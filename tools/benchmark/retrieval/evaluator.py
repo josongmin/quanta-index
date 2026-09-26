@@ -249,6 +249,7 @@ def validate_execution_profile(value: Any, system: str, where: str) -> dict[str,
         "semantic-only": ("semble-semantic-only-v1", None, "not_applicable"),
     }
     mode = profile["mode"]
+    require(isinstance(mode, str), f"{where}.mode must be a string")
     if mode == "hybrid-no-rerank":
         require(profile["profile_id"] == "semble-hybrid-no-rerank-v1", f"{where}.profile_id mismatch")
         alpha = profile["alpha"]

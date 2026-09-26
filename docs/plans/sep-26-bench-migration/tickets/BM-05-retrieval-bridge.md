@@ -1,6 +1,6 @@
 # BM-05 — Retrieval benchmark registration and product adapters
 
-Status: `PARTIAL / CONTRACT_AND_LEXICAL_SCORING_ADAPTERS_IMPLEMENTED`; fresh paired/lexical search pilot remains `NOT_RUN`. Priority: P1. Depends on: BM-02/BM-03; coordinate with RBR-12. Common gates: [TEST-PLAN](TEST-PLAN.md).
+Status: `PARTIAL / CONTRACT_PAIR_AND_LEXICAL_SCORING_ADAPTERS_IMPLEMENTED`; current paired integration verification is in progress; fresh paired/lexical search pilot remains `NOT_RUN`. Priority: P1. Depends on: BM-02/BM-03; coordinate with RBR-12. Common gates: [TEST-PLAN](TEST-PLAN.md).
 
 Current implementation/verification boundaries are recorded in [CURRENT-AUDIT.md](CURRENT-AUDIT.md). Historical [CLOSEOUT.md](CLOSEOUT.md) and [BM-07-MIGRATION-MATRIX.md](BM-07-MIGRATION-MATRIX.md) do not establish complete migration qualification.
 
@@ -47,9 +47,16 @@ over frozen external observations, five product-specific immutable runs,
 complete-profile validation and raw replay. It retains native timing layers and
 exclusions, never treating scorer execution as live product search. Focused
 tests use declared fixtures; actual clean-source CLI and pilot receipts are
-separate. Still open: `retrieval-diagnostic` common pair execution, live comparator
-capture/corpus custody, independent scorer cross-check and actual fresh
-two-repo paired/lexical pilot.
+separate. `pair_capture.py` now connects existing native `pair`/`verdict` execution
+to common `run/validate/replay/summarize` without a second scorer. It preserves a
+self-contained Git corpus bundle, exact input/executable identities and the
+original native output tree. File/context/indexed-span cases remain distinct;
+missing span observations are unsupported, not zero. The registry now names the
+actual `retrieval-run-manifest:v2` contract, replacing the erroneous v5 label.
+Focused producer fixtures do not establish real product execution. Still open:
+external release `code_only`/`developer_search` views and complete inventory
+policy, live comparator capture/corpus custody, independent scorer cross-check,
+fresh two-repo paired/lexical pilot and large-corpus storage deduplication.
 
 The registry now separates `retrieval-diagnostic` (pair execution) from
 `lexical-diagnostic` (five-product scorer). The lexical family points to its

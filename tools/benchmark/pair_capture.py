@@ -76,6 +76,13 @@ def pack_native(root: Path) -> bytes:
 
 def unpack_native(data: bytes, destination: Path) -> None:
     """Restore only sorted unique regular entries; never extractall or links."""
+    try:
+        _unpack_native(data, destination)
+    except (zipfile.BadZipFile, zipfile.LargeZipFile, RuntimeError, NotImplementedError) as exc:
+        raise EvidenceError("native tree archive is malformed or unreadable") from exc
+
+
+def _unpack_native(data: bytes, destination: Path) -> None:
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
         names = archive.namelist()
         if not names or names != sorted(set(names)):
@@ -92,6 +99,7 @@ def unpack_native(data: bytes, destination: Path) -> None:
                 or mode not in {0, 0o100000}
                 or entry.is_dir()
                 or entry.compress_type != zipfile.ZIP_STORED
+                or entry.flag_bits & 1
                 or entry.file_size > len(data)
             ):
                 raise EvidenceError("native tree has unsafe/non-regular/compressed entry")
@@ -99,6 +107,15 @@ def unpack_native(data: bytes, destination: Path) -> None:
             target.parent.mkdir(parents=True, exist_ok=True)
             with target.open("xb") as handle:
                 handle.write(archive.read(entry))
+
+
+def require_disjoint_paths(root: Path, output: Path, corpus: Path) -> None:
+    """Refuse overlapping mutable producer/custody and original corpus roots."""
+    paths = [path.resolve() for path in (root, output, corpus)]
+    for index, first in enumerate(paths):
+        for second in paths[index + 1 :]:
+            if first.is_relative_to(second) or second.is_relative_to(first):
+                raise EvidenceError("pair evidence, native output and corpus roots overlap")
 
 
 def bound_inputs(native: Path, manifest: dict, raw: Path) -> list[dict]:
@@ -114,6 +131,20 @@ def bound_inputs(native: Path, manifest: dict, raw: Path) -> list[dict]:
     return inputs
 
 
+def bind_runtime(native: Path, manifest: dict, binaries: list[dict], revision: str) -> None:
+    hashes = {entry["name"]: entry["sha256"].removeprefix("sha256:") for entry in binaries}
+    protocol = owner.read_json(
+        owner._resolve_artifact(native, manifest["artifacts"]["protocol_lock"], "protocol")
+    )
+    if (
+        manifest["provenance"]["quanta"]["source_sha"] != revision
+        or manifest["provenance"]["quanta"]["binary_digest"] != hashes["runner"]
+        or manifest["provenance"]["semble"]["interpreter_digest"] != hashes["semble_python"]
+        or protocol["searchd_expected_sha256"] != hashes["searchd"]
+    ):
+        raise EvidenceError("native pair source or executable differs from the captured identity")
+
+
 def require_registration(registry: dict) -> None:
     if registry["profiles"][PROFILE]["families"] != [FAMILY]:
         raise EvidenceError("pair profile inventory differs from the implemented owner")
@@ -126,7 +157,7 @@ def require_registration(registry: dict) -> None:
             "producer": "retrieval-pair",
             "validator": "retrieval-pair",
             "scorer": "retrieval-relevance",
-            "native_schema": "retrieval-run-manifest:v5",
+            "native_schema": f"retrieval-run-manifest:v{owner.MANIFEST_VERSION}",
             "host_policy": "any",
             "gate_tier": "diagnostic",
             "baseline": "none",
@@ -376,6 +407,9 @@ def replay_run(store: RunStore, evidence: dict) -> list[str]:
         ):
             raise EvidenceError("pair origin is malformed or native owner changed")
         _run_id(origin["capture_id"])
+        execution_root = Path(origin["native_root"])
+        if not execution_root.is_absolute() or ".." in execution_root.parts:
+            raise EvidenceError("pair execution root is not canonical")
         if (
             not isinstance(origin["binaries"], list)
             or len(origin["binaries"]) != len(BINARY_NAMES)
@@ -417,12 +451,21 @@ def replay_run(store: RunStore, evidence: dict) -> list[str]:
             or build["toolchain"] != origin["toolchain"]
         ):
             raise EvidenceError("pair executable/toolchain identity mismatch")
+        original = owner.load_spec(raw / "original-spec.json")
+        frozen = parse_json(_read_regular_file(raw / "frozen-spec.json").decode())
+        if frozen != {
+            **original,
+            **{role: str(execution_root / f"input-{role}") for role in INPUT_ROLES},
+            "repo": str(execution_root / "corpus"),
+        }:
+            raise EvidenceError("pair frozen spec differs from the original capture inputs")
         with tempfile.TemporaryDirectory(prefix="quanta-pair-corpus-") as scratch:
             corpus = Path(scratch) / "corpus"
             native = Path(scratch) / "native"
             restore_corpus(raw / "corpus.bundle", corpus)
             unpack_native(_read_regular_file(raw / "native-tree.zip"), native)
             manifest, _verdict = derive(native, corpus)
+            bind_runtime(native, manifest, binaries, evidence["source"]["revision"])
             inputs = bound_inputs(native, manifest, raw)
             if evidence["inputs"] != inputs or inputs != origin["inputs"]:
                 raise EvidenceError("pair input inventory differs from capture origin")
@@ -447,6 +490,10 @@ def capture(repo: Path, root: Path, registry: dict, spec_path: Path, timeout: in
         frozen_input = Path(scratch) / "spec.json"
         frozen_input.write_bytes(original)
         spec = owner.load_spec(frozen_input)
+    if any(key not in spec for key in (*INPUT_ROLES, "semble_python")):
+        raise EvidenceError(
+            "pair requires explicit corpus/suite/pack/host/lockfile/interpreter inputs"
+        )
     if spec.get("scope", "exploratory") != "exploratory":
         raise EvidenceError(
             "diagnostic pair profile refuses qualified admission; use the native qualified rail"
@@ -460,8 +507,7 @@ def capture(repo: Path, root: Path, registry: dict, spec_path: Path, timeout: in
     if any(path.resolve().is_relative_to(repo.resolve()) for path in external):
         raise EvidenceError("pair spec, corpus, inputs and output must stay outside the checkout")
     output = Path(spec["output_root"]).resolve()
-    if root.resolve().is_relative_to(output) or output.is_relative_to(root.resolve() / "runs"):
-        raise EvidenceError("pair native output overlaps immutable evidence custody")
+    require_disjoint_paths(root, output, Path(spec["repo"]))
     _directories(root)
     head = resolve_checkout_head(repo)
     source = source_identity(repo, "benchmark-retrieval")
@@ -525,6 +571,7 @@ def capture(repo: Path, root: Path, registry: dict, spec_path: Path, timeout: in
     raw = {"native-tree.zip": pack_native(output)}
     raw.update({path.name: _read_regular_file(path) for path in work.iterdir() if path.is_file()})
     binary_inventory = [{"name": name, "sha256": sha} for name, sha in sorted(binaries.items())]
+    bind_runtime(output, manifest, binary_inventory, head)
     toolchain = f"Python {platform.python_version()}"
     raw.update(
         {

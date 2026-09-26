@@ -14,8 +14,8 @@ try:
     from tools.ci.junit_events import JUnitEvidenceError, parse_pytest_junit_bytes
     from tools.ci.nextest_events import (
         NextestEvidenceError,
-        parse_nextest,
-        parse_nextest_inventory,
+        parse_nextest_bytes,
+        parse_nextest_inventory_bytes,
     )
 except ModuleNotFoundError:  # direct script invocation
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
@@ -23,9 +23,19 @@ except ModuleNotFoundError:  # direct script invocation
     from tools.ci.junit_events import JUnitEvidenceError, parse_pytest_junit_bytes
     from tools.ci.nextest_events import (
         NextestEvidenceError,
-        parse_nextest,
-        parse_nextest_inventory,
+        parse_nextest_bytes,
+        parse_nextest_inventory_bytes,
     )
+
+from tools.ci.lint.handoff_validation import _read_repo_regular_bytes
+
+
+def _evidence_bytes(value: Path | bytes) -> bytes:
+    if isinstance(value, bytes):
+        return value
+    path = value.absolute()
+    return _read_repo_regular_bytes(path.parent, path.name, label="proof evidence")
+
 
 PYTHON_SELECTOR = "tools/ci/tests/test_retrieval_benchmark.py"
 
@@ -39,10 +49,9 @@ def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
     return result
 
 
-def _load_pytest_inventory(path: Path) -> set[str]:
+def _load_pytest_inventory(path: Path | bytes) -> set[str]:
     try:
-        with path.open("r", encoding="utf-8") as stream:
-            payload = json.load(stream, object_pairs_hook=_unique_object)
+        payload = json.loads(_evidence_bytes(path), object_pairs_hook=_unique_object)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise SystemExit(f"invalid pytest inventory {path}: {error}") from error
     if (
@@ -61,10 +70,10 @@ def _load_pytest_inventory(path: Path) -> set[str]:
     return set(payload["tests"])
 
 
-def pytest_summary(path: Path, inventory: Path | None = None) -> dict[str, object]:
+def pytest_summary(path: Path | bytes, inventory: Path | bytes | None = None) -> dict[str, object]:
     try:
         expected = _load_pytest_inventory(inventory) if inventory is not None else None
-        counts, _ = parse_pytest_junit_bytes(path.read_bytes(), expected)
+        counts, _ = parse_pytest_junit_bytes(_evidence_bytes(path), expected)
     except (OSError, JUnitEvidenceError) as error:
         raise SystemExit(f"invalid pytest JUnit evidence {path}: {error}") from error
     return {
@@ -73,10 +82,10 @@ def pytest_summary(path: Path, inventory: Path | None = None) -> dict[str, objec
     }
 
 
-def nextest_summary(path: Path, inventory: Path | None = None) -> dict[str, object]:
+def nextest_summary(path: Path | bytes, inventory: Path | bytes | None = None) -> dict[str, object]:
     try:
-        expected = parse_nextest_inventory(inventory) if inventory is not None else None
-        evidence = parse_nextest(path, expected)
+        expected = parse_nextest_inventory_bytes(_evidence_bytes(inventory)) if inventory is not None else None
+        evidence = parse_nextest_bytes(_evidence_bytes(path), expected)
     except NextestEvidenceError as error:
         raise SystemExit(f"{error}: {path}") from error
     return {

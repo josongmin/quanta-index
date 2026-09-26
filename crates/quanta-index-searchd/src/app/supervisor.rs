@@ -363,16 +363,6 @@ impl core::fmt::Display for SupervisionError {
 
 impl std::error::Error for SupervisionError {}
 
-/// The later of two instants, for joining a cooperative checkpoint to
-/// the hard deadline that follows it.
-fn hard_at_or(cooperative_at: Instant, hard_at: Instant) -> Instant {
-    if cooperative_at >= hard_at {
-        cooperative_at
-    } else {
-        hard_at
-    }
-}
-
 /// The terminal states a drain can leave a child in.
 #[derive(Default)]
 struct DrainTally {
@@ -527,12 +517,12 @@ impl<G: Send + 'static> SearchdSupervisor<G> {
     /// answer to a spawn failure during startup; `failed` is the child
     /// that could not be spawned.
     pub fn rollback(mut self, failed: &'static str) -> SupervisionOutcome {
+        let deadline = self.hard_deadline_at(Instant::now());
         let mut torn_down: Vec<&'static str> = Vec::new();
         let mut escalated: Vec<&'static str> = Vec::new();
         // Global cancellation: what was started must now stop.
         self.cancel.request_shutdown();
         let cancel = CancelRoot::clone(&self.cancel);
-        let deadline = self.hard_deadline_at_now();
         let Self {
             children,
             pending,
@@ -621,14 +611,18 @@ impl<G: Send + 'static> SearchdSupervisor<G> {
     /// finished are joined. A reported child still in teardown at the
     /// hard deadline is escalated with its join handle and guards.
     fn drain(mut self) -> SupervisionOutcome {
+        // Both checkpoints belong to the same shutdown budget, including
+        // stop callbacks. A cooperative wait must never renew the hard limit.
+        let started = Instant::now();
+        let deadline = self.hard_deadline_at(started);
+        let cooperative_at = started
+            .checked_add(self.cooperative_deadline)
+            .unwrap_or(started)
+            .min(deadline);
         self.set_phase(SupervisorPhase::Draining);
         self.stop_all();
         // Fold any terminal events that queued during the serving loop.
         let _queued = self.take_pending_exits();
-        let started = Instant::now();
-        let cooperative_at = started
-            .checked_add(self.cooperative_deadline)
-            .unwrap_or_else(Instant::now);
         self.collect_exits_until(cooperative_at);
         // A latched abort outranks the drain: nothing is waited for.
         if let Some(signum) = self.latched_abort() {
@@ -643,8 +637,7 @@ impl<G: Send + 'static> SearchdSupervisor<G> {
             })
             .map(|child| child.name)
             .collect();
-        let deadline = self.hard_deadline_at_now();
-        self.collect_exits_until(hard_at_or(cooperative_at, deadline));
+        self.collect_exits_until(deadline);
         // The abort answer outranks the receipt: nothing is waited for.
         if let Some(signum) = self.latched_abort() {
             return self.abort(signum);
@@ -662,12 +655,12 @@ impl<G: Send + 'static> SearchdSupervisor<G> {
     /// A child ended while serving: readiness is down, fire every stop,
     /// then drain under the same hard deadline.
     fn required_child_lost(mut self, lost: ChildExit) -> SupervisionOutcome {
+        let deadline = self.hard_deadline_at(Instant::now());
         self.set_phase(SupervisorPhase::Failed);
         // Global cancellation: every well-behaved peer stops now.
         self.cancel.request_shutdown();
         let cancel = CancelRoot::clone(&self.cancel);
         self.stop_all();
-        let deadline = self.hard_deadline_at_now();
         let Self {
             children,
             pending,
@@ -1007,10 +1000,10 @@ impl<G: Send + 'static> SearchdSupervisor<G> {
         true
     }
 
-    fn hard_deadline_at_now(&self) -> Instant {
-        Instant::now()
-            .checked_add(self.hard_deadline)
-            .unwrap_or_else(Instant::now)
+    fn hard_deadline_at(&self, started: Instant) -> Instant {
+        // An unrepresentable deadline has no remaining budget, not a fresh
+        // origin or an unbounded wait.
+        started.checked_add(self.hard_deadline).unwrap_or(started)
     }
 }
 

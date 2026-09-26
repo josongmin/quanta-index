@@ -3,7 +3,7 @@
 ## 현행 판정 — 2026-09-26, [중앙 코드 감사](CURRENT-AUDIT.md)의 공유 dirty source
 
 - 구현 관측: `query_plan.rs`의 native/literal/NL 분기·original/effective identity, Python 독립 재도출 및 distractor/tamper fixture가 현재 owning 소스에 있다. 벤치 opt-in 정책이며 제품 native AND 기본값은 유지한다. 동일 정책 재구현은 잔여 작업이 아니다.
-- 검증 경계: current authority는 Python288/Rust108/SDK18. full Python285pass/3source-drift failures와 같은3건의 fresh focused 성공은 서로 다른 입력의 local 결과다. 최종 current-source whole/clean receipt는 `NOT_RUN`. SDK18은 새 binary로 재검증 중이며 observation-off 단일 성공은 query-policy 전체 증명이 아니다.
+- 검증 경계: current authority는 Python319/Rust108/SDK18. Rust108/SDK18 exact terminal은 local 통과했고 SDK symbol positive/literal typed refusal도 확인했다. full Python288의285pass/3source-drift failures와 fresh3pass, 새process31 focused는 서로 다른 입력의 local 결과이며 full319와 합성하지 않는다. JSON huge-int 7경로는 공통 변환 전 scalar guard로 typed refusal/False 보완·집중8+2통과. 최종 current-source whole/clean receipt는 NOT_RUN.
 - symbol capability 수정: literal emitter의 Phrase는 그대로 보존한다. symbol에는 chunk-only content authority가 없어 미지원 Phrase/RawString/Regex·regexp keyword·contentfilter 및 해당 symbol.has.name scalar를 중앙 domain-aware typed refusal로 거부한다. 거짓 exact-empty를 반환하거나 literal을 native로 조용히 치환하지 않는다. keyword postings와 chunk-owned repo/file predicate는 유지한다. 실제 symbol literal 지원은 RBR-08의 별도 canonical authority·format/lifecycle 후속이다.
 - 잔여: 최종 source/config에서 query-plan·현행 record/replay identity/tamper fixture, 실제 daemon 문장/식별자 distractor를 owning rail로 재실행하고 exact inventory·terminal·receipt를 연결한다. [중앙 코드 감사](CURRENT-AUDIT.md), [잔여 작업](GAP-REGISTER.md).
 

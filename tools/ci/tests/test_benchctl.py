@@ -1362,7 +1362,14 @@ def test_promotion_refuses_missing_preflight_and_partial_multi_artifact_claim(
 
 @pytest.mark.parametrize(
     "profile_name",
-    ["micro", "dsl-diagnostic", "recorded", "retrieval-contract", "retrieval-diagnostic", "lexical-diagnostic"],
+    [
+        "micro",
+        "dsl-diagnostic",
+        "recorded",
+        "retrieval-contract",
+        "retrieval-diagnostic",
+        "lexical-diagnostic",
+    ],
 )
 def test_non_native_profiles_require_adapter_or_explicit_root_before_execution(
     monkeypatch, capsys, profile_name: str
@@ -1374,10 +1381,7 @@ def test_non_native_profiles_require_adapter_or_explicit_root_before_execution(
     assert MODULE.main(["run", profile_name]) == 2
     error = capsys.readouterr().err
     assert "no producer was executed" in error.lower()
-    if profile_name in {"micro", "dsl-diagnostic", "recorded", "retrieval-contract", "lexical-diagnostic"}:
-        assert "requires --evidence-root" in error
-    else:
-        assert "needs a non-native capture adapter" in error
+    assert "requires --evidence-root" in error
 
 
 def test_native_fanout_rejects_mixed_inputs_and_incomplete_inventory() -> None:
@@ -1398,7 +1402,14 @@ def test_native_fanout_rejects_mixed_inputs_and_incomplete_inventory() -> None:
 
 @pytest.mark.parametrize(
     "profile_name",
-    ["micro", "dsl-diagnostic", "retrieval-contract", "retrieval-diagnostic", "lexical-diagnostic", "recorded"],
+    [
+        "micro",
+        "dsl-diagnostic",
+        "retrieval-contract",
+        "retrieval-diagnostic",
+        "lexical-diagnostic",
+        "recorded",
+    ],
 )
 def test_non_native_read_commands_have_explicit_unmeasured_state(
     tmp_path, capsys, profile_name: str

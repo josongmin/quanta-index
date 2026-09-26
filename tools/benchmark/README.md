@@ -45,7 +45,7 @@ families; the current end-to-end native capture path is narrower:
 | `dsl-authority`, `quality-core`, `quality-full`, `systems`, `semantic-ab` | Native Just producers, artifact checks, baseline comparison where declared, immutable promotion and raw-derived replay. Requires clean source and the declared host/inputs. |
 | `micro`, `dsl-diagnostic` | Registered Criterion owners execute with an explicit external evidence root. Fresh output directories, binary listing + correctness smoke, exact sample/estimate retention, per-case immutable runs and complete-profile publication. Diagnostic wall time only; no performance qualification. |
 | `retrieval-contract` | Executes both existing SDK/contract proof owners, retains raw terminal inventories and immutable binary copies, publishes a complete profile and replays with the existing owner validator. Typed test proof only, not relevance or speed. |
-| `retrieval-diagnostic` | Paired Quanta/Semble capture owner only. Paired native-to-common adapter remains unimplemented. |
+| `retrieval-diagnostic` | Executes the existing paired Quanta/Semble owner from an external `--pair-spec`; retains frozen inputs, executable identities, native tree and a self-contained Git corpus bundle. Publishes separate file/context/span cases only after native verdict re-computation and complete inventory validation. Diagnostic only; no quality/performance admission. |
 | `lexical-diagnostic` | Executes the existing scorer over nine frozen external observation inputs; publishes five product-specific file-recall runs as one complete capture, with raw-derived replay. Recorded diagnostic only, not live product search or qualified speed. |
 | `recorded` | Explicit external A/B/C JSONL and scan-native JSON imports; existing agent evaluator, per-family immutable runs, complete profile publication and raw-derived replay. Submitted recordings remain unauthenticated diagnostics; authenticated claims are refused. |
 
@@ -173,6 +173,43 @@ The capture retains original absolute execution paths without rewriting native
 receipts. SDK runner/searchd bytes are frozen for replay independently of the
 mutable build cache. Outer recipe wall time is not search latency. `compare`
 refuses test proofs because they have no relevance/performance baseline.
+
+### Paired diagnostic execution
+
+```sh
+uv run --frozen --extra dev python tools/benchmark/benchctl.py run retrieval-diagnostic \
+  --pair-spec /external/pair-spec.json --evidence-root /external/bench \
+  --producer-timeout 7200
+uv run --frozen --extra dev python tools/benchmark/benchctl.py validate retrieval-diagnostic \
+  --evidence-root /external/bench
+uv run --frozen --extra dev python tools/benchmark/benchctl.py replay \
+  --family retrieval-pair --evidence-root /external/bench
+```
+
+The spec is the existing `tools.benchmark.retrieval.run pair` contract, not a
+second query/scorer schema. Declare `manifest`, `suite`, `query_pack`,
+`host_profile`, `semble_lockfile` and `semble_python` explicitly. Spec, corpus,
+input and native output paths must be external to the source checkout; evidence,
+native output and original corpus roots must be mutually disjoint. Only
+`scope: exploratory` is admitted by this diagnostic profile. Qualified native
+admission remains a separate rail; `compare` refuses a qualified baseline.
+
+`pair_capture.py` re-runs the native `verdict` owner instead of duplicating its
+scorer. Original command/path bytes remain unchanged. Raw custody includes the
+native output as a sorted regular-file archive, a Git bundle restoring the real
+commit/tree/executable modes, all five frozen inputs and all four executed-file
+identities (driver Python, runner, searchd, Semble Python). Missing, duplicate,
+reordered, unsafe, compressed, encrypted or corrupt archive entries are refused.
+Original mutable corpus/output paths are not needed for replay. Current scorer
+identity remains required; a historical run is not upgraded after owner edits.
+
+Each strategy/route has independent file, context and indexed-span cases.
+Unsupported span metrics carry no score; no-answer, unsupported and timeout are
+not converted to zero relevance. Native metrics/timing remain in the raw tree,
+and common execution wall time is not search latency. This bridge does not attest
+an exhaustive searchable universe, independent gold or a quiet host. Full Git
+history and archive bytes are currently retained per case; large-corpus storage
+deduplication/streaming is not established by the fixture contract tests.
 
 ### Lexical diagnostic scorer
 

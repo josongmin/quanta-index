@@ -1414,6 +1414,10 @@ def test_qualified_uncertainty_contract_rejects_incomplete_or_forged_strata(monk
         "no_answer_abstention_delta": ev.no_answer_delta_summary([], "a" * 40),
     }
     assert pairrun._qualified_uncertainty(comparison)
+    for invalid_strata in (None, [], 10**400, True):
+        forged = json.loads(json.dumps(comparison))
+        forged["no_answer_abstention_delta"]["strata"] = invalid_strata
+        assert not pairrun._qualified_uncertainty(forged)
     for invalid_count in (10**400, -(10**400), True, None):
         forged = json.loads(json.dumps(comparison))
         forged["stratified_primary_delta"]["category"]["symbol"]["sample_count"] = invalid_count
@@ -2197,6 +2201,15 @@ def test_worker_template_dispatches_profiles_with_lane_isolation(tmp_path, monke
 
 
 def test_adapter_rejects_forged_or_mismatched_profile_reports():
+    for mode in ([], {}, None, True, 10**400):
+        profile = {"profile_id": "semble-hybrid-no-rerank-v1", "mode": mode,
+                   "alpha": 0.5, "rerank": False}
+        with pytest.raises(semble_adapter.AdapterError, match="mode"):
+            semble_adapter.execution_profile(mode, 0.5)
+        with pytest.raises(ev.EvidenceError, match="mode"):
+            ev.validate_execution_profile(profile, "semble", "profile")
+        with pytest.raises(pairrun.RunError, match="mode"):
+            pairrun._validate_semble_profile(profile, "profile")
     for alpha in (10**400, -(10**400), float("nan"), float("inf"), -float("inf"), True, None):
         profile = {
             "profile_id": "semble-hybrid-no-rerank-v1", "mode": "hybrid-no-rerank",
@@ -2972,6 +2985,26 @@ def test_runner_bundle_is_deterministic_closed_and_isolated(tmp_path):
     assert first.read_bytes() == second.read_bytes()
     assert first_proof["sha256"] == second_proof["sha256"]
     pairrun.validate_runner_bundle(first, first_proof)
+    for members in (None, [], [{}], [{"path": []}], [None],
+                    first_proof["manifest"]["members"] * 2):
+        forged = json.loads(json.dumps(first_proof))
+        forged["manifest"]["members"] = members
+        with pytest.raises(pairrun.RunError, match="member manifest"):
+            pairrun.validate_runner_bundle(first, forged)
+    for mutate in (
+        lambda value: value["manifest"].update(entrypoint="forged:main"),
+        lambda value: value["manifest"].update(schema_version=True),
+        lambda value: value["manifest"].update(schema_version=10**400),
+        lambda value: value["manifest"].update(forged=True),
+        lambda value: value["manifest"]["members"].reverse(),
+        lambda value: value["manifest"]["members"][0].update(size=True),
+        lambda value: value["manifest"]["members"][0].update(size=10**400),
+        lambda value: value["manifest"]["members"][0].update(sha256="b" * 64),
+    ):
+        forged = json.loads(json.dumps(first_proof))
+        mutate(forged)
+        with pytest.raises(pairrun.RunError, match="manifest"):
+            pairrun.validate_runner_bundle(first, forged)
     completed = subprocess.run(
         [sys.executable, "-I", "-S", str(first), "--help"],
         env={**os.environ, "PYTHONPATH": str(tmp_path / "poison")},
@@ -8083,12 +8116,16 @@ def test_benchmark_prep_does_not_repeat_retrieval_contracts():
         return completed.stdout + completed.stderr
 
     prep = recipe("benchmark-prep-local")
+    control = recipe("benchmark-control-contract-local")
     proof = recipe("retrieval-contract-proof", "/tmp/retrieval-proof")
     local = recipe("retrieval-contract-local")
-    assert "uv run --frozen --extra dev python -m pytest " in prep
+    # just's dry-run prints nested just calls without expanding their recipe.
+    # Prove the actual delegation and inspect its leaf command separately.
+    assert prep.count("uv run --frozen --extra dev just benchmark-control-contract-local") == 1
+    assert "uv run --frozen --extra dev python -m pytest " in control
     assert "uv run --frozen --extra dev python -m pytest " in local
-    assert "test_retrieval_benchmark.py -q" not in prep
-    assert "test -p quanta-index-retrieval-bench" not in prep
+    assert "test_retrieval_benchmark.py -q" not in prep + control
+    assert "test -p quanta-index-retrieval-bench" not in prep + control
     assert "portable_proof.py run --rail contract" in proof
     assert "test_retrieval_benchmark.py -q" in local
     assert "--test chunking_contract" in local

@@ -166,6 +166,7 @@ def parse_args(
             )
         if command == "run":
             child.add_argument("--lexical-spec", type=Path)
+            child.add_argument("--pair-spec", type=Path)
             child.add_argument("--agent-recording", type=Path)
             child.add_argument("--scan-recording", type=Path)
             child.add_argument("--recorded-authenticity", default=None,
@@ -736,7 +737,18 @@ def replay_command(repo_root: Path, reference: str, evidence_root: Path | None) 
         return 2
     native_families = load_manifest(registry_path, repo_root=repo_root)["families"]
     artifact_oracle = "not_applicable"
-    if evidence["profile"] == "lexical-diagnostic":
+    if evidence["profile"] == "retrieval-diagnostic":
+        from pair_capture import replay_run as replay_pair
+        from pair_capture import require_registration
+
+        try:
+            require_registration(registry)
+            replay_pair(store, evidence)
+        except (ValueError, RuntimeError, OSError, UnicodeError) as exc:
+            print(f"ERROR: pair replay refused: {exc}", file=sys.stderr)
+            return 2
+        artifact_oracle = "pass"
+    elif evidence["profile"] == "lexical-diagnostic":
         from lexical_capture import replay_run as replay_lexical
 
         try:
@@ -1330,6 +1342,51 @@ def main(argv: list[str] | None = None) -> int:
         return replay_command(repo_root, reference, args.evidence_root)
 
     profile = profiles[args.profile]
+    if args.command == "run" and args.profile != "retrieval-diagnostic" and args.pair_spec is not None:
+        print("ERROR: --pair-spec applies only to retrieval-diagnostic; no producer was executed", file=sys.stderr)
+        return 2
+    if args.profile == "retrieval-diagnostic" and args.command == "compare":
+        print("ERROR: diagnostic pairs have no qualified common baseline", file=sys.stderr)
+        return 2
+    if args.profile == "retrieval-diagnostic" and args.command in {"run", "validate", "summarize"}:
+        from pair_capture import FAMILY, require_registration
+        from pair_capture import capture as capture_pair
+        from pair_capture import validate as validate_pair
+
+        root = resolve_evidence_root(args.evidence_root)
+        if root is None and args.command != "summarize":
+            print("ERROR: pair capture requires --evidence-root; no producer was executed", file=sys.stderr)
+            return 2
+        if root is not None:
+            registry = load_registry(repo_root / "tools/benchmark/registry.toml", repo_root=repo_root)
+            try:
+                require_registration(registry)
+                if args.command == "run":
+                    if args.pair_spec is None:
+                        raise EvidenceError("pair capture requires --pair-spec")
+                    if any(getattr(args, key) is not None for key in (
+                        "lexical_spec", "criterion_samples", "criterion_warmup", "criterion_measurement", "criterion_resamples",
+                        "cold_samples", "agent_recording", "scan_recording", "recorded_authenticity")) or args.admit_baseline:
+                        raise EvidenceError("pair capture refuses unrelated producer controls")
+                    timeout = args.producer_timeout if args.producer_timeout is not None else 7200
+                    document = capture_pair(repo_root, root, registry, args.pair_spec, timeout)
+                elif args.command == "validate":
+                    document = validate_pair(repo_root, root, registry)
+                else:
+                    from profile_capture import load_capture
+
+                    capture_document = load_capture(root, profile=args.profile, registry_digest=registry_digest(registry))
+                    if set(capture_document["expected_cases"]) != {FAMILY}:
+                        raise EvidenceError("pair summary family inventory differs")
+                    document = {"profile": args.profile, "capture_id": capture_document["capture_id"],
+                                "status": "capture_present_unvalidated", "source": capture_document["source"],
+                                "measurement_count": len(capture_document["runs"]),
+                                "scope": "paired_diagnostic", "qualification": "not_run"}
+            except (ValueError, RuntimeError, OSError, UnicodeError, SystemExit) as exc:
+                print(f"ERROR: pair capture refused: {exc}", file=sys.stderr)
+                return 2
+            print(json.dumps(document, sort_keys=True, indent=2))
+            return 0
     if args.command == "run" and args.profile != "lexical-diagnostic" and args.lexical_spec is not None:
         print("ERROR: --lexical-spec applies only to lexical-diagnostic; no producer was executed", file=sys.stderr)
         return 2

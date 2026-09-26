@@ -549,7 +549,7 @@ host_policy = "any"
 gate_tier = "diagnostic"
 sample_floor = 0
 baseline = "none"
-native_schema = "retrieval-run-manifest:v5"
+native_schema = "retrieval-run-manifest:v2"
 authority = "registry"
 
 [families.lexical-file-comparison]

@@ -14,10 +14,20 @@ from pathlib import Path
 import pytest
 
 try:
-    from tools.ci.nextest_events import NextestEvidenceError, parse_nextest_inventory
+    from tools.ci.nextest_events import NextestEvidenceError, parse_nextest_inventory_bytes
 except ModuleNotFoundError:  # direct script invocation
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-    from tools.ci.nextest_events import NextestEvidenceError, parse_nextest_inventory
+    from tools.ci.nextest_events import NextestEvidenceError, parse_nextest_inventory_bytes
+
+from tools.ci.lint.handoff_validation import _read_repo_regular_bytes
+
+
+def _evidence_bytes(value: Path | bytes) -> bytes:
+    if isinstance(value, bytes):
+        return value
+    path = value.absolute()
+    return _read_repo_regular_bytes(path.parent, path.name, label="proof evidence")
+
 
 PYTHON_SELECTOR = "tools/ci/tests/test_retrieval_benchmark.py"
 DEFAULT_AUTHORITY = (
@@ -34,10 +44,9 @@ def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
     return result
 
 
-def _load_json(path: Path) -> object:
+def _load_json(path: Path | bytes) -> object:
     try:
-        with path.open("r", encoding="utf-8") as stream:
-            return json.load(stream, object_pairs_hook=_unique_object)
+        return json.loads(_evidence_bytes(path), object_pairs_hook=_unique_object)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
         raise ValueError(f"invalid proof inventory {path}: {error}") from error
 
@@ -54,7 +63,7 @@ def _identities(value: object, label: str) -> list[str]:
 
 
 def verify_inventory_authority(
-    inventory: Path, role: str, authority_path: Path = DEFAULT_AUTHORITY
+    inventory: Path | bytes, role: str, authority_path: Path = DEFAULT_AUTHORITY
 ) -> None:
     """Reject collections that differ from the source-controlled required tests."""
     if role not in {"python", "rust", "sdk"}:
@@ -82,7 +91,7 @@ def verify_inventory_authority(
         actual = _identities(payload["tests"], "pytest collection")
     else:
         try:
-            actual = sorted(parse_nextest_inventory(inventory))
+            actual = sorted(parse_nextest_inventory_bytes(_evidence_bytes(inventory)))
         except NextestEvidenceError as error:
             raise ValueError(f"invalid {role} nextest inventory: {error}") from error
     if actual != required:

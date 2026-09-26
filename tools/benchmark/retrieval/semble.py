@@ -58,6 +58,8 @@ SEMBLE_PINNED_VERSION = "0.6.0"
 
 
 def execution_profile(mode: str, alpha: float | None) -> dict:
+    if not isinstance(mode, str):
+        raise AdapterError("Semble execution profile mode must be a string")
     fixed = {
         "native-default": ("semble-native-default-v1", None, "upstream-content-default"),
         "lexical-only": ("semble-lexical-only-v1", None, "not_applicable"),

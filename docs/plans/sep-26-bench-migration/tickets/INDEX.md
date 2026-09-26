@@ -41,8 +41,10 @@ New benchmark-only packages stay in the **root Cargo workspace** and share its t
   contract proof, not authenticated real-agent or performance qualification.
 - Retrieval scorers/producers remain their existing owners. The common CLI
   now has a contract-proof adapter using typed test counts and frozen SDK
-  binaries, and a five-product lexical recorded-scoring capture adapter.
-  The pair execution and fresh lexical search/corpus adapters remain open. Native binary inventory,
+  binaries, a five-product lexical recorded-scoring capture adapter and a
+  paired diagnostic bridge to the existing native execution/verdict owner.
+  Current paired integration proof is in progress. Fresh lexical search,
+  external corpus release/views and the actual two-repo pilot remain open. Native binary inventory,
   monitored host-lease admission and hosted CI remain separate open proof/code
   boundaries, detailed in [CURRENT-AUDIT.md](CURRENT-AUDIT.md).
 - `tools/ci/source_closure.py` binds the benchmark control plane and owning

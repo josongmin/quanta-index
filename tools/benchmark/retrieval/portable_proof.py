@@ -26,6 +26,10 @@ except ModuleNotFoundError:  # direct script invocation
     from tools.ci import source_closure
 
 from tools.benchmark.producer_execution import execute
+from tools.ci.lint.handoff_validation import (
+    _read_repo_regular_bytes,
+    _sha256_repo_regular_file,
+)
 
 ROOT = Path(__file__).resolve().parents[3]
 PROOF_COMMAND_TIMEOUT_SECONDS = 7200
@@ -61,6 +65,11 @@ def _is_sha256(value: object) -> bool:
 
 
 def _json(path: Path) -> object:
+    path = path.absolute()
+    return _json_bytes(_read_repo_regular_bytes(path.parent, path.name, label="proof JSON"))
+
+
+def _json_bytes(raw: bytes) -> object:
     def unique(pairs: list[tuple[str, object]]) -> dict[str, object]:
         result: dict[str, object] = {}
         for key, value in pairs:
@@ -72,7 +81,7 @@ def _json(path: Path) -> object:
     def constant(value: str) -> None:
         raise ValueError(f"invalid JSON constant: {value}")
 
-    return json.loads(path.read_bytes(), object_pairs_hook=unique, parse_constant=constant)
+    return json.loads(raw, object_pairs_hook=unique, parse_constant=constant)
 
 
 def _write(path: Path, data: bytes) -> None:
@@ -537,12 +546,15 @@ def produce(rail: str, out: Path) -> Path:
 
 
 def _inside(out: Path, value: str) -> Path:
-    if not isinstance(value, str) or not value or Path(value).is_absolute():
+    if (
+        not isinstance(value, str)
+        or not value
+        or Path(value).is_absolute()
+        or len(Path(value).parts) != 1
+        or value in {".", ".."}
+    ):
         raise ValueError("invalid relative artifact path")
-    path = (out / value).resolve(strict=True)
-    if path.parent != out or not path.is_file():
-        raise ValueError(f"artifact escaped proof root: {value}")
-    return path
+    return out / value
 
 
 def _canonical_receipt(
@@ -554,8 +566,15 @@ def _canonical_receipt(
     inputs: dict[str, Path],
     closure: dict[str, object],
     execution_root: Path | None = None,
+    captured: dict[str, bytes] | None = None,
 ) -> None:
-    receipt = _json(path)
+    def raw(value: Path) -> bytes:
+        if captured is not None:
+            return captured[value.name]
+        return _read_repo_regular_bytes(value.absolute().parent, value.name, label="canonical evidence")
+
+    receipt = _json_bytes(raw(path))
+    summary_bytes = raw(summary)
     if not isinstance(receipt, dict) or set(receipt) != {
         "schema_version",
         "revision",
@@ -569,11 +588,11 @@ def _canonical_receipt(
         "input_evidence",
     }:
         raise ValueError(f"invalid canonical receipt shape: {path}")
-    result = _json(summary)
+    result = _json_bytes(summary_bytes)
     if not isinstance(result, dict) or result.get("command") != command:
         raise ValueError(f"canonical summary command mismatch: {summary}")
     wanted_inputs = sorted(
-        ({"role": role, "sha256": _sha(raw)} for role, raw in inputs.items()),
+        ({"role": role, "sha256": hashlib.sha256(raw(value)).hexdigest()} for role, value in inputs.items()),
         key=lambda item: item["role"],
     )
     if (
@@ -585,7 +604,7 @@ def _canonical_receipt(
         or receipt["command"] != command
         or receipt["evidence_path"]
         != str((execution_root / summary.name) if execution_root else summary)
-        or receipt["evidence_sha256"] != _sha(summary)
+        or receipt["evidence_sha256"] != hashlib.sha256(summary_bytes).hexdigest()
         or type(receipt["test_event_count"]) is not int
         or receipt["test_event_count"] != result.get("executed")
         or receipt["source_closure"] != closure
@@ -606,12 +625,23 @@ def validate(
     root and frozen binary files. These affect lookup only; raw commands,
     receipt paths, and native binary metadata are never rewritten.
     """
-    receipt_path = receipt_path.resolve(strict=True)
-    out = receipt_path.parent.resolve()
+    receipt_path = receipt_path.absolute()
+    out = receipt_path.parent
+    captured: dict[str, bytes] = {}
+
+    def capture(name: str) -> bytes:
+        _inside(out, name)
+        if name not in captured:
+            captured[name] = _read_repo_regular_bytes(out, name, label="portable proof evidence")
+        return captured[name]
+
+    def digest(name: str) -> str:
+        return hashlib.sha256(capture(name)).hexdigest()
+
     execution_root = out if execution_root is None else execution_root
     if not execution_root.is_absolute() or ".." in execution_root.parts:
         raise ValueError("execution root must be an absolute canonical recorded path")
-    context = _json(receipt_path)
+    context = _json_bytes(capture(receipt_path.name))
     if (
         not isinstance(context, dict)
         or set(context)
@@ -630,7 +660,7 @@ def validate(
         or context["rail"] not in {"contract", "sdk"}
     ):
         raise ValueError("invalid execution context shape")
-    closure = source_closure.validate_manifest_shape(_json(out / "source-closure.json"))
+    closure = source_closure.validate_manifest_shape(_json_bytes(capture("source-closure.json")))
     if (
         context["revision"] != closure["revision"]
         or not isinstance(context["os"], dict)
@@ -667,13 +697,20 @@ def validate(
         raise ValueError("invalid proof binary identities")
     if binary_files is not None and set(binary_files) != set(binaries):
         raise ValueError("frozen proof binary inventory mismatch")
+    binary_digests: dict[str, str] = {}
     for name, binary in binaries.items():
         if (
             not isinstance(binary, dict)
             or set(binary) != {"path", "sha256"}
-            or _sha(binary_files[name] if binary_files is not None else Path(binary["path"]))
-            != binary["sha256"]
+            or not isinstance(binary["path"], str)
+            or not Path(binary["path"]).is_absolute()
         ):
+            raise ValueError("proof binary identity changed")
+        binary_path = (binary_files[name] if binary_files is not None else Path(binary["path"])).absolute()
+        binary_digests[name] = _sha256_repo_regular_file(
+            binary_path.parent, binary_path.name, label="portable proof binary"
+        )
+        if binary_digests[name] != binary["sha256"]:
             raise ValueError("proof binary identity changed")
     expected_commands = _expected_commands(context["rail"], execution_root, tools, binaries)
     expected_names = [name for name, _, _ in expected_commands]
@@ -725,7 +762,7 @@ def validate(
         for role in ("stdout", "stderr"):
             if (
                 row[role] != f"{row['name']}.{role}"
-                or _sha(_inside(out, row[role])) != row[f"{role}_sha256"]
+                or digest(row[role]) != row[f"{role}_sha256"]
             ):
                 raise ValueError("proof command output changed")
     raw_evidence = context["raw_evidence"]
@@ -748,26 +785,26 @@ def validate(
     if not isinstance(raw_evidence, dict) or set(raw_evidence) != expected_raw:
         raise ValueError("invalid execution context raw evidence set")
     for name, digest in raw_evidence.items():
-        if _sha(_inside(out, name)) != digest:
+        if digest(name) != digest:
             raise ValueError(f"proof evidence changed: {name}")
     if context["rail"] == "contract":
-        proof_inventory.verify_inventory_authority(out / "python-inventory.json", "python")
-        proof_inventory.verify_inventory_authority(out / "rust-inventory.json", "rust")
-        if (out / "rust-inventory.json").read_bytes() != (
-            out / "rust-collection.stdout"
-        ).read_bytes():
+        proof_inventory.verify_inventory_authority(capture("python-inventory.json"), "python")
+        proof_inventory.verify_inventory_authority(capture("rust-inventory.json"), "rust")
+        if capture("rust-inventory.json") != capture("rust-collection.stdout"):
             raise ValueError("rust collection output differs from inventory")
-        if (out / "rust-nextest.jsonl").read_bytes() != (out / "rust-test.stdout").read_bytes():
+        if capture("rust-nextest.jsonl") != capture("rust-test.stdout"):
             raise ValueError("rust nextest output differs from raw evidence")
         expected = {
             "contract_python_results.json": contract_proof.pytest_summary(
-                out / "python-junit.xml",
-                out / "python-inventory.json",
+                capture("python-junit.xml"),
+                capture("python-inventory.json"),
             ),
             "contract_rust_results.json": contract_proof.nextest_summary(
-                out / "rust-nextest.jsonl", out / "rust-inventory.json"
+                capture("rust-nextest.jsonl"), capture("rust-inventory.json")
             ),
         }
+        capture("contract_python_receipt.json")
+        capture("contract_python_results.json")
         _canonical_receipt(
             out / "contract_python_receipt.json",
             rail="retrieval-contract-python",
@@ -780,7 +817,10 @@ def validate(
             },
             closure=closure,
             execution_root=execution_root,
+            captured=captured,
         )
+        capture("contract_rust_receipt.json")
+        capture("contract_rust_results.json")
         _canonical_receipt(
             out / "contract_rust_receipt.json",
             rail="retrieval-contract-rust",
@@ -793,10 +833,11 @@ def validate(
             },
             closure=closure,
             execution_root=execution_root,
+            captured=captured,
         )
     else:
-        proof_inventory.verify_inventory_authority(out / "nextest-inventory.json", "sdk")
-        metadata = _json(out / "metadata.stdout")
+        proof_inventory.verify_inventory_authority(capture("nextest-inventory.json"), "sdk")
+        metadata = _json_bytes(capture("metadata.stdout"))
         target = metadata.get("target_directory") if isinstance(metadata, dict) else None
         suffix = ".exe" if os.name == "nt" else ""
         if (
@@ -811,18 +852,16 @@ def validate(
         ):
             raise ValueError("SDK binary paths differ from cargo metadata")
         expected = {
-            "sdk_results.json": sdk_proof.build_summary(
-                out / "actual-runner-record.json",
-                out / "nextest.jsonl",
-                binary_files["runner"]
-                if binary_files is not None
-                else Path(binaries["runner"]["path"]),
-                out / "nextest-inventory.json",
-                searchd_path=binary_files["searchd"]
-                if binary_files is not None
-                else Path(binaries["searchd"]["path"]),
+            "sdk_results.json": sdk_proof.build_summary_from_evidence(
+                capture("actual-runner-record.json"),
+                capture("nextest.jsonl"),
+                binary_digests["runner"],
+                capture("nextest-inventory.json"),
+                searchd_digest=binary_digests["searchd"],
             )
         }
+        capture("sdk_receipt.json")
+        capture("sdk_results.json")
         _canonical_receipt(
             out / "sdk_receipt.json",
             rail="retrieval-sdk-proof",
@@ -836,9 +875,10 @@ def validate(
             },
             closure=closure,
             execution_root=execution_root,
+            captured=captured,
         )
     for name, summary in expected.items():
-        if _json(out / name) != summary:
+        if _json_bytes(capture(name)) != summary:
             raise ValueError(f"proof summary differs from machine evidence: {name}")
     return context
 

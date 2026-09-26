@@ -109,6 +109,8 @@ def _validate_semble_profile(value: object, where: str) -> dict:
     if not isinstance(value, dict) or set(value) != {"profile_id", "mode", "alpha", "rerank"}:
         raise RunError(f"{where} fields are invalid")
     mode = value["mode"]
+    if not isinstance(mode, str):
+        raise RunError(f"{where}.mode must be a string")
     fixed = {
         "native-default": ("semble-native-default-v1", None, "upstream-content-default"),
         "lexical-only": ("semble-lexical-only-v1", None, "not_applicable"),
@@ -248,11 +250,34 @@ def validate_runner_bundle(path: Path, expected: dict) -> None:
     if set(observed) != {"__main__.py", *RUNNER_BUNDLE_MEMBERS}:
         raise RunError("runner bundle member set differs from frozen source")
     manifest = expected.get("manifest")
-    if not isinstance(manifest, dict):
+    if (
+        not isinstance(manifest, dict)
+        or set(manifest) != {"schema_version", "entrypoint", "members"}
+        or type(manifest["schema_version"]) is not int
+        or manifest["schema_version"] != 1
+        or manifest["entrypoint"] != "semble:main"
+    ):
         raise RunError("runner bundle manifest is malformed")
-    rows = {row["path"]: row for row in manifest.get("members", []) if isinstance(row, dict)}
+    members = manifest.get("members")
+    if not isinstance(members, list) or any(
+        not isinstance(row, dict)
+        or set(row) != {"path", "sha256", "size"}
+        or not isinstance(row["path"], str)
+        or not _is_hex(row["sha256"], 64)
+        or type(row["size"]) is not int
+        or row["size"] < 0
+        for row in members
+    ):
+        raise RunError("runner bundle member manifest is malformed")
+    rows = {row["path"]: row for row in members}
+    if len(rows) != len(members):
+        raise RunError("runner bundle member manifest contains duplicated paths")
+    if list(rows) != sorted(rows):
+        raise RunError("runner bundle member manifest is unordered")
     if set(rows) != set(observed):
         raise RunError("runner bundle member manifest is incomplete")
+    if canonical_bytes(manifest) + b"\n" != manifest_bytes:
+        raise RunError("runner bundle declared manifest differs from embedded bytes")
     for name, data in observed.items():
         if rows[name] != {"path": name, "sha256": digest(data), "size": len(data)}:
             raise RunError("runner bundle member bytes differ from manifest")
@@ -4407,8 +4432,8 @@ def _qualified_uncertainty(comparison: object) -> bool:
     if no_answer["sample_count"] == 0:
         if (
             no_answer["mean_delta"] != "not_applicable"
-            or any(no_answer["strata"].values())
             or not _valid_stratified_delta(no_answer["strata"], 0, None)
+            or any(no_answer["strata"].values())
         ):
             return False
     elif not is_finite_json_number(no_answer["mean_delta"]):

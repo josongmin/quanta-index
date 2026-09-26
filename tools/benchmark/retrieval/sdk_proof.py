@@ -14,17 +14,27 @@ try:
     from tools.benchmark.retrieval.proof_inventory import verify_inventory_authority
     from tools.ci.nextest_events import (
         NextestEvidenceError,
-        parse_nextest,
-        parse_nextest_inventory,
+        parse_nextest_bytes,
+        parse_nextest_inventory_bytes,
     )
 except ModuleNotFoundError:  # direct script invocation
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
     from tools.benchmark.retrieval.proof_inventory import verify_inventory_authority
     from tools.ci.nextest_events import (
         NextestEvidenceError,
-        parse_nextest,
-        parse_nextest_inventory,
+        parse_nextest_bytes,
+        parse_nextest_inventory_bytes,
     )
+
+from tools.ci.lint.handoff_validation import _read_repo_regular_bytes
+
+
+def _evidence_bytes(value: Path | bytes) -> bytes:
+    if isinstance(value, bytes):
+        return value
+    path = value.absolute()
+    return _read_repo_regular_bytes(path.parent, path.name, label="proof evidence")
+
 
 PROOF_TEST = "actual_runner_binary_emits_receipt_bound_v5_record"
 
@@ -52,10 +62,10 @@ def _hex64(value: object, label: str) -> str:
     return value
 
 
-def _nextest_counts(path: Path, inventory: Path | None = None) -> tuple[int, int, int, int]:
+def _nextest_counts(path: Path | bytes, inventory: Path | bytes | None = None) -> tuple[int, int, int, int]:
     try:
-        expected = parse_nextest_inventory(inventory) if inventory is not None else None
-        evidence = parse_nextest(path, expected)
+        expected = parse_nextest_inventory_bytes(_evidence_bytes(inventory)) if inventory is not None else None
+        evidence = parse_nextest_bytes(_evidence_bytes(path), expected)
     except NextestEvidenceError as error:
         raise SystemExit(f"{error}: {path}") from error
     if not any(
@@ -66,16 +76,16 @@ def _nextest_counts(path: Path, inventory: Path | None = None) -> tuple[int, int
 
 
 def build_summary_from_evidence(
-    record_path: Path,
-    nextest_path: Path,
+    record_path: Path | bytes,
+    nextest_path: Path | bytes,
     runner_digest: str,
-    inventory_path: Path | None = None,
+    inventory_path: Path | bytes | None = None,
     *,
     searchd_digest: str | None = None,
 ) -> dict[str, object]:
     try:
         record = json.loads(
-            record_path.read_bytes(),
+            _evidence_bytes(record_path),
             object_pairs_hook=_unique_object,
             parse_constant=_reject_constant,
         )
@@ -153,13 +163,13 @@ def build_summary(
     *,
     searchd_path: Path | None = None,
 ) -> dict[str, object]:
-    binary_digest = hashlib.sha256(runner_path.read_bytes()).hexdigest()
+    binary_digest = hashlib.sha256(_evidence_bytes(runner_path)).hexdigest()
     return build_summary_from_evidence(
         record_path,
         nextest_path,
         binary_digest,
         inventory_path,
-        searchd_digest=hashlib.sha256(searchd_path.read_bytes()).hexdigest()
+        searchd_digest=hashlib.sha256(_evidence_bytes(searchd_path)).hexdigest()
         if searchd_path is not None
         else None,
     )

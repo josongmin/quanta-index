@@ -594,6 +594,14 @@ fn hard_deadline_escalation_is_not_graceful() {
     );
 }
 
+struct DeadlineGuard(mpsc::Sender<()>);
+
+impl Drop for DeadlineGuard {
+    fn drop(&mut self) {
+        let _sent = self.0.send(());
+    }
+}
+
 /// Cooperative and hard deadlines share one drain origin. The cooperative
 /// checkpoint cannot buy an extra hard-deadline interval for any child kind.
 #[test]
@@ -601,17 +609,12 @@ fn cooperative_checkpoint_does_not_restart_the_hard_drain_deadline() {
     for kind in ["unreported", "reported", "adopted"] {
         let root = CancelRoot::new();
         let (release_tx, release_rx) = mpsc::channel();
+        let (report_tx, report_rx) = mpsc::channel();
         let (dropped_tx, dropped_rx) = mpsc::channel();
-        struct Guard(mpsc::Sender<()>);
-        impl Drop for Guard {
-            fn drop(&mut self) {
-                let _sent = self.0.send(());
-            }
-        }
         let mut supervisor = SearchdSupervisor::new(
             Duration::from_millis(450),
             Duration::from_millis(450),
-            Guard(dropped_tx),
+            DeadlineGuard(dropped_tx),
             CancelRoot::clone(&root),
         );
         if kind == "adopted" {
@@ -623,10 +626,20 @@ fn cooperative_checkpoint_does_not_restart_the_hard_drain_deadline() {
                 }),
             );
         } else {
+            let stop: Box<dyn FnOnce() + Send> = if kind == "reported" {
+                Box::new(move || {
+                    let _sent = report_tx.send(());
+                })
+            } else {
+                no_stop()
+            };
             supervisor
-                .spawn_child("deadline-held", no_stop(), move |context| {
+                .spawn_child("deadline-held", stop, move |context| {
                     Ok(std::thread::spawn(move || {
                         if kind == "reported" {
+                            // Publish only after drain's stop callback runs,
+                            // never through startup's required-child-loss path.
+                            report_rx.recv().expect("drain permits the report");
                             context.report_exit(ChildExitKind::Completed);
                         }
                         let _released = release_rx.recv();
@@ -655,6 +668,127 @@ fn cooperative_checkpoint_does_not_restart_the_hard_drain_deadline() {
             "{kind}: one 450 ms hard deadline, not two: {elapsed:?}"
         );
     }
+}
+
+/// Stop callbacks consume the original phase budget, rather than opening a
+/// second interval before joins. Each real shutdown ingress preserves custody.
+#[test]
+fn stop_callback_time_consumes_every_shutdown_phase_budget() {
+    for phase in ["drain", "required-loss", "rollback"] {
+        let root = CancelRoot::new();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (dropped_tx, dropped_rx) = mpsc::channel();
+        let mut supervisor = SearchdSupervisor::new(
+            Duration::ZERO,
+            Duration::from_millis(450),
+            DeadlineGuard(dropped_tx),
+            CancelRoot::clone(&root),
+        );
+        supervisor
+            .spawn_child(
+                "budget-held",
+                Box::new(|| std::thread::sleep(Duration::from_millis(450))),
+                move |_context| {
+                    Ok(std::thread::spawn(move || {
+                        let _released = release_rx.recv();
+                    }))
+                },
+            )
+            .expect("fixture child spawns");
+        if phase == "required-loss" {
+            supervisor
+                .spawn_child("already-lost", no_stop(), |context| {
+                    let join = std::thread::spawn(move || {
+                        context.report_exit(ChildExitKind::Completed);
+                    });
+                    let limit = std::time::Instant::now() + Duration::from_secs(1);
+                    while !join.is_finished() {
+                        anyhow::ensure!(std::time::Instant::now() < limit, "lost child stalled");
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    Ok(join)
+                })
+                .expect("lost child spawns and finishes");
+        }
+        let started = std::time::Instant::now();
+        let outcome = match phase {
+            "drain" => {
+                root.request_shutdown();
+                supervisor.run(&root)
+            }
+            "required-loss" => supervisor.run(&root),
+            "rollback" => {
+                let failure = supervisor
+                    .spawn_child("refused", no_stop(), refused_spawn)
+                    .expect_err("fixture spawn is refused");
+                supervisor.rollback(failure.name)
+            }
+            _ => panic!("unknown fixture phase"),
+        };
+        let elapsed = started.elapsed();
+        let retained = dropped_rx.try_recv().is_err();
+        release_tx.send(()).expect("held child remains alive");
+        dropped_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("guard drops after its child exits");
+        assert!(retained, "{phase}: a live child must retain its guard");
+        match outcome {
+            SupervisionOutcome::HardDeadlineEscalated { unfinished } if phase != "rollback" => {
+                assert_eq!(unfinished, vec!["budget-held"]);
+            }
+            SupervisionOutcome::StartupRollback {
+                failed, escalated, ..
+            } if phase == "rollback" => {
+                assert_eq!(failed, "refused");
+                assert_eq!(escalated, vec!["budget-held"]);
+            }
+            other => panic!("{phase}: deadline must escalate its live child: {other:?}"),
+        }
+        assert!(
+            elapsed < Duration::from_millis(700),
+            "{phase}: the 450 ms stop callback must consume the hard budget: {elapsed:?}"
+        );
+    }
+}
+
+/// A deadline that cannot be represented is exhausted, not renewed or
+/// converted into an unbounded drain. Live children still retain their guard.
+#[test]
+fn unrepresentable_hard_deadline_is_exhausted_with_custody_retained() {
+    let root = CancelRoot::new();
+    let (release_tx, release_rx) = mpsc::channel();
+    let (dropped_tx, dropped_rx) = mpsc::channel();
+    let mut supervisor = SearchdSupervisor::new(
+        Duration::ZERO,
+        Duration::MAX,
+        DeadlineGuard(dropped_tx),
+        CancelRoot::clone(&root),
+    );
+    supervisor
+        .spawn_child("overflow-held", no_stop(), move |_context| {
+            Ok(std::thread::spawn(move || {
+                let _released = release_rx.recv();
+            }))
+        })
+        .expect("fixture child spawns");
+    root.request_shutdown();
+    let started = std::time::Instant::now();
+    let outcome = supervisor.run(&root);
+    let elapsed = started.elapsed();
+    let retained = dropped_rx.try_recv().is_err();
+    release_tx.send(()).expect("held child remains alive");
+    dropped_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("guard drops after its child exits");
+    assert!(retained, "a live child must retain its guard");
+    assert!(
+        matches!(outcome, SupervisionOutcome::HardDeadlineEscalated { unfinished }
+        if unfinished == vec!["overflow-held"])
+    );
+    assert!(
+        elapsed < Duration::from_millis(700),
+        "overflow has no remaining budget: {elapsed:?}"
+    );
 }
 
 /// Escalation returns at the deadline, but custody follows the unfinished

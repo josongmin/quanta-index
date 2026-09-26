@@ -6,7 +6,8 @@
 
 - 후속 owner proof `VERIFIED` local: immutable `9e443489` + 소유2파일 최종 patch에서 whole283 passed/32 subtests, 1455.42s·exit0·actual collection283 exact·선택 Python 입력 전후 동일. `/private/tmp/qi-rbr-reaudit/final-owner-receipt.json`, SHA `af5b795151554456673752d9372d12d67f875fc2ce850ba7a73f5fef57e58799`. commit의 consumer/test bytes가 검증 bytes와 같음을 owner가 확인했다. root의 floor/Sourcegraph 추가5 identity를 포함한 최신288 whole proof가 아니며 clean-source/installed/qualification은 제외한다.
 
-- 최신 전체 authority: Python288/Rust108/SDK18. 실제 collection/terminal 결과는 [CURRENT-AUDIT](CURRENT-AUDIT.md)를 따른다. 과거 count/raw를 현재 증거로 재사용하지 않는다.
+- 최신 전체 authority: Python319/Rust108/SDK18. 실제 collection/terminal 결과는 [CURRENT-AUDIT](CURRENT-AUDIT.md)를 따른다. 과거 count/raw를 현재 증거로 재사용하지 않는다.
+- 후속 deletion-counter/huge-integer/object-shape3fix는 코드 반영·focused3 및 actual9/5 raw replay 통과. owner frozen288 전체287pass/1fail의 원인은 nested `just --dry-run`을 leaf pytest까지 확장한다고 가정한 기존 prep test였다. 기존 identity를 prep→control 위임1회와 leaf canonical pytest 검사로 보강해 owner288를 재실행한다. 독립 current319 전체도 별도 source freeze에서 실행 중이며 terminal 전 `NOT_RUN`; 서로 합성하지 않는다.
 - T15는 component 0.002/cosine 0.005의 고정 tolerance, 정확한 inputs/정책/model2vec 0.9.0/assets와 native raw vectors를 검증한다. Semble native `max_length=512`와 controlled `None`를 동일 정책으로 취급하지 않는다.
 - T16은 fresh와 delta의 같은 owner scope/실제 full rows 및 fault/restart 경계를 raw oracle로 검증해야 한다. summary/count만 같은 것은 row-set equivalence가 아니다. exporter와 source/model/dependency/config/binary/environment/명령/terminal custody의 결합 검증이 종료 조건이다.
 - T16의 before→typed operation→fresh oracle를 독립 재도출하고 의미 없는 append/replace/tombstone/clear/membership을 거부한다. 무관 owner sentinel을 보존한다. terminal은 단 하나의 마지막 successful build event여야 하며 뒤 이벤트·모순/중복 event를 거부한다. dimension/receipt/exit 및 full-row u32/bool은 정확한 타입을 요구한다. 재감사 중 발견한 table 변수 shadow 회귀도 수정 후 정상 재생을 확인했다.

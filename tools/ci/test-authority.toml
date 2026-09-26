@@ -355,6 +355,7 @@ targets = [
   "benchmark-lexical-capture-python-owner",
   "benchmark-lexical-scorer-python-owner",
   "benchmark-portable-proof-python-owner",
+  "benchmark-pair-capture-python-owner",
 ]
 
 [[python_targets]]
@@ -445,6 +446,12 @@ rail = "pr-benchmark-control-python"
 id = "benchmark-portable-proof-python-owner"
 path = "tools/ci/tests/test_portable_proof.py"
 owner = "tools/benchmark/retrieval/portable_proof.py"
+rail = "pr-benchmark-control-python"
+
+[[python_targets]]
+id = "benchmark-pair-capture-python-owner"
+path = "tools/ci/tests/test_pair_capture.py"
+owner = "tools/benchmark/pair_capture.py"
 rail = "pr-benchmark-control-python"
 
 [[integration_targets]]
