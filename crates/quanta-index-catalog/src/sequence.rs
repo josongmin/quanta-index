@@ -62,7 +62,9 @@ pub(crate) const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS catalog_sequence_v2 
              payload_digest BLOB NOT NULL CHECK (length(payload_digest) = 32),
              event_commitment BLOB NOT NULL CHECK (length(event_commitment) = 32),
              row_sha256 BLOB NOT NULL CHECK (length(row_sha256) = 32)
-         ) WITHOUT ROWID;";
+         ) WITHOUT ROWID;
+         CREATE INDEX IF NOT EXISTS catalog_sequence_event_v2_identity_sequence
+             ON catalog_sequence_event_v2 (kind, identity_digest, sequence);";
 
 /// The closed set of event kinds the generic ledger admits (SEP-21-002).
 ///
@@ -642,19 +644,22 @@ pub(crate) fn is_invalidated_for_floor(
     Ok(found.is_some())
 }
 
-/// Whether a later invalidation event names `identity_digest` (the integrity
-/// pass's attribution check). An earlier invalidation cannot excuse a new
-/// unpaired terminal event after the replay floor was raised.
+/// Whether a later invalidation event names the operation identity.
+///
+/// One invalidation attributes at most the immediately preceding terminal
+/// event of the same identity. Earlier invalidations and intervening terminal
+/// events cannot excuse a missing domain row.
 fn has_later_invalidation(
     connection: &Connection,
     path: &std::path::Path,
     terminal_sequence: i64,
     identity_digest: &[u8; 32],
 ) -> Result<bool, CoreError> {
-    let found: Option<i64> = connection
+    let next_invalidation: Option<i64> = connection
         .query_row(
-            "SELECT 1 FROM catalog_sequence_event_v2
-             WHERE kind = ?1 AND identity_digest = ?2 AND sequence > ?3 LIMIT 1",
+            "SELECT sequence FROM catalog_sequence_event_v2
+             WHERE kind = ?1 AND identity_digest = ?2 AND sequence > ?3
+             ORDER BY sequence ASC LIMIT 1",
             params![
                 SequenceEventKindV1::OperationInvalidation.as_code(),
                 identity_digest.as_slice(),
@@ -664,7 +669,27 @@ fn has_later_invalidation(
         )
         .optional()
         .map_err(|error| engine_error("read invalidation", path, &error))?;
-    Ok(found.is_some())
+    let Some(invalidation_sequence) = next_invalidation else {
+        return Ok(false);
+    };
+    let intervening_terminal: Option<i64> = connection
+        .query_row(
+            "SELECT 1 FROM catalog_sequence_event_v2
+             WHERE kind IN (?1, ?2, ?3) AND identity_digest = ?4
+               AND sequence > ?5 AND sequence < ?6 LIMIT 1",
+            params![
+                SequenceEventKindV1::OperationCommitted.as_code(),
+                SequenceEventKindV1::OperationRefused.as_code(),
+                SequenceEventKindV1::OperationAborted.as_code(),
+                identity_digest.as_slice(),
+                terminal_sequence,
+                invalidation_sequence,
+            ],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| engine_error("read intervening terminal event", path, &error))?;
+    Ok(intervening_terminal.is_none())
 }
 
 impl SqliteCatalog {
@@ -979,60 +1004,120 @@ mod tests {
 
     #[test]
     fn invalidation_cannot_attribute_a_later_unpaired_operation_event() -> TestResult {
-        let root = tempfile::tempdir()?;
-        let catalog = SqliteCatalog::open(root.path(), Duration::from_millis(100))?;
-        let key = IdempotencyKeyV1 {
-            kind: IngestOperationKindV1::History,
-            repo_id: RepoId::new("repo")?,
-            revision_id: RevisionId::new("revision")?,
-            generation: ManifestGeneration::new(1),
-            batch_digest: "digest".to_string(),
-        };
-        let body = [1_u8; 32];
-        let claim = match catalog.claim_prepared(
-            &key,
-            &body,
-            "owner",
-            i64::MAX.unsigned_abs(),
-            &body,
-        )? {
-            ClaimOutcomeV1::Claimed(claim) => claim,
-            ClaimOutcomeV1::Replay { .. } | ClaimOutcomeV1::ReplayRepoMap { .. } => {
-                return Err("fixture expected a fresh claim".into());
+        for orphan_after_gc in [false, true] {
+            let root = tempfile::tempdir()?;
+            let catalog = SqliteCatalog::open(root.path(), Duration::from_millis(100))?;
+            let key = IdempotencyKeyV1 {
+                kind: IngestOperationKindV1::History,
+                repo_id: RepoId::new("repo")?,
+                revision_id: RevisionId::new("revision")?,
+                generation: ManifestGeneration::new(1),
+                batch_digest: "digest".to_string(),
+            };
+            let body = [1_u8; 32];
+            let claim = match catalog.claim_prepared(
+                &key,
+                &body,
+                "owner",
+                i64::MAX.unsigned_abs(),
+                &body,
+            )? {
+                ClaimOutcomeV1::Claimed(claim) => claim,
+                ClaimOutcomeV1::Replay { .. } | ClaimOutcomeV1::ReplayRepoMap { .. } => {
+                    return Err("fixture expected a fresh claim".into());
+                }
+            };
+            catalog.mark_applying(&claim)?;
+            let mut receipt = BatchPublishReceipt::empty_for(
+                ManifestGeneration::new(1),
+                None,
+                "digest".to_string(),
+            );
+            receipt.accept_replace_scope();
+            let _committed = catalog.commit(&claim, &receipt)?;
+            if !orphan_after_gc {
+                append_orphan_operation_event(&catalog, &key)?;
             }
-        };
-        catalog.mark_applying(&claim)?;
-        let mut receipt = BatchPublishReceipt::empty_for(
-            ManifestGeneration::new(1),
-            None,
-            "digest".to_string(),
-        );
-        receipt.accept_replace_scope();
-        let _committed = catalog.commit(&claim, &receipt)?;
-        if catalog.forget_generation(&key.repo_id, &key.revision_id, key.generation)? != 1 {
-            return Err("fixture must invalidate one committed row".into());
+            if catalog.forget_generation(&key.repo_id, &key.revision_id, key.generation)? != 1 {
+                return Err("fixture must invalidate one committed row".into());
+            }
+            if orphan_after_gc {
+                append_orphan_operation_event(&catalog, &key)?;
+            }
+            drop(catalog);
+            if !matches!(
+                SqliteCatalog::open(root.path(), Duration::from_millis(100)),
+                Err(quanta_index_core::CoreError::Typed {
+                    code: SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+                    ..
+                })
+            ) {
+                return Err(format!(
+                    "invalidation accepted an orphan event (after_gc={orphan_after_gc})"
+                )
+                .into());
+            }
         }
+        Ok(())
+    }
+
+    fn append_orphan_operation_event(
+        catalog: &SqliteCatalog,
+        key: &IdempotencyKeyV1,
+    ) -> TestResult {
+        let mut connection = catalog.lock()?;
+        let transaction = connection.transaction()?;
+        let _orphan = append_sequence_event(
+            &transaction,
+            SequenceEventKindV1::OperationCommitted,
+            &key.identity_digest(),
+            &[9_u8; 32],
+        )?;
+        transaction.commit()?;
+        drop(connection);
+        Ok(())
+    }
+
+    #[test]
+    fn expired_claim_takeover_keeps_its_aborted_event_attributable() -> TestResult {
+        for (prepare_takeover, foreign_owner) in
+            [(false, false), (true, false), (false, true), (true, true)]
         {
-            let mut connection = catalog.lock()?;
-            let transaction = connection.transaction()?;
-            let _orphan = append_sequence_event(
-                &transaction,
-                SequenceEventKindV1::OperationCommitted,
-                &key.identity_digest(),
-                &[9_u8; 32],
-            )?;
-            transaction.commit()?;
-            drop(connection);
-        }
-        drop(catalog);
-        if !matches!(
-            SqliteCatalog::open(root.path(), Duration::from_millis(100)),
-            Err(quanta_index_core::CoreError::Typed {
-                code: SearchPlaneErrorCodeV2::CatalogRowCorrupt,
-                ..
-            })
-        ) {
-            return Err("an earlier invalidation cannot excuse a later orphan event".into());
+            let root = tempfile::tempdir()?;
+            let catalog = SqliteCatalog::open(root.path(), Duration::from_millis(100))?;
+            let key = IdempotencyKeyV1 {
+                kind: IngestOperationKindV1::History,
+                repo_id: RepoId::new("repo")?,
+                revision_id: RevisionId::new("revision")?,
+                generation: ManifestGeneration::new(1),
+                batch_digest: "digest".to_string(),
+            };
+            let body = [1_u8; 32];
+            let first = catalog.claim_prepared(&key, &body, "owner", 0, &body)?;
+            if !matches!(first, ClaimOutcomeV1::Claimed(_)) {
+                return Err("fixture expected an expired first claim".into());
+            }
+            let retry_owner = if foreign_owner { "retry" } else { "owner" };
+            if prepare_takeover {
+                let _prepared =
+                    catalog.prepare(&key, &body, retry_owner, i64::MAX.unsigned_abs(), &body)?;
+            } else {
+                let second = catalog.claim_prepared(
+                    &key,
+                    &body,
+                    retry_owner,
+                    i64::MAX.unsigned_abs(),
+                    &body,
+                )?;
+                if !matches!(second, ClaimOutcomeV1::Claimed(_)) {
+                    return Err("fixture expected a fresh takeover claim".into());
+                }
+            }
+            if catalog.sequence_allocator()? != (Some(3), false) {
+                return Err("takeover must append abort and invalidation atomically".into());
+            }
+            drop(catalog);
+            let _reopened = SqliteCatalog::open(root.path(), Duration::from_millis(100))?;
         }
         Ok(())
     }

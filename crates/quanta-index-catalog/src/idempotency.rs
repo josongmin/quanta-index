@@ -1201,7 +1201,7 @@ impl IdempotencyCatalogPort for SqliteCatalog {
                         }
                     }
                     OperationJournalStateV1::Claimed | OperationJournalStateV1::Applying => {
-                        if stored.owner != owner || stored.lease_deadline_ms > now {
+                        if stored.lease_deadline_ms > now {
                             return Err(busy("prepare met a live claim"));
                         }
                         // Expired lease: abort with its ledger event, then
@@ -1230,6 +1230,7 @@ impl IdempotencyCatalogPort for SqliteCatalog {
                             None,
                             None,
                         )?;
+                        append_supersession_invalidation(&transaction, key, stored.fence_token)?;
                         prepare_fresh(
                             &transaction,
                             key,
@@ -1243,13 +1244,7 @@ impl IdempotencyCatalogPort for SqliteCatalog {
                         // Superseded: the event ledger keeps the terminal
                         // history (attributable through this invalidation),
                         // and the row is reclaimed by the new prepare.
-                        let payload = payload_digest_of_parts(&[&stored.fence_token.to_le_bytes()]);
-                        let _invalidated = append_sequence_event(
-                            &transaction,
-                            SequenceEventKindV1::OperationInvalidation,
-                            &key.identity_digest(),
-                            &payload,
-                        )?;
+                        append_supersession_invalidation(&transaction, key, stored.fence_token)?;
                         prepare_fresh(
                             &transaction,
                             key,
@@ -1370,7 +1365,7 @@ impl IdempotencyCatalogPort for SqliteCatalog {
                         ));
                     }
                     OperationJournalStateV1::Claimed | OperationJournalStateV1::Applying => {
-                        if stored.owner != owner || stored.lease_deadline_ms > now {
+                        if stored.lease_deadline_ms > now {
                             return Err(busy("claim_prepared met a live claim"));
                         }
                         // Expired lease of our own or another owner:
@@ -1398,6 +1393,7 @@ impl IdempotencyCatalogPort for SqliteCatalog {
                             None,
                             None,
                         )?;
+                        append_supersession_invalidation(&transaction, key, stored.fence_token)?;
                         claim_fresh(
                             &transaction,
                             key,
@@ -1412,13 +1408,7 @@ impl IdempotencyCatalogPort for SqliteCatalog {
                         // event ledger keeps their terminal history
                         // (attributable through this invalidation), and
                         // the row is reclaimed by the new claim.
-                        let payload = payload_digest_of_parts(&[&stored.fence_token.to_le_bytes()]);
-                        let _invalidated = append_sequence_event(
-                            &transaction,
-                            SequenceEventKindV1::OperationInvalidation,
-                            &key.identity_digest(),
-                            &payload,
-                        )?;
+                        append_supersession_invalidation(&transaction, key, stored.fence_token)?;
                         claim_fresh(
                             &transaction,
                             key,
@@ -1907,6 +1897,23 @@ impl IdempotencyCatalogPort for SqliteCatalog {
         // `removed` is already a u64 row count; no conversion is needed.
         Ok(removed)
     }
+}
+
+/// Attribute a superseded terminal abort (or uncertain claim) before its row
+/// is replaced. The event and replacement remain in the caller's transaction.
+fn append_supersession_invalidation(
+    transaction: &rusqlite::Transaction<'_>,
+    key: &IdempotencyKeyV1,
+    fence_token: u64,
+) -> Result<(), CoreError> {
+    let payload = payload_digest_of_parts(&[&fence_token.to_le_bytes()]);
+    let _sequence = append_sequence_event(
+        transaction,
+        SequenceEventKindV1::OperationInvalidation,
+        &key.identity_digest(),
+        &payload,
+    )?;
+    Ok(())
 }
 
 /// Write a fresh immutable prepared row: the `prepare` half of the
