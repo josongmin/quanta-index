@@ -8865,12 +8865,15 @@ def _conditional_incremental_unit_oracle():
     target = {key: "fixed" for key in cp.SEMANTIC_COLUMNS}
     target.update(embedding_id="target", record_id="record-target", owner_id="target-owner",
         owner_kind="Chunk", corpus_kind="RawCodeFallback", vector=[1., 0.], generated=False,
+        source_role="RawFallbackText", capability_status="Full", language="rust",
+        start_byte=0, end_byte=14, view_kind="raw_chunk",
         card_schema_version=0, start_line=1, end_line=1, parent_owner_id=None,
         package=None, symbol_kind=None, visibility=None, snippet="golden payload")
     sentinel = {**target, "embedding_id": "sentinel", "record_id": "record-sentinel",
         "owner_id": "unaffected-owner", "owner_kind": "Module", "corpus_kind": "ModuleCard"}
     def scope(records, members=None):
-        return {"embeddings": records, "cluster_memberships": [] if members is None else [{
+        return {"scope": {"doc_surface": "Chunk", "repo_relative_path": "fixed"}, "scope_digest": "fixed",
+            "embeddings": records, "cluster_memberships": [] if members is None else [{
             "cluster_record_id": "record-target", "authority_digest": "fixed", "members": members}]}
     def batch(generation, scopes, mode="ReplaceGeneration"):
         return {"generation": generation, "batch_digest": str(generation), "manifest_digest": str(generation),
@@ -8878,9 +8881,11 @@ def _conditional_incremental_unit_oracle():
                 "dimension": 2, "normalization": "L2Unit", "distance_metric": "Cosine",
                 "policy_digest": "fixed-policy", "view_policy_digest": None},
             "seal": True, "mode": mode, "base_generation": 1 if mode == "Delta" else None,
+            "required_corpora": [], "corpus_policy_digest": None,
             "replace_scopes": scopes, "tombstone_scopes": [], "clear_surfaces": []}
     def golden_state(item):
-        rows = [dict(row) for scope in item["replace_scopes"] for row in scope["embeddings"]]
+        rows = [{key: row[key] for key in cp.SEMANTIC_COLUMNS}
+                for scope in item["replace_scopes"] for row in scope["embeddings"]]
         members = []
         for current in item["replace_scopes"]:
             for replacement in current["cluster_memberships"]:
@@ -8934,12 +8939,13 @@ def _conditional_incremental_unit_oracle():
             receipts[key]["stages"]["membership_append_calls"] = sum(
                 any(membership["members"] for membership in scope["cluster_memberships"])
                 for scope in item["replace_scopes"])
-            # Hand-counted producer operations: one scope or mutation per
-            # receipt, two before owners, and the listed fresh owner counts.
+            # Hand-counted default resident recipe: every nonempty fixture
+            # fits one 1024-owner/32-MiB window, including 2/3-owner scopes.
+            # Delta clear/tombstone cases instead issue one native mutation.
+            # Logical calls remain one fragment or mutation, not owner count.
             stages = receipts[key]["stages"]
             stages["semantic_delete_calls"] = stages["membership_delete_calls"] = 1
-            stages["semantic_delete_commits"] = (2 if key == "before" else 1 if key == "delta"
-                else {"append": 3, "clear_surface": 1, "membership_replace": 2, "replace": 2, "tombstone": 1}[kind])
+            stages["semantic_delete_commits"] = 1
             stages["membership_delete_commits"] = int(
                 kind == "membership_replace" or kind == "clear_surface" and key == "delta")
         outputs.append({"case_id": kind, "fresh": golden_state(fresh), "before": golden_state(before),
@@ -9035,15 +9041,111 @@ def _conditional_vector_context_unit_bundle(observed, baseline):
     return bundle
 
 
-def test_conditional_incremental_replay_compares_payload_membership_and_empty_state(monkeypatch):
+def test_conditional_incremental_replay_compares_payload_membership_and_empty_state(monkeypatch, tmp_path):
     plan, output = _conditional_incremental_unit_oracle()
     assert [case["before"]["semantic"]["count"] for case in output["cases"]] == [2, 2, 2, 2, 2]
     assert [case["fresh"]["semantic"]["count"] for case in output["cases"]] == [3, 1, 2, 2, 1]
+    # Fifteen small receipts: 13 replacement windows plus one clear and
+    # one tombstone. Only the cluster case's three windows and the clear
+    # mutation issue membership-table native deletes.
+    stages = [case["receipts"][batch]["stages"] for case in output["cases"]
+              for batch in ("before", "fresh", "delta")]
+    assert sum(stage["windows"] for stage in stages) == 13
+    assert sum(stage["semantic_delete_commits"] for stage in stages) == 15
+    assert sum(stage["membership_delete_commits"] for stage in stages) == 4
+    assert all(stage["semantic_delete_calls"] == stage["membership_delete_calls"] == 1
+               for stage in stages)
     assert cp.incremental_rows(output, plan)[1] == 5
+    for field in ("required_corpora", "corpus_policy_digest"):
+        malformed = json.loads(json.dumps(plan["cases"][0]["before"]))
+        del malformed[field]
+        with pytest.raises(ValueError, match="native incremental batch"):
+            cp.input_state(malformed)
+    # Native SemanticTombstoneScopeVisitor rejects an empty owner identity.
+    tombstone_batch = next(case["delta"] for case in plan["cases"] if case["case_id"] == "tombstone")
+    for owner_id in (None, "", True, []):
+        malformed = json.loads(json.dumps(tombstone_batch))
+        malformed["tombstone_scopes"][0]["semantic_scope"]["owner_id"] = owner_id
+        with pytest.raises(ValueError, match="nonempty string"):
+            cp.input_state(malformed)
+    for field in ("scope", "scope_digest"):
+        malformed = json.loads(json.dumps(plan["cases"][0]["before"]))
+        del malformed["replace_scopes"][0][field]
+        with pytest.raises(ValueError, match="incremental replace scope"):
+            cp.input_state(malformed)
+    for value in (None, [], {"doc_surface": "UnknownSurface", "repo_relative_path": "fixed"}):
+        malformed = json.loads(json.dumps(plan["cases"][0]["before"]))
+        malformed["replace_scopes"][0]["scope"] = value
+        with pytest.raises(ValueError, match="scope"):
+            cp.input_state(malformed)
+    # Consistent raw/input substitution cannot admit a value that native
+    # OwnerDocKind or SemanticCorpusKindV1 deserialization would refuse.
+    for field, value in (("owner_kind", "UnknownOwner"), ("corpus_kind", "UnknownCorpus"),
+                         ("source_role", "UnknownRole"), ("capability_status", "UnknownCapability")):
+        bad_plan, bad_output = json.loads(json.dumps(plan)), json.loads(json.dumps(output))
+        for case in bad_plan["cases"]:
+            for batch in ("before", "fresh", "delta"):
+                for scope in case[batch]["replace_scopes"]:
+                    for row in scope["embeddings"]:
+                        if row["owner_id"] == "unaffected-owner":
+                            row[field] = value
+        for case in bad_output["cases"]:
+            for batch in ("before", "fresh", "incremental"):
+                for row in case[batch]["semantic"]["rows"]:
+                    if row["owner_id"] == "unaffected-owner":
+                        row[field] = value
+        with pytest.raises(ValueError, match="native enum"):
+            cp.incremental_rows(bad_output, bad_plan)
+    # Rust ClusterMembershipReplaceV1 admits only a bounded, nonempty,
+    # sorted unique array of nonempty SymbolIds, attached to a ClusterCard.
+    membership_batch = plan["cases"][2]["before"]
+    for members in (None, [], "ab", [7], [True], [{}], [""],
+                    ["a", "a"], ["z", "a"], [f"member-{index:05}" for index in range(4097)]):
+        malformed = json.loads(json.dumps(membership_batch))
+        malformed["replace_scopes"][0]["cluster_memberships"][0]["members"] = members
+        with pytest.raises(ValueError, match="membership"):
+            cp.input_state(malformed)
+    for memberships in (None, {}, [], membership_batch["replace_scopes"][0]["cluster_memberships"] * 2):
+        malformed = json.loads(json.dumps(membership_batch))
+        malformed["replace_scopes"][0]["cluster_memberships"] = memberships
+        with pytest.raises(ValueError, match="membership"):
+            cp.input_state(malformed)
+    wrong_corpus = json.loads(json.dumps(membership_batch))
+    wrong_corpus["replace_scopes"][0]["embeddings"][0]["corpus_kind"] = "ModuleCard"
+    with pytest.raises(ValueError, match="authoritative"):
+        cp.input_state(wrong_corpus)
+    canonical_members = json.loads(json.dumps(membership_batch))
+    canonical_members["replace_scopes"][0]["cluster_memberships"][0]["members"] = [
+        f"member-{index:05}" for index in range(4096)]
+    assert cp.input_state(canonical_members)["membership"]["count"] == 4096
+    # Empty memberships used to earn 5/5 when full before rows and append
+    # counts were forged consistently; native admission forbids that input.
+    empty_plan, empty_output = json.loads(json.dumps(plan)), json.loads(json.dumps(output))
+    empty_plan["cases"][2]["before"]["replace_scopes"][0]["cluster_memberships"][0]["members"] = []
+    empty_output["cases"][2]["before"]["membership"] = {"count": 0, "rows": []}
+    empty_output["cases"][2]["receipts"]["before"]["stages"]["membership_append_calls"] = 0
+    with pytest.raises(ValueError, match="membership"):
+        cp.incremental_rows(empty_output, empty_plan)
+    # Malformed captures are refused before source closure, Rust execution,
+    # or creation of a proof output directory, using the consumer's contract.
+    from argparse import Namespace
+    suite_path, corpus_path, record_path = [tmp_path / name for name in ("suite.json", "corpus.json", "record.json")]
+    suite_path.write_text("{}")
+    corpus_path.write_text("{}")
+    malformed_records = (None, [], {}, {"captures": []}, {"captures": {}},
+                         {"captures": {"raw": None}}, {"captures": {"raw": {"system": 7}}})
+    args = Namespace(kind="incremental_rows", suite=suite_path, corpus=corpus_path,
+                     records=[record_path], out=tmp_path / "proof")
+    for record in malformed_records:
+        record_path.write_bytes(cp.canonical(record))
+        with pytest.raises(ValueError, match="typed capture/model"):
+            cp.produce(args)
+        assert not args.out.exists()
     with_empty_scopes = json.loads(json.dumps(plan))
     for case in with_empty_scopes["cases"]:
         for batch in ("before", "fresh", "delta"):
-            case[batch]["replace_scopes"].append({"embeddings": [], "cluster_memberships": []})
+            case[batch]["replace_scopes"].append({"scope": {"doc_surface": "Chunk", "repo_relative_path": "fixed"},
+                "scope_digest": "fixed", "embeddings": [], "cluster_memberships": []})
     # ResidentScopeSource issues owner groups only; an empty input scope is
     # absent from the execution tally and leaves every full logical row intact.
     assert cp.incremental_rows(output, with_empty_scopes)[1] == 5
@@ -9153,6 +9255,15 @@ def test_conditional_incremental_replay_compares_payload_membership_and_empty_st
             with pytest.raises(ValueError):
                 cp.incremental_rows(output, bad_plan)
     receipt = output["cases"][0]["receipts"]["before"]
+    # Reject historical per-owner commit counts even when all full rows
+    # and logical-call/append receipts remain unchanged and self-consistent.
+    for case_id, batch, legacy_commits in (("append", "before", 2), ("append", "fresh", 3),
+                                           ("membership_replace", "fresh", 2), ("replace", "fresh", 2)):
+        mutant = json.loads(json.dumps(output))
+        changed = next(case for case in mutant["cases"] if case["case_id"] == case_id)
+        changed["receipts"][batch]["stages"]["semantic_delete_commits"] = legacy_commits
+        with pytest.raises(ValueError, match="delete counts"):
+            cp.incremental_rows(mutant, plan)
     for case in output["cases"]:
         for batch in ("before", "fresh", "delta"):
             for field in ("semantic_delete_calls", "semantic_delete_commits",

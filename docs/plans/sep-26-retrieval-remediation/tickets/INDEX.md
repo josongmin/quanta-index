@@ -118,3 +118,15 @@ RBR-04~10, RBR-12의 최종 자격 판정은 `NOT_RUN`. 현재 RBR-03 실핀 캡
 - `VERIFIED` — 공유 main의 당시 fresh focused **4 passed, 315 deselected**, 46.92s; Ruff·diff 검사 exit 0. 이후 shared source 변경에 대한 전체 qualification으로 합성하지 않는다.
 - receipt `/private/tmp/qi-rbr-deletion-audit/final-owner-receipt.json`, SHA-256 `f5f86096342a8108fbd68c69726bbcaba04b1fa2b6dcc2de2d9ecde8f17305f8`; 최종 raw `/private/tmp/qi-rbr-deletion-audit/whole-final.log`, SHA-256 `3c2edbaa0ee607d58b07518d5803c89c6ff48d6675045f373f42bfa7d2a147a0`.
 - `NOT_RUN` — 최신 main 319 집합 전체·추가 인접 validator/의존성 변경의 qualification, fresh Rust/model 실행, clean-source·quiet-host·최종 holdout pair. 격리 owner 결과와 저장된 과거 raw의 재생은 이들 증명이 아니다.
+
+### 2026-09-26 canonical conditional input 보완 — `7d581d05` 소유 변경
+
+| 티켓 / 범위 | 소유 검증 | 제외된 게이트 |
+| --- | --- | --- |
+| RBR-12 / T16 membership·DTO | `VERIFIED` — 빈 members에 맞춰 원본 rows/counter를 변조하면 이전 consumer가 5/5를 승인했던 반례를 거부한다. members 1~4096·nonempty string·정렬·중복 없음, ClusterCard authority·정확 1개 coverage를 대조한다. 실제 Rust의 batch 14필드·replace scope 4필드·embedding 27필드를 사용하고 축약 2필드 fixture를 제거했다 | `NOT_RUN` — 새 Rust owner 실행·daemon fault/restart·clean-source qualification |
+| RBR-07·12 / typed enum·producer | `VERIFIED` — OwnerDocKind 12·SemanticCorpusKind 9·SourceRole 4·CapabilityStatus 4의 실제 enum 밖 값은 입력과 원본 rows를 함께 변조해도 거부한다. frozen model identity 검증을 producer/consumer가 공유하며 malformed captures는 source capture/build/output 생성 전에 거부한다 | `NOT_RUN` — signed attestation·fresh pinned model·최종 holdout pair |
+
+- `VERIFIED` — base `7d581d0572447e4f29ce0d0ea2f9d2fbc8b1353c`에 소유 Python 두 파일만 적용한 격리 focused **3 passed / 316 deselected**, 13.03s: `PYTHONPATH=. uv run --frozen --extra dev python -m pytest tools/ci/tests/test_retrieval_benchmark.py -q -k 'conditional_incremental_replay or conditional_vector_replay or verdict_t15_t16_conditionals' -p no:cacheprovider`. `/private/tmp/qi-rbr-canonical-commit-proof/focused.log`를 보존한다. native window count fixture의 1-commit oracle·13/15/4 hand totals·기존 2/3-commit 거부 hunk는 integrator에게 소유권을 넘겨받아 함께 갱신했다.
+- 실제 과거 native plan의 입력 15개는 canonical guard로 모두 admission된다. 잘못 추가한 2필드 exact guard가 13개 정상 입력을 거부했던 회귀도 교정했다. `/private/tmp/qi-rbr-membership-audit/canonical-replay.json`은 입력 검증 범위이며 새 native 실행이나 과거 counter receipt의 재자격이 아니다.
+- 소유 전체 rail: `PYTHONPATH=. uv run --frozen --extra dev python -m pytest tools/ci/tests/test_retrieval_benchmark.py -q -p no:cacheprovider --junitxml=/private/tmp/qi-rbr-canonical-commit-proof/whole.xml --basetemp=/private/tmp/qi-rbr-canonical-commit-proof/pytest-whole`. terminal 판정·actual collection exact-match·source/tool/dependency identity는 `/private/tmp/qi-rbr-canonical-commit-proof/final-owner-receipt.json`, 원본은 `whole.log`/`whole.xml`에 기록한다. focused 결과나 중단된 129개 실행을 전체 성공으로 합성하지 않는다.
+- 기존 테스트 identity에 반례를 추가했다. 새 identity 추가/삭제는 없으며 실제 `collect_pytest()`와 authority의 집합은 exact-match로 검사한다. R0 custody·native 실행 코드·타 writer 문서는 이 소유 변경과 별도다.

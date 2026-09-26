@@ -150,6 +150,17 @@ def model_rows(observed: object, baseline: object, inputs: object) -> tuple[list
 
 SEMANTIC_COLUMNS = set("embedding_id record_id repo_relative_path owner_id owner_kind corpus_kind parent_owner_id source_doc_id language package symbol_kind visibility source_role generated capability_status authority_digest render_policy_digest card_schema_version embedding_input_digest vector_digest start_line end_line snippet vector".split())
 MEMBERSHIP_COLUMNS = set("cluster_record_id authority_digest owner_kind owner_id member_symbol_id ordinal member_count membership_content_digest".split())
+NATIVE_ENUMS = {
+    "owner_kind": {"File", "Module", "Symbol", "Chunk", "Callsite", "GraphEdge", "Dataflow", "Risk", "Test", "RepoMap", "ServiceMap", "OwnerMap"},
+    "corpus_kind": {"SymbolCard", "ModuleCard", "ClusterCard", "RawCodeFallback", "DocumentLeaf", "DocumentSection", "DocumentSummary", "TestBehavior", "RepositorySummary"},
+    "source_role": {"CardText", "RawFallbackText", "DocumentText", "SummaryText"},
+    "capability_status": {"Full", "Degraded", "Unsupported", "NotComputed"},
+}
+
+
+def native_enum(value: object, field: str) -> None:
+    if not isinstance(value, str) or value not in NATIVE_ENUMS[field]:
+        raise ValueError(f"logical {field} is outside the native enum contract")
 
 
 def table(value: object, name: str) -> dict:
@@ -161,6 +172,8 @@ def table(value: object, name: str) -> dict:
         raise ValueError("incremental table contains invalid rows")
     for row in rows:
         exact(row, SEMANTIC_COLUMNS if name == "semantic" else MEMBERSHIP_COLUMNS, "full logical row")
+        for field in NATIVE_ENUMS.keys() & row.keys():
+            native_enum(row[field], field)
         integer_fields = {"start_line", "end_line", "card_schema_version"} if name == "semantic" else {"ordinal", "member_count"}
         optional_fields = {"parent_owner_id", "package", "symbol_kind", "visibility"} if name == "semantic" else set()
         for key, cell in row.items():
@@ -213,17 +226,72 @@ def contract_vector(vector: object, contract: dict) -> list[float]:
     return converted
 
 
+def frozen_model_identities(records: object) -> list[tuple[str, str, str]]:
+    if not isinstance(records, list) or not records or any(
+        not isinstance(record, dict) or not isinstance(record.get("captures"), dict) or not record["captures"]
+        or any(not isinstance(capture, dict) or any(not isinstance(capture.get(key), str) or not capture[key]
+               for key in ("system", "model", "model_revision")) for capture in record["captures"].values())
+        for record in records
+    ):
+        raise ValueError("conditional frozen records lack typed capture/model identities")
+    return sorted(set((capture["system"], capture["model"], capture["model_revision"])
+        for record in records for capture in record["captures"].values()))
+
+
 def input_state(batch: dict) -> dict:
+    exact(batch, {"repo_id", "revision_id", "generation", "base_generation", "manifest_digest", "batch_digest",
+                  "mode", "model_contract", "required_corpora", "corpus_policy_digest", "clear_surfaces",
+                  "replace_scopes", "tombstone_scopes", "seal"}, "native incremental batch")
+    if not isinstance(batch["required_corpora"], list) or any(not isinstance(batch[key], str)
+            for key in ("repo_id", "revision_id", "manifest_digest", "batch_digest")) \
+        or batch["corpus_policy_digest"] is not None and not isinstance(batch["corpus_policy_digest"], str):
+        raise ValueError("incremental batch identities/corpora are not native DTO values")
+    for kind in batch["required_corpora"]:
+        native_enum(kind, "corpus_kind")
+    if not isinstance(batch["clear_surfaces"], list) or any(not isinstance(value, str)
+            or value not in {"File", "Module", "Chunk", "Symbol"} for value in batch["clear_surfaces"]) \
+        or not isinstance(batch["tombstone_scopes"], list):
+        raise ValueError("incremental clear/tombstone scopes are not native DTO values")
+    for tombstone in batch["tombstone_scopes"]:
+        exact(tombstone, {"semantic_scope"}, "native semantic tombstone")
+        key = exact(tombstone["semantic_scope"], {"corpus_kind", "owner_kind", "owner_id"}, "native semantic owner scope")
+        native_enum(key["corpus_kind"], "corpus_kind")
+        native_enum(key["owner_kind"], "owner_kind")
+        if not isinstance(key["owner_id"], str) or not key["owner_id"]:
+            raise ValueError("incremental tombstone owner identity must be a nonempty string")
     contract = model_contract(batch["model_contract"])
+    if not isinstance(batch["replace_scopes"], list):
+        raise ValueError("incremental replace scopes must be an array")
+    for scope in batch["replace_scopes"]:
+        exact(scope, {"scope", "scope_digest", "embeddings", "cluster_memberships"}, "incremental replace scope")
+        key = exact(scope["scope"], {"doc_surface", "repo_relative_path"}, "native search scope")
+        if not isinstance(scope["scope_digest"], str) or not isinstance(key["repo_relative_path"], str) \
+            or not isinstance(key["doc_surface"], str) or key["doc_surface"] not in {"File", "Module", "Chunk", "Symbol"}:
+            raise ValueError("incremental scope differs from native SearchScopeKey contract")
+        if not isinstance(scope["embeddings"], list) or not isinstance(scope["cluster_memberships"], list):
+            raise ValueError("incremental embeddings and memberships must be arrays")
     records = [record for scope in batch["replace_scopes"] for record in scope["embeddings"]]
+    for record in records:
+        exact(record, SEMANTIC_COLUMNS | {"start_byte", "end_byte", "view_kind"}, "native embedding record")
+        if any(type(record[field]) is not int or not 0 <= record[field] < 2**32 for field in ("start_byte", "end_byte")) \
+            or not isinstance(record["view_kind"], str):
+            raise ValueError("incremental embedding bytes/view are not native DTO values")
     semantic = [{key: record[key] for key in SEMANTIC_COLUMNS} for record in records]
     for row in semantic:
         row["vector"] = contract_vector(row["vector"], contract)
     membership = []
     for scope in batch["replace_scopes"]:
         for replacement in scope["cluster_memberships"]:
+            exact(replacement, {"cluster_record_id", "authority_digest", "members"}, "cluster membership")
+            members = replacement["members"]
+            if any(not isinstance(replacement[key], str) or not replacement[key]
+                   for key in ("cluster_record_id", "authority_digest")) \
+                or not isinstance(members, list) or not 0 < len(members) <= 4096 \
+                or any(not isinstance(member, str) or not member for member in members) \
+                or members != sorted(set(members)):
+                raise ValueError("cluster membership requires bounded canonical nonempty string identities")
             record = next((row for row in scope["embeddings"] if row["record_id"] == replacement["cluster_record_id"]), None)
-            if record is None or replacement["authority_digest"] != record["authority_digest"]:
+            if record is None or record["corpus_kind"] != "ClusterCard" or replacement["authority_digest"] != record["authority_digest"]:
                 raise ValueError("membership lacks its authoritative record")
             digest = hashlib.sha256(b"quanta-index:cluster-membership-content:v1\0")
             for member in replacement["members"]:
@@ -234,6 +302,10 @@ def input_state(batch: dict) -> dict:
                     "owner_kind": record["owner_kind"], "owner_id": record["owner_id"], "member_symbol_id": member,
                     "ordinal": ordinal, "member_count": len(replacement["members"]),
                     "membership_content_digest": "sha256:" + digest.hexdigest()})
+        expected = sorted(row["record_id"] for row in scope["embeddings"] if row["corpus_kind"] == "ClusterCard")
+        actual = [replacement["cluster_record_id"] for replacement in scope["cluster_memberships"]]
+        if actual != expected or len(actual) != len(set(actual)):
+            raise ValueError("cluster membership must cover each ClusterCard once in canonical record order")
     return logical_state(semantic, membership)
 
 
@@ -480,15 +552,7 @@ def validate_results(value: object, kind: str, *, verify_source: bool = False) -
         or sha(decode(context["semble_lockfile"])) != identity["dependency_sha256"]:
         raise ValueError("conditional corpus/dependency identity substitution")
     records = load(decode(context["records"]))
-    if not isinstance(records, list) or not records or any(
-        not isinstance(record, dict) or not isinstance(record.get("captures"), dict) or not record["captures"]
-        or any(not isinstance(capture, dict) or any(not isinstance(capture.get(key), str) or not capture[key]
-               for key in ("system", "model", "model_revision")) for capture in record["captures"].values())
-        for record in records
-    ):
-        raise ValueError("conditional frozen records lack typed capture/model identities")
-    model_identities = sorted(set((capture["system"], capture["model"], capture["model_revision"])
-        for record in records for capture in record["captures"].values()))
+    model_identities = frozen_model_identities(records)
     if not model_identities or sha(canonical(model_identities)) != identity["model_sha256"]:
         raise ValueError("conditional frozen model identity substitution")
     package, binary, features = RECIPES[kind]
@@ -604,17 +668,16 @@ def validate_results(value: object, kind: str, *, verify_source: bool = False) -
 
 
 def produce(args: argparse.Namespace) -> dict:
-    closure = source_closure.build_manifest(ROOT, "retrieval")
     kind = args.kind
     package, binary, features = RECIPES[kind]
-    out = args.out.resolve()
-    out.mkdir(exist_ok=False)
     suite_bytes, corpus_bytes = args.suite.read_bytes(), args.corpus.read_bytes()
     suite = load(suite_bytes)
     load(corpus_bytes)
     records = sorted([load(path.read_bytes()) for path in args.records], key=lambda record: sha(canonical(record)))
-    models = sorted(set((capture["system"], capture["model"], capture["model_revision"])
-        for record in records for capture in record["captures"].values()))
+    models = frozen_model_identities(records)
+    closure = source_closure.build_manifest(ROOT, "retrieval")
+    out = args.out.resolve()
+    out.mkdir(exist_ok=False)
     identity = {"source_revision": closure["revision"], "repository_commit": suite["repository_commit"],
         "model_sha256": sha(canonical(models)), "dependency_sha256": sha(args.semble_lockfile.read_bytes())}
     commands = []
