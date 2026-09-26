@@ -2365,10 +2365,15 @@ CONTEXT_COMMAND_NAMES = {
         "source-closure",
         "python-collection",
         "rust-collection",
+        "rust-build",
+        "metadata",
         "python-test",
         "rust-test",
     ),
-    "sdk": ("sdk-recipe", "metadata"),
+    "sdk": (
+        "source-closure", "build-searchd", "build-runner", "rust-collection",
+        "rust-build", "metadata", "rust-test",
+    ),
 }
 MAX_CONTEXT_LOG_BYTES = 64 * 1024 * 1024
 
@@ -8012,7 +8017,8 @@ def _verify_execution_context(
         where,
     )
     if (
-        context["schema_version"] != 1
+        type(context["schema_version"]) is not int
+        or context["schema_version"] != portable_proof.EXECUTION_CONTEXT_VERSION
         or context["rail"] != rail
         or not _is_hex(context["revision"], 40)
     ):
@@ -8043,8 +8049,19 @@ def _verify_execution_context(
             or not _is_hex(tool["sha256"], 64)
         ):
             raise RunError(f"{where} malformed tool identity: {name}")
-    binary_names = {"runner", "searchd"} if rail == "sdk" else set()
+    collection_name = "nextest-inventory.json" if rail == "sdk" else "rust-inventory.json"
+    try:
+        selected_binaries = portable_proof.selected_test_binaries(raw[collection_name].read_bytes())
+    except (OSError, ValueError) as exc:
+        raise RunError(f"{where} selected executable collection refused: {exc}") from exc
+    binary_names = set(selected_binaries) | ({"runner", "searchd"} if rail == "sdk" else set())
     binaries = _exact_keys(context["binaries"], binary_names, f"{where}.binaries")
+    binary_root = path.parent / f"{rail}-binaries"
+    try:
+        if set(entry.name for entry in binary_root.iterdir()) != binary_names:
+            raise RunError(f"{where} frozen binary inventory mismatch")
+    except OSError as exc:
+        raise RunError(f"{where} frozen binary inventory refused: {exc}") from exc
     for name, row in binaries.items():
         binary = _exact_keys(row, {"path", "sha256"}, f"{where}.binaries.{name}")
         if (
@@ -8053,6 +8070,16 @@ def _verify_execution_context(
             or not _is_hex(binary["sha256"], 64)
         ):
             raise RunError(f"{where} malformed binary identity: {name}")
+        if name in selected_binaries and binary["path"] != str(selected_binaries[name]):
+            raise RunError(f"{where} binary path differs from raw collection: {name}")
+        try:
+            frozen_sha = portable_proof._sha256_repo_regular_file(
+                binary_root, name, label="frozen execution context binary"
+            )
+        except (OSError, ValueError) as exc:
+            raise RunError(f"{where} frozen binary refused: {name}: {exc}") from exc
+        if frozen_sha != binary["sha256"]:
+            raise RunError(f"{where} frozen binary digest mismatch: {name}")
     if rail == "sdk" and (
         binaries["runner"]["sha256"] != runner_sha or binaries["searchd"]["sha256"] != searchd_sha
     ):
@@ -8061,25 +8088,24 @@ def _verify_execution_context(
     if not isinstance(commands, list) or not commands or not isinstance(commands[0], dict):
         raise RunError(f"{where} missing commands")
     first_argv = commands[0].get("argv")
-    if rail == "contract":
-        if (
-            not isinstance(first_argv, list)
-            or not first_argv
-            or not isinstance(first_argv[-1], str)
-        ):
-            raise RunError(f"{where} malformed source command")
-        original_out = Path(first_argv[-1]).parent
-    else:
-        if (
-            not isinstance(first_argv, list)
-            or len(first_argv) != 3
-            or not isinstance(first_argv[-1], str)
-        ):
-            raise RunError(f"{where} malformed SDK command")
-        original_out = Path(first_argv[-1])
+    if (
+        not isinstance(first_argv, list)
+        or len(first_argv) != 7
+        or not isinstance(first_argv[-1], str)
+    ):
+        raise RunError(f"{where} malformed source command")
+    original_out = Path(first_argv[-1]).parent
     if not original_out.is_absolute():
         raise RunError(f"{where} command output root is not absolute")
-    expected = portable_proof._expected_commands(rail, original_out, tools, binaries)
+    first_inherited = commands[0].get("inherited_environment")
+    if not isinstance(first_inherited, dict) or any(
+        key not in portable_proof.RELEVANT_ENV or not isinstance(value, str)
+        for key, value in first_inherited.items()
+    ):
+        raise RunError(f"{where} malformed inherited environment")
+    expected = portable_proof._expected_commands(
+        rail, original_out, tools, binaries, inherited_environment=first_inherited
+    )
     if len(commands) != len(expected):
         raise RunError(f"{where} command count mismatch")
     expected_logs = {
@@ -8106,8 +8132,10 @@ def _verify_execution_context(
                     or total_log_bytes > MAX_CONTEXT_LOG_BYTES
                 ):
                     raise RunError(f"{where} oversized or compressed command logs")
+            frozen_log_bytes = {name: archive.read(name) for name in expected_logs}
     except (OSError, zipfile.BadZipFile, EOFError, RuntimeError, KeyError) as exc:
         raise RunError(f"{where} cannot inspect frozen command logs: {exc}") from exc
+    reuse_build_raw = {}
     for index, (row, (name, argv, overrides)) in enumerate(zip(commands, expected)):
         command = _exact_keys(
             row,
@@ -8148,13 +8176,24 @@ def _verify_execution_context(
                 command[f"{stream}_sha256"], 64
             ):
                 raise RunError(f"{where} malformed command output digest: {name}")
-            try:
-                with zipfile.ZipFile(logs_path) as frozen_logs:
-                    observed_digest = hashlib.sha256(frozen_logs.read(command[stream])).hexdigest()
-            except (OSError, zipfile.BadZipFile, EOFError, RuntimeError, KeyError) as exc:
-                raise RunError(f"{where} cannot read frozen command output: {exc}") from exc
+            output_bytes = frozen_log_bytes[command[stream]]
+            observed_digest = hashlib.sha256(output_bytes).hexdigest()
             if observed_digest != command[f"{stream}_sha256"]:
                 raise RunError(f"{where} frozen command output digest mismatch: {command[stream]}")
+            if stream == "stdout" and name in {"rust-build", "metadata", "rust-collection"}:
+                reuse_build_raw[name] = output_bytes
+            raw_name = {"rust-collection": collection_name,
+                        "rust-test": "nextest.jsonl" if rail == "sdk" else "rust-nextest.jsonl"}.get(name)
+            if stream == "stdout" and raw_name is not None:
+                if observed_digest != sha_file(raw[raw_name]):
+                    raise RunError(f"{where} raw evidence differs from command output: {name}")
+    try:
+        portable_proof.verify_reused_build(
+            reuse_build_raw["rust-build"], reuse_build_raw["metadata"],
+            reuse_build_raw["rust-collection"], workspace_root=Path(commands[0]["cwd"]),
+        )
+    except ValueError as exc:
+        raise RunError(f"{where} native reused build refused: {exc}") from exc
     return closure
 
 
@@ -8385,6 +8424,43 @@ def freeze_receipts(spec: dict, stage: Path) -> dict[str, str]:
         if key not in receipts:
             continue
         source_dir = Path(receipts[key]).parent
+        context = read_json(Path(frozen[key]))
+        if not isinstance(context, dict) or type(context.get("schema_version")) is not int \
+            or context["schema_version"] != portable_proof.EXECUTION_CONTEXT_VERSION:
+            raise RunError("execution context schema mismatch during freeze")
+        try:
+            selected = portable_proof.selected_test_binaries((source_dir / "rust-collection.stdout").read_bytes())
+        except (OSError, ValueError) as exc:
+            raise RunError(f"cannot freeze selected executable collection: {exc}") from exc
+        roles = set(selected) | ({"runner", "searchd"} if rail == "sdk" else set())
+        binaries = _exact_keys(context.get("binaries"), roles, "execution context binaries")
+        binary_root = target_dir / f"{rail}-binaries"
+        binary_root.mkdir(exist_ok=True)
+        for role, row in binaries.items():
+            binary = _exact_keys(row, {"path", "sha256"}, "execution context binary")
+            if not isinstance(binary["path"], str) or not Path(binary["path"]).is_absolute() \
+                or not _is_hex(binary["sha256"], 64) \
+                or role in selected and binary["path"] != str(selected[role]):
+                raise RunError("execution context binary differs from selected collection")
+            source_binary = Path(binary["path"])
+            try:
+                before = portable_proof._sha256_repo_regular_file(
+                    source_binary.parent, source_binary.name, label="execution context binary"
+                )
+                target_binary = binary_root / role
+                shutil.copyfile(source_binary, target_binary)
+                after = portable_proof._sha256_repo_regular_file(
+                    binary_root, role, label="frozen execution context binary"
+                )
+            except (OSError, ValueError) as exc:
+                raise RunError(f"cannot freeze execution context binary: {role}: {exc}") from exc
+            if before != after or before != binary["sha256"]:
+                raise RunError(f"execution context binary changed during freeze: {role}")
+        try:
+            if set(entry.name for entry in binary_root.iterdir()) != roles:
+                raise RunError("frozen execution context binary inventory mismatch")
+        except OSError as exc:
+            raise RunError(f"cannot inspect frozen execution context binaries: {exc}") from exc
         target = target_dir / f"{rail}_execution_logs.zip"
         total = 0
         with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_STORED) as archive:

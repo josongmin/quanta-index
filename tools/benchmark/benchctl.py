@@ -129,6 +129,16 @@ def parse_args(
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--repo-root", type=Path, default=repo_root, help="checkout to operate on")
     subparsers = parser.add_subparsers(dest="command", required=True)
+    corpus = subparsers.add_parser(
+        "corpus", help="create or validate an immutable external corpus release"
+    )
+    corpus_commands = corpus.add_subparsers(dest="corpus_action", required=True)
+    for action in ("create", "validate"):
+        command = corpus_commands.add_parser(action)
+        command.add_argument("--release", type=Path, required=True)
+        if action == "create":
+            command.add_argument("--spec", type=Path, required=True)
+            command.add_argument("--checkouts", type=Path, required=True)
     subparsers.add_parser("list", help="show registered benchmark profiles and the registry digest")
     subparsers.add_parser(
         "plan", help="emit the resolved, digest-bound plan for a profile"
@@ -169,8 +179,11 @@ def parse_args(
             child.add_argument("--pair-spec", type=Path)
             child.add_argument("--agent-recording", type=Path)
             child.add_argument("--scan-recording", type=Path)
-            child.add_argument("--recorded-authenticity", default=None,
-                               choices=["recorded_unauthenticated", "authenticated"])
+            child.add_argument(
+                "--recorded-authenticity",
+                default=None,
+                choices=["recorded_unauthenticated", "authenticated"],
+            )
         if command == "run":
             child.add_argument("--criterion-samples", type=int)
             child.add_argument("--criterion-warmup", type=float)
@@ -1312,6 +1325,37 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     args = parse_args(argv, profiles, repo_root=repo_root)
     repo_root = args.repo_root.resolve()
+    if args.command == "corpus":
+        import corpus_release
+
+        try:
+            if repo_root != ROOT:
+                raise EvidenceError("corpus driver must come from the requested checkout")
+            if args.corpus_action == "create":
+                require_clean_worktree(repo_root)
+                head = resolve_checkout_head(repo_root)
+                document = corpus_release.create(
+                    args.spec.resolve(),
+                    args.checkouts.resolve(),
+                    args.release.resolve(),
+                    source_guard=lambda: require_frozen_source(repo_root, head),
+                )
+            else:
+                document = corpus_release.validate(args.release.resolve())
+            print(
+                json.dumps(
+                    {
+                        "release_digest": document["digest"],
+                        "status": document["status"],
+                        "repository_count": len(document["repositories"]),
+                    },
+                    sort_keys=True,
+                )
+            )
+            return 0
+        except (EvidenceError, OSError, ValueError, RuntimeError) as exc:
+            print(f"ERROR: corpus release refused: {exc}", file=sys.stderr)
+            return 2
     if args.command == "list":
         registry = load_registry(repo_root / "tools" / "benchmark" / "registry.toml")
         for name in sorted(profiles):
@@ -1342,8 +1386,15 @@ def main(argv: list[str] | None = None) -> int:
         return replay_command(repo_root, reference, args.evidence_root)
 
     profile = profiles[args.profile]
-    if args.command == "run" and args.profile != "retrieval-diagnostic" and args.pair_spec is not None:
-        print("ERROR: --pair-spec applies only to retrieval-diagnostic; no producer was executed", file=sys.stderr)
+    if (
+        args.command == "run"
+        and args.profile != "retrieval-diagnostic"
+        and args.pair_spec is not None
+    ):
+        print(
+            "ERROR: --pair-spec applies only to retrieval-diagnostic; no producer was executed",
+            file=sys.stderr,
+        )
         return 2
     if args.profile == "retrieval-diagnostic" and args.command == "compare":
         print("ERROR: diagnostic pairs have no qualified common baseline", file=sys.stderr)
@@ -1355,18 +1406,37 @@ def main(argv: list[str] | None = None) -> int:
 
         root = resolve_evidence_root(args.evidence_root)
         if root is None and args.command != "summarize":
-            print("ERROR: pair capture requires --evidence-root; no producer was executed", file=sys.stderr)
+            print(
+                "ERROR: pair capture requires --evidence-root; no producer was executed",
+                file=sys.stderr,
+            )
             return 2
         if root is not None:
-            registry = load_registry(repo_root / "tools/benchmark/registry.toml", repo_root=repo_root)
+            registry = load_registry(
+                repo_root / "tools/benchmark/registry.toml", repo_root=repo_root
+            )
             try:
                 require_registration(registry)
                 if args.command == "run":
                     if args.pair_spec is None:
                         raise EvidenceError("pair capture requires --pair-spec")
-                    if any(getattr(args, key) is not None for key in (
-                        "lexical_spec", "criterion_samples", "criterion_warmup", "criterion_measurement", "criterion_resamples",
-                        "cold_samples", "agent_recording", "scan_recording", "recorded_authenticity")) or args.admit_baseline:
+                    if (
+                        any(
+                            getattr(args, key) is not None
+                            for key in (
+                                "lexical_spec",
+                                "criterion_samples",
+                                "criterion_warmup",
+                                "criterion_measurement",
+                                "criterion_resamples",
+                                "cold_samples",
+                                "agent_recording",
+                                "scan_recording",
+                                "recorded_authenticity",
+                            )
+                        )
+                        or args.admit_baseline
+                    ):
                         raise EvidenceError("pair capture refuses unrelated producer controls")
                     timeout = args.producer_timeout if args.producer_timeout is not None else 7200
                     document = capture_pair(repo_root, root, registry, args.pair_spec, timeout)
@@ -1375,20 +1445,34 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     from profile_capture import load_capture
 
-                    capture_document = load_capture(root, profile=args.profile, registry_digest=registry_digest(registry))
+                    capture_document = load_capture(
+                        root, profile=args.profile, registry_digest=registry_digest(registry)
+                    )
                     if set(capture_document["expected_cases"]) != {FAMILY}:
                         raise EvidenceError("pair summary family inventory differs")
-                    document = {"profile": args.profile, "capture_id": capture_document["capture_id"],
-                                "status": "capture_present_unvalidated", "source": capture_document["source"],
-                                "measurement_count": len(capture_document["runs"]),
-                                "scope": "paired_diagnostic", "qualification": "not_run"}
+                    document = {
+                        "profile": args.profile,
+                        "capture_id": capture_document["capture_id"],
+                        "status": "capture_present_unvalidated",
+                        "source": capture_document["source"],
+                        "measurement_count": len(capture_document["runs"]),
+                        "scope": "paired_diagnostic",
+                        "qualification": "not_run",
+                    }
             except (ValueError, RuntimeError, OSError, UnicodeError, SystemExit) as exc:
                 print(f"ERROR: pair capture refused: {exc}", file=sys.stderr)
                 return 2
             print(json.dumps(document, sort_keys=True, indent=2))
             return 0
-    if args.command == "run" and args.profile != "lexical-diagnostic" and args.lexical_spec is not None:
-        print("ERROR: --lexical-spec applies only to lexical-diagnostic; no producer was executed", file=sys.stderr)
+    if (
+        args.command == "run"
+        and args.profile != "lexical-diagnostic"
+        and args.lexical_spec is not None
+    ):
+        print(
+            "ERROR: --lexical-spec applies only to lexical-diagnostic; no producer was executed",
+            file=sys.stderr,
+        )
         return 2
     if args.profile == "lexical-diagnostic" and args.command == "compare":
         print("ERROR: recorded lexical observations have no qualified baseline", file=sys.stderr)
@@ -1399,20 +1483,40 @@ def main(argv: list[str] | None = None) -> int:
 
         root = resolve_evidence_root(args.evidence_root)
         if root is None and args.command != "summarize":
-            print("ERROR: lexical capture requires --evidence-root; no producer was executed", file=sys.stderr)
+            print(
+                "ERROR: lexical capture requires --evidence-root; no producer was executed",
+                file=sys.stderr,
+            )
             return 2
         if root is not None:
-            registry = load_registry(repo_root / "tools/benchmark/registry.toml", repo_root=repo_root)
+            registry = load_registry(
+                repo_root / "tools/benchmark/registry.toml", repo_root=repo_root
+            )
             try:
                 if args.command == "run":
                     if args.lexical_spec is None:
                         raise EvidenceError("lexical capture requires --lexical-spec")
-                    if any(getattr(args, key) is not None for key in (
-                        "criterion_samples", "criterion_warmup", "criterion_measurement", "criterion_resamples",
-                        "cold_samples", "agent_recording", "scan_recording", "recorded_authenticity")) or args.admit_baseline:
+                    if (
+                        any(
+                            getattr(args, key) is not None
+                            for key in (
+                                "criterion_samples",
+                                "criterion_warmup",
+                                "criterion_measurement",
+                                "criterion_resamples",
+                                "cold_samples",
+                                "agent_recording",
+                                "scan_recording",
+                                "recorded_authenticity",
+                            )
+                        )
+                        or args.admit_baseline
+                    ):
                         raise EvidenceError("lexical capture refuses unrelated producer controls")
                     timeout = args.producer_timeout if args.producer_timeout is not None else 1800
-                    document = capture_lexical(repo_root, root, registry, args.lexical_spec, timeout)
+                    document = capture_lexical(
+                        repo_root, root, registry, args.lexical_spec, timeout
+                    )
                 elif args.command == "validate":
                     document = validate_lexical(repo_root, root, registry)
                 else:
@@ -1420,13 +1524,20 @@ def main(argv: list[str] | None = None) -> int:
                     from profile_capture import load_capture
 
                     require_registration(registry)
-                    capture_document = load_capture(root, profile=args.profile, registry_digest=registry_digest(registry))
+                    capture_document = load_capture(
+                        root, profile=args.profile, registry_digest=registry_digest(registry)
+                    )
                     if capture_document["expected_cases"] != {FAMILY: list(PRODUCTS)}:
                         raise EvidenceError("lexical summary product inventory differs")
-                    document = {"profile": args.profile, "capture_id": capture_document["capture_id"],
-                                "status": "capture_present_unvalidated", "source": capture_document["source"],
-                                "measurement_count": len(capture_document["runs"]),
-                                "scope": "recorded_lexical_diagnostic", "qualification": "not_run"}
+                    document = {
+                        "profile": args.profile,
+                        "capture_id": capture_document["capture_id"],
+                        "status": "capture_present_unvalidated",
+                        "source": capture_document["source"],
+                        "measurement_count": len(capture_document["runs"]),
+                        "scope": "recorded_lexical_diagnostic",
+                        "qualification": "not_run",
+                    }
             except (ValueError, RuntimeError, OSError, UnicodeError, SystemExit) as exc:
                 print(f"ERROR: lexical capture refused: {exc}", file=sys.stderr)
                 return 2
@@ -1441,14 +1552,30 @@ def main(argv: list[str] | None = None) -> int:
 
         root = resolve_evidence_root(args.evidence_root)
         if root is None:
-            print("ERROR: retrieval proof requires --evidence-root; no producer was executed", file=sys.stderr)
+            print(
+                "ERROR: retrieval proof requires --evidence-root; no producer was executed",
+                file=sys.stderr,
+            )
             return 2
         registry = load_registry(repo_root / "tools/benchmark/registry.toml", repo_root=repo_root)
         try:
             if args.command == "run":
-                if any(getattr(args, key) is not None for key in (
-                    "criterion_samples", "criterion_warmup", "criterion_measurement", "criterion_resamples",
-                    "cold_samples", "agent_recording", "scan_recording", "recorded_authenticity")) or args.admit_baseline:
+                if (
+                    any(
+                        getattr(args, key) is not None
+                        for key in (
+                            "criterion_samples",
+                            "criterion_warmup",
+                            "criterion_measurement",
+                            "criterion_resamples",
+                            "cold_samples",
+                            "agent_recording",
+                            "scan_recording",
+                            "recorded_authenticity",
+                        )
+                    )
+                    or args.admit_baseline
+                ):
                     raise EvidenceError("retrieval proofs refuse unrelated producer controls")
                 timeout = args.producer_timeout if args.producer_timeout is not None else 7200
                 if timeout < 1:
@@ -1461,11 +1588,18 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         print(json.dumps(document, sort_keys=True, indent=2))
         return 0
-    if args.command == "run" and args.profile != "recorded" and any(
-        getattr(args, key) is not None
-        for key in ("agent_recording", "scan_recording", "recorded_authenticity")
+    if (
+        args.command == "run"
+        and args.profile != "recorded"
+        and any(
+            getattr(args, key) is not None
+            for key in ("agent_recording", "scan_recording", "recorded_authenticity")
+        )
     ):
-        print("ERROR: recorded input controls apply only to recorded; no producer was executed", file=sys.stderr)
+        print(
+            "ERROR: recorded input controls apply only to recorded; no producer was executed",
+            file=sys.stderr,
+        )
         return 2
     if args.profile == "recorded" and args.command == "compare":
         print("ERROR: recorded imports have no qualified baseline/comparator", file=sys.stderr)
@@ -1476,20 +1610,41 @@ def main(argv: list[str] | None = None) -> int:
 
         root = resolve_evidence_root(args.evidence_root)
         if root is None:
-            print("ERROR: recorded import/validation requires --evidence-root; no producer was executed", file=sys.stderr)
+            print(
+                "ERROR: recorded import/validation requires --evidence-root; no producer was executed",
+                file=sys.stderr,
+            )
             return 2
         registry = load_registry(repo_root / "tools/benchmark/registry.toml", repo_root=repo_root)
         try:
             if args.command == "run":
-                if any(getattr(args, key) is not None for key in (
-                    "criterion_samples", "criterion_warmup", "criterion_measurement",
-                    "criterion_resamples", "producer_timeout", "cold_samples")) or args.admit_baseline:
+                if (
+                    any(
+                        getattr(args, key) is not None
+                        for key in (
+                            "criterion_samples",
+                            "criterion_warmup",
+                            "criterion_measurement",
+                            "criterion_resamples",
+                            "producer_timeout",
+                            "cold_samples",
+                        )
+                    )
+                    or args.admit_baseline
+                ):
                     raise EvidenceError("recorded imports do not execute timing producers")
                 if args.agent_recording is None or args.scan_recording is None:
-                    raise EvidenceError("recorded import requires --agent-recording and --scan-recording")
-                document = import_recorded(repo_root, root, registry, args.agent_recording,
-                                           args.scan_recording,
-                                           args.recorded_authenticity or "recorded_unauthenticated")
+                    raise EvidenceError(
+                        "recorded import requires --agent-recording and --scan-recording"
+                    )
+                document = import_recorded(
+                    repo_root,
+                    root,
+                    registry,
+                    args.agent_recording,
+                    args.scan_recording,
+                    args.recorded_authenticity or "recorded_unauthenticated",
+                )
             else:
                 document = validate_recorded(repo_root, root, registry)
         except (ValueError, OSError, UnicodeError) as exc:
@@ -1524,19 +1679,35 @@ def main(argv: list[str] | None = None) -> int:
         if root is not None:
             from profile_capture import load_capture
 
-            registry = load_registry(repo_root / "tools/benchmark/registry.toml", repo_root=repo_root)
+            registry = load_registry(
+                repo_root / "tools/benchmark/registry.toml", repo_root=repo_root
+            )
             try:
-                document = load_capture(root, profile=args.profile, registry_digest=registry_digest(registry))
+                document = load_capture(
+                    root, profile=args.profile, registry_digest=registry_digest(registry)
+                )
                 if document["expected_cases"] != {family: [None] for family in profile["families"]}:
                     raise EvidenceError("capture inventory differs from registry")
             except (ValueError, OSError) as exc:
                 print(f"ERROR: cannot summarize {args.profile} capture: {exc}", file=sys.stderr)
                 return 2
-            print(json.dumps({"profile": args.profile, "capture_id": document["capture_id"],
-                              "status": "capture_present_unvalidated", "source": document["source"],
-                              "measurement_count": len(document["runs"]),
-                              "scope": "contract_only" if args.profile == "retrieval-contract" else "unauthenticated_recording",
-                              "qualification": "not_run"}, sort_keys=True, indent=2))
+            print(
+                json.dumps(
+                    {
+                        "profile": args.profile,
+                        "capture_id": document["capture_id"],
+                        "status": "capture_present_unvalidated",
+                        "source": document["source"],
+                        "measurement_count": len(document["runs"]),
+                        "scope": "contract_only"
+                        if args.profile == "retrieval-contract"
+                        else "unauthenticated_recording",
+                        "qualification": "not_run",
+                    },
+                    sort_keys=True,
+                    indent=2,
+                )
+            )
             return 0
     if args.profile in {"micro", "dsl-diagnostic"} and args.command == "summarize":
         root = resolve_evidence_root(args.evidence_root)

@@ -20,6 +20,14 @@ pub(crate) fn quote_sql_string(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
+/// Exact UTF-8 length of the escaped literal, without allocating it.
+pub(crate) fn quoted_sql_string_bytes(value: &str) -> Option<usize> {
+    value
+        .len()
+        .checked_add(value.bytes().filter(|byte| *byte == b'\'').count())?
+        .checked_add(2)
+}
+
 /// Build an `embedding_id IN ('a', 'b', ...)` filter for `vector_search.only_if`
 /// from the search-time allowlist.
 pub(crate) fn build_id_in_filter(allowed_ids: &BTreeSet<String>) -> String {

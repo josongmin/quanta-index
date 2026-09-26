@@ -517,7 +517,7 @@ host_policy = "any"
 gate_tier = "contract"
 sample_floor = 0
 baseline = "none"
-native_schema = "retrieval-execution-context:v1"
+native_schema = "retrieval-execution-context:v2"
 authority = "registry"
 
 [families.retrieval-contract]
@@ -533,7 +533,7 @@ host_policy = "any"
 gate_tier = "contract"
 sample_floor = 0
 baseline = "none"
-native_schema = "retrieval-execution-context:v1"
+native_schema = "retrieval-execution-context:v2"
 authority = "registry"
 
 [families.retrieval-pair]

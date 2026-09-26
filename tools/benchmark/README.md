@@ -57,6 +57,76 @@ inputs. See the [current audit](../../docs/plans/sep-26-bench-migration/tickets/
 
 ## Immutable runs and typed evidence
 
+### Native executable custody
+
+Retrieval proof execution contexts are **v2**. Both SDK and contract rails
+derive a mandatory compiled-test executable map from retained raw nextest
+collection (`binary-id`, canonical absolute `binary-path`, selected testcases).
+Roles are `nextest-<sha256(full binary-id)>`; SDK also binds `runner` and
+`searchd`. Missing roles, duplicate paths, collection/path contradictions and
+changed executable bytes/epochs refuse. The producer pins these files before
+nextest execution; common capture retains all executable bytes and replay
+validates them without the original target cache. Common build flags retain
+the test selector's `--all-features` and `--locked`; individual raw commands
+remain the authority for each executable's actual feature/build arguments.
+
+Existing v1 contexts are not silently requalified or upcast. Runner record v5,
+diagnostic v6, run manifest v2 and required Rust test identities are unchanged.
+This is local file custody, not compiler-dependency, compromised-UID or remote
+producer attestation. SDK/contract success still requires terminal actual tests
+and fresh raw replay at the same frozen source.
+
+### Shared external corpus releases
+
+```sh
+uv run --frozen --extra dev python tools/benchmark/benchctl.py corpus create \
+  --spec /external/corpus-recipe.json --checkouts /external/checkouts \
+  --release /external/corpus-releases/release-name
+uv run --frozen --extra dev python tools/benchmark/benchctl.py corpus validate \
+  --release /external/corpus-releases/release-name
+```
+
+`corpus_release.py` is the common release/view authority; `corpus_set.py` exports
+legacy **candidate** code manifests, not admitted releases. Existing `frozen-v4`
+is not overwritten or relabelled. Creation requires clean source and clean,
+exact-commit source checkouts. Existing release destinations are never replaced.
+
+```
+<external-release>/
+  release.json                         # complete tracked inventory, policy, identities
+  recipe.json                          # canonical declared source recipe
+  bundles/<repo>.bundle                # self-contained original Git commit/history
+  blobs/<sha256>                       # deduplicated admitted canonical Git blob bytes
+  manifests/<repo>/<view>.json          # native RB-00 corpus manifest
+  views/<repo>/<view>/<tracked-path>    # independently materialized read-only files
+```
+
+Both `code_only` and `developer_search` views span the complete repository.
+The old recipe's `benchmark_root` is retained as candidate provenance, **not**
+silently reused as the new view filter. Code view extensions and generated/vendor
+directory components are explicit in the release policy; developer search also
+includes admitted documentation/configuration text. Symlink, submodule, LFS
+pointer, empty/oversize, binary/encoding and exotic-line-break exclusions are
+recorded per tracked path. NFC/casefold aliases, including parent directories,
+refuse rather than depending on host filesystem casing.
+
+All Git blobs are streamed and hash-checked against their actual Git object IDs;
+only one bounded view-size file is retained in memory. Git network protocols are
+limited to local files and unrelated service credentials are not forwarded.
+Batch readers and subprocess groups have bounded cleanup; this is local custody,
+not an OS sandbox or same-UID/remote producer attestation. Validation restores
+the retained Git bundles and re-derives inventory, manifests, exclusions, view
+bytes and executable/read-only modes without the original mutable checkouts.
+
+Use a chosen view manifest and **re-freeze its corresponding query pack/suite**
+for Quanta/Semble; external lexical products index that view directory and keep
+the original tracked-path namespace. View directories are not synthetic Git
+checkouts and must not claim the original commit as their own invented HEAD.
+Every comparator must bind the same manifest/file universe; a valid release
+does not itself prove its live searchable index universe. Release file count is
+not independent qrels, license approval, query performance or product quality.
+The release status remains `frozen_not_admitted`.
+
 Passing `--evidence-root <external-root>` (or setting
 `QUANTA_BENCH_EVIDENCE_ROOT`) makes `run` capture each family's **native**
 artifact verbatim into an immutable run:
@@ -214,16 +284,24 @@ deduplication/streaming is not established by the fixture contract tests.
 ### Lexical diagnostic scorer
 
 `retrieval-diagnostic` and `lexical-diagnostic` are separate profiles. The former
-owns paired execution; the latter consumes one exact nine-role external spec
+owns paired execution. The standalone native scorer consumes a nine-role spec
 (`schema_version: 1`): `suite`, `query_pack`, `pair_report`, `pair_lock`,
 `semble_native`, `pair_verdict`, `sourcegraph_rows`, `opengrok_rows`, `cs_rows`.
 Paths must be absolute; omitted, unknown or mixed inputs are refused.
+The common `--lexical-spec` is instead a closed schema v2 envelope containing
+`corpus` and `inputs`. `inputs` holds those same nine roles; `corpus` requires
+absolute `release_path`, `release_digest`, `repository`, and `view`
+(`code_only` or `developer_search`). The suite/query pack must exactly bind
+the selected Git-derived view's commit, ordered complete file universe and
+digest. Capture retains the recipe/release/Git bundles and binding; replay
+reconstructs the view without original mutable paths. This is input binding,
+not proof of a product's indexed universe. Capsules above 256 MiB refuse.
 
 ```sh
 uv run --frozen --extra dev python -m tools.benchmark.retrieval.lexical_file_comparison \
   --spec /external/lexical-inputs.json --out /external/fresh-lexical-report.json
 uv run --frozen --extra dev python tools/benchmark/benchctl.py run lexical-diagnostic \
-  --lexical-spec /external/lexical-inputs.json --evidence-root /external/bench
+  --lexical-spec /external/lexical-corpus-bound-spec-v2.json --evidence-root /external/bench
 uv run --frozen --extra dev python tools/benchmark/benchctl.py validate lexical-diagnostic \
   --evidence-root /external/bench
 ```

@@ -3,6 +3,7 @@
 ## 현행 판정 — 2026-09-26, [중앙 코드 감사](CURRENT-AUDIT.md) 기준
 
 - 구현 관측: `semble.py`의 네 profile·공통 cold/warmup/measured dispatch·lane/phase event와 `run.py`의 frozen profile 검증이 현재 owning 소스에 있다. 아래 99파일·20질의 Semble 0.6.0 캡처와 exploratory pair는 **과거 개발 관측**이다. profile 재구현이 아닌 실제 pinned output/phase capture 재발급이 잔여다.
+- 최종 입력 경계 보완 local VERIFIED: profile mode shape/finite alpha·raw event inventory 선행 검사·untrusted count list allocation 제거·event rep/phase_iteration/call_ordinal exact int 검증. genuine fixture의 huge count3종 및 bool/float event alias6종을 typed refusal로 거부했다. existing3 identity focused3 passed·Ruff/diff0, `/private/tmp/qi-json-final-audit.2ZpOc5/SUMMARY.md`, SHA `2d6470d1582488023b3d0326d23d0613e4720aa01afb3bef4fad6570a7cf70d5`. actual pinned Semble runtime/capture 재발급·품질/perf 자격은 별도 NOT_RUN이다.
 - 검증: 과거 bare-symbol lexical-only 도구 5 tests와 GIN/ripgrep v4 exploratory verdict는 역사적 개발 진단이다. 당시 file Recall@10/latency·artifact digest는 [비교 기록](../../sep-23-retrieval-bench/tickets/CODE-SEARCH-COMPARATORS-2026-09.md)을 따른다. 이번 감사에서 새 Semble 실행 또는 해당 전체 과거 artifact의 재검증은 하지 않았다. 현 source의 pinned capture/contract/SDK receipt·admitted qualified final pair·quality/performance는 `NOT_RUN`이다.
 - 잔여: 같은 frozen source/spec에서 네 profile의 pinned reference output·lane 호출·phase event·raw hash를 재발급하고 최종 validator collection/terminal에 바인딩한다. 현재 Python authority319/Rust108/SDK18은 등록 수이며 실제 terminal은 중앙 감사를 따른다. 과거276/280/283/288 결과를 현재 증거로 재사용하지 않는다. 독립 admission 없는 개발 캡처를 qualified pair로 승격하지 않는다. [중앙 코드 감사](CURRENT-AUDIT.md), [잔여 작업](GAP-REGISTER.md).
 

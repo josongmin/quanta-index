@@ -25,6 +25,21 @@ class ToolCustodyError(ValueError):
     """A selected executable or its invocation alias changed during custody."""
 
 
+def validate_environment(environment: Mapping[str, str]) -> None:
+    """Refuse inherited Bash execution hooks before any tool invocation.
+
+    A function import can override PATH-selected commands or shell builtins;
+    startup files can introduce those functions even when none was exported.
+    Reject the entire export namespace, including empty or malformed entries.
+    """
+    functions = sorted(key for key in environment if key.startswith("BASH_FUNC_"))
+    if functions:
+        raise ToolCustodyError("inherited Bash function exports are not admitted: " + ", ".join(functions))
+    for name in ("ENV", "BASH_ENV"):
+        if environment.get(name):
+            raise ToolCustodyError(f"inherited shell startup setting is not admitted: {name}")
+
+
 def _stat(value: os.stat_result) -> dict[str, int]:
     return {name: getattr(value, "st_" + name) for name in
             ("dev", "ino", "mode", "size", "mtime_ns", "ctime_ns")}
@@ -55,8 +70,13 @@ def _epoch(invocation: Path) -> dict:
         if not stat.S_ISREG(before.st_mode) or not before.st_mode & 0o111:
             raise ToolCustodyError(f"selected tool is not an executable regular file: {resolved}")
         digest = hashlib.sha256()
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+        remaining = before.st_size
+        while remaining:
+            chunk = stream.read(min(1024 * 1024, remaining))
+            if not chunk:
+                raise ToolCustodyError(f"selected tool was truncated while reading: {invocation}")
             digest.update(chunk)
+            remaining -= len(chunk)
         after = os.fstat(stream.fileno())
     if (_stat(before) != _stat(after) or _stat(resolved.lstat()) != _stat(before)
             or before_chain != _chain(invocation) or resolved_chain != _chain(resolved)):
@@ -66,8 +86,19 @@ def _epoch(invocation: Path) -> dict:
             "invocation_chain": before_chain, "resolved_chain": resolved_chain}
 
 
+def capture_executable(path: Path) -> dict:
+    """Capture the canonical epoch of an absolute executable invocation."""
+    if not isinstance(path, Path) or not path.is_absolute():
+        raise ToolCustodyError("executable path must be absolute")
+    try:
+        return copy.deepcopy(_epoch(path))
+    except (OSError, ValueError) as error:
+        raise ToolCustodyError(f"executable unavailable: {path}: {error}") from error
+
+
 def resolve_tool_paths(root: Path, environment: Mapping[str, str]) -> dict[str, Path]:
     """Select real Rust binaries using rustup in the requested source context."""
+    validate_environment(environment)
     if os.name == "nt":
         raise ToolCustodyError("tool custody requires Unix Bash invocation support")
     env = dict(environment)
@@ -108,6 +139,7 @@ class ToolCustody:
     def create(cls, root: Path, bin_dir: Path, *, tools: Mapping[str, Mapping[str, str]],
                environment: Mapping[str, str] | None = None) -> ToolCustody:
         env = dict(os.environ if environment is None else environment)
+        validate_environment(env)
         rows = copy.deepcopy(dict(tools))
         if set(rows) != {*TOOL_NAMES, "cargow"}:
             raise ToolCustodyError("tool metadata must name every canonical tool and cargow")
@@ -153,6 +185,27 @@ class ToolCustody:
 
     def tools(self) -> dict[str, dict[str, str]]:
         return copy.deepcopy(self._tools)
+
+    def bind_executable(self, path: Path, *, expected_sha256: str | None = None) -> dict:
+        """Bind an additional absolute executable or recheck its existing epoch."""
+        if not isinstance(path, Path) or not path.is_absolute():
+            raise ToolCustodyError("additional executable path must be absolute")
+        if expected_sha256 is not None and (
+            not isinstance(expected_sha256, str) or len(expected_sha256) != 64
+            or any(c not in "0123456789abcdef" for c in expected_sha256)
+        ):
+            raise ToolCustodyError("invalid expected executable digest")
+        try:
+            actual = _epoch(path)
+        except (OSError, ValueError) as error:
+            raise ToolCustodyError(f"additional executable unavailable: {path}: {error}") from error
+        if expected_sha256 is not None and actual["sha256"] != expected_sha256:
+            raise ToolCustodyError(f"additional executable digest differs: {path}")
+        key = actual["invocation"]
+        if key in self._epochs and self._epochs[key] != actual:
+            raise ToolCustodyError(f"tool custody epoch changed: {path}")
+        self._epochs[key] = actual
+        return copy.deepcopy(actual)
 
     def record(self) -> dict:
         return {"schema_version": 1, "tools": self.tools(), "epochs": copy.deepcopy(self._epochs),

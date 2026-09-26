@@ -245,7 +245,7 @@ def derive(native: Path, corpus: Path, timeout: int = 300) -> tuple[dict, dict]:
     manifest = owner._validate_manifest_shape(owner.read_json(native / "run-manifest.json"))
     suite = owner._resolve_artifact(native, manifest["artifacts"]["suite"], "pair suite")
     with tempfile.TemporaryDirectory(prefix="quanta-pair-verdict-") as scratch:
-        out = Path(scratch) / "verdict.json"
+        out = Path(scratch).resolve() / "verdict.json"
         execute(
             [
                 sys.executable,
@@ -460,8 +460,8 @@ def replay_run(store: RunStore, evidence: dict) -> list[str]:
         }:
             raise EvidenceError("pair frozen spec differs from the original capture inputs")
         with tempfile.TemporaryDirectory(prefix="quanta-pair-corpus-") as scratch:
-            corpus = Path(scratch) / "corpus"
-            native = Path(scratch) / "native"
+            corpus = Path(scratch).resolve() / "corpus"
+            native = Path(scratch).resolve() / "native"
             restore_corpus(raw / "corpus.bundle", corpus)
             unpack_native(_read_regular_file(raw / "native-tree.zip"), native)
             manifest, _verdict = derive(native, corpus)
@@ -487,7 +487,7 @@ def capture(repo: Path, root: Path, registry: dict, spec_path: Path, timeout: in
     require_clean_worktree(repo)
     original = _read_regular_file(spec_path)
     with tempfile.TemporaryDirectory(prefix="quanta-pair-spec-") as scratch:
-        frozen_input = Path(scratch) / "spec.json"
+        frozen_input = Path(scratch).resolve() / "spec.json"
         frozen_input.write_bytes(original)
         spec = owner.load_spec(frozen_input)
     if any(key not in spec for key in (*INPUT_ROLES, "semble_python")):

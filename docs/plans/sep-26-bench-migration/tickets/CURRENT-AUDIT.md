@@ -1,8 +1,161 @@
-# Benchmark migration — current source audit, 2026-09-26
+# Benchmark migration — current source audit, 2026-09-27
 
 **PARTIAL, not all-ticket closure.** This audit supersedes the completion
 language in `CLOSEOUT.md` and `BM-07-MIGRATION-MATRIX.md`. A registered producer
 and a valid typed fixture are not an implemented profile execution adapter.
+
+## Latest executable/read custody checkpoint
+
+**VERIFIED — frozen selected Python contracts, not native test completion.**
+Clean snapshot `a805bd16401ed1395ea85b71abc398b18e7e0fa5` at
+`/private/tmp/quanta-native-custody-proof.pPpsg8/repo` retains main base
+`7d581d0572447e4f29ce0d0ea2f9d2fbc8b1353c` plus concurrent dirty source.
+Locked uv CPython 3.13.9 command `uv run --frozen --extra dev python -m pytest
+tools/ci/tests/test_bench_protocol_conformance.py tools/ci/tests/test_portable_proof.py
+tools/ci/tests/test_portable_tool_execution.py tools/ci/tests/test_retrieval_capture.py
+tools/ci/tests/test_corpus_release.py tools/ci/tests/test_benchmark_source_closure.py
+-q -x --junitxml=/private/tmp/quanta-native-custody-proof.pPpsg8/focused.xml`
+exited 0: **204 passed in 149.70 s**. JUnit SHA-256
+`dcb5790493ab3d9b091f4e7e4d77d9e4ab804342b32fcc4bdf589942095cb57f`.
+Fresh source-closure capture/verify exited 0, binding 921 files to identity
+`cd7b77844afaf90a4283796a7e5debe586fc9c6313cbc1ac56cb5816267e2fb4`;
+manifest SHA-256
+`f2a037ad90af86150b67655d28387b03556668ef41c4305c363209d72698973a`.
+Authority, scoped Ruff and clean diff checks exited 0; the snapshot remained clean.
+
+- Compiled native test executables are now mandatory in execution-context **v2**.
+  `selected_test_binaries(raw_collection_bytes)` derives safe roles
+  `nextest-<sha256(full binary-id)>` from selected nextest suites and canonical
+  absolute `binary-path` values. Contradictory binary IDs, duplicate paths,
+  missing roles, malformed collections, legacy v1 contexts and changed frozen
+  executable bytes refuse. SDK retains its additional runner/searchd roles.
+- The producer binds every compiled executable with the shared ToolCustody
+  before nextest invocation and checks its file epoch around execution. Tests
+  include actual same-content inode replacement and content/mtime restoration,
+  not only forged receipt fields. Common capture freezes every binary and
+  raw replay checks the complete derived map. Runner v5, diagnostic v6, run
+  manifest v2 and required Rust test counts/names are unchanged.
+- A real leaf-TOCTOU counterexample made the old evidence reader return
+  replacement symlink bytes after the regular-file check. It now uses the
+  canonical no-follow descriptor reader, rejects symlink ancestors, and binds
+  leaf/ancestor identity before/after reading. Leaf swap, ancestor link,
+  inode replacement, growth and content restoration mutants refuse. The
+  shared reader and JSON dependency are included in the closure read set.
+- Individual raw command records retain actual build arguments; common build
+  flags expose the test selector's `--all-features`/`--locked` flags. This is
+  not a claim that every SDK executable uses identical feature arguments.
+
+**VERIFIED — later shared-source focused registration checks only:** both
+registry entries and the common registration guard now declare context v2;
+v1 registration explicitly refuses. The 204-test frozen receipt predates this
+small registration correction and pending paired-consumer migration. Later
+current-source registration/manifest/policy suite: **53 passed in 21.79 s**,
+JUnit `/private/tmp/quanta-native-custody-proof.pPpsg8/registry-v2-current.xml`,
+SHA-256 `563e03691d4845bb5d73c2d1cad4b274c60081e01b7fbd54b000df8355ba6a8c`.
+Current conformance/portable/execution/common-capture suite: **134 passed in
+16.98 s**, JUnit `native-v2-current.xml` in the same directory, SHA-256
+`7345eabc8bcb9f7e01915378beaf6a678f7861bb61b978f47a4073dac664070f`.
+Commands are the corresponding explicit files with locked uv Python pytest
+`-q -x --junitxml=<receipt>`. Main advanced to
+`907785f89d86e6aac9b01517b3309f8c0c8bba2e` independently with remaining dirty
+changes. These shared-source focused results do not establish clean integration.
+
+Actual SDK18/Rust108 canonical capture was launched in clean `a805bd16` with
+`CARGO_BUILD_JOBS=2 uv run --frozen --extra dev python tools/benchmark/benchctl.py
+run retrieval-contract --evidence-root
+/private/tmp/quanta-native-custody-proof.pPpsg8/native-evidence --producer-timeout 7200`.
+It terminated with exit 2: ToolCustody refused the runner epoch change during
+nextest's repeated build. Build/collection and the SDK record were produced,
+but there is no accepted terminal test or complete-profile receipt; Rust108
+was not executed. The failure is retained, not reclassified as test success.
+The producer now separates final native build metadata from execution using
+nextest `--binaries-metadata` and `--cargo-metadata`. Both metadata files are
+cross-checked with the selected collection and exact Cargo package/workspace,
+and no-follow local input epochs are checked around execution. No executable
+epoch check was weakened. Current dirty-source focused tests: **145 passed in
+3.52 s**, locked uv pytest over portable proof, portable execution, retrieval
+contract proof and ignored-inventory tests. Receipt
+`/private/tmp/quanta-native-custody-proof.pPpsg8/reuse-input-epoch-current-v2.xml`,
+SHA-256 `35166e0b859a4a83a2b97320ff78e6a1e73eab4d3628d0efb8113c6454c83ee0`.
+This is fixture/local guard proof, not real native qualification. The failed
+snapshot predates the v2 registration correction and paired consumer updates;
+even successful raw native execution cannot qualify the later full cutover.
+Require a final frozen source after all owners release, fresh actual tests and
+fresh validation/replay. Local file custody is not independent OS/remote
+producer or compiler-dependency attestation.
+
+## Latest external corpus checkpoint
+
+**VERIFIED — input release generation/replay, not product comparison.**
+Independent clean snapshot `ced1ef190fc8141b48ad06c2f2a57aad86d139a0`
+at `/tmp/quanta-corpus-proof.3rXkg3/repo` captures main
+`7d581d0572447e4f29ce0d0ea2f9d2fbc8b1353c` plus the retained patch
+`/tmp/quanta-corpus-proof.3rXkg3/source.patch`, SHA-256
+`75dded3f1bd6123efcc992d2674e206254b9d811d71e79737874b80f20d31838`.
+Locked uv CPython 3.13.9 command `uv run --frozen --extra dev python -m pytest
+tools/ci/tests/test_corpus_release.py tools/ci/tests/test_benchctl.py
+tools/ci/tests/test_benchmark_source_closure.py tools/ci/tests/test_benchmark_manifest.py
+tools/ci/tests/test_benchmark_policy.py -q -x
+--junitxml=/tmp/quanta-corpus-proof.3rXkg3/corpus-integration.xml`
+exited 0: **158 passed in 93.57 s**. JUnit SHA-256
+`11af28c2803d4518acce3f1aca69c81c36abfa23b57aea2b34cc3048356e13df`.
+Source-closure capture and fresh verification exited 0, binding 920 files to
+identity `802d2c773c599379821fa7380264889630361fd8e6358b160df5dee2d5a9910e`.
+Authority, scoped Ruff and clean diff checks exited 0. This selected proof
+does not qualify the later 28-file recipe or concurrent native/tool changes.
+
+`corpus_release.py` owns both complete-repository materialized views, tracked
+Git inventory, explicit exclusions, retained self-contained bundles,
+deduplicated content blobs, license provenance without approval, and Git-object
+replay. The former language-specific candidate `benchmark_root` does not filter
+these views. Publication is staged, guarded and fsynced before atomic rename.
+
+Actual public CLI `corpus create --spec /tmp/quanta-corpus-proof.3rXkg3/pilot-spec.json
+--checkouts /Users/songmin/Documents/code-new/qi-rb-coverage-set-2026-09-25/checkouts
+--release /Users/songmin/Documents/code-new/qi-rb-coverage-set-2026-09-25/corpus-releases/gin-ripgrep-ced1ef19`
+and independent fresh-process `corpus validate --release <same release>` both
+exited 0. Logs are `/tmp/quanta-corpus-proof.3rXkg3/real-create.json` and
+`real-validate.json`, identical SHA-256
+`c3abeb3ab67bdc5354dc114a416f77d02e6cd2f9848ccc7b6b9b85f77cee719a`.
+Release body digest is
+`sha256:af26fedb824db1c86f500d8a875da808a5bec2f529f3b9a63495285044cdddb1`;
+`release.json` file SHA-256 is
+`de769d2aa2ac5faadb8a3b55ce89a79490f1ebe3c20f714c312e358426cbb8d8`.
+
+| Repository | Exact commit | Tracked entries | code_only | developer_search |
+| --- | --- | ---: | ---: | ---: |
+| gin | `d3ffc9985281dcf4d3bef604cce4e662b1a327a6` | 130 | 99 | 130 |
+| ripgrep | `af60c2de9d85e7f3d81c78601669468cf02dabab` | 220 | 100 | 210 |
+
+The release is external and `frozen_not_admitted`. Suite/query packs must be
+refrozen against a selected view and explicitly bound through the live capture.
+Common lexical schema v2 now binds release/repository/view, complete ordered
+file universe, commit, suite and query-pack bytes. `corpus_binding.py` retains
+a closed ZIP capsule of recipe/release/Git bundles and replays Git objects
+without the original checkout/release paths. The native scorer remains its
+existing schema v1 owner; no second scorer was introduced. Local focused
+real-Git/fixture-observation tests passed **78 in 164.54 s** using locked uv
+pytest over `test_corpus_binding.py`, `test_lexical_capture.py` and
+`test_pair_capture.py`; receipt
+`/private/tmp/quanta-native-custody-proof.pPpsg8/corpus-lexical-pair-current-v2.xml`.
+Missing capsule/binding, unbound legacy specs, root overlap, untrusted path
+aliases and forged Git/view/query inputs refuse. Owned temporary aliases are
+canonicalized without relaxing untrusted evidence paths. Final frozen
+integration and live comparator production are not established by that
+selected dirty-source result. Capsules explicitly
+refuse above 256 MiB; large-corpus streaming/deduplicated storage remains open.
+Index-universe attestation stays false. No live search, gold adjudication,
+index-universe parity, latency or winner was
+measured by this input-generation receipt.
+
+**FAILED — actual complete micro capture:** clean snapshot
+`9e0f9371b8b238f6db9f775154afe908efad9fcb` executed LQ build/smoke/12 measurements,
+but runtime all-features `bench --no-run` exceeded the explicit 7,200 s deadline.
+The public CLI terminated with exit 2. No complete profile was promoted;
+fresh validate/replays are **NOT_RUN**. Raw log
+`/tmp/quanta-micro-audit.EwaPQA/micro-authority-final.log`, SHA-256
+`bce4611530ec91167ff3b4ae2502f290c90d7a2168e26278b65022f6282cb7ca`.
+The process is terminal, not an active measurement or an accepted receipt.
 
 ## Latest paired common CLI checkpoint
 
@@ -81,16 +234,38 @@ All 23 selected owner files executed under the internally locked uv Python
 entrypoint. This covers Python benchmark control/capture/custody contracts,
 not native Rust execution, hosted CI, live searches or quiet-host performance.
 
-Remaining code/real-execution scope: external corpus release with both
-`code_only`/`developer_search` materialized views and complete tracked inventory
-policy; owned live comparator capture and fresh two-repo pilot; complete native
+**FAILED — actual native retrieval-contract capture:** clean snapshot
+`9f8892ae9ca6e87eba7ecf4be986f09689857fc7`, command
+`uv run --frozen --extra dev python tools/benchmark/benchctl.py run
+retrieval-contract --evidence-root /tmp/quanta-micro-audit.EwaPQA/retrieval-proof-actual
+--producer-timeout 7200`, exited 2. The SDK rail executed 18 tests: 17 passed
+and one failed; the contract rail and planned fresh validate/replays did not
+execute. No complete profile was published. Raw failure log
+`/tmp/quanta-micro-audit.EwaPQA/retrieval-proof-actual.log`, SHA-256
+`5fe606398b9278e875a0fc7a55be1ab4df94a71dfcb2a2fa3ecd7ac6b1eb1740`.
+
+RCA: frozen `sdk_roundtrip.rs:1260` expected **diagnostic schema v5**, while
+the producer emitted **diagnostic v6**. This is not runner record version
+drift: runner record remains v5 and run manifest remains v2. Current main
+already had the corrected diagnostic v6 assertion. A narrow structural follow-up
+adds `diagnostics::DIAGNOSTIC_SCHEMA_VERSION = 6`, uses it in serialization and
+the actual SDK assertion, while retaining the independent v6 golden assertion
+in diagnostic unit tests. Rustfmt/diff checks passed; actual native verification
+of that latest delta remains **NOT_RUN**. The Python 579-test receipt above
+precedes this Rust delta and does not qualify it. A new exact-source native
+capture is required after the concurrently owned tool-custody changes stabilize;
+do not retry or mutate the failed frozen snapshot in place.
+
+Remaining code/real-execution scope: bind the implemented external corpus release
+and selected `code_only`/`developer_search` view to refrozen query packs and
+owned live comparator capture; fresh two-repo pilot; complete native
 test executable inventory/build provenance and capture-time host lease. The
 current pair bridge duplicates corpus bundle/native archive bytes per metric
 case; large-corpus storage deduplication/streaming is not proven. Existing
 `corpus_set.py` candidate code manifests are not those materialized release
 views. Independent gold/license/model/quiet-host admission remains a separate
-qualification boundary. Native micro and retrieval-contract processes still
-have no accepted complete-profile terminal receipt in this checkpoint.
+qualification boundary. Native micro and retrieval-contract captures terminated
+with failures; neither has an accepted complete-profile receipt.
 
 ## Latest common lexical capture checkpoint
 
@@ -737,18 +912,18 @@ existing profile pointer byte-for-byte unchanged; raw refusal is
 
 Micro follow-up: the `83f24879` run was deliberately interrupted after the
 real CLI uncovered its shared source-digest promotion bug. No complete capture
-was promoted. The corrected `9e0f9371` run is active with external root
+was promoted. The corrected `9e0f9371` run terminated with exit 2 at external root
 `/tmp/quanta-micro-audit.EwaPQA/evidence-authority-final` and process log
 `/tmp/quanta-micro-audit.EwaPQA/micro-authority-final.log`. It uses the same
 10-sample/0.01 s diagnostic knobs, `CARGO_BUILD_JOBS=2`, and 7,200 s producer
-deadline. Successful capture will be followed by fresh-process `validate` and
-both family replays in that same clean snapshot. This supersedes the older
-in-progress root above; it is **NOT_RUN** until that sequence terminates.
+deadline. Runtime compilation timed out; raw log identity is recorded in the
+latest checkpoint above. Capture is **FAILED**; fresh-process `validate` and
+both family replays are **NOT_RUN**. No complete profile was promoted.
 
 | Owner | Required code work | DoD |
 | --- | --- | --- |
 | BM-04 | Complete the actual full-profile Criterion capture/validate/replay receipt | Adapter and focused custody tests exist; require both registered targets and every case through the clean frozen CLI, then fresh-process raw-derived replay. Diagnostic ns only; instruction and performance rails are not implemented/qualified. |
-| BM-05 | Corpus release/views, fresh live lexical pilot and actual contract-profile receipt | Contract, pair and lexical recorded-input adapters exist; pair frozen integration (112 tests) and complete selected Python recipe (579 tests) are VERIFIED in the latest checkpoint. Require terminal actual SDK/contract run plus fresh validation/replay, complete external corpus release/views and a fresh real-product two-repo pilot. Preserve file/span and judged/unjudged spaces and reuse scorer owners. |
+| BM-05 | Fresh live view-bound lexical/paired pilot and actual contract-profile receipt | External release/views and actual gin/ripgrep input generation/replay exist. Common lexical release/view/query binding and retained Git-object reconstruction are implemented (78 selected current-source tests including pair custody). Earlier pair integration (112 tests) and selected Python recipe (579 tests) qualify only their frozen source. Require terminal actual SDK/contract run plus fresh validation/replay and a fresh real-product two-repo pilot; a bound input is not attestation of the product index. Preserve file/span and judged/unjudged spaces and reuse scorer owners. |
 | BM-06 | No remaining unauthenticated import implementation gap in this audited scope | Clean-source import/validate/two-family fresh-process replay is VERIFIED on fixed fixtures. Authentic recording verification and real-agent outcomes remain NOT_RUN; the CLI rejects authenticated claims rather than fabricating that proof. |
 | BM-04/07 | Native build/binary inventory and capture-time host lease | Exact executed binary/toolchain/flags bound before execution; monitored lease loss and generator saturation exclude speed/capacity qualification; clean-source representative capture and hosted CI receipts |
 

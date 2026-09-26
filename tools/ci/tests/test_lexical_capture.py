@@ -18,6 +18,36 @@ from tools.ci.tests.test_lexical_file_comparison import fixture_inputs
 
 def inputs(tmp_path):
     _, _, suite, pack = fixture_inputs(tmp_path)
+    import corpus_release as corpus
+
+    checkouts = tmp_path / "checkouts"
+    repository = checkouts / "fixture"
+    repository.mkdir(parents=True)
+    corpus.git(repository, "init", "-q")
+    corpus.git(repository, "config", "user.name", "Fixture")
+    corpus.git(repository, "config", "user.email", "fixture@localhost")
+    (repository / "LICENSE").write_text("Fixture license, not approval\n")
+    (repository / "src").mkdir()
+    for number in range(20):
+        (repository / "src" / f"{number}.go").write_text(f"func symbol_{number}() {{}}\n")
+    corpus.git(repository, "add", ".")
+    corpus.git(repository, "commit", "-qm", "fixed fixture corpus")
+    commit = corpus.git(repository, "rev-parse", "HEAD").decode().strip()
+    recipe = {"source_revision": "fixture recipe, not product qualification",
+              "repositories": [{"name": "fixture", "language": "go",
+                                "url": "https://example.invalid/fixture.git", "revision": commit,
+                                "benchmark_root": "src", "upstream_semble_benchmark_overlap": False}]}
+    recipe_path = tmp_path / "recipe.json"
+    recipe_path.write_text(json.dumps(recipe))
+    release_root = tmp_path / "corpus-release"
+    release = corpus.create(recipe_path, checkouts, release_root)
+    view = release["repositories"][0]["views"]["code_only"]
+    manifest = json.loads((release_root / view["manifest"]).read_bytes())
+    for payload in (suite, pack):
+        payload["repository_commit"] = commit
+        payload["file_universe"] = manifest["files"]
+        payload["file_universe_digest"] = view["file_universe_digest"][7:]
+    pack["suite_commitment_sha256"] = digest(canonical(suite))
     native = {
         "semble_profile": "lexical-only",
         "rerank_applied": False,
@@ -98,7 +128,10 @@ def inputs(tmp_path):
         paths[role].write_text("\n".join(json.dumps(row) for row in product_rows) + "\n")
     spec = tmp_path / "spec.json"
     spec.write_text(
-        json.dumps({"schema_version": 1, **{role: str(path) for role, path in paths.items()}})
+        json.dumps({"schema_version": 2,
+                    "corpus": {"release_path": str(release_root), "release_digest": release["digest"],
+                               "repository": "fixture", "view": "code_only"},
+                    "inputs": {role: str(path) for role, path in paths.items()}})
     )
     return spec, paths
 
@@ -196,6 +229,37 @@ def test_corrupt_frozen_input_is_not_a_zero_score(tmp_path, synthetic_admission)
     (store.run_dir(run) / "raw" / "input-sourcegraph_rows").write_bytes(b"truncated")
     with pytest.raises(ValueError):
         capture.validate(capture.ROOT, root, load_registry())
+
+
+@pytest.mark.parametrize("artifact", ["corpus-release.zip", "corpus-binding.json"])
+def test_missing_corpus_custody_artifact_cannot_replay(tmp_path, synthetic_admission, artifact):
+    spec, _ = inputs(tmp_path)
+    root = tmp_path / "evidence"
+    document = capture.capture(capture.ROOT, root, load_registry(), spec, 60)
+    store = RunStore(root)
+    evidence = store.load(document["runs"][0]["run_id"])
+    (store.run_dir(evidence["run_id"]) / "raw" / artifact).unlink()
+    with pytest.raises((ValueError, OSError)):
+        capture.replay_run(store, evidence)
+
+
+def test_legacy_unbound_spec_refuses_before_publication(tmp_path):
+    spec = tmp_path / "legacy.json"
+    spec.write_text(json.dumps({"schema_version": 1}))
+    root = tmp_path / "evidence"
+    with pytest.raises(ValueError, match="schema_version 2"):
+        capture.capture(capture.ROOT, root, load_registry(), spec, 60)
+    assert not root.exists()
+
+
+def test_evidence_release_overlap_refuses_before_mutation(tmp_path):
+    spec, _ = inputs(tmp_path)
+    root = Path(json.loads(spec.read_bytes())["corpus"]["release_path"])
+    before = (root / "release.json").read_bytes()
+    with pytest.raises(ValueError, match="roots overlap"):
+        capture.capture(capture.ROOT, root, load_registry(), spec, 60)
+    assert (root / "release.json").read_bytes() == before
+    assert not (root / "profiles").exists()
 
 
 @pytest.mark.parametrize("status,state", [("timeout", "timeout"), ("unavailable", "unsupported")])

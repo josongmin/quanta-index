@@ -35,6 +35,8 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+import corpus_binding  # noqa: E402
+
 from tools.benchmark.retrieval import lexical_file_comparison as owner  # noqa: E402
 
 PROFILE = "lexical-diagnostic"
@@ -179,10 +181,16 @@ def replay_run(store: RunStore, evidence: dict) -> None:
         **{role: str(native / f"input-{role}") for role in owner.INPUT_ROLES},
     }:
         raise EvidenceError("lexical frozen spec differs from captured role paths")
-    original = owner.read_spec(raw / "original-spec.json")
-    if set(original) != set(owner.INPUT_ROLES):
-        raise EvidenceError("lexical original spec is incomplete")
+    selection, _original_paths = corpus_binding.read_spec(
+        _read_regular_file(raw / "original-spec.json"), owner.INPUT_ROLES)
     paths = frozen_inputs(raw)
+    capsule = _read_regular_file(raw / "corpus-release.zip")
+    binding_raw = _read_regular_file(raw / "corpus-binding.json")
+    binding = corpus_binding.replay(capsule, selection,
+                                    _read_regular_file(paths["suite"]),
+                                    _read_regular_file(paths["query_pack"]))
+    if parse_json(binding_raw.decode()) != binding:
+        raise EvidenceError("lexical corpus/view/query binding differs from retained Git objects")
     summary = owner.evaluate_capture(paths)
     if parse_json(_read_regular_file(raw / "report.json").decode()) != summary:
         raise EvidenceError("lexical raw report differs from owner recomputation")
@@ -197,6 +205,11 @@ def replay_run(store: RunStore, evidence: dict) -> None:
             "reason": None,
         }
         for role, path in paths.items()
+    ] + [
+        {"id": "corpus-release", "availability": "present",
+         "digest": digest_bytes(capsule), "reason": None},
+        {"id": "corpus-view-query-binding", "availability": "present",
+         "digest": digest_bytes(binding_raw), "reason": None},
     ]
     if evidence["inputs"] != inputs:
         raise EvidenceError("lexical frozen input inventory or digest differs")
@@ -215,23 +228,31 @@ def capture(repo: Path, root: Path, registry: dict, spec_path: Path, timeout: in
         raise EvidenceError("lexical driver must come from the requested checkout")
     if root.resolve().is_relative_to(repo.resolve()):
         raise EvidenceError("lexical evidence must stay outside the checkout")
-    _directories(root)
-    paths = owner.read_spec(spec_path)
+    original = _read_regular_file(spec_path)
+    selection, paths = corpus_binding.read_spec(original, owner.INPUT_ROLES)
+    release = Path(selection["release_path"])
+    if root.resolve().is_relative_to(release.resolve()) or release.resolve().is_relative_to(root.resolve()):
+        raise EvidenceError("lexical evidence and corpus release roots overlap")
     if any(path.resolve().is_relative_to(repo.resolve()) for path in (spec_path, *paths.values())):
         raise EvidenceError("lexical spec and observations must stay outside the checkout")
     require_clean_worktree(repo)
     head = resolve_checkout_head(repo)
     source = source_identity(repo, "benchmark-retrieval")
-    original = _read_regular_file(spec_path)
     contents = {role: _read_regular_file(path) for role, path in paths.items()}
-    if _read_regular_file(spec_path) != original or owner.read_spec(spec_path) != paths:
+    if _read_regular_file(spec_path) != original:
         raise EvidenceError("lexical spec changed during freeze")
+    binding, capsule = corpus_binding.capture(release, selection, contents["suite"],
+                                              contents["query_pack"])
+    binding_raw = canonical_json(binding).encode()
+    _directories(root)
     capture_id = f"lexical-{uuid.uuid4().hex}"
     native = root / "work" / capture_id
     native.mkdir(parents=True, exist_ok=False)
     for role, content in contents.items():
         (native / f"input-{role}").write_bytes(content)
     (native / "original-spec.json").write_bytes(original)
+    (native / "corpus-release.zip").write_bytes(capsule)
+    (native / "corpus-binding.json").write_bytes(binding_raw)
     (native / "frozen-spec.json").write_text(
         canonical_json(
             {
@@ -326,6 +347,11 @@ def capture(repo: Path, root: Path, registry: dict, spec_path: Path, timeout: in
                         "reason": None,
                     }
                     for role, content in contents.items()
+                ] + [
+                    {"id": "corpus-release", "availability": "present",
+                     "digest": digest_bytes(capsule), "reason": None},
+                    {"id": "corpus-view-query-binding", "availability": "present",
+                     "digest": digest_bytes(binding_raw), "reason": None},
                 ],
                 host=host,
                 command=command,

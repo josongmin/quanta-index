@@ -50,11 +50,23 @@ def test_proof_recipes_capture_source_once_before_execution(tmp_path: Path) -> N
         "source-closure",
         "python-collection",
         "rust-collection",
+        "rust-build",
+        "metadata",
         "python-test",
         "rust-test",
     ]
-    sdk = portable_proof._expected_commands("sdk", tmp_path, tools, {})
-    assert sdk[0][1][1] == "_retrieval-sdk-proof-raw"
+    sdk = portable_proof._expected_commands(
+        "sdk", tmp_path, tools, {"searchd": {"path": str(tmp_path / "searchd")}}
+    )
+    assert [row[0] for row in sdk] == [
+        "source-closure",
+        "build-searchd",
+        "build-runner",
+        "rust-collection",
+        "rust-build",
+        "metadata",
+        "rust-test",
+    ]
     completed = subprocess.run(
         ["just", "--dry-run", "_retrieval-sdk-proof-raw", str(tmp_path / "raw")],
         cwd=ROOT,

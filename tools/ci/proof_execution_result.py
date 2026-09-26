@@ -57,11 +57,18 @@ def _validate_pytest_selection(selectors: list[str]) -> None:
 
 
 def pytest_junit_identity(nodeid: str) -> str:
-    """Map a collected pytest node ID to its JUnit classname and case name."""
-    parts = nodeid.split("::")
+    """Match pytest's JUnit address mangling without requiring pytest at replay.
+
+    Parameter IDs are opaque: pytest separates the first ``[`` before
+    splitting the file/class/function address on ``::``, then restores the
+    entire parameter suffix to the case name.
+    """
+    address, bracket, parameters = nodeid.partition("[")
+    parts = address.split("::")
     if len(parts) < 2 or not parts[0].endswith(".py") or any(not part for part in parts):
         raise ExecutionResultError(f"invalid pytest node ID: {nodeid!r}")
     module = parts[0][:-3].replace("/", ".")
+    parts[-1] += bracket + parameters
     return ".".join((module, *parts[1:]))
 
 

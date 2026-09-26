@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import ctypes
 import hashlib
 import html
@@ -3660,7 +3661,7 @@ def _bound_conditional_results(command, kind, *, matches=True):
     }
 
 
-def _full_receipts(commit, binary_digest):
+def _full_receipts(commit, binary_digest, binary_dir):
     py_cmd = "python3 -m pytest tools/ci/tests/test_retrieval_benchmark.py -q"
     rs_cmd = (
         "./scripts/cargow nextest run -p quanta-index-retrieval-bench "
@@ -3694,6 +3695,20 @@ def _full_receipts(commit, binary_digest):
     ).encode()
     rust_inventory, rust_raw = _nextest_evidence(authority["rust"])
     sdk_inventory, sdk_nextest = _nextest_evidence(authority["sdk"])
+    binary_dir.mkdir(parents=True, exist_ok=True)
+    inventories = []
+    for rail, raw in (("contract", rust_inventory), ("sdk", sdk_inventory)):
+        inventory = json.loads(raw)
+        for binary_id, row in inventory["rust-suites"].items():
+            role = "nextest-" + ev.digest(binary_id.encode())
+            executable = binary_dir / f"{rail}-{role}"
+            executable.write_bytes(binary_id.encode())
+            row.update({"binary-id": binary_id, "binary-path": str(executable.resolve()),
+                        "package-id": f"fixture:{portable_proof.PACKAGE}", "build-platform": "target"})
+        inventories.append(json.dumps(inventory).encode())
+    rust_inventory, sdk_inventory = inventories
+    (binary_dir / "runner").write_bytes(b"quanta-runner-binary")
+    (binary_dir / "searchd").write_bytes(b"g0-seed-searchd")
     sdk_record = _sdk_raw_record(binary_digest)
     py_inventory = json.dumps(
         {
@@ -3780,15 +3795,50 @@ def _full_receipts(commit, binary_digest):
     ):
         binaries = (
             {
-                "runner": {"path": "/fake/runner", "sha256": binary_digest},
-                "searchd": {"path": "/fake/searchd", "sha256": _fake_sha("searchd")},
+                "runner": {"path": str((binary_dir / "runner").resolve()), "sha256": binary_digest},
+                "searchd": {"path": str((binary_dir / "searchd").resolve()), "sha256": _fake_sha("searchd")},
             }
             if rail == "sdk"
             else {}
         )
+        collection_name = "nextest-inventory.json" if rail == "sdk" else "rust-inventory.json"
+        binaries.update({role: {"path": str(path), "sha256": pairrun.sha_file(path)}
+                         for role, path in portable_proof.selected_test_binaries(raw[collection_name]).items()})
+        inherited_environment = {"PATH": "/fixture/inherited/bin"}
+        transcripts = (
+            {"rust-collection.stdout": raw["nextest-inventory.json"],
+             "rust-test.stdout": raw["nextest.jsonl"]}
+            if rail == "sdk" else
+            {"rust-collection.stdout": raw["rust-inventory.json"],
+             "rust-test.stdout": raw["rust-nextest.jsonl"]}
+        )
+        inventory = json.loads(raw[collection_name])
+        build_fields = {"binary-id", "binary-name", "package-id", "kind", "binary-path", "build-platform"}
+        target_directory = str(binary_dir.resolve())
+        build_list = {
+            "rust-build-meta": {"target-directory": target_directory},
+            "rust-binaries": {binary_id: {key: suite[key] for key in build_fields}
+                              for binary_id, suite in inventory["rust-suites"].items()},
+        }
+        metadata = {
+            "version": 1, "workspace_root": str(portable_proof.ROOT),
+            "target_directory": target_directory,
+            "workspace_members": [f"fixture:{portable_proof.PACKAGE}"], "resolve": None,
+            "packages": [{"id": f"fixture:{portable_proof.PACKAGE}", "name": portable_proof.PACKAGE,
+                          "version": "0.1.0", "manifest_path": str(portable_proof.ROOT / "benchmarks/retrieval/Cargo.toml"),
+                          "targets": [{"name": suite["binary-name"], "kind": [suite["kind"]]}
+                                      for suite in inventory["rust-suites"].values()]}],
+        }
+        transcripts.update({"rust-build.stdout": json.dumps(build_list).encode(),
+                            "metadata.stdout": json.dumps(metadata).encode()})
+        portable_proof.verify_reused_build(
+            transcripts["rust-build.stdout"], transcripts["metadata.stdout"],
+            transcripts["rust-collection.stdout"], workspace_root=portable_proof.ROOT,
+        )
         commands = []
         for name, argv, overrides in portable_proof._expected_commands(
-            rail, Path("/proof"), tools, binaries
+            rail, Path("/proof"), tools, binaries,
+            inherited_environment=inherited_environment,
         ):
             commands.append(
                 {
@@ -3796,17 +3846,19 @@ def _full_receipts(commit, binary_digest):
                     "argv": argv,
                     "cwd": str(portable_proof.ROOT),
                     "environment": overrides,
-                    "inherited_environment": {},
-                    "environment_sha256": portable_proof._environment_digest(overrides),
+                    "inherited_environment": dict(inherited_environment),
+                    "environment_sha256": portable_proof._environment_digest(
+                        {**inherited_environment, **overrides}
+                    ),
                     "exit_code": 0,
                     "stdout": f"{name}.stdout",
-                    "stdout_sha256": ev.digest(b""),
+                    "stdout_sha256": ev.digest(transcripts.get(f"{name}.stdout", b"")),
                     "stderr": f"{name}.stderr",
                     "stderr_sha256": ev.digest(b""),
                 }
             )
         context = {
-            "schema_version": 1,
+            "schema_version": portable_proof.EXECUTION_CONTEXT_VERSION,
             "rail": rail,
             "revision": commit,
             "os": {
@@ -3827,7 +3879,8 @@ def _full_receipts(commit, binary_digest):
         with zipfile.ZipFile(log_buffer, "w", compression=zipfile.ZIP_STORED) as archive:
             for name in pairrun.CONTEXT_COMMAND_NAMES[rail]:
                 for stream in ("stdout", "stderr"):
-                    archive.writestr(f"{name}.{stream}", b"")
+                    filename = f"{name}.{stream}"
+                    archive.writestr(filename, transcripts.get(filename, b""))
         artifacts[f"{rail}_execution_logs"] = log_buffer.getvalue()
         for side in ("python", "rust") if rail == "contract" else ("sdk",):
             receipt = artifacts[f"contract_{side}_receipt" if rail == "contract" else "sdk_receipt"]
@@ -4549,7 +4602,7 @@ def _pair_stage(
     }
     if receipts == "full" or (scope == "qualified" and receipts is None):
         source_sha = pairrun.git_head_sha(Path(__file__).resolve().parents[3])
-        contents = _full_receipts(source_sha, binary_digest)
+        contents = _full_receipts(source_sha, binary_digest, work / "receipt-binaries")
     else:
         contents = receipts or {}
     frozen = {}
@@ -4561,6 +4614,15 @@ def _pair_stage(
             target = rdir / f"{key}.json"
             target.write_bytes(data)
             frozen[key] = str(target)
+        for rail in ("contract", "sdk"):
+            context_key = f"{rail}_execution_context"
+            if context_key not in frozen:
+                continue
+            context = json.loads(Path(frozen[context_key]).read_bytes())
+            binary_root = rdir / f"{rail}-binaries"
+            binary_root.mkdir()
+            for role, row in context["binaries"].items():
+                shutil.copyfile(row["path"], binary_root / role)
 
     frozen_admission = {}
     driver_source_closure_digest = None
@@ -5133,6 +5195,175 @@ def test_verdict_refuses_bound_execution_context_tampering(tmp_path, rail, state
     context_path = receipt_dir / f"{rail}_execution_context.json"
     context = json.loads(context_path.read_text(encoding="utf-8"))
     if mutation == "argv":
+        raw_roles = (
+            {"python-inventory.json": "contract_python_inventory", "rust-inventory.json": "contract_rust_inventory",
+             "python-junit.xml": "contract_python_raw", "rust-nextest.jsonl": "contract_rust_raw"}
+            if rail == "contract" else
+            {"nextest-inventory.json": "sdk_inventory", "nextest.jsonl": "sdk_nextest_raw",
+             "actual-runner-record.json": "sdk_record_raw"}
+        )
+        raw_paths = {name: receipt_dir / f"{role}.json" for name, role in raw_roles.items()}
+        kwargs = {"rail": rail, "raw": raw_paths}
+        if rail == "sdk":
+            assert [row["name"] for row in context["commands"]] == [
+                "source-closure", "build-searchd", "build-runner", "rust-collection", "rust-build", "metadata", "rust-test",
+            ]
+            kwargs.update(runner_sha=context["binaries"]["runner"]["sha256"],
+                          searchd_sha=context["binaries"]["searchd"]["sha256"])
+        # Mutants must share the frozen binary custody directory. First admit
+        # their unchanged bytes so missing fixture files cannot explain RED.
+        mutant_path = receipt_dir / f"{rail}-mutant-context.json"
+        mutant_path.write_text(json.dumps(context), encoding="utf-8")
+        pairrun._verify_execution_context(
+            mutant_path, receipt_dir / f"{rail}_source_closure.json",
+            receipt_dir / f"{rail}_execution_logs.json", **kwargs)
+
+        def refuse_context(forged, overrides=None, forged_logs=None, match=None):
+            mutant_path.write_text(json.dumps(forged), encoding="utf-8")
+            with pytest.raises(pairrun.RunError, match=match):
+                pairrun._verify_execution_context(
+                    mutant_path, receipt_dir / f"{rail}_source_closure.json",
+                    forged_logs or receipt_dir / f"{rail}_execution_logs.json", **{**kwargs, **(overrides or {})},
+                )
+
+        for version in (True, 2.0, 1, 1.0):
+            refuse_context(dict(context, schema_version=version))
+        # Rehash every modified transcript/context link, so refusal must come
+        # from native build/collection/Cargo agreement, not missing fixture logs.
+        with zipfile.ZipFile(receipt_dir / f"{rail}_execution_logs.json") as source_archive:
+            original_logs = {name: source_archive.read(name) for name in source_archive.namelist()}
+        build_list = json.loads(original_logs["rust-build.stdout"])
+        metadata = json.loads(original_logs["metadata.stdout"])
+        binary_id = next(iter(build_list["rust-binaries"]))
+        for case in ("workspace", "target", "package-name", "manifest", "missing-package",
+                     "missing-binary", "extra-binary", "binary-path", "kind", "package-id", "binary-name", "build-platform"):
+            forged = json.loads(json.dumps(context))
+            changed_build, changed_metadata = copy.deepcopy(build_list), copy.deepcopy(metadata)
+            if case == "workspace":
+                changed_metadata["workspace_root"] = "/wrong/workspace"
+            elif case == "target":
+                changed_metadata["target_directory"] = "/wrong/target"
+            elif case == "package-name":
+                changed_metadata["packages"][0]["name"] = "wrong-package"
+            elif case == "manifest":
+                changed_metadata["packages"][0]["manifest_path"] = "/wrong/Cargo.toml"
+            elif case == "missing-package":
+                changed_metadata["packages"] = []
+            elif case == "missing-binary":
+                del changed_build["rust-binaries"][binary_id]
+            elif case == "extra-binary":
+                changed_build["rust-binaries"][binary_id + "-extra"] = dict(changed_build["rust-binaries"][binary_id])
+            else:
+                changed_build["rust-binaries"][binary_id][case] = "wrong-value"
+            changed = {"rust-build.stdout": json.dumps(changed_build).encode(),
+                       "metadata.stdout": json.dumps(changed_metadata).encode()}
+            for command in forged["commands"]:
+                if command["stdout"] in changed:
+                    command["stdout_sha256"] = ev.digest(changed[command["stdout"]])
+            forged_logs = tmp_path / f"native-build-{rail}-{case}.zip"
+            with zipfile.ZipFile(forged_logs, "w", compression=zipfile.ZIP_STORED) as archive:
+                for filename, payload in original_logs.items():
+                    archive.writestr(filename, changed.get(filename, payload))
+            refuse_context(forged, forged_logs=forged_logs, match="native reused build refused")
+        native_role = next(role for role in context["binaries"] if role.startswith("nextest-"))
+        for mutation_kind in ("missing", "extra", "path", "digest"):
+            forged = json.loads(json.dumps(context))
+            if mutation_kind == "missing":
+                del forged["binaries"][native_role]
+            elif mutation_kind == "extra":
+                forged["binaries"]["nextest-" + "0" * 64] = dict(forged["binaries"][native_role])
+            elif mutation_kind == "path":
+                forged["binaries"][native_role]["path"] = "/wrong/path/native-test"
+            else:
+                forged["binaries"][native_role]["sha256"] = "0" * 64
+            refuse_context(forged)
+        frozen_binary = receipt_dir / f"{rail}-binaries" / native_role
+        payload = frozen_binary.read_bytes()
+        frozen_binary.write_bytes(b"substituted native binary")
+        refuse_context(context)
+        frozen_binary.unlink()
+        refuse_context(context)
+        frozen_binary.write_bytes(payload)
+        unexpected = frozen_binary.parent / "unbound-native-binary"
+        unexpected.write_bytes(payload)
+        refuse_context(context)
+        unexpected.unlink()
+        # Valid collection/JSONL bytes with altered whitespace still parse.
+        # Rehashing either side cannot detach it from its paired raw artifact.
+        raw_links = (("rust-collection", "nextest-inventory.json"), ("rust-test", "nextest.jsonl")) if rail == "sdk" else (
+            ("rust-collection", "rust-inventory.json"), ("rust-test", "rust-nextest.jsonl"))
+        for command_name, raw_name in raw_links:
+            forged = json.loads(json.dumps(context))
+            changed = b" " + raw_paths[raw_name].read_bytes()
+            forged_raw = tmp_path / f"changed-{rail}-{raw_name}"
+            forged_raw.write_bytes(changed)
+            forged["raw_evidence"][raw_name] = pairrun.sha_file(forged_raw)
+            refuse_context(forged, {"raw": {**raw_paths, raw_name: forged_raw}})
+            forged = json.loads(json.dumps(context))
+            command = next(row for row in forged["commands"] if row["name"] == command_name)
+            command["stdout_sha256"] = ev.digest(changed)
+            forged_logs = tmp_path / f"changed-{rail}-{command_name}.zip"
+            with zipfile.ZipFile(receipt_dir / f"{rail}_execution_logs.json") as source_archive:
+                with zipfile.ZipFile(forged_logs, "w", compression=zipfile.ZIP_STORED) as archive:
+                    for filename in source_archive.namelist():
+                        archive.writestr(filename, changed if filename == command["stdout"] else source_archive.read(filename))
+            refuse_context(forged, forged_logs=forged_logs)
+        # Fully recompute the inventory/context/log mapping, but reuse one
+        # executable path for two distinct selected binary IDs: forbidden.
+        collection_name = "nextest-inventory.json" if rail == "sdk" else "rust-inventory.json"
+        inventory = json.loads(raw_paths[collection_name].read_bytes())
+        binary_id, suite = next(iter(inventory["rust-suites"].items()))
+        duplicate_id = binary_id + "-duplicate"
+        duplicate = json.loads(json.dumps(suite))
+        duplicate["binary-id"] = duplicate_id
+        duplicate["binary-name"] += "-duplicate"
+        inventory["rust-suites"][duplicate_id] = duplicate
+        inventory["test-count"] += len(duplicate["testcases"])
+        changed = json.dumps(inventory).encode()
+        forged_raw = tmp_path / f"duplicate-{rail}-inventory.json"
+        forged_raw.write_bytes(changed)
+        forged = json.loads(json.dumps(context))
+        forged["raw_evidence"][collection_name] = ev.digest(changed)
+        duplicate_role = "nextest-" + ev.digest(duplicate_id.encode())
+        original_role = "nextest-" + ev.digest(binary_id.encode())
+        forged["binaries"][duplicate_role] = dict(forged["binaries"][original_role])
+        duplicate_file = frozen_binary.parent / duplicate_role
+        duplicate_file.write_bytes((frozen_binary.parent / original_role).read_bytes())
+        command = next(row for row in forged["commands"] if row["name"] == "rust-collection")
+        command["stdout_sha256"] = ev.digest(changed)
+        forged_logs = tmp_path / f"duplicate-{rail}-collection.zip"
+        with zipfile.ZipFile(receipt_dir / f"{rail}_execution_logs.json") as source_archive:
+            with zipfile.ZipFile(forged_logs, "w", compression=zipfile.ZIP_STORED) as archive:
+                for filename in source_archive.namelist():
+                    archive.writestr(filename, changed if filename == command["stdout"] else source_archive.read(filename))
+        refuse_context(forged, {"raw": {**raw_paths, collection_name: forged_raw}}, forged_logs)
+        duplicate_file.unlink()
+        for key, value in (("PATH", "/forged/bin"), ("RUSTC", "/forged/rustc"),
+                           ("RUSTC_WRAPPER", "/forged/wrapper"), ("RUSTC_WORKSPACE_WRAPPER", "/forged/workspace-wrapper"),
+                           ("QUANTA_INDEX_SCCACHE", "1")):
+            forged = json.loads(json.dumps(context))
+            command = forged["commands"][0]
+            command["environment"][key] = value
+            command["environment_sha256"] = portable_proof._environment_digest(
+                {**command["inherited_environment"], **command["environment"]}
+            )
+            refuse_context(forged)
+        forged = json.loads(json.dumps(context))
+        forged["commands"][0]["inherited_environment"]["PATH"] = None
+        refuse_context(forged)
+        if rail == "sdk":
+            forged = json.loads(json.dumps(context))
+            legacy = dict(forged["commands"][0], name="sdk-recipe",
+                          argv=[context["tools"]["just"]["path"], "_retrieval-sdk-proof-raw", "/proof"])
+            forged["commands"] = [legacy, next(row for row in forged["commands"] if row["name"] == "metadata")]
+            refuse_context(forged)
+            for raw_name in ("nextest-inventory.json", "nextest.jsonl"):
+                forged = json.loads(json.dumps(context))
+                forged_raw = tmp_path / f"forged-{raw_name}"
+                forged_raw.write_bytes(b"forged transcript")
+                forged["raw_evidence"][raw_name] = pairrun.sha_file(forged_raw)
+                refuse_context(forged, {"raw": {**raw_paths, raw_name: forged_raw}})
+    if mutation == "argv":
         context["commands"][0]["argv"][1] = "different-command"
     elif mutation == "environment":
         context["commands"][0]["environment"]["CARGO_NET_OFFLINE"] = "false"
@@ -5178,10 +5409,16 @@ def test_freeze_receipts_copies_command_transcript_bytes(tmp_path):
     source = tmp_path / "source"
     source.mkdir()
     context = source / "execution-context.json"
-    context.write_text("{}", encoding="utf-8")
+    contents = _full_receipts(pairrun.git_head_sha(Path(__file__).resolve().parents[3]),
+                              ev.digest(b"quanta-runner-binary"), source / "binaries")
+    context.write_bytes(contents["contract_execution_context"])
+    with zipfile.ZipFile(io.BytesIO(contents["contract_execution_logs"])) as archive:
+        transcripts = {name: archive.read(name) for name in archive.namelist()}
     for name in pairrun.CONTEXT_COMMAND_NAMES["contract"]:
         for stream in ("stdout", "stderr"):
-            (source / f"{name}.{stream}").write_bytes(f"{name}:{stream}".encode())
+            filename = f"{name}.{stream}"
+            payload = transcripts[filename] if name in ("rust-collection", "rust-test") else f"{name}:{stream}".encode()
+            (source / filename).write_bytes(payload)
     stage = tmp_path / "stage"
     stage.mkdir()
     frozen = pairrun.freeze_receipts(
@@ -5189,6 +5426,13 @@ def test_freeze_receipts_copies_command_transcript_bytes(tmp_path):
     )
     with zipfile.ZipFile(frozen["contract_execution_logs"]) as archive:
         assert archive.read("python-test.stdout") == b"python-test:stdout"
+    declared = json.loads(context.read_bytes())["binaries"]
+    binary_root = stage / "receipts" / "contract-binaries"
+    assert set(path.name for path in binary_root.iterdir()) == set(declared)
+    for role, row in declared.items():
+        assert pairrun.sha_file(binary_root / role) == row["sha256"]
+        Path(row["path"]).write_bytes(b"source changed after freeze")
+        assert pairrun.sha_file(binary_root / role) == row["sha256"]
     (source / "python-test.stdout").write_bytes(b"changed")
     with zipfile.ZipFile(frozen["contract_execution_logs"]) as archive:
         assert archive.read("python-test.stdout") == b"python-test:stdout"
@@ -8954,6 +9198,8 @@ def _conditional_incremental_unit_oracle():
 
 
 def _conditional_context_unit_bundle(plan, observed):
+    from tools.ci.tests.test_conditional_tool_execution import add_custody_unit_fixture
+
     # This fixture checks replay and substitution refusal only. It is not
     # execution evidence and intentionally fails current-source verification.
     revision, repository = "a" * 40, "b" * 40
@@ -8984,14 +9230,18 @@ def _conditional_context_unit_bundle(plan, observed):
         "reference_run": None, "binary_sha256": "c" * 64, "environment": {"python_version": "3.13.9", "relevant": {}}}
     raw, passed = cp.rederive("incremental_rows", context)
     command = "retrieval-conditional-proof-v2:incremental_rows"
-    return {"schema_version": 2, "command": command, "status": "pass", "selected": 5, "executed": 5,
+    bundle = {"schema_version": 2, "command": command, "status": "pass", "selected": 5, "executed": 5,
         "passed": passed, "failed": 5-passed, "identity": identity, "raw_proof": raw, "execution_context": context,
         "execution_receipt": {"schema_version": 2, "command": command, "exit_code": 0, **identity,
             "runner_binary_sha256": "c" * 64, "raw_sha256": cp.sha(cp.canonical(raw)), "context_sha256": cp.sha(cp.canonical(context))}}
+    with tempfile.TemporaryDirectory(prefix="qi-conditional-unit-context-") as directory:
+        return add_custody_unit_fixture(bundle, Path(directory))
 
 
 
 def _conditional_vector_context_unit_bundle(observed, baseline):
+    from tools.ci.tests.test_conditional_tool_execution import add_custody_unit_fixture
+
     plan, incremental = _conditional_incremental_unit_oracle()
     bundle = _conditional_context_unit_bundle(plan, incremental)
     context = bundle["execution_context"]
@@ -9038,7 +9288,8 @@ def _conditional_vector_context_unit_bundle(observed, baseline):
     bundle["execution_receipt"] = {"schema_version": 2, "command": command, "exit_code": 0, **bundle["identity"],
         "runner_binary_sha256": context["binary_sha256"], "raw_sha256": cp.sha(cp.canonical(raw)),
         "context_sha256": cp.sha(cp.canonical(context))}
-    return bundle
+    with tempfile.TemporaryDirectory(prefix="qi-conditional-unit-vector-") as directory:
+        return add_custody_unit_fixture(bundle, Path(directory))
 
 
 def test_conditional_incremental_replay_compares_payload_membership_and_empty_state(monkeypatch, tmp_path):
@@ -9056,6 +9307,80 @@ def test_conditional_incremental_replay_compares_payload_membership_and_empty_st
     assert all(stage["semantic_delete_calls"] == stage["membership_delete_calls"] == 1
                for stage in stages)
     assert cp.incremental_rows(output, plan)[1] == 5
+    # Synthetic input/raw substitutions, not native execution evidence:
+    # agreeing rows and operation counts cannot override stream admission.
+    for mutation in ("duplicate-clear", "unsorted-clear", "duplicate-tombstone", "duplicate-record_id"):
+        bad_plan, bad_output = json.loads(json.dumps(plan)), json.loads(json.dumps(output))
+        if mutation != "duplicate-record_id":
+            kind = "tombstone" if mutation == "duplicate-tombstone" else "clear_surface"
+            index = next(index for index, case in enumerate(bad_plan["cases"]) if case["case_id"] == kind)
+            delta = bad_plan["cases"][index]["delta"]
+            stages = bad_output["cases"][index]["receipts"]["delta"]["stages"]
+            if mutation == "duplicate-tombstone":
+                delta["tombstone_scopes"] *= 2
+            else:
+                delta["clear_surfaces"] = ["Chunk", "Chunk"] if mutation == "duplicate-clear" else ["Chunk", "File"]
+                stages["semantic_delete_commits"] = stages["membership_delete_commits"] = 2
+            stages["semantic_delete_calls"] = stages["membership_delete_calls"] = 2
+        else:
+            for case in bad_plan["cases"]:
+                for batch in ("before", "fresh", "delta"):
+                    for scope in case[batch]["replace_scopes"]:
+                        for row in scope["embeddings"]:
+                            if row["owner_id"] == "unaffected-owner":
+                                row["record_id"] = "record-target"
+            for case in bad_output["cases"]:
+                for batch in ("before", "fresh", "incremental"):
+                    for row in case[batch]["semantic"]["rows"]:
+                        if row["owner_id"] == "unaffected-owner":
+                            row["record_id"] = "record-target"
+                    case[batch]["semantic"]["rows"].sort(key=cp.canonical)
+        with pytest.raises(ValueError, match="clear surfaces|scope authority"):
+            cp.incremental_rows(bad_output, bad_plan)
+    # Owner groups may contain multiple distinct records within one scope;
+    # the same owner cannot be replaced across different scopes.
+    admitted = json.loads(json.dumps(plan["cases"][0]["before"]))
+    record = {**admitted["replace_scopes"][0]["embeddings"][0],
+              "record_id": "record-extra", "embedding_id": "embedding-extra"}
+    admitted["replace_scopes"][0]["embeddings"].append(record)
+    assert cp.input_state(admitted)["semantic"]["count"] == 3
+    repeated = json.loads(json.dumps(plan["cases"][0]["before"]))
+    repeated["replace_scopes"].append({**repeated["replace_scopes"][0], "embeddings": [record]})
+    with pytest.raises(ValueError, match="repeated replace owners"):
+        cp.input_state(repeated)
+    clear_batch = next(case["delta"] for case in plan["cases"] if case["case_id"] == "clear_surface")
+    for conflict in ("scope", "owner", "tombstone"):
+        malformed = json.loads(json.dumps(clear_batch))
+        source = json.loads(json.dumps(plan["cases"][0]["before"]["replace_scopes"][0]))
+        if conflict == "scope":
+            source["embeddings"] = []
+            malformed["replace_scopes"] = [source]
+        elif conflict == "owner":
+            source["scope"]["doc_surface"] = "File"
+            malformed["replace_scopes"] = [source]
+        else:
+            malformed["tombstone_scopes"] = [{"semantic_scope": {
+                key: source["embeddings"][0][key] for key in ("corpus_kind", "owner_kind", "owner_id")}}]
+        with pytest.raises(ValueError, match="scope authority"):
+            cp.input_state(malformed)
+    malformed = json.loads(json.dumps(plan["cases"][0]["before"]))
+    malformed["tombstone_scopes"] = [{"semantic_scope": {
+        key: malformed["replace_scopes"][0]["embeddings"][0][key]
+        for key in ("corpus_kind", "owner_kind", "owner_id")}}]
+    with pytest.raises(ValueError, match="tombstone/replace conflicts"):
+        cp.input_state(malformed)
+    # Native validated RepoId/RevisionId are not arbitrary text cells. Raw
+    # rows and counters can agree while the input remains inadmissible.
+    for field in ("repo_id", "revision_id"):
+        for value in ("", "x" * 513, "\x00", "\x85", "e\u0301", "é" * 257):
+            malformed = json.loads(json.dumps(plan))
+            for case in malformed["cases"]:
+                for batch in ("before", "fresh", "delta"):
+                    case[batch][field] = value
+            with pytest.raises(ValueError, match="canonical repository identity"):
+                cp.incremental_rows(output, malformed)
+        for value in ("x" * 512, "é" * 256):
+            cp.native_repository_identity(value, field)
     for field in ("required_corpora", "corpus_policy_digest"):
         malformed = json.loads(json.dumps(plan["cases"][0]["before"]))
         del malformed[field]
@@ -9144,7 +9469,7 @@ def test_conditional_incremental_replay_compares_payload_membership_and_empty_st
     with_empty_scopes = json.loads(json.dumps(plan))
     for case in with_empty_scopes["cases"]:
         for batch in ("before", "fresh", "delta"):
-            case[batch]["replace_scopes"].append({"scope": {"doc_surface": "Chunk", "repo_relative_path": "fixed"},
+            case[batch]["replace_scopes"].append({"scope": {"doc_surface": "File", "repo_relative_path": "fixed"},
                 "scope_digest": "fixed", "embeddings": [], "cluster_memberships": []})
     # ResidentScopeSource issues owner groups only; an empty input scope is
     # absent from the execution tally and leaves every full logical row intact.

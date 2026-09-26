@@ -2278,6 +2278,113 @@ fn ingest_stage_report_is_deterministic_for_the_same_input() -> TestResult {
 // CASE-COVERS: replacement and tombstone batching retain exact tuple isolation
 // and SQL quoting. Actual stored rows, not predicate shape, are the oracle.
 #[test]
+fn delete_predicate_byte_oracle_covers_quotes_unicode_groups_and_boundaries() -> TestResult {
+    use std::collections::BTreeSet;
+    let tuples = BTreeSet::from([
+        ("ClusterCard", "Module", "한'글"),
+        ("ClusterCard", "Module", "x"),
+        ("ClusterCard", "RepoMap", "x"),
+        ("SymbolCard", "Symbol", "x"),
+    ]);
+    let semantic = "(corpus_kind = 'ClusterCard' AND owner_kind = 'Module' AND owner_id IN ('x', '한''글')) OR (corpus_kind = 'ClusterCard' AND owner_kind = 'RepoMap' AND owner_id IN ('x')) OR (corpus_kind = 'SymbolCard' AND owner_kind = 'Symbol' AND owner_id IN ('x'))";
+    let membership = "(owner_kind = 'Module' AND owner_id IN ('x', '한''글')) OR (owner_kind = 'RepoMap' AND owner_id IN ('x'))";
+    assert_eq!(
+        super::delete_predicate_bytes(&tuples)?,
+        (semantic.len(), membership.len())
+    );
+    assert_eq!(
+        super::semantic_scope_delete_predicate(&tuples).as_deref(),
+        Some(semantic)
+    );
+    assert_eq!(
+        super::membership_scope_delete_predicate(&tuples).as_deref(),
+        Some(membership)
+    );
+    assert_eq!(crate::sql::quoted_sql_string_bytes("한'글"), Some(10));
+    assert!(super::add_predicate_bytes(usize::MAX, 1).is_err());
+    // Fixed SQL syntax is independent of the sizing implementation.
+    let overhead =
+        "(corpus_kind = 'RawCodeFallback' AND owner_kind = 'Chunk' AND owner_id IN (''))".len();
+    let mut id = "a".repeat(32 * 1024 * 1024 - overhead);
+    assert_eq!(
+        super::delete_predicate_bytes(&BTreeSet::from([(
+            "RawCodeFallback",
+            "Chunk",
+            id.as_str()
+        ),]))?,
+        (32 * 1024 * 1024, 0)
+    );
+    id.push('a');
+    assert!(matches!(super::delete_predicate_bytes(&BTreeSet::from([
+        ("RawCodeFallback", "Chunk", id.as_str()),
+    ])), Err(CoreError::InvalidContract(message)) if message.contains("delete predicate")));
+    let empty = BTreeSet::new();
+    assert_eq!(super::delete_predicate_bytes(&empty)?, (0, 0));
+    Ok(())
+}
+
+#[test]
+fn oversized_delete_predicates_refuse_before_preparing_generation_storage() -> TestResult {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let temp = tempdir()?;
+    let mut candidate = batch(
+        ManifestGeneration::new(1),
+        "src/large.rs",
+        "large",
+        vec![1.0, 0.0, 0.0],
+        false,
+    )?;
+    let large_id = "'".repeat(16 * 1024 * 1024);
+    candidate.replace_scopes[0].embeddings[0].owner_id = large_id.clone().into_boxed_str();
+    let policy = SemanticStreamWindowPolicy::DEFAULT;
+    let header = SemanticIngestHeaderV1::of_batch(&candidate);
+    let mut source = ResidentScopeSource::new(&candidate.replace_scopes, policy)?;
+    let outcome = build_stream_reported(
+        &runtime,
+        temp.path(),
+        policy,
+        &header,
+        &mut source,
+        &SealTalliesV1::default(),
+    );
+    assert!(
+        matches!(outcome, Err(CoreError::InvalidContract(message)) if message.contains("delete predicate"))
+    );
+    assert!(
+        temp.path().read_dir()?.next().is_none(),
+        "oversized first window must not prepare storage"
+    );
+    candidate.replace_scopes.clear();
+    candidate.tombstone_scopes = vec![SemanticTombstoneScope {
+        semantic_scope: semantic_scope(
+            SemanticCorpusKindV1::ClusterCard,
+            OwnerDocKind::Module,
+            &large_id,
+        ),
+    }];
+    let header = SemanticIngestHeaderV1::of_batch(&candidate);
+    let mut source = ResidentScopeSource::new(&candidate.replace_scopes, policy)?;
+    let outcome = build_stream_reported(
+        &runtime,
+        temp.path(),
+        policy,
+        &header,
+        &mut source,
+        &SealTalliesV1::default(),
+    );
+    assert!(
+        matches!(outcome, Err(CoreError::InvalidContract(message)) if message.contains("delete predicate"))
+    );
+    assert!(
+        temp.path().read_dir()?.next().is_none(),
+        "oversized tombstone must not prepare storage"
+    );
+    Ok(())
+}
+
+#[test]
 fn batched_owner_deletes_preserve_cross_product_neighbors_and_memberships() -> TestResult {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

@@ -45,7 +45,7 @@ def require_registered_owner(entry: dict, producer: dict, rail: str) -> None:
         or entry.get("payload") != "proof"
         or entry.get("validator") != "retrieval-proof"
         or entry.get("scorer") != "none"
-        or entry.get("native_schema") != "retrieval-execution-context:v1"
+        or entry.get("native_schema") != "retrieval-execution-context:v2"
         or entry.get("gate_tier") != "contract"
         or entry.get("host_policy") != "any"
         or entry.get("result_unit") != "count"
@@ -149,7 +149,9 @@ def replay_run(store: RunStore, evidence: dict) -> None:
         origin["execution_root"],
     ]:
         raise EvidenceError("retrieval proof command differs from the registered producer")
-    expected_binaries = {"runner", "searchd"} if RAILS[family] == "sdk" else set()
+    expected_binaries = set(portable_proof.selected_test_binaries(
+        _read_regular_file(raw / "rust-collection.stdout"))) | (
+        {"runner", "searchd"} if RAILS[family] == "sdk" else set())
     if set(context["binaries"]) != expected_binaries:
         raise EvidenceError("retrieval proof binary role inventory is malformed")
     binary_files = {name: raw / f"frozen-binary-{name}" for name in context["binaries"]}
@@ -183,6 +185,7 @@ def replay_run(store: RunStore, evidence: dict) -> None:
         binaries != evidence["build"]["binaries"]
         or evidence["build"]["toolchain"] != context["tools"]["rustc"]["version"]
         or evidence["build"]["target_triple"] != target_identity(context)
+        or evidence["build"]["flags"] != portable_proof.FLAGS
     ):
         raise EvidenceError("retrieval proof binary/toolchain inventory mismatch")
 
@@ -284,7 +287,7 @@ def capture(repo: Path, root: Path, registry: dict, timeout: int) -> dict:
                     "target_triple": target_identity(context),
                     "lockfile_digest": digest_bytes((repo / "Cargo.lock").read_bytes()),
                     "profile": "proof",
-                    "flags": [],
+                    "flags": portable_proof.FLAGS,
                     "binaries": [
                         {"name": name, "sha256": "sha256:" + entry["sha256"]}
                         for name, entry in sorted(context["binaries"].items())

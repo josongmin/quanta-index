@@ -44,6 +44,27 @@ def test_native_owner_replay_and_separate_metric_spaces(tmp_path):
         assert all(row["value"] is None for row in payload["rows"] if row["state"] == "unsupported")
 
 
+def test_owned_temporary_alias_is_canonicalized(tmp_path, monkeypatch):
+    import tempfile
+
+    stage = fixture(tmp_path)
+    alias = tmp_path / "temporary-alias"
+    target = tmp_path / "temporary-real"
+    target.mkdir()
+    alias.symlink_to(target, target_is_directory=True)
+    monkeypatch.setattr(tempfile, "tempdir", str(alias))
+    _, verdict = bridge.derive(stage["stage"], stage["repo"])
+    assert verdict["states"]["PAIR_VALID"] == "pass"
+
+
+def test_untrusted_native_root_alias_is_not_canonicalized(tmp_path):
+    stage = fixture(tmp_path)
+    alias = tmp_path / "native-alias"
+    alias.symlink_to(stage["stage"], target_is_directory=True)
+    with pytest.raises((ValueError, OSError)):
+        bridge.derive(alias, stage["repo"])
+
+
 def test_live_registration_names_the_actual_manifest_schema():
     registry = load_registry()
     schema = json.loads(

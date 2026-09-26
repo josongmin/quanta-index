@@ -1,5 +1,381 @@
 # SEP-21 execution evidence
 
+## 2026-09-27 current native mutation exporter — local terminal proof
+
+VERIFIED for current dirty-source owner execution and independent raw replay;
+NOT_RUN for controlled conditional producer qualification, clean-main proof,
+model/encoder parity, quiet-host performance, release or activation.
+
+- Canonical build: `./scripts/cargow --lane test-daemon-lane build -p
+  quanta-index-semantic --bin quanta-index-incremental-proof --features proof
+  --locked --message-format=json`: exit 0, 46.19 seconds on main
+  `907785f89d86e6aac9b01517b3309f8c0c8bba2e` plus shared dirty changes.
+  Actual build JSON `/tmp/quanta-native5-current-build-20260927.jsonl`, SHA-256
+  `8188bc06f69ae16685aa16e4bb91fd93c21553480979d559dd600c6e106e67df`;
+  stderr SHA-256
+  `b01a0cee398d7b428b3f7f0467e9b2c24a47858054d371abc301ce06e9cac413`.
+  Exactly one exporter artifact and the successful terminal build event were
+  checked. The target cache was distinct from the concurrent SDK producer.
+- The newly built executable at
+  `/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-daemon-lane/debug/quanta-index-incremental-proof`
+  ran with `/private/tmp/qi-rbr-supplement-proof/t16-plan.json` and fresh state
+  `/tmp/quanta-native5-current-v3-20260927.xsm7yjj2/fresh-state`: exit 0.
+  Binary SHA-256
+  `bc89b1cd3e154881e0463956dd60c0e6886f7a6b228b6301088a7acc7d898a0a`;
+  plan SHA-256
+  `74950cb74f9fe29851a5cc37bb76bd253ebdf967a4e95c406e156be1827c45e9`.
+  The unchanged 8D Cosine/L2Unit plan covers append, clear_surface,
+  membership_replace, replace and tombstone. No historical binary or output
+  was substituted; this is not a Potion/frozen paired-quality plan.
+- Canonical `conditional_proof.incremental_rows` independently derived five
+  selected/executed/passed cases and zero failed from complete semantic and
+  membership rows and input-derived window/delete/commit expectations.
+  Actual raw `/tmp/quanta-native5-current-v3-20260927.observed.json`, SHA-256
+  `38c0ad5e03066df1d9687dc44fb36a04de776156ca1e8f717d8ab8dc6d29154d`.
+  Execution probe `/tmp/quanta-native5-current-v3-20260927.probe.log`, SHA-256
+  `1a1dfc3e4fbea356a0ea0ff8c3b93e6a8961faa0cb499693cf93ad32d464fcc1`,
+  records actual exit 0 and identical before/after binary, Python, cargow,
+  Cargo, rustc and no-follow plan epochs. Consumed source hashes were checked
+  before/after execution and rechecked afterward; source-list SHA-256
+  `8b50e024e865527425f2a4b1011422ee9cd4591f6864e8e11cbc00a599bf5e32`.
+  The list was captured during build, not represented as a complete pre-build
+  epoch. It excludes nonconsumed retrieval `run.py`; no retrieval source-closure
+  or conditional-custody qualification manifest was issued.
+- Isolated replay refused 85/85 actual-output mutants: 75 counter changes over
+  all 15 fresh/before/delta receipts, five owner-row substitutions and five
+  partial row streams. A reduced passing count is failure, not admission.
+  Raw `/tmp/quanta-native5-current-v3-mutants-20260927.log`, SHA-256
+  `e41cdf91377205a4cc5540daaa38e78e58b7b7e328c2dd2617f8bd4f67531647`.
+  The original positive five-case replay also passed. No production code was
+  changed for these in-memory mutations.
+- Preserve failed temporary probe attempts: v1 mistakenly applied the executable
+  epoch API to a nonexecutable plan and stopped before native execution; v2
+  generated native output but refused concurrent `run.py` drift in an overbroad
+  source list. V3 used the existing no-follow input owner for the plan and the
+  inspected native/oracle source scope. No production guard was weakened.
+- Final source capture later produced an external clean Git copy
+  `a1989667d5baacc745503666efb3ccc0bb1d5816`, tree
+  `21aa7c089d290d83f740e072001838552fd66ffb`, from 1,412 unchanged main inputs.
+  Capture receipt SHA-256
+  `15bafc3eb2f4d52d07ce9bb026b08e9a3dff793680c97988a625de50a1d196ac`.
+  This subsequent document-only ledger update is not in that copy. A clean
+  copied snapshot does not prove clean main or completed canonical execution;
+  combined current-source qualification remains pending its actual terminals.
+
+## 2026-09-27 daemon terminal and inventory-bound parser repair
+
+The same required `just rust-profile test-daemon` rail ran with
+`QUANTA_PROOF_RAW_DIR=/tmp/quanta-daemon-final-20260927.AYxg9v`; the shell uses
+`set -o pipefail` and tees its output to `profile.log` in that directory.
+Completed execution session 5745 / Nextest PID 37408 / run ID
+`2fe9eee2-6e3e-47f8-9096-5f4f8de05a56` selected 206 tests across three binaries,
+with one explicitly excluded test. Actual Nextest terminal output records 206
+executed / 206 passed / zero failed / one skipped in 543.337 seconds. However,
+the original canonical gate exited 2: its parser refused the inventory-excluded
+ignored test as unexpected. Preserve that gate as FAILED (governance), not PASS.
+The revised canonical parser separately replays those unchanged machine bytes
+against the original collection and derives selected/executed/passed 206,
+failed zero; the excluded external-provider test is not a selected success.
+
+- Started on dirty main `7d581d0572447e4f29ce0d0ea2f9d2fbc8b1353c`.
+  HEAD moved to `907785f89d86e6aac9b01517b3309f8c0c8bba2e` during execution
+  through the conditional Python input-admission commit. Semantic build/tests/SQL,
+  harness, the 10001-row scenario, Cargo lock/config/toolchain, Justfile, cargow,
+  local-scope/profile runners, test authority and Nextest parser hashes were
+  captured at start. Rechecked Rust/harness/runner/catalog/lock/config/toolchain
+  hashes match; the HEAD delta contains no changes to those daemon inputs.
+  The parser changed only after the daemon terminated. This is not an exact
+  clean-commit or whole-repository qualification;
+  do not relabel the starting revision or invent pre-execution binary epochs.
+- Retains the original 10001 rows, two-file ingest batches, 600-second client
+  deadline, seal/activation, lexical and semantic maximum-page assertions and
+  exact-once lexical cursor walk. This scenario passed in 38.851607291 seconds. No fixture
+  reduction, timeout increase, selector substitution or daemon rerun occurred.
+  The earlier ingest-batch-2 timeout remains historical FAILED evidence and was
+  not reproduced here. The result does not isolate batching as its sole cause
+  or establish a controlled latency comparison on this contended host.
+- Parser RCA: collection previously discarded excluded ignored identities,
+  while execution emits their started/ignored events. The installed Nextest
+  0.9.104 reporter also initializes `running` from nonignored selected tests,
+  then decrements it for an ignored skip: it can prematurely finalize and reopen
+  a binary suite. Its per-fragment ignored/announced counts refer to the entire
+  collection. The exact upstream source at commit
+  `87857ddf299a42c9cb5822422aeba77bd8fb74e8`,
+  `nextest-runner/src/reporter/structured/libtest.rs`, confirms that transition.
+  The actual raw fast suite had 61 successes plus an ignored event in its first
+  fragment and the remaining success in its second fragment.
+- The canonical `NextestInventory` now retains selected identities, precise
+  `ignored:true`/`reason:ignored` exclusions and per-suite counts from the same
+  strict collection parse. It is an immutable selected-only Mapping, not a
+  caller-supplied ignored allowlist. Bound replay reconciles each fragment's
+  real outcomes/counters and the complete unique selected-success set. Unknown
+  ignored events, selected tests marked ignored, missing starts/results/footers,
+  wrong binaries, duplicate outcomes and inconsistent counters remain refused.
+  Unbound transcripts retain strict suite accounting. No Rust or fixture change
+  and no expensive daemon rerun are needed for this parser-only repair.
+- Owner tests include normal and exact fragmented goldens, hostile mutations,
+  immutable construction, archived `derive_test_result` and local-scope
+  frontdoor consumers. The current 30-case owner rail passed. After the serial
+  recipe owner migrated the independent exact phase fixture to include native
+  build/binding, the unchanged six-file reverse-consumer rail passed 158 cases.
+  The earlier stale five-phase assertion remains historical FAILED evidence;
+  no production guard or assertion was weakened to admit it.
+- Final parser SHA-256
+  `3ed0471fbf51d3938a7edc49a43ff9320ede091862bad12bec822ecbe8d46f96`;
+  owner test SHA-256
+  `f338201d4f21320e15bd70b6e7f01e58f46bdb891a8efd2b4f58cf1e229bf70b`.
+  `uv run --frozen --extra dev python -m pytest
+  tools/ci/tests/test_nextest_ignored_inventory.py -q`: exit 0, 30 passed in
+  1.67 seconds; raw `/tmp/quanta-nextest-ignored-final-owner-20260927.log`,
+  SHA-256 `2aa712369080e7420cf85eb067eae9d88aa9625093ec41f44c3502f662c7b51b`.
+  Preserved daemon replay through `parse_nextest(events,
+  parse_nextest_inventory(inventory))`: exit 0; raw
+  `/tmp/quanta-daemon-nextest-replay-20260927.log`, SHA-256
+  `cfac41c2068547ca293b6e214874cd3f23e04477a2f04ee2e4445198fd581475`.
+  The serial registration owner enrolled the new test in Justfile, test
+  authority and both relevant source-closure profiles; this is registration,
+  not a passed release receipt. Ruff and scoped whitespace checks passed.
+- Reverse-consumer command: `uv run --frozen --extra dev python -m pytest
+  tools/ci/tests/test_nextest_ignored_inventory.py
+  tools/ci/tests/test_proof_execution_result.py
+  tools/ci/tests/test_write_verification_receipt.py
+  tools/ci/tests/test_retrieval_contract_proof.py
+  tools/ci/tests/test_retrieval_sdk_proof.py
+  tools/ci/tests/test_run_local_test_scope.py -q`: exit 0, 158 passed in 7.49
+  seconds on dirty main `907785f89d86e6aac9b01517b3309f8c0c8bba2e`.
+  Raw `/tmp/quanta-nextest-reverse-final-20260927.log`, SHA-256
+  `dc99a7d5c69dd0872696a228608a451473cdc84b0dbd19082d9374c2c552467d`.
+  Parser and owner-test hashes above remained unchanged; corrected contract
+  fixture SHA-256
+  `bce2ca5b33a2efb8afcfcfced5aac7c54f551b77f7aeb09c39a53010016279ab`.
+  This covers raw-event admission, archived execution, receipt writing,
+  contract/SDK summaries and local-scope wiring. It excludes an actual native
+  exporter run, clean-source repository qualification and release activation.
+- Raw inventory SHA-256
+  `24ac90c2d0214ca352f24d0ca13dcaa73e4a93ae27fdfaa382d0e3c38dd5423a`;
+  event SHA-256
+  `c2d89fd0b5ae38fc89e53b4e285d28ef17c64f23689c299aeab8d001c12f0690`;
+  run stderr SHA-256
+  `145b8f9a106a7f21e092b51898ad02b7ddc897e2b700f13ef8659396c0e305d8`;
+  original failed profile log SHA-256
+  `32896d8e75efa4f04bcefdea4ea26057bcb7013bf5ca23dcee26f4c2b813b11a`.
+  Post-execution binary hashes were measured for all three selected binaries;
+  pre-execution epochs were not captured and are not retroactively invented.
+- Read-only diagnostic: `sample 87273 1 10 -file
+  /tmp/quanta-daemon-scope-cap-20260927.sample.txt` completed for the live
+  `a_wide_scope_fills_the_outer_top_k` test process. Sample SHA-256
+  `61c40127a4f4a9b4fc701eb7ae67451d4d00e9bc35ea2393a236111203735e3e`.
+  At that instant its client awaited IPC and its server was in semantic dataset
+  promotion cleanup (`finalize_promoted_dataset` / `remove_dir_all` / `unlinkat`);
+  maintenance was also walking disk usage. The fixture performs 100 serial
+  per-file publishes for each of three query-cap cases. This locates a real
+  setup-cost multiplier, not the historical timeout's root cause or a controlled
+  performance comparison. No production or fixture instrumentation was added.
+- P11 review: the typed resolver/build/test receipt gap remains explicit.
+  `_check_manifest_local` rejects staged proofs, and required-release admission
+  also rejects them. All P11 cutover/deployment/activation/rollback entries are
+  staged. Missing installed-pair proof is not current false qualification;
+  shared checker/schema/registry are unchanged during the producer freeze.
+- Remaining: final conditional native exporter/replay and whole retrieval/CI-tooling
+  results; exact-pair, approved-provider and operational/release proof.
+  Original daemon gate FAILED and corrected-parser raw replay VERIFIED are
+  separate claims. No passed proof manifest or P0–P2 closure is issued here.
+
+## 2026-09-27 conditional custody and SQL-byte admission — local terminal proof
+
+Source: main `7d581d0572447e4f29ce0d0ea2f9d2fbc8b1353c` plus the
+owned dirty changes below; concurrent Python/governance/docs work is preserved.
+This entry supersedes the earlier "semantic native proof running" and
+"conditional custody not migrated" statuses, not the release exclusions.
+
+- T15/T16 `conditional_proof.produce` now enters the shared
+  `portable_proof.controlled_execution` owner. Source capture/verify, native
+  build/run and reference Python use selected absolute tools and the same
+  executable epochs, exact environment controls and immutable execution-byte
+  digests. Replay requires these command frames and manifest bytes; old contexts
+  missing custody fields are refused, not upgraded. Public reference/native
+  binaries use canonical `bind_executable`, not a second tool validator.
+- Final `results.json` is emitted only after the shared context's terminal
+  custody check succeeds. A complete exclusive/fsynced `results.pending.json`
+  is hard-linked to the final name, avoiding partial-JSON publication. A changed
+  selected executable or body failure emits no final result. Pending bytes are
+  not a qualification receipt. Same-UID attacks, remote producer authentication,
+  Python packages and compiler/system libraries remain outside this guarantee.
+- Introduced fixture defect: custody fixture reconstruction included its previous
+  digest in the new source-closure digest. The canonical manifest reader actually
+  rejected it with `ClosureError: source closure digest mismatch` (exit 1).
+  Reconstruction now excludes `digest`, using the existing source-closure owner.
+  Regression checks canonical shape, captured bytes, receipt/context binding,
+  tampered-file refusal and refusal of the synthetic closure as current-source
+  proof. The helper is unit-fixture construction, not receipt normalization.
+- SQL RCA: `EmbeddingRecord.owner_id: Box<str>` and source-record nonempty
+  validation impose no byte ceiling. A 1024-owner/32-MiB-vector window can carry
+  arbitrary ID bytes; the 16-MiB IPC frame limit does not cover direct streaming
+  adapters. Private native delete text now has an independent 32-MiB UTF-8
+  ceiling. Exact checked sizing includes doubled quotes, Unicode, IN separators,
+  group syntax and OR separators before escaping/String construction or deletes.
+  Borrowed owner tuples avoid copying IDs. Oversize is `InvalidContract`
+  (`InvalidRequest` wire projection), never predicate splitting or broad deletion.
+- Header tombstone chunks and the first leased window are preflighted before
+  generation preparation. Later windows are admitted before their writes; an
+  error leaves earlier valid staging unpromoted. Only one window is leased at a
+  time. First-window source/admission time is charged to stream, not storage
+  preparation. This bounds SQL output, not total input/memory, and does not
+  change public owner/vector limits, wire schema or ordinary native call counts.
+  Resident proof admission and the independent Python count oracle enforce the
+  same refusal; runtime policy does not derive from that oracle.
+- Semantic baseline run ended exit 0, 69 executed / 69 passed / zero skipped;
+  Nextest `93f7d453-0cf8-4f97-8a83-64f730e76a56`, build 17m04s, tests 4.776s.
+  Raw `/tmp/quanta-semantic-delete-batch-owner-20260926.log`, SHA-256
+  `6d2a98ce635248fc968a90ecbd9cdabddeb2e10a0bbf0fe7d9d173cc4799f56b`.
+  This is the pre-byte-guard snapshot, not current-byte-guard proof.
+- Reused the same warm registered wrapper/package invocation after the guard:
+  `./scripts/cargow --lane test-runtime-supervisor-owner-lane nextest run -p
+  quanta-index-semantic --lib --all-features --locked --test-threads 4
+  --success-output never --failure-output immediate-final --status-level fail
+  --final-status-level fail`. Exit 0, 71 executed / 71 passed / zero skipped,
+  Nextest `55241bc2-7552-4c30-8e5e-807664b3a0cd`, build 14.06s, tests 10.818s.
+  Raw `/tmp/quanta-semantic-delete-byte-budget-owner-20260926.log`, SHA-256
+  `c631a58ca8bfceaa6e51e089d2a0a0be4cd9cc5c4cc0348572b34cb37587792d`.
+  Owner hashes captured during and after this run match:
+  `build.rs` `04a127e91ecb8b879c09b0975d56fb3f7be71ce2d6e9bf01cdbd1137d6a35cf8`,
+  `build/tests.rs` `6a438f82b68e97feef2375f677d7f3cca8f32112e1b3dc77e2cedf67c64dd69d`,
+  `sql.rs` `5c6d8d186beba440a320296faae2dc76bf94351fdb2766a8f04c28df3bb3feb8`.
+  Executed binary `quanta_index_semantic-f37526a110df4a75` SHA-256
+  `431139dbd82e50ff4dfc82f1c53b9faafd741ef4ae61dc79c35fa2d1ee3766f2`.
+  Lock/toolchain/config/cargow hashes match the prior native-input entry.
+  Independent fixed SQL literals cover Unicode/quotes/groups; 32-MiB equality,
+  one-byte overflow, checked overflow, empty input and actual build refusal
+  without storage preparation are tested, alongside row/membership isolation,
+  window residency, rollback and manifest parity.
+- `uv run --frozen --extra dev python -m pytest
+  tools/ci/tests/test_conditional_tool_execution.py
+  tools/ci/tests/test_conditional_window_operations.py -q`: exit 0, 16 passed
+  in 1.06s; raw `/tmp/quanta-conditional-custody-owner-v4-20260926.log`, SHA-256
+  `2e9a6290eaeedb7f8d616d497be24c084b8221cdf2b15f718a2a470bb829dd62`.
+  This is focused local wiring/golden proof, not a real conditional producer
+  execution. Shared tool/Python source changed during this work; final cross-
+  module freeze, actual exporter/replay and full retrieval rail remain separate.
+  Both focused files are enrolled in Justfile, test-authority and source closure.
+  Canonical scoped Rust formatting, Ruff and scoped diff whitespace checks passed.
+- Remaining: current-source native T16 exporter/replay, full retrieval/portable
+  producer qualification, failed daemon timeout RCA/final gate, exact pair,
+  approved providers and release/operational proof. The 71/16 focused results
+  neither resolve the historical 10001-row timeout nor establish P0–P2 closure.
+
+## 2026-09-26 native deadline owner result and bounded semantic deletion repair
+
+Additional RR found a concrete tool-custody input bypass, not a new claim that
+the original PATH-only implementation still exists. Inherited
+`BASH_FUNC_cargo%%='() { printf ambient-exported-function; }'` passed through
+`ToolCustody.create`; executing selected Bash with `-c cargo` printed
+`ambient-exported-function` instead of the selected fixture Cargo, while both
+before/after `guard.check()` calls accepted. The command used locked Python and
+the canonical `test_tool_custody.selected_tools` fixture, without repository
+edits or any tool-file mutation. Actual output:
+`{'stdout': 'ambient-exported-function', 'stderr': '',
+'expected_selected_cargo': 'selected-cargo', 'custody_checks': 'both accepted'}`.
+Current source hashes at capture: `tool_custody.py`
+`f22edae9d3cfb361c75355af9bf27224dfa8500b4ed2ea36fa8ccf8172e0fd2f`,
+`portable_proof.py`
+`4e960963e577f92c97ea517af6ed8b98441ac9aff0960aac8de7554a36491af8`.
+This is P1/open: exported functions precede PATH resolution in the Bash wrapper.
+The active custody owner received the reproduction and all-function-key
+admission requirement; this lane does not overlap that owner's edits. Current
+captured-byte reader migration is also present but awaits its final handoff.
+Same-invariant sibling audit found `conditional_proof.produce` invokes
+`portable_proof._run` for build/reference/run without activating custody;
+`_run`'s inactive branch supplies no pinned-tool controls. The bounded caller
+universe is portable SDK/contract plus these T15/T16 conditional producer
+commands. SDK/contract-only repair cannot close the full invariant. The custody
+and retrieval roots received this trace and must migrate the conditional
+producer, replay identity and tests to the same canonical invocation owner,
+without adding a second tool checker. No conditional tool-binding repair is
+claimed by the window-count oracle change.
+
+Shared main advanced to `7d581d0572447e4f29ce0d0ea2f9d2fbc8b1353c`
+while other writers integrated changes. Commit inclusion is not qualification.
+Rust paths, lockfile, toolchain, Cargo config and native runner were unchanged
+from this snapshot during the final supervisor invocation. Python benchmark
+and documentation dirt remained outside that native proof scope.
+
+- The initial supervisor run ended with exit 0, 24 executed / 24 passed /
+  zero skipped. Its dependency build took 24m44s; test execution took 1.866s.
+  `/tmp/quanta-drain-deadline.Tg8oiK/red.log` SHA-256:
+  `e66a4e68fca83a6aef25dbc271cb7896d19d894ff94cc60000bd33a12cdd09ba`.
+  Source moved during the build: this remains interim, not behavioral RED or
+  final-source proof.
+- Reissued the same registered rail after source freeze:
+  `just rust-profile test-runtime-supervisor-owner`, exit 0, 24 executed /
+  24 passed / zero skipped, Nextest run
+  `3e14614c-9499-4e3c-8302-89eb1f3ad014`; build 3.07s, tests 1.861s.
+  Raw `/tmp/quanta-drain-deadline-final-20260926.log` SHA-256
+  `2b2ad02c8e3fa538b4827b6b7ded5ae6b664338e889fa95207a36600f86a2da7`.
+  Supervisor and regression file hashes match the previous entry. This covers
+  the phase-origin clock, three child forms, three shutdown ingress paths,
+  overflow and retained child custody. It is not Linux signal/process,
+  arbitrary blocking callback, full-workspace or release qualification.
+- Native control inputs: `Justfile`
+  `8fd24e4827ddc9590523215b6ba65e0dbe7c0044fb816ba64cccf67f4bcd774b`,
+  `scripts/cargow`
+  `488fcd15987f5cd273ccbb831ab22d1c54d9c0f35eef459663594cfdbe35ed8a`,
+  `scripts/run-rust-profile.sh`
+  `1d84b52663176839dc5b0c6279af47b4995eb40f3ff38ddfe57085987c9578bb`,
+  `scripts/quanta-index-env.sh`
+  `26e171db52fa9d85d8065d57ff4424d19c766e8a4af46607b8c057513662ac26`,
+  test authority
+  `cc14be75eb679ead45a1b5efbf91995ab5dce38819134f62b74bec7ebf2a5292`,
+  scope runner
+  `31da16f3fb501f2f216e0a3ee7e3ee07aad6aa61b4ae1b558cea4f4b7273df55`.
+- Revalidated local native host: macOS 15.6 / build 24G84, arm64;
+  selected Cargo process used the absolute Rust 1.92.0 toolchain. That
+  toolchain reports rustc `ded5c06cf21d2b93bffd5d884aa6e96934ee4234`,
+  host `aarch64-apple-darwin`, LLVM 21.1.3; Cargo 1.92.0
+  `344c4567c`. Foreign Cargo jobs were present: these results are behavior
+  checks, not quiet-host performance measurements or Linux qualification.
+- Extended semantic `build.rs`: replacement deletes one exact owner-tuple
+  set per admitted window; tombstones use the same policy's bounded owner
+  chunks; ClusterCard membership deletion is derived from the same tuple set.
+  Predicate groups retain corpus/kind association and use the existing SQL
+  literal owner, avoiding cross-product deletion and a deep per-ID OR tree.
+  Replaced the old four per-scope delete helpers. All deletions remain before
+  append on staging tables; failures still prevent promotion. Logical scope
+  call counts remain separate from successful native delete invocation counts.
+  This is an implementation change, NOT_RUN for behavioral owner proof.
+  The historical 10001-row daemon timeout RCA remains UNKNOWN.
+- Rust regression checks actual semantic/membership row IDs after replacement
+  and bounded tombstones, including hostile quoted IDs, corpus/kind neighbors,
+  logical/native counts and empty operation. Existing rollback and manifest
+  parity tests remain on the semantic lib rail. Owned source SHA-256:
+  `build.rs` `96de225314861b87316de5bf99700437f85f4793fffbfedb3d2b239a767fb815`;
+  `build/tests.rs` `665460637b44d9388cae6474c228aa68d94c139135535e4283978eee1567379e`.
+- Migrated T16 consumer `conditional_proof.py` to exact input-derived window,
+  fragment, membership and tombstone-chunk counts, not a permissive inequality.
+  Its independent oracle targets the registered resident proof recipe's public
+  default 1024-owner / 32-MiB contract; it does not control runtime policy.
+  SHA-256 `b427d91a13d678906084461c4896b77fc44e97e8995f688012e6e2748ce63098`.
+  Existing shared T16 fixtures are coordinated with the retrieval root; their
+  migration and actual native exporter/replay remain pending.
+- `uv run --frozen --extra dev python -m pytest
+  tools/ci/tests/test_conditional_window_operations.py -q`: exit 0, 6 passed.
+  Covers empty, exact/overflow owner limit, interleaved indivisible owner,
+  scope/membership fragments, byte limit, tombstone chunks and invalid surface.
+  Raw `/tmp/quanta-conditional-window-operations-20260926.log` SHA-256
+  `72d7492008b287cfaf242da7b4bb8f9de870a01c51689d3b2ce48959cabf21ca`;
+  test source
+  `372dfc0993390c9266e5cc29ea51a6f7429b276640259d5e36fe99f35c275925`.
+  Python proof/CI registration is coordinated with the shared-authority owner;
+  this focused result alone does not qualify T16.
+- Semantic owner command launched once:
+  `./scripts/cargow --lane test-runtime-supervisor-owner-lane nextest run -p
+  quanta-index-semantic --lib --all-features --locked --test-threads 4
+  --success-output never --failure-output immediate-final --status-level fail
+  --final-status-level fail`. Session 16276, Nextest PID 35589 / Cargo PID
+  35711. Raw ongoing `/tmp/quanta-semantic-delete-batch-owner-20260926.log`.
+  The existing lane is reused, but the smaller package graph has a different
+  unified feature fingerprint and is compiling dependencies. No terminal test
+  verdict yet. Do not replace this with a broad gate or retry unchanged.
+
 ## 2026-09-26 hard-deadline phase-origin repair — native proof pending
 
 Started at main `ef22fb055be265eeece2b9a9942f071870e6a679`; another

@@ -1,6 +1,6 @@
 # BM-05 — Retrieval benchmark registration and product adapters
 
-Status: `PARTIAL / CONTRACT_PAIR_AND_LEXICAL_SCORING_ADAPTERS_IMPLEMENTED`; frozen paired/CLI contract verification passed (112 tests), full selected canonical Python recipe passed (579 tests); fresh paired/lexical search pilot remains `NOT_RUN`. Priority: P1. Depends on: BM-02/BM-03; coordinate with RBR-12. Common gates: [TEST-PLAN](TEST-PLAN.md).
+Status: `PARTIAL / CORPUS_VIEWS_AND_CONTRACT_PAIR_LEXICAL_ADAPTERS_IMPLEMENTED`; frozen corpus/CLI integration passed (158 tests), paired/CLI contract verification passed (112 tests), historical canonical Python recipe passed (579 tests); newly expanded recipe and fresh paired/lexical search pilot remain `NOT_RUN`. Priority: P1. Depends on: BM-02/BM-03; coordinate with RBR-12. Common gates: [TEST-PLAN](TEST-PLAN.md).
 
 Current implementation/verification boundaries are recorded in [CURRENT-AUDIT.md](CURRENT-AUDIT.md). Historical [CLOSEOUT.md](CLOSEOUT.md) and [BM-07-MIGRATION-MATRIX.md](BM-07-MIGRATION-MATRIX.md) do not establish complete migration qualification.
 
@@ -53,10 +53,19 @@ self-contained Git corpus bundle, exact input/executable identities and the
 original native output tree. File/context/indexed-span cases remain distinct;
 missing span observations are unsupported, not zero. The registry now names the
 actual `retrieval-run-manifest:v2` contract, replacing the erroneous v5 label.
-Focused producer fixtures do not establish real product execution. Still open:
-external release `code_only`/`developer_search` views and complete inventory
-policy, live comparator capture/corpus custody, independent scorer cross-check,
-fresh two-repo paired/lexical pilot and large-corpus storage deduplication.
+Focused producer fixtures do not establish real product execution.
+`corpus_release.py` now provides common `benchctl corpus create/validate`,
+complete Git-object inventory and materialized `code_only`/`developer_search`
+views with explicit exclusions and retained self-contained bundles. Real
+gin/ripgrep input release creation and fresh-process validation are verified
+at the source-bound checkpoint in CURRENT-AUDIT; this is input generation,
+not the required live comparison pilot. `corpus_binding.py` now binds common
+lexical schema v2 to one release/repository/view and exact suite/query universe,
+retaining Git bundles for reconstruction without mutable original paths.
+Product index-universe attestation remains false; capsules above 256 MiB refuse.
+Still open: view-bound inputs throughout live paired comparator execution, live comparator capture,
+independent scorer cross-check, fresh two-repo paired/lexical pilot and
+large paired-capture raw storage deduplication.
 
 The registry now separates `retrieval-diagnostic` (pair execution) from
 `lexical-diagnostic` (five-product scorer). The lexical family points to its

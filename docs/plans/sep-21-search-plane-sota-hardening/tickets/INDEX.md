@@ -6,12 +6,25 @@ proofs do not establish current-source or release closure. Use the
 Tracked docs do not embed a result SHA; validated receipts own it.
 
 Latest P08 hard-deadline owner change uses one phase origin across drain,
-required-child-loss and rollback; registered child/stop-time/overflow scenarios
-were added. Native validation is still in a cold dependency build and has no
-terminal owner verdict. The initial source-moving run cannot establish RED or
-final-source closure; see the progress ledger for its live handle and reissue
-condition. R0 tool binding/captured-byte admission are coordinated Python work,
-not closed by the historical execution-custody results.
+required-child-loss and rollback. The final source-stable registered owner rail
+executed 24 cases, all passed; the earlier source-moving cold run is only interim
+evidence, not RED. Semantic replacement/tombstone/membership deletes now use
+exact tuple batches under the existing window policy and an independent private
+32-MiB SQL-byte refusal; the dirty-source semantic owner rail passed 71/71.
+T15/T16 now use the common controlled tool executor and terminal-gated atomic
+result publication; focused custody/window tests passed 16/16. The current native
+mutation exporter now has actual 5/5 local passes and 85/85 hostile raw-output
+mutants refused. Controlled conditional producer qualification and final
+cross-module source qualification remain separate; the 8D owner plan is not
+model/encoder parity or a frozen paired-quality result.
+The required daemon execution now has 206 actual passes, including the unchanged
+10001-row oracle. Its original gate FAILED on ignored-event evidence parsing;
+corrected-parser replay derives exact 206/206 from the preserved inventory and
+events. Parser reverse-consumer integration passed 158/158 after the exact recipe
+fixture migration; final-source qualification remains separate.
+R0 tool binding/captured-byte admission are coordinated Python work, not closed
+by historical execution-custody results. See the
+progress ledger for raw results, digests and excluded proof surfaces.
 
 2026-09-26 current implementation/residual status:
 [parallel structural audit](CURRENT-RESIDUAL-2026-09-26.md). Supervisor loss,
@@ -39,10 +52,12 @@ Bounded portable-proof execution and producer cleanup are now repaired with
 70 locked owner cases and 87 caller cases. The follow-up direct-exit protocol
 keeps group identity unreaped until cleanup, including closed-output background
 descendants; earlier 47/60 counts are historical. Actual toolchain execution
-identity binding and per-owner semantic delete batching remain open in the
-current residual table. The original
+identity binding, actual conditional exporter/replay and final daemon proof
+remain distinct obligations in the current residual table. The original
 mandatory daemon gate ended FAILED (203 passed, one ingest timeout, one skipped);
-RCA remains open. Consult the current residual table and progress ledger rather
+The timeout was not reproduced; original gate FAILED and corrected-parser
+replay are separate evidence, not a newly issued clean-source gate.
+Consult the current residual table and progress ledger rather
 than historical counts.
 
 P10 update (2026-09-24): the prerelease breaking decision retires

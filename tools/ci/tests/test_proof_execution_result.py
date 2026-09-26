@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,61 @@ from tools.ci.proof_execution_result import (
     collect_pytest_inventory,
     derive_test_result,
 )
+
+
+@pytest.mark.parametrize(
+    "nodeid",
+    (
+        "tools/ci/tests/test_identity.py::test_plain",
+        "tools/ci/tests/test_identity.py::TestIdentity::test_method",
+        "tools/ci/tests/test_identity.py::test_parameter[Rust::Variant]",
+        "tools/ci/tests/test_identity.py::TestIdentity::test_method[[nested]::Variant]",
+        "tools/ci/tests/test_identity.py::test_parameter[::]",
+    ),
+)
+def test_pytest_identity_matches_runner_mangling(nodeid: str) -> None:
+    from _pytest.junitxml import mangle_test_address
+
+    from tools.benchmark.retrieval.proof_inventory import junit_identity
+
+    expected = ".".join(mangle_test_address(nodeid))
+    assert MODULE.pytest_junit_identity(nodeid) == expected
+    assert junit_identity(nodeid) == expected
+
+
+def test_real_pytest_inventory_matches_parameterized_junit(tmp_path: Path) -> None:
+    selector = "tools/ci/tests/test_identity.py"
+    source = tmp_path / selector
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "import pytest\n"
+        "def test_plain():\n    assert True\n"
+        "class TestIdentity:\n    def test_method(self):\n        assert True\n"
+        "@pytest.mark.parametrize('value', ['Rust::Variant', '[nested]::Variant', '::'])\n"
+        "def test_parameter(value):\n    assert value\n",
+        encoding="utf-8",
+    )
+    collector = (
+        f"import sys; sys.path.insert(0, {str(MODULE.ROOT)!r}); "
+        "from pathlib import Path; "
+        "from tools.ci.proof_execution_result import collect_pytest_inventory; "
+        f"collect_pytest_inventory([{selector!r}], Path('inventory.json'))"
+    )
+    subprocess.run([sys.executable, "-c", collector], cwd=tmp_path, check=True)
+    subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", selector, "--junitxml=junit.xml"],
+        cwd=tmp_path,
+        check=True,
+    )
+    counts, identities = MODULE._pytest_result(tmp_path / "junit.xml", tmp_path / "inventory.json")
+    assert counts["selected"] == counts["passed"] == 5
+    assert identities == {
+        "tools.ci.tests.test_identity.test_plain",
+        "tools.ci.tests.test_identity.TestIdentity.test_method",
+        "tools.ci.tests.test_identity.test_parameter[Rust::Variant]",
+        "tools.ci.tests.test_identity.test_parameter[[nested]::Variant]",
+        "tools.ci.tests.test_identity.test_parameter[::]",
+    }
 
 
 @pytest.mark.parametrize("variable", ("PYTEST_ADDOPTS", "PYTEST_PLUGINS"))

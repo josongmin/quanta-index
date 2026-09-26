@@ -20,6 +20,7 @@ except ModuleNotFoundError:  # direct script invocation
     from tools.ci.nextest_events import NextestEvidenceError, parse_nextest_inventory_bytes
 
 from tools.ci.lint.handoff_validation import _read_repo_regular_bytes
+from tools.ci.proof_execution_result import pytest_junit_identity
 
 
 def _evidence_bytes(value: Path | bytes) -> bytes:
@@ -99,11 +100,7 @@ def verify_inventory_authority(
 
 
 def junit_identity(nodeid: str) -> str:
-    path, separator, test = nodeid.partition("::")
-    path = path.replace("\\", "/")
-    if not separator or not path.endswith(".py") or not test:
-        raise ValueError(f"invalid collected pytest nodeid: {nodeid}")
-    return f"{path[:-3].replace('/', '.')}.{test.replace('::', '.')}"
+    return pytest_junit_identity(nodeid.replace("\\", "/"))
 
 
 def collect_pytest() -> dict[str, object]:

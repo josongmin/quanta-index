@@ -133,6 +133,7 @@ def test_cross_repo_script_consumes_pinned_binary_and_rejects_alias_drift(
         "tools/ci/paired_cargo_resolution.py",
         "tools/ci/binary_custody.py",
         "tools/ci/lint/handoff_validation.py",
+        "tools/ci/proof_json.py",
     ):
         target = quanta / relative
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -172,6 +173,7 @@ def test_cross_repo_script_consumes_pinned_binary_and_rejects_alias_drift(
     launcher.write_text(f'#!/bin/sh\nexec python3 "{driver}" "$@"\n')
     launcher.chmod(0o700)
     for root in (quanta, paired):
+        (root / ".gitignore").write_text("__pycache__/\n", encoding="utf-8")
         for args in (
             ["init", "-q"],
             ["add", "."],

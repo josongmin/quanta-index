@@ -14,6 +14,20 @@ from registry import load_registry
 from tools.ci.tests.test_portable_proof import fake_execution  # noqa: F401
 
 
+@pytest.mark.parametrize("rail", ["sdk", "contract"])
+def test_registration_requires_current_execution_context_version(rail):
+    from evidence import EvidenceError
+
+    registry = load_registry()
+    entry = registry["families"][f"retrieval-{rail}"]
+    producer = registry["producers"][entry["producer"]]
+    assert entry["native_schema"] == "retrieval-execution-context:v2"
+    capture.require_registered_owner(entry, producer, rail)
+    with pytest.raises(EvidenceError, match="registration"):
+        capture.require_registered_owner(
+            {**entry, "native_schema": "retrieval-execution-context:v1"}, producer, rail)
+
+
 def fixture(tmp_path, rail="contract"):
     source = sample_evidence()["source"]
     native = tmp_path / "proof"
@@ -150,6 +164,7 @@ def test_common_custody_replays_owner_raw_and_rejects_tampering(fake_execution, 
         **template["build"],
         "toolchain": context["tools"]["rustc"]["version"],
         "target_triple": "fixture-triple",
+        "flags": portable_proof.FLAGS,
         "binaries": [
             {"name": name, "sha256": "sha256:" + entry["sha256"]}
             for name, entry in sorted(context["binaries"].items())

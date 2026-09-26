@@ -177,3 +177,176 @@ def test_selection_refuses_rustup_nonzero_or_missing_tool(tmp_path):
         tool_custody.resolve_tool_paths(tmp_path, {"PATH": str(ambient)})
     with pytest.raises(tool_custody.ToolCustodyError, match="unavailable: rustup"):
         tool_custody.resolve_tool_paths(tmp_path, {"PATH": str(tmp_path / "empty")})
+
+
+def test_inflight_growth_is_rejected_after_bounded_initial_size_read(tmp_path, monkeypatch):
+    path = executable(tmp_path / "growing-tool", "exit 0")
+    real_sha256 = hashlib.sha256
+    reads = []
+
+    class GrowingDigest:
+        def __init__(self):
+            self.digest = real_sha256()
+
+        def update(self, data):
+            reads.append(len(data))
+            self.digest.update(data)
+            with path.open("ab") as stream:
+                stream.write(b"# ongoing append\n")
+
+        def hexdigest(self):
+            return self.digest.hexdigest()
+
+    initial_size = path.stat().st_size
+    monkeypatch.setattr(tool_custody.hashlib, "sha256", GrowingDigest)
+    with pytest.raises(tool_custody.ToolCustodyError, match="changed while reading"):
+        tool_custody._epoch(path)
+    assert sum(reads) == initial_size
+
+
+@pytest.mark.parametrize("name", ["cargo", "python3", "git", "command", "source"])
+def test_exported_function_can_override_real_pinned_bash_but_admission_refuses(tmp_path, name):
+    guard = custody(tmp_path)
+    environment = guard.environment()
+    environment[f"BASH_FUNC_{name}%%"] = "() { printf 'ambient-exported-function'; }"
+    bash = guard.tools()["bash"]["path"]
+    guard.check()
+    # This is a real shell oracle: file identity alone does not guarantee
+    # that Bash resolves a command or builtin to its recorded implementation.
+    output = subprocess.check_output([bash, "-c", f"{name} ignored"], env=environment, text=True)
+    guard.check()
+    assert output == "ambient-exported-function"
+    with pytest.raises(tool_custody.ToolCustodyError, match="Bash function exports"):
+        tool_custody.validate_environment(environment)
+    with pytest.raises(tool_custody.ToolCustodyError, match="Bash function exports"):
+        tool_custody.ToolCustody.create(tmp_path, tmp_path / "refused-bin", tools=selected_tools(tmp_path),
+                                       environment=environment)
+    assert not (tmp_path / "refused-bin").exists()
+
+
+@pytest.mark.parametrize("key", ["BASH_FUNC_cargo%%", "BASH_FUNC_", "BASH_FUNC_%%",
+                                 "BASH_FUNC_cargo", "BASH_FUNC_bad-name%%"])
+@pytest.mark.parametrize("value", ["", "not-a-function"])
+def test_entire_export_namespace_is_refused_even_empty_or_malformed(tmp_path, monkeypatch, key, value):
+    environment = {"PATH": str(tmp_path), key: value}
+    invoked = []
+
+    def forbidden(*args, **kwargs):
+        invoked.append(args)
+        raise AssertionError("selection must not invoke an executable")
+
+    monkeypatch.setattr(tool_custody.subprocess, "run", forbidden)
+    with pytest.raises(tool_custody.ToolCustodyError, match="Bash function exports"):
+        tool_custody.resolve_tool_paths(tmp_path, environment)
+    assert not invoked
+
+
+@pytest.mark.parametrize("name", ["ENV", "BASH_ENV"])
+def test_shell_startup_settings_are_refused_before_selection_and_creation(tmp_path, monkeypatch, name):
+    marker = tmp_path / "startup-ran"
+    startup = tmp_path / "startup"
+    startup.write_text(f"printf hijacked > '{marker}'\n")
+    environment = dict(os.environ, **{name: str(startup)})
+    invoked = []
+
+    def forbidden(*args, **kwargs):
+        invoked.append(args)
+        raise AssertionError("selection must not invoke an executable")
+
+    monkeypatch.setattr(tool_custody.subprocess, "run", forbidden)
+    with pytest.raises(tool_custody.ToolCustodyError, match="shell startup setting"):
+        tool_custody.resolve_tool_paths(tmp_path, environment)
+    with pytest.raises(tool_custody.ToolCustodyError, match="shell startup setting"):
+        tool_custody.ToolCustody.create(tmp_path, tmp_path / "refused-bin", tools=selected_tools(tmp_path),
+                                       environment=environment)
+    assert not invoked and not marker.exists() and not (tmp_path / "refused-bin").exists()
+
+
+def test_empty_shell_startup_settings_preserve_normal_execution(tmp_path):
+    environment = dict(os.environ, ENV="", BASH_ENV="")
+    tool_custody.validate_environment(environment)
+    guard = custody(tmp_path, environment=environment)
+    output = subprocess.check_output([guard.tools()["bash"]["path"], "-c", "cargo"],
+                                     env=guard.environment(), text=True)
+    guard.check()
+    assert output == "selected-cargo\n"
+
+
+def test_additional_executable_binding_and_offline_record(tmp_path):
+    guard = custody(tmp_path)
+    path = executable(tmp_path / "native-reference", "printf 'native-reference\\n'")
+    expected = hashlib.sha256(path.read_bytes()).hexdigest()
+    first = guard.bind_executable(path, expected_sha256=expected)
+    assert first["sha256"] == expected
+    assert first == guard.bind_executable(path)
+    first["sha256"] = "0" * 64
+    assert guard.bind_executable(path)["sha256"] == expected
+    output = subprocess.check_output([path], env=guard.environment(), text=True)
+    guard.check()
+    assert output == "native-reference\n"
+    record = guard.record()
+    path.unlink()
+    tool_custody.validate_record(record)
+    with pytest.raises(tool_custody.ToolCustodyError, match="unavailable"):
+        guard.check()
+
+
+def test_additional_executable_wrong_digest_is_not_registered(tmp_path):
+    guard = custody(tmp_path)
+    path = executable(tmp_path / "native-reference", "exit 0")
+    with pytest.raises(tool_custody.ToolCustodyError, match="digest differs"):
+        guard.bind_executable(path, expected_sha256="0" * 64)
+    assert str(path) not in guard.record()["epochs"]
+
+
+def test_additional_executable_changed_then_restored_cannot_rebind(tmp_path):
+    guard = custody(tmp_path)
+    path = executable(tmp_path / "native-reference", "exit 0")
+    first = guard.bind_executable(path)
+    original, info = path.read_bytes(), path.stat()
+    path.write_bytes(original + b"# changed\n")
+    path.write_bytes(original)
+    os.utime(path, ns=(info.st_atime_ns, info.st_mtime_ns))
+    with pytest.raises(tool_custody.ToolCustodyError, match="epoch changed"):
+        guard.bind_executable(path, expected_sha256=first["sha256"])
+    with pytest.raises(tool_custody.ToolCustodyError, match="epoch changed"):
+        guard.check()
+
+
+@pytest.mark.parametrize("path", [Path(""), Path("relative-executable")])
+def test_additional_executable_requires_absolute_path(tmp_path, path):
+    guard = custody(tmp_path)
+    with pytest.raises(tool_custody.ToolCustodyError, match="must be absolute"):
+        guard.bind_executable(path)
+
+
+@pytest.mark.parametrize("digest", ["", "wrong", "A" * 64, True])
+def test_additional_executable_expected_digest_must_be_canonical(tmp_path, digest):
+    guard = custody(tmp_path)
+    path = executable(tmp_path / "native-reference", "exit 0")
+    with pytest.raises(tool_custody.ToolCustodyError, match="invalid expected"):
+        guard.bind_executable(path, expected_sha256=digest)
+
+
+def test_public_capture_keeps_healthy_epoch_when_file_access_updates_atime(tmp_path):
+    path = executable(tmp_path / "version-tool", "printf 'version-tool 1.0\\n'")
+    info = path.stat()
+    os.utime(path, ns=(1_000_000_000, info.st_mtime_ns))
+    before = path.stat()
+    first = tool_custody.capture_executable(path)
+    output = subprocess.check_output([path, "--version"], text=True)
+    after = path.stat()
+    assert output == "version-tool 1.0\n"
+    assert after.st_atime_ns != before.st_atime_ns
+    assert after.st_mtime_ns == before.st_mtime_ns
+    assert after.st_ctime_ns == before.st_ctime_ns
+    assert first == tool_custody.capture_executable(path)
+    assert "atime_ns" not in first["stat"]
+    first["sha256"] = "0" * 64
+    assert tool_custody.capture_executable(path)["sha256"] != first["sha256"]
+
+
+@pytest.mark.parametrize("path", [Path(""), Path("relative-tool")])
+def test_public_capture_requires_absolute_path(path):
+    with pytest.raises(tool_custody.ToolCustodyError, match="must be absolute"):
+        tool_custody.capture_executable(path)

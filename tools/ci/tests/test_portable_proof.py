@@ -7,6 +7,7 @@ import importlib.util
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -63,14 +64,18 @@ def test_collected_pytest_identity_normalizes_windows_separator() -> None:
     )
 
 
-def _rust_inventory(binary: str, test: str) -> bytes:
+def _rust_inventory(binary: str, test: str, binary_path: Path) -> bytes:
     return json.dumps(
         {
             "test-count": 1,
             "rust-suites": {
                 f"quanta-index-retrieval-bench::{binary}": {
+                    "binary-id": f"quanta-index-retrieval-bench::{binary}",
+                    "package-id": "fixture-retrieval-package",
+                    "build-platform": "target",
                     "package-name": "quanta-index-retrieval-bench",
                     "binary-name": binary,
+                    "binary-path": str(binary_path),
                     "kind": "test",
                     "status": "listed",
                     "testcases": {test: {"ignored": False, "filter-match": {"status": "matches"}}},
@@ -92,12 +97,134 @@ def _events(binary: str, test: str) -> bytes:
     return ("\n".join(json.dumps(row) for row in rows) + "\n").encode()
 
 
+def test_selected_test_binary_roles_are_deterministic_and_path_bound(tmp_path):
+    binary = tmp_path / "compiled"
+    raw = _rust_inventory("sdk_roundtrip", "test_one", binary)
+    role = "nextest-" + hashlib.sha256(
+        b"quanta-index-retrieval-bench::sdk_roundtrip").hexdigest()
+    assert portable_proof.selected_test_binaries(raw) == {role: binary}
+
+
+@pytest.mark.parametrize("mutation", ["missing", "relative", "traversal", "alias",
+                                     "nul", "id", "duplicate_path", "duplicate_json"])
+def test_selected_test_binary_inventory_refuses_malformed_paths(tmp_path, mutation):
+    payload = json.loads(_rust_inventory("sdk_roundtrip", "test_one", tmp_path / "compiled"))
+    suite = next(iter(payload["rust-suites"].values()))
+    if mutation == "missing":
+        del suite["binary-path"]
+    elif mutation == "relative":
+        suite["binary-path"] = "target/test"
+    elif mutation == "traversal":
+        suite["binary-path"] = "/target/../test"
+    elif mutation == "alias":
+        suite["binary-path"] = "/target//test"
+    elif mutation == "nul":
+        suite["binary-path"] = "/target/test\x00"
+    elif mutation == "id":
+        suite["binary-id"] = "different-id"
+    elif mutation == "duplicate_path":
+        other = {**suite, "binary-name": "chunking_contract",
+                 "binary-id": "quanta-index-retrieval-bench::chunking_contract"}
+        payload["rust-suites"][other["binary-id"]] = other
+        payload["test-count"] = 2
+    raw = json.dumps(payload).encode()
+    if mutation == "duplicate_json":
+        raw = raw.replace(b'"test-count": 1', b'"test-count": 1, "test-count": 1')
+    with pytest.raises(ValueError):
+        portable_proof.selected_test_binaries(raw)
+
+
+@pytest.mark.parametrize("mutation", ["replace", "restore"])
+def test_compiled_executable_custody_refuses_real_epoch_mutants(tmp_path, mutation):
+    import os
+
+    path = tmp_path / "compiled"
+    path.write_bytes(b"compiled executable marker")
+    path.chmod(0o755)
+    custody = portable_proof.ToolCustody(tmp_path, tmp_path / "bin", {}, {}, {})
+    token = portable_proof._ACTIVE_CUSTODY.set((custody, {}))
+    try:
+        records = portable_proof._bind_test_binaries(_rust_inventory("sdk_roundtrip", "one", path))
+        assert next(iter(records.values()))["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+        before = path.stat()
+        if mutation == "replace":
+            replacement = tmp_path / "replacement"
+            replacement.write_bytes(path.read_bytes())
+            replacement.chmod(0o755)
+            replacement.replace(path)
+        else:
+            raw = path.read_bytes()
+            path.write_bytes(b"different executable marker")
+            path.write_bytes(raw)
+            os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+        with pytest.raises(ValueError, match="changed"):
+            custody.check()
+    finally:
+        portable_proof._ACTIVE_CUSTODY.reset(token)
+
+
+@pytest.mark.parametrize("mutation", ["workspace", "target", "package", "manifest",
+                                     "duplicate_package", "path", "missing", "extra_field"])
+def test_reused_build_metadata_rejects_consistent_shape_forgeries(fake_execution, mutation):
+    out, _, _ = fake_execution
+    portable_proof.produce("sdk", out)
+    build = json.loads((out / "rust-build.stdout").read_bytes())
+    metadata = json.loads((out / "metadata.stdout").read_bytes())
+    collection = (out / "rust-collection.stdout").read_bytes()
+    assert portable_proof.verify_reused_build(json.dumps(build).encode(), json.dumps(metadata).encode(),
+                                               collection, workspace_root=portable_proof.ROOT)
+    if mutation == "workspace":
+        metadata["workspace_root"] = "/different/workspace"
+    elif mutation == "target":
+        metadata["target_directory"] = "/different/target"
+    elif mutation == "package":
+        metadata["packages"][0]["name"] = "different-package"
+    elif mutation == "manifest":
+        metadata["packages"][0]["manifest_path"] = "/different/Cargo.toml"
+    elif mutation == "duplicate_package":
+        metadata["packages"].append(metadata["packages"][0])
+    elif mutation == "path":
+        next(iter(build["rust-binaries"].values()))["binary-path"] = "/different/executable"
+    elif mutation == "missing":
+        build["rust-binaries"] = {}
+    else:
+        build["extra"] = True
+    with pytest.raises(ValueError):
+        portable_proof.verify_reused_build(json.dumps(build).encode(), json.dumps(metadata).encode(),
+                                           collection, workspace_root=portable_proof.ROOT)
+
+
+@pytest.mark.parametrize("rail", ["contract", "sdk"])
+@pytest.mark.parametrize("mutation", ["missing", "tampered", "path", "legacy"])
+def test_context_requires_actual_compiled_test_executable(fake_execution, rail, mutation):
+    out, _, _ = fake_execution
+    receipt = portable_proof.produce(rail, out)
+    context = json.loads(receipt.read_bytes())
+    role = next(name for name in context["binaries"] if name.startswith("nextest-"))
+    binary = context["binaries"][role]
+    if mutation == "missing":
+        del context["binaries"][role]
+    elif mutation == "tampered":
+        Path(binary["path"]).write_bytes(b"wrong compiled executable")
+    elif mutation == "path":
+        binary["path"] = str(out / "different-binary")
+    else:
+        context["schema_version"] = 1
+    receipt.write_text(json.dumps(context))
+    with pytest.raises(ValueError):
+        portable_proof.validate(receipt)
+
+
 @pytest.fixture
 def fake_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     out = tmp_path / "proof"
     target = tmp_path / "target"
     runner = target / "debug" / "quanta-index-retrieval-bench"
     searchd = target / "debug" / "quanta-index-searchd"
+    compiled_test = target / "debug" / "deps" / "compiled-test-fixture"
+    compiled_test.parent.mkdir(parents=True)
+    compiled_test.write_bytes(b"compiled-test-marker")
+    compiled_test.chmod(0o755)
     tools = {
         name: {
             "path": f"/fake/{name}",
@@ -109,6 +236,20 @@ def fake_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     }
     monkeypatch.setattr(portable_proof, "_source_revision", lambda: "b" * 40)
     monkeypatch.setattr(portable_proof, "_tools", lambda: tools)
+    monkeypatch.setattr(
+        portable_proof.ToolCustody,
+        "create",
+        lambda *_, **kwargs: SimpleNamespace(
+            tools=lambda: tools,
+            environment=lambda: {
+                **kwargs["environment"],
+                **portable_proof.execution_overrides(tools, kwargs["environment"]),
+            },
+            check=lambda: None,
+            bind_executable=lambda *_a, **_k: {},
+        ),
+    )
+    monkeypatch.setattr(portable_proof.source_closure, "load_and_verify", lambda _: None)
     monkeypatch.setattr(
         portable_proof,
         "_os_identity",
@@ -190,10 +331,12 @@ def fake_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         assert kwargs["timeout"] == 7200
         calls.append((argv, kwargs["env"]))
         if argv[1] == str(portable_proof.SOURCE_CLOSURE_SCRIPT):
-            write_closure()
+            if argv[2] == "capture":
+                write_closure()
             raw = b""
         elif argv[1] == str(portable_proof.RECEIPT_WRITER):
-            assert (out / "execution-context.json").is_file()
+            assert (out / "execution-context.pending.json").is_file()
+            assert not (out / "execution-context.json").exists()
             assert not Path(argv[argv.index("--out") + 1]).exists()
             write_receipt(argv)
             raw = b""
@@ -204,7 +347,7 @@ def fake_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
             runner.write_bytes(b"runner")
             searchd.write_bytes(b"searchd")
             (out / "nextest-inventory.json").write_bytes(
-                _rust_inventory("sdk_roundtrip", portable_proof.sdk_proof.PROOF_TEST)
+                _rust_inventory("sdk_roundtrip", portable_proof.sdk_proof.PROOF_TEST, compiled_test)
             )
             (out / "nextest.jsonl").write_bytes(
                 _events("sdk_roundtrip", portable_proof.sdk_proof.PROOF_TEST)
@@ -235,9 +378,18 @@ def fake_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         elif argv[3:5] == ["nextest", "list"]:
             binary = "sdk_roundtrip" if "sdk_roundtrip" in argv else "chunking_contract"
             test = portable_proof.sdk_proof.PROOF_TEST if binary == "sdk_roundtrip" else "one"
-            raw = _rust_inventory(binary, test)
+            raw = _rust_inventory(binary, test, compiled_test)
+            if "--list-type" in argv:
+                full = json.loads(raw)
+                fields = {"binary-id", "binary-name", "package-id", "kind", "binary-path", "build-platform"}
+                raw = json.dumps({"rust-build-meta": {"target-directory": str(target)},
+                                  "rust-binaries": {key: {field: value[field] for field in fields}
+                                                    for key, value in full["rust-suites"].items()}}).encode()
         elif argv[3:5] == ["nextest", "run"]:
-            binary = "sdk_roundtrip" if "sdk_roundtrip" in argv else "chunking_contract"
+            assert "--binaries-metadata" in argv and "--cargo-metadata" in argv
+            assert "--all-features" not in argv and "--locked" not in argv
+            binary = ("sdk_roundtrip" if (out / "nextest-inventory.json").exists()
+                      else "chunking_contract")
             test = portable_proof.sdk_proof.PROOF_TEST if binary == "sdk_roundtrip" else "one"
             raw = _events(binary, test)
             if binary == "sdk_roundtrip":
@@ -256,7 +408,9 @@ def fake_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
             searchd.write_bytes(b"searchd")
             raw = b""
         elif argv[3] == "metadata":
-            raw = json.dumps({"target_directory": str(target)}).encode()
+            raw = json.dumps({"target_directory": str(target), "workspace_root": str(portable_proof.ROOT),
+                              "packages": [{"id": "fixture-retrieval-package", "name": portable_proof.PACKAGE,
+                                            "manifest_path": str(portable_proof.ROOT / "benchmarks/retrieval/Cargo.toml")}]}).encode()
         else:
             raise AssertionError(argv)
         return raw, b"", {"exit_code": 0}
@@ -299,7 +453,7 @@ def test_producer_and_validator_bind_execution_and_inputs(fake_execution, rail: 
     out, runner, calls = fake_execution
     receipt = portable_proof.produce(rail, out)
     assert portable_proof.validate(receipt)["rail"] == rail
-    assert len(calls) == (7 if rail == "contract" else 3)
+    assert len(calls) == (10 if rail == "contract" else 9)
     assert all(isinstance(argv, list) for argv, _ in calls)
     context = json.loads(receipt.read_text(encoding="utf-8"))
     assert set(context) == {
@@ -352,11 +506,13 @@ def test_validator_rejects_rewritten_command_and_missing_evidence(fake_execution
     out, _, _ = fake_execution
     receipt = portable_proof.produce("contract", out)
     data = json.loads(receipt.read_text(encoding="utf-8"))
-    data["commands"][4]["argv"][4] = "list"
+    command = next(row for row in data["commands"] if row["name"] == "rust-test")
+    original = command["argv"][4]
+    command["argv"][4] = "list"
     receipt.write_text(json.dumps(data), encoding="utf-8")
     with pytest.raises(ValueError, match="prescribed rail"):
         portable_proof.validate(receipt)
-    data["commands"][4]["argv"][4] = "run"
+    command["argv"][4] = original
     data["raw_evidence"].pop("python-junit.xml")
     receipt.write_text(json.dumps(data), encoding="utf-8")
     with pytest.raises(ValueError, match="raw evidence set"):
@@ -372,7 +528,7 @@ def test_validator_rejects_environment_and_sdk_record_substitution(fake_executio
     with pytest.raises(ValueError, match="prescribed rail"):
         portable_proof.validate(receipt)
 
-    data["commands"][0]["argv"][1] = "_retrieval-sdk-proof-raw"
+    data["commands"][0]["argv"][1] = str(portable_proof.SOURCE_CLOSURE_SCRIPT)
     receipt.write_text(json.dumps(data), encoding="utf-8")
     record = out / "actual-runner-record.json"
     payload = json.loads(record.read_text(encoding="utf-8"))
@@ -544,7 +700,9 @@ def test_failed_command_cannot_emit_receipt(
 
 
 @pytest.mark.parametrize("rail", ["contract", "sdk"])
-def test_validator_captures_each_artifact_once_before_path_replacement(fake_execution, monkeypatch, rail):
+def test_validator_captures_each_artifact_once_before_path_replacement(
+    fake_execution, monkeypatch, rail
+):
     out, _, _ = fake_execution
     receipt = portable_proof.produce(rail, out)
     reader = portable_proof._read_repo_regular_bytes
@@ -564,7 +722,9 @@ def test_validator_captures_each_artifact_once_before_path_replacement(fake_exec
 
 
 @pytest.mark.parametrize("rail", ["contract", "sdk"])
-def test_validator_refuses_symlink_for_every_consumed_proof_artifact(fake_execution, monkeypatch, rail):
+def test_validator_refuses_symlink_for_every_consumed_proof_artifact(
+    fake_execution, monkeypatch, rail
+):
     out, _, _ = fake_execution
     receipt = portable_proof.produce(rail, out)
     reader = portable_proof._read_repo_regular_bytes
@@ -598,12 +758,22 @@ def test_canonical_summary_digest_and_parse_use_one_capture(tmp_path, monkeypatc
     summary.write_text(json.dumps({"command": "fixture", "executed": 1}))
     different = json.dumps({"command": "forged", "executed": 1}).encode()
     closure = {"revision": "b" * 40}
-    receipt.write_text(json.dumps({
-        "schema_version": 2, "revision": "b" * 40, "rail": "fixture",
-        "tier": "correctness", "command": "fixture", "evidence_path": str(summary),
-        "evidence_sha256": hashlib.sha256(different).hexdigest(), "test_event_count": 1,
-        "source_closure": closure, "input_evidence": [],
-    }))
+    receipt.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "revision": "b" * 40,
+                "rail": "fixture",
+                "tier": "correctness",
+                "command": "fixture",
+                "evidence_path": str(summary),
+                "evidence_sha256": hashlib.sha256(different).hexdigest(),
+                "test_event_count": 1,
+                "source_closure": closure,
+                "input_evidence": [],
+            }
+        )
+    )
     original_json = portable_proof._json
 
     def replace_after_json(path):
@@ -614,5 +784,6 @@ def test_canonical_summary_digest_and_parse_use_one_capture(tmp_path, monkeypatc
 
     monkeypatch.setattr(portable_proof, "_json", replace_after_json)
     with pytest.raises(ValueError, match="differs from source and machine evidence"):
-        portable_proof._canonical_receipt(receipt, rail="fixture", command="fixture",
-            summary=summary, inputs={}, closure=closure)
+        portable_proof._canonical_receipt(
+            receipt, rail="fixture", command="fixture", summary=summary, inputs={}, closure=closure
+        )

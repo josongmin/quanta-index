@@ -6,6 +6,15 @@ Status: historical design record; current implementation and proof state must be
 rollback; six owner counterexamples added. Actual release-daemon component-loss
 proof remains NOT_RUN. See [current status](CURRENT-RESIDUAL-2026-09-26.md).
 
+2026-09-26 follow-up: drain, required-child-loss and rollback now charge
+cooperative waiting and stop callbacks to one phase-origin hard deadline;
+unrepresentable deadlines exhaust the budget. The final source-stable
+`just rust-profile test-runtime-supervisor-owner` executed 24 cases, all passed,
+zero skipped, on main `7d581d0572447e4f29ce0d0ea2f9d2fbc8b1353c`
+with unrelated Python/docs dirt. This is local owner proof, not arbitrary
+blocking-callback containment or the mandatory release/Linux process proofs.
+Raw-log and source digests are in [execution evidence](EXECUTION-PROGRESS.md).
+
 Depends on: S21-00, S21-04, S21-08
 
 ## Goal

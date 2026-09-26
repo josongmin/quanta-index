@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -21,6 +22,8 @@ FIXTURE_DIR = REPO_ROOT / "benchmarks" / "bench-protocol" / "fixtures"
 
 
 def _load_evidence_module():
+    if str(EVIDENCE_PATH.parent) not in sys.path:
+        sys.path.insert(0, str(EVIDENCE_PATH.parent))
     spec = importlib.util.spec_from_file_location("benchmark_evidence", EVIDENCE_PATH)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
@@ -31,6 +34,69 @@ def _load_evidence_module():
 
 def _sealed_text(module) -> str:
     return module.to_canonical_json(module.seal(module.sample_evidence()))
+
+
+def test_regular_evidence_refuses_leaf_replaced_after_stat(tmp_path, monkeypatch):
+    module = _load_evidence_module()
+    path = tmp_path / "evidence"
+    replacement = tmp_path / "replacement"
+    path.write_bytes(b"original")
+    replacement.write_bytes(b"replaced")
+    original = Path.lstat
+    swapped = False
+
+    def race(candidate, *args, **kwargs):
+        nonlocal swapped
+        metadata = original(candidate, *args, **kwargs)
+        if candidate == path and not swapped:
+            swapped = True
+            path.unlink()
+            path.symlink_to(replacement)
+        return metadata
+
+    monkeypatch.setattr(Path, "lstat", race)
+    with pytest.raises(module.EvidenceError):
+        module._read_regular_file(path)
+
+
+def test_regular_evidence_refuses_ancestor_symlink(tmp_path):
+    module = _load_evidence_module()
+    actual = tmp_path / "actual"
+    actual.mkdir()
+    (actual / "evidence").write_bytes(b"original")
+    alias = tmp_path / "alias"
+    alias.symlink_to(actual, target_is_directory=True)
+    with pytest.raises(module.EvidenceError, match="symlink"):
+        module._read_regular_file(alias / "evidence")
+
+
+@pytest.mark.parametrize("mutation", ["replace", "grow", "restore"])
+def test_regular_evidence_refuses_mutation_during_read(tmp_path, monkeypatch, mutation):
+    module = _load_evidence_module()
+    path = tmp_path / "evidence"
+    path.write_bytes(b"original")
+    from tools.ci.lint import handoff_validation
+
+    original = handoff_validation._read_repo_regular_bytes
+
+    def race(*args, **kwargs):
+        raw = original(*args, **kwargs)
+        if mutation == "replace":
+            other = tmp_path / "new"
+            other.write_bytes(raw)
+            other.replace(path)
+        elif mutation == "grow":
+            path.write_bytes(raw + b"extra")
+        else:
+            before = path.stat()
+            path.write_bytes(b"tampered")
+            path.write_bytes(raw)
+            os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+        return raw
+
+    monkeypatch.setattr(handoff_validation, "_read_repo_regular_bytes", race)
+    with pytest.raises(module.EvidenceError, match="changed"):
+        module._read_regular_file(path)
 
 
 # --------------------------------------------------------------------------

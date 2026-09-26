@@ -75,6 +75,10 @@ use crate::vector_index::{VectorIndexSealInputV1, seal_vector_index_v1};
 const STAGING_DIR_NAME: &str = "dataset.staging";
 const BACKUP_DIR_NAME: &str = "dataset.backup";
 
+// Private backend SQL allocation ceiling, independent of vector residency.
+// Refuse oversized exact-owner predicates; never split or broaden deletion.
+const MAX_DELETE_PREDICATE_BYTES: usize = 32 * 1024 * 1024;
+
 /// Test-only environment variable consumed by the subprocess crash matrix.
 ///
 /// The hook is compiled only into this crate's unit-test binary. It exits
@@ -497,10 +501,12 @@ pub(crate) fn proof_validate_resident_batch_v1(
         ));
     }
     let dimension = header.dimension()?;
+    preflight_tombstone_delete_predicates(&header.mutations.tombstone_scopes, policy)?;
     let mut authority = StreamScopeAuthorityV1::new(&header)?;
     let mut source = quanta_index_core::ResidentScopeSource::new(&batch.replace_scopes, policy)?;
     while let Some(window) = source.next_window()? {
         let _fill = policy.admit(&window)?;
+        preflight_window_delete_predicates(&window)?;
         for scope in window.scopes() {
             validate_replace_scope(scope, dimension, batch.model_contract.normalization)?;
             authority.admit_replace_scope(scope)?;
@@ -995,17 +1001,111 @@ fn build_cluster_membership_record_batch(
 
 fn semantic_scope_tuple_from_embedding(
     embedding: &quanta_index_contract::EmbeddingRecord,
-) -> (String, String, String) {
+) -> (&str, &str, &str) {
     (
-        embedding.corpus_kind.as_code_str().to_owned(),
-        embedding.owner_kind.as_code_str().to_owned(),
-        embedding.owner_id.as_ref().to_owned(),
+        embedding.corpus_kind.as_code_str(),
+        embedding.owner_kind.as_code_str(),
+        embedding.owner_id.as_ref(),
     )
+}
+
+fn predicate_budget_error() -> CoreError {
+    CoreError::InvalidContract(format!(
+        "semantic: exact-owner delete predicate exceeds {MAX_DELETE_PREDICATE_BYTES} UTF-8 bytes"
+    ))
+}
+
+fn add_predicate_bytes(left: usize, right: usize) -> Result<usize, CoreError> {
+    left.checked_add(right)
+        .filter(|total| *total <= MAX_DELETE_PREDICATE_BYTES)
+        .ok_or_else(predicate_budget_error)
+}
+
+fn literal_bytes(value: &str) -> Result<usize, CoreError> {
+    crate::sql::quoted_sql_string_bytes(value).ok_or_else(predicate_budget_error)
+}
+
+/// Size both exact predicates before any escaping/String allocation or delete.
+/// Owner IDs remain borrowed; the bounded group map holds only byte counts.
+fn delete_predicate_bytes(
+    scopes: &BTreeSet<(&str, &str, &str)>,
+) -> Result<(usize, usize), CoreError> {
+    let mut groups = BTreeMap::<(&str, &str), usize>::new();
+    let mut membership_groups = BTreeMap::<&str, usize>::new();
+    for (corpus, kind, id) in scopes {
+        let bytes = literal_bytes(id)?;
+        let group = groups.entry((corpus, kind)).or_default();
+        let separator = usize::from(*group != 0) * 2;
+        *group = add_predicate_bytes(*group, add_predicate_bytes(bytes, separator)?)?;
+        if *corpus == SemanticCorpusKindV1::ClusterCard.as_code_str() {
+            let group = membership_groups.entry(kind).or_default();
+            let separator = usize::from(*group != 0) * 2;
+            *group = add_predicate_bytes(*group, add_predicate_bytes(bytes, separator)?)?;
+        }
+    }
+    let mut semantic = 0;
+    for ((corpus, kind), ids) in groups {
+        let syntax = format!(
+            "({COLUMN_CORPUS_KIND} =  AND {COLUMN_OWNER_KIND} =  AND {COLUMN_OWNER_ID} IN ())"
+        )
+        .len();
+        let group = add_predicate_bytes(syntax, literal_bytes(corpus)?)?;
+        let group = add_predicate_bytes(group, literal_bytes(kind)?)?;
+        let group = add_predicate_bytes(group, ids)?;
+        semantic = add_predicate_bytes(semantic, usize::from(semantic != 0) * 4)?;
+        semantic = add_predicate_bytes(semantic, group)?;
+    }
+    let mut membership = 0;
+    for (kind, ids) in membership_groups {
+        let syntax =
+            format!("({COLUMN_MEMBERSHIP_OWNER_KIND} =  AND {COLUMN_MEMBERSHIP_OWNER_ID} IN ())")
+                .len();
+        let group = add_predicate_bytes(syntax, literal_bytes(kind)?)?;
+        let group = add_predicate_bytes(group, ids)?;
+        membership = add_predicate_bytes(membership, usize::from(membership != 0) * 4)?;
+        membership = add_predicate_bytes(membership, group)?;
+    }
+    Ok((semantic, membership))
+}
+
+fn preflight_window_delete_predicates(window: &SemanticScopeWindowV1) -> Result<(), CoreError> {
+    let scopes = window
+        .scopes()
+        .iter()
+        .flat_map(|scope| &scope.embeddings)
+        .map(semantic_scope_tuple_from_embedding)
+        .collect();
+    let _sizes = delete_predicate_bytes(&scopes)?;
+    Ok(())
+}
+
+fn tombstone_tuples(chunk: &[SemanticTombstoneScope]) -> BTreeSet<(&str, &str, &str)> {
+    chunk
+        .iter()
+        .map(|scope| {
+            let owner = &scope.semantic_scope;
+            (
+                owner.corpus_kind.as_code_str(),
+                owner.owner_kind.as_code_str(),
+                owner.owner_id.as_str(),
+            )
+        })
+        .collect()
+}
+
+fn preflight_tombstone_delete_predicates(
+    tombstones: &[SemanticTombstoneScope],
+    policy: SemanticStreamWindowPolicy,
+) -> Result<(), CoreError> {
+    for chunk in tombstones.chunks(policy.max_owner_scopes()) {
+        let _sizes = delete_predicate_bytes(&tombstone_tuples(chunk))?;
+    }
+    Ok(())
 }
 
 /// Preserve exact tuples: independently combining corpus/kind/ID lists would
 /// delete the cross product, including owners absent from this mutation.
-fn semantic_scope_delete_predicate(scopes: &BTreeSet<(String, String, String)>) -> Option<String> {
+fn semantic_scope_delete_predicate(scopes: &BTreeSet<(&str, &str, &str)>) -> Option<String> {
     let mut groups: BTreeMap<(&str, &str), Vec<String>> = BTreeMap::new();
     for (corpus, kind, id) in scopes {
         groups
@@ -1020,12 +1120,10 @@ fn semantic_scope_delete_predicate(scopes: &BTreeSet<(String, String, String)>) 
     (!clauses.is_empty()).then(|| clauses.join(" OR "))
 }
 
-fn membership_scope_delete_predicate(
-    scopes: &BTreeSet<(String, String, String)>,
-) -> Option<String> {
+fn membership_scope_delete_predicate(scopes: &BTreeSet<(&str, &str, &str)>) -> Option<String> {
     let mut groups: BTreeMap<&str, Vec<String>> = BTreeMap::new();
     for (corpus, kind, id) in scopes {
-        if corpus == SemanticCorpusKindV1::ClusterCard.as_code_str() {
+        if *corpus == SemanticCorpusKindV1::ClusterCard.as_code_str() {
             groups
                 .entry(kind)
                 .or_default()
@@ -1049,9 +1147,10 @@ fn membership_scope_delete_predicate(
 /// logical scope counters are recorded by the callers, not by native calls.
 async fn delete_scope_batch(
     tables: &WorkingTables,
-    scopes: &BTreeSet<(String, String, String)>,
+    scopes: &BTreeSet<(&str, &str, &str)>,
     report: &mut IngestStageReport,
 ) -> Result<(), CoreError> {
+    let _sizes = delete_predicate_bytes(scopes)?;
     if let Some(predicate) = semantic_scope_delete_predicate(scopes) {
         delete_semantic_predicate(&tables.table, &predicate, report).await?;
     }
@@ -1636,14 +1735,8 @@ async fn apply_tombstones(
     report: &mut IngestStageReport,
 ) -> Result<(), CoreError> {
     for chunk in tombstones.chunks(policy.max_owner_scopes()) {
-        let mut scopes = BTreeSet::new();
-        for scope in chunk {
-            let owner = &scope.semantic_scope;
-            let _inserted = scopes.insert((
-                owner.corpus_kind.as_code_str().to_owned(),
-                owner.owner_kind.as_code_str().to_owned(),
-                owner.owner_id.clone(),
-            ));
+        let scopes = tombstone_tuples(chunk);
+        for _scope in chunk {
             report.semantic_delete_calls = report.semantic_delete_calls.saturating_add(1);
             report.membership_delete_calls = report.membership_delete_calls.saturating_add(1);
         }
@@ -1682,14 +1775,16 @@ fn apply_scope_stream(
     policy: SemanticStreamWindowPolicy,
     header: &SemanticIngestHeaderV1,
     authority: &mut StreamScopeAuthorityV1,
-    scopes: &mut dyn SemanticScopeSource,
+    source: (Option<SemanticScopeWindowV1>, &mut dyn SemanticScopeSource),
     report: &mut IngestStageReport,
 ) -> Result<SemanticStreamTallyV1, CoreError> {
     let dimension = header.dimension()?;
     let normalization = header.contract.model_contract.normalization;
     let mut tally = SemanticStreamTallyV1::default();
-    while let Some(window) = scopes.next_window()? {
+    let (mut next_window, scopes) = source;
+    while let Some(window) = next_window {
         let _fill = policy.admit(&window)?;
+        preflight_window_delete_predicates(&window)?;
         report.windows = report.windows.saturating_add(1);
         for scope in window.scopes() {
             validate_replace_scope(scope, dimension, normalization)?;
@@ -1700,6 +1795,7 @@ fn apply_scope_stream(
         crate::run_blocking(runtime, apply_window(tables, &window, dimension, report))?;
         tally.count_window(window.scopes().len(), rows, window.vector_bytes())?;
         drop(window);
+        next_window = scopes.next_window()?;
     }
     Ok(tally)
 }
@@ -1759,8 +1855,20 @@ pub(crate) fn build_stream_reported(
     // and against everything before it. A refusal at any window leaves the
     // promoted dataset untouched: only the staging copy holds the rows
     // appended so far, and the next build's recovery discards it.
+    GenerationContract::validate_batch_shape(&header.contract)?;
+    preflight_tombstone_delete_predicates(&header.mutations.tombstone_scopes, policy)?;
     let mut authority = StreamScopeAuthorityV1::new(header)?;
+    // Lease only the first window before preparing storage. Subsequent windows
+    // are admitted before their writes; failures never promote earlier staging.
+    let prefetch_started = Instant::now();
+    let first_window = scopes.next_window()?;
+    if let Some(window) = &first_window {
+        let _fill = policy.admit(window)?;
+        preflight_window_delete_predicates(window)?;
+    }
+    let prefetch_elapsed = monotonic_nanos_since(prefetch_started);
 
+    let prepare_started = Instant::now();
     recover_dataset_artifacts(&generation_dir)?;
     let generation_contract = ensure_generation_contract(&generation_dir, header)?;
     let working_dataset = prepare_staging_dataset(
@@ -1774,7 +1882,7 @@ pub(crate) fn build_stream_reported(
     let (tally, manifest_bytes) = {
         let tables =
             crate::run_blocking(runtime, open_working_tables(&working_dataset, dimension))?;
-        report.durations.prepare = monotonic_nanos_since(build_started);
+        report.durations.prepare = monotonic_nanos_since(prepare_started);
         let clear_started = Instant::now();
         crate::run_blocking(
             runtime,
@@ -1788,10 +1896,11 @@ pub(crate) fn build_stream_reported(
             policy,
             header,
             &mut authority,
-            scopes,
+            (first_window, scopes),
             &mut report,
         )?;
-        report.durations.stream = monotonic_nanos_since(stream_started);
+        report.durations.stream =
+            prefetch_elapsed.saturating_add(monotonic_nanos_since(stream_started));
         let tombstones_started = Instant::now();
         crate::run_blocking(
             runtime,

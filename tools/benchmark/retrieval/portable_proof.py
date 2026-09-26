@@ -14,9 +14,9 @@ import hashlib
 import json
 import os
 import platform
-import shutil
 import sys
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 
 try:
@@ -28,7 +28,12 @@ except ModuleNotFoundError:  # direct script invocation
     from tools.ci import source_closure
 
 from tools.benchmark.producer_execution import execute
-from tools.benchmark.retrieval.tool_custody import ToolCustody, resolve_tool_paths
+from tools.benchmark.retrieval.tool_custody import (
+    ToolCustody,
+    capture_executable,
+    resolve_tool_paths,
+    validate_environment,
+)
 from tools.ci.lint.handoff_validation import (
     _read_repo_regular_bytes,
     _sha256_repo_regular_file,
@@ -39,6 +44,7 @@ PROOF_COMMAND_TIMEOUT_SECONDS = 7200
 TOOL_TIMEOUT_SECONDS = 30
 PACKAGE = "quanta-index-retrieval-bench"
 FLAGS = ["--all-features", "--locked"]
+EXECUTION_CONTEXT_VERSION = 2
 FORMAT = ["--message-format", "libtest-json-plus", "--message-format-version", "0.1"]
 SOURCE_CLOSURE_SCRIPT = ROOT / "tools/ci/source_closure.py"
 RECEIPT_WRITER = ROOT / "tools/ci/write-verification-receipt.py"
@@ -90,6 +96,139 @@ def _json_bytes(raw: bytes) -> object:
     return json.loads(raw, object_pairs_hook=unique, parse_constant=constant)
 
 
+def selected_test_binaries(raw_collection_bytes: bytes) -> dict[str, Path]:
+    """Derive mandatory compiled executable roles from raw nextest collection.
+
+    v2 contexts require these roles; v1 receipts are not silently upgraded.
+    This is file custody, not independent compiler or OS attestation.
+    """
+    from tools.ci.nextest_events import parse_nextest_inventory_bytes
+
+    # Share the exact selected-test/filter/count parser used by the raw oracle.
+    parse_nextest_inventory_bytes(raw_collection_bytes)
+    payload = _json_bytes(raw_collection_bytes)
+    result: dict[str, Path] = {}
+    paths: set[Path] = set()
+    for binary_id, suite in payload["rust-suites"].items():
+        if not any(case["filter-match"] == {"status": "matches"}
+                   for case in suite["testcases"].values()):
+            continue
+        if suite.get("binary-id") != binary_id:
+            raise ValueError("selected nextest binary-id differs from its inventory key")
+        raw_path = suite.get("binary-path")
+        if (not isinstance(raw_path, str) or not raw_path or "\\" in raw_path
+                or "\x00" in raw_path or not Path(raw_path).is_absolute()
+                or ".." in Path(raw_path).parts or Path(raw_path).as_posix() != raw_path):
+            raise ValueError("selected nextest executable has no canonical absolute binary-path")
+        path = Path(raw_path)
+        role = "nextest-" + hashlib.sha256(binary_id.encode("utf-8")).hexdigest()
+        if role in result or path in paths:
+            raise ValueError("duplicate selected nextest executable identity or path")
+        result[role] = path
+        paths.add(path)
+    if not result:
+        raise ValueError("missing selected nextest executable inventory")
+    return dict(sorted(result.items()))
+
+
+def _bind_test_binaries(raw: bytes) -> dict[str, dict[str, str]]:
+    active = _ACTIVE_CUSTODY.get()
+    if active is None:
+        raise ValueError("compiled test binary binding requires controlled execution")
+    result = {}
+    for role, path in selected_test_binaries(raw).items():
+        before = capture_executable(path)
+        active[0].bind_executable(path, expected_sha256=before["sha256"])
+        if capture_executable(path) != before:
+            raise ValueError("compiled test executable changed during binding")
+        result[role] = {"path": str(path), "sha256": before["sha256"]}
+    return result
+
+
+def verify_reused_build(binary_raw: bytes, metadata_raw: bytes, collection_raw: bytes,
+                        *, workspace_root: Path) -> dict[str, Path]:
+    """Cross-check actual native build metadata against the selected collection."""
+    selected = selected_test_binaries(collection_raw)
+    binary_list = _json_bytes(binary_raw)
+    metadata = _json_bytes(metadata_raw)
+    collection = _json_bytes(collection_raw)
+    if (not isinstance(binary_list, dict)
+            or set(binary_list) != {"rust-build-meta", "rust-binaries"}
+            or not isinstance(binary_list["rust-binaries"], dict)
+            or not isinstance(binary_list["rust-build-meta"], dict)
+            or not isinstance(metadata, dict)
+            or metadata.get("workspace_root") != str(workspace_root)
+            or metadata.get("target_directory") != binary_list["rust-build-meta"].get("target-directory")
+            or not isinstance(metadata.get("packages"), list)):
+        raise ValueError("native build metadata workspace/target identity differs")
+    target = metadata["target_directory"]
+    if not isinstance(target, str) or not Path(target).is_absolute() or ".." in Path(target).parts:
+        raise ValueError("native build metadata has no canonical target directory")
+    packages = {}
+    for package in metadata["packages"]:
+        if (not isinstance(package, dict) or not isinstance(package.get("id"), str)
+                or not package["id"] or package["id"] in packages):
+            raise ValueError("native Cargo package inventory is malformed or duplicate")
+        packages[package["id"]] = package
+    expected_ids = {binary_id for binary_id, suite in collection["rust-suites"].items()
+                    if any(case["filter-match"] == {"status": "matches"}
+                           for case in suite["testcases"].values())}
+    if set(binary_list["rust-binaries"]) != expected_ids:
+        raise ValueError("native binary build inventory differs from selected test collection")
+    fields = {"binary-id", "binary-name", "package-id", "kind", "binary-path", "build-platform"}
+    for binary_id, row in binary_list["rust-binaries"].items():
+        suite = collection["rust-suites"][binary_id]
+        if (not isinstance(row, dict) or set(row) != fields
+                or any(row.get(key) != suite.get(key) for key in fields)
+                or row["package-id"] not in packages
+                or packages[row["package-id"]].get("name") != PACKAGE
+                or packages[row["package-id"]].get("manifest_path")
+                != str(workspace_root / "benchmarks/retrieval/Cargo.toml")):
+            raise ValueError("native compiled binary differs from collection/Cargo package identity")
+    return selected
+
+
+def _reuse_nextest(wrapper: str, operation: str, out: Path, *args: str) -> list[str]:
+    return _cargo(wrapper, "nextest", operation,
+                  "--binaries-metadata", str(out / "rust-build.stdout"),
+                  "--cargo-metadata", str(out / "metadata.stdout"), *args)
+
+
+def _reuse_input_epoch(path: Path, expected: bytes) -> tuple:
+    """Bind no-follow input bytes and local file/ancestor identity, not attestation."""
+    try:
+        return _capture_reuse_input_epoch(path, expected)
+    except (OSError, ValueError) as error:
+        raise ValueError(f"nextest reuse input unavailable or changed: {path}: {error}") from error
+
+
+def _capture_reuse_input_epoch(path: Path, expected: bytes) -> tuple:
+    fields = ("st_dev", "st_ino", "st_mode", "st_size", "st_mtime_ns", "st_ctime_ns")
+    before = tuple(getattr(path.lstat(), field) for field in fields)
+    chain = tuple((str(parent), parent.lstat().st_dev, parent.lstat().st_ino,
+                   parent.lstat().st_mode) for parent in path.parents)
+    actual = _read_repo_regular_bytes(path.parent, path.name, label="nextest reuse input")
+    after = tuple(getattr(path.lstat(), field) for field in fields)
+    if before != after or actual != expected:
+        raise ValueError("nextest reuse input changed before execution")
+    return before, chain, hashlib.sha256(actual).hexdigest()
+
+
+def _run_reused_nextest(wrapper: str, out: Path, commands: list[dict[str, object]],
+                       binary_raw: bytes, metadata_raw: bytes, *,
+                       env_overrides: dict[str, str]) -> bytes:
+    inputs = ((out / "rust-build.stdout", binary_raw),
+              (out / "metadata.stdout", metadata_raw))
+    epochs = [_reuse_input_epoch(path, raw) for path, raw in inputs]
+    try:
+        return _run("rust-test", _reuse_nextest(wrapper, "run", out, *FORMAT),
+                    out, commands, env_overrides=env_overrides)
+    finally:
+        for (path, raw), epoch in zip(inputs, epochs, strict=True):
+            if _reuse_input_epoch(path, raw) != epoch:
+                raise ValueError("nextest reuse input epoch changed during execution")
+
+
 def _write(path: Path, data: bytes) -> None:
     with path.open("xb") as stream:
         stream.write(data)
@@ -102,9 +241,18 @@ def _write_json(path: Path, value: object) -> None:
 
 
 def _git(*args: str) -> str:
-    stdout, _, _ = execute(
-        ["git", *args], cwd=ROOT, env=dict(os.environ), timeout=TOOL_TIMEOUT_SECONDS
-    )
+    active = _ACTIVE_CUSTODY.get()
+    environment = dict(os.environ) if active is None else active[0].environment()
+    executable = "git" if active is None else active[0].tools()["git"]["path"]
+    if active is not None:
+        active[0].check()
+    try:
+        stdout, _, _ = execute(
+            [executable, *args], cwd=ROOT, env=environment, timeout=TOOL_TIMEOUT_SECONDS
+        )
+    finally:
+        if active is not None:
+            active[0].check()
     return stdout.decode("utf-8").strip()
 
 
@@ -133,7 +281,7 @@ def _tools() -> dict[str, dict[str, str]]:
         resolved = path.resolve(strict=True)
         if not resolved.is_file():
             raise ValueError(f"required executable is not a file: {resolved}")
-        before = (resolved.stat(), _sha(invocation))
+        before = capture_executable(invocation)
         if name == "cargow":
             version = "source-controlled wrapper"
         else:
@@ -146,12 +294,12 @@ def _tools() -> dict[str, dict[str, str]]:
             version = stdout.decode("utf-8").strip()
             if not version:
                 raise ValueError(f"required executable has no version identity: {name}")
-        if (resolved.stat(), _sha(invocation)) != before or invocation.resolve() != resolved:
+        if capture_executable(invocation) != before:
             raise ValueError(f"required executable changed during version probe: {name}")
         result[name] = {
             "path": str(invocation),
             "realpath": str(resolved),
-            "sha256": before[1],
+            "sha256": before["sha256"],
             "version": version,
         }
     return result
@@ -209,7 +357,7 @@ def _relevant_environment(environment: dict[str, str]) -> dict[str, str]:
     return {key: environment[key] for key in sorted(RELEVANT_ENV & environment.keys())}
 
 
-def _tool_overrides(
+def execution_overrides(
     tools: dict[str, dict[str, str]], inherited: dict[str, str]
 ) -> dict[str, str]:
     return {
@@ -223,6 +371,33 @@ def _tool_overrides(
     }
 
 
+@contextmanager
+def controlled_execution():
+    """Yield the shared local custody owner for a complete producer invocation.
+
+    Sibling producers bind reference and native executables to this same owner.
+    This does not authenticate a remote producer or isolate a compromised UID.
+    """
+    inherited = dict(os.environ)
+    validate_environment(inherited)
+    if any(
+        inherited.get(key)
+        for key in ("PYTEST_ADDOPTS", "PYTEST_PLUGINS", "PYTHONHOME", "PYTHONPATH")
+    ):
+        raise ValueError("portable proof refuses Python startup and test selection overrides")
+    tools = _tools()
+    with tempfile.TemporaryDirectory(prefix="qi-proof-tools-") as directory:
+        custody = ToolCustody.create(
+            ROOT, Path(directory) / "bin", tools=tools, environment=inherited
+        )
+        token = _ACTIVE_CUSTODY.set((custody, inherited))
+        try:
+            yield custody
+            custody.check()
+        finally:
+            _ACTIVE_CUSTODY.reset(token)
+
+
 def _run(
     name: str,
     argv: list[str],
@@ -230,12 +405,13 @@ def _run(
     commands: list[dict[str, object]],
     *,
     env_overrides: dict[str, str] | None = None,
+    expected_executable_sha256: str | None = None,
 ) -> bytes:
     if not argv or not Path(argv[0]).is_absolute():
         raise ValueError(f"{name} requires an absolute executable")
     active = _ACTIVE_CUSTODY.get()
     inherited = dict(os.environ) if active is None else active[1]
-    controls = {} if active is None else _tool_overrides(active[0].tools(), inherited)
+    controls = {} if active is None else execution_overrides(active[0].tools(), inherited)
     overrides = {"CARGO_NET_OFFLINE": "true", **controls, **(env_overrides or {})}
     if any(overrides.get(key) != value for key, value in controls.items()):
         raise ValueError("proof command attempted to override selected tool custody")
@@ -243,7 +419,10 @@ def _run(
     if active is not None:
         if _relevant_environment(dict(os.environ)) != _relevant_environment(inherited):
             raise ValueError("proof inherited environment changed during production")
+        active[0].bind_executable(Path(argv[0]), expected_sha256=expected_executable_sha256)
         active[0].check()
+    elif expected_executable_sha256 is not None:
+        raise ValueError("expected executable identity requires controlled execution")
     try:
         output, errors, _ = execute(
             argv,
@@ -268,9 +447,9 @@ def _run(
             "environment_sha256": _environment_digest(_relevant_environment(environment)),
             "exit_code": 0,
             "stdout": stdout,
-            "stdout_sha256": _sha(out / stdout),
+            "stdout_sha256": hashlib.sha256(output).hexdigest(),
             "stderr": stderr,
-            "stderr_sha256": _sha(out / stderr),
+            "stderr_sha256": hashlib.sha256(errors).hexdigest(),
         }
     )
     return output
@@ -298,9 +477,9 @@ def _run_fresh_recipe(argv: list[str], out: Path, commands: list[dict[str, objec
             "environment_sha256": _environment_digest(_relevant_environment(environment)),
             "exit_code": 0,
             "stdout": "sdk-recipe.stdout",
-            "stdout_sha256": _sha(out / "sdk-recipe.stdout"),
+            "stdout_sha256": hashlib.sha256(output).hexdigest(),
             "stderr": "sdk-recipe.stderr",
-            "stderr_sha256": _sha(out / "sdk-recipe.stderr"),
+            "stderr_sha256": hashlib.sha256(errors).hexdigest(),
         }
     )
 
@@ -312,7 +491,7 @@ def _cargo(wrapper: str, *args: str) -> list[str]:
 def _target_dir(wrapper: str, out: Path, commands: list[dict[str, object]]) -> Path:
     raw = _run(
         "metadata",
-        _cargo(wrapper, "metadata", "--format-version", "1", "--no-deps", "--locked"),
+        _cargo(wrapper, "metadata", "--format-version", "1", "--locked"),
         out,
         commands,
     )
@@ -331,7 +510,9 @@ def _artifact(out: Path, name: str, evidence: dict[str, str]) -> Path:
     return path
 
 
-def _receipt_argv(side: str, out: Path, python: str) -> list[str]:
+def _receipt_argv(
+    side: str, out: Path, python: str, *, context_path: Path | None = None
+) -> list[str]:
     common = [
         python,
         str(RECEIPT_WRITER),
@@ -342,7 +523,7 @@ def _receipt_argv(side: str, out: Path, python: str) -> list[str]:
         "--source-closure",
         str(out / "source-closure.json"),
         "--input-evidence",
-        f"execution-context={out / 'execution-context.json'}",
+        f"execution-context={context_path if context_path is not None else out / 'execution-context.json'}",
     ]
     if side == "python":
         return [
@@ -398,11 +579,22 @@ def _receipt_argv(side: str, out: Path, python: str) -> list[str]:
 
 
 def _expected_commands(
-    rail: str, out: Path, tools: dict[str, dict[str, str]], binaries: dict[str, dict[str, str]]
+    rail: str,
+    out: Path,
+    tools: dict[str, dict[str, str]],
+    binaries: dict[str, dict[str, str]],
+    *,
+    inherited_environment: dict[str, str] | None = None,
 ) -> list[tuple[str, list[str], dict[str, str]]]:
     python = tools["python"]["path"]
     wrapper = tools["cargow"]["path"]
     base = {"CARGO_NET_OFFLINE": "true"}
+    if "cargo" in tools and "rustc" in tools:
+        base.update(
+            execution_overrides(
+                tools, dict(os.environ) if inherited_environment is None else inherited_environment
+            )
+        )
     test_env = {**base, "NEXTEST_EXPERIMENTAL_LIBTEST_JSON": "1"}
     source = (
         "source-closure",
@@ -436,6 +628,9 @@ def _expected_commands(
                 _cargo(wrapper, "nextest", "list", *selector, "--message-format", "json"),
                 base,
             ),
+            ("rust-build", _cargo(wrapper, "nextest", "list", *selector,
+                                  "--list-type", "binaries-only", "--message-format", "json"), base),
+            ("metadata", _cargo(wrapper, "metadata", "--format-version", "1", "--locked"), base),
             (
                 "python-test",
                 [
@@ -448,14 +643,49 @@ def _expected_commands(
                 ],
                 base,
             ),
-            ("rust-test", _cargo(wrapper, "nextest", "run", *selector, *FORMAT), test_env),
+            ("rust-test", _reuse_nextest(wrapper, "run", out, *FORMAT), test_env),
         ]
+    selector = ["-p", PACKAGE, "--test", "sdk_roundtrip", *FLAGS]
     return [
-        ("sdk-recipe", [tools["just"]["path"], "_retrieval-sdk-proof-raw", str(out)], base),
+        source,
+        (
+            "build-searchd",
+            _cargo(
+                wrapper,
+                "build",
+                "-p",
+                "quanta-index-searchd-runtime",
+                "--bin",
+                "quanta-index-searchd",
+                "--locked",
+            ),
+            base,
+        ),
+        (
+            "build-runner",
+            _cargo(wrapper, "build", "-p", PACKAGE, "--bin", PACKAGE, "--locked"),
+            base,
+        ),
+        (
+            "rust-collection",
+            _cargo(wrapper, "nextest", "list", *selector, "--message-format", "json"),
+            base,
+        ),
+        ("rust-build", _cargo(wrapper, "nextest", "list", *selector,
+                              "--list-type", "binaries-only", "--message-format", "json"), base),
         (
             "metadata",
-            _cargo(wrapper, "metadata", "--format-version", "1", "--no-deps", "--locked"),
+            _cargo(wrapper, "metadata", "--format-version", "1", "--locked"),
             base,
+        ),
+        (
+            "rust-test",
+            _reuse_nextest(wrapper, "run", out, *FORMAT),
+            {
+                **test_env,
+                "QUANTA_BENCH_SDK_EVIDENCE_DIR": str(out),
+                "QUANTA_INDEX_SEARCHD_BIN": binaries["searchd"]["path"],
+            },
         ),
     ]
 
@@ -468,8 +698,31 @@ def produce(rail: str, out: Path) -> Path:
         raise ValueError("portable proof output must be outside the source worktree")
     if os.name == "nt":
         raise ValueError("Windows canonical proof is blocked by Bash-only cargow/source_closure")
-    revision = _source_revision()
-    tools = _tools()
+    with controlled_execution() as custody:
+        revision = _source_revision()
+        result = _produce(rail, out, revision, custody.tools())
+        custody.check()
+        if _source_revision() != revision:
+            raise ValueError("portable proof source revision changed during production")
+        _run(
+            "terminal-source-verify",
+            [
+                custody.tools()["python"]["path"],
+                str(SOURCE_CLOSURE_SCRIPT),
+                "verify",
+                "--manifest",
+                str(out / "source-closure.json"),
+            ],
+            out,
+            [],
+        )
+        published = out / "execution-context.json"
+        os.link(result, published)
+        result.unlink()
+        return published
+
+
+def _produce(rail: str, out: Path, revision: str, tools: dict[str, dict[str, str]]) -> Path:
     commands: list[dict[str, object]] = []
     raw_evidence: dict[str, str] = {}
     python = tools["python"]["path"]
@@ -516,6 +769,13 @@ def produce(rail: str, out: Path) -> Path:
         _write(rust_inventory, (out / "rust-collection.stdout").read_bytes())
         _artifact(out, "rust-inventory.json", raw_evidence)
         proof_inventory.verify_inventory_authority(rust_inventory, "rust")
+        build_raw = _run("rust-build", _cargo(wrapper, "nextest", "list", *selector,
+                         "--list-type", "binaries-only", "--message-format", "json"), out, commands)
+        _target_dir(wrapper, out, commands)
+        metadata_raw = (out / "metadata.stdout").read_bytes()
+        verify_reused_build(build_raw, metadata_raw,
+                            rust_inventory.read_bytes(), workspace_root=ROOT)
+        binaries = _bind_test_binaries(rust_inventory.read_bytes())
         pytest_argv = [
             python,
             "-m",
@@ -526,8 +786,8 @@ def produce(rail: str, out: Path) -> Path:
         ]
         _run("python-test", pytest_argv, out, commands)
         junit = _artifact(out, "python-junit.xml", raw_evidence)
-        nextest_argv = _cargo(wrapper, "nextest", "run", *selector, *FORMAT)
-        _run("rust-test", nextest_argv, out, commands, env_overrides=environment)
+        _run_reused_nextest(wrapper, out, commands, build_raw,
+                           metadata_raw, env_overrides=environment)
         rust_events = out / "rust-test.stdout"
         _write(out / "rust-nextest.jsonl", rust_events.read_bytes())
         _artifact(out, "rust-nextest.jsonl", raw_evidence)
@@ -535,13 +795,57 @@ def produce(rail: str, out: Path) -> Path:
         rust_summary = contract_proof.nextest_summary(rust_events, rust_inventory)
         _write_json(out / "contract_python_results.json", python_summary)
         _write_json(out / "contract_rust_results.json", rust_summary)
-        binaries: dict[str, dict[str, str]] = {}
     else:
-        _run_fresh_recipe(
-            [tools["just"]["path"], "_retrieval-sdk-proof-raw", str(out)], out, commands
+        out.mkdir(parents=True, exist_ok=False)
+        _run(
+            "source-closure",
+            [
+                python,
+                str(SOURCE_CLOSURE_SCRIPT),
+                "capture",
+                "--profile",
+                "retrieval",
+                "--out",
+                str(out / "source-closure.json"),
+            ],
+            out,
+            commands,
         )
         _artifact(out, "source-closure.json", raw_evidence)
+        _run(
+            "build-searchd",
+            _cargo(
+                wrapper,
+                "build",
+                "-p",
+                "quanta-index-searchd-runtime",
+                "--bin",
+                "quanta-index-searchd",
+                "--locked",
+            ),
+            out,
+            commands,
+        )
+        _run(
+            "build-runner",
+            _cargo(wrapper, "build", "-p", PACKAGE, "--bin", PACKAGE, "--locked"),
+            out,
+            commands,
+        )
+        selector = ["-p", PACKAGE, "--test", "sdk_roundtrip", *FLAGS]
+        collected = _run(
+            "rust-collection",
+            _cargo(wrapper, "nextest", "list", *selector, "--message-format", "json"),
+            out,
+            commands,
+        )
+        _write(out / "nextest-inventory.json", collected)
+        build_raw = _run("rust-build", _cargo(wrapper, "nextest", "list", *selector,
+                         "--list-type", "binaries-only", "--message-format", "json"), out, commands)
         target = _target_dir(wrapper, out, commands)
+        metadata_raw = (out / "metadata.stdout").read_bytes()
+        verify_reused_build(build_raw, metadata_raw, collected,
+                            workspace_root=ROOT)
         suffix = ".exe" if os.name == "nt" else ""
         searchd = target / "debug" / f"quanta-index-searchd{suffix}"
         runner = target / "debug" / f"{PACKAGE}{suffix}"
@@ -550,18 +854,31 @@ def produce(rail: str, out: Path) -> Path:
             if not path.is_file():
                 raise ValueError(f"missing built binary: {path}")
             binaries[name] = {"path": str(path), "sha256": _sha(path)}
+            active = _ACTIVE_CUSTODY.get()
+            if active is None:
+                raise ValueError("SDK binary binding requires controlled execution")
+            active[0].bind_executable(path, expected_sha256=binaries[name]["sha256"])
         inventory = out / "nextest-inventory.json"
         _artifact(out, "nextest-inventory.json", raw_evidence)
         proof_inventory.verify_inventory_authority(inventory, "sdk")
+        binaries.update(_bind_test_binaries(collected))
+        events = _run_reused_nextest(
+            wrapper, out, commands, build_raw, metadata_raw,
+            env_overrides={
+                **environment,
+                "QUANTA_BENCH_SDK_EVIDENCE_DIR": str(out),
+                "QUANTA_INDEX_SEARCHD_BIN": str(searchd),
+            },
+        )
+        _write(out / "nextest.jsonl", events)
         _artifact(out, "nextest.jsonl", raw_evidence)
         record = _artifact(out, "actual-runner-record.json", raw_evidence)
-        sdk_proof.build_summary(
+        summary = sdk_proof.build_summary(
             record, out / "nextest.jsonl", runner, inventory, searchd_path=searchd
         )
-        if not (out / "sdk_results.json").is_file():
-            raise ValueError("SDK recipe omitted canonical summary")
+        _write_json(out / "sdk_results.json", summary)
     context = {
-        "schema_version": 1,
+        "schema_version": EXECUTION_CONTEXT_VERSION,
         "rail": rail,
         "revision": revision,
         "os": _os_identity(),
@@ -570,18 +887,18 @@ def produce(rail: str, out: Path) -> Path:
         "commands": commands,
         "raw_evidence": raw_evidence,
     }
-    path = out / "execution-context.json"
+    path = out / "execution-context.pending.json"
     _write_json(path, context)
     if rail == "contract":
         for side in ("python", "rust"):
-            _run(f"{side}-receipt", _receipt_argv(side, out, python), out, [])
+            _run(f"{side}-receipt", _receipt_argv(side, out, python, context_path=path), out, [])
             if not (out / f"contract_{side}_receipt.json").is_file():
                 raise ValueError(f"contract {side} receipt writer omitted its output")
     else:
-        _run("sdk-bound-receipt", _receipt_argv("sdk", out, python), out, [])
+        _run("sdk-bound-receipt", _receipt_argv("sdk", out, python, context_path=path), out, [])
         if not (out / "sdk_receipt.json").is_file():
             raise ValueError("SDK receipt writer omitted its bound output")
-    validate(path)
+    validate(path, _allow_pending=True)
     return path
 
 
@@ -611,7 +928,9 @@ def _canonical_receipt(
     def raw(value: Path) -> bytes:
         if captured is not None:
             return captured[value.name]
-        return _read_repo_regular_bytes(value.absolute().parent, value.name, label="canonical evidence")
+        return _read_repo_regular_bytes(
+            value.absolute().parent, value.name, label="canonical evidence"
+        )
 
     receipt = _json_bytes(raw(path))
     summary_bytes = raw(summary)
@@ -632,7 +951,10 @@ def _canonical_receipt(
     if not isinstance(result, dict) or result.get("command") != command:
         raise ValueError(f"canonical summary command mismatch: {summary}")
     wanted_inputs = sorted(
-        ({"role": role, "sha256": hashlib.sha256(raw(value)).hexdigest()} for role, value in inputs.items()),
+        (
+            {"role": role, "sha256": hashlib.sha256(raw(value)).hexdigest()}
+            for role, value in inputs.items()
+        ),
         key=lambda item: item["role"],
     )
     if (
@@ -658,6 +980,7 @@ def validate(
     *,
     execution_root: Path | None = None,
     binary_files: dict[str, Path] | None = None,
+    _allow_pending: bool = False,
 ) -> dict[str, object]:
     """Verify frozen bytes, retaining original command/path provenance.
 
@@ -666,6 +989,8 @@ def validate(
     receipt paths, and native binary metadata are never rewritten.
     """
     receipt_path = receipt_path.absolute()
+    if receipt_path.name == "execution-context.pending.json" and not _allow_pending:
+        raise ValueError("unpublished proof execution context")
     out = receipt_path.parent
     captured: dict[str, bytes] = {}
 
@@ -696,7 +1021,7 @@ def validate(
             "raw_evidence",
         }
         or type(context["schema_version"]) is not int
-        or context["schema_version"] != 1
+        or context["schema_version"] != EXECUTION_CONTEXT_VERSION
         or context["rail"] not in {"contract", "sdk"}
     ):
         raise ValueError("invalid execution context shape")
@@ -731,10 +1056,17 @@ def validate(
         ):
             raise ValueError("invalid proof tool identity")
     binaries = context["binaries"]
-    if not isinstance(binaries, dict) or set(binaries) != (
-        {"runner", "searchd"} if context["rail"] == "sdk" else set()
-    ):
+    selected_binaries = selected_test_binaries(capture("rust-collection.stdout"))
+    verify_reused_build(capture("rust-build.stdout"), capture("metadata.stdout"),
+                        capture("rust-collection.stdout"), workspace_root=ROOT)
+    expected_binary_roles = set(selected_binaries) | (
+        {"runner", "searchd"} if context["rail"] == "sdk" else set())
+    if not isinstance(binaries, dict) or set(binaries) != expected_binary_roles:
         raise ValueError("invalid proof binary identities")
+    if any(not isinstance(binaries[name], dict)
+           or binaries[name].get("path") != str(path)
+           for name, path in selected_binaries.items()):
+        raise ValueError("compiled test binary path differs from raw collection")
     if binary_files is not None and set(binary_files) != set(binaries):
         raise ValueError("frozen proof binary inventory mismatch")
     binary_digests: dict[str, str] = {}
@@ -746,15 +1078,30 @@ def validate(
             or not Path(binary["path"]).is_absolute()
         ):
             raise ValueError("proof binary identity changed")
-        binary_path = (binary_files[name] if binary_files is not None else Path(binary["path"])).absolute()
+        binary_path = (
+            binary_files[name] if binary_files is not None else Path(binary["path"])
+        ).absolute()
         binary_digests[name] = _sha256_repo_regular_file(
             binary_path.parent, binary_path.name, label="portable proof binary"
         )
         if binary_digests[name] != binary["sha256"]:
             raise ValueError("proof binary identity changed")
-    expected_commands = _expected_commands(context["rail"], execution_root, tools, binaries)
-    expected_names = [name for name, _, _ in expected_commands]
     commands = context["commands"]
+    if (
+        not isinstance(commands, list)
+        or not commands
+        or not isinstance(commands[0], dict)
+        or not isinstance(commands[0].get("inherited_environment"), dict)
+    ):
+        raise ValueError("missing or malformed proof commands")
+    expected_commands = _expected_commands(
+        context["rail"],
+        execution_root,
+        tools,
+        binaries,
+        inherited_environment=commands[0]["inherited_environment"],
+    )
+    expected_names = [name for name, _, _ in expected_commands]
     if (
         not isinstance(commands, list)
         or [row.get("name") for row in commands if isinstance(row, dict)] != expected_names
@@ -877,6 +1224,10 @@ def validate(
         )
     else:
         proof_inventory.verify_inventory_authority(capture("nextest-inventory.json"), "sdk")
+        if capture("nextest-inventory.json") != capture("rust-collection.stdout") or capture(
+            "nextest.jsonl"
+        ) != capture("rust-test.stdout"):
+            raise ValueError("SDK collection/test output differs from raw evidence")
         metadata = _json_bytes(capture("metadata.stdout"))
         target = metadata.get("target_directory") if isinstance(metadata, dict) else None
         suffix = ".exe" if os.name == "nt" else ""

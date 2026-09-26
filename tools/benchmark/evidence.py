@@ -845,12 +845,44 @@ def to_canonical_json(evidence: dict[str, Any]) -> str:
 
 
 def _read_regular_file(path: Path) -> bytes:
-    metadata = path.lstat()
-    if stat.S_ISLNK(metadata.st_mode):
-        raise EvidenceError(f"refusing symlink: {path}")
-    if not stat.S_ISREG(metadata.st_mode):
-        raise EvidenceError(f"not a regular file: {path}")
-    return path.read_bytes()
+    try:
+        from tools.ci.lint.handoff_validation import _read_repo_regular_bytes
+    except ModuleNotFoundError:  # standalone evidence CLI
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+        from tools.ci.lint.handoff_validation import _read_repo_regular_bytes
+
+    path = path.absolute()
+    if ".." in path.parts:
+        raise EvidenceError(f"noncanonical evidence path: {path}")
+    # Bind aliases/ancestors as well as the leaf. Directory timestamps are not
+    # stable identities: unrelated siblings may legitimately be published.
+    def identity() -> list[tuple]:
+        entries = []
+        for prefix in reversed((path, *path.parents)):
+            info = prefix.lstat()
+            if stat.S_ISLNK(info.st_mode):
+                raise EvidenceError(f"refusing symlink: {prefix}")
+            if prefix == path:
+                if not stat.S_ISREG(info.st_mode):
+                    raise EvidenceError(f"not a regular file: {path}")
+                entries.append((info.st_dev, info.st_ino, info.st_mode, info.st_size,
+                                info.st_mtime_ns, info.st_ctime_ns))
+            else:
+                if not stat.S_ISDIR(info.st_mode):
+                    raise EvidenceError(f"not an evidence directory: {prefix}")
+                entries.append((info.st_dev, info.st_ino, info.st_mode))
+        return entries
+
+    try:
+        before = identity()
+        root = Path(path.anchor)
+        raw = _read_repo_regular_bytes(root, path.relative_to(root).as_posix(),
+                                       label="benchmark evidence")
+        if identity() != before:
+            raise EvidenceError(f"evidence changed while being read: {path}")
+        return raw
+    except (OSError, ValueError) as error:
+        raise EvidenceError(f"unsafe benchmark evidence {path}: {error}") from error
 
 
 def _write_atomic(path: Path, data: bytes) -> None:

@@ -34,7 +34,8 @@ New benchmark-only packages stay in the **root Cargo workspace** and share its t
   profile records and custody/GC checks are shared, not fabricated latency rows.
 - Both crate-local Criterion targets are registered and have an execution,
   capture and raw-replay adapter. The complete runtime/LQ measurement sequence
-  is still in progress; registration/focused tests are not that receipt.
+  failed at the runtime build deadline; registration/focused tests are not
+  a complete micro measurement receipt.
 - `recorded_capture.py` imports external inputs with explicit unauthenticated
   scope. Clean snapshot `9e0f9371` passed 272 focused tests and real CLI
   import/validate/two-family fresh-process replay on fixed fixtures. This is
@@ -44,9 +45,15 @@ New benchmark-only packages stay in the **root Cargo workspace** and share its t
   binaries, a five-product lexical recorded-scoring capture adapter and a
   paired diagnostic bridge to the existing native execution/verdict owner.
   Frozen paired/CLI contract proof passed 112 tests; the complete selected
-  canonical Python recipe passed 579 tests. Fresh lexical search,
-  external corpus release/views and the actual two-repo pilot remain open. Native binary inventory,
-  monitored host-lease admission and hosted CI remain separate open proof/code
+  canonical Python recipe passed 579 tests. The common external corpus release
+  manager now materializes and replays code/developer-search views from retained
+  Git objects; actual gin/ripgrep input creation and fresh validation passed.
+  Common lexical corpus-view/query binding and retained Git-object replay are
+  implemented, with actual comparator universe attestation explicitly false.
+  Fresh lexical search and the actual two-repo comparison pilot remain open. Mandatory compiled
+  test executable custody is implemented with context v2 and 204 frozen focused
+  Python tests; paired-consumer integration and fresh terminal native proof
+  remain open. Monitored host-lease admission and hosted CI are separate proof/code
   boundaries, detailed in [CURRENT-AUDIT.md](CURRENT-AUDIT.md).
 - `tools/ci/source_closure.py` binds the benchmark control plane and owning
   micro crates. Planning history is intentionally excluded from that closure;

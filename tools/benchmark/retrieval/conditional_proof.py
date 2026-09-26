@@ -14,11 +14,13 @@ import json
 import math
 import os
 import struct
+import unicodedata
 from pathlib import Path
 
 from tools.benchmark.retrieval import parity_reference as reference
-from tools.benchmark.retrieval import portable_proof
+from tools.benchmark.retrieval import portable_proof, tool_custody
 from tools.ci import source_closure
+from tools.ci.lint.handoff_validation import _read_repo_regular_bytes
 
 ROOT = Path(__file__).resolve().parents[3]
 MAX_BYTES = 32 * 1024 * 1024
@@ -150,6 +152,8 @@ def model_rows(observed: object, baseline: object, inputs: object) -> tuple[list
 
 SEMANTIC_COLUMNS = set("embedding_id record_id repo_relative_path owner_id owner_kind corpus_kind parent_owner_id source_doc_id language package symbol_kind visibility source_role generated capability_status authority_digest render_policy_digest card_schema_version embedding_input_digest vector_digest start_line end_line snippet vector".split())
 MEMBERSHIP_COLUMNS = set("cluster_record_id authority_digest owner_kind owner_id member_symbol_id ordinal member_count membership_content_digest".split())
+
+
 NATIVE_ENUMS = {
     "owner_kind": {"File", "Module", "Symbol", "Chunk", "Callsite", "GraphEdge", "Dataflow", "Risk", "Test", "RepoMap", "ServiceMap", "OwnerMap"},
     "corpus_kind": {"SymbolCard", "ModuleCard", "ClusterCard", "RawCodeFallback", "DocumentLeaf", "DocumentSection", "DocumentSummary", "TestBehavior", "RepositorySummary"},
@@ -161,6 +165,16 @@ NATIVE_ENUMS = {
 def native_enum(value: object, field: str) -> None:
     if not isinstance(value, str) or value not in NATIVE_ENUMS[field]:
         raise ValueError(f"logical {field} is outside the native enum contract")
+
+
+def native_repository_identity(value: object, field: str) -> None:
+    # contract-base ids.rs::validate_identity; reject, never normalize.
+    if not isinstance(value, str) or not value or len(value) > 512 \
+        or any(ord(character) <= 0x1f or 0x7f <= ord(character) <= 0x9f
+               or 0xd800 <= ord(character) <= 0xdfff for character in value) \
+        or len(value.encode("utf-8")) > 512 \
+        or unicodedata.normalize("NFC", value) != value:
+        raise ValueError(f"incremental {field} is not a canonical repository identity")
 
 
 def table(value: object, name: str) -> dict:
@@ -242,6 +256,8 @@ def input_state(batch: dict) -> dict:
     exact(batch, {"repo_id", "revision_id", "generation", "base_generation", "manifest_digest", "batch_digest",
                   "mode", "model_contract", "required_corpora", "corpus_policy_digest", "clear_surfaces",
                   "replace_scopes", "tombstone_scopes", "seal"}, "native incremental batch")
+    for field in ("repo_id", "revision_id"):
+        native_repository_identity(batch[field], field)
     if not isinstance(batch["required_corpora"], list) or any(not isinstance(batch[key], str)
             for key in ("repo_id", "revision_id", "manifest_digest", "batch_digest")) \
         or batch["corpus_policy_digest"] is not None and not isinstance(batch["corpus_policy_digest"], str):
@@ -252,6 +268,12 @@ def input_state(batch: dict) -> dict:
             or value not in {"File", "Module", "Chunk", "Symbol"} for value in batch["clear_surfaces"]) \
         or not isinstance(batch["tombstone_scopes"], list):
         raise ValueError("incremental clear/tombstone scopes are not native DTO values")
+    # StreamScopeAuthorityV1 uses enum declaration order, not lexical order.
+    surface_order = {"File": 0, "Module": 1, "Chunk": 2, "Symbol": 3}
+    clears = batch["clear_surfaces"]
+    if clears != sorted(set(clears), key=surface_order.__getitem__):
+        raise ValueError("incremental clear surfaces must be unique in native canonical order")
+    tombstone_owners = set()
     for tombstone in batch["tombstone_scopes"]:
         exact(tombstone, {"semantic_scope"}, "native semantic tombstone")
         key = exact(tombstone["semantic_scope"], {"corpus_kind", "owner_kind", "owner_id"}, "native semantic owner scope")
@@ -259,6 +281,10 @@ def input_state(batch: dict) -> dict:
         native_enum(key["owner_kind"], "owner_kind")
         if not isinstance(key["owner_id"], str) or not key["owner_id"]:
             raise ValueError("incremental tombstone owner identity must be a nonempty string")
+        identity = owner(key)
+        if surface(key) in clears or identity in tombstone_owners:
+            raise ValueError("incremental scope authority forbids clear/tombstone conflicts or duplicate tombstones")
+        tombstone_owners.add(identity)
     contract = model_contract(batch["model_contract"])
     if not isinstance(batch["replace_scopes"], list):
         raise ValueError("incremental replace scopes must be an array")
@@ -306,7 +332,25 @@ def input_state(batch: dict) -> dict:
         actual = [replacement["cluster_record_id"] for replacement in scope["cluster_memberships"]]
         if actual != expected or len(actual) != len(set(actual)):
             raise ValueError("cluster membership must cover each ClusterCard once in canonical record order")
-    return logical_state(semantic, membership)
+    state = logical_state(semantic, membership)
+    # Apply stream-wide identity/conflict admission only after full row types
+    # have been validated, so malformed fields remain typed refusals.
+    record_ids, replaced_owners = set(), set()
+    for scope in batch["replace_scopes"]:
+        if scope["scope"]["doc_surface"] in clears:
+            raise ValueError("incremental scope authority forbids clear/replace conflicts")
+        scope_owners = set()
+        for record in scope["embeddings"]:
+            if surface(record) in clears:
+                raise ValueError("incremental scope authority forbids clear/replace conflicts")
+            if record["record_id"] in record_ids:
+                raise ValueError("incremental scope authority forbids duplicate record_id")
+            record_ids.add(record["record_id"])
+            scope_owners.add(owner(record))
+        if scope_owners & tombstone_owners or scope_owners & replaced_owners:
+            raise ValueError("incremental scope authority forbids tombstone/replace conflicts or repeated replace owners")
+        replaced_owners.update(scope_owners)
+    return state
 
 
 def logical_state(semantic: list, membership: list) -> dict:
@@ -365,6 +409,33 @@ def operation_oracle(case: dict) -> tuple[dict, dict, dict]:
     return before, fresh, expected
 
 
+def default_delete_predicate_admission(owners: object) -> None:
+    """Independent golden for the private backend's 32-MiB SQL refusal.
+
+    This bounds escaped delete text, not owner ID input or total residency.
+    The renderer is not imported or invoked to derive this expectation.
+    """
+    semantic, membership = {}, {}
+    for corpus, kind, identity in sorted(set(owners)):
+        literal = len(identity.encode("utf-8")) + identity.count("'") + 2
+        group = semantic.setdefault((corpus, kind), [])
+        group.append(literal)
+        if corpus == "ClusterCard":
+            membership.setdefault(kind, []).append(literal)
+    def quoted(value):
+        return len(value.encode("utf-8")) + value.count("'") + 2
+    semantic_bytes = sum(
+        len("(corpus_kind =  AND owner_kind =  AND owner_id IN ())")
+        + quoted(corpus) + quoted(kind) + sum(ids) + 2 * (len(ids) - 1)
+        for (corpus, kind), ids in semantic.items()) + 4 * max(0, len(semantic) - 1)
+    membership_bytes = sum(
+        len("(owner_kind =  AND owner_id IN ())") + quoted(kind)
+        + sum(ids) + 2 * (len(ids) - 1)
+        for kind, ids in membership.items()) + 4 * max(0, len(membership) - 1)
+    if max(semantic_bytes, membership_bytes) > 32 * 1024 * 1024:
+        raise ValueError("incremental delete predicate exceeds private backend byte budget")
+
+
 def default_window_operation_oracle(batch: dict) -> dict[str, int]:
     """Independent operation oracle for the registered resident proof recipe.
 
@@ -392,6 +463,8 @@ def default_window_operation_oracle(batch: dict) -> dict[str, int]:
             used_bytes += byte_count
     if current:
         windows.append(current)
+    for window in windows:
+        default_delete_predicate_admission(identity for _, identity, _ in window)
     fragments = sum(len({index for index, _, _ in window}) for window in windows)
     cluster_windows = sum(any(identity[0] == "ClusterCard" for _, identity, _ in window)
                           for window in windows)
@@ -404,6 +477,8 @@ def default_window_operation_oracle(batch: dict) -> dict[str, int]:
                                       for item in batch["replace_scopes"][index]["cluster_memberships"])
     tombstones = batch["tombstone_scopes"]
     chunks = [tombstones[start:start + max_owners] for start in range(0, len(tombstones), max_owners)]
+    for chunk in chunks:
+        default_delete_predicate_admission(owner(item["semantic_scope"]) for item in chunk)
     cluster_chunks = sum(any(item["semantic_scope"]["corpus_kind"] == "ClusterCard" for item in chunk)
                          for chunk in chunks)
     clears = batch["clear_surfaces"]
@@ -500,8 +575,10 @@ def incremental_rows(observed: object, plan: object) -> tuple[list[dict], int]:
 
 
 def command_identity(command: dict, context: dict, source_root: Path) -> None:
+    expected = {"CARGO_NET_OFFLINE": "true", **portable_proof.execution_overrides(
+        context["tool_custody"]["tools"], context["environment"]["relevant"])}
     if command["cwd"] != str(source_root) or command["inherited_environment"] != context["environment"]["relevant"] \
-        or command["environment"] != {"CARGO_NET_OFFLINE": "true"} \
+        or command["environment"] != expected \
         or command["environment_sha256"] != portable_proof._environment_digest({
             **command["inherited_environment"], **command["environment"],
         }):
@@ -509,6 +586,15 @@ def command_identity(command: dict, context: dict, source_root: Path) -> None:
 
 
 COMMAND_IDENTITY = {"cwd", "inherited_environment", "environment", "environment_sha256"}
+
+
+def _command_frame(command: dict, out: Path, stdout: bytes) -> dict:
+    stderr = _read_repo_regular_bytes(out, command["stderr"], label="conditional command stderr")
+    if sha(stdout) != command["stdout_sha256"] or sha(stderr) != command["stderr_sha256"]:
+        raise ValueError("conditional command bytes differ from captured execution")
+    return {"argv": command["argv"], "exit_code": command["exit_code"],
+            "stdout": artifact(stdout), "stderr": artifact(stderr),
+            **{key: command[key] for key in COMMAND_IDENTITY}}
 
 
 def rederive(kind: str, context: dict) -> tuple[dict, int]:
@@ -536,7 +622,10 @@ def validate_results(value: object, kind: str, *, verify_source: bool = False) -
         if not isinstance(identity[key], str) or len(identity[key]) != length or any(char not in "0123456789abcdef" for char in identity[key]):
             raise ValueError("invalid conditional identity digest")
     context = exact(results["execution_context"], {"source_closure", "cargo_lock_sha256", "uv_lock_sha256",
-        "suite", "corpus", "records", "semble_lockfile", "inputs", "reference", "observed", "build", "run", "reference_run", "binary_sha256", "environment"}, "conditional execution context")
+        "suite", "corpus", "records", "semble_lockfile", "inputs", "reference", "observed", "build", "run", "reference_run", "binary_sha256", "environment",
+        "tool_custody", "source_manifest", "source_capture", "source_verify"}, "conditional execution context")
+    tool_custody.validate_record(context["tool_custody"])
+    tools = context["tool_custody"]["tools"]
     try:
         closure = source_closure.validate_manifest_shape(context["source_closure"])
     except source_closure.ClosureError as error:
@@ -544,6 +633,10 @@ def validate_results(value: object, kind: str, *, verify_source: bool = False) -
     if closure["profile"] != "retrieval" or closure["revision"] != identity["source_revision"]:
         raise ValueError("conditional source closure substitution")
     closed_files = {entry["path"]: entry["sha256"] for entry in closure["files"]}
+    if load(decode(context["source_manifest"])) != closure:
+        raise ValueError("conditional source bytes differ from captured source closure")
+    if tools["cargow"]["sha256"] != closed_files.get("scripts/cargow"):
+        raise ValueError("conditional wrapper differs from closed source")
     if closed_files.get("Cargo.lock") != context["cargo_lock_sha256"] or closed_files.get("uv.lock") != context["uv_lock_sha256"]:
         raise ValueError("conditional dependency lockfile substitution")
     suite = load(decode(context["suite"]))
@@ -557,11 +650,11 @@ def validate_results(value: object, kind: str, *, verify_source: bool = False) -
         raise ValueError("conditional frozen model identity substitution")
     package, binary, features = RECIPES[kind]
     build = exact(context["build"], {"argv", "exit_code", "stdout", "stderr"} | COMMAND_IDENTITY, "conditional build")
-    expected_args = [str(ROOT / "scripts/cargow"), "--lane", "test-daemon-lane", "build", "-p", package,
+    expected_args = [tools["cargow"]["path"], "--lane", "test-daemon-lane", "build", "-p", package,
                      "--bin", binary, *features, "--locked", "--message-format=json"]
     # An absolute checkout path is permitted to differ on replay; all recipe
     # tokens following the wrapper are fixed and no shell is evaluated.
-    if not isinstance(build["argv"], list) or not build["argv"] or any(not isinstance(arg, str) for arg in build["argv"]) or build["argv"][1:] != expected_args[1:] \
+    if not isinstance(build["argv"], list) or build["argv"] != expected_args \
         or not Path(build["argv"][0]).is_absolute() or Path(build["argv"][0]).name != "cargow" \
         or type(build["exit_code"]) is not int or build["exit_code"] != 0:
         raise ValueError("conditional build recipe differs")
@@ -584,6 +677,9 @@ def validate_results(value: object, kind: str, *, verify_source: bool = False) -
         raise ValueError("conditional execution differs from built executable")
     if decode(run["stdout"]) != decode(context["observed"]):
         raise ValueError("conditional raw output differs from execution transcript")
+    executable_epoch = context["tool_custody"]["epochs"].get(run["argv"][0])
+    if executable_epoch is None or executable_epoch["sha256"] != context["binary_sha256"]:
+        raise ValueError("conditional executable lacks selected invocation custody")
     decode(run["stderr"])
     environment = context["environment"]
     if not isinstance(environment, dict) or not isinstance(environment.get("python_version"), str) \
@@ -592,6 +688,24 @@ def validate_results(value: object, kind: str, *, verify_source: bool = False) -
         or any(not isinstance(key, str) or not isinstance(value, str) for key, value in environment["relevant"].items()):
         raise ValueError("conditional producer requires standard Python 3.13")
     source_root = Path(build["argv"][0]).parent.parent
+    if Path(build["argv"][0]) != source_root / "scripts/cargow":
+        raise ValueError("conditional wrapper is not the source owner")
+    source_capture = exact(context["source_capture"], {"argv", "exit_code", "stdout", "stderr"} | COMMAND_IDENTITY, "source capture command")
+    source_verify = exact(context["source_verify"], {"argv", "exit_code", "stdout", "stderr"} | COMMAND_IDENTITY, "source verify command")
+    source_args = source_capture["argv"]
+    input_path = Path(run["argv"][2 if kind == "model_vectors" else 1])
+    manifest_path = input_path.parent / "source-closure.json"
+    if source_args != [tools["python"]["path"], str(source_root / "tools/ci/source_closure.py"),
+                       "capture", "--profile", "retrieval", "--out", str(manifest_path)] \
+        or source_verify["argv"] != [tools["python"]["path"], str(source_root / "tools/ci/source_closure.py"),
+                                    "verify", "--manifest", str(manifest_path)]:
+        raise ValueError("conditional source command differs from selected recipe")
+    for phase, command in (("capture", source_capture), ("verify", source_verify)):
+        if type(command["exit_code"]) is not int or command["exit_code"] != 0 \
+            or decode(command["stdout"]) != f"source closure {phase} ok: retrieval {len(closure['files'])} files {closure['digest']}\n".encode():
+            raise ValueError("conditional source command lacks successful bound terminal output")
+        decode(command["stderr"])
+        command_identity(command, context, source_root)
     command_identity(build, context, source_root)
     command_identity(run, context, source_root)
     if kind == "model_vectors":
@@ -634,6 +748,9 @@ def validate_results(value: object, kind: str, *, verify_source: bool = False) -
             or ref_run["argv"][9] != "minishlab/potion-code-16M-v2":
             raise ValueError("reference source/model/input command substitution")
         command_identity(ref_run, context, source_root)
+        reference_epoch = context["tool_custody"]["epochs"].get(ref_run["argv"][0])
+        if reference_epoch is None or reference_epoch["sha256"] != ref_run["interpreter_sha256"]:
+            raise ValueError("conditional reference interpreter lacks selected invocation custody")
         decode(ref_run["stdout"])
         decode(ref_run["stderr"])
     else:
@@ -668,6 +785,18 @@ def validate_results(value: object, kind: str, *, verify_source: bool = False) -
 
 
 def produce(args: argparse.Namespace) -> dict:
+    with portable_proof.controlled_execution() as guard:
+        result = _produce_controlled(args, guard)
+    # Publish only after the shared context's terminal custody check succeeds.
+    # Exclusive hard-link publication cannot expose a partially written JSON.
+    out = args.out.resolve()
+    pending = out / "results.pending.json"
+    portable_proof._write_json(pending, result)
+    os.link(pending, out / "results.json")
+    return result
+
+
+def _produce_controlled(args: argparse.Namespace, guard: tool_custody.ToolCustody) -> dict:
     kind = args.kind
     package, binary, features = RECIPES[kind]
     suite_bytes, corpus_bytes = args.suite.read_bytes(), args.corpus.read_bytes()
@@ -675,22 +804,30 @@ def produce(args: argparse.Namespace) -> dict:
     load(corpus_bytes)
     records = sorted([load(path.read_bytes()) for path in args.records], key=lambda record: sha(canonical(record)))
     models = frozen_model_identities(records)
-    closure = source_closure.build_manifest(ROOT, "retrieval")
     out = args.out.resolve()
     out.mkdir(exist_ok=False)
+    tools = guard.tools()
+    commands = []
+    manifest_path = out / "source-closure.json"
+    capture_args = [tools["python"]["path"], str(ROOT / "tools/ci/source_closure.py"),
+                    "capture", "--profile", "retrieval", "--out", str(manifest_path)]
+    source_stdout = portable_proof._run("source-capture", capture_args, out, commands)
+    source_capture = _command_frame(commands[-1], out, source_stdout)
+    manifest_bytes = _read_repo_regular_bytes(out, manifest_path.name, label="conditional source manifest")
+    closure = source_closure.validate_manifest_shape(load(manifest_bytes))
     identity = {"source_revision": closure["revision"], "repository_commit": suite["repository_commit"],
         "model_sha256": sha(canonical(models)), "dependency_sha256": sha(args.semble_lockfile.read_bytes())}
-    commands = []
-    build_args = [str(ROOT / "scripts/cargow"), "--lane", "test-daemon-lane", "build", "-p", package,
+    build_args = [tools["cargow"]["path"], "--lane", "test-daemon-lane", "build", "-p", package,
                   "--bin", binary, *features, "--locked", "--message-format=json"]
     build_stdout = portable_proof._run("build", build_args, out, commands)
+    build_frame = _command_frame(commands[-1], out, build_stdout)
     events = [load(line) for line in build_stdout.splitlines() if line.strip()]
     binaries = [event["executable"] for event in events if event.get("reason") == "compiler-artifact"
                 and event.get("target", {}).get("name") == binary and event.get("executable")]
     if len(binaries) != 1:
         raise ValueError("build did not identify exactly one proof binary")
     executable = Path(binaries[0])
-    executable_sha = sha(executable.read_bytes())
+    executable_sha = guard.bind_executable(executable)["sha256"]
     if kind == "model_vectors":
         inputs = reference.INPUTS + [task["query"] for task in suite["tasks"]]
     else:
@@ -707,35 +844,41 @@ def produce(args: argparse.Namespace) -> dict:
         ref_args = [str(args.reference_python.absolute()), str(ROOT / "tools/benchmark/retrieval/parity_reference.py"),
                     "--model-dir", str(args.model_dir.resolve()), "--out", str(out / "reference.json"),
                     "--inputs-json", str(out / "inputs.json"), "--model-id", "minishlab/potion-code-16M-v2"]
-        interpreter_sha = sha(args.reference_python.resolve().read_bytes())
-        ref_stdout = portable_proof._run("reference", ref_args, out, commands)
-        if sha(args.reference_python.resolve().read_bytes()) != interpreter_sha:
-            raise ValueError("reference interpreter changed during execution")
-        reference_bytes = (out / "reference.json").read_bytes()
-        ref_record = {"argv": ref_args, "exit_code": 0, "stdout": artifact(ref_stdout), "stderr": artifact((out / "reference.stderr").read_bytes()),
+        interpreter_sha = guard.bind_executable(args.reference_python.absolute())["sha256"]
+        ref_stdout = portable_proof._run("reference", ref_args, out, commands,
+                                        expected_executable_sha256=interpreter_sha)
+        reference_bytes = _read_repo_regular_bytes(out, "reference.json", label="conditional reference output")
+        ref_record = {**_command_frame(commands[-1], out, ref_stdout),
                       "output_sha256": sha(reference_bytes), "interpreter_sha256": interpreter_sha,
-                      "script_sha256": sha((ROOT / "tools/benchmark/retrieval/parity_reference.py").read_bytes()),
-                      **{key: commands[-1][key] for key in COMMAND_IDENTITY}}
+                      "script_sha256": next(entry["sha256"] for entry in closure["files"]
+                                            if entry["path"] == "tools/benchmark/retrieval/parity_reference.py")}
         argv = [str(executable), str(args.model_dir.resolve()), str(out / "inputs.json")]
     else:
         argv = [str(executable), str(out / "inputs.json"), str(out / "fresh-state")]
-    observed = portable_proof._run("run", argv, out, commands)
-    if sha(executable.read_bytes()) != executable_sha:
-        raise ValueError("proof executable changed during execution")
+    observed = portable_proof._run("run", argv, out, commands,
+                                   expected_executable_sha256=executable_sha)
+    run_frame = _command_frame(commands[-1], out, observed)
     if kind == "model_vectors":
         for name, expected in reference.PINNED_ASSET_SHA256.items():
             if sha((args.model_dir / name).read_bytes()) != expected:
                 raise ValueError("pinned model asset changed during execution")
-    source_closure.verify_manifest(ROOT, closure)
-    custody = {command["name"]: {key: command[key] for key in COMMAND_IDENTITY} for command in commands}
+    verify_args = [tools["python"]["path"], str(ROOT / "tools/ci/source_closure.py"),
+                   "verify", "--manifest", str(manifest_path)]
+    verify_stdout = portable_proof._run("source-verify", verify_args, out, commands)
+    source_verify = _command_frame(commands[-1], out, verify_stdout)
+    if _read_repo_regular_bytes(out, manifest_path.name, label="conditional source manifest") != manifest_bytes:
+        raise ValueError("conditional source manifest changed between capture and verification")
+    guard.check()
     context = {"source_closure": closure, "cargo_lock_sha256": sha((ROOT / "Cargo.lock").read_bytes()),
         "uv_lock_sha256": sha((ROOT / "uv.lock").read_bytes()), "suite": artifact(suite_bytes), "corpus": artifact(corpus_bytes),
         "records": artifact(canonical(records)), "semble_lockfile": artifact(args.semble_lockfile.read_bytes()),
         "inputs": artifact(input_bytes), "reference": artifact(reference_bytes) if reference_bytes is not None else None,
         "observed": artifact(observed), "binary_sha256": executable_sha,
-        "build": {"argv": build_args, "exit_code": 0, "stdout": artifact(build_stdout), "stderr": artifact((out / "build.stderr").read_bytes()), **custody["build"]},
-        "run": {"argv": argv, "exit_code": 0, "stdout": artifact(observed), "stderr": artifact((out / "run.stderr").read_bytes()), "executable_sha256": executable_sha, **custody["run"]},
-        "reference_run": ref_record, "environment": {**portable_proof._os_identity(), "relevant": portable_proof._relevant_environment(dict(os.environ))}}
+        "build": build_frame,
+        "run": {**run_frame, "executable_sha256": executable_sha},
+        "reference_run": ref_record, "environment": {**portable_proof._os_identity(), "relevant": portable_proof._relevant_environment(dict(os.environ))},
+        "tool_custody": guard.record(), "source_manifest": artifact(manifest_bytes),
+        "source_capture": source_capture, "source_verify": source_verify}
     raw, passed = rederive(kind, context)
     count = len(raw["rows"])
     result = {"schema_version": 2, "command": f"retrieval-conditional-proof-v2:{kind}",
@@ -743,8 +886,9 @@ def produce(args: argparse.Namespace) -> dict:
         "identity": identity, "raw_proof": raw, "execution_context": context}
     result["execution_receipt"] = {"schema_version": 2, "command": result["command"], "exit_code": 0, **identity,
         "runner_binary_sha256": executable_sha, "raw_sha256": sha(canonical(raw)), "context_sha256": sha(canonical(context))}
-    validate_results(result, kind, verify_source=True)
-    portable_proof._write_json(out / "results.json", result)
+    # The guarded source-verify child already checked current source using the
+    # selected Git/Cargo. Do not rerun its subprocesses in this ambient parent.
+    validate_results(result, kind)
     return result
 
 

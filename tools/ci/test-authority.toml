@@ -356,6 +356,13 @@ targets = [
   "benchmark-lexical-scorer-python-owner",
   "benchmark-portable-proof-python-owner",
   "benchmark-pair-capture-python-owner",
+  "benchmark-corpus-release-python-owner",
+  "benchmark-corpus-binding-python-owner",
+  "benchmark-nextest-inventory-python-owner",
+  "benchmark-tool-custody-python-owner",
+  "benchmark-portable-execution-python-owner",
+  "benchmark-conditional-window-python-owner",
+  "benchmark-conditional-execution-python-owner",
 ]
 
 [[python_targets]]
@@ -452,6 +459,48 @@ rail = "pr-benchmark-control-python"
 id = "benchmark-pair-capture-python-owner"
 path = "tools/ci/tests/test_pair_capture.py"
 owner = "tools/benchmark/pair_capture.py"
+rail = "pr-benchmark-control-python"
+
+[[python_targets]]
+id = "benchmark-corpus-release-python-owner"
+path = "tools/ci/tests/test_corpus_release.py"
+owner = "tools/benchmark/corpus_release.py"
+rail = "pr-benchmark-control-python"
+
+[[python_targets]]
+id = "benchmark-tool-custody-python-owner"
+path = "tools/ci/tests/test_tool_custody.py"
+owner = "tools/benchmark/retrieval/tool_custody.py"
+rail = "pr-benchmark-control-python"
+
+[[python_targets]]
+id = "benchmark-corpus-binding-python-owner"
+path = "tools/ci/tests/test_corpus_binding.py"
+owner = "tools/benchmark/corpus_binding.py"
+rail = "pr-benchmark-control-python"
+
+[[python_targets]]
+id = "benchmark-nextest-inventory-python-owner"
+path = "tools/ci/tests/test_nextest_ignored_inventory.py"
+owner = "tools/ci/nextest_events.py"
+rail = "pr-benchmark-control-python"
+
+[[python_targets]]
+id = "benchmark-portable-execution-python-owner"
+path = "tools/ci/tests/test_portable_tool_execution.py"
+owner = "tools/benchmark/retrieval/portable_proof.py"
+rail = "pr-benchmark-control-python"
+
+[[python_targets]]
+id = "benchmark-conditional-window-python-owner"
+path = "tools/ci/tests/test_conditional_window_operations.py"
+owner = "tools/benchmark/retrieval/conditional_proof.py"
+rail = "pr-benchmark-control-python"
+
+[[python_targets]]
+id = "benchmark-conditional-execution-python-owner"
+path = "tools/ci/tests/test_conditional_tool_execution.py"
+owner = "tools/benchmark/retrieval/conditional_proof.py"
 rail = "pr-benchmark-control-python"
 
 [[integration_targets]]
