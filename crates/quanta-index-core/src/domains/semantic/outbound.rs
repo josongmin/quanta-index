@@ -22,7 +22,7 @@ pub trait SemanticIngestPort: Send + Sync {
         &self,
         header: &SemanticIngestHeaderV1,
         scopes: &mut dyn SemanticScopeSource,
-    ) -> Result<BatchPublishReceipt, CoreError>;
+    ) -> Result<(BatchPublishReceipt, quanta_index_contract::IngestStageReport), CoreError>;
 }
 
 /// The checkpoint every budget-observing embedder names when the budget

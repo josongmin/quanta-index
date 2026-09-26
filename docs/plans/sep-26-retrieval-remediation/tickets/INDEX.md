@@ -1,6 +1,6 @@
 # SEP-26 Retrieval Remediation — 작업 티켓
 
-작성일: 2026-09-26. **현재 코드 판정은 [CURRENT-AUDIT.md](CURRENT-AUDIT.md)의 최신 source 재감사를 사용한다.** 감사 기준 `8308310f`; `8b612c8d..8308310f`에 RBR 구현 변경은 없지만 계약 문서와 catalog 소스가 이동했다. 동일 Python 입력의 직전 `f1d041ff` 전체 계약 272 passed/32 subtests 및 이번 dirty lexical 5 passed는 local diagnostic이며 clean-source proof가 아니다. GIN/ripgrep v4 탐색 pair는 `PAIR_VALID=pass`이나 qualified final pair는 발급되지 않았다. 남은 작업만의 등록부는 [GAP-REGISTER.md](GAP-REGISTER.md)다. 아래 2차 라운드 표는 당시 관측 기록이며 현재 완료 판정이 아니다.
+작성일/최신 source audit: 2026-09-26, `604149ed3f6033e24a834ebaa86a596f7b8ed82d` + 공유 dirty. **현행 판정은 [CURRENT-AUDIT.md](CURRENT-AUDIT.md)의 최신 절과 [GAP-REGISTER.md](GAP-REGISTER.md)**만 사용한다. actual pinned parity baseline은 local 통과했지만 malformed fixture도 통과하는 RBR-07 검증기 결함을 새로 재현했다. RBR-01 실제 server observation-off·RBR-10 ingest transient 전달은 미구현; T15/T16 양성 protocol은 claim을 열 때 필수다. 심볼 coverage/span/cross-suite/query-stage 구현은 재확인해 재구현 항목에서 제외했다. clean-source proof와 qualified final pair는 미발급이다. 아래 수행 표는 역사 기록이며 현 완료 판정이 아니다.
 
 최초 티켓 작성 감사 기준: `33b24dd5df959f38c0df4717ff834b96750faf34` + 당시 dirty 변경. 시작 기준은 `e38e07865daf19661deaa5d1e580acc5814504ef`였으며, 공유 main 커밋 후 검사 입력 57개의 해시를 재대조하고 집중 테스트를 재실행했다. 후속 역사적 코드 감사는 `af6405629ec09219e02c0a2bdb36a4cfe29ac4ba`~`619292caadf108662c22fbb9992560056a70a5bd`의 이동 중인 source를 관측했다. **현행 판정은 위 중앙 재감사를 우선한다.** 상세는 [CURRENT-AUDIT.md](CURRENT-AUDIT.md). 이 패킷은 구현 완료나 비교 우위의 증거가 아니다. 최초 감사 근거는 [AUDIT.md](AUDIT.md), 당시 관측값·파일 해시는 [audit-evidence.json](audit-evidence.json), 공통 완료 계약은 [TEST-PLAN.md](TEST-PLAN.md)에 있다.
 
@@ -26,10 +26,10 @@
 | [RBR-04](RBR-04-symbol-producer.md) | P1 / 기능 연결 | RBR-00 | source-bound 다언어 SymbolRecord + combined scope |
 | [RBR-05](RBR-05-symbol-route-proof.md) | P1 / 기능 연결 | RBR-01/02/04 | symbol route + 공통 결과 증명 |
 | [RBR-06](RBR-06-span-chunking.md) | P1 / 계측·실험 | RBR-01/02/03 | rank/context 분리, 기존 청커 대조 |
-| [RBR-07](RBR-07-semantic-parity.md) | P1 / 원인 실험 | RBR-01/03 | full-vector parity + exact/ANN 분해 |
+| [RBR-07](RBR-07-semantic-parity.md) | P0 / proof-integrity; P1 / 원인 실험 | validator 수정은 즉시; 외부 분해는 RBR-01/03 | strict fixture validator + full-vector parity + exact/ANN 분해 |
 | [RBR-08](RBR-08-symbol-ranking.md) | P2 / 조건부 변경 | RBR-05/06 | ranking 변경 또는 근거 있는 유지 결정 |
 | [RBR-09](RBR-09-query-performance.md) | P2 / 조건부 변경 | RBR-01/02/03/07 | fetch/ANN 비용-품질 frontier |
-| [RBR-10](RBR-10-ingest-performance.md) | P2 / 조건부 변경 | RBR-01 | delete/append 비용 분해와 안전한 최적화 |
+| [RBR-10](RBR-10-ingest-performance.md) | P1 / 공개 계측; P2 / 조건부 변경 | RBR-01 observation policy | transient ingest stage 전달, 비용 분해와 조건부 최적화 |
 | [RBR-11](RBR-11-resource-accounting.md) | P0 / 재현된 결함 | 없음; inventory는 RBR-00과 통합 | live zero-RSS parent를 통한 descendant 보존 |
 | [RBR-12](RBR-12-evaluation-closeout.md) | P1 / 검증 통합 | 준비는 즉시; 최종 평가는 적용 티켓 종료 후 | frozen holdout, fresh receipts, 실제 pair/replay |
 
@@ -49,14 +49,14 @@ Rust-heavy 검증과 성능 측정은 경쟁 writer/build가 없는 구간에 �
 
 각 티켓은 구현, focused verification, integration, qualification을 별도 상태로 갱신한다. 상태 값은 `VERIFIED / FAILED / BLOCKED / NOT_RUN / NOT_APPLICABLE`이다. 조건부 티켓은 실험 근거와 유지 결정이 검증되면 종료할 수 있으나, 실행하지 않은 최적화를 완료라고 쓰지 않는다.
 
-### 2026-09-26 보완 작업 현행 상태
+### 2026-09-26 보완 작업 당시 상태 (역사 기록; 최신 아님)
 
 | 티켓 | 구현·소유 rail | clean-source proof·잔여 게이트 |
 | --- | --- | --- |
 | RBR-00 | `VERIFIED` — A2 portable SDK proof fixture를 runner v5 span accounting 형태로 정렬; `test_portable_proof.py` 11/11 (공유 dirty local) | `NOT_RUN` — 고정 소스 portable receipt와 repository contract proof |
 | RBR-04 | `VERIFIED` — A1 Go 직접 type 분류, 중첩 함수·제네릭, cursor 경계, producer defect 전파; A3 unsupported 파일별 path/SHA/reason 수집·phase metrics 기록, supported parse 실패 중단; retrieval-bench lib 83/83 및 phase validator 집중 테스트 1/1 (공유 dirty local) | `NOT_RUN` — 고정 소스 전체 inventory·SDK·clean receipt와 외부 coverage admission |
 | RBR-06 | `VERIFIED` — A4 후보별 indexed/SDK/scored span bytes·expansion ratio, rank-only Hit@1·exact-index-span Recall@10와 context bytes/tokens 진단; 손계산 fixture에서 10바이트 exact와 1MB context의 rank score 동일·비용 차이 확인 (공유 dirty local) | `NOT_RUN` — 고정 소스 SDK/merge receipt와 외부 fixed chunking matrix |
-| RBR-12 | `VERIFIED` — A5 development/holdout cross-suite file·definition·query-family 누수 거부, T15/T16 raw·receipt 형태와 frozen identity 대조, summary-only 조건부 claim 거부 (공유 dirty local) | `FAILED` — 독립 raw producer·실행 검증 프로토콜 미구현으로 T15/T16 양성 verdict는 항상 거부; `NOT_RUN` — clean-source receipt, 최종 admitted pair·quality·performance |
+| RBR-12 | `VERIFIED` — A5 development/holdout cross-suite file·definition·query-family 누수 거부, T15/T16 raw·receipt 형태와 frozen identity 대조, summary-only 조건부 claim 거부 (공유 dirty local) | claim=true이면 raw 양성 protocol 미구현으로 거부·양성 proof `NOT_RUN`; false이면 `NOT_APPLICABLE`. clean-source receipt, final admitted pair·quality·performance `NOT_RUN` |
 
 ### 2026-09-26 2차 라운드 상태 (역사적 기록; 현 상태 아님)
 

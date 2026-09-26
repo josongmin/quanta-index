@@ -2,7 +2,7 @@
 
 ## 현행 판정 — 2026-09-26, [중앙 코드 감사](CURRENT-AUDIT.md) 기준
 
-- 구현: `query_plan.rs`의 native/literal/NL 분기, effective/original identity, Python 재도출 oracle 및 distractor fixture 경로 확인. 벤치 opt-in 정책이지 제품 기본값 변경이 아니다.
+- 구현: `604149ed`에서 `query_plan.rs`의 native/literal/NL 분기, effective/original identity, Python 재도출 oracle 및 distractor fixture 경로를 재확인했다. 벤치 opt-in 정책이지 제품 기본값 변경이 아니다. 재구현 항목은 없으며 owning rail·live SDK proof가 잔여다.
 - 검증: 과거 dirty local contract 결과는 기록되어 있으나 현 frozen-source 정책/identity 부정 테스트와 live daemon SDK proof는 `NOT_RUN`.
 - 잔여: 최종 source에서 query-plan·v4/v5 record/replay tamper fixture, 실제 daemon 문장/식별자 distractor 및 exact inventory/receipt를 함께 재실행한다. [현재 전수 판정](CURRENT-AUDIT.md).
 

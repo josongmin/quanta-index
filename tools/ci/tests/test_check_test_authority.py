@@ -90,6 +90,38 @@ def test_rail_binding_requires_an_executed_command() -> None:
     assert not module._executes_declared_command(
         command + " | tee evidence.jsonl\nset -o pipefail", command
     )
+    assert module._executes_declared_command(
+        "cd crates/fuzz && cargo +nightly fuzz run demo -- -max_total_time=60",
+        "cargo +nightly fuzz run demo",
+    )
+    assert not module._executes_declared_command("set +e\n" + command + "\ntrue", command)
+    assert not module._executes_declared_command("cd missing && " + command + "\ntrue", command)
+
+
+@pytest.mark.parametrize(
+    "template",
+    [
+        "exit 0\n{command}",
+        "if false; then\n{command}\nfi",
+        "false && {command}",
+        "f() {{\n{command}\n}}",
+        "cat <<EOF\n{command}\nEOF",
+        "{command} &",
+    ],
+)
+def test_rail_binding_refuses_unexecuted_shell_text(template: str) -> None:
+    module = _load_module()
+    command = "./scripts/cargow nextest run --workspace --all-features --locked"
+    assert not module._executes_declared_command(template.format(command=command), command)
+
+
+def test_condition_refuses_contradictory_unknown_atom() -> None:
+    module = _load_module()
+    assert not module._condition_allows_tier("inputs.enable && !inputs.enable", {"pull_request"})
+    assert module._condition_allows_tier("inputs.enable || !inputs.enable", {"pull_request"})
+    assert not module._condition_allows_tier(
+        module._joint_condition("inputs.enable", "!inputs.enable"), {"pull_request"}
+    )
 
 
 @pytest.mark.parametrize(
@@ -101,6 +133,8 @@ def test_rail_binding_requires_an_executed_command() -> None:
         "    if: github.event_name == 'schedule'",
         "    if: github.event_name == 'pull_request' && false",
         "        if: ${{ github.event_name == 'pull_request' && !true }}",
+        "    continue-on-error: true",
+        "        continue-on-error: true",
     ],
 )
 def test_rail_binding_rejects_unreachable_workflow(tmp_path: Path, mutation: str) -> None:
@@ -115,7 +149,7 @@ def test_rail_binding_rejects_unreachable_workflow(tmp_path: Path, mutation: str
     )
     if mutation.startswith("on:"):
         body = body.replace("on: [pull_request]", mutation)
-    elif mutation.startswith("    if:"):
+    elif mutation.startswith(("    if:", "    continue-on-error:")):
         body = body.replace("    steps:", mutation + "\n    steps:")
     else:
         body = body.replace("        run:", mutation + "\n        run:")

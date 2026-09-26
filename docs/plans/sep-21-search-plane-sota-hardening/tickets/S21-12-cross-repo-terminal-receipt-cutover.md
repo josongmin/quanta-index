@@ -2,6 +2,12 @@
 
 Status: exact-pair release qualification staged.
 
+2026-09-26: actual resolved dependency pre/postflight is implemented and the
+registry binds the nested resolver lock. Twenty helper negatives cover wrong
+checkout and graph/path failures. Resolver mapping manifest custody and fresh
+live exact-pair evidence remain open; see [current status](CURRENT-RESIDUAL-2026-09-26.md).
+The 2026-09-24 root-lock/preflight description below is historical.
+
 2026-09-24 adversarial plan correction: the current pair snapshot binds
 Semantica Git state and `Cargo.lock`, but does not prove the resolved
 `quanta-index-{contract,ipc,sdk}` Cargo path packages point into the frozen

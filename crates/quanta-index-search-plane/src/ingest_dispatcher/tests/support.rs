@@ -1483,7 +1483,13 @@ impl SemanticIngestPort for MismatchedSemanticIngest {
         &self,
         header: &SemanticIngestHeaderV1,
         scopes: &mut dyn SemanticScopeSource,
-    ) -> Result<BatchPublishReceipt, CoreError> {
+    ) -> Result<
+        (
+            BatchPublishReceipt,
+            quanta_index_contract::IngestStageReport,
+        ),
+        CoreError,
+    > {
         while let Some(window) = scopes.next_window()? {
             drop(window);
         }
@@ -1495,7 +1501,7 @@ impl SemanticIngestPort for MismatchedSemanticIngest {
         if header.batch.seal {
             receipt.mark_sealed();
         }
-        Ok(receipt)
+        Ok((receipt, quanta_index_contract::IngestStageReport::default()))
     }
 }
 
@@ -1531,7 +1537,14 @@ impl SemanticScopeStreamBuildPort for FakeSemanticBuilder {
         &self,
         header: &SemanticIngestHeaderV1,
         scopes: &mut dyn SemanticScopeSource,
-    ) -> Result<SemanticStreamTallyV1, CoreError> {
+    ) -> Result<
+        (
+            SemanticStreamTallyV1,
+            quanta_index_contract::IngestStageReport,
+        ),
+        CoreError,
+    > {
+        let started = std::time::Instant::now();
         let mut tally = SemanticStreamTallyV1::default();
         let mut replace_scopes = Vec::new();
         while let Some(window) = scopes.next_window()? {
@@ -1547,7 +1560,19 @@ impl SemanticScopeStreamBuildPort for FakeSemanticBuilder {
             .lock()
             .map_err(|err| CoreError::Storage(format!("fake semantic builder poisoned: {err}")))?
             .push(tally.windows);
-        Ok(tally)
+        let elapsed = u64::try_from(started.elapsed().as_nanos()).map_err(|error| CoreError::InvalidContract(error.to_string()))?;
+        let report = quanta_index_contract::IngestStageReport {
+            windows: tally.windows,
+            owner_scopes: tally.replace_scopes,
+            durations: quanta_index_contract::IngestStageDurations {
+                total: elapsed,
+                stream: elapsed,
+                seal: header.batch.seal.then_some(0),
+                ..quanta_index_contract::IngestStageDurations::default()
+            },
+            ..quanta_index_contract::IngestStageReport::default()
+        };
+        Ok((tally, report))
     }
 }
 

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import itertools
 import re
 import shlex
 import sys
@@ -204,7 +205,9 @@ def _validate_rail_binding(
             _violation(catalog, f"rail {rail_id} workflow job does not exist: {job_id}")
         )
         return
-    if not _condition_allows_tier(jobs[job_id].get("if"), required_events):
+    if jobs[job_id].get("continue-on-error", False) is not False or not _condition_allows_tier(
+        jobs[job_id].get("if"), enabled_events.intersection(required_events)
+    ):
         violations.append(_violation(catalog, f"rail {rail_id} workflow job is disabled"))
         return
     steps = jobs[job_id].get("steps")
@@ -214,7 +217,10 @@ def _validate_rail_binding(
     for step in steps:
         if not isinstance(step, dict) or step.get("name") != step_name:
             continue
-        if not _condition_allows_tier(step.get("if"), required_events):
+        if step.get("continue-on-error", False) is not False or not _condition_allows_tier(
+            _joint_condition(jobs[job_id].get("if"), step.get("if")),
+            enabled_events.intersection(required_events),
+        ):
             violations.append(_violation(catalog, f"rail {rail_id} workflow step is disabled"))
             return
         run = step.get("run")
@@ -233,30 +239,92 @@ def _validate_rail_binding(
 
 
 def _executes_declared_command(run: str, command: str) -> bool:
-    """Match a logical shell command, not a comment or receipt metadata string."""
-    logical_lines = re.sub(r"\\\r?\n[ \t]*", " ", run)
+    """Require a foreground top-level command; shell text is not execution.
+
+    Authority rails use straight-line shell commands. Conditional lists,
+    functions, loops, heredocs and background jobs cannot establish a binding.
+    """
+    from tree_sitter_language_pack import get_parser
+
+    source = run.encode("utf-8")
+    tree = get_parser("bash").parse(source)
+    if tree.root_node.has_error:
+        return False
     pipefail_enabled = False
-    for raw_line in logical_lines.splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
+    for node in tree.root_node.children:
+        if node.type in {"comment", ";", "\n"}:
             continue
-        for statement in re.split(r"&&|;", line):
-            statement = " ".join(statement.split())
+        if node.type == "&":
+            return False
+        if node.type == "list":
+            parts = node.named_children
+            guard = parts[0].child_by_field_name("name") if len(parts) == 2 else None
+            if (
+                len(parts) != 2
+                or parts[0].type != "command"
+                or parts[1].type != "command"
+                or guard is None
+                or source[guard.start_byte : guard.end_byte] != b"cd"
+                or source[parts[0].end_byte : parts[1].start_byte].strip() != b"&&"
+            ):
+                return False
+            if any(
+                later.start_byte >= node.end_byte and later.type != "comment"
+                for later in tree.root_node.named_children
+            ):
+                return False
+            # A failed cd keeps the AND list failed. Its successful path must
+            # execute the foreground rail. It must be the last statement;
+            # errexit does not abort on an AND list's failed left operand.
+            node = parts[1]
+        statement = " ".join(
+            re.sub(r"\\\r?\n[ \t]*", " ", source[node.start_byte : node.end_byte].decode()).split()
+        )
+        if node.type == "command":
+            name = node.child_by_field_name("name")
+            executable = (
+                source[name.start_byte : name.end_byte].decode() if name is not None else ""
+            )
+            if executable in {"exit", "return", "exec", "false"}:
+                return False
             if statement == "set -o pipefail":
                 pipefail_enabled = True
                 continue
             if statement == "set +o pipefail":
                 pipefail_enabled = False
                 continue
-            if statement.startswith(command):
-                suffix = statement[len(command) :]
-                if "nextest run" in command and suffix.strip():
-                    tail = suffix.strip()
-                    if "||" in tail or not tail.startswith("|") or not pipefail_enabled:
-                        continue
-                if not suffix or suffix[0].isspace() or suffix[0] == "|":
-                    return True
+            if statement.startswith("set ") and ("+e" in statement or "+o errexit" in statement):
+                return False
+        elif node.type != "pipeline":
+            # Setup assignments/declarations are harmless. Unknown control
+            # flow before the rail cannot prove that the rail is reachable.
+            if node.type in {"variable_assignment", "declaration_command", "redirected_statement"}:
+                continue
+            return False
+        if statement.startswith(command):
+            # A trailing '&' is a separate program child, outside the command.
+            following = source[node.end_byte :].lstrip()
+            if following.startswith(b"&"):
+                return False
+            suffix = statement[len(command) :]
+            if "nextest run" in command and suffix.strip():
+                if not suffix.strip().startswith("|") or not pipefail_enabled:
+                    continue
+            if not suffix or suffix[0].isspace() or suffix[0] == "|":
+                return True
     return False
+
+
+def _joint_condition(job: object, step: object) -> object:
+    def expression(value: object) -> str:
+        if value is None or value is True:
+            return "true"
+        if value is False or not isinstance(value, str):
+            return "false"
+        value = value.strip()
+        return value[3:-2].strip() if value.startswith("${{") and value.endswith("}}") else value
+
+    return f"({expression(job)}) && ({expression(step)})"
 
 
 def _is_disabled(value: object) -> bool:
@@ -302,40 +370,45 @@ def _condition_allows_tier(value: object, events: set[str]) -> bool:
         except SyntaxError:
             return False
 
-        def possible(node: ast.AST) -> set[bool]:
-            if isinstance(node, ast.Expression):
-                return possible(node.body)
-            if isinstance(node, ast.Constant) and isinstance(node.value, bool):
-                return {node.value}
-            if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.And):
-                values = {True}
-                for part in node.values:
-                    values = {left and right for left in values for right in possible(part)}
-                return values
-            if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.Or):
-                values = {False}
-                for part in node.values:
-                    values = {left or right for left in values for right in possible(part)}
-                return values
-            if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
-                return {not item for item in possible(node.operand)}
-            if isinstance(node, ast.Compare):
-                if (
-                    len(node.ops) == 1
-                    and len(node.comparators) == 1
-                    and isinstance(node.left, ast.Constant)
-                    and isinstance(node.comparators[0], ast.Constant)
-                    and isinstance(node.op, (ast.Eq, ast.NotEq))
-                ):
-                    equal = node.left.value == node.comparators[0].value
-                    return {equal if isinstance(node.op, ast.Eq) else not equal}
-                return {False, True}
-            if isinstance(node, (ast.Name, ast.Attribute, ast.Call)):
-                # Non-event inputs remain unknown at static-analysis time.
-                return {False, True}
-            return set()
+        atoms: set[str] = set()
 
-        return True in possible(tree)
+        def evaluate(node: ast.AST, assignment: dict[str, bool]) -> bool | None:
+            if isinstance(node, ast.Expression):
+                return evaluate(node.body, assignment)
+            if isinstance(node, ast.Constant) and isinstance(node.value, bool):
+                return node.value
+            if isinstance(node, ast.BoolOp) and isinstance(node.op, (ast.And, ast.Or)):
+                values = [evaluate(part, assignment) for part in node.values]
+                if None in values:
+                    return None
+                return all(values) if isinstance(node.op, ast.And) else any(values)
+            if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+                value = evaluate(node.operand, assignment)
+                return None if value is None else not value
+            if isinstance(node, ast.Compare) and (
+                len(node.ops) == 1
+                and len(node.comparators) == 1
+                and isinstance(node.left, ast.Constant)
+                and isinstance(node.comparators[0], ast.Constant)
+                and isinstance(node.op, (ast.Eq, ast.NotEq))
+            ):
+                equal = node.left.value == node.comparators[0].value
+                return equal if isinstance(node.op, ast.Eq) else not equal
+            if isinstance(node, (ast.Name, ast.Attribute, ast.Call, ast.Compare)):
+                key = ast.dump(node)
+                atoms.add(key)
+                return assignment.get(key, False)
+            return None
+
+        evaluate(tree, {})
+        # Bound static analysis; unknown complexity never establishes a rail.
+        if len(atoms) > 12:
+            return False
+        keys = sorted(atoms)
+        return any(
+            evaluate(tree, dict(zip(keys, values))) is True
+            for values in itertools.product((False, True), repeat=len(keys))
+        )
 
     return any(possible_for_event(event) for event in events)
 

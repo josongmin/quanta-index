@@ -46,6 +46,49 @@ def test_parity_reference_refuses_unpinned_assets_and_library(tmp_path, monkeypa
         parity_reference.verify_reference_inputs(tmp_path)
 
 
+def test_parity_reference_rejects_partial_nonfinite_or_zero_vectors():
+    for vector in ([0.0] * 256, [1.0] * 255, [1.0] * 257,
+                   [float("nan")] + [1.0] * 255, [float("inf")] + [1.0] * 255):
+        with pytest.raises(ValueError, match="reference vector"):
+            parity_reference.l2_normalize(vector)
+    assert parity_reference.l2_normalize([1.0] * 256) == [0.0625] * 256
+
+
+def test_retrieval_diagnostic_v5_binds_actual_server_observation_policy(tmp_path):
+    stage = _pair_stage(tmp_path)
+    path = next(stage["stage"].glob("rep-00/quanta/strategy-*/retrieval-diagnostic.json"))
+    record_path = path.with_name("record.json")
+    record = json.loads(record_path.read_text())
+    suite = json.loads(stage["suite_path"].read_text())
+    pack = json.loads((stage["stage"] / "query-pack.json").read_text())
+    pack, _ = pairrun.project_pack_and_suite(pack, suite, sorted(record["route_provenance"]))
+    diagnostic = json.loads(path.read_text())
+    diagnostic["schema_version"] = 5
+    diagnostic["server_observation"] = pairrun.server_observation_configuration("enabled")
+    record_sha = ev.digest(record_path.read_bytes())
+    pairrun.validate_retrieval_diagnostic(diagnostic, record, record_sha, pack)
+    disabled = json.loads(json.dumps(diagnostic))
+    disabled["server_observation"] = pairrun.server_observation_configuration("disabled")
+    for row in disabled["results"]:
+        row["response"]["explanation"]["stage_timings"] = None
+    pairrun.validate_retrieval_diagnostic(disabled, record, record_sha, pack)
+    for mutate, match in (
+        (lambda value: value.pop("server_observation"), "must hold exactly"),
+        (lambda value: value["server_observation"].update(config_sha256="0" * 64), "digest/scope"),
+        (lambda value: value["server_observation"].update(query_stages="unknown"), "exactly enabled"),
+        (lambda value: value["results"][0]["response"]["explanation"].update(stage_timings=[]), "unmeasured"),
+        (lambda value: value["results"][0]["response"]["explanation"].update(request_id=0), "transport request"),
+    ):
+        forged = json.loads(json.dumps(disabled))
+        mutate(forged)
+        with pytest.raises(pairrun.RunError, match=match):
+            pairrun.validate_retrieval_diagnostic(forged, record, record_sha, pack)
+    contradictory = json.loads(json.dumps(disabled))
+    contradictory["server_observation"] = diagnostic["server_observation"]
+    with pytest.raises(pairrun.RunError, match="stage timings"):
+        pairrun.validate_retrieval_diagnostic(contradictory, record, record_sha, pack)
+
+
 def test_query_plan_oracle_uses_nfc_and_rejects_unindexable_runs():
     composed = qp.plan_lexical_request("natural_language", "caf\u00e9")
     decomposed = qp.plan_lexical_request("natural_language", "cafe\u0301")

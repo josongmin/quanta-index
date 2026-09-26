@@ -18,6 +18,11 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+LINT_DIR = str(Path(__file__).resolve().parent)
+if LINT_DIR not in sys.path:
+    sys.path.insert(0, LINT_DIR)
+from rust_attribute_policy import attribute_metas  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[3]
 RUST_SOURCE_ROOTS = (ROOT / "crates", ROOT / "benchmarks")
 
@@ -72,21 +77,14 @@ def derives_in(text: str) -> list[tuple[int, list[str]]]:
 
     def visit(node: object) -> None:
         if node.type in {"attribute_item", "inner_attribute_item"}:
-            stack = [node]
-            while stack:
-                current = stack.pop()
-                children = current.children
-                for index, child in enumerate(children):
-                    if child.type == "identifier" and child.text == b"derive":
-                        argument = children[index + 1] if index + 1 < len(children) else None
-                        if argument is None:
-                            raise ValueError("derive attribute has no argument list")
-                        if argument.type != "token_tree":
-                            raise ValueError("derive attribute has no argument list")
-                        body = argument.text.decode("utf-8")[1:-1]
-                        names = [name.strip() for name in body.split(",") if name.strip()]
-                        sites.append((child.start_point.row + 1, names))
-                    stack.append(child)
+            for name, arguments, _ in attribute_metas(node):
+                if name != "derive":
+                    continue
+                if len(arguments) != 1 or arguments[0].type != "token_tree":
+                    raise ValueError("derive attribute has no argument list")
+                body = arguments[0].text.decode("utf-8")[1:-1]
+                names = [name.strip() for name in body.split(",") if name.strip()]
+                sites.append((node.start_point.row + 1, names))
             return
         for child in node.children:
             visit(child)

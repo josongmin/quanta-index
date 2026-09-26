@@ -27,6 +27,7 @@ import argparse
 import decimal
 import hashlib
 import json
+import math
 import os
 import re
 import stat
@@ -244,15 +245,21 @@ def _string(value: object, where: str) -> str:
 
 
 def _uint(value: object, where: str) -> int:
-    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-        _fail(f"{where} must be a non-negative integer")
+    if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= (1 << 64) - 1:
+        _fail(f"{where} must be a non-negative integer in the u64 range")
     return value
 
 
 def _number(value: object, where: str) -> float:
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         _fail(f"{where} must be a number")
-    return float(value)
+    try:
+        measured = float(value)
+    except OverflowError as exc:
+        raise EvidenceError(f"{where} exceeds the finite numeric range") from exc
+    if not math.isfinite(measured):
+        _fail(f"{where} must be finite")
+    return measured
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -262,6 +269,18 @@ def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
             raise EvidenceError(f"duplicate JSON key {key!r}")
         seen[key] = value
     return seen
+
+
+def parse_json(text: str) -> Any:
+    """Strict JSON for native captures and orchestration records."""
+    def reject_constant(value: str) -> None:
+        raise EvidenceError(f"non-finite JSON constant: {value}")
+
+    try:
+        return json.loads(text, object_pairs_hook=_reject_duplicate_keys,
+                          parse_constant=reject_constant)
+    except (ValueError, RecursionError) as exc:
+        raise EvidenceError(f"invalid JSON: {exc}") from exc
 
 
 def _relative_path(value: object, where: str) -> str:
@@ -276,7 +295,12 @@ def _relative_path(value: object, where: str) -> str:
 
 def _run_id(value: object) -> str:
     text = _string(value, "run_id")
-    if text == "latest" or text.startswith(".") or RUN_ID_RE.fullmatch(text) is None or ".." in text:
+    if (
+        text == "latest"
+        or text.startswith(".")
+        or RUN_ID_RE.fullmatch(text) is None
+        or ".." in text
+    ):
         _fail(f"invalid run id {text!r}")
     return text
 
@@ -313,8 +337,17 @@ def _metric(value: object, where: str) -> None:
 def _validate_micro(payload: dict[str, Any]) -> None:
     table = _exact_keys(
         payload,
-        {"kind", "bench_id", "metric", "unit", "instrumentation", "statistic",
-         "value", "iterations", "samples"},
+        {
+            "kind",
+            "bench_id",
+            "metric",
+            "unit",
+            "instrumentation",
+            "statistic",
+            "value",
+            "iterations",
+            "samples",
+        },
         "payload",
     )
     _string(table["bench_id"], "payload.bench_id")
@@ -349,8 +382,18 @@ def _validate_latency(payload: dict[str, Any]) -> None:
         where = f"payload.rows[{index}]"
         row = _exact_keys(
             raw,
-            {"case_id", "metric", "unit", "samples", "p50", "p95", "p99",
-             "error_count", "timeout_count", "early_stop_reason"},
+            {
+                "case_id",
+                "metric",
+                "unit",
+                "samples",
+                "p50",
+                "p95",
+                "p99",
+                "error_count",
+                "timeout_count",
+                "early_stop_reason",
+            },
             where,
         )
         case_id = _string(row["case_id"], f"{where}.case_id")
@@ -415,9 +458,7 @@ def _validate_load(payload: dict[str, Any]) -> None:
 
 
 def _validate_freshness(payload: dict[str, Any]) -> None:
-    table = _exact_keys(
-        payload, {"kind", "phases", "stale_hits", "generation"}, "payload"
-    )
+    table = _exact_keys(payload, {"kind", "phases", "stale_hits", "generation"}, "payload")
     phases = _list(table["phases"], "payload.phases", nonempty=True)
     seen: set[str] = set()
     for index, raw in enumerate(phases):
@@ -438,8 +479,17 @@ def _validate_freshness(payload: dict[str, Any]) -> None:
 def _validate_retrieval(payload: dict[str, Any]) -> None:
     table = _exact_keys(
         payload,
-        {"kind", "lane", "metric_space", "judgments", "unjudged", "rows",
-         "universe_attested", "corpus_digest", "query_pack_digest"},
+        {
+            "kind",
+            "lane",
+            "metric_space",
+            "judgments",
+            "unjudged",
+            "rows",
+            "universe_attested",
+            "corpus_digest",
+            "query_pack_digest",
+        },
         "payload",
     )
     lane = _string(table["lane"], "payload.lane")
@@ -485,8 +535,17 @@ def _validate_retrieval(payload: dict[str, Any]) -> None:
 def _validate_agent_outcome(payload: dict[str, Any]) -> None:
     table = _exact_keys(
         payload,
-        {"kind", "task_count", "pair_count", "arms", "excluded_pairs", "unknown_pairs",
-         "metrics", "capture", "input_digest"},
+        {
+            "kind",
+            "task_count",
+            "pair_count",
+            "arms",
+            "excluded_pairs",
+            "unknown_pairs",
+            "metrics",
+            "capture",
+            "input_digest",
+        },
         "payload",
     )
     if table["arms"] != ["A", "B", "C"]:
@@ -682,9 +741,7 @@ def validate(evidence: object) -> dict[str, Any]:
     status = _string(verdict["status"], "verdict.status")
     if status not in STATUSES:
         _fail(f"verdict.status {status!r} is not registered")
-    if status != "pass" and not (
-        isinstance(verdict["reason"], str) and verdict["reason"].strip()
-    ):
+    if status != "pass" and not (isinstance(verdict["reason"], str) and verdict["reason"].strip()):
         _fail("a non-pass verdict must state a reason")
     if verdict["reason"] is not None:
         _string(verdict["reason"], "verdict.reason")
@@ -968,9 +1025,7 @@ class StagingRun:
             raise EvidenceError(
                 f"run id mismatch: expected {self.run_id!r}, found {evidence.get('run_id')!r}"
             )
-        _write_atomic(
-            self.path / EVIDENCE_FILE, to_canonical_json(evidence).encode("utf-8")
-        )
+        _write_atomic(self.path / EVIDENCE_FILE, to_canonical_json(evidence).encode("utf-8"))
 
     def read_evidence(self) -> dict[str, Any]:
         return read_evidence(self.path / EVIDENCE_FILE)
@@ -1012,9 +1067,7 @@ def sample_evidence() -> dict[str, Any]:
             "lockfile_digest": digest_bytes(b"lockfile-sample"),
             "profile": "bench",
             "flags": ["--locked"],
-            "binaries": [
-                {"name": "dsl_warm_matrix", "sha256": digest_bytes(b"binary-sample")}
-            ],
+            "binaries": [{"name": "dsl_warm_matrix", "sha256": digest_bytes(b"binary-sample")}],
         },
         "inputs": [
             {
@@ -1113,8 +1166,7 @@ def main(argv: list[str] | None = None) -> int:
             sys.stdout.write(verify_digest(evidence) + "\n")
         else:
             sys.stdout.write(
-                f"valid BenchmarkEvidenceV1: {evidence['family']} "
-                f"{verify_digest(evidence)}\n"
+                f"valid BenchmarkEvidenceV1: {evidence['family']} {verify_digest(evidence)}\n"
             )
     except EvidenceError as error:
         sys.stderr.write(f"ERROR: {error}\n")

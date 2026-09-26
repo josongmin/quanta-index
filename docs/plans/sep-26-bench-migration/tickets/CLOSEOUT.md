@@ -1,5 +1,12 @@
 # SEP-26 benchmark migration — closeout verdicts
 
+**Historical receipt — superseded by [CURRENT-AUDIT.md](CURRENT-AUDIT.md).**
+The implementation/integration claims below overstate non-native profile
+support. Before the current repair, systems promotion was latency-only and
+concurrency fan-out was refused. Current repairs cover native systems/load/
+freshness capture and replay; Criterion/retrieval/recorded adapters are still
+implementation work. Do not use this document as an all-tickets-complete claim.
+
 Source state for every receipt in this file:
 
 - `HEAD` moved **four times** during this session under a concurrent worker:

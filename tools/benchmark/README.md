@@ -35,6 +35,24 @@ changed input is refused. `summarize` is read-only and labels observed files
 a HEAD-matching artifact captured before local source edits cannot be
 requalified as evidence for the dirty tree.
 
+## Capture capabilities (2026-09-26 source audit)
+
+Registration is not execution support. `list`/`plan` expose all registered
+families; the current end-to-end native capture path is narrower:
+
+| Profiles | Current execution/evidence path |
+| --- | --- |
+| `dsl-authority`, `quality-core`, `quality-full`, `systems`, `semantic-ab` | Native Just producers, artifact checks, baseline comparison where declared, immutable promotion and raw-derived replay. Requires clean source and the declared host/inputs. |
+| `micro`, `dsl-diagnostic` | Registered Criterion owners; automatic Criterion capture/promotion adapter is not implemented. `run` refuses before executing anything. |
+| `retrieval-contract`, `retrieval-diagnostic` | Existing retrieval owners remain authoritative. Registered plans exist; CLI capture parameters and native-to-common evidence adapters are not implemented. |
+| `recorded` | Agent outcomes and scan experiments remain separate owner workflows. No complete profile capture/import adapter. |
+
+Unsupported profiles do not execute a supported subset and then claim a full
+capture. `summarize` reports `registered_not_captured` with an unknown (null)
+measurement count; `preflight` explicitly refuses rather than raising a lookup
+exception. These are implementation gaps, not missing license/gold/quiet-host
+inputs. See the [current audit](../../docs/plans/sep-26-bench-migration/tickets/CURRENT-AUDIT.md).
+
 ## Immutable runs and typed evidence
 
 Passing `--evidence-root <external-root>` (or setting
@@ -61,6 +79,24 @@ artifact verbatim into an immutable run:
   and digest, and a run that backs an admitted baseline (with its raw inputs)
   can never be garbage-collected.
 - The evidence root must stay outside the checkout; artifact data is external.
+
+Native latency, load and freshness payloads are re-derived from every raw
+artifact during replay. Concurrency requires all 1/8/32 **fast-client** cases;
+the native envelope includes the additional slow client (1/9/33 total clients).
+Each case retains its own config digest. Fast/slow aggregates are projected
+once, not re-summed from their route subsets or from all copies of `detail`.
+Open-loop counts reconcile every offered request with served/errors/timeouts/
+drops; scheduler-late drops, not SUT queue backpressure, flag generator
+saturation. Freshness retains every sample's transition phases and an explicit
+producer-observed stale-hit count; older captures without that count are not
+silently upgraded.
+
+Promoted native runs currently have diagnostic scope, shared-host lease
+observations and no measured binary digest inventory. Their profile elapsed
+time includes build/recipe work and is **not query latency**. The command clock
+is measured; a hard timeout is applied to each producer recipe. Baseline
+admission and `--evidence-root` capture are separate actions. These runs cannot
+be promoted into a performance qualification claim merely because replay passes.
 
 Typed payloads keep measurement kinds apart: a `micro` payload whose
 instrumentation is `instructions` cannot carry `ms`; a retrieval `span` metric

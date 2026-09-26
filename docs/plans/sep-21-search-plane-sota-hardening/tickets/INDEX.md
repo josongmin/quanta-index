@@ -5,6 +5,12 @@ proofs do not establish current-source or release closure. Use the
 [execution evidence index](EXECUTION-PROGRESS.md) to inspect the live result.
 Tracked docs do not embed a result SHA; validated receipts own it.
 
+2026-09-26 current implementation/residual status:
+[parallel structural audit](CURRENT-RESIDUAL-2026-09-26.md). Supervisor loss,
+resolved Cargo roots and pytest evidence admission were repaired; release and
+operational qualification remain separate. Use its status table over dated
+"owner must land" notes.
+
 P10 update (2026-09-24): the prerelease breaking decision retires
 `migrate-state` and any old-root success path. Historical migration tickets
 and prompts below are not executable current instructions. Current-format

@@ -265,7 +265,7 @@ def check_envelope(
     if not isinstance(payload, dict):
         return reasons
     schema = payload.get("schema_version")
-    if schema != CURRENT_SCHEMA_VERSION:
+    if type(schema) is not int or schema != CURRENT_SCHEMA_VERSION:
         reasons.append(
             f"schema_version {schema!r} is not {CURRENT_SCHEMA_VERSION}; "
             "re-capture the artifact with the current rail"
@@ -399,6 +399,72 @@ def check_envelope(
     return reasons
 
 
+def parse_artifact_bytes(raw: bytes) -> object:
+    """Parse native evidence without last-key-wins or non-finite defaults."""
+
+    def unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate native JSON key: {key}")
+            result[key] = value
+        return result
+
+    def reject_constant(value: str) -> None:
+        raise ValueError(f"non-finite native JSON value: {value}")
+
+    return json.loads(raw, object_pairs_hook=unique_object, parse_constant=reject_constant)
+
+
+def check_artifact(
+    payload: object,
+    *,
+    dimension: str,
+    head: str | None,
+    require: bool,
+    manifest: dict[str, object] = MANIFEST,
+) -> list[str]:
+    """One family policy for scanning, promotion and captured-raw replay."""
+    family = manifest["families"][dimension]
+    reasons = check_envelope(
+        payload, dimension=dimension, head=head, host_policy=family["host_policy"]
+    )
+    if not require or not isinstance(payload, dict):
+        return reasons
+    rows = payload.get("rows")
+    minimum = family["minimum_samples"]
+    if minimum is not None and isinstance(rows, list):
+        for index, row in enumerate(rows):
+            latency = row.get("latency") if isinstance(row, dict) else None
+            if (
+                not isinstance(latency, dict)
+                or type(latency.get("samples")) is not int
+                or latency["samples"] < minimum
+            ):
+                reasons.append(f"{dimension}: rows[{index}] needs at least {minimum} samples")
+    detail = payload.get("detail")
+    if family["requires_verdict"] and (
+        not isinstance(detail, dict) or detail.get("passed") is not True
+    ):
+        reasons.append(f"{dimension}: required rail verdict is not true")
+    if dimension == "open-loop" and (
+        not isinstance(detail, dict)
+        or detail.get("arrival_model") != "seeded_poisson"
+        or type(detail.get("duration_ms")) is not int
+        or detail["duration_ms"] < 10_000
+        or not isinstance(detail.get("points"), list)
+        or len(detail["points"]) < 4
+    ):
+        reasons.append(
+            "open-loop: authority needs seeded_poisson, >=10 s and >=4 offered-load points"
+        )
+    if isinstance(rows, list) and any(
+        isinstance(row, dict) and row.get("early_stop_reason") is not None for row in rows
+    ):
+        reasons.append(f"{dimension}: required measurement contains an early stop")
+    return reasons
+
+
 def expand(repo_root: Path, pattern: str) -> list[Path]:
     if any(char in pattern for char in "*?["):
         return sorted(repo_root.glob(pattern))
@@ -440,66 +506,14 @@ def check_families(
         for path in paths:
             checked.append(path)
             try:
-                payload = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError) as exc:
+                payload = parse_artifact_bytes(path.read_bytes())
+            except (OSError, ValueError) as exc:
                 refusals.append(Refusal(path, f"unreadable: {exc}"))
                 continue
-            raw_families = manifest["families"]
-            assert isinstance(raw_families, dict)
-            family = raw_families.get(dimension)
-            assert isinstance(family, dict)
-            host_policy = family["host_policy"]
-            assert isinstance(host_policy, str)
-            for reason in check_envelope(
-                payload, dimension=dimension, head=head, host_policy=host_policy
+            for reason in check_artifact(
+                payload, dimension=dimension, head=head, require=require, manifest=manifest
             ):
                 refusals.append(Refusal(path, reason))
-            if require and isinstance(payload, dict):
-                rows = payload.get("rows")
-                minimum = family["minimum_samples"]
-                if minimum is not None and isinstance(rows, list):
-                    for index, row in enumerate(rows):
-                        latency = row.get("latency") if isinstance(row, dict) else None
-                        if (
-                            not isinstance(latency, dict)
-                            or type(latency.get("samples")) is not int
-                            or latency["samples"] < minimum
-                        ):
-                            refusals.append(
-                                Refusal(
-                                    path,
-                                    f"{dimension}: rows[{index}] needs at least {minimum} samples",
-                                )
-                            )
-                if family["requires_verdict"]:
-                    detail = payload.get("detail")
-                    if not isinstance(detail, dict) or detail.get("passed") is not True:
-                        refusals.append(
-                            Refusal(path, f"{dimension}: required rail verdict is not true")
-                        )
-                if dimension == "open-loop":
-                    detail = payload.get("detail")
-                    if (
-                        not isinstance(detail, dict)
-                        or detail.get("arrival_model") != "seeded_poisson"
-                        or type(detail.get("duration_ms")) is not int
-                        or detail["duration_ms"] < 10_000
-                        or not isinstance(detail.get("points"), list)
-                        or len(detail["points"]) < 4
-                    ):
-                        refusals.append(
-                            Refusal(
-                                path,
-                                "open-loop: authority needs seeded_poisson, >=10 s and >=4 offered-load points",
-                            )
-                        )
-                if isinstance(rows, list) and any(
-                    isinstance(row, dict) and row.get("early_stop_reason") is not None
-                    for row in rows
-                ):
-                    refusals.append(
-                        Refusal(path, f"{dimension}: required measurement contains an early stop")
-                    )
     return refusals, checked, absent
 
 

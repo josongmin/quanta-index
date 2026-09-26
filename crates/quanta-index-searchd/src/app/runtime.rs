@@ -1590,6 +1590,7 @@ impl SearchdRuntime {
             )
             .with_cursor_key_store(cursor_keys)
             .with_history_text(history_text)
+            .with_query_stage_observation(config.query_stage_observation())
             .with_response_budget(config.query_response_budget()),
         );
         let quarantine = QuarantineService::new(QuarantineServiceParts {

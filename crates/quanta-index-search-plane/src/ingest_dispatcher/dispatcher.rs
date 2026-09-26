@@ -335,12 +335,40 @@ impl SearchPlaneIngestDispatcher {
         }
         match request {
             SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(mut batch) => {
+                let mut observation = None;
                 match self.publish_idempotent(
                     &mut batch,
                     |batch| self.lexical.preflight_batch(batch),
-                    |batch| self.lexical.publish_batch(batch, budget),
+                    |batch| {
+                        let outcome = self.lexical.publish_batch(batch, budget)?;
+                        observation = outcome.observation;
+                        Ok(outcome.receipt)
+                    },
                 ) {
-                    Ok(receipt) => SearchPlaneIngestIpcResponse::SearchCorpusReceipt(receipt),
+                    Ok(receipt) => {
+                        if !receipt.applied {
+                            observation =
+                                Some(quanta_index_contract::SearchCorpusIngestObservation {
+                                    request_id: budget.response_request_id(),
+                                    repo_id: batch.repo_id.clone(),
+                                    revision_id: batch.revision_id.clone(),
+                                    generation: batch.generation,
+                                    batch_digest: batch.batch_digest.clone(),
+                                    status:
+                                        quanta_index_contract::IngestObservationStatus::Replayed,
+                                    semantic: None,
+                                    lexical_build_ns: None,
+                                    finalize_ns: None,
+                                    activation_ns: None,
+                                });
+                        }
+                        SearchPlaneIngestIpcResponse::SearchCorpusReceipt(
+                            quanta_index_contract::SearchCorpusPublishOutcome {
+                                receipt,
+                                observation,
+                            },
+                        )
+                    }
                     Err(err) => SearchPlaneIngestIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }

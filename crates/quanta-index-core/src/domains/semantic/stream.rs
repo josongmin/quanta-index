@@ -491,6 +491,12 @@ pub trait SemanticScopeSource {
 
     /// What the source has issued so far.
     fn tally(&self) -> SemanticStreamTallyV1;
+
+    /// Provider-call elapsed time when this source owns embedding.
+    /// Precomputed vector sources do not execute embedding.
+    fn embedding_elapsed_ns(&self) -> Option<u64> {
+        None
+    }
 }
 
 /// Build one batch of a generation from a header and a scope source,
@@ -505,7 +511,7 @@ pub trait SemanticScopeStreamBuildPort: Send + Sync {
         &self,
         header: &SemanticIngestHeaderV1,
         scopes: &mut dyn SemanticScopeSource,
-    ) -> Result<SemanticStreamTallyV1, CoreError>;
+    ) -> Result<(SemanticStreamTallyV1, quanta_index_contract::IngestStageReport), CoreError>;
 }
 
 /// A semantic ingest batch without its replace scopes: what the build knows
@@ -772,7 +778,7 @@ pub fn build_resident_semantic_batch_v1(
 ) -> Result<SemanticStreamTallyV1, CoreError> {
     let header = SemanticIngestHeaderV1::of_batch(batch);
     let mut source = ResidentScopeSource::new(&batch.replace_scopes, policy)?;
-    let appended = port.build_stream(&header, &mut source)?;
+    let (appended, _observation) = port.build_stream(&header, &mut source)?;
     let issued = source.tally();
     if appended != issued {
         return Err(CoreError::InvalidContract(format!(

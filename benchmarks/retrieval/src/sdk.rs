@@ -16,9 +16,10 @@ use quanta_index_contract::ipc::GenerationStatusReport;
 use quanta_index_contract::{
     GenerationPin, HybridCandidateV1, LexicalCandidate, ManifestGeneration, QueryResultWindowV2,
     RepoId, RevisionId, SearchCorpusActiveHeadV1, SearchExplanation, SearchPlaneErrorCodeV2,
-    SearchPlaneSearchCorpusActivationCasAck,
+    SearchPlaneSearchCorpusActivationCasAck, SearchCorpusIngestObservation,
 };
 use quanta_index_sdk::{BatchReceipt, ConnectOptions, QuantaIndex, SdkError, SearchCorpusBatch};
+use quanta_index_search_plane::QueryStageObservationPolicy;
 
 use crate::batch::BatchIdentity;
 use crate::{BenchError, BenchResult};
@@ -27,6 +28,7 @@ pub const DEFAULT_READY_TIMEOUT: Duration = Duration::from_secs(30);
 pub const DEFAULT_IO_TIMEOUT: Duration = Duration::from_secs(30);
 pub const SEARCHD_BIN_ENV: &str = "QUANTA_INDEX_SEARCHD_BIN";
 pub const EMBEDDER_ENV: &str = "QUANTA_INDEX_EMBEDDER";
+pub const QUERY_STAGE_OBSERVATION_ENV: &str = "QUANTA_INDEX_QUERY_STAGE_OBSERVATION";
 
 /// Resolve the daemon binary.
 ///
@@ -220,6 +222,7 @@ pub struct DaemonConfig<'a> {
     pub state_root: &'a Path,
     pub searchd_binary: Option<&'a Path>,
     pub embedder: &'a str,
+    pub query_stage_observation: QueryStageObservationPolicy,
     /// Optional explicit local-model directory. Used by failure probes and
     /// qualified captures that must not inherit a workstation cache path.
     pub model_dir: Option<&'a Path>,
@@ -320,6 +323,9 @@ impl DaemonSession {
             .arg("--state-root")
             .arg(config.state_root)
             .env(EMBEDDER_ENV, config.embedder)
+            // Explicit even for the default: inherited workstation settings
+            // cannot silently alter a source-bound benchmark capture.
+            .env(QUERY_STAGE_OBSERVATION_ENV, config.query_stage_observation.as_str())
             .env(
                 "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_GENERATIONS",
                 config.history_max_generations.to_string(),
@@ -787,15 +793,18 @@ pub fn publish_and_activate(
     batch: &SearchCorpusBatch,
     expected: &BatchIdentity,
     expected_active: Option<&SearchCorpusActiveHeadV1>,
-) -> BenchResult<(BatchReceipt, SearchPlaneSearchCorpusActivationCasAck)> {
+) -> BenchResult<(BatchReceipt, SearchPlaneSearchCorpusActivationCasAck, SearchCorpusIngestObservation)> {
     let digest = batch
         .batch_digest()
         .map_err(|err| BenchError::Sdk(format!("failed to compute batch digest: {err}")))?;
-    let (receipt, ack) = session
+    let (outcome, ack) = session
         .client()
         .search_corpus()
-        .publish_and_activate(batch, expected_active.cloned())
+        .publish_and_activate_observed(batch, expected_active.cloned())
         .map_err(|err| BenchError::Sdk(format!("publish_and_activate failed: {err}")))?;
+    let observation = outcome.observation.ok_or_else(|| BenchError::Protocol(
+        "observed publish returned no transient observation".to_string()))?;
+    let receipt = outcome.receipt;
     verify_sealed_receipt(&receipt, &digest, expected)?;
     verify_activation_ack(&ack, expected, expected_active)?;
     if receipt.semantic_content.as_ref() != Some(&ack.active.generation.semantic_content) {
@@ -803,7 +812,7 @@ pub fn publish_and_activate(
             "sealed receipt roots differ from the activated roots".to_string(),
         ));
     }
-    Ok((receipt, ack))
+    Ok((receipt, ack, observation))
 }
 
 pub(crate) fn verify_sealed_receipt(

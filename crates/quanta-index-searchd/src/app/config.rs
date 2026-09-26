@@ -16,7 +16,8 @@ use quanta_index_embed::{
 use quanta_index_ipc::ServerAdmissionPolicy;
 use quanta_index_search_plane::readiness::SearchCorpusHistoryRetentionPolicyV1;
 use quanta_index_search_plane::{
-    ResponsePayloadBudget, SEARCH_OWNED_SEMANTIC_DIMENSION, SnapshotRegistryPolicy,
+    QueryStageObservationPolicy, ResponsePayloadBudget, SEARCH_OWNED_SEMANTIC_DIMENSION,
+    SnapshotRegistryPolicy,
 };
 
 use crate::app::socket_access::SocketAccessPolicies;
@@ -417,6 +418,7 @@ pub struct SearchdConfig {
     /// How many encoded bytes one ranked lexical page may take before it
     /// is cut and continued by its cursor (QI-BB-005 보완 #5).
     query_response_budget: ResponsePayloadBudget,
+    query_stage_observation: QueryStageObservationPolicy,
     /// How the integrity scrub is paced as maintenance (QI-BB-017): at most
     /// one bounded step per interval, on the maintenance timer.
     integrity_scrub_policy: IntegrityScrubPolicyV1,
@@ -604,6 +606,23 @@ pub(crate) const ENV_POLICY_FAMILIES: &[EnvPolicyFamily] = &[
         },
     },
     EnvPolicyFamily {
+        name: "query stage observation",
+        env_vars: &["QUANTA_INDEX_QUERY_STAGE_OBSERVATION"],
+        apply: |config, lookup| {
+            let policy = lookup("QUANTA_INDEX_QUERY_STAGE_OBSERVATION")?
+                .map(|value| {
+                    QueryStageObservationPolicy::parse(&value).map_err(|error| {
+                        anyhow::anyhow!(
+                            "QUANTA_INDEX_QUERY_STAGE_OBSERVATION: {error}, got {value:?}"
+                        )
+                    })
+                })
+                .transpose()?
+                .unwrap_or_default();
+            Ok(config.with_query_stage_observation(policy))
+        },
+    },
+    EnvPolicyFamily {
         name: "integrity scrub",
         env_vars: &[
             "QUANTA_INDEX_INTEGRITY_SCRUB_INTERVAL_MS",
@@ -670,6 +689,7 @@ impl SearchdConfig {
             process_memory_ceilings: ProcessMemoryCeilings::DEFAULT,
             maintenance_policy: MaintenancePolicy::DEFAULT,
             query_response_budget: ResponsePayloadBudget::DEFAULT,
+            query_stage_observation: QueryStageObservationPolicy::default(),
             integrity_scrub_policy: IntegrityScrubPolicyV1::DEFAULT,
             provider_work_budget: ProviderWorkBudgetConfig::default(),
             provider_egress_grant: ProviderEgressGrantConfig::default(),
@@ -865,6 +885,20 @@ impl SearchdConfig {
     #[must_use]
     pub const fn query_response_budget(&self) -> ResponsePayloadBudget {
         self.query_response_budget
+    }
+
+    #[must_use]
+    pub const fn query_stage_observation(&self) -> QueryStageObservationPolicy {
+        self.query_stage_observation
+    }
+
+    #[must_use]
+    pub const fn with_query_stage_observation(
+        mut self,
+        policy: QueryStageObservationPolicy,
+    ) -> Self {
+        self.query_stage_observation = policy;
+        self
     }
 
     #[must_use]
@@ -1897,6 +1931,7 @@ mod tests {
     /// entry point, changes the resolved config in a way the fence sees.
     fn every_knob_non_default() -> BTreeMap<&'static str, &'static str> {
         BTreeMap::from([
+            ("QUANTA_INDEX_QUERY_STAGE_OBSERVATION", "disabled"),
             ("QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_GENERATIONS", "3"),
             ("QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_BYTES", "4096"),
             (
@@ -1963,6 +1998,47 @@ mod tests {
             ("QUANTA_INDEX_PROVIDER_PROFILE", "fence-release"),
             ("QUANTA_INDEX_PROVIDER_SOURCE_CONTENT_CONSENT", "true"),
         ])
+    }
+
+    #[test]
+    fn query_stage_observation_policy_is_explicit_and_rejects_unknown_values() {
+        const KNOB: &str = "QUANTA_INDEX_QUERY_STAGE_OBSERVATION";
+        let family = ENV_POLICY_FAMILIES
+            .iter()
+            .find(|family| family.env_vars.contains(&KNOB))
+            .expect("query stage policy is registered in the daemon config chain");
+        for (value, expected) in [
+            (None, QueryStageObservationPolicy::Enabled),
+            (Some("enabled"), QueryStageObservationPolicy::Enabled),
+            (Some("disabled"), QueryStageObservationPolicy::Disabled),
+        ] {
+            let lookup = |name: &str| -> Result<Option<String>> {
+                Ok(if name == KNOB {
+                    value.map(str::to_string)
+                } else {
+                    None
+                })
+            };
+            let config = (family.apply)(
+                SearchdConfig::from_test_state_root(PathBuf::from("/tmp/qi-stage-policy")),
+                &lookup,
+            )
+            .expect("known query stage policy must resolve");
+            assert_eq!(config.query_stage_observation(), expected);
+        }
+        for value in ["", "off", "false", "enabled ", "DISABLED", "unknown"] {
+            let lookup = |name: &str| -> Result<Option<String>> {
+                Ok((name == KNOB).then(|| value.to_string()))
+            };
+            assert!(
+                (family.apply)(
+                    SearchdConfig::from_test_state_root(PathBuf::from("/tmp/qi-stage-policy")),
+                    &lookup
+                )
+                .is_err(),
+                "invalid stage observation policy must refuse: {value:?}"
+            );
+        }
     }
 
     /// An env knob name: uppercase, digits and underscores, not ending in

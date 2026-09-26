@@ -23,7 +23,7 @@ fn direct_semantic_materializer_builds_durably_and_receipts_the_seal() -> TestRe
     let header = SemanticIngestHeaderV1::of_batch(&batch);
     let mut source =
         ResidentScopeSource::new(&batch.replace_scopes, SemanticStreamWindowPolicy::DEFAULT)?;
-    let receipt = materializer.publish_stream(&header, &mut source)?;
+    let (receipt, _observation) = materializer.publish_stream(&header, &mut source)?;
     if !receipt.sealed || receipt.manifest_digest.as_deref() != Some(batch.manifest_digest.as_str())
     {
         return Err("unexpected semantic materialize receipt".into());
@@ -46,14 +46,20 @@ impl SemanticScopeStreamBuildPort for UndercountingBuilder {
         &self,
         _header: &SemanticIngestHeaderV1,
         scopes: &mut dyn SemanticScopeSource,
-    ) -> Result<SemanticStreamTallyV1, CoreError> {
+    ) -> Result<
+        (
+            SemanticStreamTallyV1,
+            quanta_index_contract::IngestStageReport,
+        ),
+        CoreError,
+    > {
         let mut tally = SemanticStreamTallyV1::default();
         while let Some(window) = scopes.next_window()? {
             tally.count_window(window.scopes().len(), window.rows()?, window.vector_bytes())?;
             drop(window);
         }
         tally.windows = tally.windows.saturating_sub(1);
-        Ok(tally)
+        Ok((tally, quanta_index_contract::IngestStageReport::default()))
     }
 }
 

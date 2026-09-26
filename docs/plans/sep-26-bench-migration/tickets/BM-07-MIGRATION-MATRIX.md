@@ -1,5 +1,12 @@
 # BM-07 — Migration matrix and cutover state
 
+**Historical matrix.** Current capability and remaining implementation work are
+in [CURRENT-AUDIT.md](CURRENT-AUDIT.md). In particular, "registered" does not
+mean `benchctl run` support; micro/retrieval/recorded rows have not completed
+their execution/evidence cutover. Native systems fan-out/payload repairs were
+added after the receipts below. Hosted CI and clean-source measurement are
+not established by this matrix.
+
 One row per registered family. "Cutover" means **the registry CLI is the live
 authority for that family**; the old control plane is no longer current for it.
 Nothing here is a benchmark result — the right-hand columns are implementation

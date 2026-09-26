@@ -35,6 +35,7 @@ use quanta_index_retrieval_bench::sdk::{
 };
 use quanta_index_retrieval_bench::symbols::extract_corpus_symbols;
 use quanta_index_retrieval_bench::{BenchError, sha256_hex};
+use quanta_index_search_plane::QueryStageObservationPolicy;
 
 const EMBEDDER: &str = "hash-dev";
 
@@ -104,6 +105,7 @@ fn boot_session(state_root: &Path, identity: &BatchIdentity) -> DaemonSession {
         searchd_binary: None,
         embedder: EMBEDDER,
         model_dir: None,
+        query_stage_observation: QueryStageObservationPolicy::Enabled,
         repo_id: &identity.repo_id,
         revision_id: &identity.revision_id,
         ready_timeout: Duration::from_secs(60),
@@ -190,6 +192,7 @@ fn stale_state_root_is_refused() {
         searchd_binary: None,
         embedder: EMBEDDER,
         model_dir: None,
+        query_stage_observation: QueryStageObservationPolicy::Enabled,
         repo_id: &identity.repo_id,
         revision_id: &identity.revision_id,
         ready_timeout: Duration::from_secs(5),
@@ -217,6 +220,7 @@ fn symlink_state_root_is_refused() {
         searchd_binary: None,
         embedder: EMBEDDER,
         model_dir: None,
+        query_stage_observation: QueryStageObservationPolicy::Enabled,
         repo_id: &identity.repo_id,
         revision_id: &identity.revision_id,
         ready_timeout: Duration::from_secs(5),
@@ -247,6 +251,7 @@ fn boot_times_out_when_daemon_never_opens_sockets() {
         searchd_binary: Some(&script),
         embedder: EMBEDDER,
         model_dir: None,
+        query_stage_observation: QueryStageObservationPolicy::Enabled,
         repo_id: &identity.repo_id,
         revision_id: &identity.revision_id,
         ready_timeout: Duration::from_secs(2),
@@ -281,6 +286,7 @@ fn missing_pinned_model_fails_boot_without_a_scored_record() {
         searchd_binary: None,
         embedder: "potion-code",
         model_dir: Some(&missing_model),
+        query_stage_observation: QueryStageObservationPolicy::Enabled,
         repo_id: &identity.repo_id,
         revision_id: &identity.revision_id,
         ready_timeout: Duration::from_secs(10),
@@ -322,6 +328,7 @@ fn unavailable_provider_is_typed_and_never_returns_hits() {
         searchd_binary: None,
         embedder: "unavailable",
         model_dir: None,
+        query_stage_observation: QueryStageObservationPolicy::Enabled,
         repo_id: &identity.repo_id,
         revision_id: &identity.revision_id,
         ready_timeout: Duration::from_secs(60),
@@ -329,7 +336,7 @@ fn unavailable_provider_is_typed_and_never_returns_hits() {
         history_max_generations: 8,
     };
     let session = DaemonSession::boot(&config).expect("daemon boots");
-    let (_receipt, _ack) =
+    let (_receipt, _ack, _observation) =
         publish_and_activate(&session, &batch, &identity, None).expect("publish+activate");
     match query_route(&RouteQuery {
         client: session.client(),
@@ -441,7 +448,7 @@ fn real_daemon_roundtrip_publishes_and_queries() {
         "query before activation must fail, got {premature:?}"
     );
 
-    let (receipt, ack) =
+    let (receipt, ack, observation) =
         publish_and_activate(&session, &batch, &identity, None).expect("publish+activate");
 
     // A stale generation pin never reads another generation's rows.
@@ -1132,7 +1139,7 @@ fn second_boot_over_used_root_is_refused_without_cleanup() {
     let state = tempfile::tempdir().expect("state root");
     let state_root = state.path().join("daemon");
     let session = boot_session(&state_root, &identity);
-    let (_receipt, _ack) =
+    let (_receipt, _ack, _observation) =
         publish_and_activate(&session, &batch, &identity, None).expect("publish");
     session.stop().expect("stop");
     // The used root still holds index data: a second boot must refuse it.
@@ -1141,6 +1148,7 @@ fn second_boot_over_used_root_is_refused_without_cleanup() {
         searchd_binary: None,
         embedder: EMBEDDER,
         model_dir: None,
+        query_stage_observation: QueryStageObservationPolicy::Enabled,
         repo_id: &identity.repo_id,
         revision_id: &identity.revision_id,
         ready_timeout: Duration::from_secs(5),
@@ -1200,7 +1208,7 @@ fn symbol_route_answers_from_published_units_and_proves_spans() {
         .expect("units");
     let state = tempfile::tempdir().expect("state root");
     let session = boot_session(&state.path().join("daemon"), &identity);
-    let (_receipt, _ack) =
+    let (_receipt, _ack, _observation) =
         publish_and_activate(&session, &batch, &identity, None).expect("publish+activate");
     let plan = plan_query(
         QueryInputPolicy::Native,
@@ -1292,7 +1300,7 @@ fn symbol_route_no_answer_is_typed_never_fake_success() {
         .expect("published units");
     let state = tempfile::tempdir().expect("state root");
     let session = boot_session(&state.path().join("daemon"), &identity);
-    let (_receipt, _ack) =
+    let (_receipt, _ack, _observation) =
         publish_and_activate(&session, &batch, &identity, None).expect("publish+activate");
     let outcome = query_route(&RouteQuery {
         client: session.client(),
@@ -1408,7 +1416,7 @@ fn sentence_and_identifier_queries_anchor_the_same_definition_over_distractors()
         .expect("published units");
     let state = tempfile::tempdir().expect("state root");
     let session = boot_session(&state.path().join("daemon"), &identity);
-    let (_receipt, _ack) =
+    let (_receipt, _ack, _observation) =
         publish_and_activate(&session, &batch, &identity, None).expect("publish+activate");
 
     // The two policies produce distinct executed lexical requests for the
@@ -1518,7 +1526,7 @@ fn homonymous_symbols_stay_distinct_units_on_the_symbol_route() {
     );
     let state = tempfile::tempdir().expect("state root");
     let session = boot_session(&state.path().join("daemon"), &identity);
-    let (_receipt, _ack) =
+    let (_receipt, _ack, _observation) =
         publish_and_activate(&session, &batch, &identity, None).expect("publish+activate");
     let plan = plan_query(
         QueryInputPolicy::Native,

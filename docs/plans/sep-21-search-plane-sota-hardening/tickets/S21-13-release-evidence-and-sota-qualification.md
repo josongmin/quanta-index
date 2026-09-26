@@ -2,6 +2,11 @@
 
 Status: infrastructure implemented; final qualification blocked.
 
+2026-09-26: JUnit grammar/outcome and inventory-selector admission strengthened;
+resolved dependency counterexamples added to the existing P12A scope. Parser
+checks are not trusted producer/host/complete-recipe attestation. See
+[current status and remaining actions](CURRENT-RESIDUAL-2026-09-26.md).
+
 2026-09-24 adversarial audit found self-reported terminal test counts.
 The current checker derives passed test counts and target coverage from archived
 Nextest or pytest runner results plus collection inventories. This closes the

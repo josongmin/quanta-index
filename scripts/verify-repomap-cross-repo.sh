@@ -24,6 +24,27 @@ semantica_head="$(git -C "$semantica_root" rev-parse HEAD)"
 require_frozen_source "$quanta_root" "$quanta_head"
 require_frozen_source "$semantica_root" "$semantica_head"
 
+resolved_pair() {
+  local consumer="$1"
+  local feature="$2"
+  (
+    cd -- "$semantica_root"
+    CODEGRAPH_PERSONA=agent ./scripts/quanta-build-cli cargo --lane local -- metadata \
+      --locked --format-version 1 --no-default-features \
+      --manifest-path "packages/analysis/quanta-v2/crates/$consumer/Cargo.toml" \
+      --features "$feature"
+  ) | python3 "$quanta_root/tools/ci/paired_cargo_resolution.py" \
+    --quanta-root "$quanta_root" --paired-root "$semantica_root" --consumer "$consumer"
+}
+
+# Check the actual Cargo resolver before the expensive build, not the spelling
+# of declared relative paths. Both selected feature profiles must use this
+# exact Quanta checkout and the nested workspace's actual lockfile.
+runtime_resolution="$(resolved_pair quanta-runtime index-sdk-ingress)"
+kernel_resolution="$(resolved_pair quanta-runtime-retrieval-kernel index-sdk-ingress-surface)"
+require_frozen_source "$quanta_root" "$quanta_head"
+require_frozen_source "$semantica_root" "$semantica_head"
+
 cd -- "$quanta_root"
 just rust-build-release-daemon-fresh
 target_dir="$(./scripts/cargow --lane release-daemon-bin-lane metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
@@ -41,12 +62,14 @@ require_frozen_source "$semantica_root" "$semantica_head"
 
 cd -- "$semantica_root"
 CODEGRAPH_PERSONA=agent ./scripts/quanta-build-cli cargo --lane local -- test \
+  --locked \
   --manifest-path packages/analysis/quanta-v2/Cargo.toml -p quanta-runtime \
   --no-default-features --features index-sdk-ingress \
   --test index_sdk_ingress_publish_contract_test -- --list \
   | rg '^index_sdk_ingress_live_repomap_roundtrip_survives_runtime_restart_v1: test$'
 QUANTA_INDEX_SEARCHD_BIN="$built_binary" CODEGRAPH_PERSONA=agent \
   ./scripts/quanta-build-cli cargo --lane local -- test \
+  --locked \
   --manifest-path packages/analysis/quanta-v2/Cargo.toml -p quanta-runtime \
   --no-default-features --features index-sdk-ingress \
   --test index_sdk_ingress_publish_contract_test \
@@ -54,11 +77,13 @@ QUANTA_INDEX_SEARCHD_BIN="$built_binary" CODEGRAPH_PERSONA=agent \
   -- --exact --nocapture
 
 CODEGRAPH_PERSONA=agent ./scripts/quanta-build-cli cargo --lane local -- test \
+  --locked \
   --manifest-path packages/analysis/quanta-v2/Cargo.toml \
   -p quanta-runtime-retrieval-kernel --no-default-features \
   --features index-sdk-ingress-surface --lib -- --list \
   | rg '^index_sdk_ingress::terminal_receipt_v1::tests::repomap_v2_receipts_require_exact_full_bundle_and_transition_v2: test$'
 CODEGRAPH_PERSONA=agent ./scripts/quanta-build-cli cargo --lane local -- test \
+  --locked \
   --manifest-path packages/analysis/quanta-v2/Cargo.toml \
   -p quanta-runtime-retrieval-kernel --no-default-features \
   --features index-sdk-ingress-surface --lib \
@@ -71,3 +96,13 @@ if ! cmp -s -- "$built_binary" "$provided_binary"; then
   printf 'release daemon bytes changed during cross-repo proof\n' >&2
   exit 1
 fi
+runtime_resolution_after="$(resolved_pair quanta-runtime index-sdk-ingress)"
+kernel_resolution_after="$(resolved_pair quanta-runtime-retrieval-kernel index-sdk-ingress-surface)"
+if [[ "$runtime_resolution_after" != "$runtime_resolution" || "$kernel_resolution_after" != "$kernel_resolution" ]]; then
+  printf 'resolved cross-repo dependency identities changed during proof\n' >&2
+  exit 1
+fi
+require_frozen_source "$quanta_root" "$quanta_head"
+require_frozen_source "$semantica_root" "$semantica_head"
+printf 'paired-cargo-resolution-runtime: %s\n' "$runtime_resolution"
+printf 'paired-cargo-resolution-kernel: %s\n' "$kernel_resolution"

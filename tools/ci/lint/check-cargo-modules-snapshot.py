@@ -115,7 +115,7 @@ def baseline_path(package: str) -> Path:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--update-baseline", action="store_true")
-    parser.add_argument("--packages", nargs="*", default=GUARDED_CRATES)
+    parser.add_argument("--packages", nargs="+", default=GUARDED_CRATES)
     return parser.parse_args()
 
 

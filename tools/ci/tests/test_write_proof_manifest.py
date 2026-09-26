@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import json
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -60,7 +61,7 @@ def test_cross_repo_hellgate_selects_live_repomap_terminal_target() -> None:
     )
     assert source.count(receipt_target) == 2
     assert "index_sdk_ingress_live_file_contributor_publish_and_query_roundtrip_v1" not in source
-    assert source.count("./scripts/quanta-build-cli cargo") == 4
+    assert source.count("./scripts/quanta-build-cli cargo") == 5
     assert source.count("-- --exact --nocapture") == 2
     build = source.index("just rust-build-release-daemon-fresh")
     compare = source.index('cmp -s -- "$built_binary" "$provided_binary"')
@@ -231,6 +232,9 @@ def _build_paired_checkout(parent: Path) -> Path:
     checkout = parent / "arbitrary-local-directory"
     checkout.mkdir(parents=True)
     (checkout / "Cargo.lock").write_text("version = 4\n", encoding="utf-8")
+    resolver_lock = checkout / CHECKER.PAIRED_DEPENDENCY_LOCK
+    resolver_lock.parent.mkdir(parents=True)
+    resolver_lock.write_text("version = 4\n# active resolver lock\n", encoding="utf-8")
     _run(checkout, "git", "init", "-q")
     _run(checkout, "git", "config", "user.name", "Pair Fixture")
     _run(checkout, "git", "config", "user.email", "pair@example.invalid")
@@ -242,7 +246,7 @@ def _build_paired_checkout(parent: Path) -> Path:
         "origin",
         "git@github-personal:josongmin/semantica-codegraph-v2.git",
     )
-    _run(checkout, "git", "add", "Cargo.lock")
+    _run(checkout, "git", "add", "Cargo.lock", CHECKER.PAIRED_DEPENDENCY_LOCK)
     _run(checkout, "git", "commit", "-qm", "fixture")
     return checkout
 
@@ -839,10 +843,11 @@ def test_exact_pair_manifest_is_live_bound_through_atomic_writer(
     root, registry = _fixture_root(tmp_path, manifest_templates)
     registry_path = root / "tools/ci/proof-authority.toml"
     registry_text = (
-        registry_path.read_text(encoding="utf-8")
-        .replace(
-            'id = "p11-cross-repo-cutover"\nauthority_state = "staged"\nexecution_mode = "test-authority"\nstaged_reason = "P11 must land the exact-pair producer protocol and cross-repository terminal receipt rail."',
+        re.sub(
+            r'id = "p11-cross-repo-cutover"\nauthority_state = "staged"\nexecution_mode = "test-authority"\nstaged_reason = "[^"\n]+"',
             'id = "p11-cross-repo-cutover"\nauthority_state = "executable"\nexecution_mode = "test-authority"',
+            registry_path.read_text(encoding="utf-8"),
+            count=1,
         )
         .replace(
             'target = "semantica-terminal-receipt"\nfilter = "none"\nsource_binding = "exact-pair"',

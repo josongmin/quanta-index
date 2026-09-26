@@ -121,12 +121,25 @@ impl SemanticIngestPort for DirectSemanticMaterializer {
         &self,
         header: &SemanticIngestHeaderV1,
         scopes: &mut dyn SemanticScopeSource,
-    ) -> Result<BatchPublishReceipt, CoreError> {
-        let appended = self.builder.build_stream(header, scopes)?;
+    ) -> Result<
+        (
+            BatchPublishReceipt,
+            quanta_index_contract::IngestStageReport,
+        ),
+        CoreError,
+    > {
+        let (appended, mut report) = self.builder.build_stream(header, scopes)?;
+        report.durations.embedding = scopes.embedding_elapsed_ns();
         let issued = scopes.tally();
         if appended != issued {
             return Err(CoreError::InvalidContract(format!(
                 "direct semantic materialize: the build appended {appended:?} but the source issued {issued:?}"
+            )));
+        }
+        if report.windows != appended.windows || report.owner_scopes != appended.replace_scopes {
+            return Err(CoreError::InvalidContract(format!(
+                "direct semantic materialize: stage report coverage {}/{} differs from appended windows/scopes {}/{}",
+                report.windows, report.owner_scopes, appended.windows, appended.replace_scopes,
             )));
         }
         self.record_stream(&header.pin, appended)?;
@@ -147,6 +160,6 @@ impl SemanticIngestPort for DirectSemanticMaterializer {
         if header.batch.seal {
             receipt.mark_sealed();
         }
-        Ok(receipt)
+        Ok((receipt, report))
     }
 }

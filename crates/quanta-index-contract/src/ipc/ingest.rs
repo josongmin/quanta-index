@@ -4690,7 +4690,7 @@ impl<'de> Deserialize<'de> for SearchPlaneIngestIpcRequest {
 /// Typed ingest response payload returned by `ingest.sock`.
 #[derive(Clone, Debug, PartialEq)]
 pub enum SearchPlaneIngestIpcResponse {
-    SearchCorpusReceipt(BatchPublishReceipt),
+    SearchCorpusReceipt(super::SearchCorpusPublishOutcome),
     HistoryReceipt(BatchPublishReceipt),
     RepoCommitRecencyReceipt(BatchPublishReceipt),
     RepoTopicReceipt(BatchPublishReceipt),
@@ -6007,7 +6007,7 @@ mod tests {
                 accepted_semantic_tombstone_scopes: 0,
                 accepted_clear_surfaces: 0,
                 sealed: true,
-            }),
+            }.into()),
         };
         let bytes = encode(&envelope)?;
         let decoded: SearchPlaneIngestIpcResponseEnvelope = decode(&bytes)?;

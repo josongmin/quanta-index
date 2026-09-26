@@ -58,7 +58,7 @@ PROOF_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]+$")
 TICKET_RE = re.compile(r"^S21-(?:0[0-9]|1[0-3])$")
 DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 PAIRED_REPOSITORY = "github:josongmin/semantica-codegraph-v2"
-PAIRED_DEPENDENCY_LOCK = "Cargo.lock"
+PAIRED_DEPENDENCY_LOCK = "packages/analysis/quanta-v2/Cargo.lock"
 ERROR_INVENTORY_PATH = "artifacts/sep-21/p00/error-authority-inventory.json"
 SOURCE_BINDING_DOMAIN = "quanta-proof-source-binding-v1"
 PROOF_ARCHIVE_ROOT = PurePosixPath("artifacts/proof-authority/archive")
@@ -127,6 +127,7 @@ EXPECTED_P12A_TEST_TARGETS = [
     "proof-authority-python-owner",
     "proof-manifest-python-owner",
     "proof-execution-result-python-owner",
+    "proof-paired-cargo-resolution-python-owner",
     "proof-local-scope-runner-python-owner",
 ]
 OPERATIONAL_HOST_PROOFS = frozenset(("p11-deployment", "p11-activation", "p11-rollback"))

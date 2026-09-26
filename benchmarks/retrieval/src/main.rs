@@ -789,7 +789,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
     let boot_elapsed = boot_start.elapsed();
 
     let publish_start = Instant::now();
-    let (receipt, ack) = publish_and_activate(&session, &batch, &identity, None)?;
+    let (receipt, ack, ingest_observation) = publish_and_activate(&session, &batch, &identity, None)?;
     let publish_elapsed = publish_start.elapsed();
     let accepted_scopes = usize::try_from(receipt.accepted_replace_scopes).map_err(|err| {
         BenchError::Protocol(format!("receipt scope count cannot fit usize: {err}"))
@@ -1079,7 +1079,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
     let record_digest = sha256_hex(format!("{rendered_record}\n").as_bytes());
     let diagnostics = if diagnostics_out.is_some() {
         let mut value =
-            diagnostic_value(&record_digest, &record, &pack, &routes, &outcomes, top_k,
+            diagnostic_value(&record_digest, &record, &pack, &routes, &outcomes,
                 query_stage_observation)?;
         let detail = serde_json::json!({
             "clock": "runner_monotonic_wall_v1",
@@ -1092,6 +1092,11 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         let object = value.as_object_mut().ok_or_else(|| {
             BenchError::Protocol("diagnostic value must be an object".to_string())
         })?;
+        let _previous = object.insert("ingest".to_string(), serde_json::json!({
+            "receipt": receipt,
+            "activation_ack": ack,
+            "observation": ingest_observation,
+        }));
         if object
             .insert("runner_timing_detail_ms".to_string(), detail)
             .is_some()

@@ -197,7 +197,7 @@ def test_pytest_result_rejects_skipped_case(tmp_path: Path) -> None:
             {
                 "schema_version": 1,
                 "kind": "pytest",
-                "selector": "tools/ci/tests",
+                "selector": "tools/ci/tests/test_example.py",
                 "tests": ["tools.ci.tests.test_example.test_ok"],
             }
         ),
@@ -232,3 +232,70 @@ def test_pytest_result_rejects_skipped_case(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     assert derive_test_result(tmp_path, result, artifacts)[0]["passed"] == 1
+
+
+@pytest.mark.parametrize(
+    "placement",
+    (
+        '<error message="collection failed"/>',
+        '<properties><property name="status"><failure/></property></properties>',
+        "<unknown/>",
+    ),
+)
+def test_pytest_junit_rejects_unaccounted_outcomes(tmp_path: Path, placement: str) -> None:
+    inventory = tmp_path / "inventory.json"
+    events = tmp_path / "events.xml"
+    inventory.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "kind": "pytest",
+                "selector": "tools/ci/tests/test_example.py",
+                "tests": ["tools.ci.tests.test_example.test_ok"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    events.write_text(
+        '<testsuite tests="1" failures="0" errors="0" skipped="0">'
+        '<testcase classname="tools.ci.tests.test_example" name="test_ok"/>'
+        + placement
+        + "</testsuite>",
+        encoding="utf-8",
+    )
+    with pytest.raises(ExecutionResultError):
+        MODULE._pytest_result(events, inventory)
+
+
+@pytest.mark.parametrize("mutation", ("outside", "omitted", "duplicate", "partial"))
+def test_pytest_inventory_binds_complete_file_selectors(tmp_path: Path, mutation: str) -> None:
+    inventory = tmp_path / "inventory.json"
+    events = tmp_path / "events.xml"
+    selector = "tools/ci/tests/test_example.py"
+    if mutation == "outside":
+        selector = "tools/ci/tests/test_other.py"
+    elif mutation == "omitted":
+        selector += " tools/ci/tests/test_other.py"
+    elif mutation == "duplicate":
+        selector += " " + selector
+    else:
+        selector += "::test_ok"
+    inventory.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "kind": "pytest",
+                "selector": selector,
+                "tests": ["tools.ci.tests.test_example.test_ok"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    events.write_text(
+        '<testsuite tests="1" failures="0" errors="0" skipped="0">'
+        '<testcase classname="tools.ci.tests.test_example" name="test_ok"/>'
+        "</testsuite>",
+        encoding="utf-8",
+    )
+    with pytest.raises(ExecutionResultError):
+        MODULE._pytest_result(events, inventory)

@@ -321,6 +321,225 @@ fn adopted_child_exit_is_a_required_child_loss() {
     );
 }
 
+/// A reporting adapter can unwind before its terminal send (for example a
+/// provider drain). The actual finished handle must take the supervisor out
+/// of Ready even when the event channel stays quiet.
+#[test]
+fn reporting_child_panic_without_event_is_observed() {
+    let root = CancelRoot::new();
+    let mut supervisor = SearchdSupervisor::new(
+        Duration::from_millis(30),
+        Duration::from_millis(100),
+        (),
+        CancelRoot::clone(&root),
+    );
+    supervisor
+        .spawn_child("unreported-panic", no_stop(), |_context| {
+            Ok(std::thread::spawn(|| {
+                panic!("adapter panicked before reporting")
+            }))
+        })
+        .expect("fixture child spawns");
+    // Bound the counterexample even on an implementation that only watches
+    // reported events. The rescue is not the expected source of shutdown.
+    let rescue_root = CancelRoot::clone(&root);
+    let (done_tx, done_rx) = mpsc::channel();
+    let rescue = std::thread::spawn(move || {
+        if done_rx.recv_timeout(Duration::from_secs(1)).is_err() {
+            rescue_root.request_shutdown();
+        }
+    });
+    let outcome = supervisor.run(&root);
+    let _sent = done_tx.send(());
+    rescue.join().expect("rescue joins");
+    assert!(
+        matches!(
+            outcome,
+            SupervisionOutcome::RequiredChildLost {
+                name: "unreported-panic",
+                kind: ChildExitKind::Panicked,
+                ..
+            }
+        ),
+        "missing terminal send must not hide a panic: {outcome:?}"
+    );
+}
+
+/// An adapter that returns normally without its promised report violated the
+/// lifecycle protocol. It is a named failure, not inferred completion.
+#[test]
+fn reporting_child_return_without_event_fails_closed() {
+    let root = CancelRoot::new();
+    let mut supervisor = SearchdSupervisor::new(
+        Duration::from_millis(30),
+        Duration::from_millis(100),
+        (),
+        CancelRoot::clone(&root),
+    );
+    supervisor
+        .spawn_child("unreported-return", no_stop(), |_context| {
+            let join = std::thread::spawn(|| {});
+            let deadline = std::time::Instant::now() + Duration::from_secs(1);
+            while !join.is_finished() {
+                anyhow::ensure!(
+                    std::time::Instant::now() < deadline,
+                    "fixture child stalled"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Ok(join)
+        })
+        .expect("fixture child spawns");
+    // The pre-cancelled root bounds older implementations, but a required
+    // child that already exited must be classified before publishing Ready.
+    root.request_shutdown();
+    let outcome = supervisor.run(&root);
+    assert!(
+        matches!(
+            outcome,
+            SupervisionOutcome::RequiredChildLost {
+                name: "unreported-return",
+                kind: ChildExitKind::Failed,
+                ..
+            }
+        ),
+        "missing report must not turn into completed: {outcome:?}"
+    );
+}
+
+/// A finished handle must not overwrite an already queued typed Failed event
+/// with Completed just because joining the thread itself succeeds.
+#[test]
+fn finished_reporting_child_preserves_queued_failure() {
+    let root = CancelRoot::new();
+    let mut supervisor = SearchdSupervisor::new(
+        Duration::from_millis(30),
+        Duration::from_millis(100),
+        (),
+        CancelRoot::clone(&root),
+    );
+    supervisor
+        .spawn_child("reported-failure", no_stop(), |context| {
+            let join = std::thread::spawn(move || context.report_exit(ChildExitKind::Failed));
+            let deadline = std::time::Instant::now() + Duration::from_secs(1);
+            while !join.is_finished() {
+                anyhow::ensure!(
+                    std::time::Instant::now() < deadline,
+                    "fixture child stalled"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Ok(join)
+        })
+        .expect("fixture child spawns");
+    root.request_shutdown();
+    let outcome = supervisor.run(&root);
+    assert!(
+        matches!(
+            outcome,
+            SupervisionOutcome::RequiredChildLost {
+                name: "reported-failure",
+                kind: ChildExitKind::Failed,
+                ..
+            }
+        ),
+        "joining must preserve the typed failure: {outcome:?}"
+    );
+}
+
+/// A missing terminal send during cancellation is an observed protocol
+/// failure, not a live-child escalation at the hard deadline.
+#[test]
+fn missing_report_during_drain_is_named_failure_not_escalation() {
+    let root = CancelRoot::new();
+    let mut supervisor = SearchdSupervisor::new(
+        Duration::from_millis(30),
+        Duration::from_millis(100),
+        (),
+        CancelRoot::clone(&root),
+    );
+    supervisor
+        .spawn_child("drain-without-report", no_stop(), |context| {
+            Ok(std::thread::spawn(move || {
+                while !context.shutdown().load(Ordering::Acquire) {
+                    std::thread::sleep(CHILD_POLL);
+                }
+            }))
+        })
+        .expect("fixture child spawns");
+    root.request_shutdown();
+    let outcome = supervisor.run(&root);
+    assert!(matches!(
+        outcome,
+        SupervisionOutcome::DrainFailed { failed }
+            if failed == vec![("drain-without-report", ChildExitKind::Failed)]
+    ));
+}
+
+/// The same finished-handle authority must be used during startup rollback;
+/// an exited reporting child is torn down, not an escalated live child.
+#[test]
+fn rollback_joins_reporting_child_without_terminal_event() {
+    let root = CancelRoot::new();
+    let mut supervisor = SearchdSupervisor::new(
+        Duration::from_millis(30),
+        Duration::from_millis(100),
+        (),
+        CancelRoot::clone(&root),
+    );
+    supervisor
+        .spawn_child("rollback-without-report", no_stop(), |context| {
+            Ok(std::thread::spawn(move || {
+                while !context.shutdown().load(Ordering::Acquire) {
+                    std::thread::sleep(CHILD_POLL);
+                }
+            }))
+        })
+        .expect("fixture child spawns");
+    let outcome = supervisor.rollback("refused-spawn");
+    assert!(matches!(
+        outcome,
+        SupervisionOutcome::StartupRollback {
+            torn_down,
+            escalated,
+            ..
+        } if torn_down == vec!["rollback-without-report"] && escalated.is_empty()
+    ));
+}
+
+/// Even a report sent immediately before unwinding cannot attest a clean
+/// completion. The actual join outcome overrides the optimistic report.
+#[test]
+fn panic_after_completed_report_overrides_lost_child_classification() {
+    let root = CancelRoot::new();
+    let mut supervisor = SearchdSupervisor::new(
+        Duration::from_millis(30),
+        Duration::from_millis(100),
+        (),
+        CancelRoot::clone(&root),
+    );
+    supervisor
+        .spawn_child("panic-after-report", no_stop(), |context| {
+            Ok(std::thread::spawn(move || {
+                context.report_exit(ChildExitKind::Completed);
+                panic!("adapter panicked after optimistic report");
+            }))
+        })
+        .expect("fixture child spawns");
+    let outcome = supervisor.run(&root);
+    assert!(
+        matches!(
+            outcome,
+            SupervisionOutcome::RequiredChildLost {
+                name: "panic-after-report",
+                kind: ChildExitKind::Panicked,
+                ..
+            }
+        ),
+        "the actual join outcome outranks the report: {outcome:?}"
+    );
+}
+
 /// A child that ignores cooperative cancellation is escalated at the
 /// hard deadline: the custody reaper retains its join and the guards,
 /// the outcome is named, and the exit is 70.

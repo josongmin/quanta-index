@@ -54,6 +54,7 @@ pub use dispatcher::{SearchPlaneDispatcher, SearchPlaneQueryDispatcher, SearchPl
 pub use errors::repair_for_code;
 pub use response_budget::{RESPONSE_ENVELOPE_RESERVE_BYTES, ResponsePayloadBudget};
 pub use selection::make_pin;
+pub use stage_timing::QueryStageObservationPolicy;
 
 pub use cursor_key::CursorKeyStore;
 

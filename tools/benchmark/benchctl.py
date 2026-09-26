@@ -28,6 +28,7 @@ import stat
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -46,7 +47,7 @@ from compare_dsl_bench import (  # noqa: E402
     require_complete_baseline_candidate,
     require_no_pending_admission,
 )
-from evidence import EvidenceError, RunStore  # noqa: E402
+from evidence import EvidenceError, RunStore, digest_bytes  # noqa: E402
 from manifest import DEFAULT_MANIFEST_PATH, ManifestError, load_manifest  # noqa: E402
 from registry import load_registry, registry_digest  # noqa: E402
 
@@ -97,8 +98,8 @@ def load_profiles(path: Path = DEFAULT_MANIFEST_PATH) -> dict[str, dict[str, obj
     """Full registry profile view: every registered profile is selectable.
 
     `recipes` names only the Justfile producers of the profile (cargo/Python/
-    recorded producers are invoked by the CLI through their own allowlisted
-    command), so a profile with no Just recipe is still listed and resolvable.
+    recorded producers are exposed by `plan`, not silently treated as native
+    captures), so a profile with no Just recipe is still listed and resolvable.
     """
     registry = load_registry(path, repo_root=ROOT)
     families = registry["families"]
@@ -431,8 +432,8 @@ def publish_dsl_baseline_pair(prepared: list[tuple[Path, str]]) -> None:
 def require_clean_preflight_receipt(receipt: Path, profile: str) -> None:
     """A diagnostic contention override cannot qualify a benchmark run."""
     try:
-        payload = json.loads(receipt.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        payload = _strict_json_bytes(receipt.read_bytes())
+    except (OSError, ValueError) as exc:
         raise RuntimeError(f"cannot read timing preflight receipt {receipt}: {exc}") from exc
     if not isinstance(payload, dict) or (
         payload.get("schema_version") != 1
@@ -725,57 +726,44 @@ def replay_command(repo_root: Path, reference: str, evidence_root: Path | None) 
     native_families = load_manifest(registry_path, repo_root=repo_root)["families"]
     artifact_oracle = "not_applicable"
     if evidence["family"] in native_families:
-        if len(evidence["raw"]) != 1:
-            print("ERROR: replay requires exactly one native artifact", file=sys.stderr)
-            return 2
-        native = run_dir / evidence["raw"][0]["path"]
-        if native.suffix != ".json":
-            print("ERROR: replay native artifact is not JSON", file=sys.stderr)
-            return 2
         checker = _load_lint_module(repo_root)
-        try:
-            payload = _strict_json_bytes(native.read_bytes())
-        except (OSError, ValueError, json.JSONDecodeError) as exc:
-            print(f"ERROR: replay cannot parse native raw {native}: {exc}", file=sys.stderr)
-            return 2
         family = native_families[evidence["family"]]
-        refusals = checker.check_envelope(
-            payload,
-            dimension=evidence["family"],
-            head=evidence["source"]["revision"],
-            host_policy=family["host_policy"],
-        )
-        if refusals:
-            print(
-                "ERROR: replay refused: native artifact oracle failed: " + "; ".join(refusals),
-                file=sys.stderr,
+        artifacts = []
+        for reference in evidence["raw"]:
+            native = run_dir / reference["path"]
+            if native.suffix != ".json":
+                print("ERROR: replay native artifact is not JSON", file=sys.stderr)
+                return 2
+            try:
+                artifact = checker.parse_artifact_bytes(native.read_bytes())
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                print(f"ERROR: replay cannot parse native raw {native}: {exc}", file=sys.stderr)
+                return 2
+            refusals = checker.check_artifact(
+                artifact,
+                dimension=evidence["family"],
+                head=evidence["source"]["revision"],
+                require=True,
+                manifest={"families": native_families},
             )
-            return 2
-        if family["requires_verdict"] and payload["detail"].get("passed") is not True:
-            print("ERROR: replay required rail verdict is not true", file=sys.stderr)
-            return 2
-        minimum = family["minimum_samples"]
-        if minimum is not None and any(
-            not isinstance(row.get("latency"), dict)
-            or type(row["latency"].get("samples")) is not int
-            or row["latency"]["samples"] < minimum
-            for row in payload["rows"]
-        ):
-            print("ERROR: replay native artifact has insufficient samples", file=sys.stderr)
-            return 2
-        if any(row.get("early_stop_reason") is not None for row in payload["rows"]):
-            print("ERROR: replay native artifact has an early stop", file=sys.stderr)
+            if refusals:
+                print(
+                    "ERROR: replay refused: native artifact oracle failed: " + "; ".join(refusals),
+                    file=sys.stderr,
+                )
+                return 2
+            artifacts.append(artifact)
+        refusals = _check_native_inventory(artifacts, family, checker.CONCURRENCY_COUNTS)
+        if refusals:
+            print(f"ERROR: replay native inventory refused: {refusals}", file=sys.stderr)
             return 2
         if family["payload"] != evidence["payload"]["kind"]:
             print("ERROR: replay native payload kind differs from registry", file=sys.stderr)
             return 2
-        if family["payload"] != "latency":
-            print("ERROR: replay has no native payload oracle for this family", file=sys.stderr)
-            return 2
-        from evidence_bridge import latency_payload_from_artifact
+        from evidence_bridge import native_payload_from_artifacts
 
         try:
-            derived = latency_payload_from_artifact(payload)
+            derived = native_payload_from_artifacts(artifacts, family["payload"])
         except EvidenceError as exc:
             print(f"ERROR: replay cannot derive native payload: {exc}", file=sys.stderr)
             return 2
@@ -800,18 +788,7 @@ def replay_command(repo_root: Path, reference: str, evidence_root: Path | None) 
 
 
 def _strict_json_bytes(raw: bytes) -> object:
-    def unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
-        result: dict[str, object] = {}
-        for key, value in pairs:
-            if key in result:
-                raise ValueError(f"duplicate native JSON key: {key}")
-            result[key] = value
-        return result
-
-    def reject_constant(value: str) -> None:
-        raise ValueError(f"non-finite native JSON value: {value}")
-
-    return json.loads(raw, object_pairs_hook=unique_object, parse_constant=reject_constant)
+    return _load_lint_module(ROOT).parse_artifact_bytes(raw)
 
 
 def _load_lint_module(repo_root: Path):
@@ -826,6 +803,61 @@ def _load_lint_module(repo_root: Path):
     return module
 
 
+def _check_native_inventory(
+    artifacts: list[dict], family: dict, concurrency_counts: tuple[int, ...]
+) -> str | None:
+    """Enforce fan-out completeness during capture AND detached replay."""
+    required = concurrency_counts if family.get("dimension") == "concurrency" else None
+    if required is not None:
+        from evidence_bridge import concurrency_clients_from_artifact
+
+        try:
+            actual = [concurrency_clients_from_artifact(artifact) for artifact in artifacts]
+        except EvidenceError as exc:
+            return str(exc)
+        if any(type(value) is not int for value in actual) or sorted(actual) != sorted(required):
+            return f"concurrency set {actual!r} differs from required {required!r}"
+    elif len(artifacts) != 1:
+        return "family requires exactly one native artifact"
+    return None
+
+
+def _capture_native_family(
+    repo_root, family, entry, initial_head, manifest, capture_started_ns, validated_artifacts
+):
+    from evidence_bridge import native_payload_from_artifacts
+
+    paths = sorted(repo_root.glob(entry["artifact_glob"]))
+    if not paths:
+        raise EvidenceError(f"family {family!r} has no artifact")
+    checker, captures, artifacts = None, [], []
+    for path in paths:
+        if (
+            path.is_symlink()
+            or not path.is_file()
+            or not path.resolve().is_relative_to(repo_root.resolve())
+            or path.stat().st_mtime_ns < capture_started_ns
+        ):
+            raise EvidenceError(f"artifact is not fresh regular output: {path}")
+        raw = path.read_bytes()
+        if validated_artifacts.get(path.relative_to(repo_root).as_posix()) != digest_bytes(raw):
+            raise EvidenceError(f"artifact changed after validation: {path}")
+        if checker is None:
+            checker = _load_lint_module(repo_root)
+        artifact = checker.parse_artifact_bytes(raw)
+        refusals = checker.check_artifact(
+            artifact, dimension=family, head=initial_head, require=True, manifest=manifest
+        )
+        if refusals:
+            raise EvidenceError(f"native artifact refused: {'; '.join(refusals)}")
+        captures.append((path, raw))
+        artifacts.append(artifact)
+    refusal = _check_native_inventory(artifacts, entry, checker.CONCURRENCY_COUNTS)
+    if refusal:
+        raise EvidenceError(refusal)
+    return captures, artifacts, native_payload_from_artifacts(artifacts, entry["payload"])
+
+
 def promote_profile_runs(
     repo_root: Path,
     profile_name: str,
@@ -836,6 +868,7 @@ def promote_profile_runs(
     preflight_digest: str,
     capture_started_ns: int,
     validated_artifacts: dict[str, str],
+    execution: dict[str, object] | None = None,
 ) -> int:
     """Promote each family *of this profile* into an immutable evidence run.
 
@@ -845,18 +878,19 @@ def promote_profile_runs(
     from evidence import digest_bytes
     from evidence_bridge import (
         host_identity,
-        latency_payload_from_artifact,
         promote_native_run,
         source_identity,
     )
+
+    promotion_started = time.monotonic_ns()
 
     families = manifest["families"]
     profiles = manifest["profiles"]
     assert isinstance(families, dict) and isinstance(profiles, dict)
     selected = profiles[profile_name]["families"]
     store = RunStore(evidence_root)
-    created = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    created = datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+    stamp = f"{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}-{time.time_ns()}"
     hostname = socket.gethostname() or "unknown"
     try:
         require_clean_preflight_receipt(receipt, profile_name)
@@ -867,102 +901,30 @@ def promote_profile_runs(
     if digest_bytes(receipt_bytes) != preflight_digest:
         print("ERROR: benchmark preflight receipt changed during capture", file=sys.stderr)
         return 2
-    checker = None
     lease_mode = "shared"
     lease_samples = 1
     promoted: list[str] = []
+    prepared = {}
+    try:
+        for family in selected:
+            prepared[family] = _capture_native_family(
+                repo_root,
+                family,
+                families[family],
+                initial_head,
+                manifest,
+                capture_started_ns,
+                validated_artifacts,
+            )
+            _native_inputs(prepared[family][1], preflight_digest)
+    except (EvidenceError, OSError, ValueError) as exc:
+        print(f"ERROR: profile native capture refused: {exc}", file=sys.stderr)
+        return 2
     for family in selected:
         entry = families[family]
-        pattern = entry["artifact_glob"]
-        paths = sorted(repo_root.glob(pattern))
-        if not paths:
-            print(f"ERROR: family {family!r} has no artifact at {pattern}", file=sys.stderr)
-            return 2
-        if len(paths) != 1:
-            print(
-                f"ERROR: family {family!r} has {len(paths)} artifacts; multi-artifact promotion is not implemented",
-                file=sys.stderr,
-            )
-            return 2
-        path = paths[0]
-        try:
-            if (
-                path.is_symlink()
-                or not path.is_file()
-                or not path.resolve().is_relative_to(repo_root.resolve())
-                or path.stat().st_mtime_ns < capture_started_ns
-            ):
-                print(
-                    f"ERROR: family {family!r} artifact is not fresh regular output: {path}",
-                    file=sys.stderr,
-                )
-                return 2
-            native_bytes = path.read_bytes()
-        except OSError as exc:
-            print(f"ERROR: family {family!r} artifact is unreadable: {exc}", file=sys.stderr)
-            return 2
-        relative_path = path.relative_to(repo_root).as_posix()
-        if validated_artifacts.get(relative_path) != digest_bytes(native_bytes):
-            print(
-                f"ERROR: family {family!r} artifact changed after validation: {path}",
-                file=sys.stderr,
-            )
-            return 2
-        try:
-            artifact = _strict_json_bytes(native_bytes)
-        except (ValueError, json.JSONDecodeError) as exc:
-            print(f"ERROR: family {family!r} native artifact is not JSON: {exc}", file=sys.stderr)
-            return 2
-        if checker is None:
-            checker = _load_lint_module(repo_root)
-        refusals = checker.check_envelope(
-            artifact,
-            dimension=family,
-            head=initial_head,
-            host_policy=entry["host_policy"],
-        )
-        if refusals:
-            print(
-                f"ERROR: family {family!r} native artifact refused: {'; '.join(refusals)}",
-                file=sys.stderr,
-            )
-            return 2
-        assert isinstance(artifact, dict)
-        if entry["requires_verdict"] and artifact.get("detail", {}).get("passed") is not True:
-            refusals.append("required rail verdict is not true")
-        minimum = entry["minimum_samples"]
-        if minimum is not None:
-            for row in artifact.get("rows", []):
-                latency = row.get("latency") if isinstance(row, dict) else None
-                if (
-                    not isinstance(latency, dict)
-                    or type(latency.get("samples")) is not int
-                    or latency["samples"] < minimum
-                ):
-                    refusals.append(f"required measurement has fewer than {minimum} samples")
-        if any(
-            isinstance(row, dict) and row.get("early_stop_reason") is not None
-            for row in artifact.get("rows", [])
-        ):
-            refusals.append("required measurement contains an early stop")
-        if refusals:
-            print(
-                f"ERROR: family {family!r} native artifact refused: {'; '.join(refusals)}",
-                file=sys.stderr,
-            )
-            return 2
-        try:
-            payload = latency_payload_from_artifact(artifact)
-        except EvidenceError as exc:
-            print(f"ERROR: family {family!r} cannot be promoted: {exc}", file=sys.stderr)
-            return 2
-        if payload["kind"] != entry["payload"]:
-            print(
-                f"ERROR: family {family!r} needs {entry['payload']!r} evidence, "
-                f"but the bridge produced {payload['kind']!r}",
-                file=sys.stderr,
-            )
-            return 2
+        captures, artifacts, payload = prepared[family]
+        path, native_bytes = captures[0]
+        artifact = artifacts[0]
         if artifact.get("provenance", {}).get("git_head") != initial_head:
             print(
                 f"ERROR: family {family!r} artifact is not from the frozen source", file=sys.stderr
@@ -980,11 +942,10 @@ def promote_profile_runs(
         # comparator have both succeeded in this run.
         verdict_status = "pass"
         verdict_reason = None
-        detail = artifact.get("detail")
-        if isinstance(detail, dict) and isinstance(detail.get("passed"), bool):
-            verdict_status = "pass" if detail["passed"] else "fail"
-            verdict_reason = None if detail["passed"] else "rail verdict false"
-        run_id = f"{family}-{stamp}-{digest_bytes(native_bytes)[7:15]}"
+        if any(a.get("detail", {}).get("passed") is False for a in artifacts):
+            verdict_status = "fail"
+            verdict_reason = "rail verdict false"
+        run_id = f"{family}-{stamp}-{digest_bytes(b''.join(raw for _, raw in captures))[7:15]}"
         try:
             promotion = promote_native_run(
                 evidence_root=evidence_root,
@@ -994,17 +955,18 @@ def promote_profile_runs(
                 created_utc=created,
                 native_path=path,
                 native_bytes=native_bytes,
+                additional_native=captures[1:],
                 payload=payload,
                 source=source,
                 build={
                     "toolchain": _toolchain_identity(repo_root),
                     "target_triple": f"{sys.platform}-{platform.machine()}",
                     "lockfile_digest": digest_bytes((repo_root / "Cargo.lock").read_bytes()),
-                    "profile": "bench",
-                    "flags": ["--locked"],
+                    "profile": "producer-recipe",
+                    "flags": [],
                     "binaries": [],
                 },
-                inputs=_declared_inputs(payload, preflight_digest),
+                inputs=_native_inputs(artifacts, preflight_digest),
                 host=host_identity(
                     policy=str(entry["host_policy"]),
                     os_name=_host_os(),
@@ -1014,19 +976,24 @@ def promote_profile_runs(
                     lease_mode=lease_mode,
                     lease_samples=lease_samples,
                 ),
-                command={
-                    "argv": ["benchctl", "run", profile_name],
+                command=execution
+                or {
+                    "argv": ["benchctl", "promote-native", profile_name],
                     "cwd": ".",
                     "status": "completed",
                     "exit_code": 0,
                     "timeout_seconds": 3600,
-                    "wall_ms": 0,
+                    "wall_ms": (time.monotonic_ns() - promotion_started) // 1_000_000,
                 },
                 boundary={
                     "clock": "monotonic",
                     "instrumentation": "none",
-                    "start_event": "producer_exec",
-                    "end_event": "artifact_written",
+                    "start_event": "profile_producer_exec"
+                    if execution
+                    else "native_promotion_start",
+                    "end_event": "profile_producers_completed"
+                    if execution
+                    else "native_promotion_envelope",
                 },
                 verdict={
                     "scope": "diagnostic",
@@ -1106,6 +1073,39 @@ def _declared_inputs(payload: dict[str, object], preflight_digest: str) -> list[
             "reason": "the rail builds its deterministic fixture in-process; no external corpus",
         },
     ]
+
+
+def _native_inputs(artifacts: list[dict], preflight_digest: str) -> list[dict]:
+    inputs = [
+        {
+            "id": "benchmark-preflight",
+            "availability": "present",
+            "digest": preflight_digest,
+            "reason": None,
+        }
+    ]
+    for key in ("corpus_digest",):
+        identities = {artifact["provenance"][key] for artifact in artifacts}
+        if len(identities) != 1:
+            raise EvidenceError(f"native artifact set mixes {key}")
+        inputs.append(
+            {
+                "id": key.removesuffix("_digest"),
+                "availability": "present",
+                "digest": identities.pop(),
+                "reason": None,
+            }
+        )
+    for index, artifact in enumerate(artifacts):
+        inputs.append(
+            {
+                "id": "config" if len(artifacts) == 1 else f"config-{index}",
+                "availability": "present",
+                "digest": artifact["provenance"]["config_digest"],
+                "reason": None,
+            }
+        )
+    return inputs
 
 
 def snapshot_profile_artifacts(
@@ -1217,14 +1217,6 @@ def validate_promoted_runs(
             file=sys.stderr,
         )
         return 2
-    unsupported = sorted(family for family in selected if families[family]["payload"] != "latency")
-    if unsupported:
-        print(
-            "ERROR: no native-to-typed payload oracle for promoted families: "
-            + ", ".join(unsupported),
-            file=sys.stderr,
-        )
-        return 2
     for receipt in receipts:
         with contextlib.redirect_stdout(io.StringIO()):
             if replay_command(repo_root, str(store.run_dir(receipt["run_id"])), evidence_root):
@@ -1281,11 +1273,68 @@ def main(argv: list[str] | None = None) -> int:
     profile = profiles[args.profile]
     artifact_profile = args.profile
     manifest = load_manifest(repo_root / "tools" / "benchmark" / "registry.toml")
+    native_profile = manifest["profiles"].get(args.profile)
+    native_families = native_profile["families"] if native_profile else []
+    fully_native = set(native_families) == set(profile["families"])
+    if args.command == "preflight" and not fully_native:
+        print(
+            f"ERROR: profile {args.profile!r} has no native timing preflight; use `plan`",
+            file=sys.stderr,
+        )
+        return 2
+    if args.command == "summarize" and not fully_native:
+        print(
+            json.dumps(
+                {
+                    "profile": args.profile,
+                    "families": profile["families"],
+                    "status": "registered_not_captured",
+                    "measurement_count": None,
+                },
+                sort_keys=True,
+            )
+        )
+        return 0
+    if args.command in {"run", "validate", "compare"}:
+        if not fully_native:
+            print(
+                f"ERROR: profile {args.profile!r} needs a non-native capture adapter; "
+                "`plan` shows the registered owner commands. No producer was executed.",
+                file=sys.stderr,
+            )
+            return 2
+        if args.command == "run" and getattr(args, "evidence_root", None) is not None:
+            unsupported = [
+                family
+                for family in native_families
+                if manifest["families"][family]["payload"] not in {"latency", "load", "freshness"}
+            ]
+            if unsupported:
+                print(
+                    f"ERROR: profile has no native payload adapter for {unsupported!r}; no producer was executed",
+                    file=sys.stderr,
+                )
+                return 2
     if args.command == "preflight":
         return preflight(repo_root, args.profile, args.receipt, manifest)
     if args.command == "summarize":
         return summarize(repo_root, profile, manifest)
     if args.command == "run":
+        requested_root = resolve_evidence_root(args.evidence_root)
+        if requested_root is not None and (
+            requested_root == repo_root or repo_root in requested_root.parents
+        ):
+            print(
+                "ERROR: --evidence-root must stay outside the checkout; no producer was executed",
+                file=sys.stderr,
+            )
+            return 2
+        if args.admit_baseline and requested_root is not None:
+            print(
+                "ERROR: baseline admission and immutable capture are separate actions; omit --evidence-root for admission",
+                file=sys.stderr,
+            )
+            return 2
         cold_samples = args.cold_samples
         if cold_samples is not None:
             if args.profile != "dsl-authority":
@@ -1332,12 +1381,17 @@ def main(argv: list[str] | None = None) -> int:
             print(f"ERROR: profile {args.profile!r} has no registered producer", file=sys.stderr)
             return 2
         capture_started_ns = time.time_ns()
+        execution_started_ns = time.monotonic_ns()
         for recipe in recipes:
             assert isinstance(recipe, str)
             command = ["just", recipe]
             if recipe == "rust-bench-dsl-cold" and cold_samples is not None:
                 command.append(str(cold_samples))
-            completed = subprocess.run(command, cwd=repo_root, check=False)
+            try:
+                completed = subprocess.run(command, cwd=repo_root, check=False, timeout=3600)
+            except subprocess.TimeoutExpired:
+                print(f"ERROR: producer recipe {recipe!r} timed out", file=sys.stderr)
+                return 2
             if completed.returncode:
                 print(f"ERROR: producer recipe {recipe!r} failed", file=sys.stderr)
                 return completed.returncode
@@ -1346,6 +1400,18 @@ def main(argv: list[str] | None = None) -> int:
             except RuntimeError as exc:
                 print(f"ERROR: {exc}", file=sys.stderr)
                 return 2
+        execution = {
+            "argv": [
+                sys.executable,
+                str(Path(__file__).resolve()),
+                *(argv if argv is not None else sys.argv[1:]),
+            ],
+            "cwd": ".",
+            "status": "completed",
+            "exit_code": 0,
+            "timeout_seconds": 3600 * len(recipes),
+            "wall_ms": (time.monotonic_ns() - execution_started_ns) // 1_000_000,
+        }
     evidence_root = resolve_evidence_root(getattr(args, "evidence_root", None))
     if args.command == "validate" and evidence_root is not None:
         from evidence import digest_bytes
@@ -1433,6 +1499,7 @@ def main(argv: list[str] | None = None) -> int:
             "sha256:" + preflight_digest,
             capture_started_ns,
             validated_artifacts,
+            execution,
         )
         if result:
             return result

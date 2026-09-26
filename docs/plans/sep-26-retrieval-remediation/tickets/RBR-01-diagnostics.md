@@ -1,6 +1,11 @@
 # RBR-01 — SDK 응답과 단계별 실행 정보 보존
 
-## 현행 판정 — 2026-09-26, 관측 HEAD `8c0c1242` + 공유 dirty overlay
+## 현행 판정 — 2026-09-26, 관측 HEAD `7cefac4a` + 공유 dirty
+
+- 최신 코드 보완: 세 query route에 startup-bound `QueryStageObservationPolicy::{Enabled,Disabled}`를 구현했다. 기본값은 Enabled이고 `SearchdConfig`의 `QUANTA_INDEX_QUERY_STAGE_OBSERVATION=enabled|disabled`만 canonical selector로 허용한다. Disabled는 per-stage `Instant`를 읽지 않고 stage vector를 할당하지 않으며 `stage_timings=None`을 반환한다. 기존 operational metric/deadline clocks는 계속 작동하므로 **stage-only overhead** 측정이다. runner sidecar 출력 전환과 별개다.
+- lexical pagination의 observation-authority 누수도 제거했다. CBOR page budget은 실제 timing slot 길이를 제외하고 on/off 동일 1024-byte reserve를 더한다. worst-case 네 stage shape가 reserve보다 작은지 검증한다. 이 변경은 byte-cap 근처 page를 이전보다 보수적으로 자를 수 있으므로 enabled의 예전 경계 row count까지 동일하다고 주장하지 않는다. ranking/window/cursor/cancellation의 on/off 동등성은 유지해야 한다.
+- 잔여 통합/측정: daemon selector와 config/binary identity를 capture/replay에 바인딩하고 stage None/present 및 selector 위조/불일치 거부를 검증한다. 동일 query/corpus에서 서버 stage 계측 비용과 sidecar 직렬화 비용을 **별도** 측정한다. 실제 overhead·fresh SDK/clean-source receipt는 `NOT_RUN`; ingest transient observation은 RBR-10 소유다. 현재 source/lane 검증 receipt는 아래 최신 보완 기록으로 구분한다.
+- 아래 실행 수치·artifact는 각 과거 dirty snapshot의 local 기록이다. 최신 inventory/검증은 [CURRENT-AUDIT](CURRENT-AUDIT.md)를 따르며 현재 live SDK/clean receipt와 실제 on/off overhead는 `NOT_RUN`이다.
 
 - 구현: `SearchExplanation.stage_timings`의 typed server-monotonic elapsed/calls/returned-candidate DTO를 lexical/semantic/hybrid의 실제 prepare/read-view/search/embed/admission/fusion/project 경계에 추가했다. lexical `TextQueryResponse`도 공통 explanation을 실어 SDK→diagnostic v4로 전달한다. diagnostic replay는 route별 필수·순서·중복·count·request ID를 검증한다. dense fetch는 refill의 중복 출력 누계이고 dense admission에 중첩되므로 합산 총시간이 아니다. ingest publish stage는 아직 공개 경로가 없다.
 - lexical `project` 시간은 response-budget fit 이전에 멈추고 후보 수만 최종 fitted page에 맞춘다. 따라서 이 stage 시간은 직렬화·cursor budget 비용을 포함한다고 해석하지 않는다. force-empty plan은 backend 호출 없이 prepare/project만 기록한다.
@@ -9,7 +14,7 @@
 - 최신 보완의 전체 Python 275 passed/32 subtests(exit 0)는 실행 중 HEAD 및 test 파일이 이동해 source-stable full proof가 아니다. 현 bytes에서 diagnostic 포함 관련 6 tests와 required inventory 275/275 exact, 보존된 실제 sidecar 3-route replay·추가 엔진/전략 변조 9건 거부를 확인했다. 새 live daemon capture와 clean-source SDK receipt는 여전히 `NOT_RUN`이다.
 - 잔여: RBR-10 ingest report 공개 연결, 서버 계측 on/off overhead 측정, 현 dirty live/local 결과를 고정 clean revision의 정식 SDK receipt로 재발급한다. 동시 writer의 `ProcessRequestEventsV1` control variant가 미완성이던 중 SDK compile이 한 번 실패했으나 이후 contract+SDK all-targets check와 `sdk_binding_owner_v1` 13/13 재실행은 통과했다. [현재 전수 판정](CURRENT-AUDIT.md).
 
-- 우선순위: P0. 세 query route의 stage 공개는 코드 반영, ingest·overhead 및 fresh live/clean-source proof는 잔여. [현재 전수 판정](CURRENT-AUDIT.md). 선행: RBR-00 계약.
+- 우선순위: P1. 세 query route의 stage 공개와 실제 startup stage on/off rail은 코드 반영; config-bound benchmark/replay, overhead 및 fresh live/clean-source proof는 잔여. ingest 공개 경로는 RBR-10의 최신 판정을 따르며 아래 historical 기록을 현행 공백으로 재사용하지 않는다. [현재 전수 판정](CURRENT-AUDIT.md). 선행: RBR-00 계약.
 - 성격: 확정 관측성 공백. [TEST-PLAN](TEST-PLAN.md) 적용.
 
 ## 파일·함수
@@ -26,7 +31,7 @@
 1. 기존 응답의 request/generation, explanation, window completeness, early stop, executed engines를 버리지 않고 보존한다. contributions는 실행 여부와 별개다.
 2. dense lane의 실제 exact/approximate identity, internal fetch, admitted/examined/fused counts를 기존 응답에서 먼저 가져온다. free-text trace는 raw로 보존하며 임의 파싱 결과를 독립 authority로 만들지 않는다.
 3. 최종 top-k 진단과 pre-fusion membership을 구분한다. 더 큰 반환 창으로도 원인 분리가 안 될 때만 opt-in bounded stage trace를 추가한다. request/generation/config 바인딩과 상한·truncation 표시가 필수다.
-4. query 단계별 elapsed/call counts와 publish 내부 embedding/delete/append/seal/activate timings를 실제 서버 경계에서 수집한다. runner 전체 wall time에서 추정 분배하지 않는다. timing은 식별자로 연결하고 diagnostic on/off overhead를 측정한다.
+4. query 단계별 elapsed/call counts와 구현된 `QueryStageObservationPolicy` rail을 보존한다. publish embedding/delete/append/seal/activate transient observation은 RBR-10과 연결한다. runner 전체 wall time에서 추정 분배하지 않는다. request/generation/config identity를 실제 daemon selector에 바인딩한 capture/replay 후 overhead를 측정한다. sidecar on/off를 서버 계측 on/off로 취급하지 않는다.
 5. 현재 dirty의 record-normalized span/rank 및 task-route/status 정합성 검증을 보존한다. 같은 수정을 중복 구현하지 않는다.
 
 ## 테스트·완료

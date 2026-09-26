@@ -2,9 +2,9 @@
 
 ## 현행 판정 — 2026-09-26, [중앙 코드 감사](CURRENT-AUDIT.md) 기준
 
-- 구현: `published_units.rs` typed registry, SDK `symbol` route와 `record.rs::prove_hit`의 published-unit 증명 경로 확인. `prove_hit`의 **scored byte span은 full-line projection**이므로 indexed span 품질은 RBR-06 미해결.
+- 구현: `604149ed`에서 `published_units.rs` typed registry, SDK `symbol` route와 `record.rs::prove_hit`의 published-unit 증명 경로를 재확인했다. scored byte span은 full-line projection이지만 **indexed/SDK/scored span 분리와 indexed-span 보조 지표는 RBR-06에서 이미 구현**됐다. 기존 미구현 판정은 철회한다; 현 source의 live propagation proof는 별도다.
 - 검증: 과거 live SDK 기록은 현 source의 forged/stale/timeout/no-answer·동명이인 proof가 아니다. 현재 SDK rail/receipt는 `NOT_RUN`.
-- 잔여: RBR-06 span 스키마와 맞춰 producer→validator를 고정하고 현 daemon route·negative fixtures를 재실행한다. [현재 전수 판정](CURRENT-AUDIT.md).
+- 잔여: 구현된 RBR-06 span 표식·회계를 producer→SDK→record→merge→validator에서 같은 revision으로 재검증하고 현 daemon route·negative fixtures의 receipt를 발급한다. 별도 span 재구현은 하지 않는다. [현재 전수 판정](CURRENT-AUDIT.md).
 
 - 우선순위: P1. typed registry·symbol route 코드 관측; 현 소스 SDK proof 미발급. [현재 전수 판정](CURRENT-AUDIT.md). 선행: RBR-01/02/04.
 - 성격: 심볼 기능을 실제 평가까지 연결하는 필수 작업.

@@ -64,12 +64,12 @@ def test_artifact_projection_matches_the_registry() -> None:
         name: registry["producers"][family["producer"]]["outputs"][0]
         for name, family in registry["families"].items()
         if family["producer"] != "none"
+        and family["native_schema"] == "BenchArtifactV1:2"
         and registry["producers"][family["producer"]]["outputs"]
     }
-    projected = {
-        name: family["artifact_glob"] for name, family in manifest["families"].items()
-    }
+    projected = {name: family["artifact_glob"] for name, family in manifest["families"].items()}
     assert projected == expected
+    assert "dsl-warm-criterion" not in projected
 
 
 def test_profiles_project_without_inventing_membership() -> None:
@@ -126,7 +126,9 @@ def test_registry_refuses_a_family_without_a_required_key(tmp_path: Path) -> Non
 def test_registry_refuses_an_unreachable_producer(tmp_path: Path) -> None:
     module = _registry_module()
     text = REGISTRY_PATH.read_text(encoding="utf-8")
-    mutated = text.replace('recipe = "rust-bench-dsl-warm"', 'recipe = "rust-bench-dsl-nonexistent"')
+    mutated = text.replace(
+        'recipe = "rust-bench-dsl-warm"', 'recipe = "rust-bench-dsl-nonexistent"'
+    )
     assert mutated != text
     path = tmp_path / "registry.toml"
     path.write_text(mutated, encoding="utf-8")

@@ -8,6 +8,7 @@ use lancedb::query::ExecutableQuery as _;
 use tempfile::tempdir;
 
 use quanta_index_contract::{
+    IngestStageDurations,
     BatchIngestMode, CapabilityStatusV1, ClusterMembershipBatchReadRequestV1,
     ClusterMembershipReadFailureV1, ClusterMembershipReadOutcomeV1, ClusterMembershipReadRequestV1,
     ClusterMembershipReplaceV1, EmbeddingDistanceMetric, EmbeddingId, EmbeddingModelContract,
@@ -23,7 +24,7 @@ use quanta_index_core::{
 };
 
 use super::{
-    BACKUP_DIR_NAME, IngestStageDurations, IngestStageReport, POST_DATASET_PRE_CONTRACT_PROMOTION,
+    BACKUP_DIR_NAME, IngestStageReport, POST_DATASET_PRE_CONTRACT_PROMOTION,
     PRE_DATASET_PROMOTION, PROMOTION_CRASH_BOUNDARY_ENV, PROMOTION_CRASH_EXIT_CODE,
     STAGING_DIR_NAME, StreamScopeAuthorityV1, build_stream, build_stream_reported, column_as,
     ensure_generation_contract, failpoint, open_connection, persist_generation_contract,

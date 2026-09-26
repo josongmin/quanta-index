@@ -60,9 +60,37 @@ def test_comparator_refuses_interrupted_baseline_pair(tmp_path: Path) -> None:
 COLD_MATRIX = _load_module("run_dsl_cold_matrix", COLD_MATRIX_PATH)
 
 HEAD = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, text=True).strip()
+COMPARATOR_CWD = REPO_ROOT
 OTHER_HEAD = "fedcba9876543210fedcba9876543210fedcba98"
 DIGEST = "sha256:" + "ab" * 32
 OTHER_DIGEST = "sha256:" + "cd" * 32
+
+
+@pytest.fixture(scope="module", autouse=True)
+def frozen_comparator_checkout(tmp_path_factory):
+    """Keep source-attribution tests independent of writers on shared main.
+
+    The real CLI still resolves Git HEAD and rejects wrong-source artifacts.
+    Only its Git working directory is pinned; no production guard is mocked.
+    """
+    repo = tmp_path_factory.mktemp("dsl-comparator") / "repo"
+    subprocess.run(
+        ["git", "clone", "--shared", "--no-checkout", "--quiet", str(REPO_ROOT), str(repo)],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "update-ref", "--no-deref", "HEAD", HEAD],
+        check=True,
+        capture_output=True,
+    )
+    assert (
+        subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+        == HEAD
+    )
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(sys.modules[__name__], "COMPARATOR_CWD", repo)
+        yield repo
 
 
 def _row(
@@ -169,7 +197,7 @@ def _write_clean_preflight(path: Path, *, host: dict | None = None, status: str 
 def _run(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, str(COMPARE_PATH), *args],
-        cwd=REPO_ROOT,
+        cwd=COMPARATOR_CWD,
         check=False,
         capture_output=True,
         text=True,

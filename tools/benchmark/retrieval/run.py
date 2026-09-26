@@ -3034,14 +3034,15 @@ def _typed_window(value: object, where: str) -> tuple[int, bool, dict[str, bool]
 
 
 def _validate_explanation(
-    value: object, where: str, route: str, version: int, returned: int
+    value: object, where: str, route: str, version: int, returned: int,
+    observation_policy: str = "enabled",
 ) -> None:
     if value is None:
-        if version == 4 and route in ("lexical", "semantic", "hybrid"):
+        if version in (4, 5) and route in ("lexical", "semantic", "hybrid"):
             raise RunError(f"{where} is missing measured stage timings")
         return
     fields = {"request_id", "early_stop_reason", "engines_executed", "engines_touched", "strategy"}
-    if version == 4:
+    if version in (4, 5):
         fields.add("stage_timings")
     detail = _exact_keys(value, fields, where)
     if detail["request_id"] is not None and (type(detail["request_id"]) is not int or detail["request_id"] < 0):
@@ -3054,9 +3055,17 @@ def _validate_explanation(
             raise RunError(f"{where}.{field} is invalid")
     if detail["strategy"] is not None and not isinstance(detail["strategy"], str):
         raise RunError(f"{where}.strategy is invalid")
-    if version != 4:
+    if version not in (4, 5):
         return
     timings = detail["stage_timings"]
+    if version == 5 and observation_policy == "disabled":
+        if timings is not None:
+            raise RunError(f"{where} disabled observation must be unmeasured, not zero/empty")
+        if route in ("lexical", "semantic", "hybrid") and (
+            type(detail["request_id"]) is not int or detail["request_id"] <= 0
+        ):
+            raise RunError(f"{where} unmeasured response still requires a transport request id")
+        return
     stages = {
         "lexical": ("prepare", "read_view", "search", "project"),
         "semantic": ("prepare", "read_view", "lexical_scope", "embedding", "dense_search", "project"),
@@ -3162,7 +3171,7 @@ def _validate_explanation(
 
 
 def _validate_diagnostic_response_v3(
-    row: dict, key: tuple[str, str], version: int
+    row: dict, key: tuple[str, str], version: int, observation_policy: str = "enabled",
 ) -> dict[str, bool]:
     where = f"retrieval diagnostic response for {key}"
     kind = row["response_kind"]
@@ -3180,7 +3189,7 @@ def _validate_diagnostic_response_v3(
     if kind == "returned_window":
         detail = _exact_keys(response, {"window", "explanation"}, where)
         returned, exhausted, lanes = _typed_window(detail["window"], f"{where}.window")
-        _validate_explanation(detail["explanation"], f"{where}.explanation", key[1], version, returned)
+        _validate_explanation(detail["explanation"], f"{where}.explanation", key[1], version, returned, observation_policy)
         if returned != len(row["candidates"]):
             raise RunError(f"{where} returned count differs from candidates")
         expected_status = "abstained" if returned == 0 and exhausted else "error" if returned == 0 else "success" if exhausted else "capped"
@@ -3191,7 +3200,7 @@ def _validate_diagnostic_response_v3(
     if kind == "rejected_response":
         detail = _exact_keys(response, {"window", "explanation", "observed_hit_count", "expected_generation", "observed_generation"}, where)
         returned, _exhausted, lanes = _typed_window(detail["window"], f"{where}.window")
-        _validate_explanation(detail["explanation"], f"{where}.explanation", key[1], version, returned)
+        _validate_explanation(detail["explanation"], f"{where}.explanation", key[1], version, returned, observation_policy)
         if detail["observed_hit_count"] != returned or row["candidates"] or row["status"] != "error" or row["error_code"] != "stale_generation":
             raise RunError(f"{where} rejected response fields are invalid")
         for field in ("expected_generation", "observed_generation"):
@@ -3204,6 +3213,117 @@ def _validate_diagnostic_response_v3(
     raise RunError(f"{where} response_kind is invalid")
 
 
+def server_observation_configuration(policy: object = "enabled") -> dict:
+    """Declared default is enabled; arbitrary inherited daemon env is never authority."""
+    if policy not in ("enabled", "disabled"):
+        raise RunError("query stage observation must be exactly enabled or disabled")
+    config = {"query_stages": policy, "scope": "server_query_stage_only_v1"}
+    return {**config, "config_sha256": digest(canonical_bytes(config))}
+
+
+def _validate_server_observation(payload: object) -> dict:
+    config = _exact_keys(payload, {"query_stages", "scope", "config_sha256"}, "server observation")
+    if config != server_observation_configuration(config["query_stages"]):
+        raise RunError("server observation configuration digest/scope mismatch")
+    return config
+
+
+def ingest_request_identity(spec: dict) -> dict:
+    return _validate_ingest_request_identity({
+        "repo_id": spec.get("repo_id", "bench-repo"),
+        "revision_id": spec.get("revision_id", "bench-rev"),
+        "generation": spec.get("generation", 7),
+    })
+
+
+def _validate_ingest_request_identity(payload: object) -> dict:
+    identity = _exact_keys(payload, {"repo_id", "revision_id", "generation"}, "ingest request identity")
+    if any(not isinstance(identity[key], str) or not identity[key] for key in ("repo_id", "revision_id")):
+        raise RunError("ingest request identity has an empty repo/revision")
+    if type(identity["generation"]) is not int or not 0 < identity["generation"] < 2**64:
+        raise RunError("ingest request identity generation is invalid")
+    return identity
+
+
+def _validate_ingest_diagnostic(payload: object, record: dict) -> dict:
+    """Bind transient stages to durable receipt/activation bytes, not self-reported totals.
+
+    A fresh capture requires executed stages. Replay/partial/finalize-only are
+    valid SDK outcomes but not fresh benchmark measurements. Nested timings
+    overlap; activation is another request and must be explicitly unmeasured.
+    """
+    ingest = _exact_keys(payload, {"receipt", "activation_ack", "observation"}, "ingest diagnostic")
+    receipt = _exact_keys(ingest["receipt"], {
+        "generation", "manifest_digest", "batch_digest", "accepted_replace_scopes",
+        "accepted_tombstone_scopes", "accepted_semantic_replace_scopes",
+        "accepted_semantic_tombstone_scopes", "accepted_clear_surfaces", "sealed",
+        "applied", "durable_sequence", "semantic_content",
+    }, "ingest receipt")
+    captures = record.get("captures")
+    if not isinstance(captures, dict) or len(captures) != 1:
+        raise RunError("ingest diagnostic requires exactly one capture")
+    capture = next(iter(captures.values()))
+    if not isinstance(capture, dict) or capture.get("receipt_digest") != digest(canonical_bytes(receipt)):
+        raise RunError("ingest receipt digest differs from capture")
+    ack = _exact_keys(ingest["activation_ack"], {"active", "previous_sealed_active"}, "ingest activation ack")
+    if capture.get("activation_digest") != digest(canonical_bytes(ack["active"])):
+        raise RunError("ingest activation digest differs from capture")
+    active = _exact_keys(ack["active"], {"generation", "activation_token"}, "ingest active head")
+    generation = _exact_keys(active["generation"], {"lexical", "semantic", "semantic_content"}, "ingest active generation")
+    pins = [_exact_keys(generation[lane], {"repo_id", "revision_id", "track", "manifest_generation", "manifest_digest"}, f"ingest {lane} pin") for lane in ("lexical", "semantic")]
+    observation = _exact_keys(ingest["observation"], {
+        "request_id", "repo_id", "revision_id", "generation", "batch_digest", "status",
+        "semantic", "lexical_build_ns", "finalize_ns", "activation_ns",
+    }, "ingest observation")
+    identity = _validate_ingest_request_identity({key: observation[key] for key in ("repo_id", "revision_id", "generation")})
+    expected_pin = {"repo_id": identity["repo_id"], "revision_id": identity["revision_id"], "manifest_generation": identity["generation"], "manifest_digest": receipt["manifest_digest"]}
+    if (pins[0] != {**expected_pin, "track": "lexical"} or pins[1] != {**expected_pin, "track": "semantic"}
+        or type(receipt["generation"]) is not int or receipt["generation"] != identity["generation"]
+        or capture.get("generation") != identity["generation"]
+        or observation["batch_digest"] != receipt["batch_digest"] or not _is_hex(receipt["batch_digest"], 64)
+        or receipt["semantic_content"] != generation["semantic_content"]
+        or receipt["semantic_content"] is None or receipt["sealed"] is not True or receipt["applied"] is not True
+        or ack["previous_sealed_active"] is not None):
+        raise RunError("ingest observation identity/fresh receipt/activation mismatch")
+    def u64(value: object, where: str, positive: bool = False) -> int:
+        if type(value) is not int or not (int(positive) <= value < 2**64):
+            raise RunError(f"{where} must be an unsigned integer")
+        return value
+    u64(observation["request_id"], "ingest request_id", True)
+    if not isinstance(active["activation_token"], str) or not active["activation_token"]:
+        raise RunError("ingest activation token is missing")
+    u64(receipt["durable_sequence"], "ingest durable sequence", True)
+    for key in ("accepted_replace_scopes", "accepted_tombstone_scopes", "accepted_semantic_replace_scopes", "accepted_semantic_tombstone_scopes", "accepted_clear_surfaces"):
+        if u64(receipt[key], f"ingest receipt {key}") >= 2**32:
+            raise RunError("ingest receipt scope count exceeds u32")
+    if not isinstance(receipt["manifest_digest"], str) or not receipt["manifest_digest"]:
+        raise RunError("ingest receipt manifest digest is missing")
+    if observation["status"] != "executed" or observation["activation_ns"] is not None:
+        raise RunError("fresh ingest requires executed status and unmeasured separate activation")
+    u64(observation["lexical_build_ns"], "ingest lexical build")
+    u64(observation["finalize_ns"], "ingest finalize")
+    report = _exact_keys(observation["semantic"], {
+        "owner_scopes", "windows", "semantic_delete_calls", "semantic_delete_commits",
+        "membership_delete_calls", "membership_delete_commits", "semantic_append_calls",
+        "membership_append_calls", "durations",
+    }, "ingest semantic report")
+    for key, value in report.items():
+        if key != "durations":
+            u64(value, f"ingest {key}")
+    durations = _exact_keys(report["durations"], {
+        "total", "prepare", "promotion", "clear_surfaces", "stream", "semantic_delete",
+        "membership_delete", "semantic_append", "membership_append", "tombstones", "seal", "embedding",
+    }, "ingest durations")
+    for key, value in durations.items():
+        if key != "embedding" or value is not None:
+            u64(value, f"ingest duration {key}")
+    if (sum(durations[key] for key in ("prepare", "promotion", "clear_surfaces", "stream", "tombstones", "seal")) > durations["total"]
+        or (durations["embedding"] is not None and durations["embedding"] > durations["stream"])
+        or sum(durations[key] for key in ("semantic_delete", "membership_delete", "semantic_append", "membership_append")) > sum(durations[key] for key in ("clear_surfaces", "stream", "tombstones"))):
+        raise RunError("ingest nested durations exceed their containing stages")
+    return identity
+
+
 def validate_retrieval_diagnostic(
     payload: object, record: object, record_sha256: str, pack: object
 ) -> dict:
@@ -3212,18 +3332,15 @@ def validate_retrieval_diagnostic(
     This is diagnostic evidence only: it cannot establish relevance or the
     identities of candidates the service did not return.
     """
+    fields = {
+        "schema_version", "kind", "record_sha256", "query_pack_sha256",
+        "top_k", "scope", "results", "runner_timing_detail_ms",
+    }
+    if isinstance(payload, dict) and payload.get("schema_version") == 5:
+        fields.update({"server_observation", "ingest"})
     diagnostic = _exact_keys(
         payload,
-        {
-            "schema_version",
-            "kind",
-            "record_sha256",
-            "query_pack_sha256",
-            "top_k",
-            "scope",
-            "results",
-            "runner_timing_detail_ms",
-        },
+        fields,
         "retrieval diagnostic",
     )
     if not isinstance(record, dict) or not isinstance(pack, dict):
@@ -3232,7 +3349,8 @@ def validate_retrieval_diagnostic(
     if not isinstance(contract, dict) or not _is_hex(record_sha256, 64):
         raise RunError("retrieval diagnostic requires a valid record contract and digest")
     if (
-        diagnostic["schema_version"] not in (2, 3, 4)
+        type(diagnostic["schema_version"]) is not int
+        or diagnostic["schema_version"] not in (2, 3, 4, 5)
         or diagnostic["kind"] != "quanta_returned_window_diagnostic"
         or diagnostic["scope"] != "returned_window_only"
         or diagnostic["record_sha256"] != record_sha256
@@ -3242,6 +3360,12 @@ def validate_retrieval_diagnostic(
         or diagnostic["top_k"] != contract.get("top_k")
     ):
         raise RunError("retrieval diagnostic identity or contract mismatch")
+    observation_policy = (
+        _validate_server_observation(diagnostic["server_observation"])["query_stages"]
+        if diagnostic["schema_version"] == 5 else "enabled"
+    )
+    if diagnostic["schema_version"] == 5:
+        _validate_ingest_diagnostic(diagnostic["ingest"], record)
     detail = _exact_keys(
         diagnostic["runner_timing_detail_ms"],
         {
@@ -3307,7 +3431,7 @@ def validate_retrieval_diagnostic(
             "candidates",
             "response",
         }
-        if diagnostic["schema_version"] in (3, 4):
+        if diagnostic["schema_version"] in (3, 4, 5):
             row_fields.add("response_kind")
         row = _exact_keys(
             row,
@@ -3339,8 +3463,8 @@ def validate_retrieval_diagnostic(
             _validate_diagnostic_response_v2(row["response"], row["error_code"], key)
             lane_execution: dict[str, bool] = {}
         else:
-            lane_execution = _validate_diagnostic_response_v3(row, key, diagnostic["schema_version"])
-            if diagnostic["schema_version"] == 4 and key[1] in ("lexical", "semantic", "hybrid") and row["response_kind"] != "sdk_failure":
+            lane_execution = _validate_diagnostic_response_v3(row, key, diagnostic["schema_version"], observation_policy)
+            if diagnostic["schema_version"] in (4, 5) and key[1] in ("lexical", "semantic", "hybrid") and row["response_kind"] != "sdk_failure":
                 request_id = row["response"]["explanation"]["request_id"]
                 if request_id in seen_request_ids:
                     raise RunError("retrieval diagnostic reuses a transport request id")
@@ -3411,7 +3535,7 @@ def validate_retrieval_diagnostic(
                     or not math.isfinite(lane["raw_score"])
                 ):
                     raise RunError("retrieval diagnostic lane is invalid")
-                if diagnostic["schema_version"] in (3, 4) and not (
+                if diagnostic["schema_version"] in (3, 4, 5) and not (
                     lane_execution.get(lane["lane"], False)
                     or lane_execution.get(f"hybrid.{lane['lane']}", False)
                 ):
@@ -3503,6 +3627,8 @@ def run_quanta_strategy(
         str(pack_path),
         "--query-input-policy",
         spec["execution_profiles"]["quanta"]["policy"],
+        "--query-stage-observation",
+        server_observation_configuration(spec.get("query_stage_observation", "enabled"))["query_stages"],
         "--strategy",
         name,
         "--routes",
@@ -3620,12 +3746,16 @@ def run_quanta_strategy(
         raise RunError(f"Rust runner omitted phase metrics for {name}")
     if not diagnostic_path.is_file():
         raise RunError(f"Rust runner omitted retrieval diagnostics for {name}")
-    validate_retrieval_diagnostic(
+    diagnostic = validate_retrieval_diagnostic(
         read_json(diagnostic_path),
         read_json(record_path),
         sha_file(record_path),
         read_json(pack_path),
     )
+    if diagnostic["schema_version"] != 5 or diagnostic["server_observation"] != server_observation_configuration(spec.get("query_stage_observation", "enabled")):
+        raise RunError("current capture omitted or contradicted the actual server observation policy")
+    if _validate_ingest_diagnostic(diagnostic["ingest"], read_json(record_path)) != ingest_request_identity(spec):
+        raise RunError("captured ingest identity differs from requested batch scope")
     index_bytes = tree_size(state_root)
     phase = read_json(phase_path)
     if not isinstance(phase, dict):
@@ -5498,6 +5628,8 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     }
     if parent_binding is not None:
         protocol_keys.add("delegated_cgroup_parent")
+    if isinstance(protocol_payload, dict) and protocol_payload.get("lock_version") == 3:
+        protocol_keys.update({"server_observation", "ingest_request_identity"})
     protocol_shape_valid = (
         isinstance(protocol_payload, dict) and set(protocol_payload) == protocol_keys
     )
@@ -5516,7 +5648,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         system_orders = protocol_payload["system_orders"]
         root_digests = protocol_payload["query_protocol_sha256s"]
         protocol_shape_valid = protocol_shape_valid and (
-            protocol_payload["lock_version"] == 2
+            protocol_payload["lock_version"] in (2, 3)
             and
             all(
                 _is_hex(protocol_payload[key], 64)
@@ -5561,11 +5693,15 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             and isinstance(protocol_payload["execution_profiles"], dict)
             and protocol_payload["execution_profiles_sha256"]
             == digest(canonical_bytes(protocol_payload["execution_profiles"]))
-            and protocol_payload["retrieval_diagnostic_version"] == 4
+            and protocol_payload["retrieval_diagnostic_version"]
+            == (5 if protocol_payload["lock_version"] == 3 else 4)
             and protocol_payload["rank_metric_k_policy"] == "declared_top_k_v1"
         )
         if protocol_shape_valid:
             try:
+                if protocol_payload["lock_version"] == 3:
+                    _validate_server_observation(protocol_payload["server_observation"])
+                    _validate_ingest_request_identity(protocol_payload["ingest_request_identity"])
                 profiles = protocol_payload["execution_profiles"]
                 if set(profiles) != {"quanta", "semble"}:
                     raise RunError("protocol execution profile systems are incomplete")
@@ -6046,7 +6182,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 bound_records.add(observed)
             diagnostic_ref = run_entry.get("retrieval_diagnostic")
             diagnostic_digest = run_entry.get("retrieval_diagnostic_digest")
-            if protocol_payload.get("retrieval_diagnostic_version") in (2, 3, 4) and (
+            if protocol_payload.get("retrieval_diagnostic_version") in (2, 3, 4, 5) and (
                 diagnostic_ref is None or diagnostic_digest is None
             ):
                 pair_note("retrieval_diagnostic_missing", ("T12",))
@@ -6074,6 +6210,10 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                         raise RunError(
                             "retrieval diagnostic version differs from the current protocol lock"
                         )
+                    if diagnostic["schema_version"] == 5 and diagnostic["server_observation"] != protocol_payload.get("server_observation"):
+                        raise RunError("retrieval diagnostic server configuration differs from protocol")
+                    if diagnostic["schema_version"] == 5 and _validate_ingest_diagnostic(diagnostic["ingest"], record_payload) != protocol_payload.get("ingest_request_identity"):
+                        raise RunError("retrieval diagnostic ingest identity differs from protocol")
                 except (KeyError, TypeError, ValueError, OSError) as exc:
                     pair_note(f"retrieval_diagnostic_invalid:{exc}", ("T12",))
     for path, entry in validated.items():
@@ -6158,7 +6298,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 or adapter.get("model_cache_manifest_digest") != sha_file(rep0_model_cache)
             ):
                 pair_note("adapter_model_cache_binding_broken", ("T11", "T12"))
-        if protocol_payload.get("retrieval_diagnostic_version") in (3, 4):
+        if protocol_payload.get("retrieval_diagnostic_version") in (3, 4, 5):
             expected_profile = protocol_payload.get("execution_profiles", {}).get("semble", {})
             expected_mode = expected_profile.get("mode")
             expected_alpha = expected_profile.get("alpha")
@@ -7289,8 +7429,10 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
         )
         driver_closure_digest = driver_closure["digest"]
     protocol_lock = {
-        "lock_version": 2,
-        "retrieval_diagnostic_version": 4,
+        "lock_version": 3,
+        "retrieval_diagnostic_version": 5,
+        "server_observation": server_observation_configuration(spec.get("query_stage_observation", "enabled")),
+        "ingest_request_identity": ingest_request_identity(spec),
         "rank_metric_k_policy": "declared_top_k_v1",
         "suite_digest": sha_file(Path(spec["suite"])),
         "query_pack_digest": sha_file(stage / "query-pack.json"),

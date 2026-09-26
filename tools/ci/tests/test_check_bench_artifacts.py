@@ -384,6 +384,17 @@ def test_authority_sample_floor_and_open_loop_ladder(tmp_path: Path) -> None:
     assert any("authority needs seeded_poisson" in refusal.reason for refusal in refusals)
 
 
+def test_duplicate_native_verdict_is_refused(tmp_path: Path) -> None:
+    path = tmp_path / "artifact.json"
+    raw = json.dumps(artifact("scale")).replace('"passed": true', '"passed": false, "passed": true')
+    path.write_text(raw, encoding="utf-8")
+    refusals, checked, _ = MODULE.check_families(
+        tmp_path, (("scale", "artifact.json"),), head=HEAD, require=True
+    )
+    assert checked == [path]
+    assert any("duplicate" in refusal.reason for refusal in refusals)
+
+
 def test_the_cli_walks_fresh_families_and_baselines(tmp_path: Path, capsys) -> None:
     install_manifest(tmp_path)
     write(tmp_path / "artifacts/dsl-bench/warm-matrix.json", artifact())

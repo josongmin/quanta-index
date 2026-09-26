@@ -30,6 +30,7 @@ use crate::query_dispatcher::metrics::{
     interruption_route_suffix, metric_count_value,
 };
 use crate::query_dispatcher::response_budget::ResponsePayloadBudget;
+use crate::query_dispatcher::stage_timing::QueryStageObservationPolicy;
 use crate::query_embedder::{HashingQueryTextEmbedder, QueryTextEmbedderPort};
 use crate::{
     ActivationCatalog, Ledger, SEARCH_OWNED_SEMANTIC_DIMENSION, SnapshotRegistries,
@@ -61,6 +62,7 @@ pub struct SearchPlaneDispatcher {
     /// How many encoded bytes one ranked lexical page may take before it
     /// is cut and continued by its cursor (QI-BB-005 보완 #5).
     pub(super) response_budget: ResponsePayloadBudget,
+    pub(super) query_stage_observation: QueryStageObservationPolicy,
     /// One continuation authority for all pageable routes. Product
     /// composition installs the persistent state-root key before serving;
     /// owner-local composition initializes a process-local authority lazily.
@@ -122,6 +124,7 @@ impl SearchPlaneDispatcher {
             obs_sink,
             history_text: None,
             response_budget: ResponsePayloadBudget::DEFAULT,
+            query_stage_observation: QueryStageObservationPolicy::default(),
             cursor_authority: OnceLock::new(),
         }
     }
@@ -139,6 +142,22 @@ impl SearchPlaneDispatcher {
     pub const fn with_response_budget(mut self, budget: ResponsePayloadBudget) -> Self {
         self.response_budget = budget;
         self
+    }
+
+    /// Select stage instrumentation before sharing the dispatcher. This is not
+    /// a sidecar-output switch: disabled routes do not read stage clocks.
+    #[must_use]
+    pub const fn with_query_stage_observation(
+        mut self,
+        policy: QueryStageObservationPolicy,
+    ) -> Self {
+        self.query_stage_observation = policy;
+        self
+    }
+
+    #[must_use]
+    pub const fn query_stage_observation(&self) -> QueryStageObservationPolicy {
+        self.query_stage_observation
     }
 
     /// Install the persistent cursor signing key held under the product

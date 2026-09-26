@@ -42,6 +42,10 @@ command was run for this audit. Registry-only lint is not execution evidence.
 
 ## Code work in dependency order
 
+Current implementation/status corrections and next-action acceptance:
+[2026-09-26 structural audit](CURRENT-RESIDUAL-2026-09-26.md). The dated source
+table above is historical; it is not the current implementation verdict.
+
 ### R0 — Establish the proof-result authority before release claims
 
 Owners: `tools/ci/proof-authority.toml`, `tools/ci/proof-manifest.schema.json`,

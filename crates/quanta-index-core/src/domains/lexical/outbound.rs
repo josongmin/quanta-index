@@ -93,7 +93,7 @@ pub trait SearchCorpusIngestPort: Send + Sync {
         &self,
         batch: &SearchCorpusIngestBatch,
         budget: &RequestBudgetV1,
-    ) -> Result<BatchPublishReceipt, CoreError>;
+    ) -> Result<quanta_index_contract::SearchCorpusPublishOutcome, CoreError>;
 }
 
 /// Ingest a source-repo keyed commit-recency authority snapshot for one lexical

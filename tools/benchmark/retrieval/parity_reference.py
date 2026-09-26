@@ -25,8 +25,10 @@ import json
 import math
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 REFERENCE_PROFILE = "model2vec-static-potion-code-16M-v2"
+MODEL_ID = "minishlab/potion-code-16M-v2"
+MODEL_REVISION = "e9d2a44ca6a05ac6685f3b23709ea57eb7352d5b"
 MODEL2VEC_VERSION = "0.9.0"
 PINNED_ASSET_SHA256 = {
     "model.safetensors": "75cf7a6c2171b230ad19b1e7d8e0b1aee86da5a02af8e7cacedd9921d227623c",
@@ -64,9 +66,11 @@ def verify_reference_inputs(model_dir: Path) -> dict[str, str]:
 
 
 def l2_normalize(vector: list[float]) -> list[float]:
+    if len(vector) != 256 or any(not math.isfinite(value) for value in vector):
+        raise ValueError("reference vector must contain 256 finite components")
     norm = math.sqrt(sum(value * value for value in vector))
-    if norm == 0.0:
-        return [0.0 for _ in vector]
+    if not math.isfinite(norm) or norm <= 0.0:
+        raise ValueError("reference vector norm must be finite and positive")
     return [value / norm for value in vector]
 
 
@@ -84,7 +88,6 @@ def main() -> int:
     from model2vec import StaticModel
 
     model = StaticModel.from_pretrained(str(args.model_dir))
-    model_id = getattr(model, "model_name", None) or str(args.model_dir)
 
     # The reference contract: no truncation (max_length=None), matching
     # the Rust decoder's unbounded pooling. model2vec 0.9.0 encode applies
@@ -92,8 +95,11 @@ def main() -> int:
     # unit layer; the Rust rail compares its L2-normalized output here.
     vectors = model.encode(INPUTS, max_length=None).tolist()
     permuted = model.encode(list(reversed(INPUTS)), max_length=None).tolist()
+    if len(vectors) != len(INPUTS) or len(permuted) != len(INPUTS):
+        raise ValueError("reference encoder returned an incomplete batch")
     for index, vector in enumerate(reversed(permuted)):
-        assert vector == vectors[index], f"batch permutation changed vector {index}"
+        if vector != vectors[index]:
+            raise ValueError(f"batch permutation changed vector {index}")
 
     norms = [math.sqrt(sum(value * value for value in vector)) for vector in vectors]
     # The model output is approximately-unit (fp16 rounding leaves norms
@@ -110,7 +116,8 @@ def main() -> int:
         "profile": REFERENCE_PROFILE,
         "library": {"model2vec": MODEL2VEC_VERSION},
         "model": {
-            "id": model_id,
+            "id": MODEL_ID,
+            "revision": MODEL_REVISION,
             "dir_name": args.model_dir.name,
             "safetensors_sha256": asset_digests["model.safetensors"],
             "tokenizer_sha256": asset_digests["tokenizer.json"],

@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
-import re
 import sys
 from pathlib import Path
 
@@ -17,7 +16,10 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
 
 ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_POLICY = ROOT / "tools" / "ci" / "ignored-test-policy.toml"
-IGNORE = re.compile(r'^#\[\s*ignore(?:\s*=\s*"([^"]+)")?\s*\]$')
+LINT_DIR = str(Path(__file__).resolve().parent)
+if LINT_DIR not in sys.path:
+    sys.path.insert(0, LINT_DIR)
+from rust_attribute_policy import attribute_metas, string_value  # noqa: E402
 
 
 def _ignored_tests(root: Path) -> set[tuple[str, str, str]]:
@@ -28,29 +30,47 @@ def _ignored_tests(root: Path) -> set[tuple[str, str, str]]:
     for source in (*root.glob("crates/**/*.rs"), *root.glob("benchmarks/**/*.rs")):
         tree = parser.parse(source.read_bytes())
 
-        def visit(node: object) -> None:
+        def visit(node: object, source: Path = source) -> None:
             children = node.children
             for index, child in enumerate(children):
                 if child.type == "attribute_item":
-                    attribute = child.text.decode("utf-8").strip()
-                    match = IGNORE.fullmatch(attribute)
-                    conditional = attribute.startswith("#[cfg_attr(") and re.search(
-                        r"\bignore\b", attribute
-                    )
-                    if match or conditional:
+                    ignores = [
+                        (arguments, conditional)
+                        for name, arguments, conditional in attribute_metas(child)
+                        if name == "ignore"
+                    ]
+                    if ignores:
                         target = next(
-                            (candidate for candidate in children[index + 1 :] if candidate.type not in {"attribute_item", "line_comment", "block_comment"}),
+                            (
+                                candidate
+                                for candidate in children[index + 1 :]
+                                if candidate.type
+                                not in {"attribute_item", "line_comment", "block_comment"}
+                            ),
                             None,
                         )
                         name = target.child_by_field_name("name") if target is not None else None
                         if target is None or target.type != "function_item" or name is None:
-                            raise ValueError(f"cannot identify ignored test function: {source}:{child.start_point.row + 1}")
-                        conditional_reason = re.search(r'\bignore\s*=\s*"([^"]+)"', attribute)
-                        reason = (match.group(1) or "") if match else (
-                            conditional_reason.group(1) if conditional_reason else "<conditional ignore>"
-                        )
-                        found.add((source.relative_to(root).as_posix(), name.text.decode("utf-8"), reason))
+                            raise ValueError(
+                                f"cannot identify ignored test function: {source}:{child.start_point.row + 1}"
+                            )
+                        for arguments, conditional in ignores:
+                            if not arguments:
+                                reason = "<conditional ignore>" if conditional else ""
+                            elif len(arguments) == 2 and arguments[0].type == "=":
+                                reason = string_value(arguments[1])
+                            else:
+                                raise ValueError("invalid ignore reason syntax")
+                            found.add(
+                                (
+                                    source.relative_to(root).as_posix(),
+                                    name.text.decode("utf-8"),
+                                    reason,
+                                )
+                            )
                 else:
+                    if child.type == "ERROR" and b"#" in child.text:
+                        raise ValueError("invalid Rust attribute syntax")
                     visit(child)
 
         visit(tree.root_node)

@@ -71,6 +71,25 @@ def test_float_canonical_form_never_uses_exponents() -> None:
         module.canonical_json({"v": float("inf")})
 
 
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf"), 10**1000])
+def test_payload_validation_refuses_non_finite_numeric_facts(value) -> None:
+    module = _load_evidence_module()
+    payload = module.sample_evidence()["payload"]
+    payload["rows"][0]["p50"] = value
+    with pytest.raises(module.EvidenceError, match="finite"):
+        module.validate_payload(payload)
+
+
+def test_python_counters_match_the_rust_u64_boundary() -> None:
+    module = _load_evidence_module()
+    payload = module.sample_evidence()["payload"]
+    payload["errors"] = (1 << 64) - 1
+    module.validate_payload(payload)
+    payload["errors"] += 1
+    with pytest.raises(module.EvidenceError, match="u64 range"):
+        module.validate_payload(payload)
+
+
 # --------------------------------------------------------------------------
 # Document-level refusals
 # --------------------------------------------------------------------------
@@ -129,7 +148,7 @@ def test_unknown_protocol_and_version_are_refused() -> None:
         (lambda e: e["host"].update({"policy": "canonical-linux"}), "canonical-linux"),
         (lambda e: e["verdict"].update({"scope": "performance"}), "exclusive host lease"),
         (
-            lambda e: (e["command"].update({"status": "timeout", "exit_code": None})),
+            lambda e: e["command"].update({"status": "timeout", "exit_code": None}),
             "cannot carry verdict",
         ),
         (lambda e: e["verdict"].update({"status": "not_run"}), "must state a reason"),
@@ -244,9 +263,7 @@ def _retrieval_payload(**overrides):
                 "kind": "recorded_experiment",
                 "experiment_id": "scan-vs-index",
                 "diagnostic_only": False,
-                "points": [
-                    {"label": "2000", "metric": "scan_ms", "unit": "ms", "value": 1.0}
-                ],
+                "points": [{"label": "2000", "metric": "scan_ms", "unit": "ms", "value": 1.0}],
                 "source_digest": "sha256:" + "ef" * 32,
             },
             "diagnostic_only",

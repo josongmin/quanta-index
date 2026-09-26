@@ -1,6 +1,6 @@
 # SEP-26 Benchmark Migration — ticket index
 
-Status: **implemented; see [CLOSEOUT.md](CLOSEOUT.md)** for the per-ticket
+Status: **PARTIAL implementation; see [CURRENT-AUDIT.md](CURRENT-AUDIT.md)** for current source-backed gaps and corrections. The older [CLOSEOUT.md](CLOSEOUT.md) is historical, not a full-completion receipt. Registration, typed fixtures and policy checks do not prove every profile can execute. See [CLOSEOUT.md](CLOSEOUT.md) for the historical per-ticket
 implementation / focused-verification / integration / qualification verdicts and
 the exact receipts. The `PLAN / NOT_RUN` status below is the plan-time state. Initially written against `f16bad934ec6b5b902eaf2d8633d734a0c34d37c` on 2026-09-26 while the shared checkout was dirty; re-audited at `8d23137cad89f2118377743824b8c841899593b1` with no intervening committed benchmark-control-plane change. The worktree remains dirty and may move again. This packet authorizes no benchmark result, baseline, or product win. Re-audit source and ownership before implementation; do not overwrite concurrent retrieval/RBR edits. See the [source-backed audit and corrections](AUDIT.md).
 

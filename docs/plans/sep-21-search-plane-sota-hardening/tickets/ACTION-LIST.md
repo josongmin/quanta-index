@@ -1,5 +1,9 @@
 # SEP-21 action list
 
+Current remaining-work status and file-level acceptance are maintained in
+[2026-09-26 structural audit](CURRENT-RESIDUAL-2026-09-26.md). Its table
+supersedes outdated implementation-gap wording below, not historical proof.
+
 Use the [residual execution plan](FINAL-RESIDUAL-EXECUTION-PLAN.md) for
 current work. The original wave checklist and importer steps are in Git
 history. Check a task against current source and raw evidence before marking

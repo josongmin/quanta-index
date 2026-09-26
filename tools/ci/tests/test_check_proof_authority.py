@@ -1410,8 +1410,10 @@ def test_exact_pair_live_binding_and_nested_checkout_exclusion(tmp_path: Path) -
     paired = root / ".proof-pairs/semantica-codegraph-v2"
     paired.mkdir(parents=True)
     _init_repo(paired)
-    (paired / "Cargo.lock").write_bytes(b"lock-v1\n")
-    subprocess.run(["git", "-C", str(paired), "add", "Cargo.lock"], check=True)
+    resolver_lock = paired / MODULE.PAIRED_DEPENDENCY_LOCK
+    resolver_lock.parent.mkdir(parents=True)
+    resolver_lock.write_bytes(b"lock-v1\n")
+    subprocess.run(["git", "-C", str(paired), "add", MODULE.PAIRED_DEPENDENCY_LOCK], check=True)
     subprocess.run(["git", "-C", str(paired), "commit", "-qm", "lock"], check=True)
     subprocess.run(
         [
@@ -1478,7 +1480,7 @@ def test_exact_pair_live_binding_and_nested_checkout_exclusion(tmp_path: Path) -
         == []
     )
 
-    (paired / "Cargo.lock").write_bytes(b"lock-v2\n")
+    resolver_lock.write_bytes(b"lock-v2\n")
     messages = _messages(
         MODULE.check_manifest(
             payload,
@@ -1497,8 +1499,10 @@ def test_paired_remote_identity_is_transport_independent(tmp_path: Path) -> None
     paired = tmp_path / "semantica-codegraph-v2"
     paired.mkdir()
     _init_repo(paired)
-    (paired / "Cargo.lock").write_bytes(b"lock-v1\n")
-    subprocess.run(["git", "-C", str(paired), "add", "Cargo.lock"], check=True)
+    resolver_lock = paired / MODULE.PAIRED_DEPENDENCY_LOCK
+    resolver_lock.parent.mkdir(parents=True)
+    resolver_lock.write_bytes(b"lock-v1\n")
+    subprocess.run(["git", "-C", str(paired), "add", MODULE.PAIRED_DEPENDENCY_LOCK], check=True)
     subprocess.run(["git", "-C", str(paired), "commit", "-qm", "lock"], check=True)
     subprocess.run(
         [

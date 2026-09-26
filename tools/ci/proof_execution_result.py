@@ -27,12 +27,18 @@ class ExecutionResultError(ValueError):
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def _validate_pytest_selection(selectors: list[str]) -> None:
+def _validate_pytest_selectors(selectors: list[str]) -> None:
     if not selectors or any(
         re.fullmatch(r"tools/ci/tests/test_[a-z0-9_]+\.py", selector) is None
         for selector in selectors
     ):
         raise ExecutionResultError("proof collection requires complete test file selectors")
+    if len(selectors) != len(set(selectors)):
+        raise ExecutionResultError("proof collection contains duplicate selectors")
+
+
+def _validate_pytest_selection(selectors: list[str]) -> None:
+    _validate_pytest_selectors(selectors)
     for variable in ("PYTEST_ADDOPTS", "PYTEST_PLUGINS"):
         if os.environ.get(variable):
             raise ExecutionResultError(f"{variable} can alter proof test collection")
@@ -158,8 +164,36 @@ def _pytest_result(events: Path, inventory: Path) -> tuple[dict[str, int], set[s
         or expected["tests"] != sorted(set(expected["tests"]))
     ):
         raise ExecutionResultError("invalid pytest collection inventory")
+    selectors = expected["selector"].split(" ")
+    _validate_pytest_selectors(selectors)
+    modules = {selector[:-3].replace("/", ".") for selector in selectors}
+    represented: set[str] = set()
+    for identity in expected["tests"]:
+        matching = [module for module in modules if identity.startswith(module + ".")]
+        if len(matching) != 1 or identity == matching[0] + ".":
+            raise ExecutionResultError("pytest inventory testcase is outside declared selectors")
+        represented.add(matching[0])
+    if represented != modules:
+        raise ExecutionResultError("pytest inventory omits a declared test file")
     if root.tag not in {"testsuite", "testsuites"}:
         raise ExecutionResultError("invalid pytest JUnit root")
+    # Interpret runner outcomes only after checking the admitted JUnit grammar.
+    # A suite-level error or an outcome hidden inside an unknown wrapper must
+    # never become a pass merely because the declared counters say zero.
+    for node in root.iter():
+        if node.tag in {"failure", "error", "skipped"}:
+            raise ExecutionResultError("pytest testcase did not pass: JUnit contains an outcome")
+        allowed_children = {
+            "testsuites": {"testsuite"},
+            "testsuite": {"testcase", "properties", "system-out", "system-err"},
+            "testcase": {"properties", "system-out", "system-err", "failure", "error", "skipped"},
+            "properties": {"property"},
+            "property": set(),
+            "system-out": set(),
+            "system-err": set(),
+        }.get(node.tag)
+        if allowed_children is None or any(child.tag not in allowed_children for child in node):
+            raise ExecutionResultError("pytest JUnit contains an unsupported element placement")
     suites = [root] if root.tag == "testsuite" else list(root.findall("testsuite"))
     if (
         not suites

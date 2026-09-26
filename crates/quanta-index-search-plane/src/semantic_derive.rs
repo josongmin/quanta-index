@@ -111,6 +111,7 @@ pub(crate) struct DerivedSemanticScopeSource<'a> {
     embedder: &'a dyn TextEmbeddingProvider,
     budget: RequestBudgetV1,
     next_window_ordinal: u64,
+    embedding_elapsed_ns: Option<u64>,
     model_contract: EmbeddingModelContract,
     policy: SemanticStreamWindowPolicy,
     dimension: usize,
@@ -146,6 +147,7 @@ impl<'a> DerivedSemanticScopeSource<'a> {
             embedder,
             budget: budget.clone(),
             next_window_ordinal: 0,
+            embedding_elapsed_ns: None,
             model_contract,
             policy,
             dimension,
@@ -233,7 +235,23 @@ impl<'a> DerivedSemanticScopeSource<'a> {
         // Ingest checks cancellation before durable intent and completes an
         // admitted publish. This diagnostic handoff does not call checkpoint
         // or change the provider's existing mid-commit cancellation policy.
+        let embedding_started = std::time::Instant::now();
         let embedded = self.embedder.embed_batch(&texts);
+        let elapsed = u64::try_from(embedding_started.elapsed().as_nanos()).map_err(|error| {
+            CoreError::InvalidContract(format!(
+                "semantic derivation: embedding duration overflow: {error}"
+            ))
+        })?;
+        self.embedding_elapsed_ns = Some(
+            self.embedding_elapsed_ns
+                .unwrap_or(0)
+                .checked_add(elapsed)
+                .ok_or_else(|| {
+                    CoreError::InvalidContract(
+                        "semantic derivation: accumulated embedding duration overflow".to_string(),
+                    )
+                })?,
+        );
         self.budget
             .record_provider_stage_v1(RequestProviderStageV1::IngestWindowReturned {
                 window_ordinal,
@@ -294,6 +312,10 @@ impl SemanticScopeSource for DerivedSemanticScopeSource<'_> {
 
     fn tally(&self) -> SemanticStreamTallyV1 {
         self.issuer.tally()
+    }
+
+    fn embedding_elapsed_ns(&self) -> Option<u64> {
+        self.embedding_elapsed_ns
     }
 }
 
