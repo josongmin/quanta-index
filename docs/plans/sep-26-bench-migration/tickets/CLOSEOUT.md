@@ -2,12 +2,16 @@
 
 Source state for every receipt in this file:
 
-- `HEAD = 51d3d34253d5d8ec0a72e1550a3c5e71ca38d8ab` (`fix: bind backend readiness to
-  active sealed identities`), shared checkout **dirty**.
-- A concurrent worker committed to `main` during this session and the tree still
-  carries that worker's in-flight retrieval/RBR edits. **No clean-source claim is
-  made here.** All receipts below are dirty-checkout implementation/contract
-  evidence; every qualified benchmark claim is `BLOCKED` or `NOT_RUN`.
+- `HEAD` moved **four times** during this session under a concurrent worker:
+  `33924335` → `51d3d342` → `420a6452` → `79bb8d23312d48d5ef8c0dba972e337c3e72e041`. The receipts below were
+  re-taken at `79bb8d23312d48d5ef8c0dba972e337c3e72e041`; the shared checkout is still **dirty** (18 files, all
+  belonging to that worker's in-flight retrieval/RBR and verification-receipt
+  work — none of this packet's files).
+- That worker also swept this packet into its commits with a repo-wide `git add`,
+  so the packet's files are now tracked, but under unrelated commit messages.
+  **No clean-source claim is made here.** All receipts below are dirty-checkout
+  implementation/contract evidence; every qualified benchmark claim is `BLOCKED`
+  or `NOT_RUN`.
 - Registry canonical digest:
   `sha256:f2066046b23aad113491157ce777f5fa25ef669a9326b939f3bfbfc7eae9291f`.
 
@@ -22,7 +26,7 @@ Axes are judged separately, as the packet requires: **implementation**,
 | R2 | `./scripts/cargow --lane bench-lane clippy -p quanta-index-bench-protocol --all-targets --all-features -- -D warnings` | clean |
 | R12 | `python3 tools/ci/lint/check-rust-derive-allowlist.py` | `All #[derive(...)] sites are on the allowlist.` (after the manual-codec rewrite) |
 | R3 | `./scripts/cargow --lane bench-lane fmt -p quanta-index-bench-protocol -- --check` | clean |
-| R4 | `uv run --frozen --extra dev python -m pytest <15-file benchmark control-plane suite>` | **271 passed, 0 failed** |
+| R4 | `uv run --frozen --extra dev python -m pytest <14-file benchmark control-plane suite>` | **255 passed, 0 failed** (the 15th file, `test_write_verification_receipt.py`, is the concurrent worker's and is currently red — see below) |
 | R5 | `python3 tools/ci/lint/check-benchmark-policy.py --print-registry-digest` | `policy ok` + digest `sha256:f2066046…9291f` |
 | R6 | `python3 tools/benchmark/benchctl.py list` / `plan dsl-authority` (×2) | 10 profiles + digest; byte-identical `plan`, `mutates: false` |
 | R7 | `python3 tools/benchmark/benchctl.py preflight dsl-authority --receipt /tmp/bm-preflight.json` | exit 1, `TIMING_PREFLIGHT_BLOCKED reason=unsupported_host expected_os=linux actual_os=darwin` |
@@ -301,6 +305,7 @@ unmodified-in-tree, so it is committed state, not a working-tree artifact:
 | `check-test-authority.py` | `crates/quanta-index-semantic/tests/exact_ann_decomposition.rs`: orphan integration target | file exists at `HEAD` (introduced in `36b2f8c5`); `HEAD:tools/ci/test-authority.toml` has no entry; file is unmodified in the tree. This packet's own three targets *are* now registered. |
 | `check-module-cycles.py` | `quanta-index-catalog`: cycle `candidate → sequence → idempotency → sequence` | `crates/quanta-index-catalog/src/*.rs` unmodified in the tree; introduced in `f16bad93`. |
 | `check-digest-fallibility.py` | `crates/quanta-index-catalog/src/sequence.rs:234,253` return `[u8; 32]` without `Result` or an "infallible by construction" doc | same files, unmodified in the tree. |
+| `test_write_verification_receipt.py` (pytest) | 8 failures in receipt/nextest-event handling | `tools/ci/write-verification-receipt.py`, its test and `verification-receipt.schema.json` were modified in the tree at 18:28-18:30 local, i.e. by the concurrent worker, after this packet's earlier green run of the same file. |
 
 They are reported rather than silently fixed: they belong to other owners and
 touching them would collide with in-flight work this packet was told to

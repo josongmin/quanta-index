@@ -6,19 +6,19 @@ Nothing here is a benchmark result — the right-hand columns are implementation
 and contract receipts only.
 
 Common receipt for all rows (dirty-checkout implementation evidence, `HEAD =
-51d3d34253d5d8ec0a72e1550a3c5e71ca38d8ab`):
+79bb8d23312d48d5ef8c0dba972e337c3e72e041`):
 
 - `python3 tools/ci/lint/check-benchmark-policy.py --print-registry-digest`
   → `benchmark control-plane policy ok`, registry digest
   `sha256:f2066046b23aad113491157ce777f5fa25ef669a9326b939f3bfbfc7eae9291f`
-- `uv run --frozen --extra dev python -m pytest <15-file benchmark control-plane suite>`
-  → **271 passed, 0 failed** (`test_benchmark_manifest`, `test_benchmark_policy`,
+- `uv run --frozen --extra dev python -m pytest <14-file benchmark control-plane suite>`
+  → **255 passed, 0 failed** (`test_benchmark_manifest`, `test_benchmark_policy`,
   `test_bench_protocol_conformance`, `test_benchmark_evidence_bridge`,
   `test_benchmark_source_closure`, `test_benchctl`, `test_check_bench_artifacts`,
   `test_check_host_contention`, `test_compare_dsl_bench`,
   `test_quality_integration_summary`, `test_retrieval_contract_proof`,
-  `test_retrieval_sdk_proof`, `test_write_verification_receipt`,
-  `test_agent_outcome_benchmark`, `test_validate_agent_output`)
+  `test_retrieval_sdk_proof`, `test_agent_outcome_benchmark`,
+  `test_validate_agent_output`)
 - `./scripts/cargow --lane bench-lane test -p quanta-index-bench-protocol` → 46 passed
 - `python3 tools/benchmark/benchctl.py list` → all 10 registered profiles plus the registry digest
 

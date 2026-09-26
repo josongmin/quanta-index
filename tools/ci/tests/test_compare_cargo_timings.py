@@ -98,8 +98,7 @@ def test_ambiguous_timing_json_is_refused(tmp_path: Path) -> None:
 
     path = tmp_path / "summary.json"
     path.write_text(
-        '{"top_repo_crates":[{"name":"demo","duration":1,"units":1}],'
-        '"top_repo_crates":[]}',
+        '{"top_repo_crates":[{"name":"demo","duration":1,"units":1}],"top_repo_crates":[]}',
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="duplicate JSON key"):

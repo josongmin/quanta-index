@@ -98,8 +98,8 @@ impl ControlCapabilityV1 {
             | SearchPlaneControlIpcRequest::MetricsSnapshot(_)
             | SearchPlaneControlIpcRequest::QuarantineInventory(_)
             | SearchPlaneControlIpcRequest::ProcessReadiness(_) => Self::Observe,
-            SearchPlaneControlIpcRequest::ProcessRequestEventsV1(_) => Self::Admin,
-            SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(_)
+            SearchPlaneControlIpcRequest::ProcessRequestEventsV1(_)
+            | SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(_)
             | SearchPlaneControlIpcRequest::RollbackSearchCorpusGenerationCas(_)
             | SearchPlaneControlIpcRequest::RepoMapActivateV2(_)
             | SearchPlaneControlIpcRequest::RepoMapActiveHeadV2(_)
@@ -867,7 +867,7 @@ mod tests {
     #[test]
     fn shared_socket_observer_gets_typed_denial_before_event_ring_read() -> TestResult {
         let owner_uid = rustix::process::geteuid().as_raw();
-        let owner_gid = rustix::process::getegid().as_raw();
+        let shared_group_id = rustix::process::getegid().as_raw();
         let observer_uid = if owner_uid == u32::MAX {
             owner_uid - 1
         } else {
@@ -876,14 +876,14 @@ mod tests {
         let directory = tempfile::Builder::new()
             .prefix("qi-control-events-")
             .tempdir_in("/tmp")?;
-        chown(directory.path(), None, Some(owner_gid))?;
+        chown(directory.path(), None, Some(shared_group_id))?;
         std::fs::set_permissions(
             directory.path(),
             std::fs::Permissions::from_mode(quanta_index_ipc::GROUP_DIRECTORY_MODE),
         )?;
         let socket = directory.path().join("control.sock");
         let access = quanta_index_ipc::SocketAccessPolicy::Shared(
-            quanta_index_ipc::SharedSocketAccess::new(Some(owner_gid), BTreeSet::new()),
+            quanta_index_ipc::SharedSocketAccess::new(Some(shared_group_id), BTreeSet::new()),
         );
         let counters = Arc::new(
             quanta_index_ipc::IpcServerCounters::for_plane_with_instance(
@@ -899,7 +899,7 @@ mod tests {
             counters,
             Arc::new(ObserverPeerSource(quanta_index_ipc::PeerCredentials {
                 uid: observer_uid,
-                gid: owner_gid,
+                gid: shared_group_id,
                 pid: None,
             })),
         )?);
@@ -946,8 +946,7 @@ mod tests {
             Ok(())
         })();
         server.shutdown_handle().trigger();
-        let served = join.join().expect("control server thread")?;
-        let _terminated = served;
+        join.join().expect("control server thread")?;
         outcome
     }
 

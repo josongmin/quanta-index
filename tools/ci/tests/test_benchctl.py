@@ -816,7 +816,7 @@ def test_replay_refuses_contract_only_claim_for_registered_native_family(
     run_id = "dsl-warm-20260926T120000Z-deadbeef"
     run_dir = _promote_sample_run(tmp_path / "root", run_id)
     assert MODULE.main(["replay", str(run_dir)]) == 2
-    assert "cannot parse native raw" in capsys.readouterr().err
+    assert "native artifact oracle failed" in capsys.readouterr().err
     assert MODULE.main(["replay", "--evidence-root", str(tmp_path / "root"), run_id]) == 2
 
 
@@ -828,6 +828,22 @@ def test_replay_refuses_a_tampered_run(tmp_path: Path, capsys) -> None:
     raw.write_bytes(raw.read_bytes().replace(b"0.42", b"0.43"))
     assert MODULE.main(["replay", str(run_dir)]) == 2
     assert "digest mismatch" in capsys.readouterr().err
+
+
+def test_replay_refuses_a_family_claimed_by_another_profile(tmp_path: Path, capsys) -> None:
+    import evidence as evidence_module
+
+    sys.path.insert(0, str(REPO_ROOT / "tools" / "benchmark"))
+    run_dir = _promote_sample_run(tmp_path / "root", "dsl-warm-wrong-profile")
+    evidence_path = run_dir / "evidence.json"
+    forged = json.loads(evidence_path.read_text(encoding="utf-8"))
+    forged["profile"] = "systems"
+    forged["digest"] = None
+    evidence_path.write_text(
+        evidence_module.to_canonical_json(evidence_module.seal(forged)), encoding="utf-8"
+    )
+    assert MODULE.main(["replay", str(run_dir)]) == 2
+    assert "not registered in its profile" in capsys.readouterr().err
 
 
 def test_replay_requires_an_evidence_root_outside_a_run_directory(capsys) -> None:
@@ -988,8 +1004,9 @@ def _promote_family_run(
     )["run_dir"]
 
 
-def test_promoted_run_validation_is_scoped_to_the_profile(tmp_path: Path, capsys) -> None:
-    """A profile must not require evidence runs owned by a different profile."""
+def test_promoted_run_validation_refuses_unverifiable_payloads_and_other_profile(
+    tmp_path: Path, capsys
+) -> None:
     sys.path.insert(0, str(REPO_ROOT / "tools" / "benchmark"))
     manifest = MODULE.load_manifest()
     root = tmp_path / "root"
@@ -1006,10 +1023,9 @@ def test_promoted_run_validation_is_scoped_to_the_profile(tmp_path: Path, capsys
     expected_lock = "sha256:" + "22" * 32
     assert (
         MODULE.validate_promoted_runs(root, "systems", manifest, expected_source, expected_lock)
-        == 0
+        == 2
     )
-    receipts = json.loads(capsys.readouterr().out)
-    assert [entry["family"] for entry in receipts["runs"]] == ["freshness", "open-loop"]
+    assert "no native-to-typed payload oracle" in capsys.readouterr().err
 
     # dsl-authority owns two different families; its runs are absent, so the
     # profile must refuse rather than accept the systems runs.
@@ -1020,6 +1036,91 @@ def test_promoted_run_validation_is_scoped_to_the_profile(tmp_path: Path, capsys
         == 2
     )
     assert "dsl-warm" in capsys.readouterr().err
+
+
+def test_promoted_latency_profile_replays_both_native_artifacts(tmp_path: Path, capsys) -> None:
+    import evidence as evidence_module
+    import evidence_bridge
+
+    from tools.ci.tests.test_check_bench_artifacts import HEAD, artifact
+
+    manifest = MODULE.load_manifest()
+    root = tmp_path / "runs"
+    source = {
+        "revision": HEAD,
+        "dirty": False,
+        "dirty_paths_digest": None,
+        "closure_profile": "benchmark-control-plane",
+        "closure_digest": "sha256:" + "11" * 32,
+    }
+    lock = "sha256:" + "22" * 32
+    for family in ("dsl-warm", "dsl-cold"):
+        native = artifact(family, head=HEAD)
+        raw = (json.dumps(native) + "\n").encode()
+        evidence_bridge.promote_native_run(
+            evidence_root=root,
+            run_id=f"{family}-native-proof",
+            family=family,
+            profile="dsl-authority",
+            created_utc="2026-09-26T12:00:00Z",
+            native_path=Path(f"{family}.json"),
+            native_bytes=raw,
+            payload=evidence_bridge.latency_payload_from_artifact(native),
+            source=source,
+            build={
+                "toolchain": "rustc 1.92.0",
+                "target_triple": "x86_64-unknown-linux-gnu",
+                "lockfile_digest": lock,
+                "profile": "bench",
+                "flags": ["--locked"],
+                "binaries": [],
+            },
+            inputs=[
+                {
+                    "id": "benchmark-preflight",
+                    "availability": "present",
+                    "digest": "sha256:" + "33" * 32,
+                    "reason": None,
+                }
+            ],
+            host=evidence_bridge.host_identity(
+                policy="canonical-linux",
+                os_name="linux",
+                arch="x86_64",
+                cpu_count=8,
+                hostname="test-host",
+                lease_mode="shared",
+                lease_samples=1,
+            ),
+            command={
+                "argv": ["benchctl", "run", "dsl-authority"],
+                "cwd": ".",
+                "status": "completed",
+                "exit_code": 0,
+                "timeout_seconds": 3600,
+                "wall_ms": 1,
+            },
+            boundary={
+                "clock": "monotonic",
+                "instrumentation": "none",
+                "start_event": "producer_exec",
+                "end_event": "artifact_written",
+            },
+            verdict={"scope": "diagnostic", "status": "pass", "reason": None, "metrics": []},
+        )
+    assert MODULE.validate_promoted_runs(root, "dsl-authority", manifest, source, lock) == 0
+    assert len(json.loads(capsys.readouterr().out)["runs"]) == 2
+    evidence_path = root / "runs" / "dsl-warm-native-proof" / "evidence.json"
+    forged = json.loads(evidence_path.read_text(encoding="utf-8"))
+    forged["payload"]["rows"][0]["p50"] = 0.5
+    forged["output_digest"] = evidence_module.digest_bytes(
+        json.dumps(forged["payload"], sort_keys=True).encode()
+    )
+    forged["digest"] = None
+    forged = evidence_module.seal(forged)
+    evidence_path.write_text(evidence_module.to_canonical_json(forged), encoding="utf-8")
+    assert MODULE.validate_promoted_runs(root, "dsl-authority", manifest, source, lock) == 2
+    assert "typed payload differs" in capsys.readouterr().err
 
 
 def test_promoted_run_validation_rejects_failed_wrong_source_and_tampered_runs(

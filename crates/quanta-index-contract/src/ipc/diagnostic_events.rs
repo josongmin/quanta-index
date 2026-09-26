@@ -255,7 +255,22 @@ impl ProcessRequestEventV1 {
                     return Err("ingest-window stage detail is incomplete or mixed");
                 }
             }
-            _ => {
+            ProcessRequestEventStageV1::Validated
+            | ProcessRequestEventStageV1::ShuttingDown
+            | ProcessRequestEventStageV1::QueueAdmitted
+            | ProcessRequestEventStageV1::QueueRefusedGlobal
+            | ProcessRequestEventStageV1::QueueRefusedRepository
+            | ProcessRequestEventStageV1::DispatchStarted
+            | ProcessRequestEventStageV1::BackendStarted
+            | ProcessRequestEventStageV1::BackendReturned
+            | ProcessRequestEventStageV1::DispatchReturned
+            | ProcessRequestEventStageV1::PeerWatchFailed
+            | ProcessRequestEventStageV1::PeerCancelled
+            | ProcessRequestEventStageV1::ResponseEncodeFailed
+            | ProcessRequestEventStageV1::ResponseWriteFailed
+            | ProcessRequestEventStageV1::ResponseWritten
+            | ProcessRequestEventStageV1::Aborted
+            | ProcessRequestEventStageV1::Panicked => {
                 if self.route.is_some()
                     || self.error.is_some()
                     || self.ticket_id.is_some()
@@ -382,21 +397,20 @@ impl ProcessRequestEventsV1 {
             event.validate_v1()?;
             if event.sequence <= previous
                 || event.sequence >= self.next_sequence
-                || (previous != 0 && event.sequence != previous + 1)
+                || (previous != 0 && previous.checked_add(1) != Some(event.sequence))
             {
                 return Err("request-event sequence is reordered or out of range");
             }
-            if let Some(route) = event.route.as_deref() {
-                if !route.starts_with(self.plane.as_code_str())
-                    || route.as_bytes().get(self.plane.as_code_str().len()) != Some(&b'.')
-                {
-                    return Err("backend route does not belong to reported plane");
-                }
+            if let Some(route) = event.route.as_deref()
+                && (!route.starts_with(self.plane.as_code_str())
+                    || route.as_bytes().get(self.plane.as_code_str().len()) != Some(&b'.'))
+            {
+                return Err("backend route does not belong to reported plane");
             }
             previous = event.sequence;
         }
         if let Some(last) = self.events.last()
-            && last.sequence != self.next_sequence - 1
+            && last.sequence.checked_add(1) != Some(self.next_sequence)
         {
             return Err("request-event tail does not reach next sequence");
         }
@@ -411,8 +425,7 @@ impl ProcessRequestEventsV1 {
         ciborium::into_writer(self, &mut encoded).map_err(|error| error.to_string())?;
         if encoded.len() > MAX_PROCESS_REQUEST_EVENTS_WIRE_BYTES_V1 {
             return Err(format!(
-                "request-event window exceeds {} encoded bytes",
-                MAX_PROCESS_REQUEST_EVENTS_WIRE_BYTES_V1
+                "request-event window exceeds {MAX_PROCESS_REQUEST_EVENTS_WIRE_BYTES_V1} encoded bytes"
             ));
         }
         Ok(())
@@ -555,14 +568,13 @@ mod tests {
         let decoded: ProcessRequestEventsV1 =
             ciborium::from_reader(cbor.as_slice()).expect("response CBOR decode");
         assert_eq!(decoded, response);
-        assert!(
-            ciborium::from_reader::<ProcessRequestEventsV1, _>(&cbor[..cbor.len() - 1]).is_err()
-        );
+        assert!(cbor.pop().is_some(), "encoded sample must be nonempty");
+        assert!(ciborium::from_reader::<ProcessRequestEventsV1, _>(cbor.as_slice()).is_err());
         let mut forged = sample();
-        forged.events[0].ticket_id = Some(5);
+        forged.events.get_mut(0).expect("sample event").ticket_id = Some(5);
         assert!(forged.validate_v1().is_err());
         forged = sample();
-        forged.events[0].route = Some("control.metrics".to_owned());
+        forged.events.get_mut(0).expect("sample event").route = Some("control.metrics".to_owned());
         assert!(forged.validate_v1().is_err());
         forged = sample();
         forged.dropped_after = 1;
@@ -573,5 +585,28 @@ mod tests {
         forged = sample();
         forged.next_sequence = 9;
         assert!(forged.validate_v1().is_err());
+    }
+
+    #[test]
+    fn sequence_boundary_remains_checked_without_wraparound() {
+        let mut window = sample();
+        window.events.get_mut(0).expect("sample event").sequence = u64::MAX - 1;
+        window.oldest_retained_sequence = Some(u64::MAX - 1);
+        window.next_sequence = u64::MAX;
+        window.omitted_before_window = false;
+        window.sequence_exhausted = true;
+        assert!(window.validate_v1().is_ok());
+
+        let mut missing_tail = window.clone();
+        missing_tail
+            .events
+            .get_mut(0)
+            .expect("sample event")
+            .sequence = u64::MAX - 2;
+        missing_tail.oldest_retained_sequence = Some(u64::MAX - 2);
+        assert!(missing_tail.validate_v1().is_err());
+
+        window.events.get_mut(0).expect("sample event").sequence = u64::MAX;
+        assert!(window.validate_v1().is_err());
     }
 }

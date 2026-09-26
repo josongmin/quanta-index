@@ -31,7 +31,9 @@
 use std::collections::BTreeSet;
 use std::error::Error;
 
-use quanta_index_contract::{EmbeddingRecord, LexicalCandidate, ManifestGeneration, RepoId, RevisionId};
+use quanta_index_contract::{
+    EmbeddingRecord, LexicalCandidate, ManifestGeneration, RepoId, RevisionId,
+};
 use quanta_index_core::{
     DenseIndexV1, MetricSourcePort, MetricValueV1, RequestBudgetV1, SemanticIndexOpenPort,
 };
@@ -260,7 +262,10 @@ fn the_255_256_row_boundary_serves_the_exhaustive_oracle_through_both_lanes() ->
     };
     assert_eq!(effort.index_kind, "ivf_hnsw_sq");
     assert_eq!(effort.partitions, 1, "256 rows fill one partition");
-    assert_eq!(effort.nprobes, 1, "one partition is probed: min(NPROBES, partitions)");
+    assert_eq!(
+        effort.nprobes, 1,
+        "one partition is probed: min(NPROBES, partitions)"
+    );
     assert_eq!(effort.ef_floor, 64);
     assert_eq!(effort.ef_per_candidate, 2);
     assert_eq!(effort.refine_factor, 2);
@@ -351,7 +356,10 @@ fn a_full_length_approximate_pass_is_served_as_ranked_without_exact_completion()
         before_full.1.saturating_add(1),
         "exactly one approximate-lane query runs"
     );
-    assert_eq!(after_full.2, before_full.2, "a full pass must not be completed exactly");
+    assert_eq!(
+        after_full.2, before_full.2,
+        "a full pass must not be completed exactly"
+    );
     // ... and what it served is the oracle's ordered top-k (measured; see
     // the recall test for the aggregate statement).
     let expected = exhaustive_cosine_oracle(&query, &records, None, usize::try_from(TOP_K)?);
@@ -390,8 +398,8 @@ fn a_full_length_approximate_pass_is_served_as_ranked_without_exact_completion()
     clippy::panic_in_result_fn,
     reason = "the test asserts the pinned recall via assert macros; a violated pin is a test failure, not a propagatable error"
 )]
-fn approximate_top_k_recall_against_the_exhaustive_oracle_is_pinned_at_the_measured_value(
-) -> TestResult {
+fn approximate_top_k_recall_against_the_exhaustive_oracle_is_pinned_at_the_measured_value()
+-> TestResult {
     let temp = tempfile::tempdir()?;
     let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf())?;
     let generation = ManifestGeneration::new(1);
@@ -409,10 +417,14 @@ fn approximate_top_k_recall_against_the_exhaustive_oracle_is_pinned_at_the_measu
     let mut found = 0_u64;
     for query_seed in 0..QUERIES {
         let query = unit_vector(recall_seed_base.saturating_add(query_seed));
-        let expected: BTreeSet<String> =
-            oracle_ids(&exhaustive_cosine_oracle(&query, &records, None, TOP_K as usize))
-                .into_iter()
-                .collect();
+        let expected: BTreeSet<String> = oracle_ids(&exhaustive_cosine_oracle(
+            &query,
+            &records,
+            None,
+            TOP_K as usize,
+        ))
+        .into_iter()
+        .collect();
         let hits = searcher.search(&query, TOP_K, &RequestBudgetV1::unbounded())?;
         assert_eq!(
             usize::try_from(hits.len())?,
@@ -420,7 +432,10 @@ fn approximate_top_k_recall_against_the_exhaustive_oracle_is_pinned_at_the_measu
             "query {query_seed}: a full-length pass must come back"
         );
         found = found.saturating_add(u64::try_from(
-            hit_ids(&hits).iter().filter(|id| expected.contains(*id)).count(),
+            hit_ids(&hits)
+                .iter()
+                .filter(|id| expected.contains(*id))
+                .count(),
         )?);
     }
     let total = QUERIES.saturating_mul(u64::from(TOP_K));
@@ -484,12 +499,8 @@ fn scoped_search_matches_the_exhaustive_oracle_over_the_allowed_subset() -> Test
         ("approximate", ann_searcher.as_ref(), &ann_records),
     ] {
         let before = lane_counters(&adapter)?;
-        let scoped = searcher.search_scoped(
-            &query,
-            &allowed,
-            scope_top_k,
-            &RequestBudgetV1::unbounded(),
-        )?;
+        let scoped =
+            searcher.search_scoped(&query, &allowed, scope_top_k, &RequestBudgetV1::unbounded())?;
         let after = lane_counters(&adapter)?;
         let expected =
             exhaustive_cosine_oracle(&query, records, Some(&allowed), scope_top_k as usize);
@@ -508,7 +519,10 @@ fn scoped_search_matches_the_exhaustive_oracle_over_the_allowed_subset() -> Test
         }
         // No exact completion: the filtered pass was full-length (finding
         // above). Exactly one query ran, on the generation's own lane.
-        assert_eq!(after.2, before.2, "{label} lane: no exact completion may run");
+        assert_eq!(
+            after.2, before.2,
+            "{label} lane: no exact completion may run"
+        );
         match label {
             "exact" => {
                 assert_eq!(after.0, before.0.saturating_add(1));

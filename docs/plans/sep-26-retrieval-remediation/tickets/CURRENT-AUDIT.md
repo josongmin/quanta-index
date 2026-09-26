@@ -2,6 +2,13 @@
 
 이 파일이 이 패킷의 **현재 상태표**다. 각 RBR 티켓의 합격 계약은 유지하고, [INDEX](INDEX.md)의 '2차 라운드' 표는 역사적 기록이며 [GAP-REGISTER](GAP-REGISTER.md)는 현행 잔여 작업만 기록한다. 코드 존재, focused test, clean-source proof, 실제 비교 자격을 혼동하지 않는다.
 
+## 2026-09-26 후속 정적 게이트 복구 — 공유 dirty local
+
+- 관측 기준 HEAD `79bb8d23312d48d5ef8c0dba972e337c3e72e041`; 이 턴 시작의 `b7336a94`에서 다른 writer의 control 관측 커밋으로 이동했다. `tools/benchmark/benchctl.py`와 두 CI test 파일은 선행 dirty였고, 실행 중 searchd state-migration 경로도 다른 writer가 편집했다. 이들의 소유 변경은 수정하거나 retrieval 증거로 합치지 않았다.
+- `diagnostic_events.rs`의 closed enum/checked sequence/테스트 접근, IPC ring의 const `u16`→`usize` 변환, control test의 lint, SDK control response exhaustive match 및 `lxe_unified_surface`의 clone lint를 수정했다. embed/semantic 두 파일은 rustfmt 형식만 변경했다. 기능상 RBR-10 공개 ingest stage, RBR-01 on/off overhead, T15/T16 양성 producer를 구현한 변경은 아니다.
+- local exit 0: `just fmt-check`; `./scripts/cargow clippy -p quanta-index-contract -p quanta-index-search-plane -p quanta-index-retrieval-bench --all-targets -- -D warnings`; 4-crate `--lib -- --quiet`에서 contract 140, IPC 55, SDK 109, search-plane 415 passed; `lxe_unified_surface` 19 passed. Python required inventory는 275/275 exact. `uv run --frozen --extra dev python -m pytest tools/ci/tests/test_retrieval_benchmark.py -q -p no:cacheprovider -k 'verdict_t15_t16_conditionals or retrieval_diagnostic_v4_semantic_stages_bind_execution_and_strategy'`는 2 passed/273 deselected. 이들은 moving dirty checkout의 **local diagnostic**이고 raw artifact/digest가 달린 clean-source receipt는 아니다.
+- `run.py`의 현재 T15/T16 경계는 raw shape/identity를 확인한 뒤에도 양성 raw proof 프로토콜 미구현을 이유로 명시적으로 fail-closed한다. RBR-07과 TEST-PLAN의 구식 "현 summary-only 양성 승인" 문구를 수정했다. 외부 `frozen-v4/corpus-set.json` SHA-256 `31c248d79ad908052018ee74279630b4b0bd77c5e3cd5ead31d1651b0eb71f33`은 10 repo/1,480파일 후보이며 자체 상태는 `candidate_not_admitted_no_gold_no_pair`다. 독립 gold/admission·고정 model/lockfile·quiet host의 qualified final pair와 `QUALITY_DELTA`/`PERF_QUALIFIED`는 `NOT_RUN`이다.
+
 ## 2026-09-26 후속 RBR-01 validator 재감사 — 공유 dirty local
 
 - 관측 중 HEAD가 `8c0c1242`에서 `1245ea40`으로 이동했다. `run.py`의 diagnostic v4 재생에서 route별 stage 기록과 executed/touched engine 및 strategy를 cross-check하도록 보강했다. 이전에는 정상 stage 배열에 모순된 semantic/hybrid engine·strategy를 넣어도 통과할 수 있었다. lexical budget-fit 후 기여와 semantic zero-hit scoped 경우를 별도 검사한다. 새 Python test 1개를 required inventory에 등록했고 `collect_pytest()` 275/275 exact, diagnostic 집중 4 passed, Ruff exit 0이다. 보존된 실제 v4 sidecar(`/private/tmp/rbr01-lexical-final.B3GlSv/`)는 강화된 validator에서 3 route replay를 통과했다. 이전 capture를 새 source의 live daemon proof로 승격하지 않는다.

@@ -20,11 +20,30 @@ import jsonschema
 import pytest
 
 from tools.benchmark.retrieval import evaluator as ev
-from tools.benchmark.retrieval import portable_proof
+from tools.benchmark.retrieval import parity_reference, portable_proof
 from tools.benchmark.retrieval import query_plan as qp
 from tools.benchmark.retrieval import run as pairrun
 from tools.benchmark.retrieval import semble as semble_adapter
 from tools.ci import source_closure
+
+
+def test_parity_reference_refuses_unpinned_assets_and_library(tmp_path, monkeypatch):
+    names = tuple(parity_reference.PINNED_ASSET_SHA256)
+    for name in names:
+        (tmp_path / name).write_bytes(name.encode())
+    digests = {name: hashlib.sha256(name.encode()).hexdigest() for name in names}
+    monkeypatch.setattr(parity_reference.importlib.metadata, "version", lambda _: "0.9.0")
+    monkeypatch.setattr(parity_reference, "PINNED_ASSET_SHA256", digests)
+    assert parity_reference.verify_reference_inputs(tmp_path) == digests
+    for name in names:
+        monkeypatch.setattr(
+            parity_reference, "PINNED_ASSET_SHA256", digests | {name: "0" * 64}
+        )
+        with pytest.raises(ValueError, match="SHA-256 mismatch"):
+            parity_reference.verify_reference_inputs(tmp_path)
+    monkeypatch.setattr(parity_reference.importlib.metadata, "version", lambda _: "0.9.1")
+    with pytest.raises(ValueError, match="model2vec version mismatch"):
+        parity_reference.verify_reference_inputs(tmp_path)
 
 
 def test_query_plan_oracle_uses_nfc_and_rejects_unindexable_runs():

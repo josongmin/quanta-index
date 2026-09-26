@@ -375,7 +375,7 @@ fn server_stage_timing_round_trips_and_refuses_false_shapes() -> TestRes {
         returned_candidates: Some(13),
     };
     let original = SearchExplanation {
-        stage_timings: Some(vec![stage.clone()]),
+        stage_timings: Some(vec![stage]),
         ..sample_explanation_full()
     };
     let decoded: SearchExplanation = decode(&encode(&original)?)?;

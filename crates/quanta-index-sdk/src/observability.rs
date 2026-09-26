@@ -97,10 +97,23 @@ impl<'a> ObservabilityNamespace<'a> {
                 request,
             ))? {
             SearchPlaneControlIpcResponse::ProcessRequestEventsV1(events) => Ok(events),
-            other => Err(SdkError::Protocol(format!(
-                "expected process request events, got {}",
-                QuantaIndex::control_response_kind(&other)
-            ))),
+            other @ (SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(_)
+            | SearchPlaneControlIpcResponse::SearchCorpusRollbackCasAck(_)
+            | SearchPlaneControlIpcResponse::RepoMapTerminalReceiptV2(_)
+            | SearchPlaneControlIpcResponse::RepoMapActiveHeadV2(_)
+            | SearchPlaneControlIpcResponse::CurrentGenerationSnapshot(_)
+            | SearchPlaneControlIpcResponse::GenerationStatusReport(_)
+            | SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(_)
+            | SearchPlaneControlIpcResponse::Error(_)
+            | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
+            | SearchPlaneControlIpcResponse::QuarantineInventory(_)
+            | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
+            | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)) => {
+                Err(SdkError::Protocol(format!(
+                    "expected process request events, got {}",
+                    QuantaIndex::control_response_kind(&other)
+                )))
+            }
         }
     }
 }

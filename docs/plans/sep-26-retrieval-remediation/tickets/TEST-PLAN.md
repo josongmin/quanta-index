@@ -62,6 +62,6 @@ just retrieval-verdict <repo> <suite> <run-manifest> <fresh-external-verdict>
 
 각 결과에 full HEAD, 관련 dirty paths/source hash, 입력·모델·parser·dependency·설정·binary hash, host/runtime, 정확한 명령, raw 출력/종료 상태, 산출물 경로/SHA-256, covered/excluded scope를 남긴다. schema/config/policy 변경은 옛 증거 재사용을 무효화한다. 새 티켓 디렉터리가 source closure에 편입되면 이 문서의 사후 상태 변경도 receipt를 무효화한다. 최종 상태·결과표는 레포 외부의 digest-bound closeout artifact에 기록한다.
 
-조건부 T15(동일 모델)·T16(증분)의 `pass`/count JSON과 그 SHA-256은 독립 증거가 아니다. T15는 pinned 양쪽 모델·토크나이저·정밀도·입력·raw 전체 벡터·사전 선언 tolerance·실행 context로, T16은 동일 source/generation에서 before/after raw row-set·rename/delete/restart·실행 context로 재도출해야 한다. 임의 command 문자열 또는 새 digest를 붙인 요약만으로 조건부 claim을 승인하지 않는다. 현 validator의 이 경계는 [현재 감사](CURRENT-AUDIT.md)에서 `FAILED`로 기록했다.
+조건부 T15(동일 모델)·T16(증분)의 `pass`/count JSON과 그 SHA-256은 독립 증거가 아니다. T15는 pinned 양쪽 모델·토크나이저·정밀도·입력·raw 전체 벡터·사전 선언 tolerance·실행 context로, T16은 동일 source/generation에서 before/after raw row-set·rename/delete/restart·실행 context로 재도출해야 한다. 임의 command 문자열 또는 새 digest를 붙인 요약만으로 조건부 claim을 승인하지 않는다. 현재 `run.py`는 raw 양성 프로토콜이 없어 두 조건부 claim을 fail-closed로 거부한다. 과거 summary-only 승인은 역사적 결함이며, 현 양성 proof는 `NOT_RUN`이다. [현재 감사](CURRENT-AUDIT.md)를 따른다.
 
 개발 작업의 종료와 `PAIR_VALID`, `QUALITY_DELTA`, `PERF_QUALIFIED`의 종료를 분리한다. 외부 독립 입력이 없으면 해당 qualification만 `BLOCKED` 또는 `NOT_RUN`으로 남기고, 개발 티켓에 가짜 승인·정답·quiet-host를 만드는 작업을 추가하지 않는다.

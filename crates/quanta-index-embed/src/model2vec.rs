@@ -193,6 +193,9 @@ mod tests {
     #[test]
     #[ignore = "requires the pinned model assets and the generated parity reference fixture"]
     fn full_vector_parity_against_pinned_reference() {
+        const NORM_TOLERANCE: f64 = 0.002;
+        const COS_TOLERANCE: f64 = 0.005;
+
         // RBR-07 full-vector parity rail. The one-sentence/8-component
         // comparison above is not parity; this test is. It verifies the
         // complete 256-dimension vectors, norms, pairwise cosine, batch
@@ -227,17 +230,13 @@ mod tests {
             fixture["library"]["model2vec"], "0.9.0",
             "reference library version drifted"
         );
-        assert!(
-            fixture["model"]["tokenizer_sha256"].as_str().is_some_and(|value| {
-                value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
-            }),
-            "tokenizer digest missing from the fixture"
+        assert_eq!(
+            fixture["model"]["tokenizer_sha256"], TOKENIZER_SHA256,
+            "fixture tokenizer differs from the crate pin"
         );
-        assert!(
-            fixture["model"]["config_sha256"].as_str().is_some_and(|value| {
-                value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
-            }),
-            "config digest missing from the fixture"
+        assert_eq!(
+            fixture["model"]["config_sha256"], CONFIG_SHA256,
+            "fixture config differs from the crate pin"
         );
 
         let inputs: Vec<&str> = fixture["inputs"]
@@ -249,7 +248,7 @@ mod tests {
         // The pinned reference output is the internally-L2-normalized
         // layer (model2vec 0.9.0), compared against the Rust
         // L2Unit-normalized output below.
-        let vectors_reference: Vec<Vec<f32>> = fixture["vectors"]
+        let vectors_reference: Vec<Vec<f64>> = fixture["vectors"]
             .as_array()
             .expect("vectors")
             .iter()
@@ -258,7 +257,7 @@ mod tests {
                     .as_array()
                     .expect("vector")
                     .iter()
-                    .map(|value| value.as_f64().expect("f64") as f32)
+                    .map(|value| value.as_f64().expect("f64"))
                     .collect()
             })
             .collect();
@@ -297,16 +296,15 @@ mod tests {
         // tokenless (empty-pool) vector deviates up to ~1.3e-3 through
         // the fp16->fp32 pooling path, so 2e-3 is the tight bound that
         // still admits the real edge (2.5x tighter than the old 5e-3).
-        const NORM_TOLERANCE: f32 = 0.002;
         for (index, (actual, expected)) in unit.iter().zip(&vectors_reference).enumerate() {
             for (position, (a, e)) in actual.iter().zip(expected).enumerate() {
                 assert!(
-                    (a - e).abs() < NORM_TOLERANCE,
+                    (f64::from(*a) - e).abs() < NORM_TOLERANCE,
                     "normalized vector {index} component {position}: {a} != {e}"
                 );
             }
         }
-        let pairwise_reference: Vec<Vec<f32>> = fixture["pairwise_cosine_upper"]
+        let pairwise_reference: Vec<Vec<f64>> = fixture["pairwise_cosine_upper"]
             .as_array()
             .expect("pairwise")
             .iter()
@@ -314,17 +312,16 @@ mod tests {
                 row.as_array()
                     .expect("row")
                     .iter()
-                    .map(|value| value.as_f64().expect("f64") as f32)
+                    .map(|value| value.as_f64().expect("f64"))
                     .collect()
             })
             .collect();
-        const COS_TOLERANCE: f32 = 0.005;
         for (i, row) in pairwise_reference.iter().enumerate() {
             for (offset, expected) in row.iter().enumerate() {
                 let j = i + offset + 1;
                 let actual: f32 = unit[i].iter().zip(&unit[j]).map(|(a, b)| a * b).sum();
                 assert!(
-                    (actual - expected).abs() < COS_TOLERANCE,
+                    (f64::from(actual) - expected).abs() < COS_TOLERANCE,
                     "cosine ({i},{j}): {actual} != {expected}"
                 );
             }
@@ -337,7 +334,10 @@ mod tests {
             .expect("permuted inference");
         for (index, vector) in permuted.iter().rev().enumerate() {
             for (a, e) in vector.iter().zip(&unit[index]) {
-                assert!((a - e).abs() < NORM_TOLERANCE, "permutation moved a vector");
+                assert!(
+                    (f64::from(*a) - f64::from(*e)).abs() < NORM_TOLERANCE,
+                    "permutation moved a vector"
+                );
             }
         }
         // Tokenless contract: the empty and whitespace-only inputs embed
@@ -352,7 +352,10 @@ mod tests {
             .position(|value| value.trim().is_empty() && !value.is_empty())
             .expect("whitespace")];
         for (a, e) in empty.iter().zip(whitespace) {
-            assert!((a - e).abs() < NORM_TOLERANCE, "tokenless inputs diverged");
+            assert!(
+                (f64::from(*a) - f64::from(*e)).abs() < NORM_TOLERANCE,
+                "tokenless inputs diverged"
+            );
         }
         assert!(
             empty.iter().any(|value| value.abs() > 1e-6),
@@ -367,7 +370,10 @@ mod tests {
             .map(|offset| offset + 1)
             .expect("duplicate input present");
         for (a, e) in unit[first].iter().zip(&unit[duplicate]) {
-            assert!((a - e).abs() < NORM_TOLERANCE, "duplicate diverged");
+            assert!(
+                (f64::from(*a) - f64::from(*e)).abs() < NORM_TOLERANCE,
+                "duplicate diverged"
+            );
         }
     }
 }

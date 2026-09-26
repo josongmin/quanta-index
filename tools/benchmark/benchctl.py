@@ -17,7 +17,9 @@ canonical bytes. Registration lives in `tools/benchmark/registry.toml`.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
+import io
 import json
 import os
 import platform
@@ -714,7 +716,13 @@ def replay_command(repo_root: Path, reference: str, evidence_root: Path | None) 
     except EvidenceError as exc:
         print(f"ERROR: replay refused: {exc}", file=sys.stderr)
         return 2
-    native_families = load_manifest(repo_root=repo_root)["families"]
+    registry_path = repo_root / "tools" / "benchmark" / "registry.toml"
+    registry = load_registry(registry_path, repo_root=repo_root)
+    profile = registry["profiles"].get(evidence["profile"])
+    if not isinstance(profile, dict) or evidence["family"] not in profile["families"]:
+        print("ERROR: replay run family is not registered in its profile", file=sys.stderr)
+        return 2
+    native_families = load_manifest(registry_path, repo_root=repo_root)["families"]
     artifact_oracle = "not_applicable"
     if evidence["family"] in native_families:
         if len(evidence["raw"]) != 1:
@@ -743,20 +751,37 @@ def replay_command(repo_root: Path, reference: str, evidence_root: Path | None) 
                 file=sys.stderr,
             )
             return 2
+        if family["requires_verdict"] and payload["detail"].get("passed") is not True:
+            print("ERROR: replay required rail verdict is not true", file=sys.stderr)
+            return 2
+        minimum = family["minimum_samples"]
+        if minimum is not None and any(
+            not isinstance(row.get("latency"), dict)
+            or type(row["latency"].get("samples")) is not int
+            or row["latency"]["samples"] < minimum
+            for row in payload["rows"]
+        ):
+            print("ERROR: replay native artifact has insufficient samples", file=sys.stderr)
+            return 2
+        if any(row.get("early_stop_reason") is not None for row in payload["rows"]):
+            print("ERROR: replay native artifact has an early stop", file=sys.stderr)
+            return 2
         if family["payload"] != evidence["payload"]["kind"]:
             print("ERROR: replay native payload kind differs from registry", file=sys.stderr)
             return 2
-        if family["payload"] == "latency":
-            from evidence_bridge import latency_payload_from_artifact
+        if family["payload"] != "latency":
+            print("ERROR: replay has no native payload oracle for this family", file=sys.stderr)
+            return 2
+        from evidence_bridge import latency_payload_from_artifact
 
-            try:
-                derived = latency_payload_from_artifact(payload)
-            except EvidenceError as exc:
-                print(f"ERROR: replay cannot derive native payload: {exc}", file=sys.stderr)
-                return 2
-            if derived != evidence["payload"]:
-                print("ERROR: replay typed payload differs from native artifact", file=sys.stderr)
-                return 2
+        try:
+            derived = latency_payload_from_artifact(payload)
+        except EvidenceError as exc:
+            print(f"ERROR: replay cannot derive native payload: {exc}", file=sys.stderr)
+            return 2
+        if derived != evidence["payload"]:
+            print("ERROR: replay typed payload differs from native artifact", file=sys.stderr)
+            return 2
         artifact_oracle = "pass"
     receipt = {
         "run_id": run_id,
@@ -884,8 +909,8 @@ def promote_profile_runs(
             )
             return 2
         try:
-            artifact = json.loads(native_bytes)
-        except json.JSONDecodeError as exc:
+            artifact = _strict_json_bytes(native_bytes)
+        except (ValueError, json.JSONDecodeError) as exc:
             print(f"ERROR: family {family!r} native artifact is not JSON: {exc}", file=sys.stderr)
             return 2
         if checker is None:
@@ -1122,6 +1147,7 @@ def validate_promoted_runs(
     manifest: dict[str, object],
     expected_source: dict[str, object],
     expected_lock_digest: str,
+    repo_root: Path = ROOT,
 ) -> int:
     """Require a valid promoted run for every artifact family in the profile."""
     store = RunStore(evidence_root)
@@ -1191,6 +1217,22 @@ def validate_promoted_runs(
             file=sys.stderr,
         )
         return 2
+    unsupported = sorted(family for family in selected if families[family]["payload"] != "latency")
+    if unsupported:
+        print(
+            "ERROR: no native-to-typed payload oracle for promoted families: "
+            + ", ".join(unsupported),
+            file=sys.stderr,
+        )
+        return 2
+    for receipt in receipts:
+        with contextlib.redirect_stdout(io.StringIO()):
+            if replay_command(repo_root, str(store.run_dir(receipt["run_id"])), evidence_root):
+                print(
+                    f"ERROR: promoted run {receipt['run_id']!r} failed native replay",
+                    file=sys.stderr,
+                )
+                return 2
     print(json.dumps({"profile": profile_name, "runs": receipts}, sort_keys=True, indent=2))
     return 0
 
@@ -1317,7 +1359,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"ERROR: cannot establish current validation identity: {exc}", file=sys.stderr)
             return 2
         return validate_promoted_runs(
-            evidence_root, args.profile, manifest, expected_source, expected_lock
+            evidence_root, args.profile, manifest, expected_source, expected_lock, repo_root
         )
     if artifact_profile in manifest["profiles"]:
         validation = validate(repo_root, artifact_profile)

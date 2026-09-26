@@ -13,6 +13,9 @@ use std::sync::{Arc, Mutex, TryLockError};
 use quanta_index_contract::{MAX_PROCESS_REQUEST_EVENTS_V1, SearchPlaneErrorCodeV2};
 use quanta_index_core::{CoreError, MetricPointV1, MetricSourcePort};
 
+// The wire bound is u16 and every supported target has a usize of at least 16 bits.
+// `usize::from(u16)` is not const on the pinned toolchain.
+#[expect(clippy::as_conversions, reason = "bounded u16 to usize in a const")]
 const REQUEST_EVENT_CAPACITY_V1: usize = MAX_PROCESS_REQUEST_EVENTS_V1 as usize;
 
 /// Fixed, payload-free stages of one admitted envelope. The caller's ID is

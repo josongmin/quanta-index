@@ -20,12 +20,19 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.metadata
 import json
 import math
 from pathlib import Path
 
 SCHEMA_VERSION = 1
 REFERENCE_PROFILE = "model2vec-static-potion-code-16M-v2"
+MODEL2VEC_VERSION = "0.9.0"
+PINNED_ASSET_SHA256 = {
+    "model.safetensors": "75cf7a6c2171b230ad19b1e7d8e0b1aee86da5a02af8e7cacedd9921d227623c",
+    "tokenizer.json": "107bbdcbad4bff1d299b7a4c3a2fb17c52890688b7dd0e4c9deab79d3c4f3d45",
+    "config.json": "148e5691a6fcc553437156859701fba017a1ba5d340b170f17e0f3668fb861a7",
+}
 
 INPUTS = [
     "refresh access token",
@@ -42,6 +49,18 @@ INPUTS = [
 
 def sha_file(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def verify_reference_inputs(model_dir: Path) -> dict[str, str]:
+    """Refuse a reference from unpinned assets or a different library build."""
+    version = importlib.metadata.version("model2vec")
+    if version != MODEL2VEC_VERSION:
+        raise ValueError(f"model2vec version mismatch: {version} != {MODEL2VEC_VERSION}")
+    observed = {name: sha_file(model_dir / name) for name in PINNED_ASSET_SHA256}
+    for name, expected in PINNED_ASSET_SHA256.items():
+        if observed[name] != expected:
+            raise ValueError(f"{name} SHA-256 mismatch: {observed[name]} != {expected}")
+    return observed
 
 
 def l2_normalize(vector: list[float]) -> list[float]:
@@ -61,6 +80,7 @@ def main() -> int:
     parser.add_argument("--out", required=True, type=Path)
     args = parser.parse_args()
 
+    asset_digests = verify_reference_inputs(args.model_dir)
     from model2vec import StaticModel
 
     model = StaticModel.from_pretrained(str(args.model_dir))
@@ -88,13 +108,13 @@ def main() -> int:
     payload = {
         "schema_version": SCHEMA_VERSION,
         "profile": REFERENCE_PROFILE,
-        "library": {"model2vec": "0.9.0"},
+        "library": {"model2vec": MODEL2VEC_VERSION},
         "model": {
             "id": model_id,
             "dir_name": args.model_dir.name,
-            "safetensors_sha256": sha_file(args.model_dir / "model.safetensors"),
-            "tokenizer_sha256": sha_file(args.model_dir / "tokenizer.json"),
-            "config_sha256": sha_file(args.model_dir / "config.json"),
+            "safetensors_sha256": asset_digests["model.safetensors"],
+            "tokenizer_sha256": asset_digests["tokenizer.json"],
+            "config_sha256": asset_digests["config.json"],
         },
         "policy": {"max_length": None, "normalization": "approx-unit-fp16 (rail L2-normalizes both sides)"},
         "inputs": INPUTS,

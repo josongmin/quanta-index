@@ -3,7 +3,8 @@
 ## 현행 판정 — 2026-09-26, [중앙 코드 감사](CURRENT-AUDIT.md) 기준
 
 - 구현: pinned Python full-vector reference와 Rust parity test, `crates/quanta-index-semantic/tests/exact_ann_decomposition.rs`의 경계 oracle은 코드에서 확인. 과거 실모델 통과는 현 source proof가 아니다.
-- 검증: 이 감사의 pinned asset/digest, ignored parity rail, owning Rust/semantic integration 및 외부 per-query exact-vs-served delta는 `NOT_RUN`. `run.py`의 조건부 same-model T15 verdict는 임의 `pass` 요약만으로 통과할 수 있어 proof-integrity `FAILED`.
+- 후속 코드 보강: `parity_reference.py`는 reference 생성 전에 model2vec 배포 버전과 weights/tokenizer/config의 pinned SHA-256을 모두 확인한다. Rust ignored full-vector rail도 tokenizer/config digest를 형식이 아닌 정확한 pin과 비교한다. 합성 asset/version 변조 테스트를 required Python inventory에 추가했다. 실제 pinned asset을 사용한 ignored rail의 실행은 여전히 `NOT_RUN`이다.
+- 검증: 이 감사의 pinned asset/digest, ignored parity rail, owning Rust/semantic integration 및 외부 per-query exact-vs-served delta는 `NOT_RUN`. 현재 `run.py`는 조건부 same-model T15의 임의 `pass` 요약을 fail-closed로 거부한다. 독립 raw vector producer·실행 문맥·양성 replay는 아직 없어 T15 양성 자격도 `NOT_RUN`이다.
 - 잔여: frozen vectors·tokenizer/model/정밀도/truncation binding에서 256차원 전수 parity와 255/256·short/full ANN 분해를 재실행한다. T15는 summary JSON 대신 raw vectors·입력·tolerance·asset/source/실행 context를 재도출/검증해야 한다. wrong-file/wrong-span/미반환을 구분하지 못하면 unresolved로 둔다. [현재 전수 판정](CURRENT-AUDIT.md).
 
 - 우선순위: P1. full-vector parity·exact/ANN harness 코드 관측; 현 소스 재실행·외부 per-query 분해는 `NOT_RUN`. [현재 전수 판정](CURRENT-AUDIT.md). 선행: RBR-01/03.

@@ -123,6 +123,7 @@
     "tools.ci.tests.test_retrieval_benchmark.test_pair_preflights_searchd_socket_length_before_creating_stage",
     "tools.ci.tests.test_retrieval_benchmark.test_pair_record_identity_accepts_multi_route_quanta_and_rejects_mixed_captures",
     "tools.ci.tests.test_retrieval_benchmark.test_pair_staging_atomicity",
+    "tools.ci.tests.test_retrieval_benchmark.test_parity_reference_refuses_unpinned_assets_and_library",
     "tools.ci.tests.test_retrieval_benchmark.test_process_tree_completed_root_does_not_invalidate_prior_samples",
     "tools.ci.tests.test_retrieval_benchmark.test_process_tree_exited_root_with_surviving_group_is_incomplete",
     "tools.ci.tests.test_retrieval_benchmark.test_process_tree_invalid_snapshot_marks_resource_artifact_incomplete",
