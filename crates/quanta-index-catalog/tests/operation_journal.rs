@@ -103,13 +103,22 @@ fn opens_only_current_journal_and_sequence_tables() -> TestResult {
     let connection = raw(&temp)?;
     let mut statement = connection.prepare(
         "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN
-         ('idempotency_v1', 'idempotency_v2', 'catalog_sequence_v1', 'catalog_sequence_v2')
+         ('idempotency_v1', 'idempotency_v2', 'catalog_sequence_v1', 'catalog_sequence_v2',
+          'catalog_sequence_event_v2', 'catalog_fence_v1', 'operation_gc_floor_v1')
          ORDER BY name",
     )?;
     let names: Vec<String> = statement
         .query_map([], |row| row.get(0))?
         .collect::<Result<_, _>>()?;
-    if names != ["catalog_sequence_v2", "idempotency_v2"] {
+    if names
+        != [
+            "catalog_fence_v1",
+            "catalog_sequence_event_v2",
+            "catalog_sequence_v2",
+            "idempotency_v2",
+            "operation_gc_floor_v1",
+        ]
+    {
         return Err(std::io::Error::other(format!("unexpected catalog tables: {names:?}")).into());
     }
     Ok(())

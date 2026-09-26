@@ -1008,7 +1008,9 @@ mod tests {
         BatchPublishReceipt, IngestOperationKindV1, ManifestGeneration, RepoId, RevisionId,
         SearchPlaneErrorCodeV2,
     };
-    use quanta_index_core::{ClaimOutcomeV1, IdempotencyCatalogPort, IdempotencyKeyV1};
+    use quanta_index_core::{
+        ClaimOutcomeV1, IdempotencyCatalogPort, IdempotencyKeyV1, OPERATION_FENCE_LOST_CODE,
+    };
 
     use super::{SequenceEventKindV1, append_sequence_event, event_commitment, event_row_digest};
     use crate::connection::{CATALOG_FILE_NAME, SqliteCatalog, blob32, catalog_dir};
@@ -1576,14 +1578,17 @@ mod tests {
                 batch_digest: "digest".to_string(),
             };
             let body = [1_u8; 32];
-            let first = catalog.claim_prepared(&key, &body, "owner", 0, &body)?;
-            if !matches!(first, ClaimOutcomeV1::Claimed(_)) {
-                return Err("fixture expected an expired first claim".into());
-            }
+            let first = match catalog.claim_prepared(&key, &body, "owner", 0, &body)? {
+                ClaimOutcomeV1::Claimed(claim) => claim,
+                ClaimOutcomeV1::Replay { .. } | ClaimOutcomeV1::ReplayRepoMap { .. } => {
+                    return Err("fixture expected an expired first claim".into());
+                }
+            };
             let retry_owner = if foreign_owner { "retry" } else { "owner" };
-            if prepare_takeover {
-                let _prepared =
-                    catalog.prepare(&key, &body, retry_owner, i64::MAX.unsigned_abs(), &body)?;
+            let next_fence = if prepare_takeover {
+                catalog
+                    .prepare(&key, &body, retry_owner, i64::MAX.unsigned_abs(), &body)?
+                    .fence_token
             } else {
                 let second = catalog.claim_prepared(
                     &key,
@@ -1592,9 +1597,22 @@ mod tests {
                     i64::MAX.unsigned_abs(),
                     &body,
                 )?;
-                if !matches!(second, ClaimOutcomeV1::Claimed(_)) {
-                    return Err("fixture expected a fresh takeover claim".into());
+                match second {
+                    ClaimOutcomeV1::Claimed(claim) => claim.fence_token,
+                    ClaimOutcomeV1::Replay { .. } | ClaimOutcomeV1::ReplayRepoMap { .. } => {
+                        return Err("fixture expected a fresh takeover claim".into());
+                    }
                 }
+            };
+            if next_fence <= first.fence_token {
+                return Err("takeover must advance the durable fence".into());
+            }
+            if !matches!(
+                catalog.mark_applying(&first),
+                Err(quanta_index_core::CoreError::Typed { code, .. })
+                    if code == OPERATION_FENCE_LOST_CODE
+            ) {
+                return Err("stale claim must lose its fence after takeover".into());
             }
             if catalog.sequence_allocator()? != (Some(3), false) {
                 return Err("takeover must append abort and invalidation atomically".into());

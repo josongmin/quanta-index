@@ -43,6 +43,17 @@ impl SqliteCatalog {
                 path.display()
             )));
         }
+        let existing_current_tables: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN
+                 ('idempotency_v2', 'mutation_lease_v1', 'catalog_fence_v1',
+                  'catalog_sequence_v2', 'catalog_sequence_event_v2',
+                  'operation_gc_floor_v1', 'repomap_candidate_v1', 'repomap_activation_v1')",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|error| engine_error("inspect current catalog tables", &path, &error))?;
+        let fresh_root = existing_current_tables == 0;
         connection
             .execute_batch(crate::idempotency::SCHEMA)
             .map_err(|error| engine_error("create idempotency schema", &path, &error))?;
@@ -57,6 +68,7 @@ impl SqliteCatalog {
             .execute_batch(crate::candidate::SCHEMA)
             .map_err(|error| engine_error("create repomap candidate schema", &path, &error))?;
         crate::candidate::verify_installed_schema(&connection, &path)?;
+        crate::idempotency::seed_fence_allocator(&connection, &path, fresh_root)?;
         // A missing or recast GC floor must refuse before recovery mutates
         // journal rows or clears old mutation leases.
         crate::sequence::verify_gc_floor_domain_integrity(&connection, &path)?;

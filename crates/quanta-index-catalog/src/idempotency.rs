@@ -11,6 +11,7 @@
 //!                refusal_code TEXT NULL, refusal_message TEXT NULL,
 //!                row_sha256 BLOB)
 //! mutation_lease_v1(scope, owner, fence_token, deadline_ms, row_sha256)
+//! catalog_fence_v1(id=1, last_fence, row_sha256)
 //! ```
 //!
 //! Only the current journal and sequence tables are created and read.
@@ -53,6 +54,7 @@ use crate::sequence::{
 const ROW_DIGEST_DOMAIN: &[u8] = b"quanta-index:catalog:idempotency-row:v2\0";
 const RECEIPT_DIGEST_DOMAIN: &[u8] = b"quanta-index:catalog:idempotency-receipt:v2\0";
 const LEASE_ROW_DIGEST_DOMAIN: &[u8] = b"quanta-index:catalog:mutation-lease-row:v1\0";
+const FENCE_ALLOCATOR_ROW_DOMAIN: &[u8] = b"quanta-index:catalog:fence-allocator-row:v1\0";
 const FIELD_SEPARATOR: &[u8] = b"\x1f";
 
 /// The current journal and durable mutation lease tables, created at open.
@@ -83,6 +85,11 @@ pub(crate) const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS idempotency_v2 (
                      owner TEXT NOT NULL,
                      fence_token INTEGER NOT NULL,
                      deadline_ms INTEGER NOT NULL,
+                     row_sha256 BLOB NOT NULL CHECK (length(row_sha256) = 32)
+                  ) WITHOUT ROWID;
+                  CREATE TABLE IF NOT EXISTS catalog_fence_v1 (
+                     id INTEGER PRIMARY KEY CHECK (id = 1),
+                     last_fence INTEGER NOT NULL CHECK (last_fence BETWEEN 0 AND 9223372036854775807),
                      row_sha256 BLOB NOT NULL CHECK (length(row_sha256) = 32)
                   ) WITHOUT ROWID;";
 
@@ -692,22 +699,134 @@ fn payload_digest_of_parts(parts: &[&[u8]]) -> [u8; 32] {
     hasher.finalize().into()
 }
 
-/// A uniqueness token for fence comparisons, not a time decision: it
-/// stays on the wall clock directly while lease-deadline decisions read
-/// the sampled transaction `now` (TOPT-01 / PO-3).
-fn fence_token_now() -> Result<u64, CoreError> {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|error| CoreError::Storage(format!("catalog: clock is before the epoch: {error}")))
-        // u64 holds ~584 years of nanoseconds, so a duration-since-epoch
-        // always fits; the typed branch is the fail-closed unreachable
-        // backstop, replacing the silent `as` truncation.
-        .and_then(|since| {
-            u64::try_from(since.as_nanos()).map_err(|error| {
-                CoreError::Storage(format!("catalog: wall-clock nanos overflow u64: {error}"))
-            })
-        })?;
-    Ok(nanos & u64::from(u32::MAX) | (1_u64 << 32))
+fn fence_allocator_digest(last_fence: i64) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(FENCE_ALLOCATOR_ROW_DOMAIN);
+    hasher.update(last_fence.to_le_bytes());
+    hasher.finalize().into()
+}
+
+fn read_fence_allocator(connection: &Connection, path: &Path) -> Result<i64, CoreError> {
+    let row: Option<(i64, Vec<u8>)> = connection
+        .query_row(
+            "SELECT last_fence, row_sha256 FROM catalog_fence_v1 WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|error| engine_error("read fence allocator", path, &error))?;
+    let (last_fence, digest) = row.ok_or_else(|| {
+        CoreError::Storage(format!(
+            "catalog: {} has no durable fence allocator row",
+            path.display()
+        ))
+    })?;
+    if last_fence < 0
+        || blob32("fence allocator digest", &digest)? != fence_allocator_digest(last_fence)
+    {
+        return Err(CoreError::Typed {
+            code: SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+            message: "catalog: fence allocator row is corrupt".to_string(),
+        });
+    }
+    Ok(last_fence)
+}
+
+/// Seed only a genuinely new root; an existing root without this allocator
+/// requires an explicit offline migration rather than silent fence reuse.
+pub(crate) fn seed_fence_allocator(
+    connection: &Connection,
+    path: &Path,
+    fresh_root: bool,
+) -> Result<(), CoreError> {
+    let schema: String = connection
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'catalog_fence_v1'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| engine_error("read installed fence schema", path, &error))?;
+    let compact = schema.split_whitespace().collect::<String>();
+    for required in [
+        "idINTEGERPRIMARYKEYCHECK(id=1)",
+        "last_fenceINTEGERNOTNULLCHECK(last_fenceBETWEEN0AND9223372036854775807)",
+        "row_sha256BLOBNOTNULLCHECK(length(row_sha256)=32)",
+        "WITHOUTROWID",
+    ] {
+        if !compact.contains(required) {
+            return Err(CoreError::Storage(format!(
+                "catalog: {} has an unsupported fence allocator schema",
+                path.display()
+            )));
+        }
+    }
+    if fresh_root {
+        let _seeded = connection
+            .execute(
+                "INSERT INTO catalog_fence_v1 (id, last_fence, row_sha256)
+                 VALUES (1, 0, ?1)",
+                params![fence_allocator_digest(0).as_slice()],
+            )
+            .map_err(|error| engine_error("seed fence allocator", path, &error))?;
+    }
+    let last_fence = read_fence_allocator(connection, path)?;
+    let journal_maximum: Option<i64> = connection
+        .query_row("SELECT MAX(fence_token) FROM idempotency_v2", [], |row| {
+            row.get(0)
+        })
+        .map_err(|error| engine_error("read journal fence high-water", path, &error))?;
+    let lease_maximum: Option<i64> = connection
+        .query_row(
+            "SELECT MAX(fence_token) FROM mutation_lease_v1",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| engine_error("read mutation-lease fence high-water", path, &error))?;
+    for (table, maximum) in [
+        ("idempotency_v2", journal_maximum),
+        ("mutation_lease_v1", lease_maximum),
+    ] {
+        if maximum.is_some_and(|maximum| maximum > last_fence) {
+            return Err(CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+                message: format!(
+                    "catalog: fence allocator is below the retained {table} high-water"
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Allocate a root-global, never-reused fence in the owning write transaction.
+fn next_fence_token(
+    transaction: &rusqlite::Transaction<'_>,
+    path: &Path,
+) -> Result<u64, CoreError> {
+    let last_fence = read_fence_allocator(transaction, path)?;
+    let next = last_fence
+        .checked_add(1)
+        .ok_or_else(|| CoreError::Storage("catalog: fence allocator is exhausted".to_string()))?;
+    let updated = transaction
+        .execute(
+            "UPDATE catalog_fence_v1 SET last_fence = ?1, row_sha256 = ?2
+             WHERE id = 1 AND last_fence = ?3 AND row_sha256 = ?4",
+            params![
+                next,
+                fence_allocator_digest(next).as_slice(),
+                last_fence,
+                fence_allocator_digest(last_fence).as_slice(),
+            ],
+        )
+        .map_err(|error| engine_error("advance fence allocator", path, &error))?;
+    if updated != 1 {
+        return Err(CoreError::Typed {
+            code: SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+            message: "catalog: fence allocator CAS did not advance exactly one row".to_string(),
+        });
+    }
+    u64::try_from(next)
+        .map_err(|error| CoreError::Storage(format!("catalog: fence conversion: {error}")))
 }
 
 /// Verify the claim against the stored row and the fence.
@@ -973,6 +1092,24 @@ pub(crate) fn release_stale_mutation_leases(
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| engine_error("begin lease recovery", path, &error))?;
+    let scopes: Vec<String> = {
+        let mut statement = transaction
+            .prepare("SELECT scope FROM mutation_lease_v1")
+            .map_err(|error| engine_error("prepare stale lease scan", path, &error))?;
+        statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|error| engine_error("scan stale leases", path, &error))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| engine_error("read stale lease scope", path, &error))?
+    };
+    for scope in &scopes {
+        if read_lease_row(&transaction, path, scope)?.is_none() {
+            return Err(CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+                message: format!("catalog: stale mutation lease {scope} disappeared during scan"),
+            });
+        }
+    }
     let released = transaction
         .execute("DELETE FROM mutation_lease_v1", [])
         .map_err(|error| engine_error("release stale mutation leases", path, &error))?;
@@ -1154,6 +1291,7 @@ impl IdempotencyCatalogPort for SqliteCatalog {
         let outcome = match read_row(&transaction, &path, key)? {
             None => prepare_fresh(
                 &transaction,
+                &path,
                 key,
                 body_sha256,
                 owner,
@@ -1192,6 +1330,7 @@ impl IdempotencyCatalogPort for SqliteCatalog {
                             // Expired foreign prepare: take over fresh.
                             prepare_fresh(
                                 &transaction,
+                                &path,
                                 key,
                                 body_sha256,
                                 owner,
@@ -1237,6 +1376,7 @@ impl IdempotencyCatalogPort for SqliteCatalog {
                         )?;
                         prepare_fresh(
                             &transaction,
+                            &path,
                             key,
                             body_sha256,
                             owner,
@@ -1255,6 +1395,7 @@ impl IdempotencyCatalogPort for SqliteCatalog {
                         )?;
                         prepare_fresh(
                             &transaction,
+                            &path,
                             key,
                             body_sha256,
                             owner,
@@ -1295,7 +1436,7 @@ impl IdempotencyCatalogPort for SqliteCatalog {
         let now = self.clock.now_unix_ms();
         let outcome = match read_row(&transaction, &path, key)? {
             None => {
-                let fence = fence_token_now()?;
+                let fence = next_fence_token(&transaction, &path)?;
                 // Prepared (immutable prepare) → Claimed (fenced claim) in
                 // one transaction: an outsider only ever sees the claim.
                 let _inserted = write_row(
@@ -1406,6 +1547,7 @@ impl IdempotencyCatalogPort for SqliteCatalog {
                         )?;
                         claim_fresh(
                             &transaction,
+                            &path,
                             key,
                             body_sha256,
                             owner,
@@ -1425,6 +1567,7 @@ impl IdempotencyCatalogPort for SqliteCatalog {
                         )?;
                         claim_fresh(
                             &transaction,
+                            &path,
                             key,
                             body_sha256,
                             owner,
@@ -1442,6 +1585,7 @@ impl IdempotencyCatalogPort for SqliteCatalog {
                         }
                         claim_fresh(
                             &transaction,
+                            &path,
                             key,
                             body_sha256,
                             owner,
@@ -1916,13 +2060,14 @@ impl IdempotencyCatalogPort for SqliteCatalog {
 /// and the fenced claim.
 fn prepare_fresh(
     transaction: &rusqlite::Transaction<'_>,
+    path: &Path,
     key: &IdempotencyKeyV1,
     body_sha256: &[u8; 32],
     owner: &str,
     lease_deadline_ms: u64,
     epoch_commitment: &[u8; 32],
 ) -> Result<PreparedMutationV1, CoreError> {
-    let fence = fence_token_now()?;
+    let fence = next_fence_token(transaction, path)?;
     let _written = write_row(
         transaction,
         key,
@@ -1952,13 +2097,14 @@ fn prepare_fresh(
 /// record.
 fn claim_fresh(
     transaction: &rusqlite::Transaction<'_>,
+    path: &Path,
     key: &IdempotencyKeyV1,
     body_sha256: &[u8; 32],
     owner: &str,
     lease_deadline_ms: u64,
     epoch_commitment: &[u8; 32],
 ) -> Result<ClaimOutcomeV1, CoreError> {
-    let fence = fence_token_now()?;
+    let fence = next_fence_token(transaction, path)?;
     let _written = write_row(
         transaction,
         key,
@@ -1997,6 +2143,38 @@ fn lease_row_digest(scope: &str, owner: &str, fence_token: i64, deadline_ms: i64
     hasher.finalize().into()
 }
 
+fn read_lease_row(
+    connection: &Connection,
+    path: &Path,
+    scope: &str,
+) -> Result<Option<(String, u64, u64)>, CoreError> {
+    let row: Option<(String, i64, i64, Vec<u8>)> = connection
+        .query_row(
+            "SELECT owner, fence_token, deadline_ms, row_sha256
+             FROM mutation_lease_v1 WHERE scope = ?1",
+            params![scope],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .optional()
+        .map_err(|error| engine_error("read mutation lease", path, &error))?;
+    let Some((owner, fence, deadline, digest)) = row else {
+        return Ok(None);
+    };
+    let digest = blob32("mutation lease row digest", &digest)?;
+    if fence <= 0 || deadline < 0 || digest != lease_row_digest(scope, &owner, fence, deadline) {
+        return Err(CoreError::Typed {
+            code: SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+            message: format!("catalog: mutation lease {scope} has a corrupt row"),
+        });
+    }
+    let fence = u64::try_from(fence)
+        .map_err(|error| CoreError::Storage(format!("catalog: lease fence conversion: {error}")))?;
+    let deadline = u64::try_from(deadline).map_err(|error| {
+        CoreError::Storage(format!("catalog: lease deadline conversion: {error}"))
+    })?;
+    Ok(Some((owner, fence, deadline)))
+}
+
 impl MutationCoordinatorPort for SqliteCatalog {
     fn enter(&self, scope: &str, owner: &str, lease_ms: u64) -> Result<MutationLeaseV1, CoreError> {
         let mut connection = self.lock()?;
@@ -2006,24 +2184,14 @@ impl MutationCoordinatorPort for SqliteCatalog {
             .map_err(|error| engine_error("begin lease transaction", &path, &error))?;
         let now = self.clock.now_unix_ms();
         let deadline = now.saturating_add(lease_ms);
-        let existing: Option<(String, i64, i64)> = transaction
-            .query_row(
-                "SELECT owner, fence_token, deadline_ms FROM mutation_lease_v1 WHERE scope = ?1",
-                params![scope],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .optional()
-            .map_err(|error| engine_error("read mutation lease", &path, &error))?;
+        let existing = read_lease_row(&transaction, &path, scope)?;
         if let Some((lease_owner, _fence, lease_deadline)) = &existing {
-            let live = u64::try_from(*lease_deadline).map_err(|error| CoreError::Typed {
-                code: SearchPlaneErrorCodeV2::CatalogRowCorrupt,
-                message: format!("catalog: lease deadline is negative: {error}"),
-            })? > now;
+            let live = *lease_deadline > now;
             if live && lease_owner != owner {
                 return Err(busy("mutation coordinator enter"));
             }
         }
-        let fence = fence_token_now()?;
+        let fence = next_fence_token(&transaction, &path)?;
         let fence_i64 = u64_i64("lease fence", fence)?;
         let deadline_i64 = u64_i64("lease deadline", deadline)?;
         let _written = transaction
@@ -2060,6 +2228,22 @@ impl MutationCoordinatorPort for SqliteCatalog {
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| engine_error("begin lease release", &path, &error))?;
+        let held = read_lease_row(&transaction, &path, &lease.scope)?;
+        if !matches!(
+            held,
+            Some((ref owner, fence, deadline))
+                if owner == &lease.owner
+                    && fence == lease.fence_token
+                    && deadline == lease.deadline_ms
+        ) {
+            return Err(CoreError::Typed {
+                code: OPERATION_FENCE_LOST_CODE,
+                message: format!(
+                    "catalog: mutation lease {} held by {} is no longer this worker's",
+                    lease.scope, lease.owner
+                ),
+            });
+        }
         let removed = transaction
             .execute(
                 "DELETE FROM mutation_lease_v1
@@ -2097,12 +2281,15 @@ mod tests {
         BATCH_PUBLISH_RECEIPT_FORMAT_VERSION, BatchPublishReceipt, IngestOperationKindV1,
         ManifestGeneration, RepoId, RevisionId, SearchPlaneErrorCodeV2,
     };
-    use quanta_index_core::{ClaimOutcomeV1, CoreError, IdempotencyCatalogPort, IdempotencyKeyV1};
+    use quanta_index_core::{
+        ClaimOutcomeV1, CoreError, IdempotencyCatalogPort, IdempotencyKeyV1,
+        MutationCoordinatorPort, OPERATION_FENCE_LOST_CODE,
+    };
     use rusqlite::params;
 
     use super::{
-        decode_versioned_receipt, encode_versioned_receipt, payload_digest_of_parts, read_row,
-        receipt_digest, row_digest,
+        decode_versioned_receipt, encode_versioned_receipt, fence_allocator_digest,
+        payload_digest_of_parts, read_row, receipt_digest, row_digest,
     };
     use crate::connection::SqliteCatalog;
     use crate::sequence::{SequenceEventKindV1, event_commitment, event_row_digest};
@@ -2123,6 +2310,202 @@ mod tests {
         ) {
             return Err("foreign receipt version must refuse before payload decode".into());
         }
+        Ok(())
+    }
+
+    #[test]
+    fn mutation_lease_fences_advance_across_release_and_reopen() -> Result<(), Box<dyn Error>> {
+        let root = tempfile::tempdir()?;
+        let catalog = SqliteCatalog::open(root.path(), Duration::from_millis(100))?;
+        let first = catalog.enter("scope", "owner", 100)?;
+        catalog.release(&first)?;
+        let second = catalog.enter("scope", "owner", 100)?;
+        if second.fence_token <= first.fence_token {
+            return Err("released lease reused its fence".into());
+        }
+        if !matches!(
+            catalog.release(&first),
+            Err(CoreError::Typed { code, .. }) if code == OPERATION_FENCE_LOST_CODE
+        ) {
+            return Err("old lease released a new same-owner lease".into());
+        }
+        drop(catalog);
+        let reopened = SqliteCatalog::open(root.path(), Duration::from_millis(100))?;
+        let third = reopened.enter("scope", "owner", 100)?;
+        if third.fence_token <= second.fence_token {
+            return Err("reopened allocator regressed its fence".into());
+        }
+        if !matches!(
+            reopened.release(&second),
+            Err(CoreError::Typed { code, .. }) if code == OPERATION_FENCE_LOST_CODE
+        ) {
+            return Err("pre-reopen lease released a new same-owner lease".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn corrupted_lease_deadline_refuses_takeover_and_startup_cleanup() -> Result<(), Box<dyn Error>>
+    {
+        let root = tempfile::tempdir()?;
+        let catalog = SqliteCatalog::open(root.path(), Duration::from_millis(100))?;
+        let lease = catalog.enter("scope", "owner", 60_000)?;
+        {
+            let connection = catalog.lock()?;
+            let changed = connection.execute(
+                "UPDATE mutation_lease_v1 SET deadline_ms = 0 WHERE scope = 'scope'",
+                [],
+            )?;
+            if changed != 1 {
+                return Err("fixture must damage one lease deadline".into());
+            }
+            drop(connection);
+        }
+        if !matches!(
+            catalog.enter("scope", "other", 60_000),
+            Err(CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+                ..
+            })
+        ) {
+            return Err("damaged live lease must not be stolen".into());
+        }
+        if !matches!(
+            catalog.release(&lease),
+            Err(CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+                ..
+            })
+        ) {
+            return Err("damaged lease must not be released as valid".into());
+        }
+        let catalog_path = catalog.path().to_path_buf();
+        drop(catalog);
+        if !matches!(
+            SqliteCatalog::open(root.path(), Duration::from_millis(100)),
+            Err(CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+                ..
+            })
+        ) {
+            return Err("startup must not erase a damaged lease".into());
+        }
+        let connection = rusqlite::Connection::open(catalog_path)?;
+        let retained: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM mutation_lease_v1 WHERE scope = 'scope'",
+            [],
+            |row| row.get(0),
+        )?;
+        if retained != 1 {
+            return Err("failed startup erased the damaged lease".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn missing_or_regressed_fence_allocator_refuses_before_recovery() -> Result<(), Box<dyn Error>>
+    {
+        for remove_table in [false, true] {
+            let root = tempfile::tempdir()?;
+            let catalog = SqliteCatalog::open(root.path(), Duration::from_millis(100))?;
+            let key = IdempotencyKeyV1 {
+                kind: IngestOperationKindV1::History,
+                repo_id: RepoId::new("repo")?,
+                revision_id: RevisionId::new("revision")?,
+                generation: ManifestGeneration::new(1),
+                batch_digest: "digest".to_string(),
+            };
+            let body = [1_u8; 32];
+            if !matches!(
+                catalog.claim_prepared(&key, &body, "owner", 0, &body)?,
+                ClaimOutcomeV1::Claimed(_)
+            ) {
+                return Err("fixture expected a fresh claim".into());
+            }
+            {
+                let connection = catalog.lock()?;
+                if remove_table {
+                    connection.execute_batch("DROP TABLE catalog_fence_v1")?;
+                } else {
+                    let changed = connection.execute(
+                        "UPDATE catalog_fence_v1 SET last_fence = 0, row_sha256 = ?1 WHERE id = 1",
+                        params![fence_allocator_digest(0).as_slice()],
+                    )?;
+                    if changed != 1 {
+                        return Err("fixture must regress one fence allocator row".into());
+                    }
+                }
+                drop(connection);
+            }
+            let catalog_path = catalog.path().to_path_buf();
+            drop(catalog);
+            let opened = SqliteCatalog::open(root.path(), Duration::from_millis(100));
+            let refused_as_expected = match opened {
+                Err(CoreError::Storage(message)) if remove_table => {
+                    message.contains("no durable fence allocator row")
+                }
+                Err(CoreError::Typed {
+                    code: SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+                    message,
+                }) if !remove_table => message.contains("high-water"),
+                _ => false,
+            };
+            if !refused_as_expected {
+                return Err(format!(
+                    "missing/regressed fence allocator must refuse (removed={remove_table})"
+                )
+                .into());
+            }
+            let connection = rusqlite::Connection::open(catalog_path)?;
+            let events: i64 = connection.query_row(
+                "SELECT COUNT(*) FROM catalog_sequence_event_v2",
+                [],
+                |row| row.get(0),
+            )?;
+            if events != 0 {
+                return Err("fence refusal must precede crash-recovery abort".into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn exhausted_fence_allocator_refuses_without_operation_mutation() -> Result<(), Box<dyn Error>>
+    {
+        let root = tempfile::tempdir()?;
+        let catalog = SqliteCatalog::open(root.path(), Duration::from_millis(100))?;
+        {
+            let connection = catalog.lock()?;
+            let changed = connection.execute(
+                "UPDATE catalog_fence_v1 SET last_fence = ?1, row_sha256 = ?2 WHERE id = 1",
+                params![i64::MAX, fence_allocator_digest(i64::MAX).as_slice()],
+            )?;
+            if changed != 1 {
+                return Err("fixture must exhaust one fence allocator".into());
+            }
+            drop(connection);
+        }
+        let key = IdempotencyKeyV1 {
+            kind: IngestOperationKindV1::History,
+            repo_id: RepoId::new("repo")?,
+            revision_id: RevisionId::new("revision")?,
+            generation: ManifestGeneration::new(1),
+            batch_digest: "digest".to_string(),
+        };
+        let body = [1_u8; 32];
+        if !matches!(
+            catalog.claim_prepared(&key, &body, "owner", 0, &body),
+            Err(CoreError::Storage(message)) if message.contains("fence allocator is exhausted")
+        ) {
+            return Err("exhausted fence allocator must refuse a fresh claim".into());
+        }
+        let connection = catalog.lock()?;
+        let journal_rows: i64 =
+            connection.query_row("SELECT COUNT(*) FROM idempotency_v2", [], |row| row.get(0))?;
+        if journal_rows != 0 {
+            return Err("fence exhaustion inserted a journal row".into());
+        }
+        drop(connection);
         Ok(())
     }
 
