@@ -41,11 +41,344 @@ use quanta_index_searchd_harness::E2eRuntime;
 use quanta_index_searchd_runtime::state_migration::{
     render_offline_outcome_v1, run_offline_state_command_with_v1,
 };
+use sha2::{Digest as _, Sha256};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 const BUSY: Duration = Duration::from_secs(2);
 const INCARNATION: &str = "activations/.activation-root-incarnation-v1";
+
+fn signed_manifest_fixture(body: &str) -> String {
+    format!("{body}root-digest {:x}\n", Sha256::digest(body.as_bytes()))
+}
+
+fn canonical_manifest_fixture() -> String {
+    format!(
+        "quanta-index-state-root-manifest\nformat-version 1\nroot-format current-v1\ncatalog-digest {}\ncatalog-rows 0\n",
+        "0".repeat(64)
+    )
+}
+
+#[test]
+fn audit_manifest_decode_refuses_noncanonical_authority() -> TestResult {
+    let body = canonical_manifest_fixture();
+    let canonical = signed_manifest_fixture(&body);
+    let parsed = StateRootManifestV1::decode(&canonical)?;
+    assert_eq!(
+        parsed.encode(),
+        canonical,
+        "the independent golden round-trips exactly"
+    );
+
+    let mut counterexamples = Vec::new();
+    for line in [
+        "format-version 1",
+        "root-format current-v1",
+        "catalog-rows 0",
+    ] {
+        counterexamples.push(signed_manifest_fixture(
+            &body.replace(&format!("{line}\n"), &format!("{line}\n{line}\n")),
+        ));
+    }
+    let digest_line = format!("catalog-digest {}\n", "0".repeat(64));
+    counterexamples.push(signed_manifest_fixture(
+        &body.replace(&digest_line, &digest_line.repeat(2)),
+    ));
+    counterexamples.push(signed_manifest_fixture(&body.replace(
+        "format-version 1\nroot-format current-v1\n",
+        "root-format current-v1\nformat-version 1\n",
+    )));
+    counterexamples.push(signed_manifest_fixture(
+        &body.replace("catalog-rows 0", "catalog-rows 00"),
+    ));
+    counterexamples.push(canonical.trim_end_matches('\n').to_string());
+    // Existing decoding normalizes CRLF before digest comparison. A signed
+    // LF body with CRLF transport must not acquire the same byte authority.
+    counterexamples.push(canonical.replace('\n', "\r\n"));
+    for bytes in counterexamples {
+        let _error = StateRootManifestV1::decode(&bytes)
+            .expect_err("noncanonical or duplicate manifest authority must be refused");
+    }
+    Ok(())
+}
+
+#[test]
+fn audit_manifest_decode_refuses_invalid_digests_and_ambiguous_paths() -> TestResult {
+    let body = canonical_manifest_fixture();
+    let _valid = StateRootManifestV1::decode(&signed_manifest_fixture(&body))?;
+    for digest in [
+        String::new(),
+        "g".repeat(64),
+        "A".repeat(64),
+        "0".repeat(63),
+    ] {
+        let forged = body.replace(&"0".repeat(64), &digest);
+        let _error = StateRootManifestV1::decode(&signed_manifest_fixture(&forged))
+            .expect_err("a self-signed manifest still requires a canonical SHA-256 catalog digest");
+    }
+    for payload in [
+        format!(
+            "object {} 1 item\nobject {} 2 item\n",
+            "0".repeat(64),
+            "1".repeat(64)
+        ),
+        format!("object {} 1 item\ndir item\n", "0".repeat(64)),
+        "object malformed 1 item\n".to_string(),
+        format!("object {} 1 item\tname\n", "0".repeat(64)),
+    ] {
+        let _error =
+            StateRootManifestV1::decode(&signed_manifest_fixture(&format!("{body}{payload}")))
+                .expect_err("an object path or digest cannot have ambiguous authority");
+    }
+    Ok(())
+}
+
+#[test]
+fn audit_manifest_write_refuses_invalid_authority_before_creation() -> TestResult {
+    let parent = private_root()?;
+    let root = parent.path().join("staging");
+    fs::create_dir(&root)?;
+    let manifest =
+        StateRootManifestV1::decode(&signed_manifest_fixture(&canonical_manifest_fixture()))?;
+    let mut wrong_version = manifest.clone();
+    wrong_version.format_version = 2;
+    let mut wrong_digest = manifest.clone();
+    wrong_digest.catalog_digest_hex = "invalid".to_string();
+    let mut wrong_directory = manifest.clone();
+    wrong_directory
+        .directories
+        .push("injected\ndir authority".to_string());
+    for invalid in [wrong_version, wrong_digest, wrong_directory] {
+        let _error = write_root_manifest_last_v1(
+            &root,
+            STATE_ROOT_MANIFEST_FILE_NAME,
+            &invalid,
+            &NoStateMigrationFaultsV1,
+        )
+        .expect_err("an unreadable manifest cannot be published");
+        assert!(!root.join(STATE_ROOT_MANIFEST_FILE_NAME).exists());
+    }
+    let outside = parent.path().join("escaped-manifest");
+    for name in [
+        "../escaped-manifest".to_string(),
+        outside.display().to_string(),
+        "other.txt".to_string(),
+    ] {
+        let error = write_root_manifest_last_v1(&root, &name, &manifest, &NoStateMigrationFaultsV1)
+            .expect_err("manifest publication must use an owned top-level manifest name");
+        assert_eq!(
+            typed_code(&error),
+            Some(SearchPlaneErrorCodeV2::InvalidRequest)
+        );
+    }
+    assert!(!outside.exists());
+    assert_eq!(
+        fs::read_dir(&root)?.count(),
+        0,
+        "refusal must leave no files"
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn audit_inventory_and_custody_refuse_noncanonical_names() -> TestResult {
+    for name in ["bad\\separator", "bad\nline"] {
+        let root = private_root()?;
+        build_live_root(root.path())?;
+        fs::write(
+            root.path().join("authorities").join(name),
+            b"cannot be relabeled",
+        )?;
+        let error = inventory_state_root_v1(root.path(), &[])
+            .expect_err("object inventory cannot normalize an unrepresentable path");
+        assert_eq!(
+            typed_code(&error),
+            Some(SearchPlaneErrorCodeV2::StateRootInsecure)
+        );
+        let error = quanta_index_searchd::app::state_format::inventory_state_directories_v1(
+            root.path(),
+            &[],
+        )
+        .expect_err("directory inventory must use the same path admission");
+        assert_eq!(
+            typed_code(&error),
+            Some(SearchPlaneErrorCodeV2::StateRootInsecure)
+        );
+        let lease = StateRootLease::acquire(root.path())?;
+        let error = OfflineSourceSessionV1::open_current(lease)
+            .expect_err("source custody cannot normalize a filesystem identity");
+        assert_eq!(
+            typed_code(&error),
+            Some(SearchPlaneErrorCodeV2::StateRootInsecure)
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn audit_verify_current_refuses_catalog_changed_after_catalog_read() -> TestResult {
+    let source = private_root()?;
+    let parent = private_root()?;
+    build_live_root(source.path())?;
+    let backup = parent.path().join("backup");
+    make_backup(source.path(), &backup)?;
+    let restored = parent.path().join("restored");
+    let restore = OfflineStateCommandV1 {
+        operation: OfflineStateOperationV1::Restore,
+        source_root: backup,
+        destination_root: Some(restored.clone()),
+    };
+    let _outcome = run_offline_state_command_with_v1(&restore, &NoStateMigrationFaultsV1)?;
+    let session = current_session(&restored)?;
+    let path = restored.join("catalog/catalog-v1.sqlite");
+    let mut bytes = fs::read(&path)?;
+    bytes.push(0xFF);
+    let error = run_offline_verify_v1(&session, &PostVerifyMutationV1 { path, bytes })
+        .expect_err("a current-root catalog change after its read must not verify successfully");
+    assert_eq!(
+        typed_code(&error),
+        Some(SearchPlaneErrorCodeV2::StateRootInsecure)
+    );
+    Ok(())
+}
+
+#[test]
+fn audit_verify_current_refuses_root_replaced_after_custody() -> TestResult {
+    let source = private_root()?;
+    let parent = private_root()?;
+    build_live_root(source.path())?;
+    let backup = parent.path().join("backup");
+    make_backup(source.path(), &backup)?;
+    let restored = parent.path().join("restored");
+    let restore = OfflineStateCommandV1 {
+        operation: OfflineStateOperationV1::Restore,
+        source_root: backup,
+        destination_root: Some(restored.clone()),
+    };
+    let _first = run_offline_state_command_with_v1(&restore, &NoStateMigrationFaultsV1)?;
+    let session = current_session(&restored)?;
+    fs::rename(&restored, parent.path().join("old-root-with-held-lease"))?;
+    let _replacement = run_offline_state_command_with_v1(&restore, &NoStateMigrationFaultsV1)?;
+    let error = run_offline_verify_v1(&session, &CatalogVerifierV1)
+        .expect_err("a lease on the replaced inode is not custody of the new root");
+    assert_eq!(
+        typed_code(&error),
+        Some(SearchPlaneErrorCodeV2::StateRootInsecure)
+    );
+    Ok(())
+}
+
+#[test]
+fn audit_verify_current_does_not_reset_non_catalog_custody() -> TestResult {
+    let source = private_root()?;
+    let parent = private_root()?;
+    build_live_root(source.path())?;
+    let backup = parent.path().join("backup");
+    make_backup(source.path(), &backup)?;
+    let restored = parent.path().join("restored");
+    let _outcome = run_offline_state_command_with_v1(
+        &OfflineStateCommandV1 {
+            operation: OfflineStateOperationV1::Restore,
+            source_root: backup,
+            destination_root: Some(restored.clone()),
+        },
+        &NoStateMigrationFaultsV1,
+    )?;
+    let session = current_session(&restored)?;
+    let relative = "authorities/history.cbor";
+    let bytes = b"changed after the pinned custody";
+    fs::write(restored.join(relative), bytes)?;
+    // Self-sign the changed payload: manifest/object consistency alone is
+    // not evidence that the original session's identities are unchanged.
+    let manifest_path = restored.join(STATE_ROOT_MANIFEST_FILE_NAME);
+    let mut manifest = read_root_manifest_v1(&manifest_path)?;
+    let object = manifest
+        .objects
+        .iter_mut()
+        .find(|entry| entry.relative_path == relative)
+        .ok_or("the authority fixture must be advertised")?;
+    object.byte_size = u64::try_from(bytes.len())?;
+    object.digest_hex = format!("{:x}", Sha256::digest(bytes));
+    fs::write(&manifest_path, manifest.encode())?;
+    let error = run_offline_verify_v1(&session, &CatalogVerifierV1)
+        .expect_err("a new verification freeze cannot reset existing source custody");
+    assert_eq!(
+        typed_code(&error),
+        Some(SearchPlaneErrorCodeV2::StateRootInsecure)
+    );
+    Ok(())
+}
+
+#[test]
+fn audit_backup_preserves_non_catalog_sidecar_names_and_subtrees() -> TestResult {
+    let source = private_root()?;
+    let parent = private_root()?;
+    build_live_root(source.path())?;
+    let paths = [
+        "authorities/ordinary.sqlite-wal",
+        "authorities/ordinary.sqlite-shm",
+        "authorities/ordinary.sqlite-journal",
+        "authorities/subtree.sqlite-wal/payload",
+    ];
+    fs::create_dir_all(source.path().join("authorities/subtree.sqlite-wal"))?;
+    for path in paths {
+        fs::write(source.path().join(path), path.as_bytes())?;
+    }
+    let backup = parent.path().join("backup");
+    make_backup(source.path(), &backup)?;
+    let manifest = read_root_manifest_v1(&backup.join("state-backup-manifest-v1.txt"))?;
+    for path in paths {
+        assert!(
+            manifest
+                .objects
+                .iter()
+                .any(|entry| entry.relative_path == path),
+            "a suffix is not authority to omit {path}"
+        );
+        assert_eq!(fs::read(backup.join(path))?, path.as_bytes());
+    }
+    let _verified = verify_backup(&backup)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn audit_backup_custody_refuses_linked_owned_sidecars() -> TestResult {
+    let source = private_root()?;
+    let parent = private_root()?;
+    build_live_root(source.path())?;
+    let backup = parent.path().join("backup");
+    make_backup(source.path(), &backup)?;
+    let alias = parent.path().join("aliased-bytes");
+    fs::write(&alias, b"must not be adopted as SQLite bookkeeping")?;
+    let sidecar = backup.join("catalog/catalog-v1.sqlite-shm");
+    // The deep-open fixture may already have created this disposable vendor
+    // file. Replace only that exact fixture path before injecting the link.
+    if sidecar.try_exists()? {
+        fs::remove_file(&sidecar)?;
+    }
+    fs::hard_link(&alias, &sidecar)?;
+    let error = OfflineSourceSessionV1::open_produced_backup(&backup)
+        .expect_err("a vendor filename cannot grant custody of a hard-linked file");
+    assert_eq!(
+        typed_code(&error),
+        Some(SearchPlaneErrorCodeV2::StateRootInsecure)
+    );
+    fs::remove_file(&sidecar)?;
+    std::os::unix::fs::symlink(&alias, &sidecar)?;
+    let error = OfflineSourceSessionV1::open_produced_backup(&backup)
+        .expect_err("a vendor filename cannot grant custody of a symlink");
+    assert_eq!(
+        typed_code(&error),
+        Some(SearchPlaneErrorCodeV2::StateRootInsecure)
+    );
+    assert_eq!(
+        fs::read(&alias)?,
+        b"must not be adopted as SQLite bookkeeping"
+    );
+    Ok(())
+}
 
 #[test]
 fn migrate_state_cli_is_rejected_before_opening_a_root() -> TestResult {
@@ -1524,7 +1857,7 @@ struct StubCatalogV1;
 
 fn stub_snapshot() -> CatalogSnapshotV1 {
     CatalogSnapshotV1 {
-        content_digest_hex: "stub-catalog-digest".to_string(),
+        content_digest_hex: "0".repeat(64),
         byte_size: 8,
         table_rows: vec![("stub-table".to_string(), 3)],
     }

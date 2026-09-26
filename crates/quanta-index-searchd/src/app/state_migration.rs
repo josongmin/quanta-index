@@ -487,25 +487,9 @@ fn freeze_walk_v1(
         let entry = entry.map_err(|error| storage("read directory entry", directory, &error))?;
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
-        let relative = path
-            .strip_prefix(root)
-            .map_err(|error| storage("relativize object", &path, &error))?
-            .to_string_lossy()
-            .replace('\\', "/");
+        let relative = super::state_format::relative_state_path_v1(root, &path)?;
         if !relative.contains('/') && skip.contains(name.as_str()) {
             continue;
-        }
-        if is_sqlite_sidecar_v1(&name) {
-            continue;
-        }
-        if !is_canonical_relative_path(&relative) {
-            return Err(typed(
-                SearchPlaneErrorCodeV2::StateRootInsecure,
-                format!(
-                    "source root {} contains the non-canonical path {relative}; an offline freeze refuses it",
-                    root.display()
-                ),
-            ));
         }
         let metadata = fs::symlink_metadata(&path)
             .map_err(|error| storage("inspect object", &path, &error))?;
@@ -550,6 +534,9 @@ fn freeze_walk_v1(
                     ),
                 ));
             }
+        }
+        if is_sqlite_sidecar_v1(&relative) {
+            continue;
         }
         let (digest_hex, _byte_size) = sha256_file_hex(&path)?;
         out.push(frozen_entry_v1(
@@ -738,6 +725,47 @@ fn refuse_source_drift_v1(
 fn source_matches_freeze_v1(session: &OfflineSourceSessionV1) -> Result<bool, CoreError> {
     let observed = freeze_source_root_v1(session.canonical_root(), session_exclusions_v1(session))?;
     Ok(observed == *session.before())
+}
+
+fn same_frozen_root_identity(
+    before: &SourceFreezeReceiptV1,
+    after: &SourceFreezeReceiptV1,
+) -> bool {
+    before.canonical_root == after.canonical_root
+        && before.root_device == after.root_device
+        && before.root_inode == after.root_inode
+        && before.root_mode == after.root_mode
+        && before.root_owner == after.root_owner
+}
+
+/// Compare verification freezes with a bounded catalog-directory exception.
+///
+/// `SQLite` read-only WAL inspection can create/remove excluded WAL/SHM
+/// sidecars. Those change the catalog directory's size, mtime and APFS link
+/// count, not its custody or advertised payload. Compare its identity while
+/// retaining exact file bytes/metadata and all other directory metadata.
+fn same_verification_freeze(before: &SourceFreezeReceiptV1, after: &SourceFreezeReceiptV1) -> bool {
+    same_frozen_root_identity(before, after)
+        && before.entries.len() == after.entries.len()
+        && before
+            .entries
+            .iter()
+            .zip(&after.entries)
+            .all(|(left, right)| {
+                if left.relative_path == STATE_CATALOG_DIRECTORY
+                    && left.entry_kind == SourceEntryKindV1::Directory
+                {
+                    left.relative_path == right.relative_path
+                        && left.entry_kind == right.entry_kind
+                        && left.device == right.device
+                        && left.inode == right.inode
+                        && left.mode == right.mode
+                        && left.owner == right.owner
+                        && left.content_digest_hex == right.content_digest_hex
+                } else {
+                    left == right
+                }
+            })
 }
 
 /// Require the current root format for backup custody.
@@ -1116,6 +1144,46 @@ pub fn run_offline_verify_v1(
             ),
         ));
     }
+    // A current session's freeze is for backup and deliberately excludes
+    // the live catalog. Verification is over a produced root and must bind
+    // the catalog bytes too, just as backup custody already does. Reuse the
+    // existing backup freeze; take a verification-scoped one only for a
+    // current-root lease.
+    let verification_before = match session.custody() {
+        OfflineSourceCustodyV1::Current(_) => {
+            let frozen = freeze_source_root_v1(&root, manifest_exclusions_v1(session))?;
+            // Extending the backup freeze with catalog bytes must not reset
+            // its already-pinned non-catalog identities. Compare the same
+            // entries without another filesystem walk.
+            if !session
+                .before()
+                .entries
+                .iter()
+                .eq(frozen.entries.iter().filter(|entry| {
+                    entry.relative_path.split('/').next() != Some(STATE_CATALOG_DIRECTORY)
+                }))
+            {
+                return Err(typed(
+                    SearchPlaneErrorCodeV2::StateRootInsecure,
+                    format!(
+                        "offline verify-state source {} changed after custody opened",
+                        root.display()
+                    ),
+                ));
+            }
+            frozen
+        }
+        OfflineSourceCustodyV1::ProducedBackup(_) => session.before().clone(),
+    };
+    if !same_frozen_root_identity(session.before(), &verification_before) {
+        return Err(typed(
+            SearchPlaneErrorCodeV2::StateRootInsecure,
+            format!(
+                "offline verify-state source {} no longer matches its custody",
+                root.display()
+            ),
+        ));
+    }
     verify_root_against_manifest_v1(
         &root,
         manifest_file_name,
@@ -1152,7 +1220,8 @@ pub fn run_offline_verify_v1(
     // catalog verifier (or another local writer) may change the source after
     // the object walk; neither a previous object digest nor the session's
     // initial freeze proves the returned result still describes this root.
-    if !source_matches_freeze_v1(session)? {
+    let verification_after = freeze_source_root_v1(&root, manifest_exclusions_v1(session))?;
+    if !same_verification_freeze(&verification_before, &verification_after) {
         return Err(typed(
             SearchPlaneErrorCodeV2::StateRootInsecure,
             format!(
