@@ -19,12 +19,12 @@
 | [`docs/ssot/README.md`](../docs/ssot/README.md) | SSOT index |
 | [`docs/ssot/may-23-storage-architecture-endgame-implementation.md`](../docs/ssot/may-23-storage-architecture-endgame-implementation.md) | search-plane implementation plan |
 | [`docs/plans/may-25-lexical-enhancement/lexical-capability-matrix.md`](../docs/plans/may-25-lexical-enhancement/lexical-capability-matrix.md) | DSL capability matrix |
-| [`docs/bugbash/sep-16/findings.md`](../docs/bugbash/sep-16/findings.md) | current production-readiness inventory |
+| `git show eff53181:docs/bugbash/sep-16/findings.md` | current production-readiness inventory |
 
 Historical only:
 
-- [`docs/ssot/channel-architecture.md`](../docs/ssot/channel-architecture.md)
-- [`docs/ssot/producer-handoff.md`](../docs/ssot/producer-handoff.md)
+- `git show eff53181:docs/ssot/channel-architecture.md`
+- `git show eff53181:docs/ssot/producer-handoff.md`
 
 ## Fast Start
 

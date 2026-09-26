@@ -66,5 +66,6 @@ in their proof scope.
 
 ## Historical record
 
-Detailed implementation checkpoints and raw artifact references remain indexed by the
-[SEP-26 archive manifest](../plans/sep-26-retrieval-remediation/tickets/ARCHIVE-MANIFEST.md).
+Completed implementation checkpoints and raw artifact references are
+recoverable with `git show eff53181:<path>`. Remaining execution is owned by
+[the active SEP-26 packet](../plans/sep-26-retrieval-remediation/tickets/INDEX.md).

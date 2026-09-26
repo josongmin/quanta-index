@@ -188,7 +188,7 @@ Canonical architecture:
 - `jun-4-sourcegraph-parity` packet residue:
   - 없음
 - `jun-5-sourcegraph-tail-gaps` packet (resolved):
-  - packet: [docs/plans/jun-5-sourcegraph-tail-gaps/rfc.md](../plans/jun-5-sourcegraph-tail-gaps/rfc.md)
+  - packet: `git show eff53181:docs/plans/jun-5-sourcegraph-tail-gaps/rfc.md`
   - 지원됨으로 종결 (SGT-01):
     - `repo:contains.file(...)` — alias → `repo.has.file`
     - `repo:contains.path(...)` — alias → `repo.has.file(path:...)`
@@ -206,7 +206,7 @@ Canonical architecture:
     - `file:has.contributor(<name-or-email regex>)` (SGX-04: structured `name`/`email` authority + regex match)
     - SG structural mixed non-repo predicate sibling (SGX-06: exact support)
 - `jun-6-sourcegraph-expansion` packet (landed):
-  - packet: [docs/plans/jun-6-sourcegraph-expansion/rfc.md](../plans/jun-6-sourcegraph-expansion/rfc.md)
+  - packet: `git show eff53181:docs/plans/jun-6-sourcegraph-expansion/rfc.md`
   - closed unsupported, not backlog:
     - SG structural direct lexical `Phrase` / `Regex` sibling (SGX-05)
       - reason: SG structural route에서 quoted/slash token은 direct lexical sibling slot이 아니라 structural body syntax로 소비됨
@@ -219,7 +219,7 @@ Canonical architecture:
     - `semantica-codegraph-v2` `index-sdk-ingress` live contributor publish + query roundtrip is green
     - `quanta-runtime --lib history_wire_batch_maps_to_file_contributor_batch_v1` broad exact rail is also green
 - verification follow-on:
-  - packet: [docs/plans/jun-7-verification-hellgates/rfc.md](../plans/jun-7-verification-hellgates/rfc.md)
+  - packet: `git show eff53181:docs/plans/jun-7-verification-hellgates/rfc.md`
   - packet status: landed
   - this is not feature backlog
   - it owns fast hellgates, broad daemon lifecycle gates, cross-repo ingress proof routing, and perf compare naming only

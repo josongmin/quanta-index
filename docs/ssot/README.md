@@ -23,9 +23,9 @@ not the full plan/ticket catalog; use `docs/plans/` for packet execution state.
 
 | Document | Role |
 | --- | --- |
-| [`channel-architecture.md`](channel-architecture.md) | Pre de-channelize channel architecture |
-| [`producer-handoff.md`](producer-handoff.md) | Pre de-channelize producer/search-plane handoff note |
-| [`../bugbash/sep-16/findings.md`](../bugbash/sep-16/findings.md) | Sep 16 frozen production-readiness audit; not a current defect inventory |
+| `git show eff53181:docs/ssot/channel-architecture.md` | Pre de-channelize channel architecture |
+| `git show eff53181:docs/ssot/producer-handoff.md` | Pre de-channelize producer/search-plane handoff note |
+| `git show eff53181:docs/bugbash/sep-16/findings.md` | Sep 16 frozen production-readiness audit; not a current defect inventory |
 
 The complete non-plan archive is indexed in
 [`docs/ARCHIVE-INDEX.md`](../ARCHIVE-INDEX.md). Do not treat archive documents

@@ -6,8 +6,8 @@ Consolidated: 2026-09-27 from clean pre-documentation snapshot
 `5e6addd5814ce8b71af808ff201ddd0b18fbe6c4`.
 
 This file contains only work that can still change a current verification or qualification claim. Accepted design is
-owned by the [SEP-26 ADR set](../../../adr/README.md). Historical detail is indexed by
-[ARCHIVE-MANIFEST.md](ARCHIVE-MANIFEST.md).
+owned by the [SEP-26 ADR set](../../../adr/README.md). Completed RBR packets and the old audit ledger are
+recoverable with `git show eff53181:<path>`; they are not live status authority.
 
 ## Pre-freeze checkpoint — 2026-09-27
 
@@ -28,14 +28,14 @@ capsules retain their original source identities and are not qualification of th
   forgery or a demonstrated full-custody exploit. Root integrated the canonical
   language/kind/UTF-8 guards (`conditional_proof.py` digest prefix `702fe`) and persistent raw18 assertions into an
   existing test method without new authority IDs. Root focused owning method is `VERIFIED` local:1 passed/318
-  deselected, stable selected code inputs, Ruff/diff0. [Raw](/private/tmp/qi-rbr-sdk-symbol-final.TEINH2/final-native-types-raw-table.log),
+  deselected, stable selected code inputs, Ruff/diff0. Raw (`/private/tmp/qi-rbr-sdk-symbol-final.TEINH2/final-native-types-raw-table.log`),
   SHA `2bfa0ff52b8378e16956fbb0fd8ae9071573c14d8f3a87d4cbaebab3e19e86bc`; conditional source SHA
   `702fe9ffbdffa23ac7d3c0288d94234e772703042c60d8567b463d8607c9d38e`, test source SHA
   `8aeadd926cc560b9718ef2eadd159355f271fb92cda417ce7ee8897e69e976b6`. The local command used user
   `PYTHONPATH=.`; it is not canonical process custody. Owner external whole328 is `VERIFIED` local:328 selected,
   executed, passed and unique JUnit identities match exactly; zero failures/errors/skips,436.42s. Independent
   receipt replay checked all20 artifact hashes and identical pre/post source/tool/environment/dependency snapshots.
-  [Owner receipt](/private/tmp/qi-rbr-metadata-audit-proof/owner-receipt.json), SHA
+  Owner receipt (`/private/tmp/qi-rbr-metadata-audit-proof/owner-receipt.json`), SHA
   `d5eb65d832bbe317cf660952a574da13be49d63ea5d9782d1c46bf5dc34e68bf`; whole log SHA
   `1e742346423107ec5f873b39b9c0702213c5e359c0b57a7665ec441a2fc06490`, JUnit SHA
   `e13e65bc32b7bd51f59d3b4f11cb79025eb9c5da7be88b948260052d879b3dc6`.
@@ -51,10 +51,10 @@ capsules retain their original source identities and are not qualification of th
   symlink swaps and linked evidence/ancestor paths cannot pass via a prior `is_file` check. Optional latest/baseline
   pointers use the existing no-follow entry-presence guard: a truly absent pointer remains absent, while dangling
   or linked ancestors fail closed. Before fix, the selected8 negatives/control cases had6 failed/2 passed
-  ([RED](/private/tmp/qi-rbr-sdk-symbol-final.TEINH2/final-store-reader-red.log), SHA
+  (RED (`/private/tmp/qi-rbr-sdk-symbol-final.TEINH2/final-store-reader-red.log`), SHA
   `0bd512ea4539f4a823f033ca1cf78e6d859627842ba7fabedc6650f73343b326`). After serial integration,
   four owning files' local suite had156 passed/0 failed and selected source inputs stable
-  ([GREEN](/private/tmp/qi-rbr-sdk-symbol-final.TEINH2/final-store-reader-green.log), SHA
+  (GREEN (`/private/tmp/qi-rbr-sdk-symbol-final.TEINH2/final-store-reader-green.log`), SHA
   `38b855b2d984fdcd9809880a1d42597bbcd1c6e0f3cbfd903d3e96e12b02f721`). Evidence reader source SHA
   `9b448675de28a688e09b29af27dd318095caee23b9b569216de99d68bf74ca6f`, conformance-test SHA
   `e4083cf75947e3792a9ab59d38a75400973c9ae041b5f5dca36689e9ba113bf2`.
@@ -63,14 +63,14 @@ capsules retain their original source identities and are not qualification of th
 - Symbol-boundary P2 before-fix probe had five failing counterexamples plus one already-correct nested-generic
   control, not six defects. Rust generic-owner character stripping mishandled `fn() -> ()` and const `<` expressions;
   nested named functions under TypeScript class arrow/static blocks and Rust impl const closures were classified
-  as methods. [Native six-case before probe](/private/tmp/qi-rbr-readiness-review/native-before.log), SHA
+  as methods. Native six-case before probe (`/private/tmp/qi-rbr-readiness-review/native-before.log`), SHA
   `8ddbc237cdf4e6e8e1b3a523bbcb31b124d16c1cb2c2c2054d7807fb6986356e`, used pinned grammars with zero parse errors.
   Root now serially integrated the exact final-v2 tested `symbols.rs` SHA
   `3c120e572d28fc6bbc10749a1ba3fce9aca8512d5e79158887ec291985b8992c`. Rust methods require direct impl/trait
   declaration-list ownership; JS/TS function declarations remain functions and explicit methods stay methods;
   Python nearest named scope survives control flow/decorators. Associated-type const cases and same-root controls
   are included. Pinned turbofish `ParseFailure` remains a negative, not an accepted positive fixture.
-  [Owner receipt](/private/tmp/qi-rbr-readiness-review/owner-receipt.json), SHA
+  Owner receipt (`/private/tmp/qi-rbr-readiness-review/owner-receipt.json`), SHA
   `218b2baab77feef40a4d1b7538a1d5966c5a8fac4fda95e4566dc7d1b10b8006`: **VERIFIED local**, actual83/83 unique lib
   identities, native11 goldens, all-target Clippy/fmt0,38 artifact hashes and source/tool/environment snapshots
   stable across1424 files. The command was `./scripts/cargow --lane test-daemon-lane test -p quanta-index-retrieval-bench --lib --locked`.
@@ -79,22 +79,22 @@ capsules retain their original source identities and are not qualification of th
   not proof of a ranking bug or a symbol-authority expansion.
 - The previous `11f146cfc643fa06decd9a8cbdcce8fb1810ac97` run is not final: SDK18 passed and12 gates exited0 within their original scope, but root
   requested a controlled stop after the P2 discovery. Python319/Rust108/full CI were interrupted and remain
-  `NOT_RUN`. [Native interruption record](/private/tmp/qi-rbr-final-native-admission.BOl8u0fy/INTERRUPTED-CHECKPOINT.md)
-  preserves the untouched snapshot and incomplete publication. [CI stop receipt](/private/tmp/quanta-trust-terminal-final-yt76u851/stop-receipt.json),
+  `NOT_RUN`. Native interruption record (`/private/tmp/qi-rbr-final-native-admission.BOl8u0fy/INTERRUPTED-CHECKPOINT.md`)
+  preserves the untouched snapshot and incomplete publication. CI stop receipt (`/private/tmp/quanta-trust-terminal-final-yt76u851/stop-receipt.json`),
   SHA `d7e2392f4f454d5170ac2596ca210cdd23b914839c0456012cad845182f4f83b`, reports1047/1640 completed, exit2,
   and no remaining original processes. Preserve these partial results without composing them with `c6dd70af` or owner/focused proofs.
 
 - Previous capsule contract319: `FAILED`, 318 passed/1 failed, due to a stale CRC diagnostic expectation. The
   fixture now checks the exact current refusal. Its actual SDK18 passed; Rust108 was `NOT_RUN` and the partial
-  results are not composed into integration success. [Failed producer receipt](/private/tmp/qi-rbr-final319-native-share.lu7R0r/failed-producer-receipt.json),
+  results are not composed into integration success. Failed producer receipt (`/private/tmp/qi-rbr-final319-native-share.lu7R0r/failed-producer-receipt.json`),
   SHA `a7cab428f689f98a79f4950a1853df136222588a2d9b63dcfad281693c70da89`; historical Python JUnit SHA
   `4a10b882a23e1145945c02e7d448e3d6b609b657f7a22b1b94e6afb38240f715`.
 - Previous CI1639: `FAILED`, 1637 passed/2 failed. The module-class reload failure was traced to the canonical
   bridge import; that import and a regression test were added. The actor positive fixture now states its explicit
   boundary. Its reusable-fixture preflight additionally found two setup errors from a missing capture import;
-  the explicit import is now integrated. [Preflight raw](/private/tmp/qi-rbr-sdk-symbol-final.TEINH2/capture-actor-fixture-before.log),
+  the explicit import is now integrated. Preflight raw (`/private/tmp/qi-rbr-sdk-symbol-final.TEINH2/capture-actor-fixture-before.log`),
   SHA `92534ab3e502dde2c93e8e398de6a3a9f66ec782ebacd431f7f23723b2c367f7`.
-  Fresh standalone capture32/32 passed with stable selected source inputs, [plain raw](/private/tmp/qi-rbr-sdk-symbol-final.TEINH2/capture-actor-fixture-plain.log),
+  Fresh standalone capture32/32 passed with stable selected source inputs, plain raw (`/private/tmp/qi-rbr-sdk-symbol-final.TEINH2/capture-actor-fixture-plain.log`),
   SHA `b10c725ab1be4b555840e22f877873842e10618c4a7e7f634e33f8e821ce1875`.
   That first failed CI raw root is `/private/tmp/quanta-trust-terminal-1st7p9q2`; its exact receipt digest was not
   received here. Subsequent `c6dd70af` full verification is recorded above for its own bound inputs; the final P1
@@ -104,11 +104,11 @@ capsules retain their original source identities and are not qualification of th
   SEARCH3 covers 12 blind literals/88 files (file hits10/12, occurrence27/30,27/30,28/30); it excludes semantic
   gold, holdout and quiet performance. Native5/85 excludes full conditional source/model custody, encoder,
   fault/restart and performance. ANN covers the bounded406-row/4-query fixture, not broad corpus/churn quality.
-  [SEARCH summary](/private/tmp/qi-rbr06-final-matrix.WSMPZu/SUMMARY.md), SHA
+  SEARCH summary (`/private/tmp/qi-rbr06-final-matrix.WSMPZu/SUMMARY.md`), SHA
   `1571d783db7d71498bef2718abd144a2db0a18e2639d24a4fd360fa9fccb1b47`;
-  [native5 raw](/tmp/quanta-native5-current-v3-20260927.observed.json), SHA
+  native5 raw (`/tmp/quanta-native5-current-v3-20260927.observed.json`), SHA
   `38c0ad5e03066df1d9687dc44fb36a04de776156ca1e8f717d8ab8dc6d29154d`;
-  [ANN summary](/private/tmp/qi-rbr07-real-ann.DH0pzi/SUMMARY.md), SHA
+  ANN summary (`/private/tmp/qi-rbr07-real-ann.DH0pzi/SUMMARY.md`), SHA
   `e2936870978ccadc746b9ab424fb010a20718ceea3ebd64667198fe524ade625`.
 
 Final terminal results must be recorded externally under [TEST-PLAN §5](TEST-PLAN.md#5-증거-묶음과-완료).

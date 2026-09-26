@@ -74,7 +74,7 @@ Authority inputs:
 - `docs/analysis/quanta-index-purpose-static-audit-2026-09-21-pass3.md`
 - `docs/bugbash/sep-16/structural-remediation-plan.md`
 - `docs/bugbash/sep-16/test-plan.md`
-- [final plan audit](FINAL-AUDIT.md)
+- `git show eff53181:docs/plans/sep-21-search-plane-sota-hardening/tickets/FINAL-AUDIT.md`
 - [file-level execution action list](ACTION-LIST.md)
 - [final current-source residual execution plan](FINAL-RESIDUAL-EXECUTION-PLAN.md)
 - [current execution entrypoints](prompts/README.md)
@@ -292,16 +292,16 @@ Authority rules:
 | Ticket | Owner outcome | Depends on |
 |---|---|---|
 | [S21-00](S21-00-authority-freeze-and-cutover-contract.md) | authority/ADR/schema/cutover freeze | none |
-| [S21-01](S21-01-canonical-identity-and-layout-v3.md) | P01A pure identity/codec/error primitives; P03 live layout/quarantine closure | 00; live phase also 03, 04 |
-| [S21-02](S21-02-sealed-candidate-activation-and-recovery.md) | immutable RepoMap candidate, content-bound activation, recovery reconciliation | 00, 01A, 03, 04; closes with 01B in P03 |
-| [S21-03](S21-03-repomap-graph-compiler-and-resource-envelope.md) | validated typed graph compiler and bounded materialization | 00, 01A |
-| [S21-04](S21-04-operation-journal-and-sequence-authority.md) | replay-first durable operation state machine and sequence authority | 00, 01A |
+| `git show eff53181:docs/plans/sep-21-search-plane-sota-hardening/tickets/S21-01-canonical-identity-and-layout-v3.md` | P01A pure identity/codec/error primitives; P03 live layout/quarantine closure | 00; live phase also 03, 04 |
+| `git show eff53181:docs/plans/sep-21-search-plane-sota-hardening/tickets/S21-02-sealed-candidate-activation-and-recovery.md` | immutable RepoMap candidate, content-bound activation, recovery reconciliation | 00, 01A, 03, 04; closes with 01B in P03 |
+| `git show eff53181:docs/plans/sep-21-search-plane-sota-hardening/tickets/S21-03-repomap-graph-compiler-and-resource-envelope.md` | validated typed graph compiler and bounded materialization | 00, 01A |
+| `git show eff53181:docs/plans/sep-21-search-plane-sota-hardening/tickets/S21-04-operation-journal-and-sequence-authority.md` | replay-first durable operation state machine and sequence authority | 00, 01A |
 | [S21-05](S21-05-read-view-v2-and-snapshot-lifetime.md) | actual immutable handle pinning for every declared domain | 00, 02, 04 |
-| [S21-06](S21-06-query-completeness-continuation-and-provenance.md) | canonical cursor, completeness, ranking and explain truth | 00, 05 |
-| [S21-07](S21-07-sdk-wire-response-binding.md) | shared request/response/receipt semantic validators | 00, 01, 02, 04, 06 |
-| [S21-08](S21-08-semantic-admission-and-provider-boundary.md) | pre-I/O model/input gate, bounded provider work, egress policy | 00, 04, 06, 07 |
-| [S21-09](S21-09-supervised-runtime-and-bounded-shutdown.md) | signal-aware supervisor, runtime-guard ownership, rollback, RAII, hard drain | 00, 04; provider enrollment closes atomically with 08 |
-| [S21-10](S21-10-control-authorization-readiness-and-observability.md) | capability control plane and all-plane health truth | 00, 04, 09 |
+| `git show eff53181:docs/plans/sep-21-search-plane-sota-hardening/tickets/S21-06-query-completeness-continuation-and-provenance.md` | canonical cursor, completeness, ranking and explain truth | 00, 05 |
+| `git show eff53181:docs/plans/sep-21-search-plane-sota-hardening/tickets/S21-07-sdk-wire-response-binding.md` | shared request/response/receipt semantic validators | 00, 01, 02, 04, 06 |
+| `git show eff53181:docs/plans/sep-21-search-plane-sota-hardening/tickets/S21-08-semantic-admission-and-provider-boundary.md` | pre-I/O model/input gate, bounded provider work, egress policy | 00, 04, 06, 07 |
+| `git show eff53181:docs/plans/sep-21-search-plane-sota-hardening/tickets/S21-09-supervised-runtime-and-bounded-shutdown.md` | signal-aware supervisor, runtime-guard ownership, rollback, RAII, hard drain | 00, 04; provider enrollment closes atomically with 08 |
+| `git show eff53181:docs/plans/sep-21-search-plane-sota-hardening/tickets/S21-10-control-authorization-readiness-and-observability.md` | capability control plane and all-plane health truth | 00, 04, 09 |
 | [S21-11](S21-11-state-migration-backup-and-restore.md) | current-format backup/restore/verify and typed legacy refusal | 01, 02, 04, 09, 10 |
 | [S21-12](S21-12-cross-repo-terminal-receipt-cutover.md) | exact Semantica/SDK/daemon terminal receipt and breaking cutover | 02, 04, 07, 11 |
 | [S21-13](S21-13-release-evidence-and-sota-qualification.md) | early proof infrastructure plus final source-bound closeout | phase A: 00; phase B: all |

@@ -1,6 +1,6 @@
 # RBR 공통 검증·완료 계약
 
-상태: 공통 완료 계약. 현재 결정은 [SEP-26 ADR set](../../../adr/README.md), 미완료 실행·자격 판정은 [GAP-REGISTER.md](GAP-REGISTER.md)를 따른다. [CURRENT-AUDIT.md](CURRENT-AUDIT.md)는 이전 source·명령·원본의 역사 ledger다. strict fixture/manual serde 및 server observation/V2 ingest·typed floor 연결을 구현했으나 focused/local 실행은 clean-source proof나 qualified final pair가 아니다. 현재 diagnostic6/protocol4는 requested floor와 실제 initial-fetch trace를 대조한다. 두 bare-symbol 탐색 pair의 `PAIR_VALID=pass`는 이 게이트를 대체하지 않는다. 이 문서 변경도 retrieval source closure 입력이다. 기존 [RB TEST-PLAN](../../sep-23-retrieval-bench/tickets/TEST-PLAN.md)의 입력 격리·replay·성능 자격을 약화하지 않는다.
+상태: 공통 완료 계약. 현재 결정은 [SEP-26 ADR set](../../../adr/README.md), 미완료 실행·자격 판정은 [GAP-REGISTER.md](GAP-REGISTER.md)를 따른다. 이전 source·명령·원본의 역사 ledger는 `git show eff53181:docs/plans/sep-26-retrieval-remediation/tickets/CURRENT-AUDIT.md`로 회수한다. strict fixture/manual serde 및 server observation/V2 ingest·typed floor 연결을 구현했으나 focused/local 실행은 clean-source proof나 qualified final pair가 아니다. 현재 diagnostic6/protocol4는 requested floor와 실제 initial-fetch trace를 대조한다. 두 bare-symbol 탐색 pair의 `PAIR_VALID=pass`는 이 게이트를 대체하지 않는다. 이 문서 변경도 retrieval source closure 입력이다. 기존 [RB TEST-PLAN](../../sep-23-retrieval-bench/tickets/TEST-PLAN.md)의 입력 격리·replay·성능 자격을 약화하지 않는다.
 
 ## 1. 공통 oracle와 부정 테스트
 

@@ -4,9 +4,9 @@ Status: `implementation integrated; current-source qualification blocked`
 
 Current actionable ledger: [SEP25-CURRENT-CLOSEOUT.md](SEP25-CURRENT-CLOSEOUT.md).
 
-Historical integration receipt: [RCA-2026-09-23-current-source.md](RCA-2026-09-23-current-source.md#committed-tree-integration-receipt). The 18 finding owners have code changes; this is not a current-source performance or full-workspace-green claim. TOPT-00 and TOPT-08 remain open on the exact gates in the current ledger.
+Historical integration receipt: `git show eff53181:tickets/sep-22-test-optimization/RCA-2026-09-23-current-source.md`. The 18 finding owners have code changes; this is not a current-source performance or full-workspace-green claim. TOPT-00 and TOPT-08 remain open on the exact gates in the current ledger.
 
-Latest shared-checkout gate follow-up: [SEP23-GATE-FOLLOWUP.md](SEP23-GATE-FOLLOWUP.md).
+Latest shared-checkout gate follow-up: `git show eff53181:tickets/sep-22-test-optimization/SEP23-GATE-FOLLOWUP.md`.
 
 Source base: `23bd3d7fa7af1122f904e59f1f514935bd5ffe7e`
 

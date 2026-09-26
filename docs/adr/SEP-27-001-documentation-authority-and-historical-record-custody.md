@@ -25,9 +25,12 @@ count, or implementation status can be mistaken for current authority.
 3. Verification claims require a fresh exact-source receipt under the repository
    verification contract. Historical test output, status labels, and counts do
    not qualify a later source revision.
-4. Completed or superseded records stay at their stable paths. Each receives a
-   historical banner and an entry in `docs/ARCHIVE-INDEX.md`; the original body
-   remains unchanged as provenance.
+4. Completed or superseded records are removed from the live documentation
+   tree once their decisions are represented by an accepted ADR and their
+   unfinished work has a current owner. Git history retains the exact bodies;
+   `docs/ARCHIVE-INDEX.md` and `docs/plans/ARCHIVE-INDEX.md` identify the
+   pre-deletion revision and recovery command. A deleted record is not a live
+   link or a current authority.
 5. A parent packet remains active when any implementation, measurement,
    qualification, deployment, or activation gate remains open. Historical child
    records may be archived individually without closing the parent.
@@ -50,7 +53,7 @@ what the implementation should do.
 
 ## Initial custody set
 
-This decision classifies 21 non-plan Markdown records:
+The initial classification covered 21 non-plan Markdown records:
 
 - three Sep 21 purpose-audit snapshots;
 - eight Sep 16 bugbash records, including four local gate decisions;
@@ -58,15 +61,17 @@ This decision classifies 21 non-plan Markdown records:
 - six Sep 22 test-optimization audit inputs;
 - two Sep 23 TOPT integration and gate receipts.
 
-The exact paths, successor authorities, and deliberately retained active records
-are listed in [the documentation archive index](../ARCHIVE-INDEX.md). Completed
-implementation plans remain indexed separately in
-[the completed-plan archive](../plans/ARCHIVE-INDEX.md).
+The recovery boundary, successor authorities, and deliberately retained active
+records are listed in [the documentation history index](../ARCHIVE-INDEX.md).
+Completed implementation plans are grouped in
+[the plan history index](../plans/ARCHIVE-INDEX.md). The later SEP-26 retrieval
+packet follows the same rule: accepted decisions in SEP-26-001/002/003,
+unfinished execution in its active gap register, historical detail in Git.
 
 ## Consequences
 
-- Stable historical links continue to resolve.
-- Search results expose the archive boundary before the historical claim.
-- Current ledgers stay small enough to audit without deleting provenance.
-- Archiving a record does not assert that every finding in it was implemented or
-  qualified; it asserts only that the record is no longer current authority.
+- Live links target accepted ADRs or active ledgers, not deleted records.
+- Git history, including the pre-deletion revision named by the indexes,
+  preserves the old bodies without presenting them as current documentation.
+- Removing a completed packet does not assert that every finding in it was
+  implemented or qualified; open work stays in the active owner ledger.

@@ -1,8 +1,8 @@
 # SEP-26 Benchmark Migration — ticket index
 
-Status: **PARTIAL implementation; see [CURRENT-AUDIT.md](CURRENT-AUDIT.md)** for current source-backed gaps and corrections. The older [CLOSEOUT.md](CLOSEOUT.md) is historical, not a full-completion receipt. Registration, typed fixtures and policy checks do not prove every profile can execute. See [CLOSEOUT.md](CLOSEOUT.md) for the historical per-ticket
+Status: **PARTIAL implementation; see [CURRENT-AUDIT.md](CURRENT-AUDIT.md)** for current source-backed gaps and corrections. The older `git show eff53181:docs/plans/sep-26-bench-migration/tickets/CLOSEOUT.md` is historical, not a full-completion receipt. Registration, typed fixtures and policy checks do not prove every profile can execute. See `git show eff53181:docs/plans/sep-26-bench-migration/tickets/CLOSEOUT.md` for the historical per-ticket
 implementation / focused-verification / integration / qualification verdicts and
-the exact receipts. The `PLAN / NOT_RUN` status below is the plan-time state. Initially written against `f16bad934ec6b5b902eaf2d8633d734a0c34d37c` on 2026-09-26 while the shared checkout was dirty; re-audited at `8d23137cad89f2118377743824b8c841899593b1` with no intervening committed benchmark-control-plane change. The worktree remains dirty and may move again. This packet authorizes no benchmark result, baseline, or product win. Re-audit source and ownership before implementation; do not overwrite concurrent retrieval/RBR edits. See the [source-backed audit and corrections](AUDIT.md).
+the exact receipts. The `PLAN / NOT_RUN` status below is the plan-time state. Initially written against `f16bad934ec6b5b902eaf2d8633d734a0c34d37c` on 2026-09-26 while the shared checkout was dirty; re-audited at `8d23137cad89f2118377743824b8c841899593b1` with no intervening committed benchmark-control-plane change. The worktree remains dirty and may move again. This packet authorizes no benchmark result, baseline, or product win. Re-audit source and ownership before implementation; do not overwrite concurrent retrieval/RBR edits. See the `git show eff53181:docs/plans/sep-26-bench-migration/tickets/AUDIT.md`.
 
 ## Objective
 
@@ -78,7 +78,7 @@ constitute complete diagnostic profile execution or product qualification.
 | [BM-06](BM-06-recorded-and-experiments.md) | Agent outcome and recorded experiments | BM-02/03 | Recorded-only evaluation with explicit authenticity boundary |
 | [BM-07](BM-07-ci-baselines-cutover.md) | CI, baseline admission, migration closeout | BM-04/05/06 | One current authority, old authority removed, full replay/negative proof |
 
-The [TEST-PLAN](TEST-PLAN.md) defines common evidence, failure, and cutover gates. Ticket DoD is **implementation DoD**, not automatic benchmark qualification. Implementation artifacts: [BM-00-INVENTORY.md](BM-00-INVENTORY.md), [BM-03-DECISION.md](BM-03-DECISION.md), [BM-07-MIGRATION-MATRIX.md](BM-07-MIGRATION-MATRIX.md), [CLOSEOUT.md](CLOSEOUT.md).
+The [TEST-PLAN](TEST-PLAN.md) defines common evidence, failure, and cutover gates. Ticket DoD is **implementation DoD**, not automatic benchmark qualification. Implementation artifacts: [BM-00-INVENTORY.md](BM-00-INVENTORY.md), [BM-03-DECISION.md](BM-03-DECISION.md), [BM-07-MIGRATION-MATRIX.md](BM-07-MIGRATION-MATRIX.md), `git show eff53181:docs/plans/sep-26-bench-migration/tickets/CLOSEOUT.md`.
 
 ## Execution and stop rules
 

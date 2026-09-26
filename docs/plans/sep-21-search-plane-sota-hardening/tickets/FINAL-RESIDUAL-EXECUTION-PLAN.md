@@ -213,7 +213,7 @@ cutover. DoD: stopped daemon + exclusive lease, current-format backup,
 verify, restore-forward, activation-incarnation rotation and wrong-format
 refusal on one disposable and one authorized target root. No legacy importer.
 
-The [2026-09-26 adversarial follow-up](P10-ADVERSARIAL-AUDIT-2026-09-26.md)
+The `git show eff53181:docs/plans/sep-21-search-plane-sota-hardening/tickets/P10-ADVERSARIAL-AUDIT-2026-09-26.md`
 records manifest canonical authority, exact path admission, bounded catalog
 sidecar exceptions and verification-scoped custody changes. Local owner
 checks do not discharge the authorized-target or release DoD above.

@@ -10,7 +10,7 @@ Date: `2026-06-02`
 Scope: LQ DSL, Sourcegraph lowering, lexical/history/structural/runtime query rails, and bridge directive companion rails
 
 Whole-DSL execution ownership closed in
-[../jun-2-dsl-final-cut/README.md](../jun-2-dsl-final-cut/README.md) (`closed` 2026-06-02).
+`git show eff53181:docs/plans/jun-2-dsl-final-cut/README.md` (`closed` 2026-06-02).
 This packet retains the active proof inventory and capability matrix for all
 accounted surfaces. Executable capability remains code-owned.
 

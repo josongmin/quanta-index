@@ -7,10 +7,10 @@ This packet is product-quality work, not DSL-surface expansion work.
 
 It follows the landed feature and verification packets:
 
-- [../jun-4-sourcegraph-parity/rfc.md](../jun-4-sourcegraph-parity/rfc.md)
-- [../jun-5-sourcegraph-tail-gaps/rfc.md](../jun-5-sourcegraph-tail-gaps/rfc.md)
-- [../jun-6-sourcegraph-expansion/rfc.md](../jun-6-sourcegraph-expansion/rfc.md)
-- [../jun-7-verification-hellgates/rfc.md](../jun-7-verification-hellgates/rfc.md)
+- `git show eff53181:docs/plans/jun-4-sourcegraph-parity/rfc.md`
+- `git show eff53181:docs/plans/jun-5-sourcegraph-tail-gaps/rfc.md`
+- `git show eff53181:docs/plans/jun-6-sourcegraph-expansion/rfc.md`
+- `git show eff53181:docs/plans/jun-7-verification-hellgates/rfc.md`
 
 ## 1. Scope Lock
 

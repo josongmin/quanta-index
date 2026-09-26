@@ -40,6 +40,15 @@ The symbol producer identity binds parser and grammar versions, lockfile digest 
 parse failure is a coverage failure. Unsupported input is recorded per path with source digest and typed reason; it is
 not counted as successful full coverage.
 
+Symbol identity is derived from parser structure, not delimiter scanning or
+lexical ancestor guesses. Rust generic impl owners drop arguments only when the
+grammar identifies a generic type; methods require direct impl/trait
+declaration-list ownership. JavaScript and TypeScript named function
+declarations stay functions inside class initializers and static blocks;
+explicit method definitions stay methods. Python uses the nearest named scope
+through decorators and control-flow blocks. A malformed or unsupported parse
+remains a typed failure, never a guessed symbol identity.
+
 ### Result proof
 
 The typed published-unit registry is the authority for result kind, path and byte span. A result is valid only when it
@@ -67,5 +76,7 @@ matrix, but it cannot change public defaults or claim semantic quality without t
 
 ## Historical record
 
-Detailed implementation checkpoints and rejected intermediate states remain indexed by the
-[SEP-26 archive manifest](../plans/sep-26-retrieval-remediation/tickets/ARCHIVE-MANIFEST.md).
+The completed RBR packets were removed from the live tree after consolidation.
+Their exact pre-deletion bodies are available with
+`git show eff53181:<path>`; [the active packet](../plans/sep-26-retrieval-remediation/tickets/INDEX.md)
+owns remaining execution.

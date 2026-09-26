@@ -2,7 +2,7 @@
 
 Status: `PARTIAL / CORPUS_VIEWS_AND_CONTRACT_PAIR_LEXICAL_ADAPTERS_IMPLEMENTED`; frozen corpus/CLI integration passed (158 tests), paired/CLI contract verification passed (112 tests), historical canonical Python recipe passed (579 tests); newly expanded recipe and fresh paired/lexical search pilot remain `NOT_RUN`. Priority: P1. Depends on: BM-02/BM-03; coordinate with RBR-12. Common gates: [TEST-PLAN](TEST-PLAN.md).
 
-Current implementation/verification boundaries are recorded in [CURRENT-AUDIT.md](CURRENT-AUDIT.md). Historical [CLOSEOUT.md](CLOSEOUT.md) and [BM-07-MIGRATION-MATRIX.md](BM-07-MIGRATION-MATRIX.md) do not establish complete migration qualification.
+Current implementation/verification boundaries are recorded in [CURRENT-AUDIT.md](CURRENT-AUDIT.md). Historical `git show eff53181:docs/plans/sep-26-bench-migration/tickets/CLOSEOUT.md` and [BM-07-MIGRATION-MATRIX.md](BM-07-MIGRATION-MATRIX.md) do not establish complete migration qualification.
 
 ## Purpose
 

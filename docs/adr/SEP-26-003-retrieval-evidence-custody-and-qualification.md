@@ -38,6 +38,14 @@ Validators fail closed on missing, malformed, stale, duplicate, partial, reorder
 wrong-environment, timed-out, interrupted or tampered evidence. A `pass` boolean, count, report summary or locally
 self-reported hash is not an independent oracle.
 
+Evidence documents, referenced raw files and optional latest/baseline pointers
+are read through one no-follow path-custody boundary. The reader verifies the
+regular leaf and directory ancestry before and after consumption and uses
+descriptor-relative no-follow opens; a prior `is_file` or `exists` check does
+not authorize a later read. Only a genuinely absent optional pointer is
+absence. Dangling links, linked ancestors and same-byte symlink swaps are
+failures, not empty/default evidence.
+
 Conditional same-model and incremental claims are `NOT_APPLICABLE` while disabled. When enabled, they require their
 raw vector or row-set inputs, typed operations, independent replay, source/model/dependency identity and execution
 terminal. They cannot be opened by a summary JSON.
@@ -61,6 +69,6 @@ kept in the [gap register](../plans/sep-26-retrieval-remediation/tickets/GAP-REG
 
 ## Consequences
 
-- The historical RBR packet is retained as an evidence ledger, not current status authority.
+- The historical RBR packet is recoverable from Git history, not a live status authority.
 - Current decisions live only in accepted ADRs; unfinished execution work lives only in the active gap register.
 - A documentation change under the remediation packet requires new source-bound proof before current qualification.

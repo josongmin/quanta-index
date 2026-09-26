@@ -15,7 +15,7 @@
    [wire inventory](../../tools/ci/inventory/wire-surface.toml)
 3. [README](../../README.md)의 현재 owner/non-goal 설명
 4. [search product quality measurement matrix](../plans/jun-7-search-product-quality/MEASUREMENT_MATRIX.md)
-5. [sep-16 test plan](../bugbash/sep-16/test-plan.md)과 historical plan/SSOT
+5. `git show eff53181:docs/bugbash/sep-16/test-plan.md`과 historical plan/SSOT
 
 낮은 순위 문서가 current source와 충돌하면 current source와 실행 결과를 따른다.
 

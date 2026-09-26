@@ -30,7 +30,7 @@ Current packet facts:
 
 - DSL capability is already broad on the live tree
 - correctness hellgates are already landed in
-  [../jun-7-verification-hellgates/rfc.md](../jun-7-verification-hellgates/rfc.md)
+  `git show eff53181:docs/plans/jun-7-verification-hellgates/rfc.md`
 - this packet owns product quality, not feature parity
 - this packet excludes semantic retrieval and hybrid fusion quality
 - current gaps are quality gaps, not syntax gaps

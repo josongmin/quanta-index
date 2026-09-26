@@ -8,7 +8,7 @@ Status summary:
 - this packet owns search product quality, not DSL feature coverage
 - this packet is restricted to the non-semantic code-search stack
 - correctness verification remains owned by
-  [../../jun-7-verification-hellgates/rfc.md](../../jun-7-verification-hellgates/rfc.md)
+  `git show eff53181:docs/plans/jun-7-verification-hellgates/rfc.md`
 - current quality backlog is split into relevance, snippet/explain, scale,
   tail, operator UX, ambiguity repair, and UI contract lanes
 

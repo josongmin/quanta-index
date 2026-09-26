@@ -77,5 +77,5 @@ Current preflight truth:
 Backlinks:
 
 - DSL capability inventory: [../../analysis/jun-4-dsl-capabilty.md](../../analysis/jun-4-dsl-capabilty.md)
-- Sourcegraph feature closeout: [../jun-6-sourcegraph-expansion/rfc.md](../jun-6-sourcegraph-expansion/rfc.md)
-- verification architecture: [../jun-7-verification-hellgates/rfc.md](../jun-7-verification-hellgates/rfc.md)
+- Sourcegraph feature closeout: `git show eff53181:docs/plans/jun-6-sourcegraph-expansion/rfc.md`
+- verification architecture: `git show eff53181:docs/plans/jun-7-verification-hellgates/rfc.md`

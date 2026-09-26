@@ -5,7 +5,7 @@
 
 Status: `adopted`
 Date: `2026-06-02`
-Owner packet: [README.md](README.md)
+Owner packet: `git show eff53181:docs/plans/jun-2-dsl-hardening/README.md`
 
 ## Goal
 

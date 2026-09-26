@@ -94,7 +94,7 @@ Current verification posture (2026-09-16):
   - `just rust-fuzz-smoke`
   - `just rust-profile test-daemon`
 - these prove correctness of the current code substrate, not production ops readiness;
-- [`docs/bugbash/sep-16/findings.md`](docs/bugbash/sep-16/findings.md) records
+- `git show eff53181:docs/bugbash/sep-16/findings.md` records
   open P1/P2 operational and contract gaps on HEAD `4914156` and later; treat
   bugbash as the current production-readiness inventory until remediated.
 
