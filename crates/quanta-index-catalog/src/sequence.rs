@@ -212,7 +212,7 @@ fn allocator_digest(next: Option<i64>, exhausted: bool) -> [u8; 32] {
 
 /// The event's commitment: SEP-21-002 preimage over the allocation
 /// itself, the kind, and the two content digests.
-fn event_commitment(
+pub(crate) fn event_commitment(
     sequence: i64,
     kind: SequenceEventKindV1,
     identity: &[u8; 32],
@@ -231,7 +231,7 @@ fn event_commitment(
 }
 
 /// The event row's digest over every other column.
-fn event_row_digest(
+pub(crate) fn event_row_digest(
     sequence: i64,
     kind: SequenceEventKindV1,
     identity: &[u8; 32],

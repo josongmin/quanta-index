@@ -2089,11 +2089,21 @@ impl MutationCoordinatorPort for SqliteCatalog {
 #[cfg(test)]
 mod tests {
     use std::error::Error;
+    use std::time::Duration;
 
-    use quanta_index_contract::{BatchPublishReceipt, ManifestGeneration, SearchPlaneErrorCodeV2};
-    use quanta_index_core::CoreError;
+    use quanta_index_contract::{
+        BATCH_PUBLISH_RECEIPT_FORMAT_VERSION, BatchPublishReceipt, IngestOperationKindV1,
+        ManifestGeneration, RepoId, RevisionId, SearchPlaneErrorCodeV2,
+    };
+    use quanta_index_core::{ClaimOutcomeV1, CoreError, IdempotencyCatalogPort, IdempotencyKeyV1};
+    use rusqlite::params;
 
-    use super::{decode_versioned_receipt, encode_versioned_receipt};
+    use super::{
+        decode_versioned_receipt, encode_versioned_receipt, payload_digest_of_parts, read_row,
+        receipt_digest, row_digest,
+    };
+    use crate::connection::SqliteCatalog;
+    use crate::sequence::{SequenceEventKindV1, event_commitment, event_row_digest};
 
     #[test]
     fn foreign_receipt_tag_refuses_decode_typed() -> Result<(), Box<dyn Error>> {
@@ -2110,6 +2120,117 @@ mod tests {
             }) if message.contains("format version")
         ) {
             return Err("foreign receipt version must refuse before payload decode".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn fully_redigested_foreign_receipt_refuses_replay_without_mutation()
+    -> Result<(), Box<dyn Error>> {
+        let root = tempfile::tempdir()?;
+        let catalog = SqliteCatalog::open(root.path(), Duration::from_millis(100))?;
+        let key = IdempotencyKeyV1 {
+            kind: IngestOperationKindV1::History,
+            repo_id: RepoId::new("repo")?,
+            revision_id: RevisionId::new("revision")?,
+            generation: ManifestGeneration::new(1),
+            batch_digest: "digest".to_string(),
+        };
+        let body = [1_u8; 32];
+        let claim =
+            match catalog.claim_prepared(&key, &body, "owner", i64::MAX.unsigned_abs(), &body)? {
+                ClaimOutcomeV1::Claimed(claim) => claim,
+                ClaimOutcomeV1::Replay { .. } | ClaimOutcomeV1::ReplayRepoMap { .. } => {
+                    return Err("fixture expected a fresh claim".into());
+                }
+            };
+        catalog.mark_applying(&claim)?;
+        let mut receipt =
+            BatchPublishReceipt::empty_for(ManifestGeneration::new(1), None, "digest".to_string());
+        receipt.accept_replace_scope();
+        let sequence = i64::try_from(catalog.commit(&claim, &receipt)?)?;
+        {
+            let mut connection = catalog.lock()?;
+            let transaction = connection.transaction()?;
+            let stored = read_row(&transaction, catalog.path(), &key)?
+                .ok_or("committed fixture row disappeared")?;
+            let mut foreign = stored
+                .receipt_cbor
+                .clone()
+                .ok_or("committed fixture has no receipt")?;
+            let future_version = BATCH_PUBLISH_RECEIPT_FORMAT_VERSION
+                .checked_add(1)
+                .ok_or("receipt version cannot advance")?;
+            foreign
+                .get_mut(..4)
+                .ok_or("versioned receipt has no tag")?
+                .copy_from_slice(&future_version.to_le_bytes());
+            let foreign_digest = receipt_digest(&foreign);
+            let journal_digest = row_digest(
+                &key,
+                &stored.body_sha256,
+                stored.state,
+                &stored.owner,
+                stored.lease_deadline_ms,
+                stored.fence_token,
+                &stored.input_commitment,
+                Some(&foreign_digest),
+                stored.durable_sequence,
+                stored.refusal_code.as_deref(),
+                stored.refusal_message.as_deref(),
+            );
+            let payload = payload_digest_of_parts(&[&foreign]);
+            let identity = key.identity_digest();
+            let kind = SequenceEventKindV1::OperationCommitted;
+            let commitment = event_commitment(sequence, kind, &identity, &payload);
+            let event_digest = event_row_digest(sequence, kind, &identity, &payload, &commitment);
+            let updated_row = transaction.execute(
+                "UPDATE idempotency_v2
+                 SET receipt_cbor = ?1, receipt_digest = ?2, row_sha256 = ?3
+                 WHERE kind = ?4 AND repo_id = ?5 AND revision_id = ?6
+                   AND generation = 1 AND batch_digest = ?7",
+                params![
+                    &foreign,
+                    foreign_digest.as_slice(),
+                    journal_digest.as_slice(),
+                    key.kind.as_code_str(),
+                    key.repo_id.as_str(),
+                    key.revision_id.as_str(),
+                    key.batch_digest.as_str(),
+                ],
+            )?;
+            let updated_event = transaction.execute(
+                "UPDATE catalog_sequence_event_v2
+                 SET payload_digest = ?1, event_commitment = ?2, row_sha256 = ?3
+                 WHERE sequence = ?4",
+                params![
+                    payload.as_slice(),
+                    commitment.as_slice(),
+                    event_digest.as_slice(),
+                    sequence,
+                ],
+            )?;
+            if updated_row != 1 || updated_event != 1 {
+                return Err("fixture must rewrite exactly one row and event".into());
+            }
+            transaction.commit()?;
+            drop(connection);
+        }
+        drop(catalog);
+        let reopened = SqliteCatalog::open(root.path(), Duration::from_millis(100))?;
+        let before = reopened.sequence_allocator()?;
+        let refused = reopened.claim_prepared(&key, &body, "retry", i64::MAX.unsigned_abs(), &body);
+        if !matches!(
+            refused,
+            Err(CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+                message,
+            }) if message.contains("format version")
+        ) {
+            return Err("coherently redigested foreign receipt must refuse by version".into());
+        }
+        if reopened.sequence_allocator()? != before {
+            return Err("foreign-version replay allocated a ledger event".into());
         }
         Ok(())
     }
