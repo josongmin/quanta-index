@@ -2270,6 +2270,15 @@ def test_adapter_rejects_forged_or_mismatched_profile_reports():
         "actual_alpha_by_task": None,
     })
     semble_adapter.validate_native_profile_report(dict(base), "lexical-only", None)
+    for field in ("repetitions", "warmup_passes", "event_lane_count"):
+        forged = json.loads(json.dumps(base))
+        if field == "event_lane_count":
+            forged["execution_events"][0]["lane_entry_counts"]["bm25"] = 10**400
+            forged["execution_events_sha256"] = ev.digest(ev.canonical(forged["execution_events"]))
+        else:
+            forged[field] = 10**400
+        with pytest.raises(semble_adapter.AdapterError, match="event count|candidate depth"):
+            semble_adapter.validate_native_profile_report(forged, "lexical-only", None)
 
     # Worker echoing a different profile than requested.
     forged = dict(base, semble_profile="semantic-only")

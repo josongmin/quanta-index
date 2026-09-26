@@ -613,6 +613,8 @@ def validate_native_profile_report(
         warmup_schedules = protocol["warmup_schedules"]
         measurement_schedules = protocol["measurement_schedules"]
     else:
+        if len(events) != len(query_schedule) * (repetitions + warmup_passes):
+            raise AdapterError("Semble execution event count differs from the query protocol")
         warmup_schedules = [query_schedule for _ in range(warmup_passes)]
         measurement_schedules = [query_schedule for _ in range(repetitions)]
     for iteration, schedule in enumerate(warmup_schedules):
@@ -666,7 +668,9 @@ def validate_native_profile_report(
         if type(candidate_depth) is not int or candidate_depth <= 0:
             raise AdapterError("Semble event candidate depth is invalid")
         for lane in observed_lane_calls:
-            if depths[lane] != [candidate_depth] * lane_event[lane]:
+            if len(depths[lane]) != lane_event[lane] or any(
+                depth != candidate_depth for depth in depths[lane]
+            ):
                 raise AdapterError("Semble event candidate depth differs from lane calls")
             observed_lane_calls[lane] += lane_event[lane]
         if profile in ("native-default", "hybrid-no-rerank"):
