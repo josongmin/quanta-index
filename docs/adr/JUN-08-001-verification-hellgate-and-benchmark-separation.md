@@ -58,6 +58,18 @@ Baseline admission requires the declared source, host, configuration, sample
 floor and complete artifacts. A stale or unattributed baseline cannot be
 silently migrated into a current gate.
 
+The DSL latency gate uses the bench-owned scenario authority in
+`crates/quanta-index-searchd-harness/src/scenarios.rs`. The dedicated
+`dsl_warm_matrix` runner is warm gate authority; the Criterion view is
+diagnostic. Cold samples come from a fresh process per query. Warm and cold
+authority captures run serially. The current comparator blocks on both p50
+and p95 regressions; p99 is advisory. Exact thresholds, sample floors,
+artifact schema and baseline-admission procedure are owned by
+`tools/benchmark/compare_dsl_bench.py` and
+[`tools/benchmark/README.md`](../../tools/benchmark/README.md), not by the
+historical RFC. Scan-vs-index is a separate exploratory scaling experiment,
+not a DSL latency gate or semantic comparison against a text-only engine.
+
 ## Consequences
 
 - Fast green does not imply broad, cross-repository or performance green.
@@ -68,7 +80,6 @@ silently migrated into a current gate.
 
 ## Historical record
 
-The hellgate implementation packet is indexed in
-[the completed-plan archive](../plans/ARCHIVE-INDEX.md). The detailed adopted
-measurement contract remains in
-[the DSL benchmarking RFC](../plans/jun-2-dsl-hardening/RFC-DSL-Benchmarking.md).
+The hellgate implementation packet and superseded Jun-2 measurement RFC are
+indexed in [the completed-plan archive](../plans/ARCHIVE-INDEX.md). The RFC's
+old p95-advisory and proposed file-path instructions are not current policy.

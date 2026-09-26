@@ -13,7 +13,7 @@
 //!   Promoted here from the runtime crate's test-private `common/` tree so a
 //!   single source of truth is shared by tests, benches, and the cold runner.
 //! - [`artifact`] + [`scenarios`] — the bench-owned scenario authority and the
-//!   machine-readable latency-artifact model (RFC-DSL-Benchmarking, Layer 3).
+//!   machine-readable latency-artifact model (JUN-08-001, Layer 3).
 //! - [`bench_support`] — the glue that prepares a runtime for a scenario and
 //!   runs one scenario query, mapping the harness result onto an artifact row.
 

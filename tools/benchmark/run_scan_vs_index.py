@@ -2,8 +2,8 @@
 """Scaling experiment: indexed keyword query vs full-text scan, vs corpus size.
 
 This is an **exploratory experiment, not a benchmark gate**. It is deliberately
-NOT part of the RFC-DSL-Benchmarking 3-layer model and writes nothing to the
-committed baselines. The RFC forbids reporting DSL query latency against a
+NOT part of the JUN-08-001 3-layer model and writes nothing to the
+committed baselines. The ADR forbids reporting DSL query latency against a
 text-only engine *as a benchmark* because a daemon IPC round-trip and a `grep`
 process answer different questions. This tool isolates the one comparison that
 IS meaningful — how each approach scales with corpus size — by:
@@ -153,7 +153,7 @@ def render_report(rows: list[dict], crossover: str, git_head: str, host: dict) -
         "",
         "In-process lexical index query (no daemon/IPC) vs `rg`/`grep` full scan,",
         f"searching `{NEEDLE}` over identical corpus bytes. See the script header",
-        "for why this is an experiment and not part of RFC-DSL-Benchmarking.",
+        "for why this is an experiment and not part of the DSL latency gate.",
         "",
         f"- git_head: `{git_head}`",
         f"- host: {host['os']}/{host['arch']}, {host['cpu_count']} cpus, "

@@ -2459,6 +2459,52 @@ def _mock_unbound_resource_metrics():
     }
 
 
+def _mock_bound_resource_metrics():
+    metrics = _mock_unbound_resource_metrics()
+    metrics["storage"] = {
+        "index_bytes": 4096,
+        "model_cache_bytes": 0,
+        "parser_cache_bytes": 0,
+        "embedding_cache_bytes": 0,
+        "discovered_files": 1,
+        "indexed_chunks": 1,
+        "index_storage": "disk",
+        "index_measurement": "filesystem_tree_v1",
+    }
+    return metrics
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        pytest.param(
+            lambda value: value["processes"].append(dict(value["processes"][0])), id="duplicate-pid"
+        ),
+        pytest.param(lambda value: value.update(peak_rss_bytes=1), id="underreported-rss"),
+        pytest.param(
+            lambda value: value["processes"][0].update(peak_cpu_percent=1.0),
+            id="underreported-cpu",
+        ),
+        pytest.param(
+            lambda value: value["processes"][0].update(samples=2), id="row-samples-exceed-total"
+        ),
+    ],
+)
+def test_macos_resource_replay_rejects_inconsistent_process_rows(mutate):
+    metrics = _mock_bound_resource_metrics()
+    pairrun._validate_resource_metrics(metrics, "valid macOS resource")
+    mutate(metrics)
+    with pytest.raises(pairrun.RunError):
+        pairrun._validate_resource_metrics(metrics, "mutated macOS resource")
+
+
+def test_macos_resource_replay_allows_zero_rss_root_without_metric_row():
+    metrics = _mock_bound_resource_metrics()
+    # The sampler sees the live root but emits only positive-RSS metric rows.
+    metrics["processes"][0]["pid"] = 101
+    assert pairrun._validate_resource_metrics(metrics, "zero-RSS root") == metrics
+
+
 def test_run_semble_capture_forwards_lockfile(tmp_path, monkeypatch):
     seen = {}
 

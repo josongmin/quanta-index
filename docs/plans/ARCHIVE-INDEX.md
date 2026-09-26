@@ -18,7 +18,7 @@ work remains in active tickets and qualification ledgers.
 | `may-26-indexing-residue-tasks` | 7 | DSL ADR |
 | `may-27-dsl-master-closeout` and `may-27-structural-dsl` | 18 | DSL ADR |
 | `may-28-lancedb-adoption` | 9 | [Semantic generation](../adr/MAY-31-001-lancedb-semantic-generation-authority.md) |
-| `jun-2-dsl-final-cut`, `jun-2-dsl-hardening`, `jun-2-dsl-advanced` | 24 | DSL and [verification](../adr/JUN-08-001-verification-hellgate-and-benchmark-separation.md) ADRs; active benchmarking RFC retained |
+| `jun-2-dsl-final-cut`, `jun-2-dsl-hardening`, `jun-2-dsl-advanced` | 25 | DSL and [verification](../adr/JUN-08-001-verification-hellgate-and-benchmark-separation.md) ADRs; current mechanics in [benchmark tooling](../../tools/benchmark/README.md) |
 | `jun-4-dsl-extension`, `jun-4-sourcegraph-parity` | 21 | DSL and Sourcegraph ADRs |
 | `jun-5-sourcegraph-tail-gaps`, `jun-6-sourcegraph-expansion` | 30 | Sourcegraph ADR |
 | `jun-7-verification-hellgates` | 15 | Verification ADR |
@@ -29,11 +29,11 @@ work remains in active tickets and qualification ledgers.
 | Completed `sep-26-bench-migration/tickets/BM-03-DECISION.md` | 1 | [Benchmark orchestration ADR](../adr/SEP-27-002-single-benchmark-orchestrator-and-typed-evidence.md); active BM-03 ticket retained |
 | Historical `sep-26-retrieval-remediation/tickets` | 17 | [SEP-26 ADRs](../adr/SEP-26-DECISION-REGISTRY.md), [active gaps](sep-26-retrieval-remediation/tickets/GAP-REGISTER.md) |
 
-Total: 209 removed historical plan Markdown files. The SEP-26 historical
+Total: 210 removed historical plan Markdown files. The SEP-26 historical
 archive manifest and initial `audit-evidence.json` were also removed; both are
 recoverable at the same Git revision.
 
-Still live: the Jun-2 benchmarking RFC, May-25 lexical closeout and capability
+Still live: the May-25 lexical closeout and capability
 matrix, mixed-state search/semantic packets, Sep-21 residual execution,
 Sep-23 retrieval benchmark, Sep-23/24 drafts, Sep-26 benchmark migration,
 and the SEP-26 retrieval gap register and test plan. A packet is not closed

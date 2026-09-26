@@ -1,5 +1,5 @@
 //! `dsl_cold_matrix` — cold-start single-query probe for the Layer-3 DSL
-//! latency matrix (RFC-DSL-Benchmarking §3.2), and the assembler of its
+//! latency matrix (JUN-08-001, Layer 3), and the assembler of its
 //! artifact.
 //!
 //! Each `--scenario` invocation is **one fresh process = one true cold

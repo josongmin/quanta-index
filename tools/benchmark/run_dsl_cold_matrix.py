@@ -2,7 +2,7 @@
 """Orchestrate a cold-matrix DSL latency artifact via fresh Rust processes.
 
 Layer-3 (query latency) cold-start measurement for the DSL-benchmarking model
-defined in ``docs/plans/jun-2-dsl-hardening/RFC-DSL-Benchmarking.md``. Criterion
+in ``docs/adr/JUN-08-001-verification-hellgate-and-benchmark-separation.md``. Criterion
 cannot measure true cold-start (it amortizes runtime boot across iterations), so
 this orchestrator invokes a Rust harness binary once per (scenario, sample) in a
 FRESH OS process to capture the first-query latency from a cold runtime, then

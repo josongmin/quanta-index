@@ -5146,6 +5146,9 @@ def _validate_resource_metrics(payload: object, where: str) -> dict:
     processes = metrics["processes"]
     if not isinstance(processes, list) or not processes:
         raise RunError(f"{where}.processes must be nonempty")
+    if type(metrics["samples"]) is not int or metrics["samples"] < 1:
+        raise RunError(f"{where}.samples must be positive")
+    process_ids: set[int] = set()
     for index, process in enumerate(processes):
         row = _exact_keys(
             process,
@@ -5154,17 +5157,23 @@ def _validate_resource_metrics(payload: object, where: str) -> dict:
         )
         if type(row["pid"]) is not int or row["pid"] < 1:
             raise RunError(f"{where}.processes[{index}].pid must be positive")
+        if row["pid"] in process_ids:
+            raise RunError(f"{where}.processes[{index}].pid is duplicated")
+        process_ids.add(row["pid"])
         if not isinstance(row["command"], str) or not row["command"]:
             raise RunError(f"{where}.processes[{index}].command must be nonempty")
         if type(row["peak_rss_bytes"]) is not int or row["peak_rss_bytes"] <= 0:
             raise RunError(f"{where}.processes[{index}].peak_rss_bytes must be positive")
         if type(row["samples"]) is not int or row["samples"] < 1:
             raise RunError(f"{where}.processes[{index}].samples must be positive")
-        if (
-            not is_finite_json_number(row["peak_cpu_percent"])
-            or row["peak_cpu_percent"] < 0
-        ):
+        if row["samples"] > metrics["samples"]:
+            raise RunError(f"{where}.processes[{index}].samples exceeds total samples")
+        if not is_finite_json_number(row["peak_cpu_percent"]) or row["peak_cpu_percent"] < 0:
             raise RunError(f"{where}.processes[{index}].peak_cpu_percent is invalid")
+        if row["peak_rss_bytes"] > metrics["peak_rss_bytes"]:
+            raise RunError(f"{where}.processes[{index}].peak_rss_bytes exceeds tree peak")
+        if row["peak_cpu_percent"] > metrics["peak_cpu_percent"]:
+            raise RunError(f"{where}.processes[{index}].peak_cpu_percent exceeds tree peak")
     storage = _exact_keys(
         metrics["storage"],
         {
@@ -5194,8 +5203,6 @@ def _validate_resource_metrics(payload: object, where: str) -> dict:
         raise RunError(f"{where}.storage.index_measurement is invalid")
     if storage["index_bytes"] <= 0:
         raise RunError(f"{where}.storage.index_bytes must be positive")
-    if type(metrics["samples"]) is not int or metrics["samples"] < 1:
-        raise RunError(f"{where}.samples must be positive")
     if metrics["complete"] is not True or metrics["error"] is not None:
         raise RunError(f"{where} resource sampling is incomplete")
     if (

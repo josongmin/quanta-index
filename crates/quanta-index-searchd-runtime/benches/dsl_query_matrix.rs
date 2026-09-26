@@ -1,4 +1,4 @@
-//! Layer-3 warm steady-state DSL query-latency matrix (RFC-DSL-Benchmarking §3.1).
+//! Layer-3 warm steady-state DSL query-latency matrix (JUN-08-001).
 //!
 //! Boots the runtime **once**, ingests a deterministic fixture, seals +
 //! activates, then for each shipped DSL scenario:

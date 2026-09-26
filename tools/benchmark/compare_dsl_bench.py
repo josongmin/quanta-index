@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Compare a fresh DSL query-latency artifact against a committed baseline.
 
-Layer-3 (query latency) regression gate for the DSL-benchmarking model defined
-in ``docs/plans/jun-2-dsl-hardening/RFC-DSL-Benchmarking.md``. Reads two
+Layer-3 (query latency) regression gate for the DSL-benchmarking model in
+``docs/adr/JUN-08-001-verification-hellgate-and-benchmark-separation.md``.
+Reads two
 ``BenchArtifactV1`` JSON artifacts (schema 2; see ``tools/benchmark/README.md``
 and ``crates/quanta-index-searchd-harness/src/artifact.rs``): one baseline
 (checked into ``tools/benchmark/baselines/``) and one current run (produced by

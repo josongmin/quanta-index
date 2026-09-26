@@ -452,7 +452,7 @@ retrieval-host-probe out="":
 
 # Layer-3 DSL query-latency matrix. Architecture:
 # docs/adr/JUN-08-001-verification-hellgate-and-benchmark-separation.md.
-# Detailed measurement contract: docs/plans/jun-2-dsl-hardening/RFC-DSL-Benchmarking.md.
+# Current measurement contract: tools/benchmark/README.md.
 # Warm: in-process criterion + p50/p95/p99 artifact. Cold: fresh-process-per-sample runner.
 rust-bench-dsl-warm:
     mkdir -p artifacts/dsl-bench

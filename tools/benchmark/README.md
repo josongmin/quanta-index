@@ -420,8 +420,9 @@ The sections below document the DSL Layer-3 latency gate.
 
 The architecture and claim boundaries are defined in
 [`JUN-08-001`](../../docs/adr/JUN-08-001-verification-hellgate-and-benchmark-separation.md).
-The detailed 3-layer measurement contract remains in
-[`docs/plans/jun-2-dsl-hardening/RFC-DSL-Benchmarking.md`](../../docs/plans/jun-2-dsl-hardening/RFC-DSL-Benchmarking.md).
+The current capture, artifact, comparison and baseline-admission contract is
+documented below. The superseded Jun-2 RFC is recoverable through
+[`docs/plans/ARCHIVE-INDEX.md`](../../docs/plans/ARCHIVE-INDEX.md).
 This directory holds the **Layer-3 (query latency)** tooling: capturing and
 gating per-scenario warm and cold query latencies for the DSL query matrix.
 
@@ -727,9 +728,10 @@ A scenario regresses iff **both** legs are exceeded on the mode's blocking metri
 
 `run_scan_vs_index.py` + the `scan_vs_index` binary are an **exploratory
 experiment**, deliberately separate from the 3-layer model above. They exist
-only to make the *scaling* argument concrete, because the RFC forbids reporting
-DSL latency against a text-only engine as a benchmark — a daemon IPC round-trip
-and a `grep` process answer different questions, and at toy corpus sizes the
+only to make the *scaling* argument concrete, because the benchmark separation
+decision forbids reporting DSL latency against a text-only engine as a
+benchmark: a daemon IPC round-trip and a `grep` process answer different
+questions, and at toy corpus sizes the
 plumbing (IPC vs process spawn) dominates, which inverts the real picture.
 
 The experiment removes that confound: it measures the lexical index query

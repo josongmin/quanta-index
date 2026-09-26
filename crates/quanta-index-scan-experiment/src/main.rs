@@ -1,8 +1,8 @@
 //! `scan_vs_index` — exploratory scaling experiment: indexed keyword query vs
 //! full-text scan, as a function of corpus size.
 //!
-//! This is **NOT** part of the RFC-DSL-Benchmarking 3-layer model and its output
-//! never feeds the committed baselines. The RFC explicitly forbids reporting
+//! This is **NOT** part of the JUN-08-001 3-layer model and its output
+//! never feeds the committed baselines. The ADR explicitly forbids reporting
 //! `dirty:no` / DSL latency against a text-only engine as a benchmark, because a
 //! daemon IPC round-trip and a `grep` process answer different questions. This
 //! tool exists only to make the *scaling* argument concrete in isolation:
