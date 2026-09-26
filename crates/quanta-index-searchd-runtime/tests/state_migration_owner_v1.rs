@@ -97,6 +97,67 @@ fn legacy_root_format_manifest_is_rejected() -> TestResult {
     Ok(())
 }
 
+#[cfg(unix)]
+#[test]
+fn manifest_authority_refuses_links_and_dangling_write_target() -> TestResult {
+    use std::os::unix::fs::symlink;
+
+    let source = private_root()?;
+    let parent = private_root()?;
+    build_live_root(source.path())?;
+    let backup = parent.path().join("backup");
+    make_backup(source.path(), &backup)?;
+    let manifest_path = backup.join("state-backup-manifest-v1.txt");
+    let manifest = read_root_manifest_v1(&manifest_path)?;
+
+    let symlink_path = parent.path().join("manifest-link");
+    symlink(&manifest_path, &symlink_path)?;
+    let error = read_root_manifest_v1(&symlink_path)
+        .expect_err("a symlink cannot serve as a root manifest");
+    assert_eq!(
+        typed_code(&error),
+        Some(SearchPlaneErrorCodeV2::StateRootInsecure)
+    );
+
+    let hardlink_path = parent.path().join("manifest-hardlink");
+    fs::hard_link(&manifest_path, &hardlink_path)?;
+    let error = read_root_manifest_v1(&hardlink_path)
+        .expect_err("a hard-linked file cannot serve as a root manifest");
+    assert_eq!(
+        typed_code(&error),
+        Some(SearchPlaneErrorCodeV2::StateRootInsecure)
+    );
+    fs::remove_file(&hardlink_path)?;
+
+    let fifo = parent.path().join("manifest-fifo");
+    let fifo_status = Command::new("mkfifo").arg(&fifo).status()?;
+    assert!(fifo_status.success(), "the FIFO fixture must be created");
+    let error = read_root_manifest_v1(&fifo)
+        .expect_err("a FIFO cannot serve as a manifest or block the offline command");
+    assert_eq!(
+        typed_code(&error),
+        Some(SearchPlaneErrorCodeV2::StateRootInsecure)
+    );
+
+    let staging = private_root()?;
+    let outside = parent.path().join("outside-manifest");
+    let dangling = staging.path().join(STATE_ROOT_MANIFEST_FILE_NAME);
+    symlink(&outside, &dangling)?;
+    let error = write_root_manifest_last_v1(
+        staging.path(),
+        STATE_ROOT_MANIFEST_FILE_NAME,
+        &manifest,
+        &NoStateMigrationFaultsV1,
+    )
+    .expect_err("a dangling manifest symlink cannot redirect a write outside staging");
+    assert_eq!(
+        typed_code(&error),
+        Some(SearchPlaneErrorCodeV2::InvalidRequest)
+    );
+    assert!(!outside.exists(), "no write may escape the staging root");
+    Ok(())
+}
+
 /// A fault port that fails exactly one boundary, the way a full disk or a
 /// torn write would.
 struct ScriptedFaultV1 {
@@ -134,6 +195,34 @@ impl CatalogSnapshotPort for CatalogVerifierV1 {
             byte_size: receipt.byte_size,
             table_rows: receipt.table_rows,
         })
+    }
+}
+
+/// Change a produced root at the last verifier boundary, after the object
+/// walk and the catalog read have succeeded.
+struct PostVerifyMutationV1 {
+    path: PathBuf,
+    bytes: Vec<u8>,
+}
+
+impl CatalogSnapshotPort for PostVerifyMutationV1 {
+    fn snapshot_into(
+        &self,
+        live_root: &Path,
+        destination_file: &Path,
+    ) -> Result<CatalogFreezeV1, CoreError> {
+        CatalogVerifierV1.snapshot_into(live_root, destination_file)
+    }
+
+    fn verify_snapshot_at(&self, snapshot_file: &Path) -> Result<CatalogSnapshotV1, CoreError> {
+        let receipt = CatalogVerifierV1.verify_snapshot_at(snapshot_file)?;
+        fs::write(&self.path, &self.bytes).map_err(|error| {
+            CoreError::Storage(format!(
+                "mutate produced root {} after catalog verification: {error}",
+                self.path.display()
+            ))
+        })?;
+        Ok(receipt)
     }
 }
 
@@ -953,6 +1042,95 @@ fn deleting_or_corrupting_one_published_object_fails_verification() -> TestResul
     );
     fs::write(&victim_path, &original)?;
     let _verified = verify_backup(&destination)?;
+    Ok(())
+}
+
+#[test]
+fn verify_state_refuses_object_changed_after_catalog_verification() -> TestResult {
+    let source = private_root()?;
+    let parent = private_root()?;
+    build_live_root(source.path())?;
+    let backup = parent.path().join("backup");
+    make_backup(source.path(), &backup)?;
+    let session = backup_session(&backup)?;
+    let victim = backup.join("authorities/history.cbor");
+    let mut changed = fs::read(&victim)?;
+    let last = changed
+        .len()
+        .checked_sub(1)
+        .ok_or("authority fixture is empty")?;
+    *changed
+        .get_mut(last)
+        .ok_or("authority fixture byte is missing")? ^= 0xFF;
+
+    let error = run_offline_verify_v1(
+        &session,
+        &PostVerifyMutationV1 {
+            path: victim,
+            bytes: changed,
+        },
+    )
+    .expect_err("a post-walk source mutation must not verify successfully");
+    assert_eq!(
+        typed_code(&error),
+        Some(SearchPlaneErrorCodeV2::StateRootInsecure)
+    );
+    Ok(())
+}
+
+#[test]
+fn verify_state_refuses_manifest_changed_after_catalog_verification() -> TestResult {
+    let source = private_root()?;
+    let parent = private_root()?;
+    build_live_root(source.path())?;
+    let backup = parent.path().join("backup");
+    make_backup(source.path(), &backup)?;
+    let session = backup_session(&backup)?;
+    let manifest_path = backup.join("state-backup-manifest-v1.txt");
+    let mut changed = read_root_manifest_v1(&manifest_path)?;
+    changed.catalog_rows = changed
+        .catalog_rows
+        .checked_add(1)
+        .ok_or("row count overflow")?;
+
+    let error = run_offline_verify_v1(
+        &session,
+        &PostVerifyMutationV1 {
+            path: manifest_path,
+            bytes: changed.encode().into_bytes(),
+        },
+    )
+    .expect_err("a post-walk manifest replacement must not verify successfully");
+    assert_eq!(
+        typed_code(&error),
+        Some(SearchPlaneErrorCodeV2::StateRootInsecure)
+    );
+    Ok(())
+}
+
+#[test]
+fn verify_state_refuses_second_manifest_added_after_catalog_verification() -> TestResult {
+    let source = private_root()?;
+    let parent = private_root()?;
+    build_live_root(source.path())?;
+    let backup = parent.path().join("backup");
+    make_backup(source.path(), &backup)?;
+    let session = backup_session(&backup)?;
+    let backup_manifest = backup.join("state-backup-manifest-v1.txt");
+    let bytes = fs::read(&backup_manifest)?;
+
+    let error = run_offline_verify_v1(
+        &session,
+        &PostVerifyMutationV1 {
+            path: backup.join(STATE_ROOT_MANIFEST_FILE_NAME),
+            bytes,
+        },
+    )
+    .expect_err("a second manifest added after the object walk must not verify successfully");
+    assert_eq!(
+        typed_code(&error),
+        Some(SearchPlaneErrorCodeV2::InvalidRequest)
+    );
     Ok(())
 }
 

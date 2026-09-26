@@ -17,6 +17,13 @@ Execution owner: `crates/quanta-index-searchd-runtime/src/state_migration.rs`
    A daemon-created root may lack a root manifest; backup validates and
    writes the backup manifest.
 3. `verify-state --source <backup>` checks the produced backup manifest.
+   It rechecks the source inventory, selected manifest, and manifest kind
+   after catalog verification; a detected in-command change is a refusal.
+   Manifest reads reject symlinks and hard links; manifest publication uses
+   exclusive creation so a dangling link cannot redirect the last write.
+   Backup custody is read-only, not an exclusive lock: keep the backup root
+   quiescent throughout verification and cutover. A successful point-in-time
+   check does not authorize later mutation or prove a different target root.
 4. `restore-state --source <backup> --destination <new>` and
    `verify-state --source <new>` validate the restored root. Do not use
    `verify-state` as a pre-backup check on a manifest-less daemon root.

@@ -715,8 +715,7 @@ fn refuse_source_drift_v1(
     operation: OfflineStateOperationV1,
     staging: &Path,
 ) -> Result<(), CoreError> {
-    let observed = freeze_source_root_v1(session.canonical_root(), session_exclusions_v1(session))?;
-    if observed == *session.before() {
+    if source_matches_freeze_v1(session)? {
         return Ok(());
     }
     let drift = typed(
@@ -734,6 +733,11 @@ fn refuse_source_drift_v1(
             staging.display()
         ))),
     }
+}
+
+fn source_matches_freeze_v1(session: &OfflineSourceSessionV1) -> Result<bool, CoreError> {
+    let observed = freeze_source_root_v1(session.canonical_root(), session_exclusions_v1(session))?;
+    Ok(observed == *session.before())
 }
 
 /// Require the current root format for backup custody.
@@ -1089,7 +1093,8 @@ pub fn run_offline_verify_v1(
     // backup root — and a root that advertises both is ambiguous, so it is
     // refused rather than resolved. The peek is re-run here so the engine
     // never trusts the composition root's routing.
-    let (manifest_file_name, manifest_path) = match peek_verify_manifest_v1(&root)? {
+    let manifest_kind = peek_verify_manifest_v1(&root)?;
+    let (manifest_file_name, manifest_path) = match manifest_kind {
         VerifyManifestKindV1::CurrentRoot => (
             STATE_ROOT_MANIFEST_FILE_NAME,
             root.join(STATE_ROOT_MANIFEST_FILE_NAME),
@@ -1139,6 +1144,40 @@ pub fn run_offline_verify_v1(
             SearchPlaneErrorCodeV2::CatalogRowCorrupt,
             format!(
                 "root {} catalog holds {observed_rows} rows but its manifest records {expected_rows}",
+                root.display()
+            ),
+        ));
+    }
+    // A produced backup has read-only custody, not an exclusive lock. A
+    // catalog verifier (or another local writer) may change the source after
+    // the object walk; neither a previous object digest nor the session's
+    // initial freeze proves the returned result still describes this root.
+    if !source_matches_freeze_v1(session)? {
+        return Err(typed(
+            SearchPlaneErrorCodeV2::StateRootInsecure,
+            format!(
+                "offline verify-state source {} changed during verification",
+                root.display()
+            ),
+        ));
+    }
+    // Manifest files are intentionally excluded from the object inventory.
+    // Re-read the selected authority separately so a concurrent replacement
+    // cannot turn a verification of one manifest into a success for another.
+    if read_root_manifest_v1(&manifest_path)? != manifest {
+        return Err(typed(
+            SearchPlaneErrorCodeV2::StateRootInsecure,
+            format!(
+                "offline verify-state manifest {} changed during verification",
+                manifest_path.display()
+            ),
+        ));
+    }
+    if peek_verify_manifest_v1(&root)? != manifest_kind {
+        return Err(typed(
+            SearchPlaneErrorCodeV2::StateRootInsecure,
+            format!(
+                "offline verify-state manifest kind in {} changed during verification",
                 root.display()
             ),
         ));

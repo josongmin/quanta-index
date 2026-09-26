@@ -21,6 +21,7 @@
 
 use std::collections::BTreeSet;
 use std::fs;
+use std::io::{Read as _, Write as _};
 use std::path::{Component, Path, PathBuf};
 
 use quanta_index_contract::SearchPlaneErrorCodeV2;
@@ -1017,19 +1018,31 @@ pub fn write_root_manifest_last_v1(
         ));
     }
     let path = root.join(file_name);
-    if path.exists() {
-        return Err(refuse(
-            SearchPlaneErrorCodeV2::InvalidRequest,
-            format!(
-                "manifest {} already exists; a manifest is written exactly once per root",
-                path.display()
-            ),
-        ));
-    }
     fault.reach(StateMigrationFaultPointV1::BeforeManifestSync)?;
-    fs::write(&path, manifest.encode())
+    // create_new is atomic and refuses even a dangling symlink. A separate
+    // exists() probe followed by fs::write would follow that link outside
+    // the staged root.
+    let mut file = match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Err(refuse(
+                SearchPlaneErrorCodeV2::InvalidRequest,
+                format!(
+                    "manifest {} already exists; a manifest is written exactly once per root",
+                    path.display()
+                ),
+            ));
+        }
+        Err(error) => return Err(storage("create manifest", &path, &error)),
+    };
+    file.write_all(manifest.encode().as_bytes())
         .map_err(|error| storage("write manifest", &path, &error))?;
-    fsync_file_v1(&path)?;
+    file.sync_all()
+        .map_err(|error| storage("fsync manifest", &path, &error))?;
     fsync_directory_v1(root)?;
     fault.reach(StateMigrationFaultPointV1::BeforeCutoverRename)?;
     Ok(path)
@@ -1037,13 +1050,11 @@ pub fn write_root_manifest_last_v1(
 
 /// Read and strictly decode a root manifest.
 pub fn read_root_manifest_v1(path: &Path) -> Result<StateRootManifestV1, CoreError> {
-    if !path.is_file() {
-        return Err(typed(
-            SearchPlaneErrorCodeV2::NotFound,
-            format!("state-root manifest {} is not a file", path.display()),
-        ));
-    }
-    let bytes = fs::read_to_string(path).map_err(|error| storage("read manifest", path, &error))?;
+    let mut file = open_manifest_nofollow_v1(path)?;
+    let mut bytes = String::new();
+    let _bytes_read = file
+        .read_to_string(&mut bytes)
+        .map_err(|error| storage("read manifest", path, &error))?;
     let manifest = StateRootManifestV1::decode(&bytes)?;
     if manifest.format_version != STATE_ROOT_MANIFEST_FORMAT_VERSION {
         return Err(typed(
@@ -1056,6 +1067,59 @@ pub fn read_root_manifest_v1(path: &Path) -> Result<StateRootManifestV1, CoreErr
         ));
     }
     Ok(manifest)
+}
+
+#[cfg(unix)]
+fn open_manifest_nofollow_v1(path: &Path) -> Result<fs::File, CoreError> {
+    use std::os::unix::fs::MetadataExt as _;
+
+    use rustix::fs::{Mode, OFlags, open};
+
+    let file = open(
+        path,
+        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+        Mode::empty(),
+    )
+    .map(fs::File::from)
+    .map_err(|error| {
+        if error == rustix::io::Errno::NOENT {
+            typed(
+                SearchPlaneErrorCodeV2::NotFound,
+                format!("state-root manifest {} is not a file", path.display()),
+            )
+        } else if error == rustix::io::Errno::LOOP {
+            typed(
+                SearchPlaneErrorCodeV2::StateRootInsecure,
+                format!("state-root manifest {} is a symlink", path.display()),
+            )
+        } else {
+            storage("open manifest without following links", path, &error)
+        }
+    })?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| storage("inspect manifest", path, &error))?;
+    if !metadata.is_file() || metadata.nlink() != 1 {
+        return Err(typed(
+            SearchPlaneErrorCodeV2::StateRootInsecure,
+            format!(
+                "state-root manifest {} must be a regular file with one link",
+                path.display()
+            ),
+        ));
+    }
+    Ok(file)
+}
+
+#[cfg(not(unix))]
+fn open_manifest_nofollow_v1(path: &Path) -> Result<fs::File, CoreError> {
+    Err(typed(
+        SearchPlaneErrorCodeV2::StateRootInsecure,
+        format!(
+            "state-root manifest {} cannot be admitted: no-follow reads are unsupported on this platform",
+            path.display()
+        ),
+    ))
 }
 
 /// Re-verify a root against a manifest: every advertised object must exist
