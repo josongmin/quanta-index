@@ -50,17 +50,17 @@ impl SqliteCatalog {
                 path.display()
             )));
         }
-        let existing_current_tables: i64 = initialization
+        // Any pre-existing table means this is not a pristine catalog.
+        // An allowlist of today's journal tables would misclassify a retained
+        // auxiliary-only (or future-domain) root and silently reuse fences.
+        let existing_tables: i64 = initialization
             .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN
-                 ('idempotency_v2', 'mutation_lease_v1', 'catalog_fence_v1',
-                  'catalog_sequence_v2', 'catalog_sequence_event_v2',
-                  'operation_gc_floor_v1', 'repomap_candidate_v1', 'repomap_activation_v1')",
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'",
                 [],
                 |row| row.get(0),
             )
-            .map_err(|error| engine_error("inspect current catalog tables", &path, &error))?;
-        let fresh_root = existing_current_tables == 0;
+            .map_err(|error| engine_error("inspect existing catalog tables", &path, &error))?;
+        let fresh_root = existing_tables == 0;
         // DDL and allocator seeding are one durable decision. In particular,
         // interruption before the first fence row must not strand a new root
         // with only some current tables, which would look like an older root
@@ -103,5 +103,44 @@ impl SqliteCatalog {
             path,
             clock,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::error::Error;
+    use std::time::Duration;
+
+    use quanta_index_core::CoreError;
+
+    use super::SqliteCatalog;
+    use crate::connection::{CATALOG_FILE_NAME, catalog_dir};
+
+    #[test]
+    fn auxiliary_only_existing_catalog_must_not_seed_a_new_fence() -> Result<(), Box<dyn Error>> {
+        let root = tempfile::tempdir()?;
+        let directory = catalog_dir(root.path());
+        std::fs::create_dir_all(&directory)?;
+        let path = directory.join(CATALOG_FILE_NAME);
+        let connection = rusqlite::Connection::open(&path)?;
+        connection.execute_batch(crate::auxiliary::SCHEMA)?;
+        drop(connection);
+
+        if !matches!(
+            SqliteCatalog::open(root.path(), Duration::from_millis(100)),
+            Err(CoreError::Storage(message)) if message.contains("no durable fence allocator row")
+        ) {
+            return Err("existing auxiliary-only catalog was classified as fresh".into());
+        }
+        let connection = rusqlite::Connection::open(path)?;
+        let created_journal: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'idempotency_v2'",
+            [],
+            |row| row.get(0),
+        )?;
+        if created_journal != 0 {
+            return Err("failed open must roll back current journal creation".into());
+        }
+        Ok(())
     }
 }
