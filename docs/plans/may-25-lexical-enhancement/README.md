@@ -1,13 +1,18 @@
 # May 25 Lexical Enhancement Closeout
 
+> Active proof inventory. The completed execution tickets under `tickets/` are
+> historical records; current architecture is owned by
+> [JUN-02-001](../../adr/JUN-02-001-search-dsl-authority-and-runtime-contract.md)
+> and [JUN-06-001](../../adr/JUN-06-001-sourcegraph-compatibility-boundary.md).
+
 Status: `proof-accounted`
 Date: `2026-06-02`
 Scope: LQ DSL, Sourcegraph lowering, lexical/history/structural/runtime query rails, and bridge directive companion rails
 
 Whole-DSL execution ownership closed in
 [../jun-2-dsl-final-cut/README.md](../jun-2-dsl-final-cut/README.md) (`closed` 2026-06-02).
-This packet remains the authoritative proof inventory and capability matrix for
-all accounted surfaces.
+This packet retains the active proof inventory and capability matrix for all
+accounted surfaces. Executable capability remains code-owned.
 
 이 pack은 더 이상 "전부 completed"로 닫지 않는다. 현재 목표는 `docs/plans/may-24-lexical-indexing-sourcegraph/dsl.md`의 각 표면이 정확히 하나의 proof state를 가지게 하는 것이다.
 

@@ -1,5 +1,8 @@
 # SDK interface target for search configuration/profile V1
 
+> Archive status: `Superseded proposal`. Accepted provider policy: [SEP-21-003](../../adr/SEP-21-003-read-view-continuation-and-provider-policy.md). Current proposed SDK shape: [Sep-24 SDK DSL RFC](../sep-24-sdk-dsl-rfc.md). The parent packet remains active. Archive map: [Completed Plan Archive](../ARCHIVE-INDEX.md).
+
+
 - Status: superseded for SDK public-shape and source-compatibility decisions by [Sep-24 SDK DSL RFC](../sep-24-sdk-dsl-rfc.md). This earlier proposal remains background for the server/client configuration boundary; no SDK or wire implementation is claimed.
 - Source audit: local `1306325e81189a8c0df5d38c56567664a6f20c1d` on 2026-09-24. Concurrent benchmark/CI files were dirty; re-freeze source and owners before implementation.
 - Parent: [search configuration RFC](rfc.md). The server remains the authority for effective policy and sealed-generation compatibility.

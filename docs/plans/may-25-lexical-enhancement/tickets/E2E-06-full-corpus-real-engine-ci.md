@@ -1,5 +1,8 @@
 # E2E-06 - Full Corpus Real-engine CI
 
+> Archive status: `Historical execution record`. Current architecture: [JUN-02-001](../../../adr/JUN-02-001-search-dsl-authority-and-runtime-contract.md) and [JUN-06-001](../../../adr/JUN-06-001-sourcegraph-compatibility-boundary.md). Live capability truth: [Lexical Capability Matrix](../lexical-capability-matrix.md). Archive map: [Completed Plan Archive](../../ARCHIVE-INDEX.md).
+
+
 Status: `completed`
 Priority: `P0`
 Depends on: [E2E-01](E2E-01-lexical-full-fidelity-e2e.md), [E2E-02](E2E-02-sourcegraph-parity-e2e.md)

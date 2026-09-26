@@ -1,5 +1,8 @@
 # Tickets - May 25 Lexical Enhancement Closeout
 
+> Archive status: `Historical execution record`. Current architecture: [JUN-02-001](../../../adr/JUN-02-001-search-dsl-authority-and-runtime-contract.md) and [JUN-06-001](../../../adr/JUN-06-001-sourcegraph-compatibility-boundary.md). Live capability truth: [Lexical Capability Matrix](../lexical-capability-matrix.md). Archive map: [Completed Plan Archive](../../ARCHIVE-INDEX.md).
+
+
 Parent doc: [../README.md](../README.md)
 
 This ticket pack is a breaking-first implementation plan. It separates

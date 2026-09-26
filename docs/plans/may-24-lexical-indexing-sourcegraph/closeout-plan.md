@@ -1,5 +1,8 @@
 # May-25 Closeout Plan — Sourcegraph Compat + LQ DSL
 
+> Archive status: `Historical program record`. Current architecture: [JUN-02-001](../../adr/JUN-02-001-search-dsl-authority-and-runtime-contract.md), [JUN-06-001](../../adr/JUN-06-001-sourcegraph-compatibility-boundary.md), and [MAY-27-002](../../adr/MAY-27-002-sdk-ingress-and-public-surface-boundary.md). Archive map: [Completed Plan Archive](../ARCHIVE-INDEX.md).
+
+
 > Status: `Historical closeout packet — repo-internal closeout landed`
 > Scope: remaining work only; historical shipped claims stay in [implementation-plan.md](implementation-plan.md)
 > Parent packet: [implementation-plan.md](implementation-plan.md)

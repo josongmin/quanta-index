@@ -1,5 +1,8 @@
 # E2E-04 - History/Structural E2E
 
+> Archive status: `Historical execution record`. Current architecture: [JUN-02-001](../../../adr/JUN-02-001-search-dsl-authority-and-runtime-contract.md) and [JUN-06-001](../../../adr/JUN-06-001-sourcegraph-compatibility-boundary.md). Live capability truth: [Lexical Capability Matrix](../lexical-capability-matrix.md). Archive map: [Completed Plan Archive](../../ARCHIVE-INDEX.md).
+
+
 Status: `completed`
 Priority: `P1`
 Depends on: [E2E-00](E2E-00-live-dsl-matrix-harness.md), [LXE-08](LXE-08-history-live-integration.md), [LXE-09](LXE-09-structural-live-integration.md)

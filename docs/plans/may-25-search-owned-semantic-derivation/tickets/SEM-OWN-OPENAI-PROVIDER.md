@@ -1,5 +1,8 @@
 # SEM-OWN — OpenAI embedding provider (real neural embeddings)
 
+> Archive status: `Historical execution record`. Current semantic and provider architecture: [MAY-31-001](../../../adr/MAY-31-001-lancedb-semantic-generation-authority.md) and [SEP-21-003](../../../adr/SEP-21-003-read-view-continuation-and-provider-policy.md). The parent packet remains active. Archive map: [Completed Plan Archive](../../ARCHIVE-INDEX.md).
+
+
 Status: `landed` (branch `sem-openai-embeddings`, opt-in; hash stays default).
 
 The semantic plane shipped with an FNV-1a token-distribution hash embedder, which

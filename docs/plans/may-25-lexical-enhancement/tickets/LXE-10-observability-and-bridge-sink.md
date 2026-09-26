@@ -1,5 +1,8 @@
 # LXE-10 - Observability and Bridge Sink
 
+> Archive status: `Historical execution record`. Current architecture: [JUN-02-001](../../../adr/JUN-02-001-search-dsl-authority-and-runtime-contract.md) and [JUN-06-001](../../../adr/JUN-06-001-sourcegraph-compatibility-boundary.md). Live capability truth: [Lexical Capability Matrix](../lexical-capability-matrix.md). Archive map: [Completed Plan Archive](../../ARCHIVE-INDEX.md).
+
+
 Status: `completed`
 Priority: `P1`
 Depends on: [LXE-02](LXE-02-planner-authority-ir.md), [LXE-07](LXE-07-semantic-hybrid-planner-provenance.md)

@@ -29,6 +29,7 @@ SEP-26 retrieval accepted set:
 
 May–Jun 2026 accepted set:
 
+- [SDK ingress and public surface boundary](MAY-27-002-sdk-ingress-and-public-surface-boundary.md)
 - [Search DSL authority and runtime contract](JUN-02-001-search-dsl-authority-and-runtime-contract.md)
 - [Sourcegraph compatibility boundary](JUN-06-001-sourcegraph-compatibility-boundary.md)
 - [LanceDB semantic generation authority](MAY-31-001-lancedb-semantic-generation-authority.md)

@@ -1,5 +1,8 @@
 # SDK / Ingest IPC Cutover — Wave Plan (2026-05-25)
 
+> Archive status: `Historical program record`. Current architecture: [MAY-27-002](../adr/MAY-27-002-sdk-ingress-and-public-surface-boundary.md). Archive map: [Completed Plan Archive](ARCHIVE-INDEX.md).
+
+
 12 tickets across 5 waves to finish the producer / search-plane split cutover.
 
 Each ticket carries: Owner files / Acceptance / Blockers / Proof.

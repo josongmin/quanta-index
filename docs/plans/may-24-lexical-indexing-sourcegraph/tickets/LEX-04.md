@@ -1,5 +1,8 @@
 # LEX-04 — RE2 Regex Executor
 
+> Archive status: `Historical program record`. Current architecture: [JUN-02-001](../../../adr/JUN-02-001-search-dsl-authority-and-runtime-contract.md), [JUN-06-001](../../../adr/JUN-06-001-sourcegraph-compatibility-boundary.md), and [MAY-27-002](../../../adr/MAY-27-002-sdk-ingress-and-public-surface-boundary.md). Archive map: [Completed Plan Archive](../../ARCHIVE-INDEX.md).
+
+
 > Status: `shipped`
 > Crate: `quanta-index-lq-regex`
 > Tests: 81

@@ -1,5 +1,8 @@
 # S21-08 — Semantic Admission and Provider Boundary
 
+> Archive status: `Historical design record`. Current architecture: [SEP-21 Decision Registry](../../../adr/SEP-21-DECISION-REGISTRY.md). Current proof and residual status: [CURRENT-RESIDUAL-2026-09-26](CURRENT-RESIDUAL-2026-09-26.md). The parent packet remains active. Archive map: [Completed Plan Archive](../../ARCHIVE-INDEX.md).
+
+
 Status: historical design record; current implementation and proof state must be read from source and `tools/ci/proof-authority.toml`.
 
 Depends on: S21-00, S21-04, S21-06, S21-07

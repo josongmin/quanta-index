@@ -1,5 +1,8 @@
 # LQ Family DSL — Formal Grammar, Expression, Normalization
 
+> Archive status: `Historical program record`. Current architecture: [JUN-02-001](../../adr/JUN-02-001-search-dsl-authority-and-runtime-contract.md), [JUN-06-001](../../adr/JUN-06-001-sourcegraph-compatibility-boundary.md), and [MAY-27-002](../../adr/MAY-27-002-sdk-ingress-and-public-surface-boundary.md). Archive map: [Completed Plan Archive](../ARCHIVE-INDEX.md).
+
+
 Status: `Planning packet — DSL freeze candidate`
 Parent RFC: [rfc.md](rfc.md)
 Sibling planning docs (forward references, authored in parallel): `feature-scope.md`, `usecase.md`

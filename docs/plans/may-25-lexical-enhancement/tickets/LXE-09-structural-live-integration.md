@@ -1,5 +1,8 @@
 # LXE-09 - Structural Live Integration
 
+> Archive status: `Historical execution record`. Current architecture: [JUN-02-001](../../../adr/JUN-02-001-search-dsl-authority-and-runtime-contract.md) and [JUN-06-001](../../../adr/JUN-06-001-sourcegraph-compatibility-boundary.md). Live capability truth: [Lexical Capability Matrix](../lexical-capability-matrix.md). Archive map: [Completed Plan Archive](../../ARCHIVE-INDEX.md).
+
+
 Status: `completed`
 Priority: `P1`
 Depends on: [LXE-01](LXE-01-active-contract-and-dead-route-cleanup.md), [LXE-02](LXE-02-planner-authority-ir.md)

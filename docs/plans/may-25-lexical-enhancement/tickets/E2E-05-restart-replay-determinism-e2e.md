@@ -1,5 +1,8 @@
 # E2E-05 - Restart/Replay Determinism E2E
 
+> Archive status: `Historical execution record`. Current architecture: [JUN-02-001](../../../adr/JUN-02-001-search-dsl-authority-and-runtime-contract.md) and [JUN-06-001](../../../adr/JUN-06-001-sourcegraph-compatibility-boundary.md). Live capability truth: [Lexical Capability Matrix](../lexical-capability-matrix.md). Archive map: [Completed Plan Archive](../../ARCHIVE-INDEX.md).
+
+
 Status: `completed`
 Priority: `P1`
 Depends on: [E2E-00](E2E-00-live-dsl-matrix-harness.md), [LXE-10](LXE-10-observability-and-bridge-sink.md)

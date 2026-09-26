@@ -1,5 +1,8 @@
 # May-23 Sourcegraph-Class Lexical Kernel RFC
 
+> Archive status: `Historical program record`. Current architecture: [JUN-02-001](../../adr/JUN-02-001-search-dsl-authority-and-runtime-contract.md), [JUN-06-001](../../adr/JUN-06-001-sourcegraph-compatibility-boundary.md), and [MAY-27-002](../../adr/MAY-27-002-sdk-ingress-and-public-surface-boundary.md). Archive map: [Completed Plan Archive](../ARCHIVE-INDEX.md).
+
+
 Status: `Planning packet`
 
 > **Architecture correction (2026-05-25)**: the original framing of LEX-05 / LEX-07 / STR-01 / RT-01 implied search-side parsing, git access, and a separate `apply_changes` IPC. That framing was corrected: the search plane decodes producer-authored records over the channel, never authors them. See [tickets/INDEX.md § 3.6](tickets/INDEX.md) for the full correction table and [docs/ssot/producer-handoff.md](../../ssot/producer-handoff.md) for the ratified op catalogue.

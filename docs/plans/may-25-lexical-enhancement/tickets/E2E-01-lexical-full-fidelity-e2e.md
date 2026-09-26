@@ -1,5 +1,8 @@
 # E2E-01 - Lexical Full-fidelity E2E
 
+> Archive status: `Historical execution record`. Current architecture: [JUN-02-001](../../../adr/JUN-02-001-search-dsl-authority-and-runtime-contract.md) and [JUN-06-001](../../../adr/JUN-06-001-sourcegraph-compatibility-boundary.md). Live capability truth: [Lexical Capability Matrix](../lexical-capability-matrix.md). Archive map: [Completed Plan Archive](../../ARCHIVE-INDEX.md).
+
+
 Status: `completed`
 Priority: `P0`
 Depends on: [E2E-00](E2E-00-live-dsl-matrix-harness.md), [LXE-03](LXE-03-lexical-filter-execution.md), [LXE-04](LXE-04-regex-trigram-real-execution.md)

@@ -1,5 +1,9 @@
 # Lexical Capability Matrix
 
+> Active proof inventory. Completed execution tickets are historical. Current
+> architecture is owned by [JUN-02-001](../../adr/JUN-02-001-search-dsl-authority-and-runtime-contract.md)
+> and [JUN-06-001](../../adr/JUN-06-001-sourcegraph-compatibility-boundary.md).
+
 Status: `proof-accounted`
 Date: `2026-06-02`
 Program owner: [JFC-00](../jun-2-dsl-final-cut/tickets/JFC-00-truth-freeze-and-scope-lock.md)

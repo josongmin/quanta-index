@@ -16,6 +16,9 @@ Consolidated: 2026-09-27
 | SEM-BACKEND-01 | Real LanceDB is the sole durable semantic query backend | [MAY-31-001](MAY-31-001-lancedb-semantic-generation-authority.md) |
 | SEM-GEN-01 | Only validated sealed generations may serve or seed readiness | [MAY-31-001](MAY-31-001-lancedb-semantic-generation-authority.md) |
 | SEM-MIG-01 | Live boot rejects legacy journal markers before adapter open; conversion is offline-only and never a parallel authority | [MAY-31-001](MAY-31-001-lancedb-semantic-generation-authority.md) |
+| SDK-FRONT-01 | External Rust consumers enter through the typed SDK; raw IPC is an internal adapter and test seam | [MAY-27-002](MAY-27-002-sdk-ingress-and-public-surface-boundary.md) |
+| SDK-NS-01 | One client exposes family-specific namespaces that lower to canonical contract routes without creating parallel engines | [MAY-27-002](MAY-27-002-sdk-ingress-and-public-surface-boundary.md) |
+| SDK-LIFE-01 | Publish, seal, activation and visibility are separate service operations; the current combined helper is not recovery proof | [MAY-27-002](MAY-27-002-sdk-ingress-and-public-surface-boundary.md) |
 | VERIFY-SPLIT-01 | Fast, broad, cross-repository, performance and aggregate gates are separate claims | [JUN-08-001](JUN-08-001-verification-hellgate-and-benchmark-separation.md) |
 | PERF-SPLIT-01 | Compile, pure pipeline, warm query and cold query measurements are non-interchangeable | [JUN-08-001](JUN-08-001-verification-hellgate-and-benchmark-separation.md) |
 

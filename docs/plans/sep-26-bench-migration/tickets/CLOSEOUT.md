@@ -1,5 +1,8 @@
 # SEP-26 benchmark migration — closeout verdicts
 
+> Archive status: `Superseded receipt`. Current packet status: [CURRENT-AUDIT](CURRENT-AUDIT.md). Architecture: [JUN-08-001](../../../adr/JUN-08-001-verification-hellgate-and-benchmark-separation.md). The parent packet remains active. Archive map: [Completed Plan Archive](../../ARCHIVE-INDEX.md).
+
+
 **Historical receipt — superseded by [CURRENT-AUDIT.md](CURRENT-AUDIT.md).**
 The implementation/integration claims below overstate non-native profile
 support. Before the current repair, systems promotion was latency-only and
