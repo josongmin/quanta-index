@@ -862,19 +862,16 @@ fn check_claim(
 /// its own, and leaving it behind would answer every retry with
 /// `CATALOG_BUSY` until its lease expired.
 ///
-/// Each unfinished row is therefore aborted here, inside one
-/// `BEGIN IMMEDIATE` transaction: an `OperationAborted` event attributes
+/// Each unfinished row is therefore aborted here, inside the caller's
+/// `BEGIN IMMEDIATE` startup transaction: an `OperationAborted` event attributes
 /// the transition in the generic ledger, and the row itself becomes
 /// `Aborted`, which `claim_prepared` already treats as superseded. The
 /// committed/refused history is untouched.
 pub(crate) fn recover_unfinished_rows(
-    connection: &mut Connection,
+    transaction: &rusqlite::Transaction<'_>,
     path: &Path,
 ) -> Result<u64, CoreError> {
     use quanta_index_core::OperationJournalStateV1 as State;
-    let transaction = connection
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(|error| engine_error("begin crash recovery", path, &error))?;
     let unfinished = [
         State::Prepared.as_code(),
         State::Claimed.as_code(),
@@ -882,14 +879,14 @@ pub(crate) fn recover_unfinished_rows(
     ];
     let mut recovered: u64 = 0;
     for state_code in unfinished {
-        let keys = unfinished_keys(&transaction, path, state_code)?;
+        let keys = unfinished_keys(transaction, path, state_code)?;
         for key in keys {
-            let stored = read_row(&transaction, path, &key)?
+            let stored = read_row(transaction, path, &key)?
                 .ok_or_else(|| corrupt_row(&key, "unfinished row vanished mid-recovery"))?;
             let identity = key.identity_digest();
             let payload = payload_digest_of_parts(&[&stored.fence_token.to_le_bytes()]);
             let sequence = append_sequence_event(
-                &transaction,
+                transaction,
                 SequenceEventKindV1::OperationAborted,
                 &identity,
                 &payload,
@@ -939,9 +936,6 @@ pub(crate) fn recover_unfinished_rows(
             recovered = recovered.saturating_add(1);
         }
     }
-    transaction
-        .commit()
-        .map_err(|error| engine_error("commit crash recovery", path, &error))?;
     Ok(recovered)
 }
 
@@ -1086,12 +1080,9 @@ fn unfinished_keys(
 /// restores the invariant "one live writer" for the process that is
 /// actually running.
 pub(crate) fn release_stale_mutation_leases(
-    connection: &mut Connection,
+    transaction: &rusqlite::Transaction<'_>,
     path: &Path,
 ) -> Result<u64, CoreError> {
-    let transaction = connection
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(|error| engine_error("begin lease recovery", path, &error))?;
     let scopes: Vec<String> = {
         let mut statement = transaction
             .prepare("SELECT scope FROM mutation_lease_v1")
@@ -1103,7 +1094,7 @@ pub(crate) fn release_stale_mutation_leases(
             .map_err(|error| engine_error("read stale lease scope", path, &error))?
     };
     for scope in &scopes {
-        if read_lease_row(&transaction, path, scope)?.is_none() {
+        if read_lease_row(transaction, path, scope)?.is_none() {
             return Err(CoreError::Typed {
                 code: SearchPlaneErrorCodeV2::CatalogRowCorrupt,
                 message: format!("catalog: stale mutation lease {scope} disappeared during scan"),
@@ -1113,9 +1104,6 @@ pub(crate) fn release_stale_mutation_leases(
     let released = transaction
         .execute("DELETE FROM mutation_lease_v1", [])
         .map_err(|error| engine_error("release stale mutation leases", path, &error))?;
-    transaction
-        .commit()
-        .map_err(|error| engine_error("commit lease recovery", path, &error))?;
     Ok(u64::try_from(released).map_or(u64::MAX, |released| released))
 }
 

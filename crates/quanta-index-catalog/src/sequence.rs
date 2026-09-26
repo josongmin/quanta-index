@@ -506,7 +506,8 @@ pub(crate) fn seed_allocator(
 }
 
 /// The open/restore reconciliation: recompute the allocator from the
-/// generic ledger only, then verify the event↔domain-row pairs.
+/// generic ledger only. The caller verifies event↔domain-row pairs before
+/// committing the same startup transaction.
 ///
 /// Branches (from the ledger maximum alone — domain maxima are never
 /// used): empty ledger → `(1, 0)`; `max < i64::MAX` → `(max + 1, 0)`;
@@ -516,12 +517,9 @@ pub(crate) fn seed_allocator(
 /// silently pulled back — reissuing those sequences would break the
 /// uniqueness receipts already depend on.
 pub(crate) fn reconcile(
-    connection: &mut Connection,
+    transaction: &rusqlite::Transaction<'_>,
     path: &std::path::Path,
 ) -> Result<(), CoreError> {
-    let transaction = connection
-        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-        .map_err(|error| engine_error("begin sequence reconcile", path, &error))?;
     let max: Option<i64> = transaction
         .query_row(
             "SELECT MAX(sequence) FROM catalog_sequence_event_v2",
@@ -537,7 +535,7 @@ pub(crate) fn reconcile(
         // no-op rather than a panic path.
         Some(max) => (Some(max.saturating_add(1)), false),
     };
-    let existing = read_allocator(&transaction, path)?;
+    let existing = read_allocator(transaction, path)?;
     if let (Some(stored_next), Some(expected)) = (existing.next, expected_next)
         && stored_next > expected
     {
@@ -559,10 +557,7 @@ pub(crate) fn reconcile(
             )
             .map_err(|error| engine_error("reconcile sequence allocator", path, &error))?;
     }
-    transaction
-        .commit()
-        .map_err(|error| engine_error("commit sequence reconcile", path, &error))?;
-    verify_integrity(connection, path)
+    Ok(())
 }
 
 type EventRawRow = (i64, i64, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>);

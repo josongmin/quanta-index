@@ -644,6 +644,154 @@ fn restored_db_reconciles_from_the_ledger_alone() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn unfinished_recovery_reconciles_a_behind_allocator_before_appending() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let committed = key(
+        IngestOperationKindV1::RepoTopic,
+        40,
+        "committed-before-recovery",
+    );
+    let unfinished = key(
+        IngestOperationKindV1::SearchCorpus,
+        40,
+        "unfinished-after-restore",
+    );
+    let body = [4_u8; 32];
+    {
+        let catalog = SqliteCatalog::open(temp.path(), Duration::from_millis(200))?;
+        let _sequence = apply_and_commit(
+            &catalog,
+            &committed,
+            &body,
+            &receipt(40, "committed-before-recovery"),
+        )?;
+        let _claim = claim(&catalog, &unfinished, &body)?;
+    }
+    {
+        let connection = raw(&temp)?;
+        let digest = allocator_row_digest(Some(1), false);
+        let changed = connection.execute(
+            "UPDATE catalog_sequence_v2 SET next = 1, exhausted = 0, row_sha256 = ?1 WHERE id = 1",
+            rusqlite::params![digest.as_slice()],
+        )?;
+        if changed != 1 {
+            return Err("fixture must rewind the allocator".into());
+        }
+    }
+    let reopened = SqliteCatalog::open(temp.path(), Duration::from_millis(200))?;
+    if event_count(&temp)? != 2 || allocator_next(&temp)? != Some(3) {
+        return Err("recovery must append one abort after reconciling the ledger".into());
+    }
+    if !matches!(reopened.inspect(&unfinished)?, OperationInspectV1::Absent) {
+        return Err("the unfinished claim must be aborted on reopen".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn corrupt_stale_lease_refuses_without_partially_aborting_an_operation() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let unfinished = key(
+        IngestOperationKindV1::SearchCorpus,
+        41,
+        "unfinished-with-damaged-lease",
+    );
+    let body = [5_u8; 32];
+    {
+        let catalog = SqliteCatalog::open(temp.path(), Duration::from_millis(200))?;
+        let _claim = claim(&catalog, &unfinished, &body)?;
+        let _lease = catalog.enter("scope", "owner", 60_000)?;
+    }
+    {
+        let connection = raw(&temp)?;
+        let changed = connection.execute(
+            "UPDATE mutation_lease_v1 SET deadline_ms = 0 WHERE scope = 'scope'",
+            [],
+        )?;
+        if changed != 1 {
+            return Err("fixture must damage the retained lease".into());
+        }
+    }
+    let before = {
+        let connection = raw(&temp)?;
+        connection.query_row(
+            "SELECT state FROM idempotency_v2 WHERE batch_digest = ?1",
+            rusqlite::params![unfinished.batch_digest],
+            |row| row.get::<_, i64>(0),
+        )?
+    };
+    let refused = SqliteCatalog::open(temp.path(), Duration::from_millis(200));
+    if !matches!(refused, Err(CoreError::Typed { code, .. }) if code == CATALOG_ROW_CORRUPT_CODE) {
+        return Err("damaged lease must refuse startup".into());
+    }
+    let after = {
+        let connection = raw(&temp)?;
+        connection.query_row(
+            "SELECT state FROM idempotency_v2 WHERE batch_digest = ?1",
+            rusqlite::params![unfinished.batch_digest],
+            |row| row.get::<_, i64>(0),
+        )?
+    };
+    if after != before || event_count(&temp)? != 0 || allocator_next(&temp)? != Some(1) {
+        return Err("failed startup partially committed operation recovery".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn corrupt_ledger_refuses_without_partially_aborting_an_operation() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let committed = key(
+        IngestOperationKindV1::RepoTopic,
+        42,
+        "committed-before-corruption",
+    );
+    let unfinished = key(
+        IngestOperationKindV1::SearchCorpus,
+        42,
+        "unfinished-before-corruption",
+    );
+    let body = [6_u8; 32];
+    {
+        let catalog = SqliteCatalog::open(temp.path(), Duration::from_millis(200))?;
+        let _sequence = apply_and_commit(
+            &catalog,
+            &committed,
+            &body,
+            &receipt(42, "committed-before-corruption"),
+        )?;
+        let _claim = claim(&catalog, &unfinished, &body)?;
+    }
+    {
+        let connection = raw(&temp)?;
+        let changed = connection.execute(
+            "UPDATE catalog_sequence_event_v2 SET row_sha256 = zeroblob(32) WHERE sequence = 1",
+            [],
+        )?;
+        if changed != 1 {
+            return Err("fixture must damage one committed ledger event".into());
+        }
+    }
+    let refused = SqliteCatalog::open(temp.path(), Duration::from_millis(200));
+    if !matches!(refused, Err(CoreError::Typed { code, .. }) if code == CATALOG_ROW_CORRUPT_CODE) {
+        return Err("damaged ledger must refuse startup".into());
+    }
+    let connection = raw(&temp)?;
+    let state: i64 = connection.query_row(
+        "SELECT state FROM idempotency_v2 WHERE batch_digest = ?1",
+        rusqlite::params![unfinished.batch_digest],
+        |row| row.get(0),
+    )?;
+    if state != OperationJournalStateV1::Claimed.as_code()
+        || event_count(&temp)? != 1
+        || allocator_next(&temp)? != Some(2)
+    {
+        return Err("failed ledger verification partially committed operation recovery".into());
+    }
+    Ok(())
+}
+
 /// Same-body replay performs zero work even across a restart: the
 /// sequence, the event ledger and the allocator are all untouched.
 #[test]

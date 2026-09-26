@@ -30,7 +30,13 @@ impl SqliteCatalog {
         clock: Arc<dyn CatalogClockPort>,
     ) -> Result<Self, CoreError> {
         let (mut connection, path) = open_connection(state_root, busy_timeout)?;
-        let legacy_tables: i64 = connection
+        // Lock before classifying the root. Two concurrent first opens must
+        // not both observe an empty catalog and independently decide to seed
+        // its first fence row.
+        let initialization = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| engine_error("begin catalog initialization", &path, &error))?;
+        let legacy_tables: i64 = initialization
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN
                  ('idempotency_v1', 'catalog_sequence_v1')",
@@ -44,7 +50,7 @@ impl SqliteCatalog {
                 path.display()
             )));
         }
-        let existing_current_tables: i64 = connection
+        let existing_current_tables: i64 = initialization
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN
                  ('idempotency_v2', 'mutation_lease_v1', 'catalog_fence_v1',
@@ -59,9 +65,6 @@ impl SqliteCatalog {
         // interruption before the first fence row must not strand a new root
         // with only some current tables, which would look like an older root
         // and (correctly) refuse implicit fence re-seeding on the next open.
-        let initialization = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(|error| engine_error("begin catalog initialization", &path, &error))?;
         initialization
             .execute_batch(crate::idempotency::SCHEMA)
             .map_err(|error| engine_error("create idempotency schema", &path, &error))?;
@@ -80,19 +83,21 @@ impl SqliteCatalog {
         // A missing or recast GC floor must refuse before recovery mutates
         // journal rows or clears old mutation leases.
         crate::sequence::verify_gc_floor_domain_integrity(&initialization, &path)?;
-        // Seed the allocator row (self-digested), then reconcile it from
-        // the generic ledger and verify the event↔domain pairs
-        // (SEP-21-002).
+        // Reconcile the sequence allocator before recovery allocates abort
+        // events. Recovery, lease cleanup, and the final integrity pass all
+        // share this transaction: a failed open must not publish a partial
+        // recovery or a partially initialized schema.
         crate::sequence::seed_allocator(&initialization, &path)?;
-        initialization
-            .commit()
-            .map_err(|error| engine_error("commit catalog initialization", &path, &error))?;
+        crate::sequence::reconcile(&initialization, &path)?;
         // Crash recovery (S21-04): the state root admits one writer at a
         // time, so any unfinished journal row found here belongs to a dead
         // process and is aborted before the catalog answers anything.
-        let _recovered = crate::idempotency::recover_unfinished_rows(&mut connection, &path)?;
-        let _leases = crate::idempotency::release_stale_mutation_leases(&mut connection, &path)?;
-        crate::sequence::reconcile(&mut connection, &path)?;
+        let _recovered = crate::idempotency::recover_unfinished_rows(&initialization, &path)?;
+        let _leases = crate::idempotency::release_stale_mutation_leases(&initialization, &path)?;
+        crate::sequence::verify_integrity(&initialization, &path)?;
+        initialization
+            .commit()
+            .map_err(|error| engine_error("commit catalog initialization", &path, &error))?;
         Ok(Self {
             connection: Mutex::new(connection),
             path,
