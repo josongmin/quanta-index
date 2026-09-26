@@ -440,6 +440,38 @@ pub(crate) fn reconcile(
     verify_integrity(connection, path)
 }
 
+type EventRawRow = (i64, i64, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>);
+
+fn event_raw_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EventRawRow> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+        row.get(4)?,
+        row.get(5)?,
+    ))
+}
+
+fn checked_event_row(
+    raw: EventRawRow,
+) -> Result<(i64, SequenceEventKindV1, [u8; 32], [u8; 32]), CoreError> {
+    let (sequence, kind_code, identity, payload, commitment, row_digest) = raw;
+    let kind = SequenceEventKindV1::from_code(kind_code)?;
+    let identity = blob32("event identity digest", &identity)?;
+    let payload = blob32("event payload digest", &payload)?;
+    let commitment = blob32("event commitment", &commitment)?;
+    let stored = blob32("event row digest", &row_digest)?;
+    if event_commitment(sequence, kind, &identity, &payload) != commitment
+        || event_row_digest(sequence, kind, &identity, &payload, &commitment) != stored
+    {
+        return Err(corrupt(&format!(
+            "sequence event {sequence} does not match its commitment or row digest"
+        )));
+    }
+    Ok((sequence, kind, identity, payload))
+}
+
 /// Verify a domain row's reverse reference to the exact self-digested event.
 /// The forward ledger pass alone cannot detect a forged domain row borrowing
 /// an existing sequence from a different event kind.
@@ -453,34 +485,16 @@ pub(crate) fn verify_event_reference(
 ) -> Result<(), CoreError> {
     let event = connection
         .query_row(
-            "SELECT kind, identity_digest, payload_digest, event_commitment, row_sha256
+            "SELECT sequence, kind, identity_digest, payload_digest, event_commitment, row_sha256
              FROM catalog_sequence_event_v2 WHERE sequence = ?1",
             params![sequence],
-            |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, Vec<u8>>(1)?,
-                    row.get::<_, Vec<u8>>(2)?,
-                    row.get::<_, Vec<u8>>(3)?,
-                    row.get::<_, Vec<u8>>(4)?,
-                ))
-            },
+            event_raw_row,
         )
         .optional()
         .map_err(|error| engine_error("read referenced sequence event", path, &error))?
         .ok_or_else(|| corrupt(&format!("domain row references missing event {sequence}")))?;
-    let (kind_code, identity, payload, commitment, row_digest) = event;
-    let kind = SequenceEventKindV1::from_code(kind_code)?;
-    let identity = blob32("referenced event identity digest", &identity)?;
-    let payload = blob32("referenced event payload digest", &payload)?;
-    let commitment = blob32("referenced event commitment", &commitment)?;
-    let row_digest = blob32("referenced event row digest", &row_digest)?;
-    if kind != expected_kind
-        || identity != *expected_identity
-        || payload != *expected_payload
-        || event_commitment(sequence, kind, &identity, &payload) != commitment
-        || event_row_digest(sequence, kind, &identity, &payload, &commitment) != row_digest
-    {
+    let (_, kind, identity, payload) = checked_event_row(event)?;
+    if kind != expected_kind || identity != *expected_identity || payload != *expected_payload {
         return Err(corrupt(&format!(
             "domain row disagrees with referenced event {sequence}"
         )));
@@ -509,39 +523,19 @@ pub(crate) fn verify_integrity(
         )
         .map_err(|error| engine_error("prepare integrity pass", path, &error))?;
     let rows = statement
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, i64>(1)?,
-                row.get::<_, Vec<u8>>(2)?,
-                row.get::<_, Vec<u8>>(3)?,
-                row.get::<_, Vec<u8>>(4)?,
-                row.get::<_, Vec<u8>>(5)?,
-            ))
-        })
+        .query_map([], event_raw_row)
         .map_err(|error| engine_error("read events for integrity pass", path, &error))?;
     let mut expected_sequence = Some(1_i64);
     for row in rows {
-        let (sequence, kind_code, identity, payload, commitment, row_digest) =
-            row.map_err(|error| engine_error("read event row", path, &error))?;
+        let event = row.map_err(|error| engine_error("read event row", path, &error))?;
+        let sequence = event.0;
         if expected_sequence != Some(sequence) {
             return Err(corrupt(&format!(
                 "sequence event {sequence} is not the expected contiguous ledger event {expected_sequence:?}"
             )));
         }
         expected_sequence = sequence.checked_add(1);
-        let kind = SequenceEventKindV1::from_code(kind_code)?;
-        let identity = blob32("event identity digest", &identity)?;
-        let payload = blob32("event payload digest", &payload)?;
-        let commitment = blob32("event commitment", &commitment)?;
-        let stored = blob32("event row digest", &row_digest)?;
-        if event_commitment(sequence, kind, &identity, &payload) != commitment
-            || event_row_digest(sequence, kind, &identity, &payload, &commitment) != stored
-        {
-            return Err(corrupt(&format!(
-                "sequence event {sequence} does not match its commitment or row digest"
-            )));
-        }
+        let (_, kind, identity, payload) = checked_event_row(event)?;
         match kind {
             SequenceEventKindV1::OperationCommitted
             | SequenceEventKindV1::OperationRefused
@@ -814,6 +808,59 @@ mod tests {
             })
         ) {
             return Err("missing middle activation event must refuse reopen".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn missing_unpaired_ledger_event_refuses_reopen() -> TestResult {
+        for missing_index in [0_usize, 1] {
+            let root = tempfile::tempdir()?;
+            let catalog = SqliteCatalog::open(root.path(), Duration::from_millis(100))?;
+            let sequences = {
+                let mut connection = catalog.lock()?;
+                let transaction = connection.transaction()?;
+                let mut sequences = [0_i64; 3];
+                for sequence in &mut sequences {
+                    *sequence = append_sequence_event(
+                        &transaction,
+                        SequenceEventKindV1::Rollback,
+                        &[1_u8; 32],
+                        &[2_u8; 32],
+                    )?;
+                }
+                transaction.commit()?;
+                drop(connection);
+                sequences
+            };
+            {
+                let connection = catalog.lock()?;
+                let deleted = connection.execute(
+                    "DELETE FROM catalog_sequence_event_v2 WHERE sequence = ?1",
+                    rusqlite::params![
+                        sequences
+                            .get(missing_index)
+                            .ok_or("missing ledger fixture sequence")?
+                    ],
+                )?;
+                if deleted != 1 {
+                    return Err("fixture must delete exactly one ledger event".into());
+                }
+                drop(connection);
+            }
+            drop(catalog);
+            if !matches!(
+                SqliteCatalog::open(root.path(), Duration::from_millis(100)),
+                Err(quanta_index_core::CoreError::Typed {
+                    code: SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+                    ..
+                })
+            ) {
+                return Err(format!(
+                    "missing unpaired event at position {missing_index} must refuse reopen"
+                )
+                .into());
+            }
         }
         Ok(())
     }
