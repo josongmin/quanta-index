@@ -321,7 +321,7 @@ impl QuarantineService {
                 code:
                     quanta_index_contract::SearchPlaneErrorCodeV2::QuarantineTargetStillReferenced,
                 message: format!(
-                    "quarantine discard: {} is still held by {holders} in-flight reader(s); retry once they finish",
+                    "quarantine discard: {} still has {holders} reader handle(s) or open flight(s); retry once they finish",
                     entry.path.display()
                 ),
             });

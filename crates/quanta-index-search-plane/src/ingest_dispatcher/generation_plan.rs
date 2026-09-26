@@ -190,7 +190,7 @@ impl SealedGenerationBuildPlanV1 {
                 return Err(CoreError::Typed {
                     code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusGenerationConflict,
                     message: format!(
-                        "direct search-corpus materialize: {:?} track of generation {} fails exact validation ({code}) but {holders} reader(s) still hold its handle; the rebuild is refused rather than deleting under them — retry once they release",
+                        "direct search-corpus materialize: {:?} track of generation {} fails exact validation ({code}) but {holders} reader handle(s) or open flight(s) remain; the rebuild is refused rather than deleting under them — retry once they finish",
                         track.track,
                         track.manifest_generation.get(),
                     ),

@@ -922,8 +922,9 @@ impl DirectSearchCorpusMaterializer {
     /// does not retain and that is older than the one being sealed is an
     /// orphan of this or an earlier retention pass; it is fenced out of the
     /// snapshot registry first — a resident handle dropped, an open in flight
-    /// fenced and waited for so its handle is refused rather than admitted —
-    /// and reclaimed only if nothing still holds its handle. A pinned
+    /// fenced without waiting for its opener, so its handle is refused rather
+    /// than admitted; reclaim waits for a later pass if that open or any
+    /// reader is still live. A pinned
     /// generation is deferred, not deleted under a reader; the next pass will
     /// find it again, and boot lists it as an orphan meanwhile. Sweeping from
     /// the filesystem rather than from the receipt's reaped set is what makes
@@ -934,8 +935,8 @@ impl DirectSearchCorpusMaterializer {
     /// (`search_corpus_gc_failures_total`) and found again by the next pass
     /// (QI-BB-020). What fails closed: a refusal — a directory whose identity
     /// contradicts its path is a finding a retry would only repeat (§3.49) —
-    /// and process state, a poisoned snapshot registry or a fence that cannot
-    /// settle. The receipt is kept: its bytes and counts feed the
+    /// and process state, such as a poisoned snapshot registry. The receipt
+    /// is kept: its bytes and counts feed the
     /// `search_corpus_gc_…` metrics.
     pub(super) fn reclaim_retired_generations_v1(
         &self,
