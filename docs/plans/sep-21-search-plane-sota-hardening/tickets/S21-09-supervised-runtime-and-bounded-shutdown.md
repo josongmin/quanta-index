@@ -2,6 +2,10 @@
 
 Status: historical design record; current implementation and proof state must be read from source and `tools/ci/proof-authority.toml`.
 
+2026-09-26: reporting-child finished-handle loss is repaired in serving/drain/
+rollback; six owner counterexamples added. Actual release-daemon component-loss
+proof remains NOT_RUN. See [current status](CURRENT-RESIDUAL-2026-09-26.md).
+
 Depends on: S21-00, S21-04, S21-08
 
 ## Goal

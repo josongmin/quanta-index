@@ -23,11 +23,13 @@ import hashlib
 import importlib.metadata
 import json
 import math
-import platform
+import sys
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 REFERENCE_PROFILE = "model2vec-static-potion-code-16M-v2"
+MODEL_ID = "minishlab/potion-code-16M-v2"
+MODEL_REVISION = "e9d2a44ca6a05ac6685f3b23709ea57eb7352d5b"
 MODEL2VEC_VERSION = "0.9.0"
 PINNED_ASSET_SHA256 = {
     "model.safetensors": "75cf7a6c2171b230ad19b1e7d8e0b1aee86da5a02af8e7cacedd9921d227623c",
@@ -65,9 +67,11 @@ def verify_reference_inputs(model_dir: Path) -> dict[str, str]:
 
 
 def l2_normalize(vector: list[float]) -> list[float]:
+    if len(vector) != 256 or any(not math.isfinite(value) for value in vector):
+        raise ValueError("reference vector must contain 256 finite components")
     norm = math.sqrt(sum(value * value for value in vector))
-    if norm == 0.0:
-        return [0.0 for _ in vector]
+    if not math.isfinite(norm) or norm <= 0.0:
+        raise ValueError("reference vector norm must be finite and positive")
     return [value / norm for value in vector]
 
 
@@ -76,27 +80,34 @@ def cosine(left: list[float], right: list[float]) -> float:
 
 
 def main() -> int:
+    if sys.version_info[:2] != (3, 13):
+        raise ValueError("reference execution requires Python 3.13")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model-dir", required=True, type=Path)
     parser.add_argument("--out", required=True, type=Path)
+    parser.add_argument("--inputs-json", type=Path)
+    parser.add_argument("--model-id", choices=[MODEL_ID], default=MODEL_ID)
     args = parser.parse_args()
+    inputs = INPUTS if args.inputs_json is None else json.loads(args.inputs_json.read_bytes())
+    if not isinstance(inputs, list) or not 0 < len(inputs) <= 4096 or any(not isinstance(text, str) for text in inputs):
+        raise ValueError("reference inputs must be 1..4096 strings")
 
     asset_digests = verify_reference_inputs(args.model_dir)
     from model2vec import StaticModel
 
-    installed_version = importlib.metadata.version("model2vec")
-
     model = StaticModel.from_pretrained(str(args.model_dir))
-    model_id = getattr(model, "model_name", None) or str(args.model_dir)
 
     # The reference contract: no truncation (max_length=None), matching
     # the Rust decoder's unbounded pooling. model2vec 0.9.0 encode applies
     # internal L2 normalization, so the pinned reference output IS the
     # unit layer; the Rust rail compares its L2-normalized output here.
-    vectors = model.encode(INPUTS, max_length=None).tolist()
-    permuted = model.encode(list(reversed(INPUTS)), max_length=None).tolist()
+    vectors = model.encode(inputs, max_length=None).tolist()
+    permuted = model.encode(list(reversed(inputs)), max_length=None).tolist()
+    if len(vectors) != len(inputs) or len(permuted) != len(inputs):
+        raise ValueError("reference encoder returned an incomplete batch")
     for index, vector in enumerate(reversed(permuted)):
-        assert vector == vectors[index], f"batch permutation changed vector {index}"
+        if vector != vectors[index]:
+            raise ValueError(f"batch permutation changed vector {index}")
 
     norms = [math.sqrt(sum(value * value for value in vector)) for vector in vectors]
     # The model output is approximately-unit (fp16 rounding leaves norms
@@ -104,29 +115,24 @@ def main() -> int:
     # are explicitly L2-normalized before the dot product.
     unit = [l2_normalize(vector) for vector in vectors]
     pairwise = [
-        [cosine(unit[i], unit[j]) for j in range(i + 1, len(INPUTS))]
-        for i in range(len(INPUTS))
+        [cosine(unit[i], unit[j]) for j in range(i + 1, len(inputs))]
+        for i in range(len(inputs))
     ]
 
     payload = {
         "schema_version": SCHEMA_VERSION,
         "profile": REFERENCE_PROFILE,
-        "library": {
-            "model2vec": installed_version,
-            "numpy": importlib.metadata.version("numpy"),
-            "tokenizers": importlib.metadata.version("tokenizers"),
-            "huggingface_hub": importlib.metadata.version("huggingface_hub"),
-        },
-        "python": platform.python_version(),
+        "library": {"model2vec": MODEL2VEC_VERSION},
         "model": {
-            "id": model_id,
+            "id": MODEL_ID,
+            "revision": MODEL_REVISION,
             "dir_name": args.model_dir.name,
             "safetensors_sha256": asset_digests["model.safetensors"],
             "tokenizer_sha256": asset_digests["tokenizer.json"],
             "config_sha256": asset_digests["config.json"],
         },
         "policy": {"max_length": None, "normalization": "approx-unit-fp16 (rail L2-normalizes both sides)"},
-        "inputs": INPUTS,
+        "inputs": inputs,
         "vectors": vectors,
         "norms": norms,
         "pairwise_cosine_upper": pairwise,
@@ -136,7 +142,7 @@ def main() -> int:
     args.out.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n")
     print(
         f"parity reference written: {args.out} "
-        f"({len(INPUTS)} inputs x {payload['dimension']} dims)"
+        f"({len(inputs)} inputs x {payload['dimension']} dims)"
     )
     return 0
 

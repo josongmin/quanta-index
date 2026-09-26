@@ -457,7 +457,13 @@ impl SemanticScopeStreamBuildPort for DrainingPort {
         &self,
         header: &SemanticIngestHeaderV1,
         scopes: &mut dyn SemanticScopeSource,
-    ) -> Result<SemanticStreamTallyV1, CoreError> {
+    ) -> Result<
+        (
+            SemanticStreamTallyV1,
+            quanta_index_contract::IngestStageReport,
+        ),
+        CoreError,
+    > {
         if header.dimension()? != DIMENSION {
             return Err(CoreError::InvalidContract("header dimension".to_string()));
         }
@@ -473,7 +479,7 @@ impl SemanticScopeStreamBuildPort for DrainingPort {
         if self.undercount {
             tally.windows = tally.windows.saturating_sub(1);
         }
-        Ok(tally)
+        Ok((tally, quanta_index_contract::IngestStageReport::default()))
     }
 }
 

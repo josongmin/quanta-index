@@ -1,6 +1,6 @@
 # SEP-26 Retrieval Remediation — 작업 티켓
 
-작성일: 2026-09-26. **현재 코드 판정은 [CURRENT-AUDIT.md](CURRENT-AUDIT.md)의 최신 source 재감사를 사용한다.** 감사 기준 `8308310f`; `8b612c8d..8308310f`에 RBR 구현 변경은 없지만 계약 문서와 catalog 소스가 이동했다. 동일 Python 입력의 직전 `f1d041ff` 전체 계약 272 passed/32 subtests 및 이번 dirty lexical 5 passed는 local diagnostic이며 clean-source proof가 아니다. GIN/ripgrep v4 탐색 pair는 `PAIR_VALID=pass`이나 qualified final pair는 발급되지 않았다. 남은 작업만의 등록부는 [GAP-REGISTER.md](GAP-REGISTER.md)다. 아래 2차 라운드 표는 당시 관측 기록이며 현재 완료 판정이 아니다.
+최신 구현 통합: 2026-09-26, `f9c3b4dc487a1b54a260e4ab2d3dd199310d3a5e` + 공유 dirty. **현행 판정은 [CURRENT-AUDIT.md](CURRENT-AUDIT.md)의 현재 구현 통합 절·[IMPLEMENTATION-WAVE.md](IMPLEMENTATION-WAVE.md)**을 우선한다. strict parity/manual serde, 실제 server observation-off, transient V2 ingest 전달 및 diagnostic5/protocol3를 병렬 구현했다. 실제 첫 SDK17/17·sidecar 정상/변조5거부, T16 raw5/5 local 관측과 독립 mutant 재감사를 회수했다. 수정 중 결과와 최종 source 검증은 구분한다. 수정 전 GAP/수행 표는 당시 snapshot이다. [GAP-REGISTER.md](GAP-REGISTER.md)는 남은 도구 구현(floor selector·외부 exact-vs-served)과 미실행 실험을 분리한다. clean-source proof와 qualified final pair는 미발급이다.
 
 최초 티켓 작성 감사 기준: `33b24dd5df959f38c0df4717ff834b96750faf34` + 당시 dirty 변경. 시작 기준은 `e38e07865daf19661deaa5d1e580acc5814504ef`였으며, 공유 main 커밋 후 검사 입력 57개의 해시를 재대조하고 집중 테스트를 재실행했다. 후속 역사적 코드 감사는 `af6405629ec09219e02c0a2bdb36a4cfe29ac4ba`~`619292caadf108662c22fbb9992560056a70a5bd`의 이동 중인 source를 관측했다. **현행 판정은 위 중앙 재감사를 우선한다.** 상세는 [CURRENT-AUDIT.md](CURRENT-AUDIT.md). 이 패킷은 구현 완료나 비교 우위의 증거가 아니다. 최초 감사 근거는 [AUDIT.md](AUDIT.md), 당시 관측값·파일 해시는 [audit-evidence.json](audit-evidence.json), 공통 완료 계약은 [TEST-PLAN.md](TEST-PLAN.md)에 있다.
 
@@ -26,10 +26,10 @@
 | [RBR-04](RBR-04-symbol-producer.md) | P1 / 기능 연결 | RBR-00 | source-bound 다언어 SymbolRecord + combined scope |
 | [RBR-05](RBR-05-symbol-route-proof.md) | P1 / 기능 연결 | RBR-01/02/04 | symbol route + 공통 결과 증명 |
 | [RBR-06](RBR-06-span-chunking.md) | P1 / 계측·실험 | RBR-01/02/03 | rank/context 분리, 기존 청커 대조 |
-| [RBR-07](RBR-07-semantic-parity.md) | P1 / 원인 실험 | RBR-01/03 | full-vector parity + exact/ANN 분해 |
+| [RBR-07](RBR-07-semantic-parity.md) | P0 / proof-integrity; P1 / 원인 실험 | validator 수정은 즉시; 외부 분해는 RBR-01/03 | strict fixture validator + full-vector parity + exact/ANN 분해 |
 | [RBR-08](RBR-08-symbol-ranking.md) | P2 / 조건부 변경 | RBR-05/06 | ranking 변경 또는 근거 있는 유지 결정 |
 | [RBR-09](RBR-09-query-performance.md) | P2 / 조건부 변경 | RBR-01/02/03/07 | fetch/ANN 비용-품질 frontier |
-| [RBR-10](RBR-10-ingest-performance.md) | P2 / 조건부 변경 | RBR-01 | delete/append 비용 분해와 안전한 최적화 |
+| [RBR-10](RBR-10-ingest-performance.md) | P1 / 공개 계측; P2 / 조건부 변경 | RBR-01 observation policy | transient ingest stage 전달, 비용 분해와 조건부 최적화 |
 | [RBR-11](RBR-11-resource-accounting.md) | P0 / 재현된 결함 | 없음; inventory는 RBR-00과 통합 | live zero-RSS parent를 통한 descendant 보존 |
 | [RBR-12](RBR-12-evaluation-closeout.md) | P1 / 검증 통합 | 준비는 즉시; 최종 평가는 적용 티켓 종료 후 | frozen holdout, fresh receipts, 실제 pair/replay |
 
@@ -49,14 +49,14 @@ Rust-heavy 검증과 성능 측정은 경쟁 writer/build가 없는 구간에 �
 
 각 티켓은 구현, focused verification, integration, qualification을 별도 상태로 갱신한다. 상태 값은 `VERIFIED / FAILED / BLOCKED / NOT_RUN / NOT_APPLICABLE`이다. 조건부 티켓은 실험 근거와 유지 결정이 검증되면 종료할 수 있으나, 실행하지 않은 최적화를 완료라고 쓰지 않는다.
 
-### 2026-09-26 보완 작업 현행 상태
+### 2026-09-26 보완 작업 당시 상태 (역사 기록; 최신 아님)
 
 | 티켓 | 구현·소유 rail | clean-source proof·잔여 게이트 |
 | --- | --- | --- |
 | RBR-00 | `VERIFIED` — A2 portable SDK proof fixture를 runner v5 span accounting 형태로 정렬; `test_portable_proof.py` 11/11 (공유 dirty local) | `NOT_RUN` — 고정 소스 portable receipt와 repository contract proof |
 | RBR-04 | `VERIFIED` — A1 Go 직접 type 분류, 중첩 함수·제네릭, cursor 경계, producer defect 전파; A3 unsupported 파일별 path/SHA/reason 수집·phase metrics 기록, supported parse 실패 중단; retrieval-bench lib 83/83 및 phase validator 집중 테스트 1/1 (공유 dirty local) | `NOT_RUN` — 고정 소스 전체 inventory·SDK·clean receipt와 외부 coverage admission |
 | RBR-06 | `VERIFIED` — A4 후보별 indexed/SDK/scored span bytes·expansion ratio, rank-only Hit@1·exact-index-span Recall@10와 context bytes/tokens 진단; 손계산 fixture에서 10바이트 exact와 1MB context의 rank score 동일·비용 차이 확인 (공유 dirty local) | `NOT_RUN` — 고정 소스 SDK/merge receipt와 외부 fixed chunking matrix |
-| RBR-12 | `VERIFIED` — A5 development/holdout cross-suite file·definition·query-family 누수 거부, T15/T16 raw·receipt 형태와 frozen identity 대조, summary-only 조건부 claim 거부 (공유 dirty local) | `FAILED` — 독립 raw producer·실행 검증 프로토콜 미구현으로 T15/T16 양성 verdict는 항상 거부; `NOT_RUN` — clean-source receipt, 최종 admitted pair·quality·performance |
+| RBR-12 | `VERIFIED` — A5 development/holdout cross-suite file·definition·query-family 누수 거부, T15/T16 raw·receipt 형태와 frozen identity 대조, summary-only 조건부 claim 거부 (공유 dirty local) | claim=true이면 raw 양성 protocol 미구현으로 거부·양성 proof `NOT_RUN`; false이면 `NOT_APPLICABLE`. clean-source receipt, final admitted pair·quality·performance `NOT_RUN` |
 
 ### 2026-09-26 2차 라운드 상태 (역사적 기록; 현 상태 아님)
 
@@ -73,3 +73,21 @@ Rust-heavy 검증과 성능 측정은 경쟁 writer/build가 없는 구간에 �
 | RBR-03 | 진행 중 — worker 단일 dispatch(cold/warmup/measured 공유), 4 profile 및 v5 record capture별 profile/digest 구현. 어댑터는 총 lane 호출 수와 각 이벤트의 호출·후보 깊이 및 alpha 범위를 대조한다. 잔여: W0-B 승인 입력에서 pair driver 재실행과 품질·속도 자격 판정 | `VERIFIED` — stub/적대 검증과 고정 Semble 0.6.0 환경의 GIN 99파일·20질의 4 profile 실캡처(각 40 이벤트, 매핑 누락/불일치 0). [원본 경로·SHA·명령](../../sep-23-retrieval-bench/tickets/CODE-SEARCH-COMPARATORS-2026-09.md) | `NOT_RUN` — 현재 dirty source의 clean-source receipt; 과거 `c52007d3` receipt는 이후 소스 변경에 대해 무효 | 실핀 프로파일 진단 `VERIFIED`; admitted pair/quality/speed `NOT_RUN` |
 
 RBR-04~10, RBR-12의 최종 자격 판정은 `NOT_RUN`. 현재 RBR-03 실핀 캡처도 dirty 작업 트리의 진단 결과이며, TEST-PLAN §3의 clean-source proof rail은 별도 발급해야 한다. 위 inventory 숫자(python 231 / rust 70 / sdk 12)는 이전 receipt 시점의 기록이고 현재 소스의 최신 inventory가 아니다.
+
+### 2026-09-26 conditional owner 보완 검증 — `e3c87234` 코드 체크포인트
+
+이 절은 해당 코드 체크포인트의 **소유 범위 local 검증**이다. 실행 당시 HEAD는 `f9c3b4dc487a1b54a260e4ab2d3dd199310d3a5e` + 공유 dirty였고, 다른 writer가 같은 선택 코드 bytes를 `e3c87234b0b3fad94df3080b65c7e0f4b086b8b1`에 커밋했다. 이후 ANN exporter·hybrid floor selector·Sourcegraph 수집 변경은 이 검증 범위 밖이다. 앞의 역사 기록을 최신 source qualification으로 읽지 않는다.
+
+| 티켓 / 범위 | 구현·소유 rail | 미발급 게이트 |
+| --- | --- | --- |
+| RBR-12 / T15·T16 | `VERIFIED` — schema 2 producer/consumer가 원본 build·실행 streams, 입력 bytes, binary·source·model·dependency identities 및 receipt를 재생한다. T16은 실제 변경 5종과 무관 owner 보존을 독립 input oracle로 확인하고 sealed table의 모든 semantic·membership column을 비교한다. summary-only, no-op, 누락·변조·중복 terminal 및 bool/float 정수 우회를 거부한다. 기존 Rust owner test 1/1, 소유 semantic·embed Clippy와 fmt exit 0 | `NOT_RUN` — clean-source receipt, frozen suite 전체 입력의 조건부 qualification, 최종 holdout pair |
+| RBR-07 / 실제 벡터 원본 | `VERIFIED` — pinned assets 3종의 실행 전후 SHA 일치, 별도 Python 3.13/model2vec 0.9.0 reference와 9개 입력의 256차원 전수·역순 batch 비교 9/9 | `NOT_RUN` — suite query 전체 및 외부 corpus의 exact-vs-served 평가 |
+| RBR-01·09 / on-off 비교 도구 | `VERIFIED` — config·원본 digest·ingest binding·답변/순위·정확한 표본 집합을 검증한 뒤 median latency delta/ratio를 계산하는 diagnostic comparator와 고정 손계산 fixture | `NOT_RUN` — quiet-host 실제 overhead 측정·performance qualification |
+
+- `VERIFIED` — 최종 선택 Python bytes 전후 일치: `test_retrieval_benchmark.py` 전체 **283 passed, 32 subtests passed**, 720.50s; raw `/private/tmp/qi-rbr-integrate.Fg8v62/python-final-scalars.log`. 이 수치는 해당 snapshot의 실행 결과이며, 이후 collection 변경에 대한 exact authority나 최신-source receipt가 아니다.
+- 소유 Rust 명령: `./scripts/cargow --lane test-daemon-lane test -p quanta-index-semantic --test generation_delta_reuse --features proof --locked delta_generation_inherits_base_dataset_by_link_without_touching_base_bytes` — **1 passed, 0 failed, 1 filtered**, 100.43s. 수정된 membership fixture에는 before/fresh 양쪽에 무관 owner가 있고 delta에는 없다.
+- 소유 원본·명령·환경·dirty state·범위·digest: `/private/tmp/qi-rbr-supplement-proof/final-owner-rails-receipt.json`, SHA-256 `171d7c86380936cd76a601c718b13e4aa275d445f668e3caf5d860dff787dd93`.
+- 실제 T15 receipt: `/private/tmp/qi-rbr-supplement-proof/actual-vector-owner-receipt.json`, SHA-256 `4dcb44fcfda7f20ad2079b0d275431c7bbf3801daced35a44b4013c36cd8f164`.
+- 실제 T16 receipt: `/private/tmp/qi-rbr-supplement-proof/exact-t16-owner-receipt.json`, SHA-256 `a238ee5fdd2bafb67c229054b32ab885d713b2f8f650ff26da3a51f3b6b14c38`. 실행 중 test fixture 한 줄 변경은 executable source 범위에서 명시적으로 제외했다. 이후 해당 fixture의 test·Clippy를 다시 실행한 결과가 위 owner receipt다.
+- `NOT_RUN` — 마지막 manual-serde source의 installed SDK 17건 재캡처. 최초 JSON 실행은 nextest 환경 설정 누락으로 시작 전 거부됐고, 재시도는 후속 hybrid floor 변경 중 compile 실패로 실행에 도달하지 않았다. 이전 SDK 17/17 관측을 새 source proof로 승격하지 않는다.
+- `NOT_RUN` — repository/workspace qualification·서명된 build/OS attestation·clean-source integration·qualified final pair. 원본과 receipt의 local custody 검증이 이들을 대신하지 않는다.

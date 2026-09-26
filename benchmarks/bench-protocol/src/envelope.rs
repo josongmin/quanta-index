@@ -485,6 +485,17 @@ impl BenchmarkEvidenceV1 {
             ));
         }
         self.payload.validate()?;
+        if let Payload::Proof(proof) = &self.payload {
+            if self.verdict.scope != "contract"
+                || proof.source_digest != self.source.closure_digest
+                || (self.verdict.status == "pass" && proof.failed != 0)
+            {
+                return Err(ProtocolError::semantic(
+                    "proof requires contract scope, matching source, and no failed tests for pass"
+                        .to_owned(),
+                ));
+            }
+        }
 
         if self.raw.is_empty() {
             return Err(ProtocolError::semantic(

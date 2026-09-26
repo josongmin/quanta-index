@@ -421,6 +421,9 @@ pub(crate) fn artifact(
         ],
         detail: json!({
             "passed": true,
+            // Every transition asserts exact visible paths and pinned generation;
+            // a stale hit aborts before an artifact can be emitted.
+            "stale_hits": 0,
             "timing_contract": {
                 "mutation_to_visible_ms": "filesystem mutation start to first correct pinned query after activation",
                 "receipt_to_visible_ms": "last successful ingest response return to first correct pinned query after activation",
@@ -478,6 +481,10 @@ mod tests {
         ensure!(
             envelope.pointer("/detail/passed") == Some(&json!(true)),
             "correctness verdict drift"
+        );
+        ensure!(
+            envelope.pointer("/detail/stale_hits") == Some(&json!(0)),
+            "observed stale-hit accounting drift"
         );
         ensure!(
             envelope.pointer("/rows/1/result_shape") == Some(&json!("empty")),

@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import importlib.util
+import io
+import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 from tree_sitter_language_pack import get_parser
 
@@ -14,15 +18,6 @@ assert SPEC is not None and SPEC.loader is not None
 LINT = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(LINT)
 PARSER = get_parser("rust")
-
-
-def test_untracked_rust_source_is_scanned(tmp_path: Path, monkeypatch, capsys) -> None:
-    source = tmp_path / "crates" / "quanta-index-search-plane" / "src" / "hidden.rs"
-    source.parent.mkdir(parents=True)
-    source.write_text("fn f() { let _ = Err::<(), ()>(()).or_else(|_| Ok(())); }\n")
-    monkeypatch.setattr(LINT, "ROOT", tmp_path)
-    assert LINT.main() == 1
-    assert LINT.RULE_OR_ELSE in capsys.readouterr().out
 
 
 def scan(
@@ -37,6 +32,25 @@ def scan(
 
 
 class RustFallbackTest(unittest.TestCase):
+    def test_missing_source_roots_cannot_certify_zero_scoped_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            error = io.StringIO()
+            with patch.object(LINT, "ROOT", Path(directory)), redirect_stderr(error):
+                self.assertEqual(LINT.main(), 2)
+            self.assertIn("Rust source roots are missing", error.getvalue())
+
+    def test_untracked_rust_source_is_scanned(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "benchmarks").mkdir()
+            source = root / "crates" / "quanta-index-search-plane" / "src" / "hidden.rs"
+            source.parent.mkdir(parents=True)
+            source.write_text("fn f() { let _ = Err::<(), ()>(()).or_else(|_| Ok(())); }\n")
+            output = io.StringIO()
+            with patch.object(LINT, "ROOT", root), redirect_stdout(output):
+                self.assertEqual(LINT.main(), 1)
+            self.assertIn(LINT.RULE_OR_ELSE, output.getvalue())
+
     def test_three_replaced_rules_and_width_exceptions(self) -> None:
         source = """fn f(result: Result<(), ()>, value: u64) {
     if u8::try_from(value).is_ok() { narrow(); } else { wide(); }

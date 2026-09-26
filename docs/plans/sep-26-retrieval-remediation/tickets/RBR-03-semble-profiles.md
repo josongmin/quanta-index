@@ -1,13 +1,13 @@
 # RBR-03 — Semble native-default와 통제 실험 분리
 
-## 현행 판정 — 2026-09-26, [중앙 코드 감사](CURRENT-AUDIT.md) 기준
+## 현행 판정 — 2026-09-26, `f9c3b4dc` + 공유 dirty
 
-- 구현: 네 profile dispatch와 phase execution event 검증 경로 확인. 아래 99파일·20질의 Semble 0.6.0 캡처와 exploratory pair는 **과거 개발 관측**이다.
-- 검증: 새 dirty bare-symbol lexical-only 비교 도구의 5 tests passed(exit 0, focused local; 코드/테스트 SHA 전후 일치). GIN/ripgrep v4 영수증과 보존된 suite/query-pack/protocol/Semble native/report/verdict의 SHA는 이번 read-only 대조에서 일치했고, 양쪽 탐색 verdict는 `PAIR_VALID=pass`; 20 bare-symbol task·1 root·기계 라벨의 개발 진단이다. file Recall@10은 GIN 전 제품 20/20, ripgrep Quanta·Semble·OpenGrok·cs 19/20, Sourcegraph 20/20. 측정 층이 달라 latency는 descriptive only다. 현 source에서 clean pinned capture/contract/SDK receipt와 admitted **qualified final pair**는 `NOT_RUN`; quality/performance도 `NOT_RUN`. [비교 기록](../../sep-23-retrieval-bench/tickets/CODE-SEARCH-COMPARATORS-2026-09.md).
-- 잔여: 같은 frozen source/spec에서 실제 pinned reference output·lane 호출·phase event를 재대조한다. 독립 gold/admission/quiet-host가 없는 개발 캡처를 qualified pair로 승격하지 않는다. [현재 전수 판정](CURRENT-AUDIT.md).
+- 구현 관측: `semble.py`의 네 profile·공통 cold/warmup/measured dispatch·lane/phase event와 `run.py`의 frozen profile 검증이 현재 owning 소스에 있다. 아래 99파일·20질의 Semble 0.6.0 캡처와 exploratory pair는 **과거 개발 관측**이다. profile 재구현이 아닌 실제 pinned output/phase capture 재발급이 잔여다.
+- 검증: 과거 bare-symbol lexical-only 도구 5 tests와 GIN/ripgrep v4 exploratory verdict는 역사적 개발 진단이다. 당시 file Recall@10/latency·artifact digest는 [비교 기록](../../sep-23-retrieval-bench/tickets/CODE-SEARCH-COMPARATORS-2026-09.md)을 따른다. 이번 감사에서 새 Semble 실행 또는 해당 전체 과거 artifact의 재검증은 하지 않았다. 현 source의 pinned capture/contract/SDK receipt·admitted qualified final pair·quality/performance는 `NOT_RUN`이다.
+- 잔여: 같은 frozen source/spec에서 네 profile의 pinned reference output·lane 호출·phase event·raw hash를 재발급하고 최종 validator collection/terminal에 바인딩한다. Python authority 283개는 실행 성공이 아니며 과거 276/280 결과를 현재 증거로 재사용하지 않는다. 독립 admission 없는 개발 캡처를 qualified pair로 승격하지 않는다. [중앙 코드 감사](CURRENT-AUDIT.md), [잔여 작업](GAP-REGISTER.md).
 
-- 우선순위: P0. 과거 pinned 개발 캡처와 exploratory pair는 역사적 증거; local 계약은 이후 통과, clean-source receipt와 qualified pair는 `NOT_RUN`. [현재 전수 판정](CURRENT-AUDIT.md). 선행: RBR-00.
-- 성격: 비교 모드 표기/실행 계약 공백. 설치된 Semble 0.6.0을 기준으로 한다.
+- 우선순위: P0. profile/phase 계약 구현 관측; 과거 개발 캡처는 역사적 증거이며 최종 clean-source receipt와 qualified pair는 `NOT_RUN`. [현재 전수 판정](CURRENT-AUDIT.md). 선행: RBR-00.
+- 성격: 비교 모드 표기/실행 계약. Semble 0.6.0 과거 캡처와 새 실행의 실제 pinned dependency/source identity를 구분한다.
 
 ## 파일·함수
 
@@ -38,7 +38,7 @@
 - actual settings 위조, phase별 mode 차이, 파일 누락, 다른 SHA의 corpus를 거부한다.
 - 각 profile의 real pinned Semble 개발 캡처와 raw output이 남는다. strict pair 자격은 [TEST-PLAN](TEST-PLAN.md)와 RBR-12에서 별도 판정한다.
 
-## 2026-09-26 실행 상태
+## 2026-09-26 과거 개발 실행 상태 — 현 source 재실행 아님
 
 - 고정 Semble 0.6.0과 GIN 99파일·20질의 입력에서 4 profile을 현재 worker로 다시 실행했다. 각 실행 이벤트 40건, 파일 누락/추가/해시 불일치 0건, pure-lane 격리 확인. 원본 경로, SHA-256, 재현 명령은 [비교 실행 기록](../../sep-23-retrieval-bench/tickets/CODE-SEARCH-COMPARATORS-2026-09.md)에 있다.
 - 어댑터가 총 BM25/semantic 호출 수와 각 이벤트의 lane 진입·candidate depth, 관측 alpha 범위를 대조하도록 보강했다. 관련 적대 테스트와 전체 Python retrieval 계약 테스트(287 passed, 32 subtests passed)가 통과했다.

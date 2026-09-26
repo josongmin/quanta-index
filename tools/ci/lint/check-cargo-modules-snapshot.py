@@ -105,6 +105,9 @@ def render_module_tree(package: str) -> str:
     if result.returncode != 0:
         raise RuntimeError(f"cargo modules structure failed for {package}: {result.stderr}")
     body = "\n".join(line.rstrip() for line in result.stdout.splitlines())
+    expected_root = f"crate {package.replace(chr(45), chr(95))}"
+    if next((line for line in body.splitlines() if line.strip()), None) != expected_root:
+        raise RuntimeError(f"cargo modules returned missing or wrong crate root for {package}")
     return body + "\n"
 
 
@@ -115,7 +118,7 @@ def baseline_path(package: str) -> Path:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--update-baseline", action="store_true")
-    parser.add_argument("--packages", nargs="*", default=GUARDED_CRATES)
+    parser.add_argument("--packages", nargs="+", default=GUARDED_CRATES)
     return parser.parse_args()
 
 

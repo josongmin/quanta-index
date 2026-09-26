@@ -17,6 +17,11 @@ const TOKENIZER_SHA256: &str = "107bbdcbad4bff1d299b7a4c3a2fb17c52890688b7dd0e4c
 const MODEL_SHA256: &str = "75cf7a6c2171b230ad19b1e7d8e0b1aee86da5a02af8e7cacedd9921d227623c";
 const CONFIG_SHA256: &str = "148e5691a6fcc553437156859701fba017a1ba5d340b170f17e0f3668fb861a7";
 
+#[cfg(test)]
+mod parity_capture;
+#[cfg(test)]
+mod parity_fixture;
+
 pub struct PotionCodeEmbeddingProvider {
     model: StaticModel,
 }
@@ -206,82 +211,16 @@ mod tests {
             .expect("set QUANTA_INDEX_TEST_POTION_CODE_MODEL_DIR");
         let reference_path = std::env::var("QUANTA_INDEX_PARITY_REFERENCE")
             .expect("set QUANTA_INDEX_PARITY_REFERENCE");
-        let fixture: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(&reference_path).expect("reference fixture reads"),
-        )
-        .expect("reference fixture parses");
-
-        // Identity binding: the fixture must describe exactly the pinned
-        // model bytes this crate refuses to load anything else for.
-        assert_eq!(fixture["profile"], "model2vec-static-potion-code-16M-v2");
-        assert_eq!(fixture["schema_version"], 1);
-        assert_eq!(
-            fixture["policy"].get("max_length"),
-            Some(&serde_json::Value::Null),
-            "reference must encode unbounded, matching the Rust decoder"
-        );
-        assert_eq!(
-            fixture["policy"]["normalization"],
-            "approx-unit-fp16 (rail L2-normalizes both sides)"
-        );
-        assert_eq!(
-            fixture["model"]["safetensors_sha256"], MODEL_SHA256,
-            "fixture model bytes differ from the crate pin"
-        );
-        assert_eq!(fixture["dimension"], 256);
-        // Audit hardening: bind the remaining fixture identities and the
-        // per-vector shapes before any comparison can silently narrow.
-        assert_eq!(
-            fixture["library"]["model2vec"], "0.9.0",
-            "reference library version drifted"
-        );
-        assert_eq!(
-            fixture["model"]["tokenizer_sha256"], TOKENIZER_SHA256,
-            "fixture tokenizer differs from the crate pin"
-        );
-        assert_eq!(
-            fixture["model"]["config_sha256"], CONFIG_SHA256,
-            "fixture config differs from the crate pin"
-        );
-
-        let inputs: Vec<&str> = fixture["inputs"]
-            .as_array()
-            .expect("inputs array")
-            .iter()
-            .map(|value| value.as_str().expect("input string"))
-            .collect();
-        let long_input = "a".repeat(5000);
-        assert_eq!(
-            inputs,
-            [
-                "refresh access token",
-                "parse_and_expression",
-                "quanta_index_retrieval_bench::sdk::query_route",
-                "fn main() { println!(\"{}\", x); }",
-                "한글 검색 αβγ 🚀",
-                "",
-                "   ",
-                long_input.as_str(),
-                "refresh access token",
-            ],
-            "parity input inventory drifted"
-        );
+        // Validation happens before loading assets or inference. Missing JSON
+        // keys must never be confused with an explicit null policy.
+        let reference_bytes = std::fs::read(&reference_path).expect("reference fixture reads");
+        let fixture = parity_fixture::ParityFixture::parse(&reference_bytes)
+            .expect("reference fixture is complete, pinned and internally consistent");
+        let inputs: Vec<&str> = fixture.inputs.iter().map(String::as_str).collect();
         // The pinned reference output is the internally-L2-normalized
         // layer (model2vec 0.9.0), compared against the Rust
         // L2Unit-normalized output below.
-        let vectors_reference: Vec<Vec<f64>> = fixture["vectors"]
-            .as_array()
-            .expect("vectors")
-            .iter()
-            .map(|vector| {
-                vector
-                    .as_array()
-                    .expect("vector")
-                    .iter()
-                    .map(|value| value.as_f64().expect("f64"))
-                    .collect()
-            })
-            .collect();
+        let vectors_reference = &fixture.vectors;
 
         let provider = PotionCodeEmbeddingProvider::from_local_dir(Path::new(&model_dir))
             .expect("pinned model loads");
@@ -292,7 +231,7 @@ mod tests {
             inputs.len(),
             "fixture holds a wrong number of reference vectors"
         );
-        for vector in &vectors_reference {
+        for vector in vectors_reference {
             assert_eq!(
                 vector.len(),
                 POTION_CODE_DIMENSION,
@@ -316,20 +255,19 @@ mod tests {
         for vector in &unit {
             assert_eq!(vector.len(), POTION_CODE_DIMENSION);
             assert!(vector.iter().all(|value| value.is_finite()));
-        }
-        let reference_norms = fixture["norms"].as_array().expect("reference norms");
-        assert_eq!(reference_norms.len(), inputs.len());
-        for (vector, reference_norm) in vectors_reference.iter().zip(reference_norms) {
-            let expected = reference_norm.as_f64().expect("reference norm");
-            let actual = vector.iter().map(|value| value * value).sum::<f64>().sqrt();
-            assert!((actual - expected).abs() < 1e-4, "reference norm mismatch");
+            let norm = vector
+                .iter()
+                .map(|value| f64::from(*value).powi(2))
+                .sum::<f64>()
+                .sqrt();
+            assert!((norm - 1.0).abs() < NORM_TOLERANCE, "Rust L2 norm {norm}");
         }
         // Audit finding: 0.005 was ~100x the fp16 quantization step for
         // the observed component magnitudes. Empirical floor: the
         // tokenless (empty-pool) vector deviates up to ~1.3e-3 through
         // the fp16->fp32 pooling path, so 2e-3 is the tight bound that
         // still admits the real edge (2.5x tighter than the old 5e-3).
-        for (index, (actual, expected)) in unit.iter().zip(&vectors_reference).enumerate() {
+        for (index, (actual, expected)) in unit.iter().zip(vectors_reference).enumerate() {
             for (position, (a, e)) in actual.iter().zip(expected).enumerate() {
                 assert!(
                     (f64::from(*a) - e).abs() < NORM_TOLERANCE,
@@ -337,21 +275,8 @@ mod tests {
                 );
             }
         }
-        let pairwise_reference: Vec<Vec<f64>> = fixture["pairwise_cosine_upper"]
-            .as_array()
-            .expect("pairwise")
-            .iter()
-            .map(|row| {
-                row.as_array()
-                    .expect("row")
-                    .iter()
-                    .map(|value| value.as_f64().expect("f64"))
-                    .collect()
-            })
-            .collect();
-        assert_eq!(pairwise_reference.len(), inputs.len());
+        let pairwise_reference = &fixture.pairwise_cosine_upper;
         for (i, row) in pairwise_reference.iter().enumerate() {
-            assert_eq!(row.len(), inputs.len() - i - 1);
             for (offset, expected) in row.iter().enumerate() {
                 let j = i + offset + 1;
                 let actual: f32 = unit[i].iter().zip(&unit[j]).map(|(a, b)| a * b).sum();
@@ -367,9 +292,10 @@ mod tests {
         let permuted = normalized
             .embed_batch(&reversed)
             .expect("permuted inference");
-        assert_eq!(permuted.len(), inputs.len());
+        assert_eq!(permuted.len(), unit.len());
         for (index, vector) in permuted.iter().rev().enumerate() {
             assert_eq!(vector.len(), POTION_CODE_DIMENSION);
+            assert!(vector.iter().all(|value| value.is_finite()));
             for (a, e) in vector.iter().zip(&unit[index]) {
                 assert!(
                     (f64::from(*a) - f64::from(*e)).abs() < NORM_TOLERANCE,
@@ -411,6 +337,38 @@ mod tests {
                 (f64::from(*a) - f64::from(*e)).abs() < NORM_TOLERANCE,
                 "duplicate diverged"
             );
+        }
+        // Emitted only after all assertions succeed. The terminal wrapper,
+        // not this output, must bind binary/source/dependencies and exit state.
+        if let Some(path) = std::env::var_os("QUANTA_INDEX_PARITY_CAPTURE") {
+            let payload = serde_json::json!({
+                "schema_version": 1,
+                "kind": "model2vec-native-parity-capture",
+                "reference_schema_version": 2,
+                "reference_sha256": format!("{:x}", Sha256::digest(&reference_bytes)),
+                "model": {
+                    "id": POTION_CODE_MODEL_ID,
+                    "revision": POTION_CODE_MODEL_REVISION,
+                    "safetensors_sha256": MODEL_SHA256,
+                    "tokenizer_sha256": TOKENIZER_SHA256,
+                    "config_sha256": CONFIG_SHA256
+                },
+                "policy": {"max_length": null, "raw_precision": "f32", "unit_normalization": "L2UnitEmbeddingProvider"},
+                "dimension": POTION_CODE_DIMENSION,
+                "inputs": inputs,
+                "raw_vectors": raw,
+                "raw_norms": parity_capture::norms(&raw),
+                "unit_vectors": unit,
+                "unit_norms": parity_capture::norms(&unit),
+                "unit_pairwise_cosine_upper": parity_capture::cosine_triangle(&unit),
+                "permuted_inputs": reversed,
+                "permuted_unit_vectors": permuted,
+                "component_tolerance": NORM_TOLERANCE,
+                "cosine_tolerance": COS_TOLERANCE,
+                "custody": "unqualified: requires independent terminal/source/binary/dependency binding"
+            });
+            parity_capture::write_new_external(Path::new(&path), &payload)
+                .expect("optional native parity capture writes once outside the source repository");
         }
     }
 }

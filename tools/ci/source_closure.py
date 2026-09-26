@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import os
+import stat
 import subprocess
 from pathlib import Path
 
@@ -32,6 +34,7 @@ PROFILES = {
             "rust-toolchain.toml",
             "tools/benchmark/retrieval",
             "tools/ci/lint/check-rust-derive-allowlist.py",
+            "tools/ci/lint/rust_attribute_policy.py",
             "tools/ci/lint/check-test-authority.py",
             "tools/ci/nextest_events.py",
             "tools/ci/source_closure.py",
@@ -58,8 +61,10 @@ PROFILES = {
             "Cargo.toml",
             "Justfile",
             "pyproject.toml",
+            "uv.lock",
             "rust-toolchain.toml",
             "scripts/cargow",
+            "scripts/quanta-index-env.sh",
             "benchmarks/bench-protocol",
             "tools/benchmark/registry.toml",
             "tools/benchmark/registry.py",
@@ -67,6 +72,14 @@ PROFILES = {
             "tools/benchmark/evidence.py",
             "tools/benchmark/evidence.schema.json",
             "tools/benchmark/evidence_bridge.py",
+            "tools/benchmark/native_contracts.py",
+            "tools/benchmark/profile_capture.py",
+            "tools/benchmark/custody.py",
+            "tools/benchmark/criterion_capture.py",
+            "tools/benchmark/producer_execution.py",
+            "tools/benchmark/retrieval_capture.py",
+            "tools/benchmark/recorded_capture.py",
+            "tools/benchmark/agent_outcome",
             "tools/benchmark/benchctl.py",
             "tools/benchmark/compare_dsl_bench.py",
             "tools/benchmark/quality_integration_summary.py",
@@ -76,6 +89,12 @@ PROFILES = {
             "tools/ci/timing/check_host_contention.py",
             "tools/ci/tests/test_bench_protocol_conformance.py",
             "tools/ci/tests/test_benchmark_evidence_bridge.py",
+            "tools/ci/tests/test_check_bench_artifacts.py",
+            "tools/ci/tests/test_concurrency_sample_contract.py",
+            "tools/ci/tests/test_benchmark_profile_capture.py",
+            "tools/ci/tests/test_criterion_capture.py",
+            "tools/ci/tests/test_recorded_capture.py",
+            "tools/ci/tests/test_agent_outcome_benchmark.py",
             "tools/ci/tests/test_benchmark_manifest.py",
             "tools/ci/tests/test_benchmark_policy.py",
             "tools/ci/tests/test_benchmark_source_closure.py",
@@ -84,9 +103,84 @@ PROFILES = {
     },
 }
 
+PROFILES["benchmark-micro"] = {
+    "cargo_packages": (
+        "quanta-index-bench-protocol",
+        "quanta-index-lq-norm",
+        "quanta-index-searchd-runtime",
+    ),
+    "paths": PROFILES["benchmark-control-plane"]["paths"],
+}
+
 
 class ClosureError(RuntimeError):
     """A source closure cannot be captured or verified."""
+
+
+class _SourceFrame:
+    """One frozen Git tree with bytes independently checked against its blobs."""
+
+    def __init__(self, repo: Path, revision: str):
+        self.repo = repo
+        self.revision = revision
+        try:
+            output = subprocess.check_output(
+                ["git", "ls-tree", "-rz", "--full-tree", revision], cwd=repo
+            )
+        except (OSError, subprocess.CalledProcessError) as error:
+            raise ClosureError("cannot inspect committed source tree") from error
+        self.blobs: dict[str, str] = {}
+        self.directories: set[str] = {"."}
+        self.bytes: dict[str, bytes] = {}
+        self.observations: dict[str, tuple[int, int, int, int]] = {}
+        for record in output.split(b"\0"):
+            if not record:
+                continue
+            try:
+                header, raw_path = record.split(b"\t", 1)
+                mode, kind, digest = header.decode().split()
+                path = raw_path.decode()
+            except (ValueError, UnicodeError) as error:
+                raise ClosureError("malformed committed source tree inventory") from error
+            if kind != "blob" or mode not in {"100644", "100755"}:
+                continue
+            self.blobs[path] = digest
+            self.directories.update(parent.as_posix() for parent in Path(path).parents)
+
+    def read(self, path: Path) -> bytes:
+        relative = path.relative_to(self.repo).as_posix()
+        if relative not in self.bytes:
+            expected = self.blobs.get(relative)
+            if expected is None:
+                raise ClosureError(f"source dependency is not a committed regular file: {relative}")
+            try:
+                before = self._state(path)
+                data = path.read_bytes()
+                after = self._state(path)
+            except OSError as error:
+                raise ClosureError(f"cannot read committed source dependency {relative}: {error}") from error
+            if before != after:
+                raise ClosureError(f"source changed while reading: {relative}")
+            header = b"blob " + str(len(data)).encode() + b"\0"
+            if hashlib.sha1(header + data).hexdigest() != expected:
+                raise ClosureError(f"dirty relevant source: differs from committed HEAD: {relative}")
+            self.bytes[relative] = data
+            self.observations[relative] = after
+        return self.bytes[relative]
+
+    @staticmethod
+    def _state(path: Path) -> tuple[int, int, int, int]:
+        info = path.stat()
+        return info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+
+    def recheck(self) -> None:
+        for relative, observed in self.observations.items():
+            try:
+                current = self._state(self.repo / relative)
+            except OSError as error:
+                raise ClosureError(f"cannot recheck source dependency {relative}: {error}") from error
+            if current != observed:
+                raise ClosureError(f"source changed during closure operation: {relative}")
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -184,7 +278,9 @@ def _cargo_roots(repo: Path, package_names: tuple[str, ...]) -> set[str]:
     return roots
 
 
-def resolve_roots(repo: Path, profile: str, extra_paths: tuple[str, ...] = ()) -> list[str]:
+def resolve_roots(
+    repo: Path, profile: str, extra_paths: tuple[str, ...] = (), *, frame: _SourceFrame | None = None
+) -> list[str]:
     if profile not in PROFILES:
         raise ClosureError(f"unknown source closure profile: {profile}")
     config = PROFILES[profile]
@@ -201,10 +297,158 @@ def resolve_roots(repo: Path, profile: str, extra_paths: tuple[str, ...] = ()) -
         if not candidate.exists() and not candidate.is_symlink():
             raise ClosureError(f"source root does not exist: {relative}")
         normalized.add(relative)
+    normalized.update(_python_import_roots(repo, sorted(normalized), frame=frame))
     return sorted(normalized)
 
 
-def _files(repo: Path, roots: list[str]) -> list[str]:
+def _python_import_roots(
+    repo: Path, roots: list[str], *, frame: _SourceFrame | None = None
+) -> set[str]:
+    """Close static local imports without executing Python or importing packages.
+
+    External dependencies remain bound by the declared lockfile. Dynamic
+    importlib/__import__ paths remain the caller's explicit normative roots.
+    Both repository and sibling candidates are bound for bare script imports;
+    this covers the repository's script and package invocation front doors.
+    """
+    pending = [
+        repo / path for path in _files(repo, roots, validate_files=False) if path.endswith(".py")
+    ]
+    visited: set[str] = set()
+    wildcard_packages: set[str] = set()
+
+    def kind(path: Path, wanted: str) -> bool:
+        if frame is not None:
+            relative = path.relative_to(repo).as_posix()
+            if relative in (frame.blobs if wanted == "file" else frame.directories):
+                return True
+        try:
+            mode = path.stat().st_mode
+        except FileNotFoundError:
+            return False
+        except OSError as error:
+            raise ClosureError(
+                f"cannot inspect Python source dependency {path}: {error}"
+            ) from error
+        return stat.S_ISREG(mode) if wanted == "file" else stat.S_ISDIR(mode)
+
+    def local_files(base: Path, parts: tuple[str, ...]) -> set[Path]:
+        candidates: set[Path] = set()
+        package = base
+        for part in parts:
+            child = package / part
+            if not kind(child, "directory") and not kind(child.with_suffix(".py"), "file"):
+                break
+            init = package / "__init__.py"
+            if package != repo and kind(init, "file"):
+                candidates.add(init)
+            package = child
+            init = package / "__init__.py"
+            if kind(init, "file"):
+                candidates.add(init)
+            if kind(package.with_suffix(".py"), "file"):
+                candidates.add(package.with_suffix(".py"))
+        return candidates
+
+    def enqueue(paths: set[Path]) -> None:
+        for candidate in paths:
+            try:
+                relative = candidate.relative_to(repo)
+                resolved = candidate.resolve().relative_to(repo)
+            except ValueError as error:
+                raise ClosureError(f"Python import escaped repository: {candidate}") from error
+            if relative != resolved or candidate.is_symlink():
+                raise ClosureError(f"source closure refuses symlinked Python import: {relative}")
+            if relative.as_posix() not in visited:
+                pending.append(candidate)
+
+    def wildcard_package(package: Path) -> None:
+        if not kind(package, "directory"):
+            return
+        try:
+            relative = package.relative_to(repo).as_posix()
+            resolved = package.resolve().relative_to(repo).as_posix()
+        except ValueError as error:
+            raise ClosureError(f"wildcard Python import escaped repository: {package}") from error
+        if relative != resolved or package.is_symlink():
+            raise ClosureError(f"source closure refuses symlinked Python package: {package}")
+        if relative in wildcard_packages:
+            return
+        wildcard_packages.add(relative)
+
+        def fail(error: OSError) -> None:
+            raise ClosureError(f"cannot inventory wildcard Python package: {error}") from error
+
+        for directory, directories, names in os.walk(package, onerror=fail):
+            if any((Path(directory) / name).is_symlink() for name in directories):
+                raise ClosureError(
+                    f"source closure refuses symlinked Python package directory: {directory}"
+                )
+            enqueue({Path(directory) / name for name in names if name.endswith(".py")})
+
+    while pending:
+        source = pending.pop()
+        relative = source.relative_to(repo).as_posix()
+        if relative in visited:
+            continue
+        visited.add(relative)
+        package = source.parent
+        while package != repo:
+            init = package / "__init__.py"
+            if kind(init, "file"):
+                enqueue({init})
+            package = package.parent
+        try:
+            data = frame.read(source) if frame is not None else source.read_bytes()
+            tree = ast.parse(data, filename=relative)
+        except (OSError, SyntaxError, UnicodeError, ValueError) as error:
+            raise ClosureError(
+                f"cannot parse Python source dependency {relative}: {error}"
+            ) from error
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    parts = tuple(alias.name.split("."))
+                    enqueue(local_files(repo, parts) | local_files(source.parent, parts))
+            elif isinstance(node, ast.ImportFrom):
+                parts = tuple(node.module.split(".")) if node.module else ()
+                if node.level:
+                    base = source.parent
+                    for _ in range(node.level - 1):
+                        base = base.parent
+                    try:
+                        base.relative_to(repo)
+                    except ValueError as error:
+                        raise ClosureError(
+                            f"relative Python import escaped repository: {relative}"
+                        ) from error
+                    bases = {base}
+                else:
+                    bases = {repo, source.parent}
+                for base in bases:
+                    enqueue(local_files(base, parts))
+                    for alias in node.names:
+                        if alias.name == "*":
+                            # __all__ can ask import-star to load a submodule
+                            # that __init__ never explicitly imports. Bind the
+                            # local package subtree instead of trusting exports.
+                            wildcard_package(base.joinpath(*parts))
+                        else:
+                            enqueue(local_files(base, (*parts, alias.name)))
+
+    # Git's exclude-standard can hide a Python helper that is still executable.
+    # Refuse that evidence rather than recording an incomplete source closure.
+    if visited:
+        inventoried = set(_files(repo, sorted(visited)))
+        missing = visited - inventoried
+        if missing:
+            raise ClosureError(
+                f"cannot inventory imported Python source: {', '.join(sorted(missing))}"
+            )
+    return visited | wildcard_packages
+
+
+def _files(repo: Path, roots: list[str], *, validate_files: bool = True) -> list[str]:
     output = subprocess.check_output(
         ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", *roots],
         cwd=repo,
@@ -212,6 +456,8 @@ def _files(repo: Path, roots: list[str]) -> list[str]:
     paths = sorted({part.decode() for part in output.split(b"\0") if part})
     if not paths:
         raise ClosureError("source closure contains no files")
+    if not validate_files:
+        return paths
     for path in paths:
         candidate = repo / path
         if candidate.is_symlink():
@@ -229,13 +475,23 @@ def _assert_clean(repo: Path, roots: list[str]) -> None:
 
 
 def build_manifest(repo: Path, profile: str) -> dict:
-    roots = resolve_roots(repo, profile)
-    _assert_clean(repo, roots)
     revision = _git(repo, "rev-parse", "HEAD")
+    frame = _SourceFrame(repo, revision)
+    roots = resolve_roots(repo, profile, frame=frame)
+    _assert_clean(repo, roots)
+    paths = _files(repo, roots)
     entries = [
-        {"path": path, "sha256": hashlib.sha256((repo / path).read_bytes()).hexdigest()}
-        for path in _files(repo, roots)
+        {"path": path, "sha256": hashlib.sha256(frame.read(repo / path)).hexdigest()}
+        for path in paths
     ]
+    _assert_clean(repo, roots)
+    if _git(repo, "rev-parse", "HEAD") != revision:
+        raise ClosureError("source closure revision changed during capture")
+    if _files(repo, roots) != paths:
+        raise ClosureError("source closure file set changed during capture")
+    if not _python_import_roots(repo, roots, frame=frame) <= set(roots):
+        raise ClosureError("source closure imports changed during capture")
+    frame.recheck()
     core = {
         "schema_version": SCHEMA_VERSION,
         "profile": profile,
@@ -250,14 +506,23 @@ def validate_manifest_shape(payload: object) -> dict:
     keys = {"schema_version", "profile", "revision", "roots", "files", "digest"}
     if not isinstance(payload, dict) or set(payload) != keys:
         raise ClosureError(f"source closure must hold exactly {sorted(keys)}")
-    if payload["schema_version"] != SCHEMA_VERSION:
+    if type(payload["schema_version"]) is not int or payload["schema_version"] != SCHEMA_VERSION:
         raise ClosureError(f"source closure schema_version must be {SCHEMA_VERSION}")
     if not isinstance(payload["profile"], str) or payload["profile"] not in PROFILES:
         raise ClosureError("source closure has unknown profile")
-    if not isinstance(payload["revision"], str) or len(payload["revision"]) != 40:
+    if (
+        not isinstance(payload["revision"], str)
+        or len(payload["revision"]) != 40
+        or any(ch not in "0123456789abcdef" for ch in payload["revision"])
+    ):
         raise ClosureError("source closure revision must be a full Git SHA")
     roots = payload["roots"]
-    if not isinstance(roots, list) or not roots or roots != sorted(set(roots)):
+    if (
+        not isinstance(roots, list)
+        or not roots
+        or any(not isinstance(root, str) or not root for root in roots)
+        or roots != sorted(set(roots))
+    ):
         raise ClosureError("source closure roots must be a nonempty sorted unique list")
     files = payload["files"]
     if not isinstance(files, list) or not files:
@@ -287,26 +552,49 @@ def validate_manifest_shape(payload: object) -> dict:
 
 def verify_manifest(repo: Path, payload: object) -> dict:
     manifest = validate_manifest_shape(payload)
-    current_roots = resolve_roots(repo, manifest["profile"])
+    revision = _git(repo, "rev-parse", "HEAD")
+    if revision != manifest["revision"]:
+        raise ClosureError("source closure revision changed")
+    frame = _SourceFrame(repo, revision)
+    current_roots = resolve_roots(repo, manifest["profile"], frame=frame)
     if current_roots != manifest["roots"]:
         raise ClosureError("source closure roots changed")
     _assert_clean(repo, current_roots)
-    if _git(repo, "rev-parse", "HEAD") != manifest["revision"]:
-        raise ClosureError("source closure revision changed")
     current_paths = _files(repo, current_roots)
     expected_paths = [entry["path"] for entry in manifest["files"]]
     if current_paths != expected_paths:
         raise ClosureError("source closure file set changed")
     for entry in manifest["files"]:
-        actual = hashlib.sha256((repo / entry["path"]).read_bytes()).hexdigest()
+        actual = hashlib.sha256(frame.read(repo / entry["path"])).hexdigest()
         if actual != entry["sha256"]:
             raise ClosureError(f"source closure file digest changed: {entry['path']}")
+    _assert_clean(repo, current_roots)
+    if _git(repo, "rev-parse", "HEAD") != revision:
+        raise ClosureError("source closure revision changed during verification")
+    if _files(repo, current_roots) != current_paths:
+        raise ClosureError("source closure file set changed during verification")
+    if not _python_import_roots(repo, current_roots, frame=frame) <= set(current_roots):
+        raise ClosureError("source closure imports changed during verification")
+    frame.recheck()
     return manifest
 
 
 def load_and_verify(path: Path, repo: Path | None = None) -> dict:
+    def object_pairs(pairs: list[tuple[str, object]]) -> dict:
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ClosureError(f"duplicate source closure JSON key: {key}")
+            result[key] = value
+        return result
+
+    def reject_constant(value: str) -> object:
+        raise ClosureError(f"non-finite source closure JSON value: {value}")
+
     try:
-        payload = json.loads(path.read_bytes())
+        payload = json.loads(
+            path.read_bytes(), object_pairs_hook=object_pairs, parse_constant=reject_constant
+        )
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ClosureError(f"cannot read source closure {path}: {error}") from error
     return verify_manifest(repo or _repo_root(), payload)

@@ -3,21 +3,32 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
 import tempfile
-import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
 try:
-    from tools.ci.nextest_events import NextestEvidenceError, parse_nextest, parse_nextest_inventory
+    from tools.ci.nextest_events import (
+        NextestEvidenceError,
+        parse_nextest_bytes,
+        parse_nextest_inventory_bytes,
+    )
 except ModuleNotFoundError:  # direct tool entrypoints place only their own directory on sys.path
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-    from tools.ci.nextest_events import NextestEvidenceError, parse_nextest, parse_nextest_inventory
+    from tools.ci.nextest_events import (
+        NextestEvidenceError,
+        parse_nextest_bytes,
+        parse_nextest_inventory_bytes,
+    )
+
+from tools.ci.junit_events import JUnitEvidenceError, parse_pytest_junit_bytes
+from tools.ci.lint.handoff_validation import _read_repo_regular_bytes
 
 
 class ExecutionResultError(ValueError):
@@ -27,12 +38,18 @@ class ExecutionResultError(ValueError):
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def _validate_pytest_selection(selectors: list[str]) -> None:
+def _validate_pytest_selectors(selectors: list[str]) -> None:
     if not selectors or any(
         re.fullmatch(r"tools/ci/tests/test_[a-z0-9_]+\.py", selector) is None
         for selector in selectors
     ):
         raise ExecutionResultError("proof collection requires complete test file selectors")
+    if len(selectors) != len(set(selectors)):
+        raise ExecutionResultError("proof collection contains duplicate selectors")
+
+
+def _validate_pytest_selection(selectors: list[str]) -> None:
+    _validate_pytest_selectors(selectors)
     for variable in ("PYTEST_ADDOPTS", "PYTEST_PLUGINS"):
         if os.environ.get(variable):
             raise ExecutionResultError(f"{variable} can alter proof test collection")
@@ -138,11 +155,15 @@ def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 def _pytest_result(events: Path, inventory: Path) -> tuple[dict[str, int], set[str]]:
     try:
-        expected = json.loads(
-            inventory.read_text(encoding="utf-8"), object_pairs_hook=_unique_object
-        )
-        root = ET.parse(events).getroot()
-    except (OSError, UnicodeError, ValueError, ET.ParseError) as error:
+        return _pytest_result_bytes(events.read_bytes(), inventory.read_bytes())
+    except OSError as error:
+        raise ExecutionResultError(f"invalid pytest result: {error}") from error
+
+
+def _pytest_result_bytes(events: bytes, inventory: bytes) -> tuple[dict[str, int], set[str]]:
+    try:
+        expected = json.loads(inventory, object_pairs_hook=_unique_object)
+    except (UnicodeError, ValueError) as error:
         raise ExecutionResultError(f"invalid pytest result: {error}") from error
     if (
         not isinstance(expected, dict)
@@ -158,59 +179,34 @@ def _pytest_result(events: Path, inventory: Path) -> tuple[dict[str, int], set[s
         or expected["tests"] != sorted(set(expected["tests"]))
     ):
         raise ExecutionResultError("invalid pytest collection inventory")
-    if root.tag not in {"testsuite", "testsuites"}:
-        raise ExecutionResultError("invalid pytest JUnit root")
-    suites = [root] if root.tag == "testsuite" else list(root.findall("testsuite"))
-    if (
-        not suites
-        or (root.tag == "testsuites" and root.findall("testcase"))
-        or any(suite.findall("testsuite") for suite in suites)
-        or len(list(root.iter("testcase")))
-        != sum(len(suite.findall("testcase")) for suite in suites)
-    ):
-        raise ExecutionResultError("pytest JUnit has missing or nested suites")
-    observed: set[str] = set()
-    for suite in suites:
-        cases = suite.findall("testcase")
-        if not cases:
-            raise ExecutionResultError("pytest JUnit has an empty suite")
-        for case in cases:
-            name = case.get("name")
-            classname = case.get("classname")
-            if not name or not classname:
-                raise ExecutionResultError("pytest testcase lacks identity")
-            identity = f"{classname}.{name}"
-            if identity in observed:
-                raise ExecutionResultError("duplicate pytest testcase")
-            observed.add(identity)
-            if any(case.find(outcome) is not None for outcome in ("failure", "error", "skipped")):
-                raise ExecutionResultError(f"pytest testcase did not pass: {identity}")
-        for field, actual in (
-            ("tests", len(cases)),
-            ("failures", 0),
-            ("errors", 0),
-            ("skipped", 0),
-        ):
-            if suite.get(field) != str(actual):
-                raise ExecutionResultError(f"pytest suite {field} disagrees with testcases")
-    if root.tag == "testsuites":
-        for field, actual in (
-            ("tests", len(observed)),
-            ("failures", 0),
-            ("errors", 0),
-            ("skipped", 0),
-        ):
-            if root.get(field) is not None and root.get(field) != str(actual):
-                raise ExecutionResultError(f"pytest root {field} disagrees with testcases")
-    if observed != set(expected["tests"]):
-        raise ExecutionResultError("pytest execution differs from collected required tests")
-    return {
-        "selected": len(observed),
-        "executed": len(observed),
-        "passed": len(observed),
-        "failed": 0,
-        "ignored": 0,
-    }, observed
+    selectors = expected["selector"].split(" ")
+    _validate_pytest_selectors(selectors)
+    modules = {selector[:-3].replace("/", ".") for selector in selectors}
+    represented: set[str] = set()
+    for identity in expected["tests"]:
+        matching = [module for module in modules if identity.startswith(module + ".")]
+        if len(matching) != 1 or identity == matching[0] + ".":
+            raise ExecutionResultError("pytest inventory testcase is outside declared selectors")
+        represented.add(matching[0])
+    if represented != modules:
+        raise ExecutionResultError("pytest inventory omits a declared test file")
+    try:
+        return parse_pytest_junit_bytes(events, set(expected["tests"]))
+    except JUnitEvidenceError as error:
+        raise ExecutionResultError(str(error)) from error
+
+
+def _bound_artifact_bytes(root: Path, artifact: dict[str, str]) -> bytes:
+    digest = artifact.get("sha256")
+    if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+        raise ExecutionResultError("execution artifact lacks a valid digest")
+    try:
+        raw = _read_repo_regular_bytes(root, artifact["path"], label="execution artifact")
+    except (OSError, ValueError) as error:
+        raise ExecutionResultError(f"unsafe execution artifact: {error}") from error
+    if hashlib.sha256(raw).hexdigest() != digest:
+        raise ExecutionResultError("execution artifact digest mismatch")
+    return raw
 
 
 def derive_test_result(
@@ -242,11 +238,13 @@ def derive_test_result(
         if paths[0] == paths[1] or used_paths.intersection(paths):
             raise ExecutionResultError("duplicate execution evidence")
         used_paths.update(paths)
-        event_path = root / by_source[paths[0]]["path"]
-        inventory_path = root / by_source[paths[1]]["path"]
+        event_bytes = _bound_artifact_bytes(root, by_source[paths[0]])
+        inventory_bytes = _bound_artifact_bytes(root, by_source[paths[1]])
         if run["format"] == "nextest-jsonl":
             try:
-                parsed = parse_nextest(event_path, parse_nextest_inventory(inventory_path))
+                parsed = parse_nextest_bytes(
+                    event_bytes, parse_nextest_inventory_bytes(inventory_bytes)
+                )
             except NextestEvidenceError as error:
                 raise ExecutionResultError(str(error)) from error
             current = {
@@ -258,7 +256,7 @@ def derive_test_result(
             }
             current_names = set(parsed.passed_names)
         else:
-            current, current_names = _pytest_result(event_path, inventory_path)
+            current, current_names = _pytest_result_bytes(event_bytes, inventory_bytes)
         typed_names = {(run["format"], name) for name in current_names}
         if names.intersection(typed_names):
             raise ExecutionResultError("duplicate selected test across execution runs")

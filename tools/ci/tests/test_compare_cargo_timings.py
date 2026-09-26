@@ -34,7 +34,14 @@ MODULE = _load_module()
 
 def _write_json(path: Path, top_repo_crates: list[dict]) -> None:
     payload = {
-        "summary": {"profile": "dev", "total_time": "13.2s"},
+        "summary": {
+            "profile": "dev",
+            "total_time": "13.2s",
+            "rustc": "rustc test-fixture Host: test Target: test",
+            "fresh_units": "0",
+            "dirty_units": str(max(1, sum(row.get("units", 1) for row in top_repo_crates))),
+            "total_units": str(max(1, sum(row.get("units", 1) for row in top_repo_crates))),
+        },
         "top_units": [],
         "top_repo_crates": top_repo_crates,
     }
@@ -339,3 +346,45 @@ def test_update_baseline_creates_baseline_when_missing(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stdout + result.stderr
     assert baseline.exists()
     assert baseline.read_text(encoding="utf-8") == current.read_text(encoding="utf-8")
+
+
+def test_warm_or_incomplete_summary_cannot_pass(tmp_path: Path) -> None:
+    baseline = tmp_path / "baseline.json"
+    current = tmp_path / "current.json"
+    _write_json(baseline, [{"name": "demo", "duration": 1.0, "units": 2}])
+    for summary_patch in (
+        {"fresh_units": "1", "dirty_units": "1"},
+        {"dirty_units": "0", "total_units": "0"},
+        {"total_units": "3"},
+        {"rustc": "different compiler"},
+        {"profile": "release"},
+        {"fresh_units": None},
+    ):
+        _write_json(current, [{"name": "demo", "duration": 0.5, "units": 2}])
+        payload = json.loads(current.read_text())
+        payload["summary"].update(summary_patch)
+        current.write_text(json.dumps(payload))
+        result = _run(str(baseline), str(current))
+        assert result.returncode == 2, result.stdout + result.stderr
+        assert "OK: no compile-time regressions" not in result.stdout
+
+
+def test_missing_summary_cannot_pass_or_replace_baseline(tmp_path: Path) -> None:
+    baseline = tmp_path / "baseline.json"
+    current = tmp_path / "current.json"
+    _write_json(baseline, [{"name": "demo", "duration": 1.0, "units": 1}])
+    current.write_text('{"top_repo_crates":[{"name":"demo","duration":0.1,"units":1}]}')
+    before = baseline.read_bytes()
+    assert _run(str(baseline), str(current)).returncode == 2
+    assert _run(str(baseline), str(current), "--update-baseline").returncode == 2
+    assert baseline.read_bytes() == before
+
+
+def test_partial_same_crate_units_cannot_be_a_timing_improvement(tmp_path: Path) -> None:
+    baseline = tmp_path / "baseline.json"
+    current = tmp_path / "current.json"
+    _write_json(baseline, [{"name": "demo", "duration": 2.0, "units": 2}])
+    _write_json(current, [{"name": "demo", "duration": 0.5, "units": 1}])
+    result = _run(str(baseline), str(current))
+    assert result.returncode == 2
+    assert "omits compiled crate units" in result.stderr

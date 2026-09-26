@@ -35,7 +35,13 @@ def _artifact(rows: list[dict], schema_version: int = 2) -> dict:
         "mode": "warm",
         "concurrency": 1,
         "provenance": {"git_head": "a" * 40},
-        "host": {"os": "macos", "arch": "aarch64", "cpu_count": 10, "mem_bytes": 1, "hostname_hash": "sha256:" + "0" * 64},
+        "host": {
+            "os": "macos",
+            "arch": "aarch64",
+            "cpu_count": 10,
+            "mem_bytes": 1,
+            "hostname_hash": "sha256:" + "0" * 64,
+        },
         "resources": {"peak_rss_bytes": 1},
         "phases": {"build_ms": None, "update_ms": None, "gc_ms": None},
         "disk_amplification": None,
@@ -104,6 +110,24 @@ def test_wrong_artifact_schema_is_refused() -> None:
         bridge.latency_payload_from_artifact(_artifact([_row("a")], schema_version=1))
 
 
+@pytest.mark.parametrize(
+    "field,value",
+    [("error_count", None), ("error_count", False), ("timeout_count", "0"), ("scenario_id", None)],
+)
+def test_bridge_refuses_invalid_native_facts(field: str, value: object) -> None:
+    bridge = _bridge()
+    with pytest.raises(bridge.EvidenceError):
+        bridge.latency_payload_from_artifact(_artifact([_row("a", **{field: value})]))
+
+
+def test_bridge_refuses_missing_native_counter() -> None:
+    bridge = _bridge()
+    row = _row("a")
+    del row["error_count"]
+    with pytest.raises(bridge.EvidenceError):
+        bridge.latency_payload_from_artifact(_artifact([row]))
+
+
 def test_micro_payload_never_converts_instructions_to_latency() -> None:
     bridge = _bridge()
     wall = bridge.micro_payload_from_criterion(
@@ -154,6 +178,183 @@ def test_host_identity_digest_tracks_the_host() -> None:
     assert first["identity_digest"] != second["identity_digest"]
     assert first["hostname_hash"] != second["hostname_hash"]
     assert "host-a" not in json.dumps(first)
+
+
+def system_artifacts(family: str) -> list[dict]:
+    from tools.ci.tests.test_check_bench_artifacts import artifact
+
+    if family == "freshness":
+        native = artifact(family)
+        transition = {
+            key: 1.0
+            for key in (
+                "mutation_to_visible_ms",
+                "receipt_to_visible_ms",
+                "ingest_ms",
+                "ingest_through_seal_ms",
+                "seal_ms",
+                "activation_ms",
+                "first_query_ms",
+            )
+        }
+        native["detail"].update(
+            {
+                "stale_hits": 0,
+                "sample_count": 1,
+                "samples": [
+                    {
+                        "base_build_ms": 2.0,
+                        **{
+                            name: {**transition, "generation": generation}
+                            for name, generation in (("update", 2), ("delete", 3), ("rename", 4))
+                        },
+                    }
+                ],
+            }
+        )
+        return [native]
+    if family == "open-loop":
+        native = artifact(family)
+        native["detail"]["points"] = [
+            {
+                "target_qps": 200,
+                "offered": 200,
+                "served": 180,
+                "typed_errors": 2,
+                "transport_errors": 3,
+                "invalid_results": 1,
+                "timeouts": 4,
+                "dropped_queue_full": 5,
+                "dropped_scheduler_late": 2,
+                "dropped_deadline": 3,
+                "offered_qps": 200.0,
+                "achieved_qps": 180.0,
+            }
+        ]
+        return [native]
+    artifacts = [artifact(family, clients=clients) for clients in (1, 8, 32)]
+    for clients, native in zip((1, 8, 32), artifacts, strict=True):
+        native["provenance"]["config_digest"] = "sha256:" + f"{clients:064x}"
+    return artifacts
+
+
+@pytest.mark.parametrize(
+    "family,kind", [("freshness", "freshness"), ("open-loop", "load"), ("concurrency", "load")]
+)
+def test_system_native_payload_preserves_measured_accounting(family: str, kind: str) -> None:
+    bridge = _bridge()
+    payload = bridge.native_payload_from_artifacts(system_artifacts(family), kind)
+    if family == "freshness":
+        assert len(payload["phases"]) == 22
+        assert payload["stale_hits"] == 0 and payload["generation"] == "4"
+    elif family == "open-loop":
+        assert payload["errors"] == 6 and payload["generator_saturated"] is True
+        assert payload["points"] == [
+            {
+                "label": "qps-200",
+                "offered_rate": 200.0,
+                "completed_rate": 180.0,
+                "dropped": 10,
+                "timeouts": 4,
+            }
+        ]
+    else:
+        assert payload["arrival"] == "closed_loop"
+        assert len(payload["points"]) == 5  # One fast + two fast/slow, never duplicated across raw.
+        assert all(point["offered_rate"] is None for point in payload["points"])
+
+
+@pytest.mark.parametrize("value", [False, "1.0", None, float("nan")])
+def test_micro_bridge_does_not_coerce_missing_or_invalid_measurements(value) -> None:
+    bridge = _bridge()
+    with pytest.raises(bridge.EvidenceError):
+        bridge.micro_payload_from_criterion(
+            bench_id="case", statistic="mean", value_ns=value, iterations=10, samples=10
+        )
+
+
+@pytest.mark.parametrize("mutation", ["missing", "bool", "lost", "duplicate"])
+def test_open_loop_missing_or_forged_facts_are_refused(mutation: str) -> None:
+    bridge = _bridge()
+    artifacts = system_artifacts("open-loop")
+    point = artifacts[0]["detail"]["points"][0]
+    if mutation == "missing":
+        del point["dropped_deadline"]
+    elif mutation == "bool":
+        point["timeouts"] = False
+    elif mutation == "lost":
+        point["offered"] += 1
+    else:
+        artifacts[0]["detail"]["points"].append(dict(point))
+    with pytest.raises(bridge.EvidenceError):
+        bridge.native_payload_from_artifacts(artifacts, "load")
+
+
+@pytest.mark.parametrize(
+    "family,kind", [("freshness", "freshness"), ("open-loop", "load"), ("concurrency", "load")]
+)
+def test_system_runs_replay_native_payload_in_fresh_process(
+    tmp_path: Path, family: str, kind: str
+) -> None:
+    import subprocess
+
+    bridge = _bridge()
+    from evidence import sample_evidence
+
+    artifacts = system_artifacts(family)
+    if family == "open-loop":
+        detail = artifacts[0]["detail"]
+        detail.update({"arrival_model": "seeded_poisson", "duration_ms": 10_000})
+        point = detail["points"][0]
+        detail["points"] = [{**point, "target_qps": target} for target in (50, 100, 200, 400)]
+    template = sample_evidence()
+    template["source"]["revision"] = artifacts[0]["provenance"]["git_head"]
+    captures = [
+        (
+            Path(f"summary-c{bridge.concurrency_clients_from_artifact(a)}.json")
+            if family == "concurrency"
+            else Path("summary.json"),
+            json.dumps(a).encode(),
+        )
+        for a in artifacts
+    ]
+    promotion = bridge.promote_native_run(
+        evidence_root=tmp_path / "evidence",
+        run_id=f"{family}-native-replay",
+        family=family,
+        profile="quality-full" if family == "concurrency" else "systems",
+        created_utc=template["created_utc"],
+        native_path=captures[0][0],
+        native_bytes=captures[0][1],
+        additional_native=captures[1:],
+        payload=bridge.native_payload_from_artifacts(artifacts, kind),
+        **{
+            key: template[key]
+            for key in ("source", "build", "inputs", "host", "command", "boundary", "verdict")
+        },
+    )
+    command = [
+        sys.executable,
+        str(BENCHMARK_DIR / "benchctl.py"),
+        "replay",
+        str(promotion["run_dir"]),
+    ]
+    completed = subprocess.run(command, capture_output=True, text=True, check=False)
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout)["raw_references"] == len(artifacts)
+    # A well-sealed typed forgery is still rejected by independent raw replay.
+    from evidence import digest_bytes, seal, to_canonical_json
+
+    forged = promotion["evidence"]
+    if kind == "freshness":
+        forged["payload"]["stale_hits"] += 1
+    else:
+        forged["payload"]["errors"] += 1
+    forged["output_digest"] = digest_bytes(json.dumps(forged["payload"], sort_keys=True).encode())
+    forged["digest"] = None
+    (promotion["run_dir"] / "evidence.json").write_text(to_canonical_json(seal(forged)))
+    completed = subprocess.run(command, capture_output=True, text=True, check=False)
+    assert completed.returncode == 2 and "typed payload differs" in completed.stderr
 
 
 def test_promote_native_run_writes_an_immutable_verifiable_run(tmp_path: Path) -> None:
@@ -375,3 +576,53 @@ def test_promoted_real_artifact_fixture_replays_through_the_artifact_oracle(
     )
     assert tampered.returncode == 2
     assert "digest mismatch" in tampered.stderr
+
+
+def test_concurrency_bridge_refuses_partial_rows_even_with_good_detail() -> None:
+    bridge = _bridge()
+    artifacts = system_artifacts("concurrency")
+    artifacts[1]["rows"] = [artifacts[1]["rows"][5]]
+    with pytest.raises(bridge.EvidenceError, match="row inventory mismatch"):
+        bridge.native_payload_from_artifacts(artifacts, "load")
+
+
+def test_concurrency_bridge_refuses_detail_row_disagreement() -> None:
+    bridge = _bridge()
+    artifacts = system_artifacts("concurrency")
+    artifacts[1]["rows"][0]["qps"] += 1
+    with pytest.raises(bridge.EvidenceError, match="qps disagrees"):
+        bridge.native_payload_from_artifacts(artifacts, "load")
+
+
+def test_concurrency_bridge_refuses_explicit_failed_verdict() -> None:
+    bridge = _bridge()
+    artifacts = system_artifacts("concurrency")
+    artifacts[1]["detail"]["passed"] = False
+    with pytest.raises(bridge.EvidenceError, match="passed verdict is not true"):
+        bridge.native_payload_from_artifacts(artifacts, "load")
+
+
+def test_real_closure_digest_crosses_typed_evidence_boundary(tmp_path, monkeypatch):
+    import subprocess
+
+    bridge = _bridge()
+    engine = bridge.source_closure_module()
+    engine.PROFILES["bridge-synthetic"] = {"cargo_packages": (), "paths": ("normative.txt",)}
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "normative.txt").write_text("fixed source\n")
+    for argv in (("init", "-q"), ("config", "user.name", "Bridge Test"),
+                 ("config", "user.email", "bridge@example.invalid"),
+                 ("add", "normative.txt"), ("commit", "-qm", "fixture")):
+        subprocess.run(["git", "-C", str(repo), *argv], check=True, capture_output=True)
+    monkeypatch.setattr(bridge, "source_closure_module", lambda: engine)
+    manifest = engine.build_manifest(repo, "bridge-synthetic")
+    source = bridge.source_identity(repo, "bridge-synthetic")
+    assert source["closure_digest"] == "sha256:" + manifest["digest"]
+    assert source["dirty"] is False
+    evidence = bridge.source_closure_module()  # Same real engine remains the authority.
+    evidence.validate_manifest_shape(manifest)
+    from evidence import sample_evidence, seal, validate
+    record = sample_evidence()
+    record["source"] = source
+    validate(seal(record))

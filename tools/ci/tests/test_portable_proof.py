@@ -132,9 +132,7 @@ def fake_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
                         "run": {
                             "runner_binary": {"name": "runner", "digest": digest},
                             "searchd_binary": {
-                                "binary_digest": hashlib.sha256(
-                                    searchd.read_bytes()
-                                ).hexdigest()
+                                "binary_digest": hashlib.sha256(searchd.read_bytes()).hexdigest()
                             },
                             "receipt_digest": "c" * 64,
                             "activation_digest": "d" * 64,
@@ -225,6 +223,35 @@ def fake_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr(portable_proof.subprocess, "run", run)
     return out, runner, calls
+
+
+@pytest.mark.parametrize("rail", ["contract", "sdk"])
+def test_relocated_custody_preserves_commands_and_paths(fake_execution, rail):
+    import shutil
+
+    out, _, _ = fake_execution
+    receipt = portable_proof.produce(rail, out)
+    copied = out.with_name(out.name + "-immutable-copy")
+    shutil.copytree(out, copied)
+    context = json.loads(receipt.read_text())
+    frozen_bins = {}
+    for name, binary in context["binaries"].items():
+        target = copied / ("frozen-" + name)
+        shutil.copyfile(binary["path"], target)
+        frozen_bins[name] = target
+    relocated = copied / receipt.name
+    assert (
+        portable_proof.validate(relocated, execution_root=out, binary_files=frozen_bins) == context
+    )
+    assert relocated.read_bytes() == receipt.read_bytes()
+    with pytest.raises(ValueError):
+        portable_proof.validate(
+            relocated, execution_root=out.with_name("wrong-root"), binary_files=frozen_bins
+        )
+    if frozen_bins:
+        next(iter(frozen_bins.values())).write_bytes(b"tampered binary")
+        with pytest.raises(ValueError, match="binary identity changed"):
+            portable_proof.validate(relocated, execution_root=out, binary_files=frozen_bins)
 
 
 @pytest.mark.parametrize("rail", ["contract", "sdk"])

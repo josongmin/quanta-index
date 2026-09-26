@@ -1,7 +1,7 @@
 //! Hybrid (lexical + semantic RRF) query route and the shared fusion core.
 
 use std::collections::BTreeSet;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use quanta_index_contract::{
     EarlyStopReason, HybridQueryRequest, HybridQueryResponse, LexicalCandidate, QueryStageKindV1,
@@ -24,7 +24,7 @@ use crate::query_dispatcher::semantic_query::{
     HybridFilterTraceV1, HybridFusion, HybridLaneTallyV1, build_hybrid_response_explanation,
     resolve_hybrid_request_selection,
 };
-use crate::query_dispatcher::stage_timing::{elapsed, measured};
+use crate::query_dispatcher::stage_timing::{StageTimings, measured};
 use crate::query_dispatcher::window::{fused_window_v2, hybrid_probe_top_k_v1, lane_count_u64};
 
 /// Lane traces for the fused window.
@@ -88,19 +88,14 @@ impl SearchPlaneDispatcher {
         budget: &RequestBudgetV1,
     ) -> Result<HybridFusion, CoreError> {
         let pin = selection.pin.clone();
-        let mut stage_timings = Vec::with_capacity(7);
-        let prepare_started = Instant::now();
+        let mut stage_timings = StageTimings::new(self.query_stage_observation, 7);
+        let prepare_started = self.query_stage_observation.start();
         let lexical_query = lower_lexical_text_query(text_query)?;
         let filter_plan = HybridFilterPlanV1::plan(&lexical_query)?;
         let prepared_language = prepare_language_query_v1(lexical_query, &text_query.constraints)?;
         LexicalPolicy::validate_query(&prepared_language.query)?;
-        stage_timings.push(elapsed(
-            QueryStageKindV1::HybridPrepare,
-            prepare_started,
-            1,
-            None,
-        ));
-        let view_started = Instant::now();
+        stage_timings.record_elapsed(QueryStageKindV1::HybridPrepare, prepare_started, 1, None);
+        let view_started = self.query_stage_observation.start();
         let view = self.acquire_read_view(
             &ReadViewRequestV1::declare(
                 plane,
@@ -111,12 +106,7 @@ impl SearchPlaneDispatcher {
             .with_semantic_manifest_digest(selection.expected_manifest_digest.as_deref()),
             budget,
         )?;
-        stage_timings.push(elapsed(
-            QueryStageKindV1::HybridReadView,
-            view_started,
-            1,
-            None,
-        ));
+        stage_timings.record_elapsed(QueryStageKindV1::HybridReadView, view_started, 1, None);
         let lex_searcher = view.lexical()?;
         let sem_searcher = view.semantic()?;
         let internal_top_k = hybrid_probe_top_k_v1(top_k)?;
@@ -124,7 +114,7 @@ impl SearchPlaneDispatcher {
         // `force_empty` plan invokes nothing and records nothing.
         let execution = LaneExecutionRecorderV1::new();
         budget.checkpoint("hybrid:lexical")?;
-        let lexical_started = Instant::now();
+        let lexical_started = self.query_stage_observation.start();
         let mut lex_results = if prepared_language.force_empty {
             Vec::new()
         } else {
@@ -139,28 +129,23 @@ impl SearchPlaneDispatcher {
                 .candidates
         };
         if !prepared_language.force_empty {
-            stage_timings.push(elapsed(
+            stage_timings.record_elapsed(
                 QueryStageKindV1::HybridLexicalSearch,
                 lexical_started,
                 1,
                 Some(lex_results.len()),
-            ));
+            );
         }
         stabilize_ranked_candidates(&mut lex_results);
         budget.checkpoint("hybrid:embed")?;
-        let embed_started = Instant::now();
+        let embed_started = self.query_stage_observation.start();
         let query_vector =
             self.embed_and_gate_query(semantic_query_text, sem_searcher.as_ref(), plane, budget)?;
-        stage_timings.push(elapsed(
-            QueryStageKindV1::HybridEmbedding,
-            embed_started,
-            1,
-            None,
-        ));
+        stage_timings.record_elapsed(QueryStageKindV1::HybridEmbedding, embed_started, 1, None);
         // Independent dense lane under the same constraints and, per
         // candidate, the same exact filters; never scoped to the lexical
         // hits.
-        let admission_started = Instant::now();
+        let admission_started = self.query_stage_observation.start();
         let mut dense_fetch_duration = Duration::ZERO;
         let mut dense_fetch_calls = 0_u32;
         let mut dense_fetched_rows = 0_usize;
@@ -178,35 +163,38 @@ impl SearchPlaneDispatcher {
                 }
                 budget.checkpoint("hybrid:semantic")?;
                 execution.record_semantic_invocation();
-                let fetch_started = Instant::now();
+                let fetch_started = self.query_stage_observation.start();
                 let fetched = sem_searcher.search_constrained(
                     &query_vector,
                     &prepared_language.constraints,
                     fetch_size,
                     budget,
                 )?;
-                dense_fetch_duration = dense_fetch_duration.saturating_add(fetch_started.elapsed());
-                dense_fetch_calls = dense_fetch_calls.saturating_add(1);
-                dense_fetched_rows = dense_fetched_rows.saturating_add(fetched.len());
+                if let Some(fetch_started) = fetch_started {
+                    dense_fetch_duration =
+                        dense_fetch_duration.saturating_add(fetch_started.elapsed());
+                    dense_fetch_calls = dense_fetch_calls.saturating_add(1);
+                    dense_fetched_rows = dense_fetched_rows.saturating_add(fetched.len());
+                }
                 Ok(fetched)
             },
         )?;
         if dense_fetch_calls > 0 {
             // Refills can return the same row more than once. This count is
             // cumulative backend output, not unique admitted candidates.
-            stage_timings.push(measured(
+            stage_timings.push(Some(measured(
                 QueryStageKindV1::HybridDenseFetch,
                 dense_fetch_duration,
                 dense_fetch_calls,
                 Some(dense_fetched_rows),
-            ));
+            )));
         }
-        stage_timings.push(elapsed(
+        stage_timings.record_elapsed(
             QueryStageKindV1::HybridDenseAdmission,
             admission_started,
             1,
             Some(dense.rows.len()),
-        ));
+        );
         let filter_trace = HybridFilterTraceV1 {
             filters: format!("hybrid.filters={filter_plan}"),
             admission: vec![dense.trace_detail("hybrid.dense_admission")],
@@ -216,7 +204,7 @@ impl SearchPlaneDispatcher {
         let dense_admitted = dense.admitted;
         let mut sem_results = dense.rows;
         budget.checkpoint("hybrid:fuse")?;
-        let fuse_started = Instant::now();
+        let fuse_started = self.query_stage_observation.start();
         stabilize_ranked_candidates(&mut sem_results);
         let internal_limit = usize::try_from(internal_top_k).map_err(|err| {
             CoreError::InvalidContract(format!("hybrid: internal top_k overflow: {err}"))
@@ -238,12 +226,12 @@ impl SearchPlaneDispatcher {
             .len();
         let fused =
             HybridOrchestratorPolicy::fuse_rrf_candidates(&lex_results, &sem_results, top_k)?;
-        stage_timings.push(elapsed(
+        stage_timings.record_elapsed(
             QueryStageKindV1::HybridFusion,
             fuse_started,
             1,
             Some(fused.len()),
-        ));
+        );
         let early_stop_reason = if fused_universe_size > fused.len() {
             Some(EarlyStopReason::CountReached)
         } else {
@@ -272,7 +260,7 @@ impl SearchPlaneDispatcher {
             &filter_trace,
             budget.response_request_id(),
         );
-        explanation.stage_timings = Some(stage_timings);
+        explanation.stage_timings = stage_timings.finish();
         attach_read_view_trace(&mut explanation, view.identity());
         let window_v2 = fused_window_v2(
             top_k,

@@ -1,6 +1,13 @@
 # BM-06 — Recorded agent outcomes and experiments
 
-Status: `PLAN / NOT_RUN`. Priority: P2. Depends on: BM-02/BM-03. Common gates: [TEST-PLAN](TEST-PLAN.md).
+Status: `IMPLEMENTED / VERIFIED_CONTRACT`, diagnostic unauthenticated imports only. Priority: P2. Depends on: BM-02/BM-03. Common gates: [TEST-PLAN](TEST-PLAN.md).
+
+Current source follow-up: `tools/benchmark/recorded_capture.py` supplies explicit
+external JSONL/native-JSON imports, complete-profile custody, existing-owner
+metric recomputation and raw-derived replay. Authenticated claims are explicitly
+refused; no authenticator or real agent-capture qualification is claimed.
+See [CURRENT-AUDIT.md](CURRENT-AUDIT.md) for exact snapshot/receipt boundaries;
+the historical closeout below does not qualify these newer changes.
 
 Implementation/verification/qualification verdicts for this ticket are recorded in [CLOSEOUT.md](CLOSEOUT.md) and, where relevant, [BM-00-INVENTORY.md](BM-00-INVENTORY.md), [BM-03-DECISION.md](BM-03-DECISION.md) and [BM-07-MIGRATION-MATRIX.md](BM-07-MIGRATION-MATRIX.md). The original `PLAN / NOT_RUN` status above is the plan-time state, not the closeout state.
 

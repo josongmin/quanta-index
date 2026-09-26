@@ -244,6 +244,58 @@ fn format_tag(format: StateRootFormatV1) -> &'static str {
 }
 
 impl StateRootManifestV1 {
+    /// Shared admission for decoded and about-to-be-published authority.
+    /// Signing arbitrary text is not proof that its field identities are valid.
+    fn validate_authority(&self) -> Result<(), CoreError> {
+        let refuse = |detail: String| {
+            typed(
+                SearchPlaneErrorCodeV2::StateRootFormatUnsupported,
+                format!("state-root manifest: {detail}"),
+            )
+        };
+        if self.format_version != STATE_ROOT_MANIFEST_FORMAT_VERSION {
+            return Err(refuse(format!(
+                "format {} is unsupported; expected {}",
+                self.format_version, STATE_ROOT_MANIFEST_FORMAT_VERSION
+            )));
+        }
+        if self.root_format != (StateRootFormatV1::CurrentV1 { manifest: true }) {
+            return Err(refuse(
+                "authority must describe a produced current root".to_string(),
+            ));
+        }
+        if !is_manifest_sha256_hex(&self.catalog_digest_hex) {
+            return Err(refuse(
+                "catalog-digest is not canonical SHA-256 hex".to_string(),
+            ));
+        }
+        let mut paths = BTreeSet::new();
+        for object in &self.objects {
+            if !is_canonical_relative_path(&object.relative_path)
+                || !is_manifest_sha256_hex(&object.digest_hex)
+            {
+                return Err(refuse(format!(
+                    "object {} has an invalid path or digest",
+                    object.relative_path
+                )));
+            }
+            if !paths.insert(object.relative_path.as_str()) {
+                return Err(refuse(format!(
+                    "duplicate object path {}",
+                    object.relative_path
+                )));
+            }
+        }
+        for directory in &self.directories {
+            if !is_canonical_relative_path(directory) || !paths.insert(directory.as_str()) {
+                return Err(refuse(format!(
+                    "invalid or ambiguous directory path {directory}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// The manifest body: every line except `root-digest`, each terminated by
     /// `\n`. This is the exact byte string the digest covers.
     #[must_use]
@@ -393,43 +445,86 @@ impl StateRootManifestV1 {
                 ),
             ));
         }
-        let mut sorted = objects.clone();
-        sorted.sort();
-        sorted.dedup();
-        if sorted != objects {
-            return Err(refuse(
-                "object lines are not in canonical sorted order".to_string(),
-            ));
-        }
-        let mut sorted_directories = directories.clone();
-        sorted_directories.sort();
-        sorted_directories.dedup();
-        if sorted_directories != directories {
-            return Err(refuse(
-                "dir lines are not in canonical sorted order".to_string(),
-            ));
-        }
-        Ok(Self {
+        let manifest = Self {
             format_version,
             root_format,
             catalog_digest_hex,
             catalog_rows,
             objects,
             directories,
-        })
+        };
+        manifest.validate_authority()?;
+        // Do not accept last-field-wins or normalize an authority's bytes.
+        // This also rejects reordered fields, duplicate singleton fields,
+        // noncanonical numbers/line endings and duplicate/unsorted entries.
+        // The returned digest must identify the exact admitted byte body.
+        if manifest.encode() != bytes {
+            return Err(refuse("noncanonical manifest encoding".to_string()));
+        }
+        Ok(manifest)
     }
 }
 
+fn is_manifest_sha256_hex(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 /// A canonical manifest relative path: non-empty, forward-slash separated, no
-/// `.`/`..` component, no absolute or drive prefix, no backslash.
+/// `.`/`..` component, no absolute or drive prefix, no backslash or controls.
 #[must_use]
 pub fn is_canonical_relative_path(path: &str) -> bool {
-    if path.is_empty() || path.starts_with('/') || path.contains('\\') {
+    if path.is_empty()
+        || path.starts_with('/')
+        || path.contains('\\')
+        || path.chars().any(char::is_control)
+    {
         return false;
     }
     path.split('/').all(|component| {
         !component.is_empty() && component != "." && component != ".." && component != " "
     })
+}
+
+/// Admit a filesystem path without lossy encoding or separator rewriting.
+pub(crate) fn relative_state_path_v1(root: &Path, path: &Path) -> Result<String, CoreError> {
+    let relative = path
+        .strip_prefix(root)
+        .map_err(|error| storage("relativize object", path, &error))?;
+    let relative = relative
+        .to_str()
+        .filter(|value| is_canonical_relative_path(value))
+        .ok_or_else(|| {
+            typed(
+                SearchPlaneErrorCodeV2::StateRootInsecure,
+                format!(
+                    "state root {} contains an unrepresentable or non-canonical path {}",
+                    root.display(),
+                    path.display()
+                ),
+            )
+        })?;
+    Ok(relative.to_string())
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn non_utf8_path_identity_is_refused_without_lossy_conversion() {
+    use std::os::unix::ffi::OsStringExt as _;
+
+    // APFS refuses non-UTF-8 names at creation. Exercise the admission
+    // invariant directly, without mistaking that OS refusal for our proof.
+    let root = Path::new("/state-root");
+    let path = root.join(std::ffi::OsString::from_vec(vec![b'b', b'a', b'd', 0xFF]));
+    assert!(matches!(
+        relative_state_path_v1(root, &path),
+        Err(CoreError::Typed {
+            code: SearchPlaneErrorCodeV2::StateRootInsecure,
+            ..
+        })
+    ));
 }
 
 /// Hex SHA-256 of a byte string; the one digest helper every caller shares.
@@ -483,15 +578,20 @@ fn hex_lower(bytes: &[u8]) -> String {
 
 /// `SQLite`'s own per-connection bookkeeping beside a database file.
 ///
-/// These are vendor-native and their content is a function of the last
-/// connection, not of the logical catalog — the manifest's `catalog-digest`
-/// covers the logical content instead, so inventorying these bytes would
-/// make a root's manifest depend on who opened it last.
+/// Only the owned catalog's exact relative sidecar paths are excluded.
+/// A suffix elsewhere is ordinary state, not evidence of `SQLite` ownership.
+/// The manifest's `catalog-digest` covers logical content; sidecar byte
+/// inventory would make the manifest depend on who opened it last.
 #[must_use]
-pub fn is_sqlite_sidecar_v1(name: &str) -> bool {
-    [".sqlite-wal", ".sqlite-shm", ".sqlite-journal"]
-        .iter()
-        .any(|suffix| name.ends_with(suffix))
+pub fn is_sqlite_sidecar_v1(relative_path: &str) -> bool {
+    let Some(suffix) = relative_path
+        .strip_prefix(STATE_CATALOG_DIRECTORY)
+        .and_then(|rest| rest.strip_prefix('/'))
+        .and_then(|rest| rest.strip_prefix(STATE_BACKUP_CATALOG_FILE_NAME))
+    else {
+        return false;
+    };
+    matches!(suffix, "-wal" | "-shm" | "-journal")
 }
 
 /// Enumerate every regular file under `root`, skipping `exclusions`
@@ -525,15 +625,8 @@ fn walk(
         let path = entry.path();
         let name = entry.file_name();
         let name = name.to_string_lossy().to_string();
-        let relative = path
-            .strip_prefix(root)
-            .map_err(|error| storage("relativize object", &path, &error))?
-            .to_string_lossy()
-            .replace('\\', "/");
+        let relative = relative_state_path_v1(root, &path)?;
         if !relative.contains('/') && skip.contains(name.as_str()) {
-            continue;
-        }
-        if is_sqlite_sidecar_v1(&name) {
             continue;
         }
         let metadata = fs::symlink_metadata(&path)
@@ -549,6 +642,9 @@ fn walk(
         }
         if metadata.is_dir() {
             walk(root, &path, skip, out)?;
+            continue;
+        }
+        if metadata.is_file() && is_sqlite_sidecar_v1(&relative) {
             continue;
         }
         if !metadata.is_file() {
@@ -595,11 +691,7 @@ fn walk_directories(
         let entry = entry.map_err(|error| storage("read directory entry", directory, &error))?;
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
-        let relative = path
-            .strip_prefix(root)
-            .map_err(|error| storage("relativize object", &path, &error))?
-            .to_string_lossy()
-            .replace('\\', "/");
+        let relative = relative_state_path_v1(root, &path)?;
         if !relative.contains('/') && skip.contains(name.as_str()) {
             continue;
         }
@@ -1008,15 +1100,17 @@ pub fn write_root_manifest_last_v1(
     manifest: &StateRootManifestV1,
     fault: &dyn StateMigrationFaultPort,
 ) -> Result<PathBuf, CoreError> {
-    if manifest.root_format != (StateRootFormatV1::CurrentV1 { manifest: true }) {
+    if !matches!(
+        file_name,
+        STATE_ROOT_MANIFEST_FILE_NAME | STATE_BACKUP_MANIFEST_FILE_NAME
+    ) {
         return Err(typed(
-            SearchPlaneErrorCodeV2::StateRootFormatUnsupported,
-            format!(
-                "state-root manifest for {} must describe a current root",
-                root.display()
-            ),
+            SearchPlaneErrorCodeV2::InvalidRequest,
+            format!("state-root manifest name {file_name} is not an owned top-level authority"),
         ));
     }
+    manifest.validate_authority()?;
+    let encoded = manifest.encode();
     let path = root.join(file_name);
     fault.reach(StateMigrationFaultPointV1::BeforeManifestSync)?;
     // create_new is atomic and refuses even a dangling symlink. A separate
@@ -1039,7 +1133,7 @@ pub fn write_root_manifest_last_v1(
         }
         Err(error) => return Err(storage("create manifest", &path, &error)),
     };
-    file.write_all(manifest.encode().as_bytes())
+    file.write_all(encoded.as_bytes())
         .map_err(|error| storage("write manifest", &path, &error))?;
     file.sync_all()
         .map_err(|error| storage("fsync manifest", &path, &error))?;
@@ -1055,18 +1149,7 @@ pub fn read_root_manifest_v1(path: &Path) -> Result<StateRootManifestV1, CoreErr
     let _bytes_read = file
         .read_to_string(&mut bytes)
         .map_err(|error| storage("read manifest", path, &error))?;
-    let manifest = StateRootManifestV1::decode(&bytes)?;
-    if manifest.format_version != STATE_ROOT_MANIFEST_FORMAT_VERSION {
-        return Err(typed(
-            SearchPlaneErrorCodeV2::StateRootFormatUnsupported,
-            format!(
-                "state-root manifest {} declares format {}, this build writes and reads {STATE_ROOT_MANIFEST_FORMAT_VERSION}",
-                path.display(),
-                manifest.format_version
-            ),
-        ));
-    }
-    Ok(manifest)
+    StateRootManifestV1::decode(&bytes)
 }
 
 #[cfg(unix)]

@@ -42,7 +42,7 @@ and it currently may not.**
   `crates/quanta-index-searchd-harness/src/harness.rs` `ingest_text_chunks`
   (`replace_scopes: vec![one]`), and the test/boot builders. The realistic
   multi-file batch only exists via the new `ingest_text_files_one_batch` test helper.
-- Production batches arrive from **codegraph** via IPC `PublishSearchCorpusBatch`.
+- Production batches arrive from **codegraph** via Rust IPC variant `PublishSearchCorpusBatch` (current 2026-09-26 wire tag: `PublishSearchCorpusBatchV2`; the retired tag is refused before dispatch).
   If codegraph emits **one file per batch**, the searchd batching (and therefore
   the bounded-concurrency dispatch) never fire on real ingest — the A/B win would
   not reproduce in production.

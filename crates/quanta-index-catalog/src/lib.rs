@@ -26,6 +26,7 @@ mod backup;
 mod candidate;
 mod connection;
 mod idempotency;
+mod integrity;
 mod open;
 mod sequence;
 

@@ -571,7 +571,7 @@ impl<G: Send + 'static> SearchdSupervisor<G> {
         if external.abort_signum() != 0 {
             return self.abort(external.abort_signum());
         }
-        if let Some(lost) = self.observe_finished_direct_children() {
+        if let Some(lost) = self.observe_finished_children() {
             return self.required_child_lost(lost);
         }
         if let Some(lost) = self.take_pending_exits() {
@@ -601,7 +601,7 @@ impl<G: Send + 'static> SearchdSupervisor<G> {
             if let Some(lost) = observed {
                 return self.required_child_lost(lost);
             }
-            if let Some(lost) = self.observe_finished_direct_children() {
+            if let Some(lost) = self.observe_finished_children() {
                 if external.shutdown_requested() || self.cancel.shutdown_requested() {
                     break;
                 }
@@ -675,7 +675,7 @@ impl<G: Send + 'static> SearchdSupervisor<G> {
             ..
         } = &mut self;
         for child in children.iter_mut() {
-            if child.kind.is_none() {
+            if child.join.is_some() {
                 let _awaited = Self::await_child(child, pending, exits, deadline, &cancel);
             }
         }
@@ -683,6 +683,12 @@ impl<G: Send + 'static> SearchdSupervisor<G> {
             return self.abort(signum);
         }
         let tally = self.join_children_with_known_exits();
+        let lost_kind = self
+            .children
+            .iter()
+            .find(|child| child.name == lost.name)
+            .and_then(|child| child.kind)
+            .unwrap_or(lost.kind);
         self.release_guards_after_children();
         if !tally.unfinished.is_empty() {
             return SupervisionOutcome::HardDeadlineEscalated {
@@ -698,7 +704,7 @@ impl<G: Send + 'static> SearchdSupervisor<G> {
             .collect();
         SupervisionOutcome::RequiredChildLost {
             name: lost.name,
-            kind: lost.kind,
+            kind: lost_kind,
             drained,
             escalated,
         }
@@ -746,7 +752,7 @@ impl<G: Send + 'static> SearchdSupervisor<G> {
             if self.cancel.abort_signum() != 0 {
                 return;
             }
-            let _finished = self.observe_finished_direct_children();
+            let _finished = self.observe_finished_children();
             if self.children.iter().all(|child| {
                 child.kind.is_some() && child.join.as_ref().is_none_or(JoinHandle::is_finished)
             }) {
@@ -775,24 +781,39 @@ impl<G: Send + 'static> SearchdSupervisor<G> {
         }
     }
 
-    /// A directly adopted child has no terminal-event adapter. Its actual
-    /// finished join handle is the authority for a serving-time loss and
-    /// for drain classification; never infer completion from a timer tick.
-    fn observe_finished_direct_children(&mut self) -> Option<ChildExit> {
-        let mut first = None;
-        for child in &mut self.children {
-            if child.reports_exit || child.kind.is_some() {
-                continue;
-            }
+    /// A terminal report is not the only authority: an adapter can panic
+    /// before sending it. Observe every finished handle and fail closed when
+    /// a reporting child returns without its required report. Drain reports
+    /// after observing completion, so a queued typed failure is never replaced
+    /// with inferred success. Directly adopted children need no report.
+    fn observe_finished_children(&mut self) -> Option<ChildExit> {
+        self.pending.extend(self.exits.try_iter());
+        let mut first = self.take_pending_exits();
+        for index in 0..self.children.len() {
+            let Some(child) = self.children.get(index) else {
+                return first.or(Some(ChildExit {
+                    name: "supervisor-child-registry",
+                    kind: ChildExitKind::Failed,
+                }));
+            };
             if !child.join.as_ref().is_some_and(JoinHandle::is_finished) {
                 continue;
             }
-            let kind = match child.join.take().map(JoinHandle::join) {
-                Some(Err(_panic)) => ChildExitKind::Panicked,
-                Some(Ok(())) | None => ChildExitKind::Completed,
-            };
-            child.kind = Some(kind);
+            self.pending.extend(self.exits.try_iter());
+            let queued = self.take_pending_exits();
             if first.is_none() {
+                first = queued;
+            }
+            // Pending reports update kinds, never registry shape. Preserve a
+            // typed loss rather than treating a broken index invariant as success.
+            let Some(child) = self.children.get_mut(index) else {
+                return first.or(Some(ChildExit {
+                    name: "supervisor-child-registry",
+                    kind: ChildExitKind::Failed,
+                }));
+            };
+            let kind = Self::join_finished_child(child);
+            if first.is_none() || first.is_some_and(|exit| exit.name == child.name) {
                 first = Some(ChildExit {
                     name: child.name,
                     kind,
@@ -800,6 +821,20 @@ impl<G: Send + 'static> SearchdSupervisor<G> {
             }
         }
         first
+    }
+
+    fn join_finished_child(child: &mut RegisteredChild) -> ChildExitKind {
+        let kind = match child.join.take().map(JoinHandle::join) {
+            Some(Err(_panic)) => ChildExitKind::Panicked,
+            Some(Ok(())) => child.kind.unwrap_or(if child.reports_exit {
+                ChildExitKind::Failed
+            } else {
+                ChildExitKind::Completed
+            }),
+            None => child.kind.unwrap_or(ChildExitKind::Failed),
+        };
+        child.kind = Some(kind);
+        kind
     }
 
     fn stop_all(&mut self) {
@@ -877,6 +912,7 @@ impl<G: Send + 'static> SearchdSupervisor<G> {
                         (_, Err(_panic_at_join)) => ChildExitKind::Panicked,
                         (kind, Ok(())) => kind,
                     };
+                    child.kind = Some(kind);
                     if matches!(kind, ChildExitKind::Completed) {
                         tally.drained.push(child.name);
                     } else {
@@ -923,12 +959,16 @@ impl<G: Send + 'static> SearchdSupervisor<G> {
             if cancel.abort_signum() != 0 {
                 return false;
             }
-            if !child.reports_exit && child.join.as_ref().is_some_and(JoinHandle::is_finished) {
-                child.kind = Some(match child.join.take().map(JoinHandle::join) {
-                    Some(Err(_panic)) => ChildExitKind::Panicked,
-                    Some(Ok(())) | None => ChildExitKind::Completed,
-                });
+            if child.join.as_ref().is_some_and(JoinHandle::is_finished) {
+                pending.extend(exits.try_iter());
+                if let Some(position) = pending.iter().position(|exit| exit.name == child.name) {
+                    child.kind = Some(pending.remove(position).kind);
+                }
+                let _joined_kind = Self::join_finished_child(child);
                 return true;
+            }
+            if child.kind.is_some() {
+                break;
             }
             if let Some(position) = pending.iter().position(|exit| exit.name == child.name) {
                 let exit = pending.remove(position);

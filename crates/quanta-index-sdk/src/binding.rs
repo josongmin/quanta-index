@@ -1284,6 +1284,8 @@ pub(crate) struct IngestCallBinding {
     /// `None` where the route's receipt carries no batch echo to check.
     commitment: Option<(ManifestGeneration, String)>,
     repo_map_v2: Option<RepoMapPublishBundleRequestV2>,
+    /// Identity only: retaining the batch would clone all corpus source text.
+    search_corpus: Option<(quanta_index_contract::GenerationPin, String, bool)>,
 }
 
 impl IngestCallBinding {
@@ -1357,7 +1359,47 @@ impl IngestCallBinding {
             expected,
             commitment,
             repo_map_v2,
+            search_corpus: match request {
+                SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch) => Some((
+                    quanta_index_contract::GenerationPin::new(
+                        batch.repo_id.clone(),
+                        batch.revision_id.clone(),
+                        batch.generation,
+                    ),
+                    batch.batch_digest.clone(),
+                    batch.seal,
+                )),
+                SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(_)
+                | SearchPlaneIngestIpcRequest::PublishHistoryBatch(_)
+                | SearchPlaneIngestIpcRequest::PublishRepoCommitRecencyBatch(_)
+                | SearchPlaneIngestIpcRequest::PublishRepoTopicBatch(_)
+                | SearchPlaneIngestIpcRequest::PublishFileOwnershipBatch(_)
+                | SearchPlaneIngestIpcRequest::PublishFileContributorBatch(_)
+                | SearchPlaneIngestIpcRequest::PublishDirtyBatch(_)
+                | SearchPlaneIngestIpcRequest::PublishRuntimeCatalogBatch(_)
+                | SearchPlaneIngestIpcRequest::PublishStructuralBatch(_)
+                | SearchPlaneIngestIpcRequest::PublishRepoMetaBatch(_)
+                | SearchPlaneIngestIpcRequest::PublishRepoDescriptionBatch(_) => None,
+            },
         }
+    }
+
+    pub(crate) fn validate_observation(
+        &self,
+        request_id: u64,
+        response: &SearchPlaneIngestIpcResponse,
+    ) -> Result<(), SdkError> {
+        if let SearchPlaneIngestIpcResponse::SearchCorpusReceipt(outcome) = response
+            && let Some(observation) = &outcome.observation
+        {
+            let (pin, digest, sealed) = self.search_corpus.as_ref().ok_or_else(|| {
+                SdkError::Protocol("unexpected search corpus observation".to_string())
+            })?;
+            observation
+                .validate_identity(request_id, pin, digest, *sealed, &outcome.receipt)
+                .map_err(SdkError::Protocol)?;
+        }
+        Ok(())
     }
 }
 
@@ -1651,7 +1693,7 @@ pub const SDK_WIRE_ROUTES_V1: &[SdkWireRouteV1] = &[
         route: "search_corpus_receipt",
         plane: "ingest",
         expected_kind: "search_corpus_receipt",
-        bound_axes: &["variant", "batch_commitment"],
+        bound_axes: &["variant", "batch_commitment", "observation_identity"],
     },
     SdkWireRouteV1 {
         route: "repomap_receipt",

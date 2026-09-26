@@ -17,8 +17,6 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, BinaryIO, TypeVar
 
-import jsonschema
-
 try:
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover - Python 3.10 compatibility
@@ -452,6 +450,10 @@ def validate_handoff(
     proof_checker: ModuleType,
     require_result_head: bool = False,
 ) -> list[str]:
+    # Descriptor custody is also used by lightweight execution/binary readers.
+    # Load schema machinery only at its actual validation boundary.
+    import jsonschema
+
     errors: list[str] = []
     proof_registry_path = root / PROOF_REGISTRY_PATH.relative_to(ROOT)
     schema = json.loads(

@@ -465,7 +465,22 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
         &self,
         batch: &SearchCorpusIngestBatch,
         budget: &quanta_index_core::RequestBudgetV1,
-    ) -> Result<BatchPublishReceipt, CoreError> {
+    ) -> Result<quanta_index_contract::SearchCorpusPublishOutcome, CoreError> {
+        use quanta_index_contract::{
+            IngestObservationStatus, SearchCorpusIngestObservation, SearchCorpusPublishOutcome,
+        };
+        let mut observation = SearchCorpusIngestObservation {
+            request_id: budget.response_request_id(),
+            repo_id: batch.repo_id.clone(),
+            revision_id: batch.revision_id.clone(),
+            generation: batch.generation,
+            batch_digest: batch.batch_digest.clone(),
+            status: IngestObservationStatus::Executed,
+            semantic: None,
+            lexical_build_ns: None,
+            finalize_ns: None,
+            activation_ns: None,
+        };
         Self::validate_batch_shape_v1(batch)?;
         self.measure_resource_envelope(batch)?;
         let stripe = search_corpus_lock_stripe_v1(&batch.repo_id, &batch.revision_id);
@@ -507,8 +522,14 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
             .as_ref()
             .is_some_and(SealedGenerationBuildPlanV1::is_finalize_only)
         {
+            let started = std::time::Instant::now();
             self.finalize_sealed_generation_v1(batch)?;
-            return self.sealed_receipt_v1(batch);
+            observation.finalize_ns = Some(elapsed_ingest_ns(started)?);
+            observation.status = IngestObservationStatus::FinalizeOnly;
+            return Ok(SearchCorpusPublishOutcome {
+                receipt: self.sealed_receipt_v1(batch)?,
+                observation: Some(observation),
+            });
         }
         if let Some(plan) = sealed_plan.as_ref() {
             plan.discard_incomplete_v1(
@@ -529,6 +550,9 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
         let build_semantic = sealed_plan
             .as_ref()
             .is_none_or(SealedGenerationBuildPlanV1::build_semantic);
+        if !build_semantic || !build_lexical {
+            observation.status = IngestObservationStatus::PartialRecovery;
+        }
         // Search-owned semantic derivation is mandatory work for every
         // accepted search-corpus batch; there is no lexical-only downgrade
         // path. The semantic track builds first: its records are embedded
@@ -545,9 +569,10 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
                 self.source_egress_policy.as_ref(),
                 budget,
             )?;
-            let semantic_receipt = self
+            let (semantic_receipt, semantic_report) = self
                 .semantic_ingest
                 .publish_stream(&derived.header, &mut derived.source)?;
+            observation.semantic = Some(Box::new(semantic_report));
             validate_semantic_publish_receipt_v1(
                 &derived.header,
                 derived.source.tally(),
@@ -558,7 +583,9 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
             }
         }
         if build_lexical {
+            let started = std::time::Instant::now();
             self.builder.build_batch(batch)?;
+            observation.lexical_build_ns = Some(elapsed_ingest_ns(started)?);
         }
         if batch.seal {
             let (lexical, semantic) = generation_pair_from_batch_v1(batch);
@@ -573,12 +600,30 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
                 "semantic post-build",
             )?;
             crash_point::reached(crash_point::BEFORE_AUTHORITY_RECORD);
+            let started = std::time::Instant::now();
             self.finalize_sealed_generation_v1(batch)?;
-            return self.sealed_receipt_v1(batch);
+            observation.finalize_ns = Some(elapsed_ingest_ns(started)?);
+            return Ok(SearchCorpusPublishOutcome {
+                receipt: self.sealed_receipt_v1(batch)?,
+                observation: Some(observation),
+            });
         }
+        let started = std::time::Instant::now();
         self.finalize_generation_v1(batch, None)?;
-        Ok(batch_publish_receipt_v1(batch))
+        observation.finalize_ns = Some(elapsed_ingest_ns(started)?);
+        Ok(SearchCorpusPublishOutcome {
+            receipt: batch_publish_receipt_v1(batch),
+            observation: Some(observation),
+        })
     }
+}
+
+fn elapsed_ingest_ns(started: std::time::Instant) -> Result<u64, CoreError> {
+    u64::try_from(started.elapsed().as_nanos()).map_err(|error| {
+        CoreError::InvalidContract(format!(
+            "ingest observation: elapsed duration overflow: {error}"
+        ))
+    })
 }
 
 impl DirectSearchCorpusMaterializer {

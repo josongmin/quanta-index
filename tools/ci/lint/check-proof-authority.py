@@ -58,7 +58,7 @@ PROOF_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]+$")
 TICKET_RE = re.compile(r"^S21-(?:0[0-9]|1[0-3])$")
 DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 PAIRED_REPOSITORY = "github:josongmin/semantica-codegraph-v2"
-PAIRED_DEPENDENCY_LOCK = "Cargo.lock"
+PAIRED_DEPENDENCY_LOCK = "packages/analysis/quanta-v2/Cargo.lock"
 ERROR_INVENTORY_PATH = "artifacts/sep-21/p00/error-authority-inventory.json"
 SOURCE_BINDING_DOMAIN = "quanta-proof-source-binding-v1"
 PROOF_ARCHIVE_ROOT = PurePosixPath("artifacts/proof-authority/archive")
@@ -127,6 +127,7 @@ EXPECTED_P12A_TEST_TARGETS = [
     "proof-authority-python-owner",
     "proof-manifest-python-owner",
     "proof-execution-result-python-owner",
+    "proof-paired-cargo-resolution-python-owner",
     "proof-local-scope-runner-python-owner",
 ]
 OPERATIONAL_HOST_PROOFS = frozenset(("p11-deployment", "p11-activation", "p11-rollback"))
@@ -1430,7 +1431,7 @@ def paired_content_identity(pair: dict[str, Any]) -> tuple[Any, ...]:
     )
 
 
-def check_manifest(
+def _check_manifest_local(
     payload: Any,
     *,
     manifest_path: Path,
@@ -1438,6 +1439,9 @@ def check_manifest(
     schema: dict[str, Any],
     root: Path,
     bind_source: bool,
+    _pending: list,
+    _decoded: dict[str, Any],
+    _validator: Any,
     allow_non_passed: bool = False,
     paired_checkouts: dict[str, Path] | None = None,
     proof_by_id: dict[str, dict[str, Any]] | None = None,
@@ -1446,8 +1450,7 @@ def check_manifest(
     _archive_stack: frozenset[str] | None = None,
 ) -> list[Finding]:
     findings: list[Finding] = []
-    validator = jsonschema.Draft202012Validator(schema, format_checker=jsonschema.FormatChecker())
-    for error in sorted(validator.iter_errors(payload), key=lambda item: list(item.path)):
+    for error in sorted(_validator.iter_errors(payload), key=lambda item: list(item.path)):
         location = ".".join(str(part) for part in error.path) or "root"
         findings.append(Finding(manifest_path, f"schema {location}: {error.message}"))
     if not isinstance(payload, dict) or findings:
@@ -1751,7 +1754,9 @@ def check_manifest(
                 )
                 continue
             try:
-                dependency_payload = json.loads(dependency_bytes)
+                if dependency["sha256"] not in _decoded:
+                    _decoded[dependency["sha256"]] = json.loads(dependency_bytes)
+                dependency_payload = _decoded[dependency["sha256"]]
             except (UnicodeDecodeError, json.JSONDecodeError) as error:
                 findings.append(
                     Finding(manifest_path, f"dependency receipt is unreadable: {error}")
@@ -1792,18 +1797,15 @@ def check_manifest(
                 )
                 continue
             if proof_by_id is not None:
-                nested_findings = check_manifest(
-                    dependency_payload,
-                    manifest_path=dependency_path,
-                    proof=dependency_authority,
-                    schema=schema,
-                    root=root,
-                    bind_source=False,
-                    paired_checkouts=None,
-                    proof_by_id=proof_by_id,
-                    _archive_stack=archive_stack,
+                _pending.append(
+                    (
+                        dependency_payload,
+                        dependency_path,
+                        dependency_authority,
+                        archive_stack,
+                        False,
+                    )
                 )
-                findings.extend(nested_findings)
 
     if bind_source:
         runtime_exclusions: list[Path] = []
@@ -1829,6 +1831,88 @@ def check_manifest(
         for field, label in labels.items():
             if payload["source"][field] != current_source[field]:
                 findings.append(Finding(manifest_path, f"source.{field} is not {label}"))
+    return findings
+
+
+def _rehash_manifest_bindings(payload: dict[str, Any], root: Path, path: Path) -> list[Finding]:
+    """Intrinsic reuse never exempts referenced bytes from live custody."""
+    findings = []
+    bindings = [(item, "proof artifact") for item in payload["artifacts"]]
+    bindings.extend((item, "dependency receipt") for item in payload["dependency_receipts"])
+    if payload["daemon_binary"] is not None:
+        bindings.append((payload["daemon_binary"], "daemon binary"))
+    for item, label in bindings:
+        try:
+            digest = _payload_sha256(root, item["path"], label=label)
+        except (OSError, ValueError) as error:
+            findings.append(Finding(path, f"{label} is unreadable: {error}"))
+        else:
+            if digest != item["sha256"]:
+                findings.append(Finding(path, f"{label} digest mismatch"))
+    return findings
+
+
+def check_manifest(
+    payload: Any,
+    *,
+    manifest_path: Path,
+    proof: dict[str, Any],
+    schema: dict[str, Any],
+    root: Path,
+    bind_source: bool,
+    allow_non_passed: bool = False,
+    paired_checkouts: dict[str, Path] | None = None,
+    proof_by_id: dict[str, dict[str, Any]] | None = None,
+    bound_source: dict[str, Any] | None = None,
+    bound_source_pair: dict[str, Any] | None = None,
+) -> list[Finding]:
+    """Validate each content/config-bound node once, rather than each DAG path.
+
+    Reuse is invocation-local. Incoming archive edges retain no-follow reads,
+    digest, identity, registry and ancestry validation. A final custody pass
+    rehashes every referenced artifact, binary and dependency, including nodes
+    reached through a cache hit. No proof-ID-only or cross-call cache exists.
+    """
+    findings: list[Finding] = []
+    pending = [(payload, manifest_path, proof, frozenset(), True)]
+    checked: dict[tuple[str, str], tuple[dict[str, Any], Path]] = {}
+    decoded: dict[str, Any] = {}
+    validator = jsonschema.Draft202012Validator(schema, format_checker=jsonschema.FormatChecker())
+    while pending:
+        current, path, authority, ancestry, top = pending.pop()
+        # Root and schema are fixed for this invocation; the key binds every
+        # byte interpreted and the complete local authority, not just its ID.
+        key = (
+            json.dumps(current, sort_keys=True, separators=(",", ":")),
+            json.dumps(authority, sort_keys=True, separators=(",", ":")),
+        )
+        if key in checked:
+            findings.extend(_rehash_manifest_bindings(current, root, path))
+            continue
+        local = _check_manifest_local(
+            current,
+            manifest_path=path,
+            proof=authority,
+            schema=schema,
+            root=root,
+            bind_source=bind_source if top else False,
+            allow_non_passed=allow_non_passed if top else False,
+            paired_checkouts=paired_checkouts if top else None,
+            proof_by_id=proof_by_id,
+            bound_source=bound_source if top else None,
+            bound_source_pair=bound_source_pair if top else None,
+            _pending=pending,
+            _decoded=decoded,
+            _validator=validator,
+            _archive_stack=ancestry,
+        )
+        findings.extend(local)
+        if isinstance(current, dict) and not any(
+            item.message.startswith("schema ") for item in local
+        ):
+            checked[key] = (current, path)
+    for current, path in checked.values():
+        findings.extend(_rehash_manifest_bindings(current, root, path))
     return findings
 
 

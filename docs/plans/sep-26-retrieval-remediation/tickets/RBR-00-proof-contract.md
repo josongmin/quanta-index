@@ -1,10 +1,10 @@
 # RBR-00 — Proof inventory와 새 실행 계약의 증거 바인딩
 
-## 현행 판정 — 2026-09-26, [중앙 코드 감사](CURRENT-AUDIT.md) 기준
+## 현행 판정 — 2026-09-26, `f9c3b4dc` + 공유 dirty
 
-- 구현: Python authority·sep-26 source closure·profile 계약은 코드에서 확인. 아래 210/211 및 closure 미포함은 **티켓 작성 당시 반례**이며 현 상태가 아니다.
-- 검증: 현 HEAD에서 `collect_pytest()` 대 authority는 exit 0, Python **272/272 exact**. `uv run --frozen --extra dev python -m pytest tools/ci/tests/test_retrieval_benchmark.py -q -p no:cacheprovider`는 272 passed/32 subtests passed(exit 0, 197.17s). 실행 전후 Python 입력 SHA는 동일하지만 공유 dirty checkout이 이동했고 문서도 source closure 입력이므로 **local diagnostic**이다. Rust 106·SDK 16은 manifest 수량 관측일 뿐 현재 source의 nextest collection과 clean receipt는 `NOT_RUN`.
-- 잔여: 최종 dirty bytes 고정 → 3역할 exact collection·negative fixture → clean-source contract/SDK receipt. 현재 구현/문서 변경 뒤 이전 receipt 재사용 금지. [현재 전수 판정](CURRENT-AUDIT.md).
+- 구현 관측: `proof_inventory.py`의 exact-set 검증, retrieval source closure의 sep-26 경로, profile·diagnostic/replay 계약이 현재 owning 소스에 있다. 아래 210/211 및 closure 미포함은 **티켓 작성 당시 반례**이며 현 상태가 아니다.
+- 검증 경계: 현재 authority 파일은 Python **283**, Rust **108**, SDK **17** identity를 선언한다. 수량은 collection 또는 실행 성공이 아니다. Python 소비자 수정과 실제 SDK 17개 전체 실행이 진행 중이며, 최종 source-stable exact collection·terminal execution·receipt는 미발급이다. 과거 276/276·280 결과는 현재 증거가 아니다. clean-source contract/SDK closure는 `NOT_RUN`; 문서 변경도 closure 입력이다.
+- 잔여: 최종 code/document bytes 고정 → 3역할 actual exact collection·negative fixture·terminal execution → 입력/바이너리/로그를 바인딩한 receipt. dirty local proof와 clean-source closure를 분리하고 변경 전 receipt를 재사용하지 않는다. [중앙 코드 감사](CURRENT-AUDIT.md), [잔여 작업](GAP-REGISTER.md).
 
 - 우선순위: P0. Python inventory·closure 코드는 관측됨; 현 소스 전체 proof는 미발급. [현재 전수 판정](CURRENT-AUDIT.md).
 - 선행조건: 없음. 공통 완료 조건: [TEST-PLAN](TEST-PLAN.md).

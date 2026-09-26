@@ -1,7 +1,6 @@
 //! Semantic query route and the shared embed -> model-identity gate.
 
 use std::collections::BTreeSet;
-use std::time::Instant;
 
 use quanta_index_contract::{
     EarlyStopReason, QueryConstraintSetV1, QueryStageKindV1, SemanticQueryRequest,
@@ -22,7 +21,7 @@ use crate::query_dispatcher::semantic_query::{
     SemanticScopeV1, build_semantic_response_explanation, ensure_query_model_matches_index_v1,
     prefix_semantic_query_error, resolve_semantic_request_selection,
 };
-use crate::query_dispatcher::stage_timing::elapsed;
+use crate::query_dispatcher::stage_timing::StageTimings;
 use crate::query_dispatcher::window::{probe_top_k_v1, semantic_window_v2, top_k_limit};
 
 /// The lexical scope of a semantic query, lowered before anything is
@@ -69,8 +68,8 @@ impl SearchPlaneDispatcher {
         let selection =
             resolve_semantic_request_selection(self.activation_catalog.as_ref(), request)?;
         let pin = selection.pin.clone();
-        let mut stage_timings = Vec::with_capacity(6);
-        let prepare_started = Instant::now();
+        let mut stage_timings = StageTimings::new(self.query_stage_observation, 6);
+        let prepare_started = self.query_stage_observation.start();
         let scope_plan = match request.lexical_scope.as_ref() {
             Some(scope) => Some(plan_semantic_scope(request, scope)?),
             None => None,
@@ -79,13 +78,8 @@ impl SearchPlaneDispatcher {
             || request.constraints.clone(),
             |plan| plan.prepared.constraints.clone(),
         );
-        stage_timings.push(elapsed(
-            QueryStageKindV1::SemanticPrepare,
-            prepare_started,
-            1,
-            None,
-        ));
-        let view_started = Instant::now();
+        stage_timings.record_elapsed(QueryStageKindV1::SemanticPrepare, prepare_started, 1, None);
+        let view_started = self.query_stage_observation.start();
         let view = self.acquire_read_view(
             &ReadViewRequestV1::declare(
                 "semantic",
@@ -96,12 +90,7 @@ impl SearchPlaneDispatcher {
             .with_semantic_manifest_digest(selection.expected_manifest_digest.as_deref()),
             budget,
         )?;
-        stage_timings.push(elapsed(
-            QueryStageKindV1::SemanticReadView,
-            view_started,
-            1,
-            None,
-        ));
+        stage_timings.record_elapsed(QueryStageKindV1::SemanticReadView, view_started, 1, None);
         // Invocation truth (W10-R1): only backend calls record. A
         // `force_empty` scope invokes nothing and records nothing.
         let execution = LaneExecutionRecorderV1::new();
@@ -114,7 +103,7 @@ impl SearchPlaneDispatcher {
                 // of the scope query.
                 let searcher = view.lexical()?;
                 budget.checkpoint("semantic:scope")?;
-                let scope_started = Instant::now();
+                let scope_started = self.query_stage_observation.start();
                 let mut scoped = if plan.prepared.force_empty {
                     Vec::new()
                 } else {
@@ -129,12 +118,12 @@ impl SearchPlaneDispatcher {
                         .candidates
                 };
                 if !plan.prepared.force_empty {
-                    stage_timings.push(elapsed(
+                    stage_timings.record_elapsed(
                         QueryStageKindV1::SemanticLexicalScope,
                         scope_started,
                         1,
                         Some(scoped.len()),
-                    ));
+                    );
                 }
                 if scoped.len() > top_k_limit(plan.cap) {
                     return Err(CoreError::InvalidContract(format!(
@@ -157,22 +146,17 @@ impl SearchPlaneDispatcher {
         let scope_candidate_ids = scope.as_ref().map(|scope| &scope.candidate_ids);
         let searcher = view.semantic()?;
         budget.checkpoint("semantic:embed")?;
-        let embed_started = Instant::now();
+        let embed_started = self.query_stage_observation.start();
         let query_vector = self.embed_and_gate_query(
             request.query_text.as_str(),
             searcher.as_ref(),
             "semantic",
             budget,
         )?;
-        stage_timings.push(elapsed(
-            QueryStageKindV1::SemanticEmbedding,
-            embed_started,
-            1,
-            None,
-        ));
+        stage_timings.record_elapsed(QueryStageKindV1::SemanticEmbedding, embed_started, 1, None);
         let probe_top_k = probe_top_k_v1(request.top_k)?;
         budget.checkpoint("semantic:search")?;
-        let search_started = Instant::now();
+        let search_started = self.query_stage_observation.start();
         execution.record_semantic_invocation();
         let mut results = if let Some(scope_ids) = scope_candidate_ids {
             searcher.search_scoped_constrained(
@@ -190,14 +174,14 @@ impl SearchPlaneDispatcher {
                 budget,
             )?
         };
-        stage_timings.push(elapsed(
+        stage_timings.record_elapsed(
             QueryStageKindV1::SemanticDenseSearch,
             search_started,
             1,
             Some(results.len()),
-        ));
+        );
         budget.checkpoint("semantic:project")?;
-        let project_started = Instant::now();
+        let project_started = self.query_stage_observation.start();
         let observed = results.len();
         results.truncate(top_k_limit(request.top_k));
         // Contribution, same rule the builder used to apply inline: the
@@ -232,13 +216,13 @@ impl SearchPlaneDispatcher {
             budget.response_request_id(),
         );
         attach_read_view_trace(&mut explanation, view.identity());
-        stage_timings.push(elapsed(
+        stage_timings.record_elapsed(
             QueryStageKindV1::SemanticProject,
             project_started,
             1,
             Some(results.len()),
-        ));
-        explanation.stage_timings = Some(stage_timings);
+        );
+        explanation.stage_timings = stage_timings.finish();
         Ok(SemanticQueryResponse {
             generation: pin,
             results,

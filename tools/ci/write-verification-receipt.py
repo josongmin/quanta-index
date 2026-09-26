@@ -10,7 +10,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from nextest_events import NextestEvidenceError, parse_nextest, parse_nextest_inventory_bytes
+from nextest_events import NextestEvidenceError, parse_nextest_bytes, parse_nextest_inventory_bytes
 from source_closure import ClosureError, load_and_verify
 
 
@@ -38,14 +38,20 @@ def _nextest_evidence_summary(
     evidence: Path, inventory: Path | None
 ) -> tuple[str, int, str | None]:
     try:
-        # Parse execution first so malformed or failing runs remain the primary
-        # error even when their collection artifact is also missing.
-        parse_nextest(evidence)
-        inventory_bytes = inventory.read_bytes() if inventory is not None else None
-        expected = (
-            parse_nextest_inventory_bytes(inventory_bytes) if inventory_bytes is not None else None
-        )
-        parsed = parse_nextest(evidence, expected=expected)
+        evidence_bytes = evidence.read_bytes()
+        try:
+            inventory_bytes = inventory.read_bytes() if inventory is not None else None
+            expected = (
+                parse_nextest_inventory_bytes(inventory_bytes)
+                if inventory_bytes is not None
+                else None
+            )
+        except (NextestEvidenceError, OSError):
+            # Keep a malformed/failing execution as the primary error without
+            # parsing every healthy run twice or reopening its pathname.
+            parse_nextest_bytes(evidence_bytes)
+            raise
+        parsed = parse_nextest_bytes(evidence_bytes, expected=expected)
     except (NextestEvidenceError, OSError) as error:
         raise SystemExit(f"{error}: {evidence}") from error
     inventory_digest = (

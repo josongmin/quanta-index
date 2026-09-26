@@ -2,7 +2,7 @@
 
 ## 현행 판정 — 2026-09-26, [중앙 코드 감사](CURRENT-AUDIT.md) 기준
 
-- 구현/검증: `symbol` route는 있으나 source-bound 오순위 진입 사례, exact-name ranker 변경, 영향받은 lexical/page/reopen proof는 `NOT_RUN`. 제품 기본값 변경도 없다.
+- 구현/검증: `604149ed`에서 `symbol` route는 확인했으나 source-bound 오순위 진입 probe, exact-name ranker 변경의 효과, lexical/page/reopen proof는 `NOT_RUN`이다. 이번 감사로 ranker 결함을 확정하지 않았다. 무조건 구현 티켓이 아니라 실험 결과에 따른 변경/유지 결정 티켓이다.
 - 잔여 결정: 정의 정답이 후보에 **있는데도** 참조/부분일치/동명이인 아래 놓이는 독립 사례를 먼저 수집한다. 사례가 없으면 이유와 raw probe로 **유지 결정**; 있으면 한 후보만 development에서 시험하고 schema 양 ingest 경로·pagination·reopen·holdout guard를 증명한다. [현재 전수 판정](CURRENT-AUDIT.md).
 
 - 우선순위: P2. 진입 probe·변경 또는 유지 결정 `NOT_RUN`; 정책을 임의 승격하지 않는다. [현재 전수 판정](CURRENT-AUDIT.md). 선행: RBR-05/06.

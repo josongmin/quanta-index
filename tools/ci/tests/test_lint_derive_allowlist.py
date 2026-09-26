@@ -107,3 +107,21 @@ def test_main_returns_zero_on_clean_repo():
     """End-to-end smoke: running main() against the real tree returns 0."""
     rc = MODULE.main()
     assert rc == 0
+
+
+def test_macro_derive_is_inventoried(tmp_path: Path):
+    source = tmp_path / "macro.rs"
+    source.write_text(
+        "macro_rules! m { () => { #[cfg_attr(all(), derive(serde::Serialize))] struct S; }; }"
+    )
+    assert "Serialize" in MODULE.audit_file(source)[0]
+
+
+def test_derive_comments_and_raw_identifiers_preserve_paths(tmp_path: Path):
+    source = tmp_path / "comment.rs"
+    source.write_text(
+        "#[derive(Debug /* comment */, r#Clone, thiserror /* comment */ :: Error)] struct S;"
+    )
+    assert MODULE.audit_file(source) == []
+    source.write_text("#[r#derive(r#Serialize)] struct S;")
+    assert "Serialize" in MODULE.audit_file(source)[0]

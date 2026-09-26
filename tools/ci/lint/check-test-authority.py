@@ -23,6 +23,9 @@ from __future__ import annotations
 
 import argparse
 import ast
+import itertools
+import json
+import math
 import re
 import shlex
 import sys
@@ -128,8 +131,28 @@ def _load_workflow(
     except ModuleNotFoundError:
         violations.append(_violation(catalog, "PyYAML is required to validate CI rail bindings"))
         return None
+
+    class UniqueKeyLoader(yaml.SafeLoader):
+        def construct_mapping(self, node, deep=False):
+            self.flatten_mapping(node)
+            result = {}
+            for key_node, value_node in node.value:
+                key = self.construct_object(key_node, deep=deep)
+                try:
+                    duplicate = key in result
+                except TypeError as error:
+                    raise yaml.constructor.ConstructorError(
+                        None, None, "workflow key must be scalar", key_node.start_mark
+                    ) from error
+                if duplicate:
+                    raise yaml.constructor.ConstructorError(
+                        None, None, f"duplicate workflow key: {key!r}", key_node.start_mark
+                    )
+                result[key] = self.construct_object(value_node, deep=deep)
+            return result
+
     try:
-        parsed = yaml.safe_load(path.read_text(encoding="utf-8"))
+        parsed = yaml.load(path.read_text(encoding="utf-8"), Loader=UniqueKeyLoader)
     except (OSError, yaml.YAMLError) as error:
         violations.append(_violation(path, f"cannot parse workflow YAML: {error}"))
         return None
@@ -204,7 +227,11 @@ def _validate_rail_binding(
             _violation(catalog, f"rail {rail_id} workflow job does not exist: {job_id}")
         )
         return
-    if not _condition_allows_tier(jobs[job_id].get("if"), required_events):
+    if jobs[job_id].get("continue-on-error", False) is not False or not _condition_allows_tier(
+        jobs[job_id].get("if"),
+        enabled_events.intersection(required_events),
+        require_guaranteed=True,
+    ):
         violations.append(_violation(catalog, f"rail {rail_id} workflow job is disabled"))
         return
     steps = jobs[job_id].get("steps")
@@ -214,11 +241,21 @@ def _validate_rail_binding(
     for step in steps:
         if not isinstance(step, dict) or step.get("name") != step_name:
             continue
-        if not _condition_allows_tier(step.get("if"), required_events):
+        if step.get("continue-on-error", False) is not False or not _condition_allows_tier(
+            _joint_condition(jobs[job_id].get("if"), step.get("if")),
+            enabled_events.intersection(required_events),
+            require_guaranteed=True,
+        ):
             violations.append(_violation(catalog, f"rail {rail_id} workflow step is disabled"))
             return
+        shell = _rail_shell(workflow, jobs[job_id], step)
+        if shell is None:
+            violations.append(
+                _violation(catalog, f"rail {rail_id} shell does not prove failure propagation")
+            )
+            return
         run = step.get("run")
-        if isinstance(run, str) and _executes_declared_command(run, command):
+        if isinstance(run, str) and _executes_declared_command(run, command, shell_pipefail=shell):
             return
         violations.append(
             _violation(
@@ -232,31 +269,268 @@ def _validate_rail_binding(
     )
 
 
-def _executes_declared_command(run: str, command: str) -> bool:
-    """Match a logical shell command, not a comment or receipt metadata string."""
-    logical_lines = re.sub(r"\\\r?\n[ \t]*", " ", run)
-    pipefail_enabled = False
-    for raw_line in logical_lines.splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
+def _rail_shell(workflow: dict, job: dict, step: dict) -> bool | None:
+    """Return the shell's initial pipefail state, or reject unknown semantics.
+
+    GitHub's default Linux/macOS shell uses errexit; explicit bash also uses
+    pipefail. Custom templates without errexit can swallow a failed rail by
+    executing a later successful command. Only known templates establish proof.
+    """
+    for scope in (workflow, job, step):
+        environment = scope.get("env", {})
+        if not isinstance(environment, dict) or any(
+            isinstance(key, str) and key.upper() in {"BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS"}
+            for key in environment
+        ):
+            return None
+    shell = None
+    for scope in (workflow, job):
+        defaults = scope.get("defaults", {})
+        if not isinstance(defaults, dict) or not isinstance(defaults.get("run", {}), dict):
+            return None
+        run = defaults.get("run", {})
+        if "shell" in run:
+            shell = run["shell"]
+    if "shell" in step:
+        shell = step["shell"]
+    if shell is None:
+        runner = job.get("runs-on")
+        labels = [runner] if isinstance(runner, str) else runner if isinstance(runner, list) else []
+        if any(
+            isinstance(label, str) and ("windows" in label.lower() or "${{" in label)
+            for label in labels
+        ):
+            return None
+        return False
+    if not isinstance(shell, str):
+        return None
+    known = {
+        "bash": True,
+        "sh": False,
+        "bash --noprofile --norc -eo pipefail {0}": True,
+        "bash -e {0}": False,
+        "sh -e {0}": False,
+    }
+    return known.get(shell.strip())
+
+
+def _literal_shell_argv(text: str) -> list[str] | None:
+    """Decode only literal Bash words; expansion is not execution authority.
+
+    shlex is not a Bash lexer: it mishandles escaped newlines, double-quote
+    escapes and embedded comment markers. All command-name and argv decisions
+    share this restricted decoder. Unknown syntax fails closed, never expands.
+    """
+    words: list[str] = []
+    word: list[str] = []
+    active = False
+    quote: str | None = None
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if quote == "'":
+            if char == "'":
+                quote = None
+            else:
+                word.append(char)
+        elif char == "\\":
+            index += 1
+            if index == len(text):
+                return None
+            escaped = text[index]
+            if escaped != "\n":
+                if quote == '"' and escaped not in '\\"$`':
+                    word.append("\\")
+                word.append(escaped)
+                active = True
+        elif quote == '"':
+            if char == '"':
+                quote = None
+            elif char in "$`":
+                return None
+            else:
+                word.append(char)
+        elif char in "'\"":
+            quote = char
+            active = True
+        elif char in " \t\n":
+            if active:
+                words.append("".join(word))
+                word = []
+                active = False
+        elif char == "#" and not active:
+            break
+        elif char in "$`*?[]{}~;|&<>()":
+            return None
+        else:
+            word.append(char)
+            active = True
+        index += 1
+    if quote is not None:
+        return None
+    if active:
+        words.append("".join(word))
+    return words or None
+
+
+def _executes_declared_command(run: str, command: str, *, shell_pipefail: bool = False) -> bool:
+    """Require a foreground top-level command; shell text is not execution.
+
+    Authority rails use straight-line shell commands. Conditional lists,
+    functions, loops, heredocs and background jobs cannot establish a binding.
+    """
+    from tree_sitter_language_pack import get_parser
+
+    if "${{" in run:
+        # Actions renders expressions before shell parsing. An unknown input
+        # can inject control flow even inside a quoted echo argument. Runtime
+        # data belongs in env, whose shell expansion cannot insert syntax.
+        return False
+    source = run.encode("utf-8")
+    tree = get_parser("bash").parse(source)
+    if tree.root_node.has_error:
+        return False
+    declared = _literal_shell_argv(command)
+    if declared is None:
+        return False
+    pipefail_enabled = shell_pipefail
+    for node in tree.root_node.children:
+        if node.type in {"comment", ";", "\n"}:
             continue
-        for statement in re.split(r"&&|;", line):
-            statement = " ".join(statement.split())
-            if statement == "set -o pipefail":
-                pipefail_enabled = True
+        if node.type == "&":
+            return False
+        if node.type == "redirected_statement":
+            body = node.child_by_field_name("body")
+            if body is None:
+                return False
+            node = body
+        if node.type == "list":
+            parts = node.named_children
+            guard = parts[0].child_by_field_name("name") if len(parts) == 2 else None
+            if (
+                len(parts) != 2
+                or parts[0].type != "command"
+                or parts[1].type != "command"
+                or guard is None
+                or source[guard.start_byte : guard.end_byte] != b"cd"
+                or source[parts[0].end_byte : parts[1].start_byte].strip() != b"&&"
+            ):
+                return False
+            if any(
+                later.start_byte >= node.end_byte and later.type != "comment"
+                for later in tree.root_node.named_children
+            ):
+                return False
+            # A failed cd keeps the AND list failed. Its successful path must
+            # execute the foreground rail. It must be the last statement;
+            # errexit does not abort on an AND list's failed left operand.
+            node = parts[1]
+        if node.type == "command":
+            if any(child.type == "variable_assignment" for child in node.named_children):
+                # Prefix assignments are not argv[0] and can change command
+                # resolution. Never let them hide a shell-control builtin.
+                return False
+            words = _literal_shell_argv(source[node.start_byte : node.end_byte].decode())
+            if words is None:
+                return False
+            executable = words[0]
+            if executable in {
+                "exit",
+                "return",
+                "exec",
+                "false",
+                "eval",
+                "source",
+                ".",
+                "builtin",
+                "command",
+                "alias",
+                "unalias",
+                "trap",
+                "enable",
+                "shopt",
+            }:
+                # These builtins can alter control flow, replace the declared
+                # executable, or swallow an error in the current shell.
+                return False
+            if executable == "set":
+                # Admit a small, literal option grammar, not substrings of
+                # shell text. Quoted/concatenated words retain their meaning.
+                if any(
+                    descendant.type in {"expansion", "simple_expansion", "command_substitution"}
+                    for descendant in _shell_nodes(node)
+                ):
+                    return False
+                options = iter(words[1:])
+                for option in options:
+                    if option in {"-o", "+o"}:
+                        value = next(options, None)
+                        if value == "pipefail":
+                            pipefail_enabled = option == "-o"
+                        elif option != "-o" or value not in {"errexit", "nounset", "xtrace"}:
+                            return False
+                    elif re.fullmatch(r"-[euxE]+o", option):
+                        if next(options, None) != "pipefail":
+                            return False
+                        pipefail_enabled = True
+                    elif re.fullmatch(r"-[euxE]+", option) is None:
+                        return False
+                if len(words) < 2:
+                    return False
                 continue
-            if statement == "set +o pipefail":
-                pipefail_enabled = False
+        elif node.type != "pipeline":
+            # Setup assignments/declarations are harmless. Unknown control
+            # flow before the rail cannot prove that the rail is reachable.
+            if node.type in {"variable_assignment", "declaration_command"}:
                 continue
-            if statement.startswith(command):
-                suffix = statement[len(command) :]
-                if "nextest run" in command and suffix.strip():
-                    tail = suffix.strip()
-                    if "||" in tail or not tail.startswith("|") or not pipefail_enabled:
-                        continue
-                if not suffix or suffix[0].isspace() or suffix[0] == "|":
-                    return True
+            return False
+        candidate = node.named_children[0] if node.type == "pipeline" else node
+        if candidate.type == "redirected_statement":
+            candidate = candidate.child_by_field_name("body")
+        if candidate is not None and candidate.type == "command":
+            if any(
+                descendant.type
+                in {
+                    "expansion",
+                    "simple_expansion",
+                    "command_substitution",
+                    "ansi_c_string",
+                    "variable_assignment",
+                }
+                for descendant in _shell_nodes(candidate)
+            ):
+                continue
+            invocation = _literal_shell_argv(
+                source[candidate.start_byte : candidate.end_byte].decode()
+            )
+            if invocation is None or invocation != declared:
+                continue
+            # A trailing '&' is a separate program child, outside the command.
+            following = source[node.end_byte :].lstrip()
+            if following.startswith(b"&"):
+                return False
+            if node.type == "pipeline" and not pipefail_enabled:
+                continue
+            return True
     return False
+
+
+def _shell_nodes(node: Any):
+    yield node
+    for child in node.named_children:
+        yield from _shell_nodes(child)
+
+
+def _joint_condition(job: object, step: object) -> object:
+    def expression(value: object) -> str:
+        if value is None or value is True:
+            return "true"
+        if value is False or not isinstance(value, str):
+            return "false"
+        value = value.strip()
+        return value[3:-2].strip() if value.startswith("${{") and value.endswith("}}") else value
+
+    return f"({expression(job)}) && ({expression(step)})"
 
 
 def _is_disabled(value: object) -> bool:
@@ -267,12 +541,113 @@ def _is_disabled(value: object) -> bool:
     return value.strip().lower() in {"false", "${{ false }}"}
 
 
-def _condition_allows_tier(value: object, events: set[str]) -> bool:
+def _parse_actions_condition(expression: str) -> ast.Expression:
+    """Parse the supported Actions grammar with its own operator precedence.
+
+    Python's ``not`` binds below equality; Actions ``!`` binds above it. Build
+    nodes explicitly instead of translating text into Python expressions.
+    """
+    token_pattern = re.compile(
+        r"'(?:[^']|'')*'|[a-zA-Z_][a-zA-Z_0-9]*(?:\.[a-zA-Z_][a-zA-Z_0-9]*)*"
+        r"|-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?"
+        r"|&&|\|\||==|!=|[!()]"
+    )
+    tokens: list[str] = []
+    offset = 0
+    while offset < len(expression):
+        if expression[offset].isspace():
+            offset += 1
+            continue
+        match = token_pattern.match(expression, offset)
+        if match is None:
+            raise ValueError("unsupported Actions token")
+        tokens.append(match.group())
+        offset = match.end()
+        if len(tokens) > 128:
+            raise ValueError("Actions expression exceeds parser budget")
+    position = 0
+
+    def take(token: str) -> bool:
+        nonlocal position
+        if position < len(tokens) and tokens[position] == token:
+            position += 1
+            return True
+        return False
+
+    def unary() -> ast.expr:
+        nonlocal position
+        if take("!"):
+            return ast.UnaryOp(op=ast.Not(), operand=unary())
+        if take("("):
+            node = disjunction()
+            if not take(")"):
+                raise ValueError("unclosed Actions group")
+            return node
+        if position == len(tokens):
+            raise ValueError("missing Actions operand")
+        token = tokens[position]
+        position += 1
+        if token.startswith("'"):
+            return ast.Constant(value=token[1:-1].replace("''", "'"))
+        constants = {"true": True, "false": False, "null": None}
+        if token.lower() in constants:
+            return ast.Constant(value=constants[token.lower()])
+        if token[0].isdigit() or token[0] == "-":
+            return ast.Constant(value=float(json.loads(token)))
+        if not re.fullmatch(r"[a-zA-Z_][a-zA-Z_0-9]*(?:\.[a-zA-Z_][a-zA-Z_0-9]*)*", token):
+            raise ValueError("invalid Actions operand")
+        parts = token.split(".")
+        node = ast.Name(id=parts[0], ctx=ast.Load())
+        for part in parts[1:]:
+            node = ast.Attribute(value=node, attr=part, ctx=ast.Load())
+        if take("("):
+            if not take(")"):
+                raise ValueError("only zero-argument status calls are supported")
+            return ast.Call(func=node, args=[], keywords=[])
+        return node
+
+    def equality() -> ast.expr:
+        node = unary()
+        if take("=="):
+            return ast.Compare(left=node, ops=[ast.Eq()], comparators=[unary()])
+        if take("!="):
+            return ast.Compare(left=node, ops=[ast.NotEq()], comparators=[unary()])
+        return node
+
+    def conjunction() -> ast.expr:
+        values = [equality()]
+        while take("&&"):
+            values.append(equality())
+        return values[0] if len(values) == 1 else ast.BoolOp(op=ast.And(), values=values)
+
+    def disjunction() -> ast.expr:
+        values = [conjunction()]
+        while take("||"):
+            values.append(conjunction())
+        return values[0] if len(values) == 1 else ast.BoolOp(op=ast.Or(), values=values)
+
+    result = disjunction()
+    if position != len(tokens):
+        raise ValueError("unsupported Actions expression suffix")
+    return ast.Expression(body=result)
+
+
+def _condition_allows_tier(
+    value: object, events: set[str], *, require_guaranteed: bool = False
+) -> bool:
+    """Find a concrete scalar witness, never independent comparison booleans.
+
+    Supported syntax is literals, context paths, equality, Boolean operators,
+    and zero-argument status checks. Equality/truthiness follow GitHub's scalar
+    rules, including case-insensitive strings and numeric coercion. Candidate
+    values form a bounded witness search, not a complete Actions interpreter:
+    unsupported syntax or an exhausted budget cannot establish a rail.
+    """
     if _is_disabled(value):
         return False
     if value is None or value is True:
-        return True
-    if not isinstance(value, str):
+        return bool(events)
+    if not isinstance(value, str) or not events:
         return False
     expression = value.strip()
     if expression.startswith("${{") and expression.endswith("}}"):
@@ -280,64 +655,232 @@ def _condition_allows_tier(value: object, events: set[str]) -> bool:
     if not expression:
         return False
 
-    def possible_for_event(event: str) -> bool:
-        def replace_event(match: re.Match[str]) -> str:
-            comparison = match.group(1)
-            matches = event == match.group(3)
-            return "True" if matches == (comparison == "==") else "False"
+    try:
+        tree = _parse_actions_condition(expression)
+    except (ValueError, RecursionError):
+        return False
 
-        resolved = re.sub(
-            r"github\.event_name\s*(==|!=)\s*(['\"])([^'\"]+)\2",
-            replace_event,
-            expression,
-        )
-        if "github.event_name" in resolved:
-            return False
-        resolved = re.sub(r"\btrue\b", "True", resolved, flags=re.IGNORECASE)
-        resolved = re.sub(r"\bfalse\b", "False", resolved, flags=re.IGNORECASE)
-        resolved = resolved.replace("&&", " and ").replace("||", " or ")
-        resolved = re.sub(r"!(?!=)", " not ", resolved).strip()
-        try:
-            tree = ast.parse(resolved, mode="eval")
-        except SyntaxError:
-            return False
+    symbols: set[str] = set()
+    literals: list[object] = [None, False, True, 0, 1, "", "__authority_other__"]
+    status_used = False
 
-        def possible(node: ast.AST) -> set[bool]:
-            if isinstance(node, ast.Expression):
-                return possible(node.body)
-            if isinstance(node, ast.Constant) and isinstance(node.value, bool):
-                return {node.value}
-            if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.And):
-                values = {True}
-                for part in node.values:
-                    values = {left and right for left in values for right in possible(part)}
-                return values
-            if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.Or):
-                values = {False}
-                for part in node.values:
-                    values = {left or right for left in values for right in possible(part)}
-                return values
-            if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
-                return {not item for item in possible(node.operand)}
-            if isinstance(node, ast.Compare):
-                if (
-                    len(node.ops) == 1
-                    and len(node.comparators) == 1
-                    and isinstance(node.left, ast.Constant)
-                    and isinstance(node.comparators[0], ast.Constant)
-                    and isinstance(node.op, (ast.Eq, ast.NotEq))
+    def context_path(node: ast.AST) -> str | None:
+        if isinstance(node, ast.Name):
+            return node.id.lower()
+        if isinstance(node, ast.Attribute):
+            prefix = context_path(node.value)
+            return f"{prefix}.{node.attr.lower()}" if prefix else None
+        return None
+
+    def supported(node: ast.AST) -> bool:
+        nonlocal status_used
+        if isinstance(node, ast.Expression):
+            return supported(node.body)
+        if isinstance(node, ast.Constant):
+            if node.value is None or type(node.value) in (bool, str, int, float):
+                if isinstance(node.value, float) and not math.isfinite(node.value):
+                    return False
+                # OrdinalIgnoreCase Unicode folding is runner-specific. ASCII
+                # witnesses are supported; other strings cannot prove a rail.
+                if isinstance(node.value, str) and not node.value.isascii():
+                    return False
+                literals.append(node.value)
+                return True
+            return False
+        if isinstance(node, (ast.Name, ast.Attribute)):
+            path = context_path(node)
+            if path is None or "." not in path:
+                return False
+            parts = path.split(".")
+            if parts[0] not in {
+                "github",
+                "inputs",
+                "env",
+                "vars",
+                "secrets",
+                "matrix",
+                "steps",
+                "needs",
+                "strategy",
+                "job",
+                "runner",
+            }:
+                return False
+            if path in {"github.event", "job.container", "job.services"}:
+                return False
+            if parts[0] in {"steps", "needs"} and (
+                len(parts) < 3 or (len(parts) == 3 and parts[2] == "outputs")
+            ):
+                return False
+            if path != "github.event_name":
+                symbols.add(path)
+            return True
+        if isinstance(node, ast.BoolOp) and isinstance(node.op, (ast.And, ast.Or)):
+            return all(supported(child) for child in node.values)
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            return supported(node.operand)
+        if isinstance(node, ast.Compare):
+            return (
+                len(node.ops) == 1
+                and isinstance(node.ops[0], (ast.Eq, ast.NotEq))
+                and supported(node.left)
+                and supported(node.comparators[0])
+            )
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            if node.args or node.keywords:
+                return False
+            if node.func.id.lower() == "always":
+                return True
+            if node.func.id.lower() in {"success", "failure", "cancelled"}:
+                status_used = True
+                return True
+        return False
+
+    if not supported(tree):
+        return False
+    keys = sorted(symbols)
+    # A scalar and a child of that same scalar cannot be assigned separately.
+    paths = [*keys, "github.event_name"]
+    if any(right.startswith(left + ".") for left in paths for right in paths if left != right):
+        return False
+
+    def number(item: object) -> float:
+        if item is None:
+            return 0.0
+        if type(item) in (bool, int, float):
+            try:
+                return float(item)
+            except OverflowError:
+                return math.nan
+        if isinstance(item, str):
+            text = item.strip()
+            if not text:
+                return 0.0
+            # Runner ExpressionUtility.ParseNumber: trimmed decimal strings,
+            # Infinity, and signed 32-bit hex/octal bit patterns. JSON number
+            # parsing alone differs for '+1', '01', '1.', and '0x10'.
+            try:
+                radix = 16 if text.startswith("0x") else 8 if text.startswith("0o") else None
+                if radix is not None:
+                    digits = text[2:]
+                    pattern = r"[0-9a-fA-F]+" if radix == 16 else r"[0-7]+"
+                    if not re.fullmatch(pattern, digits):
+                        return math.nan
+                    parsed = int(digits, radix)
+                    if parsed > 0xFFFFFFFF:
+                        return math.nan
+                    return float(parsed if parsed <= 0x7FFFFFFF else parsed - 0x100000000)
+                if re.fullmatch(
+                    r"[+-]?(?:(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?|Infinity)",
+                    text,
+                    re.IGNORECASE,
                 ):
-                    equal = node.left.value == node.comparators[0].value
-                    return {equal if isinstance(node.op, ast.Eq) else not equal}
-                return {False, True}
-            if isinstance(node, (ast.Name, ast.Attribute, ast.Call)):
-                # Non-event inputs remain unknown at static-analysis time.
-                return {False, True}
-            return set()
+                    return float(text)
+            except (ValueError, OverflowError):
+                pass
+        return math.nan
 
-        return True in possible(tree)
+    def equal(left: object, right: object) -> bool:
+        if isinstance(left, str) and isinstance(right, str):
+            return left.lower() == right.lower()
+        if type(left) is type(right):
+            return left == right
+        return number(left) == number(right)
 
-    return any(possible_for_event(event) for event in events)
+    if require_guaranteed:
+        # An existential scalar witness is insufficient for an authority rail:
+        # the configured context might never have that value. Prove a tier
+        # event without assumptions about env, inputs, matrix, or step outputs.
+        # Unknown conditions remain unknown; a literal event branch can still
+        # establish unconditional coverage (e.g. schedule || dispatch input).
+        unknown = object()
+
+        def known_value(node: ast.AST, event: str) -> object:
+            if isinstance(node, ast.Constant):
+                return node.value
+            if isinstance(node, (ast.Name, ast.Attribute)):
+                return event if context_path(node) == "github.event_name" else unknown
+            if isinstance(node, ast.Call):
+                return node.func.id.lower() in {"always", "success"}
+            if isinstance(node, (ast.Compare, ast.UnaryOp)):
+                result = truth(node, event)
+                return unknown if result is None else result
+            return unknown
+
+        def truth(node: ast.AST, event: str) -> bool | None:
+            if isinstance(node, ast.Expression):
+                return truth(node.body, event)
+            if isinstance(node, ast.BoolOp):
+                values = [truth(child, event) for child in node.values]
+                if isinstance(node.op, ast.And):
+                    return False if False in values else None if None in values else True
+                return True if True in values else None if None in values else False
+            if isinstance(node, ast.UnaryOp):
+                result = truth(node.operand, event)
+                return None if result is None else not result
+            if isinstance(node, ast.Compare):
+                left = known_value(node.left, event)
+                right = known_value(node.comparators[0], event)
+                if left is unknown or right is unknown:
+                    return None
+                same = equal(left, right)
+                return same if isinstance(node.ops[0], ast.Eq) else not same
+            result = known_value(node, event)
+            return None if result is unknown else bool(result)
+
+        return any(truth(tree, event) is True for event in sorted(events))
+
+    # Include numeric witnesses for mixed-type equality and a fresh string
+    # outside every literal class. Every successful assignment is concrete.
+    candidates: list[object] = []
+    for literal in literals:
+        if not any(type(literal) is type(item) and literal == item for item in candidates):
+            candidates.append(literal)
+        numeric = number(literal)
+        if math.isfinite(numeric) and numeric not in candidates:
+            candidates.append(numeric)
+    fresh = "__authority_other__"
+    while any(isinstance(item, str) and equal(fresh, item) for item in literals):
+        fresh += "_"
+    candidates.append(fresh)
+    statuses = ("success", "failure", "cancelled") if status_used else ("success",)
+    if len(candidates) ** len(keys) * len(statuses) * len(events) > 4096:
+        return False
+
+    def evaluate(node: ast.AST, assignment: dict[str, object], status: str) -> object:
+        if isinstance(node, ast.Expression):
+            return evaluate(node.body, assignment, status)
+        if isinstance(node, ast.Constant):
+            return node.value
+        if isinstance(node, (ast.Name, ast.Attribute)):
+            return assignment[context_path(node)]
+        if isinstance(node, ast.BoolOp):
+            result: object = None
+            for child in node.values:
+                result = evaluate(child, assignment, status)
+                if isinstance(node.op, ast.And) and not result:
+                    break
+                if isinstance(node.op, ast.Or) and result:
+                    break
+            return result
+        if isinstance(node, ast.UnaryOp):
+            return not evaluate(node.operand, assignment, status)
+        if isinstance(node, ast.Compare):
+            same = equal(
+                evaluate(node.left, assignment, status),
+                evaluate(node.comparators[0], assignment, status),
+            )
+            return same if isinstance(node.ops[0], ast.Eq) else not same
+        if isinstance(node, ast.Call):
+            return node.func.id.lower() == "always" or node.func.id.lower() == status
+        raise AssertionError("unsupported node escaped validation")
+
+    return any(
+        bool(evaluate(tree, {**dict(zip(keys, values)), "github.event_name": event}, status))
+        for event in sorted(events)
+        for status in statuses
+        for values in itertools.product(candidates, repeat=len(keys))
+    )
 
 
 def _validate_rails(
@@ -922,16 +1465,18 @@ def _python_command_selects_path(root: Path, command: str, path: str) -> bool:
             continue
         if any(operator in line for operator in ("||", "&&", ";", "|", "$(", "`")):
             continue
-        try:
-            tokens = shlex.split(line)
-        except ValueError:
+        tokens = _literal_shell_argv(line)
+        if tokens is None:
             continue
         if tokens[:3] != ["python3", "-m", "pytest"]:
             continue
         selectors = tokens[3:]
-        if any(
-            item in {"-k", "-m", "--ignore", "--deselect", "--collect-only"}
-            or item.startswith(("-k=", "-m=", "--ignore=", "--deselect="))
+        # A target path beside --help/--co/--lf or attached filters is not
+        # complete execution. Only presentation flags and full files bind it.
+        presentation = {"-q", "-v", "-vv", "-ra", "--disable-warnings"}
+        if not selectors or any(
+            item not in presentation
+            and re.fullmatch(r"tools/ci/tests/test_[a-z0-9_]+\.py", item) is None
             for item in selectors
         ):
             continue

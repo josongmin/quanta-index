@@ -1410,6 +1410,112 @@ impl SemanticSearcher for PersistedSemanticSearcher {
     }
 }
 
+/// Exhaustive logical state export for the opt-in local proof tool.
+#[cfg(feature = "proof")]
+pub(crate) async fn proof_rows_v1(
+    semantic_root: &Path,
+    batch: &quanta_index_contract::SemanticIngestBatch,
+) -> Result<serde_json::Value, CoreError> {
+    let loaded = open_generation(
+        semantic_root,
+        &batch.repo_id,
+        &batch.revision_id,
+        batch.generation,
+    )
+    .await?;
+    let mut tables = serde_json::Map::new();
+    for (name, table) in [
+        ("semantic", &loaded.table),
+        ("membership", &loaded.cluster_membership),
+    ] {
+        let count = table
+            .count_rows(None)
+            .await
+            .map_err(|error| lancedb_err("proof count", error))?;
+        if count > 65_536 {
+            return Err(CoreError::InvalidContract(
+                "proof table exceeds row limit".to_string(),
+            ));
+        }
+        let mut stream = table
+            .query()
+            .execute()
+            .await
+            .map_err(|error| lancedb_err("proof query", error))?;
+        let mut rows = Vec::new();
+        while let Some(batch) = stream
+            .try_next()
+            .await
+            .map_err(|error| lancedb_err("proof stream", error))?
+        {
+            for row in 0..batch.num_rows() {
+                let mut values = serde_json::Map::new();
+                for (field, column) in batch.schema().fields().iter().zip(batch.columns()) {
+                    let value = proof_cell_v1(column.as_ref(), row)?;
+                    if value.is_null() && !field.is_nullable() {
+                        return Err(CoreError::Storage(
+                            "proof nonnullable cell is null".to_string(),
+                        ));
+                    }
+                    let _previous = values.insert(field.name().clone(), value);
+                }
+                rows.push(serde_json::Value::Object(values));
+                if rows.len() > count {
+                    return Err(CoreError::Storage(
+                        "proof stream exceeds counted rows".to_string(),
+                    ));
+                }
+            }
+        }
+        if rows.len() != count {
+            return Err(CoreError::Storage("proof stream is partial".to_string()));
+        }
+        rows.sort_unstable_by_key(serde_json::Value::to_string);
+        let _previous = tables.insert(
+            name.to_owned(),
+            serde_json::json!({"count": count, "rows": rows}),
+        );
+    }
+    Ok(serde_json::Value::Object(tables))
+}
+
+#[cfg(feature = "proof")]
+fn proof_cell_v1(column: &dyn Array, row: usize) -> Result<serde_json::Value, CoreError> {
+    if column.is_null(row) {
+        return Ok(serde_json::Value::Null);
+    }
+    if let Some(values) = column.as_any().downcast_ref::<StringArray>() {
+        return Ok(serde_json::json!(values.value(row)));
+    }
+    if let Some(values) = column.as_any().downcast_ref::<UInt32Array>() {
+        return Ok(serde_json::json!(values.value(row)));
+    }
+    if let Some(values) = column.as_any().downcast_ref::<arrow_array::BooleanArray>() {
+        return Ok(serde_json::json!(values.value(row)));
+    }
+    if let Some(values) = column.as_any().downcast_ref::<Float32Array>() {
+        let value = values.value(row);
+        if !value.is_finite() {
+            return Err(CoreError::Storage("proof nonfinite vector".to_string()));
+        }
+        return Ok(serde_json::json!(value));
+    }
+    if let Some(values) = column
+        .as_any()
+        .downcast_ref::<arrow_array::FixedSizeListArray>()
+    {
+        let child = values.value(row);
+        let values = (0..child.len())
+            .map(|offset| proof_cell_v1(child.as_ref(), offset))
+            .collect::<Result<Vec<_>, _>>()?;
+        return Ok(serde_json::Value::Array(values));
+    }
+    Err(CoreError::Storage(format!(
+        "unsupported proof column type {}",
+        column.data_type()
+    )))
+}
+
 #[cfg(test)]
 #[expect(
     clippy::indexing_slicing,

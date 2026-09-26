@@ -133,7 +133,7 @@ repos:
         entry: bash scripts/check-rust-allow-attributes.sh
         language: system
         pass_filenames: false
-        files: ^((crates|benchmarks)/.*\.rs|scripts/check-rust-allow-attributes\.sh)$
+        files: ^((crates|benchmarks)/.*\.rs|scripts/check-rust-allow-attributes\.sh|tools/ci/lint/(check-rust-allow-attributes|rust_attribute_policy)\.py|tools/ci/tests/test_check_rust_allow_attributes\.py)$
         stages: [pre-push]
 
       - id: rust-derive-allowlist
@@ -141,7 +141,7 @@ repos:
         entry: python3 tools/ci/lint/check-rust-derive-allowlist.py
         language: system
         pass_filenames: false
-        files: ^((crates|benchmarks)/.*\.rs|tools/ci/lint/check-rust-derive-allowlist\.py|tools/ci/tests/test_lint_derive_allowlist\.py)$
+        files: ^((crates|benchmarks)/.*\.rs|tools/ci/lint/(check-rust-derive-allowlist|rust_attribute_policy)\.py|tools/ci/tests/test_lint_derive_allowlist\.py)$
         stages: [pre-commit, pre-push]
 
       - id: rust-cargo-toml-hygiene
@@ -222,7 +222,7 @@ repos:
         entry: python3 tools/ci/lint/check-rust-fallbacks.py
         language: system
         pass_filenames: false
-        files: ^(crates/[^/]+/(?:src/.*|fuzz/fuzz_targets/.*)\.rs|benchmarks/[^/]+/src/.*\.rs|tools/ci/lint/check-rust-fallbacks\.py)$
+        files: ^(crates/[^/]+/(?:src/.*|fuzz/fuzz_targets/.*)\.rs|benchmarks/[^/]+/src/.*\.rs|tools/ci/lint/(check-rust-fallbacks|rust_attribute_policy)\.py)$
         stages: [pre-push]
 
       - id: rust-fallback-tests
@@ -230,7 +230,7 @@ repos:
         entry: python3 tools/ci/tests/test_check_rust_fallbacks.py
         language: system
         pass_filenames: false
-        files: ^(tools/ci/lint/check-rust-fallbacks\.py|tools/ci/tests/test_check_rust_fallbacks\.py)$
+        files: ^(tools/ci/lint/(check-rust-fallbacks|rust_attribute_policy)\.py|tools/ci/tests/test_check_rust_fallbacks\.py)$
         stages: [pre-push]
 
       - id: cargo-deny

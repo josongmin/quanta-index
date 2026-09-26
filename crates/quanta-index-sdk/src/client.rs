@@ -412,6 +412,7 @@ impl QuantaIndex {
             )));
         }
         bind_ingest_response(&binding, &response.payload)?;
+        binding.validate_observation(request_id, &response.payload)?;
         match response.payload {
             SearchPlaneIngestIpcResponse::Error(error) => Err(SdkError::Remote {
                 code: error.code,
@@ -723,6 +724,15 @@ impl<'a> ProducerClient<'a> {
         batch: &crate::SearchCorpusBatch<SEALED>,
     ) -> Result<crate::BatchReceipt, SdkError> {
         self.client.search_corpus().publish(batch)
+    }
+
+    /// Publish with this call's transient server observation. Missing
+    /// observations are protocol errors, never fabricated measurements.
+    pub fn publish_search_corpus_observed<const SEALED: bool>(
+        &self,
+        batch: &crate::SearchCorpusBatch<SEALED>,
+    ) -> Result<quanta_index_contract::SearchCorpusPublishOutcome, SdkError> {
+        crate::lexical::dispatch_search_corpus_publish_observed_v1(self.client, batch)
     }
 
     pub fn publish_search_corpus_and_activate(

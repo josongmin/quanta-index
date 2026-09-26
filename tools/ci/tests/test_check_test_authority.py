@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -90,6 +91,206 @@ def test_rail_binding_requires_an_executed_command() -> None:
     assert not module._executes_declared_command(
         command + " | tee evidence.jsonl\nset -o pipefail", command
     )
+    assert module._executes_declared_command(
+        "cd crates/fuzz && cargo +nightly fuzz run demo -- -max_total_time=60",
+        "cargo +nightly fuzz run demo -- -max_total_time=60",
+    )
+    assert not module._executes_declared_command("set +e\n" + command + "\ntrue", command)
+    assert not module._executes_declared_command("cd missing && " + command + "\ntrue", command)
+
+
+@pytest.mark.parametrize(
+    "setup",
+    ["set +o 'errexit'", 'set +o "errexit"', '"set" +e', 'set +o err"exit"', "$'set' +e"],
+)
+def test_rail_binding_refuses_quoted_errexit_disable(setup: str) -> None:
+    module = _load_module()
+    command = "./scripts/cargow nextest run --workspace --all-features --locked"
+    assert not module._executes_declared_command(setup + "\n" + command + "\ntrue", command)
+
+
+@pytest.mark.parametrize(
+    "command", ["just proof-p00-authority-freeze", "cargo +nightly fuzz run demo"]
+)
+def test_every_rail_pipeline_requires_failure_propagation(command: str) -> None:
+    module = _load_module()
+    assert not module._executes_declared_command(command + " | tee evidence.log", command)
+    assert module._executes_declared_command(
+        "set -euo pipefail\n" + command + " | tee evidence.log", command
+    )
+
+
+@pytest.mark.parametrize("suffix", [" --help", " -- --help", " -- -runs=0"])
+@pytest.mark.parametrize(
+    "command", ["just proof-p00-authority-freeze", "cargo +nightly fuzz run demo"]
+)
+def test_rail_binding_refuses_undeclared_arguments(command: str, suffix: str) -> None:
+    module = _load_module()
+    assert not module._executes_declared_command(command + suffix, command)
+
+
+@pytest.mark.parametrize("setup", ["set +o 'errexit'", '"set" +e', "$'set' +e"])
+def test_rail_refusal_matches_real_bash_swallowed_failure(setup: str) -> None:
+    command = "sh -c 'exit 17'"
+    script = setup + "\n" + command + "\ntrue"
+    assert subprocess.run(["bash", "-e", "-c", script], check=False).returncode == 0
+    assert not _load_module()._executes_declared_command(script, command)
+
+
+@pytest.mark.parametrize(
+    "setup",
+    ["ex\\\nit 0", "se\\\nt +e", "touch exit\nex*t 0", "touch set\nse*t +e"],
+)
+def test_rail_refuses_bash_word_reinterpretation(setup: str, tmp_path: Path) -> None:
+    command = "sh -c 'exit 17'"
+    script = setup + "\n" + command + "\ntrue"
+    assert subprocess.run(["bash", "-e", "-c", script], cwd=tmp_path, check=False).returncode == 0
+    assert not _load_module()._executes_declared_command(script, command)
+
+
+@pytest.mark.parametrize(
+    "run",
+    ["ju\\\nst proof-p00-authority-freeze", "just proof-p00-authority-\\\nfreeze"],
+)
+def test_rail_literal_words_remove_only_bash_line_continuations(run: str) -> None:
+    assert _load_module()._executes_declared_command(run, "just proof-p00-authority-freeze")
+
+
+@pytest.mark.parametrize("setup", ["A=1 exit 0", "A=1 set +e"])
+def test_rail_refuses_assignment_prefixed_control_flow(setup: str) -> None:
+    assert not _load_module()._executes_declared_command(
+        setup + "\njust proof-p00-authority-freeze\ntrue", "just proof-p00-authority-freeze"
+    )
+
+
+@pytest.mark.parametrize("separator", ["\u00a0", "\r", "\v", "\f"])
+def test_rail_does_not_invent_bash_word_boundaries(separator: str) -> None:
+    assert not _load_module()._executes_declared_command(
+        "just" + separator + "proof-p00-authority-freeze", "just proof-p00-authority-freeze"
+    )
+
+
+@pytest.mark.parametrize(
+    "template",
+    [
+        "exit 0\n{command}",
+        "exit 0 > /dev/null\n{command}",
+        "exec true > /dev/null\n{command}",
+        'eval "exit 0"\n{command}',
+        "source skip.sh\n{command}",
+        ". skip.sh\n{command}",
+        "builtin exit 0\n{command}",
+        "trap 'exit 0' ERR\n{command}",
+        'echo "${{{{ inputs.untrusted }}}}"\n{command}',
+        "if false; then\n{command}\nfi",
+        "false && {command}",
+        "f() {{\n{command}\n}}",
+        "cat <<EOF\n{command}\nEOF",
+        "{command} &",
+    ],
+)
+def test_rail_binding_refuses_unexecuted_shell_text(template: str) -> None:
+    module = _load_module()
+    command = "./scripts/cargow nextest run --workspace --all-features --locked"
+    assert not module._executes_declared_command(template.format(command=command), command)
+
+
+def test_condition_refuses_contradictory_unknown_atom() -> None:
+    module = _load_module()
+    assert not module._condition_allows_tier("inputs.enable && !inputs.enable", {"pull_request"})
+    assert module._condition_allows_tier("inputs.enable || !inputs.enable", {"pull_request"})
+    assert not module._condition_allows_tier(
+        module._joint_condition("inputs.enable", "!inputs.enable"), {"pull_request"}
+    )
+
+
+@pytest.mark.parametrize(
+    ("expression", "expected"),
+    [
+        ("inputs.mode == 'a' && inputs.mode == 'b'", False),
+        ("inputs.mode == 'a' && inputs.mode != 'a'", False),
+        ("inputs.mode == 'a' && 'a' != inputs.mode", False),
+        ("inputs.mode == 'A' && inputs.mode != 'a'", False),
+        ("inputs.left == inputs.right && inputs.left != inputs.right", False),
+        ("inputs.left == inputs.right && inputs.right == 'a' && inputs.left == 'b'", False),
+        ("inputs.mode == '' && inputs.mode", False),
+        ("inputs.mode == 'true' && inputs.mode == 'false'", False),
+        ("'a' == 'a'", True),
+        ("'A' == 'a'", True),
+        ("'a' != 'a'", False),
+        ("true == 1", True),
+        ("FALSE", False),
+        ("TRUE", True),
+        ("inputs.true && !inputs.true", False),
+        ('"a" == "a"', False),
+        ("false == 0", True),
+        ("null == ''", True),
+        ("'1' == 1", True),
+        ("9007199254740992 != 9007199254740993", False),
+        ("'  ' != 0", False),
+        ("'01' != 1", False),
+        ("'+1' != 1", False),
+        ("'1.' != 1", False),
+        ("'0x10' != 16", False),
+        ("'0o10' != 8", False),
+        ("'0xffffffff' != -1", False),
+        ("'0x100000000' == 0", False),
+        ("'ς' != 'σ'", False),
+        ("'a' == 0", False),
+        ("'0' == ''", False),
+        ("inputs.mode == 'a' || inputs.mode == 'b'", True),
+        ("inputs.mode != 'a' && inputs.mode != 'b'", True),
+        ("inputs.mode == 'a' && inputs.mode", True),
+        ("inputs.mode == 'true'", True),
+        ("inputs.mode == 'a && !false'", True),
+        ("'it''s' == 'it''s'", True),
+        ("github.event_name == 'PULL_REQUEST'", True),
+        ("'pull_request' == github.event_name", True),
+        ("github.event_name != 'pull_request'", False),
+        ("always()", True),
+        ("success() && failure()", False),
+        ("cancelled() && success()", False),
+        ("unknown()", False),
+        ("github.EVENT_NAME == 'push'", False),
+        ("inputs.mode == 'a' && inputs.MODE != 'a'", False),
+        ("inputs == 'a'", False),
+        ("github == 'a'", False),
+        ("github.event == 'a'", False),
+        ("steps.foo == 'a'", False),
+        ("needs.foo.outputs == 'a'", False),
+        ("banana == 'a'", False),
+        ("unknown.foo == 'a'", False),
+        ("10 == 1_0", False),
+        ("ALWAYS()", True),
+        ("inputs.x == '0' && !inputs.x == true", True),
+        ("inputs.x == '0' && !inputs.x == false", True),
+        ("!'a' == 'b'", False),
+        ("!'0' == true", False),
+        ("inputs.x == '0' && inputs.x != '' && !inputs.x == true", False),
+        ("inputs.x == '0' && !(inputs.x == true)", True),
+        ("github.event_name.foo == 'a'", False),
+        ("inputs.mode == 'a' && inputs.mode.flag", False),
+        ("true and false", False),
+        ("inputs.mode < 'z'", False),
+        ("inputs.mode ==", False),
+    ],
+)
+def test_condition_uses_consistent_scalar_values(expression: str, expected: bool) -> None:
+    module = _load_module()
+    assert module._condition_allows_tier(expression, {"pull_request"}) is expected
+
+
+def test_joint_conditions_share_comparison_operands() -> None:
+    module = _load_module()
+    assert not module._condition_allows_tier(
+        module._joint_condition("inputs.mode == 'a'", "inputs.mode == 'b'"), {"pull_request"}
+    )
+
+
+def test_condition_refuses_unbounded_symbol_search() -> None:
+    module = _load_module()
+    expression = " && ".join(f"inputs.value_{i}" for i in range(20))
+    assert not module._condition_allows_tier(expression, {"pull_request"})
 
 
 @pytest.mark.parametrize(
@@ -100,7 +301,15 @@ def test_rail_binding_requires_an_executed_command() -> None:
         "        if: false",
         "    if: github.event_name == 'schedule'",
         "    if: github.event_name == 'pull_request' && false",
+        "    if: inputs.mode == 'a' && inputs.mode == 'b'",
+        "    if: inputs.mode == 'a'",
+        "    if: github.ref == 'refs/heads/not-a-pr'",
+        "        if: env.SKIP_TESTS != 'yes'",
+        "        if: inputs.mode == 'a' && inputs.mode != 'a'",
+        "    if: 'a' != 'a'",
         "        if: ${{ github.event_name == 'pull_request' && !true }}",
+        "    continue-on-error: true",
+        "        continue-on-error: true",
     ],
 )
 def test_rail_binding_rejects_unreachable_workflow(tmp_path: Path, mutation: str) -> None:
@@ -115,7 +324,7 @@ def test_rail_binding_rejects_unreachable_workflow(tmp_path: Path, mutation: str
     )
     if mutation.startswith("on:"):
         body = body.replace("on: [pull_request]", mutation)
-    elif mutation.startswith("    if:"):
+    elif mutation.startswith(("    if:", "    continue-on-error:")):
         body = body.replace("    steps:", mutation + "\n    steps:")
     else:
         body = body.replace("        run:", mutation + "\n        run:")
@@ -183,6 +392,16 @@ def test_python_rail_requires_unfiltered_pytest_execution(tmp_path: Path) -> Non
     assert not module._python_command_selects_path(tmp_path, f"# python3 -m pytest {path} -q", path)
     assert not module._python_command_selects_path(
         tmp_path, f"python3 -m pytest {path} -q || true", path
+    )
+
+
+@pytest.mark.parametrize("option", ["--help", "--co", "--version", "--lf", "-kselected", "-mfast"])
+def test_python_rail_cannot_promote_nonexecution_or_partial_selection(
+    tmp_path: Path, option: str
+) -> None:
+    path = "tools/ci/tests/test_aggregate.py"
+    assert not _load_module()._python_command_selects_path(
+        tmp_path, f"python3 -m pytest {path} {option}", path
     )
 
 
@@ -668,3 +887,110 @@ def test_p0_p1_invariants_require_all_four_proof_roles(tmp_path: Path, risk: str
         "missing required proof role consumer_target" in violation.message
         for violation in violations
     )
+
+
+@pytest.mark.parametrize(
+    ("shell", "defaults_scope", "expected"),
+    [
+        ("bash {0}", "step", False),
+        ("bash {0}", "job", False),
+        ("bash {0}", "workflow", False),
+        ("python {0}", "step", False),
+        ("bash", "step", True),
+        ("sh", "job", True),
+        ("bash --noprofile --norc -eo pipefail {0}", "workflow", True),
+    ],
+)
+def test_rail_binding_requires_shell_failure_propagation(
+    tmp_path: Path, shell: str, defaults_scope: str, expected: bool
+) -> None:
+    module = _load_module()
+    path = tmp_path / ".github/workflows/test.yml"
+    path.parent.mkdir(parents=True)
+    workflow = {
+        "on": ["pull_request"],
+        "jobs": {
+            "test": {
+                "runs-on": "ubuntu-latest",
+                "steps": [
+                    {
+                        "name": "run",
+                        "run": "./scripts/cargow nextest run --workspace --all-features --locked\ntrue",
+                    }
+                ],
+            }
+        },
+    }
+    if defaults_scope == "step":
+        workflow["jobs"]["test"]["steps"][0]["shell"] = shell
+    elif defaults_scope == "job":
+        workflow["jobs"]["test"]["defaults"] = {"run": {"shell": shell}}
+    else:
+        workflow["defaults"] = {"run": {"shell": shell}}
+    path.write_text(yaml.safe_dump(workflow))
+    violations = []
+    module._validate_rail_binding(
+        root=tmp_path,
+        catalog=tmp_path / "authority.toml",
+        rail_id="pr",
+        raw_rail={
+            "workflow": ".github/workflows/test.yml",
+            "job": "test",
+            "step": "run",
+            "tier": "pr",
+        },
+        command="./scripts/cargow nextest run --workspace --all-features --locked",
+        violations=violations,
+    )
+    assert (not violations) is expected
+
+
+def test_rail_binding_refuses_duplicate_workflow_keys(tmp_path: Path) -> None:
+    module = _load_module()
+    path = tmp_path / ".github/workflows/test.yml"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        "on: [pull_request]\njobs:\n  test:\n    steps:\n"
+        "      - name: run\n        run: false\n"
+        "        run: ./scripts/cargow nextest run --workspace --all-features --locked\n"
+    )
+    violations = []
+    parsed = module._load_workflow(
+        root=tmp_path,
+        catalog=tmp_path / "authority.toml",
+        workflow_path=".github/workflows/test.yml",
+        violations=violations,
+    )
+    assert parsed is None
+    assert any("duplicate" in violation.message for violation in violations)
+
+
+@pytest.mark.parametrize("scope_name", ["workflow", "job", "step"])
+def test_rail_shell_refuses_startup_script_that_skips_execution(scope_name: str) -> None:
+    module = _load_module()
+    workflow = {}
+    job = {"runs-on": "ubuntu-latest"}
+    step = {"shell": "bash"}
+    scopes = {"workflow": workflow, "job": job, "step": step}
+    scopes[scope_name]["env"] = {"BASH_ENV": "skip-with-exit-zero.sh"}
+    assert module._rail_shell(workflow, job, step) is None
+
+
+@pytest.mark.parametrize(
+    ("expression", "events", "expected"),
+    [
+        ("inputs.mode == 'a'", {"pull_request"}, False),
+        ("github.event_name == 'pull_request'", {"pull_request"}, True),
+        ("github.event_name == 'schedule' || inputs.mode == 'a'", {"schedule"}, True),
+        ("github.event_name == 'schedule' || inputs.mode == 'a'", {"pull_request"}, False),
+        ("inputs.mode || true", {"pull_request"}, True),
+        ("(inputs.mode || true) == true", {"pull_request"}, False),
+        ("inputs.mode && false", {"pull_request"}, False),
+        ("failure()", {"pull_request"}, False),
+    ],
+)
+def test_authority_condition_requires_coverage_without_unknown_context_assumptions(
+    expression: str, events: set[str], expected: bool
+) -> None:
+    module = _load_module()
+    assert module._condition_allows_tier(expression, events, require_guaranteed=True) is expected

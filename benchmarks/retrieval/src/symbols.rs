@@ -34,7 +34,7 @@ pub const SYMBOL_PRODUCER_GRAMMARS: &str = concat!(
 );
 
 /// Producer identity for batch digests.
-pub const SYMBOL_PRODUCER_IDENTITY: &str = "source-bound-symbols-v1";
+pub const SYMBOL_PRODUCER_IDENTITY: &str = "source-bound-symbols-v2";
 
 /// One supported extraction language.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -683,24 +683,16 @@ pub fn extract_symbols(path: &str, source: &str) -> Result<Vec<SymbolRecord>, Sy
 
 /// Extract symbols for a whole admitted corpus.
 ///
-/// Unsupported admitted files retain a per-file coverage failure for the
-/// phase metrics. Parse failures in a supported language abort the run.
-pub struct UnsupportedSymbolFile {
-    pub path: String,
-    pub file_sha256: String,
-    pub reason: &'static str,
-}
-
+/// Unsupported admitted files and parse failures abort the run before any
+/// batch is assembled or published.
 pub struct CorpusSymbolExtraction {
     pub symbols: std::collections::BTreeMap<String, Vec<SymbolRecord>>,
-    pub unsupported_files: Vec<UnsupportedSymbolFile>,
 }
 
 pub fn extract_corpus_symbols(
     files: &std::collections::BTreeMap<String, crate::corpus::SourceFile>,
 ) -> crate::BenchResult<CorpusSymbolExtraction> {
     let mut symbols = std::collections::BTreeMap::new();
-    let mut unsupported_files = Vec::new();
     for (path, file) in files {
         if &file.path != path
             || file.sha256 != sha256_hex(&file.bytes)
@@ -712,12 +704,14 @@ pub fn extract_corpus_symbols(
             });
         }
         if SymbolLanguage::from_path(path).is_none() {
-            unsupported_files.push(UnsupportedSymbolFile {
+            return Err(crate::BenchError::Chunk {
                 path: path.clone(),
-                file_sha256: file.sha256.clone(),
-                reason: "unsupported_language",
+                message: format!(
+                    "symbol extraction coverage failure: unsupported symbol language: {path}; \
+                     source_sha256={}; reason=unsupported_language",
+                    file.sha256
+                ),
             });
-            continue;
         }
         let records = extract_symbols(path, &file.text).map_err(|error| match error {
             SymbolExtractError::ProducerDefect { detail } => crate::BenchError::Protocol(format!(
@@ -736,10 +730,7 @@ pub fn extract_corpus_symbols(
         })?;
         let _previous = symbols.insert(path.clone(), records);
     }
-    Ok(CorpusSymbolExtraction {
-        symbols,
-        unsupported_files,
-    })
+    Ok(CorpusSymbolExtraction { symbols })
 }
 
 #[cfg(test)]
@@ -931,20 +922,15 @@ mod tests {
             (file.path.clone(), file),
             (other.path.clone(), other),
         ]);
-        let extraction = extract_corpus_symbols(&files).expect("coverage is reported");
-        assert!(extraction.symbols.is_empty());
-        assert_eq!(extraction.unsupported_files.len(), 2);
-        let unsupported = extraction
-            .unsupported_files
-            .first()
-            .expect("unsupported file");
-        assert_eq!(unsupported.path, "docs/readme.md");
-        assert_eq!(unsupported.file_sha256, digest);
-        assert_eq!(unsupported.reason, "unsupported_language");
-        let other = extraction.unsupported_files.get(1).expect("second file");
-        assert_eq!(other.path, "docs/znotes.toml");
-        assert_eq!(other.file_sha256, other_digest);
-        assert_eq!(other.reason, "unsupported_language");
+        let coverage_error = extract_corpus_symbols(&files)
+            .err()
+            .expect("the first unsupported admitted file must abort the corpus");
+        assert!(matches!(coverage_error, crate::BenchError::Chunk { .. }));
+        let coverage_error = coverage_error.to_string();
+        assert!(coverage_error.contains("docs/readme.md"));
+        assert!(coverage_error.contains(&digest));
+        assert!(coverage_error.contains("unsupported_language"));
+        assert!(!coverage_error.contains(&other_digest));
 
         let malformed = "fn incomplete( {".to_string();
         let malformed_sha = sha256_hex(malformed.as_bytes());

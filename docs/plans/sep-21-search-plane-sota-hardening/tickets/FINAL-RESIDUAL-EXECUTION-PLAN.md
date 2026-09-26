@@ -42,6 +42,10 @@ command was run for this audit. Registry-only lint is not execution evidence.
 
 ## Code work in dependency order
 
+Current implementation/status corrections and next-action acceptance:
+[2026-09-26 structural audit](CURRENT-RESIDUAL-2026-09-26.md). The dated source
+table above is historical; it is not the current implementation verdict.
+
 ### R0 — Establish the proof-result authority before release claims
 
 Owners: `tools/ci/proof-authority.toml`, `tools/ci/proof-manifest.schema.json`,
@@ -197,7 +201,9 @@ checked to assert its own completeness.
 
 ### R4 — P10 current-format state custody
 
-Owners: `crates/quanta-index-searchd-runtime/src/state_migration.rs`,
+Owners: `crates/quanta-index-searchd/src/app/state_format.rs`,
+`crates/quanta-index-searchd/src/app/state_migration.rs`,
+`crates/quanta-index-searchd-runtime/src/state_migration.rs`,
 `crates/quanta-index-searchd-runtime/tests/state_migration_owner_v1.rs`,
 `crates/quanta-index-searchd/src/cli/command.rs`, and the operator runbook.
 The backup/restore/verify CLI and legacy typed refusal already exist. Add
@@ -206,6 +212,11 @@ cover them; inventory actual state roots and retention obligations before any
 cutover. DoD: stopped daemon + exclusive lease, current-format backup,
 verify, restore-forward, activation-incarnation rotation and wrong-format
 refusal on one disposable and one authorized target root. No legacy importer.
+
+The [2026-09-26 adversarial follow-up](P10-ADVERSARIAL-AUDIT-2026-09-26.md)
+records manifest canonical authority, exact path admission, bounded catalog
+sidecar exceptions and verification-scoped custody changes. Local owner
+checks do not discharge the authorized-target or release DoD above.
 
 ### R5 — P11 exact source pair, resolved dependency roots and build result
 

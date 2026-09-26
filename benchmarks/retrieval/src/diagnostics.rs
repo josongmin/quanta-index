@@ -7,6 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use quanta_index_search_plane::QueryStageObservationPolicy;
 use serde_json::{Value, json};
 
 use crate::record::QueryPack;
@@ -37,8 +38,9 @@ pub fn diagnostic_value(
     pack: &QueryPack,
     routes: &[&str],
     outcomes: &BTreeMap<(String, String), QueryOutcome>,
-    top_k: u32,
+    observation_policy: QueryStageObservationPolicy,
 ) -> BenchResult<Value> {
+    let top_k = pack.contract_top_k;
     if record_sha256.len() != 64
         || !record_sha256
             .bytes()
@@ -48,7 +50,7 @@ pub fn diagnostic_value(
             "diagnostic record digest must be lowercase sha256".to_string(),
         ));
     }
-    if top_k == 0 || top_k != pack.contract_top_k {
+    if top_k == 0 {
         return Err(BenchError::Protocol(
             "diagnostic top_k differs from the query pack".to_string(),
         ));
@@ -365,7 +367,9 @@ pub fn diagnostic_value(
         }
     }
     Ok(json!({
-        "schema_version": 4,
+        "schema_version": 5,
+        "server_observation": server_observation_value(observation_policy)?,
+        "ingest": null,
         "kind": "quanta_returned_window_diagnostic",
         "record_sha256": record_sha256,
         "query_pack_sha256": pack.pack_sha256,
@@ -373,6 +377,21 @@ pub fn diagnostic_value(
         "scope": "returned_window_only",
         "results": rows,
     }))
+}
+
+/// Canonical startup configuration is bound separately from sidecar output.
+/// This scope excludes pre-existing request/deadline and operational metric clocks.
+pub fn server_observation_value(policy: QueryStageObservationPolicy) -> BenchResult<Value> {
+    let mut config = json!({
+        "query_stages": policy.as_str(),
+        "scope": "server_query_stage_only_v1",
+    });
+    let digest = crate::sha256_hex(crate::canonical::canonical_json(&config)?.as_bytes());
+    let object = config.as_object_mut().ok_or_else(|| {
+        BenchError::Protocol("server observation config is not an object".to_string())
+    })?;
+    let _previous = object.insert("config_sha256".to_string(), json!(digest));
+    Ok(config)
 }
 
 #[cfg(test)]
@@ -491,7 +510,7 @@ mod tests {
             &pack(),
             &["hybrid"],
             &outcomes(),
-            10,
+            QueryStageObservationPolicy::Enabled,
         )
         .expect("complete diagnostic");
         assert_eq!(value.get("record_sha256"), Some(&json!("e".repeat(64))));
@@ -513,10 +532,10 @@ mod tests {
             &pack(),
             &["hybrid"],
             &outcomes(),
-            10,
+            QueryStageObservationPolicy::Enabled,
         )
         .expect("complete diagnostic");
-        assert_eq!(value.get("schema_version"), Some(&json!(4)));
+        assert_eq!(value.get("schema_version"), Some(&json!(5)));
         assert_eq!(
             value.pointer("/results/0/response_kind"),
             Some(&json!("returned_window"))
@@ -581,7 +600,7 @@ mod tests {
             &pack(),
             &["hybrid"],
             &sparse,
-            10,
+            QueryStageObservationPolicy::Disabled,
         )
         .expect("complete diagnostic");
         // Absent observations remain explicit nulls: no explanation, no
@@ -601,7 +620,7 @@ mod tests {
                 &pack(),
                 &["hybrid"],
                 &BTreeMap::new(),
-                10,
+                QueryStageObservationPolicy::Enabled,
             )
             .is_err()
         );
@@ -619,7 +638,7 @@ mod tests {
                 &pack(),
                 &["hybrid"],
                 &missing_lane,
-                10,
+                QueryStageObservationPolicy::Enabled,
             )
             .is_err()
         );
@@ -642,7 +661,7 @@ mod tests {
             &pack(),
             &["hybrid"],
             &unanchored,
-            10,
+            QueryStageObservationPolicy::Enabled,
         )
         .expect("record supplies the normalized span");
         assert_eq!(

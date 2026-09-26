@@ -42,8 +42,8 @@ OTHER_HEAD = "fedcba9876543210fedcba9876543210fedcba98"
 DIGEST = "sha256:" + "ab" * 32
 
 
-def artifact(dimension: str = "dsl-warm", head: str = HEAD) -> dict:
-    return {
+def artifact(dimension: str = "dsl-warm", head: str = HEAD, *, clients: int = 1) -> dict:
+    payload = {
         "schema_version": 2,
         "dimension": dimension,
         "mode": "warm",
@@ -82,6 +82,66 @@ def artifact(dimension: str = "dsl-warm", head: str = HEAD) -> dict:
         ],
         "detail": {"passed": True},
     }
+
+    if dimension == "concurrency":
+        assert clients in (1, 8, 32)
+        routes = ("lexical", "semantic", "hybrid", "symbol", "lexical_count")
+        measurements = []
+        for count in (1, 8, 32):
+
+            def group(label: str, requests: int) -> dict:
+                return {
+                    "label": label,
+                    "requests": requests,
+                    "served": requests,
+                    "error_count": 0,
+                    "timeout_count": 0,
+                    "qps": requests / 2.0,
+                    "latency": {"p50_ms": 1.0, "p95_ms": 2.0, "p99_ms": 3.0, "samples": requests},
+                    "error_codes": [],
+                    "last_result_count": 3,
+                }
+
+            measurements.append(
+                {
+                    "clients": count,
+                    "requests_per_client": 80,
+                    "window_secs": 2.0,
+                    "routes": [group(label, count * 16) for label in routes],
+                    "fast": group("fast", count * 80),
+                    "slow": group("slow", 16) if count > 1 else None,
+                }
+            )
+        payload["concurrency"] = clients + int(clients > 1)
+        payload["detail"].update(
+            {
+                "client_counts": [1, 8, 32],
+                "mixed_routes": list(routes),
+                "minimum_row_samples": 16,
+                "maximum_samples_per_worker": 100_000,
+                "measurement_timeout_secs": 600,
+                "measurements": measurements,
+            }
+        )
+        measurement = next(m for m in measurements if m["clients"] == clients)
+        groups = measurement["routes"] + [measurement["fast"]]
+        if measurement["slow"] is not None:
+            groups.append(measurement["slow"])
+        template = payload["rows"][0]
+        payload["rows"] = [
+            {
+                **template,
+                "scenario_id": f"concurrency.c{clients}.{g['label']}",
+                "route_family": g["label"]
+                if g["label"] in ("semantic", "hybrid", "symbol")
+                else "lexical",
+                "latency": copy.deepcopy(g["latency"]),
+                "qps": g["qps"],
+                "engine_touched": [],
+            }
+            for g in groups
+        ]
+    return payload
 
 
 def schema_one_artifact() -> dict:
@@ -311,7 +371,7 @@ def test_contract_quality_rails_are_intentionally_untimed_but_verdict_bound() ->
 def test_required_concurrency_profile_needs_all_client_counts(tmp_path: Path) -> None:
     write(
         tmp_path / "artifacts/search-quality/concurrency/latest/summary-c8.json",
-        artifact("concurrency"),
+        artifact("concurrency", clients=8),
     )
     family_paths = dict(MODULE.FRESH_FAMILIES)
     refusals, _, _ = MODULE.check_families(
@@ -384,12 +444,23 @@ def test_authority_sample_floor_and_open_loop_ladder(tmp_path: Path) -> None:
     assert any("authority needs seeded_poisson" in refusal.reason for refusal in refusals)
 
 
+def test_duplicate_native_verdict_is_refused(tmp_path: Path) -> None:
+    path = tmp_path / "artifact.json"
+    raw = json.dumps(artifact("scale")).replace('"passed": true', '"passed": false, "passed": true')
+    path.write_text(raw, encoding="utf-8")
+    refusals, checked, _ = MODULE.check_families(
+        tmp_path, (("scale", "artifact.json"),), head=HEAD, require=True
+    )
+    assert checked == [path]
+    assert any("duplicate" in refusal.reason for refusal in refusals)
+
+
 def test_the_cli_walks_fresh_families_and_baselines(tmp_path: Path, capsys) -> None:
     install_manifest(tmp_path)
     write(tmp_path / "artifacts/dsl-bench/warm-matrix.json", artifact())
     write(
         tmp_path / "artifacts/search-quality/concurrency/latest/summary-c8.json",
-        artifact(dimension="concurrency"),
+        artifact(dimension="concurrency", clients=8),
     )
     write(tmp_path / "tools/benchmark/baselines/cold-matrix.json", artifact("dsl-cold", OTHER_HEAD))
     assert MODULE.main(["--repo-root", str(tmp_path), "--head", HEAD]) == 0
@@ -458,3 +529,186 @@ def test_the_gate_refuses_the_repository_when_a_stale_artifact_is_present(tmp_pa
         {**stale, "dimension": "tail"},
     )
     assert MODULE.main(["--repo-root", str(tmp_path), "--head", HEAD, "--skip-baselines"]) == 1
+
+
+def test_concurrency_complete_public_inventory_passes() -> None:
+    for clients in (1, 8, 32):
+        value = artifact("concurrency", clients=clients)
+        assert (
+            MODULE.check_artifact(
+                value,
+                dimension="concurrency",
+                head=HEAD,
+                require=True,
+                artifact_path=Path(f"summary-c{clients}.json"),
+            )
+            == []
+        )
+
+
+def test_concurrency_partial_rows_cannot_hide_behind_passed_detail() -> None:
+    value = artifact("concurrency", clients=8)
+    value["rows"] = [value["rows"][5]]
+    reasons = MODULE.check_artifact(value, dimension="concurrency", head=HEAD, require=True)
+    assert any("row inventory mismatch" in reason for reason in reasons), reasons
+
+
+def test_concurrency_rows_are_bound_to_actual_measurement() -> None:
+    for key, bad in (
+        ("qps", 123.0),
+        ("error_count", 1),
+        ("timeout_count", 1),
+        ("result_count", 99),
+        ("route_family", "foreign"),
+    ):
+        value = artifact("concurrency", clients=8)
+        value["rows"][0][key] = bad
+        reasons = MODULE.check_artifact(value, dimension="concurrency", head=HEAD, require=True)
+        assert any(f"{key} disagrees with detail" in r for r in reasons), reasons
+    value = artifact("concurrency", clients=8)
+    value["rows"][0]["latency"]["samples"] += 1
+    assert any(
+        "latency disagrees with detail" in r
+        for r in MODULE.check_artifact(value, dimension="concurrency", head=HEAD, require=True)
+    )
+
+
+def test_concurrency_detail_tallies_cannot_hide_behind_good_rows() -> None:
+    for key, bad in (
+        ("requests", 129),
+        ("served", 127),
+        ("qps", 1.0),
+        ("error_count", 1),
+        ("timeout_count", 1),
+    ):
+        value = artifact("concurrency", clients=8)
+        value["detail"]["measurements"][1]["routes"][0][key] = bad
+        assert MODULE.check_artifact(value, dimension="concurrency", head=HEAD, require=True)
+    value = artifact("concurrency", clients=1)
+    value["detail"]["measurements"][2]["fast"]["latency"]["samples"] += 1
+    reasons = MODULE.check_artifact(value, dimension="concurrency", head=HEAD, require=True)
+    assert any("answered samples mismatch" in r for r in reasons), reasons
+
+
+def test_concurrency_inventory_envelope_filename_and_order_are_bound() -> None:
+    value = artifact("concurrency", clients=8)
+    assert any(
+        "filename disagrees" in r
+        for r in MODULE.check_artifact(
+            value,
+            dimension="concurrency",
+            head=HEAD,
+            require=True,
+            artifact_path=Path("summary-c32.json"),
+        )
+    )
+    value["concurrency"] = 8
+    assert any(
+        "envelope disagrees" in r
+        for r in MODULE.check_artifact(value, dimension="concurrency", head=HEAD, require=True)
+    )
+    value = artifact("concurrency", clients=8)
+    value["rows"][0], value["rows"][1] = value["rows"][1], value["rows"][0]
+    assert any(
+        "row inventory mismatch" in r
+        for r in MODULE.check_artifact(value, dimension="concurrency", head=HEAD, require=True)
+    )
+    value = artifact("concurrency", clients=8)
+    value["detail"]["measurements"].pop()
+    assert any(
+        "measurement client inventory" in r
+        for r in MODULE.check_artifact(value, dimension="concurrency", head=HEAD, require=True)
+    )
+
+
+def test_concurrency_malformed_detail_is_refused_without_exception() -> None:
+    for malformed in (None, False, "wrong", [], {}):
+        value = artifact("concurrency", clients=8)
+        value["detail"]["measurements"][1]["routes"][0] = malformed
+        assert MODULE.check_artifact(value, dimension="concurrency", head=HEAD, require=True)
+    value = artifact("concurrency", clients=8)
+    value["detail"]["measurements"][1]["slow"]["label"] = {}
+    assert MODULE.check_artifact(value, dimension="concurrency", head=HEAD, require=True)
+
+
+def test_concurrency_missing_static_budget_and_fields_are_refused() -> None:
+    for key in ("maximum_samples_per_worker", "measurement_timeout_secs"):
+        value = artifact("concurrency")
+        del value["detail"][key]
+        assert MODULE.check_artifact(value, dimension="concurrency", head=HEAD, require=True)
+    value = artifact("concurrency")
+    del value["detail"]["measurements"][0]["slow"]
+    assert any(
+        "missing fields" in reason
+        for reason in MODULE.check_artifact(value, dimension="concurrency", head=HEAD, require=True)
+    )
+
+
+def test_concurrency_forged_round_robin_and_slow_budget_are_refused() -> None:
+    value = artifact("concurrency", clients=8)
+    measurement = value["detail"]["measurements"][1]
+    measurement["routes"][0]["requests"] -= 1
+    measurement["routes"][1]["requests"] += 1
+    assert any(
+        "round-robin partition" in reason
+        for reason in MODULE.check_artifact(value, dimension="concurrency", head=HEAD, require=True)
+    )
+    value = artifact("concurrency", clients=8)
+    slow = value["detail"]["measurements"][1]["slow"]
+    slow.update(requests=100_001, served=100_001, qps=50_000.5)
+    slow["latency"]["samples"] = 100_001
+    row = value["rows"][-1]
+    row.update(latency=copy.deepcopy(slow["latency"]), qps=slow["qps"])
+    assert any(
+        "counters must be" in reason
+        for reason in MODULE.check_artifact(value, dimension="concurrency", head=HEAD, require=True)
+    )
+
+
+def test_concurrency_conserved_but_undercovered_partition_is_refused() -> None:
+    value = artifact("concurrency", clients=8)
+    measurement = value["detail"]["measurements"][1]
+    for group, row, requests in zip(
+        measurement["routes"], value["rows"], (129, 128, 128, 128, 127)
+    ):
+        group.update(requests=requests, served=requests, qps=requests / 2.0)
+        group["latency"]["samples"] = requests
+        row.update(latency=copy.deepcopy(group["latency"]), qps=group["qps"])
+    reasons = MODULE.check_artifact(value, dimension="concurrency", head=HEAD, require=True)
+    assert any("planned round-robin share" in reason for reason in reasons), reasons
+
+
+def test_concurrency_extension_counts_are_allowed_when_conserved() -> None:
+    value = artifact("concurrency", clients=8)
+    measurement = value["detail"]["measurements"][1]
+    for group, row in zip(measurement["routes"], value["rows"]):
+        group.update(requests=136, served=136, qps=68.0)
+        group["latency"]["samples"] = 136
+        row.update(latency=copy.deepcopy(group["latency"]), qps=68.0)
+    measurement["fast"].update(requests=680, served=680, qps=340.0)
+    measurement["fast"]["latency"]["samples"] = 680
+    value["rows"][5].update(latency=copy.deepcopy(measurement["fast"]["latency"]), qps=340.0)
+    assert MODULE.check_artifact(value, dimension="concurrency", head=HEAD, require=True) == []
+
+
+def test_concurrency_error_codes_cannot_outnumber_typed_error_responses() -> None:
+    # Each typed error response carries one code; summaries deduplicate those codes.
+    for codes in (["INVALID_REQUEST"], ["INVALID_REQUEST", "SERVER_OVERLOADED"]):
+        value = artifact("concurrency")
+        measurement = value["detail"]["measurements"][0]
+        for group, row in (
+            (measurement["routes"][0], value["rows"][0]),
+            (measurement["fast"], value["rows"][5]),
+        ):
+            group.update(
+                error_count=1,
+                served=group["requests"] - 1,
+                qps=(group["requests"] - 1) / measurement["window_secs"],
+                error_codes=codes,
+            )
+            row.update(error_count=1, qps=group["qps"], typed_error_code=codes[0])
+        reasons = MODULE.check_artifact(value, dimension="concurrency", head=HEAD, require=True)
+        if len(codes) == 1:
+            assert reasons == []
+        else:
+            assert any("outnumber" in reason for reason in reasons), reasons

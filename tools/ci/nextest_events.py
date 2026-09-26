@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import BinaryIO
 
 
 class NextestEvidenceError(ValueError):
@@ -86,8 +88,32 @@ def parse_nextest_inventory_bytes(raw: bytes) -> dict[str, tuple[str, str, str]]
             if not isinstance(name, str) or not name or not isinstance(case, dict):
                 raise NextestEvidenceError("nextest inventory has invalid testcase")
             match = case.get("filter-match")
-            if not isinstance(match, dict) or match.get("status") != "matches":
+            if type(case.get("ignored")) is not bool or not isinstance(match, dict):
+                raise NextestEvidenceError(
+                    "nextest inventory has invalid filter-match or ignored flag"
+                )
+            if match.get("status") == "mismatch":
+                # nextest-metadata's explicit MismatchReason contract. Unknown
+                # variants require deliberate admission, never silent exclusion.
+                reason = match.get("reason")
+                if (
+                    set(match) != {"status", "reason"}
+                    or not isinstance(reason, str)
+                    or reason
+                    not in {
+                        "not-benchmark",
+                        "ignored",
+                        "string",
+                        "expression",
+                        "partition",
+                        "rerun-already-passed",
+                        "default-filter",
+                    }
+                ):
+                    raise NextestEvidenceError("nextest inventory has invalid filter mismatch")
                 continue
+            if match != {"status": "matches"}:
+                raise NextestEvidenceError("nextest inventory has invalid filter-match")
             if case.get("ignored") is not False:
                 raise NextestEvidenceError("nextest inventory contains ignored required test")
             event_name = f"{package}::{binary}${name}"
@@ -102,6 +128,23 @@ def parse_nextest_inventory_bytes(raw: bytes) -> dict[str, tuple[str, str, str]]
 def parse_nextest(
     path: Path, expected: dict[str, tuple[str, str, str]] | None = None
 ) -> NextestEvidence:
+    try:
+        stream = path.open("rb")
+    except OSError as error:
+        raise NextestEvidenceError(f"cannot read nextest evidence: {error}") from error
+    return _parse_nextest_stream(stream, expected)
+
+
+def parse_nextest_bytes(
+    raw: bytes, expected: dict[str, tuple[str, str, str]] | None = None
+) -> NextestEvidence:
+    """Interpret the same immutable bytes captured and hashed by the caller."""
+    return _parse_nextest_stream(io.BytesIO(raw), expected)
+
+
+def _parse_nextest_stream(
+    stream: BinaryIO, expected: dict[str, tuple[str, str, str]] | None
+) -> NextestEvidence:
     digest = hashlib.sha256()
     counts = {"ok": 0, "failed": 0, "ignored": 0, "timeout": 0}
     started: set[str] = set()
@@ -111,7 +154,7 @@ def parse_nextest(
     active_suites: dict[tuple[str, str, str] | None, dict[str, int | None]] = {}
     started_suites: dict[str, tuple[str, str, str] | None] = {}
     try:
-        with path.open("rb") as stream:
+        with stream:
             for line in stream:
                 digest.update(line)
                 try:

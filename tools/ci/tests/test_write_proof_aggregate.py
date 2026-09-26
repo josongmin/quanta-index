@@ -118,6 +118,9 @@ def _build_paired_checkout(tmp_path: Path) -> Path:
     checkout = tmp_path / "semantica"
     checkout.mkdir(parents=True)
     (checkout / "Cargo.lock").write_text("version = 4\n", encoding="utf-8")
+    resolver_lock = checkout / CHECKER.PAIRED_DEPENDENCY_LOCK
+    resolver_lock.parent.mkdir(parents=True)
+    resolver_lock.write_text("version = 4\n# active resolver lock\n", encoding="utf-8")
     _run(checkout, "git", "init", "-q")
     _run(checkout, "git", "config", "user.name", "Pair Fixture")
     _run(checkout, "git", "config", "user.email", "pair@example.invalid")
@@ -129,7 +132,7 @@ def _build_paired_checkout(tmp_path: Path) -> Path:
         "origin",
         "git@github-personal:josongmin/semantica-codegraph-v2.git",
     )
-    _run(checkout, "git", "add", "Cargo.lock")
+    _run(checkout, "git", "add", "Cargo.lock", CHECKER.PAIRED_DEPENDENCY_LOCK)
     _run(checkout, "git", "commit", "-qm", "fixture")
     return checkout
 

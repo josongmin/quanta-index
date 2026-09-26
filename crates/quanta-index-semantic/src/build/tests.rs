@@ -11,10 +11,10 @@ use quanta_index_contract::{
     BatchIngestMode, CapabilityStatusV1, ClusterMembershipBatchReadRequestV1,
     ClusterMembershipReadFailureV1, ClusterMembershipReadOutcomeV1, ClusterMembershipReadRequestV1,
     ClusterMembershipReplaceV1, EmbeddingDistanceMetric, EmbeddingId, EmbeddingModelContract,
-    EmbeddingNormalization, EmbeddingRecord, GenerationPin, ManifestGeneration, OwnerDocKind,
-    RepoId, RepoRelativePath, RevisionId, SearchScopeKey, SearchScopeSurface, SemanticCorpusKindV1,
-    SemanticIngestBatch, SemanticReplaceScope, SemanticSourceScopeKeyV1, SemanticTombstoneScope,
-    SourceRoleV1, SymbolId, lex::LanguageCode,
+    EmbeddingNormalization, EmbeddingRecord, GenerationPin, IngestStageDurations,
+    ManifestGeneration, OwnerDocKind, RepoId, RepoRelativePath, RevisionId, SearchScopeKey,
+    SearchScopeSurface, SemanticCorpusKindV1, SemanticIngestBatch, SemanticReplaceScope,
+    SemanticSourceScopeKeyV1, SemanticTombstoneScope, SourceRoleV1, SymbolId, lex::LanguageCode,
 };
 use quanta_index_core::{
     CoreError, RequestBudgetV1, ResidentScopeSource, SEMANTIC_STREAM_WINDOW_VECTOR_BYTES,
@@ -23,9 +23,9 @@ use quanta_index_core::{
 };
 
 use super::{
-    BACKUP_DIR_NAME, IngestStageDurations, IngestStageReport, POST_DATASET_PRE_CONTRACT_PROMOTION,
-    PRE_DATASET_PROMOTION, PROMOTION_CRASH_BOUNDARY_ENV, PROMOTION_CRASH_EXIT_CODE,
-    STAGING_DIR_NAME, StreamScopeAuthorityV1, build_stream, build_stream_reported, column_as,
+    BACKUP_DIR_NAME, IngestStageReport, POST_DATASET_PRE_CONTRACT_PROMOTION, PRE_DATASET_PROMOTION,
+    PROMOTION_CRASH_BOUNDARY_ENV, PROMOTION_CRASH_EXIT_CODE, STAGING_DIR_NAME,
+    StreamScopeAuthorityV1, build_stream, build_stream_reported, column_as,
     ensure_generation_contract, failpoint, open_connection, persist_generation_contract,
     recover_dataset_artifacts, stage_generation_contract,
 };

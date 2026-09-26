@@ -46,20 +46,38 @@ def measure_llvm_lines(package: str) -> int:
 
 def parse_total(stdout: str) -> int:
     """Parse the trailing `(TOTAL)` line from cargo-llvm-lines output."""
-    # cargo-llvm-lines prints something like:
-    #     30000   500  (TOTAL)
-    for line in reversed(stdout.splitlines()):
-        if "(TOTAL)" in line:
-            match = re.match(r"\s*(\d+)\s+\d+\s+\(TOTAL\)", line)
-            if match:
-                return int(match.group(1))
-    raise RuntimeError("could not locate (TOTAL) line in cargo-llvm-lines output")
+    # Exactly one complete TOTAL record is the producer contract. Do not let a
+    # malformed or duplicate trailing record fall back to an earlier total.
+    total_rows = [line for line in stdout.splitlines() if "(TOTAL)" in line]
+    if len(total_rows) != 1:
+        raise RuntimeError("expected exactly one (TOTAL) line in cargo-llvm-lines output")
+    match = re.fullmatch(r"\s*(\d+)\s+(\d+)\s+\(TOTAL\)\s*", total_rows[0])
+    if not match or int(match.group(1)) <= 0 or int(match.group(2)) <= 0:
+        raise RuntimeError("malformed or empty (TOTAL) line in cargo-llvm-lines output")
+    return int(match.group(1))
 
 
 def load_baseline() -> dict[str, int]:
     if not BASELINE_PATH.exists():
-        return {}
-    return json.loads(BASELINE_PATH.read_text(encoding="utf-8"))
+        raise RuntimeError(f"no baseline at {BASELINE_PATH}")
+
+    def unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate baseline key {key}")
+            result[key] = value
+        return result
+
+    values = json.loads(
+        BASELINE_PATH.read_text(encoding="utf-8"), object_pairs_hook=unique_object
+    )
+    if not isinstance(values, dict) or not values:
+        raise ValueError("LLVM baseline must be a nonempty object")
+    for package, lines in values.items():
+        if not isinstance(package, str) or not package or type(lines) is not int or lines <= 0:
+            raise ValueError(f"invalid LLVM baseline entry {package!r}: {lines!r}")
+    return values
 
 
 def write_baseline(values: dict[str, int]) -> None:
@@ -72,7 +90,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--update-baseline", action="store_true")
     parser.add_argument(
         "--packages",
-        nargs="*",
+        nargs="+",
         default=TARGET_PACKAGES,
         help="packages to measure (default: contract + core)",
     )
@@ -84,7 +102,9 @@ def main() -> int:
     measured = {pkg: measure_llvm_lines(pkg) for pkg in args.packages}
 
     if args.update_baseline:
-        write_baseline(measured)
+        # A focused update must preserve budgets for packages not measured.
+        baseline = load_baseline() if BASELINE_PATH.exists() else {}
+        write_baseline(baseline | measured)
         for pkg, lines in measured.items():
             print(f"baseline {pkg}: {lines}")
         return 0

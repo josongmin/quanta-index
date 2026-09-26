@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import codecs
 import re
 import subprocess
 import sys
@@ -93,7 +94,19 @@ def _is_production_rust(path: str) -> bool:
 def changed_production_lines(root: Path, base: str) -> set[tuple[str, int]]:
     """Return added production Rust lines in ``base...HEAD`` without inference."""
     result = subprocess.run(
-        ["git", "diff", "--no-ext-diff", "--unified=0", f"{base}...HEAD", "--", "crates"],
+        [
+            "git",
+            "diff",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            "--unified=0",
+            f"{base}...HEAD",
+            "--",
+            "crates",
+        ],
         cwd=root,
         check=False,
         capture_output=True,
@@ -107,8 +120,22 @@ def changed_production_lines(root: Path, base: str) -> set[tuple[str, int]]:
     changed: set[tuple[str, int]] = set()
     current_path: str | None = None
     for line in result.stdout.splitlines():
-        if line.startswith("+++ b/"):
-            candidate = line.removeprefix("+++ b/")
+        if line.startswith("+++ "):
+            destination = line.removeprefix("+++ ")
+            if destination.startswith('"'):
+                if not destination.endswith('"'):
+                    raise ValueError("unterminated Git destination path")
+                # Git C-quotes tabs, quotes, and UTF-8 bytes (as octal), even
+                # when core.quotepath is false for other Unicode characters.
+                destination = codecs.escape_decode(destination[1:-1].encode("utf-8"))[0].decode(
+                    "utf-8"
+                )
+            if destination == "/dev/null":
+                current_path = None
+                continue
+            if not destination.startswith("b/"):
+                raise ValueError(f"unexpected Git destination path: {destination!r}")
+            candidate = destination[2:]
             current_path = candidate if _is_production_rust(candidate) else None
             continue
         match = HUNK_RE.match(line)

@@ -41,6 +41,8 @@ class ManifestError(ValueError):
 
 
 def _artifact_glob(registry: dict[str, Any], family: dict[str, Any]) -> str | None:
+    if family["native_schema"] != "BenchArtifactV1:2":
+        return None
     reference = family["producer"]
     if reference == "none":
         return None

@@ -46,6 +46,12 @@ pub(super) struct CursorAuthorityV2 {
 }
 
 impl CursorAuthorityV2 {
+    #[cfg(test)]
+    pub(super) fn with_clock_for_tests(mut self, clock: Arc<dyn CursorClockV2>) -> Self {
+        self.clock = clock;
+        self
+    }
+
     pub(super) fn process_local() -> Result<Self, CoreError> {
         Ok(Self {
             keys: Arc::new(CursorKeyStore::ephemeral()?),

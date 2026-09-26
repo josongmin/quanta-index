@@ -21,6 +21,27 @@ Execution owner: `crates/quanta-index-searchd-runtime/src/state_migration.rs`
    after catalog verification; a detected in-command change is a refusal.
    Manifest reads reject symlinks and hard links; manifest publication uses
    exclusive creation so a dangling link cannot redirect the last write.
+   Decode and publication share the same authority validator: current
+   format, canonical lowercase SHA-256 digests, and unique file/directory
+   identities. Decode requires the exact canonical byte encoding; duplicate
+   headers, reordered fields, noncanonical numbers and line endings are
+   refused rather than normalized into a different receipt digest. Writers
+   accept only the two owned top-level manifest names and validate before
+   creating any file. Valid current manifests retain their existing format.
+   Current-root verification includes catalog bytes in its start/end freeze
+   and binds the root inode to the held custody. SQLite may create native
+   WAL/SHM bookkeeping during reads: only regular files at the exact paths
+   `catalog/catalog-v1.sqlite-{wal,shm,journal}` are excluded. Their creation
+   can change the catalog directory's size, mtime and APFS link count; these
+   fields are not compared for that directory, but its inode/type/mode/owner,
+   the complete advertised inventory and all payload file identities remain
+   checked. Sidecar symlinks/hard links are refused; suffixes elsewhere are
+   ordinary state and must be preserved.
+   Filesystem paths are admitted without lossy UTF-8 conversion or separator
+   rewriting. Non-UTF-8 names, control characters and backslash separators
+   are refused before inventory or authority publication. Extending current
+   verification with catalog bytes does not reset the session's existing
+   non-catalog identities or root custody.
    Backup custody is read-only, not an exclusive lock: keep the backup root
    quiescent throughout verification and cutover. A successful point-in-time
    check does not authorize later mutation or prove a different target root.

@@ -1,6 +1,6 @@
 //! Purpose-specific measurement payloads.
 //!
-//! One envelope, seven payload kinds. The payload is the *structure* of what
+//! One envelope, purpose-specific payloads. The payload is the *structure* of what
 //! was measured; the registry family is the *question*. A payload kind is
 //! never reinterpreted: a retrieval payload cannot be read as a latency row,
 //! an instruction count cannot be read as wall latency, and an agent outcome
@@ -589,6 +589,47 @@ impl RecordedExperimentPayload {
     }
 }
 
+/// Terminal test proof counts, never retrieval relevance or timing metrics.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProofPayload {
+    /// Registered verification rail.
+    pub rail: String,
+    /// Exact independently collected test inventory count.
+    pub selected: u64,
+    /// Terminal executed test count.
+    pub executed: u64,
+    /// Terminal successful test count.
+    pub passed: u64,
+    /// Terminal failed test count.
+    pub failed: u64,
+    /// Bound source closure digest.
+    pub source_digest: String,
+    /// Digest of the raw command/execution context.
+    pub execution_context_digest: String,
+}
+crate::impl_wire!(ProofPayload tag "proof" {
+    rail, selected, executed, passed, failed, source_digest, execution_context_digest,
+});
+
+impl ProofPayload {
+    fn validate(&self) -> Result<(), ProtocolError> {
+        if self.rail.is_empty()
+            || self.selected == 0
+            || self.executed != self.selected
+            || self.passed.checked_add(self.failed) != Some(self.executed)
+        {
+            return Err(ProtocolError::semantic(
+                "proof requires a nonempty rail and complete consistent terminal counts".to_owned(),
+            ));
+        }
+        crate::wire::require_digest("proof.source_digest", &self.source_digest)?;
+        crate::wire::require_digest(
+            "proof.execution_context_digest",
+            &self.execution_context_digest,
+        )
+    }
+}
+
 /// The typed measurement payload of one evidence document.
 ///
 /// The wire form is a JSON object whose `kind` field selects exactly one
@@ -609,6 +650,8 @@ pub enum Payload {
     AgentOutcome(AgentOutcomePayload),
     /// Recorded experiment.
     RecordedExperiment(RecordedExperimentPayload),
+    /// Terminal verification counts, not relevance metrics.
+    Proof(ProofPayload),
 }
 
 impl Payload {
@@ -623,6 +666,7 @@ impl Payload {
             Self::Retrieval(_) => "retrieval",
             Self::AgentOutcome(_) => "agent_outcome",
             Self::RecordedExperiment(_) => "recorded_experiment",
+            Self::Proof(_) => "proof",
         }
     }
 
@@ -642,6 +686,7 @@ impl Payload {
             "recorded_experiment" => {
                 RecordedExperimentPayload::decode(value).map(Self::RecordedExperiment)
             }
+            "proof" => ProofPayload::decode(value).map(Self::Proof),
             other => Err(ProtocolError::semantic(format!(
                 "payload.kind {other:?} is not registered"
             ))),
@@ -658,6 +703,7 @@ impl Payload {
             Self::Retrieval(value) => value.validate(),
             Self::AgentOutcome(value) => value.validate(),
             Self::RecordedExperiment(value) => value.validate(),
+            Self::Proof(value) => value.validate(),
         }
     }
 }
@@ -672,6 +718,7 @@ impl crate::codec::Wire for Payload {
             Self::Retrieval(value) => value.encode(),
             Self::AgentOutcome(value) => value.encode(),
             Self::RecordedExperiment(value) => value.encode(),
+            Self::Proof(value) => value.encode(),
         }
     }
 

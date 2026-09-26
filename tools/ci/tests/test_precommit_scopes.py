@@ -71,10 +71,14 @@ def test_scoped_repository_lints_skip_unrelated_docs_and_cover_their_inputs() ->
         "rust-no-allow": (
             "crates/quanta-index-core/src/lib.rs",
             "scripts/check-rust-allow-attributes.sh",
+            "tools/ci/lint/check-rust-allow-attributes.py",
+            "tools/ci/lint/rust_attribute_policy.py",
+            "tools/ci/tests/test_check_rust_allow_attributes.py",
         ),
         "rust-derive-allowlist": (
             "crates/quanta-index-core/src/lib.rs",
             "tools/ci/lint/check-rust-derive-allowlist.py",
+            "tools/ci/lint/rust_attribute_policy.py",
         ),
         "rust-cargo-toml-hygiene": (
             "crates/quanta-index-core/Cargo.toml",
@@ -119,9 +123,11 @@ def test_scoped_repository_lints_skip_unrelated_docs_and_cover_their_inputs() ->
             "crates/quanta-index-core/fuzz/fuzz_targets/silent.rs",
             "benchmarks/retrieval/src/lib.rs",
             "tools/ci/lint/check-rust-fallbacks.py",
+            "tools/ci/lint/rust_attribute_policy.py",
         ),
         "rust-fallback-tests": (
             "tools/ci/lint/check-rust-fallbacks.py",
+            "tools/ci/lint/rust_attribute_policy.py",
             "tools/ci/tests/test_check_rust_fallbacks.py",
         ),
         "precommit-scope-tests": (

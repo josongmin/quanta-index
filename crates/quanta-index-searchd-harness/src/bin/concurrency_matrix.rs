@@ -21,16 +21,12 @@ use std::process::ExitCode;
 use anyhow::Result as AnyResult;
 use quanta_index_searchd_harness::artifact::{GitHeadV1, HostV1};
 use quanta_index_searchd_harness::concurrency::{
-    ConcurrencyReport, run_concurrency_report, write_artifacts,
+    ConcurrencyReport, DEFAULT_REQUESTS_PER_CLIENT, run_concurrency_report, write_artifacts,
 };
 
 /// Deterministic default seed so the rail is reproducible run-to-run unless an
 /// operator overrides it via `--seed`.
 const DEFAULT_SEED: u64 = 0x434f_4e43_5552_5231;
-
-/// Requests each fast client issues per client count; small enough to run on
-/// a developer host, overridable via `--requests-per-client`.
-const DEFAULT_REQUESTS_PER_CLIENT: u32 = 16;
 
 struct CliArgs {
     out_dir: PathBuf,

@@ -2,18 +2,28 @@
 
 ## 현행 판정 — 2026-09-26, [중앙 코드 감사](CURRENT-AUDIT.md) 기준
 
-2026-09-26 후속 dirty 코드 판정: admission v2가 development suite와 experiment-custody manifest의 raw/canonical digest를 묶고, capture/verdict 양쪽에서 source revision, repository commit, gold-bearing file(서로 다른 span 포함), exact gold block, query family, normalized/near-duplicate query를 거부한다. indexed corpus 공유는 허용한다. T15/T16은 `pass`/count/digest만으로 승인하던 false positive를 차단했으나 raw 양성 proof 프로토콜은 **미구현**이다. 최종 holdout pair·quality/performance qualification은 `NOT_RUN`. 아래 기존 감사 문장은 수정 전 snapshot이며 [현재 감사](CURRENT-AUDIT.md)를 우선한다.
+현재 `f9c3b4dc` + 공유 dirty 통합: native vector capture에 더해 `quanta-index-vector-proof`, `quanta-index-incremental-proof`, `semantic::proof` full-row export, `conditional_proof.py` schema2 replay가 main에 들어왔다. `run.py` T15/T16이 이 원본 validator를 사용한다. 아래 `604149ed`의 “양성 protocol 미구현”은 수정 전 기록이다. 독립 재감사에서 정상T16 5개 통과 및 no-op5·terminal3·dimension2·receipt3 거부, 무관 owner 삭제 fresh5 거부/raw5 실패를 회수했다. `/private/tmp/qi-rbr-conditional-final.JNYc3M/receipt.md`. **실제 exporter 양성 terminal·최종 frozen source custody는 아직 `NOT_RUN`**이다. claim=false는 `NOT_APPLICABLE`이다. query overhead replay 도구 구현과 실제 비용/quiet-host 자격은 별도다.
+
+- 최신 전체 authority: Python 283개. 실제 collection/terminal 결과는 [CURRENT-AUDIT](CURRENT-AUDIT.md)를 따른다. 과거 276/276을 현재 증거로 재사용하지 않는다.
+- T15는 component 0.002/cosine 0.005의 고정 tolerance, 정확한 inputs/정책/model2vec 0.9.0/assets와 native raw vectors를 검증한다. Semble native `max_length=512`와 controlled `None`를 동일 정책으로 취급하지 않는다.
+- T16은 fresh와 delta의 같은 owner scope/실제 full rows 및 fault/restart 경계를 raw oracle로 검증해야 한다. summary/count만 같은 것은 row-set equivalence가 아니다. exporter와 source/model/dependency/config/binary/environment/명령/terminal custody의 결합 검증이 종료 조건이다.
+- T16의 before→typed operation→fresh oracle를 독립 재도출하고 의미 없는 append/replace/tombstone/clear/membership을 거부한다. 무관 owner sentinel을 보존한다. terminal은 단 하나의 마지막 successful build event여야 하며 뒤 이벤트·모순/중복 event를 거부한다. dimension/receipt/exit 및 full-row u32/bool은 정확한 타입을 요구한다. 재감사 중 발견한 table 변수 shadow 회귀도 수정 후 정상 재생을 확인했다.
+- 증거 경계: local binary/build hash self-report와 raw bytes 대조는 local custody다. OS 서명·원격 attestation·clean-source qualification으로 승격하지 않는다.
+
+### 수정 전 판정 — `604149ed`
+
+2026-09-26 `604149ed` 코드 재감사: admission v2가 development suite와 experiment-custody manifest의 raw/canonical digest를 묶고, capture/verdict 양쪽에서 source revision, repository commit, gold-bearing file(서로 다른 span 포함), exact gold block, query family, normalized/near-duplicate query를 거부한다. indexed corpus 공유는 허용한다. cross-suite validator 미구현 판정은 철회한다. T15/T16은 `pass`/count/digest만으로 승인하던 false positive를 차단했으나 raw 양성 proof 프로토콜은 **미구현**이다. 최종 holdout pair·quality/performance qualification은 `NOT_RUN`. [현재 감사](CURRENT-AUDIT.md)를 우선한다.
 
 - 구현: 단일 suite train/eval 검사에 더해 admission v2의 development/holdout custody가 gold-bearing file·exact block·query family·near-duplicate query를 검사한다. 동일 indexed corpus는 허용한다.
-- 검증: 현재 dirty overlay의 Python 전체 274 passed/32 subtests(exit 0, 이동 source local diagnostic)에는 cross-suite leak/위조, admission replay, T15/T16 summary-only refusal fixture가 포함된다. GIN/ripgrep v4 탐색 verdict의 `PAIR_VALID=pass`는 qualified final pair가 아니다. admitted final `PAIR_VALID`/`QUALITY_DELTA`/`PERF_QUALIFIED`와 T15/T16 양성 raw proof는 `NOT_RUN`.
-- 잔여 코드: custody의 현재 exact block hash 범위를 넘어서는 semantic definition identity가 필요하면 외부 adjudicated inventory와 검증 경계를 확장한다. T15/T16은 raw vector/증분 row-set, 정확한 실행 명령·source/model/dependency, collection/terminal receipt를 결합한 양성 protocol이 필요하다. 현재 조작된 `pass` JSON은 fail-closed다.
+- 검증: 이번 Python 전체는 **276 passed/32 subtests**, inventory **276/276 exact**, exit 0이며 cross-suite leak/위조, admission replay, T15/T16 summary-only refusal fixture를 포함한다. selected Python 입력과 HEAD는 전후 동일하나 공유 dirty local diagnostic이다. raw `/private/tmp/qi-rbr-source-audit.p3VfSl/python-audit.json`을 따른다. GIN/ripgrep v4 탐색 verdict는 과거 개발 진단이며 qualified final pair가 아니다. admitted final `PAIR_VALID`/`QUALITY_DELTA`/`PERF_QUALIFIED`와 claimed T15/T16 양성 raw proof는 `NOT_RUN`이다.
+- 잔여 코드: T15/T16은 raw vector/증분 row-set producer와 정확한 실행 명령·source/model/dependency·binary/environment·collection/terminal receipt를 결합한 양성 protocol이 필요하다. 현재 `run.py`는 shape/digest/identity 검사 후에도 무조건 `raw proof protocol is not implemented`로 거부한다. claim=false면 해당 gate는 `NOT_APPLICABLE`; claim=true일 때만 필수다. 기본 pair 전체의 실행 버그로 표시하지 않는다. RBR-07 local parity test의 exit 0을 이 protocol로 대신하지 않는다. exact-block 범위를 넘는 definition identity 확장은 실제 승인된 claim이 요구할 때만 추가한다.
 - 잔여 외부 자격: 독립 gold·admission, frozen corpus/model/spec, quiet host와 final single holdout pair/replay. 이는 개발 티켓의 수동 작업 항목이 아니라 qualified claim의 입력 조건이다. [현재 전수 판정](CURRENT-AUDIT.md).
 
 - 우선순위: P1. 기존 split 검증·verdict framework는 관측됨; 독립 holdout·최종 pair/replay는 `NOT_RUN`. [현재 전수 판정](CURRENT-AUDIT.md).
 - 선행: 설계·분리는 즉시. 최종 capture는 적용된 RBR-00~11 통합·검증 후.
 - 성격: 개발 구현 완료와 외부 비교 자격을 분리하는 통합 티켓.
 
-현재 코드 감사(2026-09-26): `evaluator.validate_suite`는 한 suite의 train/eval만 검사한다. `suite.schema.json`에는 holdout split/외부 experiment identity가 없고, 현재 mutant fixture는 같은 파일의 disjoint train/eval을 통과시킨다. 따라서 두 별도 suite 사이의 같은 파일·정의·질의 가족 누수를 현 validator로 증명할 수 없다. 역사 v3 의미를 사후 변경하기보다, 개발 suite와 최종 holdout suite의 digest·repo/source identity·split key를 함께 받는 새로운 frozen admission 경계가 필요하다. 이는 독립 gold·quiet host 부재와 별개의 **코드 P1** 잔여다.
+티켓 작성 당시 단일-suite 한계는 역사적 반례다. 현 `evaluator.validate_experiment_custody`와 admission v2에서 development/holdout suite를 함께 검증한다. 잔여는 이 구현의 frozen live admission/capture/replay proof이며 기존 v3 suite의 train/eval 의미는 사후 변경하지 않는다.
 
 ## 파일·함수
 

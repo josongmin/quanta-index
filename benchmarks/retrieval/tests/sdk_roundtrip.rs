@@ -35,6 +35,7 @@ use quanta_index_retrieval_bench::sdk::{
 };
 use quanta_index_retrieval_bench::symbols::extract_corpus_symbols;
 use quanta_index_retrieval_bench::{BenchError, sha256_hex};
+use quanta_index_search_plane::QueryStageObservationPolicy;
 
 const EMBEDDER: &str = "hash-dev";
 
@@ -99,11 +100,20 @@ fn write_repo(root: &Path, files: &[(&str, &str)]) {
 }
 
 fn boot_session(state_root: &Path, identity: &BatchIdentity) -> DaemonSession {
+    boot_session_with_policy(state_root, identity, QueryStageObservationPolicy::Enabled)
+}
+
+fn boot_session_with_policy(
+    state_root: &Path,
+    identity: &BatchIdentity,
+    policy: QueryStageObservationPolicy,
+) -> DaemonSession {
     let config = DaemonConfig {
         state_root,
         searchd_binary: None,
         embedder: EMBEDDER,
         model_dir: None,
+        query_stage_observation: policy,
         repo_id: &identity.repo_id,
         revision_id: &identity.revision_id,
         ready_timeout: Duration::from_secs(60),
@@ -150,6 +160,82 @@ fn sdk_frontdoor_static_guard() {
     }
 }
 
+#[test]
+fn real_daemon_query_observation_off_preserves_results_and_marks_unmeasured() {
+    let repo = tempfile::tempdir().expect("repo");
+    write_tiny_repo(repo.path());
+    let manifest = load_manifest(&repo.path().join("manifest.json")).expect("manifest");
+    let files = load_corpus(repo.path(), &manifest, &CorpusLimits::default()).expect("corpus");
+    let (chunks, _coverage) = chunk_corpus(&WholeFileChunker, &files).expect("chunks");
+    let identity = BatchIdentity::new(
+        "bench-repo",
+        "bench-rev",
+        7,
+        "manifest:observation".to_string(),
+    )
+    .expect("identity");
+    let (batch, _assembly) =
+        assemble_batch(&identity, &chunks, &symbols_for(&files)).expect("batch");
+    let state = tempfile::tempdir().expect("state");
+    let mut observations = Vec::new();
+    for (name, policy) in [
+        ("enabled", QueryStageObservationPolicy::Enabled),
+        ("disabled", QueryStageObservationPolicy::Disabled),
+    ] {
+        let session = boot_session_with_policy(&state.path().join(name), &identity, policy);
+        let (_receipt, _ack, _ingest) =
+            publish_and_activate(&session, &batch, &identity, None).expect("publish");
+        let mut routes = BTreeMap::new();
+        for route in ["lexical", "semantic", "hybrid"] {
+            let outcome = query_route(&RouteQuery {
+                client: session.client(),
+                route,
+                lexical_request: "sphinx quartz vaults",
+                semantic_text: "sphinx quartz vaults",
+                repo_id: &identity.repo_id,
+                revision_id: &identity.revision_id,
+                generation: identity.generation,
+                top_k: 10,
+            });
+            let QueryOutcome::ReturnedWindow {
+                hits,
+                window,
+                explanation,
+                ..
+            } = outcome
+            else {
+                panic!("observation policy changed success: {outcome:?}");
+            };
+            assert!(!hits.is_empty(), "fixture must exercise nonempty results");
+            let mut explanation = explanation.expect("transport explanation");
+            assert!(explanation.request_id.is_some_and(|id| id > 0));
+            match policy {
+                QueryStageObservationPolicy::Enabled => assert!(
+                    explanation
+                        .stage_timings
+                        .take()
+                        .is_some_and(|stages| !stages.is_empty())
+                ),
+                QueryStageObservationPolicy::Disabled => {
+                    assert!(explanation.stage_timings.is_none());
+                }
+            }
+            let rows: Vec<_> = hits.into_iter().map(|hit| serde_json::json!({
+                "id": hit.candidate_id, "path": hit.path, "start": hit.start_line,
+                "end": hit.end_line, "snippet": hit.snippet, "score": hit.score,
+                "contributions": hit.contributions.iter().map(|part| serde_json::json!({"lane": part.lane, "rank": part.rank, "score": part.raw_score})).collect::<Vec<_>>(),
+            })).collect();
+            let _old = routes.insert(route, (rows, window, explanation));
+        }
+        observations.push(routes);
+        session.stop().expect("stop");
+    }
+    assert_eq!(
+        observations[0], observations[1],
+        "only stage observations may differ"
+    );
+}
+
 fn collect_sources(dir: &Path, out: &mut Vec<PathBuf>) {
     for entry in std::fs::read_dir(dir).expect("src dir") {
         let entry = entry.expect("dir entry");
@@ -190,6 +276,7 @@ fn stale_state_root_is_refused() {
         searchd_binary: None,
         embedder: EMBEDDER,
         model_dir: None,
+        query_stage_observation: QueryStageObservationPolicy::Enabled,
         repo_id: &identity.repo_id,
         revision_id: &identity.revision_id,
         ready_timeout: Duration::from_secs(5),
@@ -217,6 +304,7 @@ fn symlink_state_root_is_refused() {
         searchd_binary: None,
         embedder: EMBEDDER,
         model_dir: None,
+        query_stage_observation: QueryStageObservationPolicy::Enabled,
         repo_id: &identity.repo_id,
         revision_id: &identity.revision_id,
         ready_timeout: Duration::from_secs(5),
@@ -247,6 +335,7 @@ fn boot_times_out_when_daemon_never_opens_sockets() {
         searchd_binary: Some(&script),
         embedder: EMBEDDER,
         model_dir: None,
+        query_stage_observation: QueryStageObservationPolicy::Enabled,
         repo_id: &identity.repo_id,
         revision_id: &identity.revision_id,
         ready_timeout: Duration::from_secs(2),
@@ -281,6 +370,7 @@ fn missing_pinned_model_fails_boot_without_a_scored_record() {
         searchd_binary: None,
         embedder: "potion-code",
         model_dir: Some(&missing_model),
+        query_stage_observation: QueryStageObservationPolicy::Enabled,
         repo_id: &identity.repo_id,
         revision_id: &identity.revision_id,
         ready_timeout: Duration::from_secs(10),
@@ -322,6 +412,7 @@ fn unavailable_provider_is_typed_and_never_returns_hits() {
         searchd_binary: None,
         embedder: "unavailable",
         model_dir: None,
+        query_stage_observation: QueryStageObservationPolicy::Enabled,
         repo_id: &identity.repo_id,
         revision_id: &identity.revision_id,
         ready_timeout: Duration::from_secs(60),
@@ -329,7 +420,7 @@ fn unavailable_provider_is_typed_and_never_returns_hits() {
         history_max_generations: 8,
     };
     let session = DaemonSession::boot(&config).expect("daemon boots");
-    let (_receipt, _ack) =
+    let (_receipt, _ack, _observation) =
         publish_and_activate(&session, &batch, &identity, None).expect("publish+activate");
     match query_route(&RouteQuery {
         client: session.client(),
@@ -441,8 +532,48 @@ fn real_daemon_roundtrip_publishes_and_queries() {
         "query before activation must fail, got {premature:?}"
     );
 
-    let (receipt, ack) =
+    let (receipt, ack, observation) =
         publish_and_activate(&session, &batch, &identity, None).expect("publish+activate");
+    assert_eq!(observation.repo_id, identity.repo_id);
+    assert_eq!(observation.revision_id, identity.revision_id);
+    assert_eq!(observation.generation, receipt.generation);
+    assert_eq!(observation.batch_digest, receipt.batch_digest);
+    assert!(observation.request_id > 0);
+    assert_eq!(
+        observation.status,
+        quanta_index_contract::IngestObservationStatus::Executed
+    );
+    assert!(
+        observation
+            .semantic
+            .as_ref()
+            .expect("semantic measured")
+            .durations
+            .seal
+            .is_some()
+    );
+    assert!(observation.lexical_build_ns.is_some());
+    assert!(observation.finalize_ns.is_some());
+    assert!(
+        observation.activation_ns.is_none(),
+        "separate activation is not a server ingest stage"
+    );
+    let replay = session
+        .client()
+        .producer()
+        .publish_search_corpus_observed(&batch)
+        .expect("observed replay");
+    assert_eq!(replay.receipt, receipt.clone().replayed());
+    let replayed = replay.observation.expect("explicit replay observation");
+    assert_ne!(replayed.request_id, observation.request_id);
+    assert_eq!(
+        replayed.status,
+        quanta_index_contract::IngestObservationStatus::Replayed
+    );
+    assert!(replayed.semantic.is_none());
+    assert!(replayed.lexical_build_ns.is_none());
+    assert!(replayed.finalize_ns.is_none());
+    assert!(replayed.activation_ns.is_none());
 
     // A stale generation pin never reads another generation's rows.
     let stale_result = query_route(&RouteQuery {
@@ -1040,7 +1171,42 @@ fn actual_runner_binary_emits_receipt_bound_v5_record() {
     let diagnostic: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&diagnostic_out).expect("diagnostic bytes"))
             .expect("diagnostic JSON");
-    assert_eq!(diagnostic["schema_version"], 4);
+    assert_eq!(diagnostic["schema_version"], 5);
+    assert_eq!(
+        diagnostic["server_observation"],
+        quanta_index_retrieval_bench::diagnostics::server_observation_value(
+            QueryStageObservationPolicy::Enabled
+        )
+        .expect("canonical config")
+    );
+    let raw_ingest = &diagnostic["ingest"];
+    let raw_receipt: quanta_index_sdk::BatchReceipt =
+        serde_json::from_value(raw_ingest["receipt"].clone()).expect("strict durable receipt");
+    let raw_ack: quanta_index_contract::SearchPlaneSearchCorpusActivationCasAck =
+        serde_json::from_value(raw_ingest["activation_ack"].clone()).expect("strict activation");
+    let observation: quanta_index_contract::SearchCorpusIngestObservation =
+        serde_json::from_value(raw_ingest["observation"].clone())
+            .expect("strict transient observation");
+    assert_eq!(observation.repo_id.as_str(), "runner-binary-repo");
+    assert_eq!(observation.revision_id.as_str(), commit);
+    assert_eq!(observation.generation.get(), 1);
+    assert_eq!(observation.batch_digest, raw_receipt.batch_digest);
+    assert_eq!(
+        observation.status,
+        quanta_index_contract::IngestObservationStatus::Executed
+    );
+    assert!(observation.activation_ns.is_none());
+    assert!(observation.request_id > 0);
+    for capture in captures.values() {
+        assert_eq!(
+            capture["receipt_digest"],
+            receipt_digest(&raw_receipt).expect("receipt hash")
+        );
+        assert_eq!(
+            capture["activation_digest"],
+            activation_digest(&raw_ack).expect("activation hash")
+        );
+    }
     assert_eq!(
         diagnostic["record_sha256"],
         sha256_hex(&std::fs::read(&out).expect("record bytes"))
@@ -1132,7 +1298,7 @@ fn second_boot_over_used_root_is_refused_without_cleanup() {
     let state = tempfile::tempdir().expect("state root");
     let state_root = state.path().join("daemon");
     let session = boot_session(&state_root, &identity);
-    let (_receipt, _ack) =
+    let (_receipt, _ack, _observation) =
         publish_and_activate(&session, &batch, &identity, None).expect("publish");
     session.stop().expect("stop");
     // The used root still holds index data: a second boot must refuse it.
@@ -1141,6 +1307,7 @@ fn second_boot_over_used_root_is_refused_without_cleanup() {
         searchd_binary: None,
         embedder: EMBEDDER,
         model_dir: None,
+        query_stage_observation: QueryStageObservationPolicy::Enabled,
         repo_id: &identity.repo_id,
         revision_id: &identity.revision_id,
         ready_timeout: Duration::from_secs(5),
@@ -1200,7 +1367,7 @@ fn symbol_route_answers_from_published_units_and_proves_spans() {
         .expect("units");
     let state = tempfile::tempdir().expect("state root");
     let session = boot_session(&state.path().join("daemon"), &identity);
-    let (_receipt, _ack) =
+    let (_receipt, _ack, _observation) =
         publish_and_activate(&session, &batch, &identity, None).expect("publish+activate");
     let plan = plan_query(
         QueryInputPolicy::Native,
@@ -1292,7 +1459,7 @@ fn symbol_route_no_answer_is_typed_never_fake_success() {
         .expect("published units");
     let state = tempfile::tempdir().expect("state root");
     let session = boot_session(&state.path().join("daemon"), &identity);
-    let (_receipt, _ack) =
+    let (_receipt, _ack, _observation) =
         publish_and_activate(&session, &batch, &identity, None).expect("publish+activate");
     let outcome = query_route(&RouteQuery {
         client: session.client(),
@@ -1408,7 +1575,7 @@ fn sentence_and_identifier_queries_anchor_the_same_definition_over_distractors()
         .expect("published units");
     let state = tempfile::tempdir().expect("state root");
     let session = boot_session(&state.path().join("daemon"), &identity);
-    let (_receipt, _ack) =
+    let (_receipt, _ack, _observation) =
         publish_and_activate(&session, &batch, &identity, None).expect("publish+activate");
 
     // The two policies produce distinct executed lexical requests for the
@@ -1518,7 +1685,7 @@ fn homonymous_symbols_stay_distinct_units_on_the_symbol_route() {
     );
     let state = tempfile::tempdir().expect("state root");
     let session = boot_session(&state.path().join("daemon"), &identity);
-    let (_receipt, _ack) =
+    let (_receipt, _ack, _observation) =
         publish_and_activate(&session, &batch, &identity, None).expect("publish+activate");
     let plan = plan_query(
         QueryInputPolicy::Native,

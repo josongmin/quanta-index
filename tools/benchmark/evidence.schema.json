@@ -137,7 +137,8 @@
         { "$ref": "#/$defs/freshness" },
         { "$ref": "#/$defs/retrieval" },
         { "$ref": "#/$defs/agent_outcome" },
-        { "$ref": "#/$defs/recorded_experiment" }
+        { "$ref": "#/$defs/recorded_experiment" },
+        { "$ref": "#/$defs/proof" }
       ]
     },
     "raw": {
@@ -169,6 +170,8 @@
     "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
   },
   "$defs": {
+    "uint": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
     "unit": { "enum": ["ms", "ratio", "count", "ns", "instructions", "qps", "bytes"] },
     "metric": {
       "type": "object",
@@ -326,6 +329,21 @@
         "metrics": { "type": "array", "items": { "$ref": "#/$defs/metric" } },
         "capture": { "enum": ["recorded_unauthenticated", "authenticated"] },
         "input_digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+      }
+    },
+    "proof": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "rail", "selected", "executed", "passed", "failed", "source_digest", "execution_context_digest"],
+      "properties": {
+        "kind": { "const": "proof" },
+        "rail": { "type": "string", "minLength": 1 },
+        "selected": { "type": "integer", "minimum": 1, "maximum": 18446744073709551615 },
+        "executed": { "$ref": "#/$defs/uint" },
+        "passed": { "$ref": "#/$defs/uint" },
+        "failed": { "$ref": "#/$defs/uint" },
+        "source_digest": { "$ref": "#/$defs/digest" },
+        "execution_context_digest": { "$ref": "#/$defs/digest" }
       }
     },
     "recorded_experiment": {

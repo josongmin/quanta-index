@@ -72,8 +72,8 @@ pub trait LexicalIndexOpenPort: Send + Sync {
 ///
 /// QI-RT-01 splits the producer-facing surface from transport details so the
 /// SDK can route batches over typed ingest IPC while runtime ownership stays
-/// batch-native. Implementations commit the batch and return the accepted
-/// surface in [`BatchPublishReceipt`].
+/// batch-native. Implementations return a canonical publish outcome whose
+/// [`BatchPublishReceipt`] is durable and whose observation is transient.
 pub trait SearchCorpusIngestPort: Send + Sync {
     /// Everything that can refuse `batch` without mutating anything: its
     /// shape, its surface-mutation authority, the resource envelope, and
@@ -93,7 +93,7 @@ pub trait SearchCorpusIngestPort: Send + Sync {
         &self,
         batch: &SearchCorpusIngestBatch,
         budget: &RequestBudgetV1,
-    ) -> Result<BatchPublishReceipt, CoreError>;
+    ) -> Result<quanta_index_contract::SearchCorpusPublishOutcome, CoreError>;
 }
 
 /// Ingest a source-repo keyed commit-recency authority snapshot for one lexical

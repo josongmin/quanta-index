@@ -71,6 +71,25 @@ def test_float_canonical_form_never_uses_exponents() -> None:
         module.canonical_json({"v": float("inf")})
 
 
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf"), 10**1000])
+def test_payload_validation_refuses_non_finite_numeric_facts(value) -> None:
+    module = _load_evidence_module()
+    payload = module.sample_evidence()["payload"]
+    payload["rows"][0]["p50"] = value
+    with pytest.raises(module.EvidenceError, match="finite"):
+        module.validate_payload(payload)
+
+
+def test_python_counters_match_the_rust_u64_boundary() -> None:
+    module = _load_evidence_module()
+    payload = module.sample_evidence()["payload"]
+    payload["errors"] = (1 << 64) - 1
+    module.validate_payload(payload)
+    payload["errors"] += 1
+    with pytest.raises(module.EvidenceError, match="u64 range"):
+        module.validate_payload(payload)
+
+
 # --------------------------------------------------------------------------
 # Document-level refusals
 # --------------------------------------------------------------------------
@@ -129,7 +148,7 @@ def test_unknown_protocol_and_version_are_refused() -> None:
         (lambda e: e["host"].update({"policy": "canonical-linux"}), "canonical-linux"),
         (lambda e: e["verdict"].update({"scope": "performance"}), "exclusive host lease"),
         (
-            lambda e: (e["command"].update({"status": "timeout", "exit_code": None})),
+            lambda e: e["command"].update({"status": "timeout", "exit_code": None}),
             "cannot carry verdict",
         ),
         (lambda e: e["verdict"].update({"status": "not_run"}), "must state a reason"),
@@ -244,9 +263,7 @@ def _retrieval_payload(**overrides):
                 "kind": "recorded_experiment",
                 "experiment_id": "scan-vs-index",
                 "diagnostic_only": False,
-                "points": [
-                    {"label": "2000", "metric": "scan_ms", "unit": "ms", "value": 1.0}
-                ],
+                "points": [{"label": "2000", "metric": "scan_ms", "unit": "ms", "value": 1.0}],
                 "source_digest": "sha256:" + "ef" * 32,
             },
             "diagnostic_only",
@@ -398,3 +415,36 @@ def test_published_wire_schema_accepts_the_golden_and_refuses_malformed_document
         "samples": 1,
     }
     assert list(validator.iter_errors(broken)), "schema accepted an unregistered unit"
+
+
+def test_proof_counts_are_not_relevance_or_performance():
+    module = _load_evidence_module()
+    record = module.sample_evidence()
+    record["verdict"]["scope"] = "contract"
+    record["payload"] = {
+        "kind": "proof",
+        "rail": "retrieval-contract",
+        "selected": 8,
+        "executed": 8,
+        "passed": 8,
+        "failed": 0,
+        "source_digest": record["source"]["closure_digest"],
+        "execution_context_digest": record["source"]["closure_digest"],
+    }
+    sealed = module.seal(record)
+    assert module.open_evidence(module.to_canonical_json(sealed)) == sealed
+    record["verdict"]["scope"] = "quality"
+    with pytest.raises(ValueError):
+        module.seal(record)
+    record["verdict"]["scope"] = "contract"
+    record["payload"]["executed"] = 7
+    with pytest.raises(ValueError):
+        module.seal(record)
+    record["payload"].update(executed=8, passed=7, failed=1)
+    with pytest.raises(ValueError):
+        module.seal(record)
+    record["verdict"].update(status="fail", reason="one failed test")
+    assert module.seal(record)
+    record["payload"].update(passed=2**64 - 1, failed=1)
+    with pytest.raises(ValueError):
+        module.seal(record)

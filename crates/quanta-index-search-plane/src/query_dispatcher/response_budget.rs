@@ -22,6 +22,9 @@ use serde::Serialize;
 /// id, the status and the payload's variant tag encode in far less.
 pub const RESPONSE_ENVELOPE_RESERVE_BYTES: u64 = 4_096;
 
+/// Same page overhead allowance under enabled and disabled stage observation.
+pub(super) const LEXICAL_STAGE_RESERVE_BYTES: u64 = 512;
+
 /// How many encoded bytes one ranked page may take.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ResponsePayloadBudget {
@@ -77,6 +80,12 @@ pub(super) trait RankedPage: Serialize + Clone {
 
     fn generation(&self) -> quanta_index_contract::ManifestGeneration;
 
+    /// Timing observations are not pagination authority. Routes carrying them
+    /// use the same bounded reserve with instrumentation enabled or disabled.
+    fn budget_encoded_len(&self) -> Result<u64, CoreError> {
+        encoded_len(self, "ranked page")
+    }
+
     /// Keep the first `returned` rows under `window`, continued by `cursor`.
     fn cut(self, returned: usize, window: QueryResultWindowV2, cursor: ContinuationTokenV2)
     -> Self;
@@ -102,7 +111,7 @@ pub(super) fn fit_ranked_page<P: RankedPage>(
     mint: impl Fn(&LexicalCursor) -> Result<ContinuationTokenV2, CoreError>,
 ) -> Result<P, CoreError> {
     let limit = budget.max_payload_bytes();
-    let whole = encoded_len(&page, "ranked page")?;
+    let whole = page.budget_encoded_len()?;
     if whole <= limit {
         return Ok(page);
     }
@@ -136,7 +145,7 @@ pub(super) fn fit_ranked_page<P: RankedPage>(
             crate::query_dispatcher::window::cut_pageable_window_v2(&window, returned)?,
             token,
         );
-        if encoded_len(&cut, "cut ranked page")? <= limit {
+        if cut.budget_encoded_len()? <= limit {
             return Ok(cut);
         }
         returned = last;
@@ -147,7 +156,7 @@ fn too_large(encoded: u64, limit: u64) -> CoreError {
     CoreError::Typed {
         code: quanta_index_contract::SearchPlaneErrorCodeV2::ResultTooLarge,
         message: format!(
-            "the page's first row alone does not fit the {limit}-byte response budget (the whole page encodes to {encoded} bytes); narrow the query or the projection"
+            "no nonempty continued page fits the {limit}-byte response budget (the whole page accounts for {encoded} bytes including reserved observations); narrow the query or the projection"
         ),
     }
 }
@@ -179,6 +188,28 @@ impl RankedPage for TextQueryResponse {
 
     fn generation(&self) -> quanta_index_contract::ManifestGeneration {
         self.generation.manifest_generation
+    }
+
+    fn budget_encoded_len(&self) -> Result<u64, CoreError> {
+        // At most four lexical stages, each with bounded kind, u64 timing and
+        // candidate count, and u32 calls. 512 bytes dominates the CBOR shape
+        // even at every scalar maximum (covered by the reserve test).
+        let whole = encoded_len(self, "ranked page")?;
+        let measured_slot = encoded_len(&self.explanation.stage_timings, "lexical stage slot")?;
+        if measured_slot > LEXICAL_STAGE_RESERVE_BYTES {
+            return Err(CoreError::InvalidContract(
+                "lexical stages exceed reserved shape".to_string(),
+            ));
+        }
+        let empty_slot: Option<&[quanta_index_contract::QueryStageTimingV1]> = None;
+        let empty_slot_bytes = encoded_len(&empty_slot, "unobserved lexical stage slot")?;
+        // The explanation always serializes this slot. CBOR values encode
+        // independently, avoiding candidate clones or a parallel wire schema.
+        whole
+            .checked_sub(measured_slot)
+            .and_then(|bytes| bytes.checked_add(empty_slot_bytes))
+            .and_then(|bytes| bytes.checked_add(LEXICAL_STAGE_RESERVE_BYTES))
+            .ok_or_else(|| CoreError::InvalidContract("lexical stage reserve overflow".to_string()))
     }
 
     fn cut(

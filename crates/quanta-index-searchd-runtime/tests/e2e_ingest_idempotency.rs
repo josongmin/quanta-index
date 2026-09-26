@@ -53,7 +53,7 @@ fn receipt_of(
     response: SearchPlaneIngestIpcResponse,
 ) -> Result<BatchPublishReceipt, Box<dyn Error>> {
     match response {
-        SearchPlaneIngestIpcResponse::SearchCorpusReceipt(receipt) => Ok(receipt),
+        SearchPlaneIngestIpcResponse::SearchCorpusReceipt(outcome) => Ok(outcome.receipt),
         SearchPlaneIngestIpcResponse::Error(error) => {
             Err(format!("refused: {}: {}", error.code, error.message).into())
         }

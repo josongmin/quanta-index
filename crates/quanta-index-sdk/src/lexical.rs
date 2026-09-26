@@ -347,6 +347,39 @@ impl<'a> SearchCorpusNamespace<'a> {
         batch: &SearchCorpusBatch,
         expected_active: Option<SearchCorpusActiveHeadV1>,
     ) -> Result<(BatchReceipt, SearchPlaneSearchCorpusActivationCasAck), SdkError> {
+        let (outcome, activation) =
+            self.publish_and_activate_outcome(batch, expected_active, false)?;
+        Ok((outcome.receipt, activation))
+    }
+
+    /// The same validated publish/CAS path, retaining the ingest request's
+    /// observation. Activation timing is intentionally not part of ingest.
+    pub fn publish_and_activate_observed(
+        &self,
+        batch: &SearchCorpusBatch,
+        expected_active: Option<SearchCorpusActiveHeadV1>,
+    ) -> Result<
+        (
+            quanta_index_contract::SearchCorpusPublishOutcome,
+            SearchPlaneSearchCorpusActivationCasAck,
+        ),
+        SdkError,
+    > {
+        self.publish_and_activate_outcome(batch, expected_active, true)
+    }
+
+    fn publish_and_activate_outcome(
+        &self,
+        batch: &SearchCorpusBatch,
+        expected_active: Option<SearchCorpusActiveHeadV1>,
+        observation_required: bool,
+    ) -> Result<
+        (
+            quanta_index_contract::SearchCorpusPublishOutcome,
+            SearchPlaneSearchCorpusActivationCasAck,
+        ),
+        SdkError,
+    > {
         // An expectation that could never be met — invalid, another pair,
         // or not advanced by this batch — is refused before any byte is
         // published, by the contract's own rule.
@@ -357,9 +390,14 @@ impl<'a> SearchCorpusNamespace<'a> {
         .map_err(|error| {
             SdkError::Protocol(format!("composite activation request is invalid: {error}"))
         })?;
-        let receipt = self.publish(batch)?;
+        let outcome = dispatch_search_corpus_publish_outcome_v1(self.client, batch)?;
+        if observation_required && outcome.observation.is_none() {
+            return Err(SdkError::Protocol(
+                "search corpus observation is missing".to_string(),
+            ));
+        }
         let request = SearchPlaneActivateSearchCorpusGenerationCasRequest {
-            candidate: search_corpus_identity_from_sealed_receipt_v1(batch, &receipt)?,
+            candidate: search_corpus_identity_from_sealed_receipt_v1(batch, &outcome.receipt)?,
             expected_active,
         };
         request.validate_v1().map_err(|error| {
@@ -392,7 +430,7 @@ impl<'a> SearchCorpusNamespace<'a> {
                 ));
             }
         };
-        Ok((receipt, activation))
+        Ok((outcome, activation))
     }
 }
 
@@ -468,6 +506,26 @@ fn dispatch_search_corpus_publish_v1<const SEALED: bool>(
     client: &QuantaIndex,
     batch: &SearchCorpusBatch<SEALED>,
 ) -> Result<BatchReceipt, SdkError> {
+    Ok(dispatch_search_corpus_publish_outcome_v1(client, batch)?.receipt)
+}
+
+pub(crate) fn dispatch_search_corpus_publish_observed_v1<const SEALED: bool>(
+    client: &QuantaIndex,
+    batch: &SearchCorpusBatch<SEALED>,
+) -> Result<quanta_index_contract::SearchCorpusPublishOutcome, SdkError> {
+    let outcome = dispatch_search_corpus_publish_outcome_v1(client, batch)?;
+    if outcome.observation.is_none() {
+        return Err(SdkError::Protocol(
+            "search corpus observation is missing".to_string(),
+        ));
+    }
+    Ok(outcome)
+}
+
+fn dispatch_search_corpus_publish_outcome_v1<const SEALED: bool>(
+    client: &QuantaIndex,
+    batch: &SearchCorpusBatch<SEALED>,
+) -> Result<quanta_index_contract::SearchCorpusPublishOutcome, SdkError> {
     validate_semantic_cluster_membership_authority_v1(batch.semantic_replace_scopes())?;
     let wire_batch = batch.to_wire_batch()?;
     wire_batch.validate_surface_mutations_v1().map_err(|err| {
@@ -478,9 +536,9 @@ fn dispatch_search_corpus_publish_v1<const SEALED: bool>(
         SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(wire_batch),
     )?;
     match response {
-        SearchPlaneIngestIpcResponse::SearchCorpusReceipt(receipt) => {
-            validate_search_corpus_publish_receipt_v1(batch, &batch_digest, &receipt)?;
-            Ok(receipt)
+        SearchPlaneIngestIpcResponse::SearchCorpusReceipt(outcome) => {
+            validate_search_corpus_publish_receipt_v1(batch, &batch_digest, &outcome.receipt)?;
+            Ok(outcome)
         }
         other @ (SearchPlaneIngestIpcResponse::HistoryReceipt(_)
         | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_)

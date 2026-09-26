@@ -31,6 +31,13 @@ class CrateRow:
     units: int
 
 
+@dataclass(frozen=True)
+class TimingEvidence:
+    crates: dict[str, CrateRow]
+    profile: str
+    rustc: str
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("baseline", type=Path, help="committed baseline JSON")
@@ -64,6 +71,10 @@ def load_crates(path: Path) -> dict[str, CrateRow]:
 
 
 def parse_crates(raw: bytes, source: str) -> dict[str, CrateRow]:
+    return parse_evidence(raw, source).crates
+
+
+def parse_evidence(raw: bytes, source: str) -> TimingEvidence:
     def unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
         result: dict[str, object] = {}
         for key, value in pairs:
@@ -98,7 +109,25 @@ def parse_crates(raw: bytes, source: str) -> dict[str, CrateRow]:
         if type(units) is not int or units < 1:
             raise ValueError(f"{source}: invalid units for {name}")
         crates[name] = CrateRow(name=name, duration=float(duration), units=units)
-    return crates
+    summary = payload.get("summary")
+    if not isinstance(summary, dict):
+        raise ValueError(f"{source}: missing timing summary")
+    profile, rustc = summary.get("profile"), summary.get("rustc")
+    if not isinstance(profile, str) or not profile or not isinstance(rustc, str) or not rustc:
+        raise ValueError(f"{source}: missing timing profile or compiler identity")
+    counts: dict[str, int] = {}
+    for field in ("fresh_units", "dirty_units", "total_units"):
+        value = summary.get(field)
+        if not isinstance(value, str) or not value.isascii() or not value.isdecimal():
+            raise ValueError(f"{source}: missing or invalid summary {field}")
+        counts[field] = int(value)
+    if counts["fresh_units"] != 0:
+        raise ValueError(f"{source}: warm timing evidence cannot qualify cold-build regression")
+    if counts["dirty_units"] <= 0 or counts["total_units"] != counts["dirty_units"]:
+        raise ValueError(f"{source}: inconsistent cold-build unit inventory")
+    if sum(row.units for row in crates.values()) > counts["dirty_units"]:
+        raise ValueError(f"{source}: crate unit counts exceed compiled unit inventory")
+    return TimingEvidence(crates, profile, rustc)
 
 
 def main() -> int:
@@ -125,16 +154,28 @@ def main() -> int:
         return 0
 
     try:
-        baseline = load_crates(args.baseline)
-        current = load_crates(args.current)
+        baseline_evidence = parse_evidence(args.baseline.read_bytes(), str(args.baseline))
+        current_evidence = parse_evidence(args.current.read_bytes(), str(args.current))
+        baseline = baseline_evidence.crates
+        current = current_evidence.crates
     except (OSError, ValueError, json.JSONDecodeError) as error:
         print(f"invalid timing evidence: {error}", file=sys.stderr)
+        return 2
+    if (baseline_evidence.profile, baseline_evidence.rustc) != (
+        current_evidence.profile, current_evidence.rustc
+    ):
+        print("timing profile or compiler identity differs from baseline", file=sys.stderr)
         return 2
     missing = sorted(set(baseline) - set(current))
     if missing:
         print(
             f"current timing evidence omits baseline crates: {', '.join(missing)}", file=sys.stderr
         )
+        return 2
+
+    reduced = sorted(name for name in baseline if current[name].units < baseline[name].units)
+    if reduced:
+        print(f"current timing evidence omits compiled crate units: {', '.join(reduced)}", file=sys.stderr)
         return 2
 
     all_crates = sorted(set(baseline) | set(current))

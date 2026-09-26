@@ -1,34 +1,30 @@
 # SEP-26 RBR 잔여 공백 등록부 — 2026-09-26
 
-최신 보정: [CURRENT-AUDIT](CURRENT-AUDIT.md)의 `79bb8d23` 공유 dirty local에서 이전 fmt/scoped Clippy 실패를 수선해 두 명령은 exit 0, contract/IPC/SDK/search-plane lib 및 LXE 통합 테스트도 local 통과했다. 이전 문단의 `FAILED`는 당시 소스 스냅샷의 역사적 결과다. **남은 기능/자격**은 이 표 그대로다: RBR-01 on/off overhead, RBR-10 ingest stage 공개 연결, RBR-12 T15/T16 독립 raw 양성 proof, RBR-06 fixed matrix와 frozen-source 재자격, 외부 gold/admission/quiet-host final pair. 조건부 RBR-08/09/10 정책은 개발 실측 전 변경하지 않는다.
+현재 source: `f9c3b4dc487a1b54a260e4ab2d3dd199310d3a5e` + 공유 dirty. [CURRENT-AUDIT](CURRENT-AUDIT.md)와 [IMPLEMENTATION-WAVE](IMPLEMENTATION-WAVE.md)의 명령·원본·검증 경계를 따른다. 수정 전 parity fail-open, 항상 켜진 query stage clock, 공개되지 않은 ingest stage report는 **현재 미구현 목록에서 제거**했다. 아래는 남은 실제 작업이다. `VERIFIED` local 결과를 clean-source proof나 검색 우위로 승격하지 않는다.
 
-2026-09-26 `f16bad93` 기반 dirty overlay 재감사. RBR-04 strict-full 실패/성공 coverage, RBR-06 indexed-span record/merge/evaluator, RBR-12 admission v2 cross-suite custody는 코드에 반영했다. T15/T16의 summary-only false positive는 닫았으나 raw 양성 proof는 아직 없다. 이 단계의 Python 전체 **274 passed/32 subtests**, Rust lib 82/chunking 25, live SDK 16, Python/Rust/SDK inventory는 lexical stage 추가 전 공유 dirty source의 역사적 local diagnostic이다. clean-source receipt와 **qualified final pair**는 자격 판정이 없다. 티켓별 계약과 증거 한계는 [CURRENT-AUDIT.md](CURRENT-AUDIT.md), [RBR-00~12](INDEX.md), [TEST-PLAN.md](TEST-PLAN.md)을 따른다. 아래 상태는 **남은 작업**이다.
+| ID | 남은 작업 | 현재 경계 / 종료 조건 |
+| --- | --- | --- |
+| [RBR-00](RBR-00-proof-contract.md) | 최종 source/document freeze 후 Python/Rust/SDK exact collection, terminal execution, source-bound contract/SDK receipts | 현재 Python authority는 283개. 실제 수집·실행의 exact equality와 raw terminal을 함께 확인해야 한다. 공유 dirty local 실행은 허용하되 clean closure는 `NOT_RUN` |
+| [RBR-01](RBR-01-diagnostics.md) | final-binary actual daemon on/off·diagnostic5/protocol3 replay 및 동일 workload 비용 측정 | 첫 SDK17/17·actual sidecar 정상+5변조 거부는 local 관측; 최종 재캡처 대기. `SPEC_OPTIONAL` selector 누락으로 disabled spec을 거부하던 실제 실행 결함도 수정했다. enabled/disabled/schema·invalid9 회귀 포함. roomy budget 결과 동등성; tight deadline·sidecar 비용 별도 |
+| [RBR-02](RBR-02-query-policy.md) | 정책/identity/negative fixture의 최종 revision 재자격 | 정책 코드는 구현돼 있다. native 제품 정책은 변경하지 않음; clean receipt `NOT_RUN` |
+| [RBR-03](RBR-03-semble-profiles.md) | 네 profile의 pinned reference capture·phase event·raw hash 재발급 | profile/phase validator 구현. 과거 탐색 pair를 현 source 자격으로 쓰지 않음 |
+| [RBR-04](RBR-04-symbol-producer.md) | 5언어 hand oracle·strict-full coverage·combined replace/reopen의 고정-source proof | 파일 path/SHA/text 및 coverage replay 구현. 현재 owning unit/live SDK와 clean receipt를 분리 |
+| [RBR-05](RBR-05-symbol-route-proof.md) | 실제 symbol route·forged/stale/no-answer/timeout·span binding 재자격 | 공통 route/record producer 구현; final live SDK raw terminal 필요 |
+| [RBR-06](RBR-06-span-chunking.md) | 외부 development의 strict vs line-aligned 1024·same-overlap/whole-file matrix | indexed/SDK/scored span 및 rank/context 지표 구현. primary density NDCG는 변경하지 않음; 외부 matrix `NOT_RUN` |
+| [RBR-07](RBR-07-semantic-parity.md) | 외부 동일 vectors/filters/k의 exact-vs-served CLI 구현·원인 분해, claim-specific T15 proof 연결 | strict schema2 fixture·9×256 capture·manual serde·정상/invalid 거부 local 검증. tolerance 0.002/0.005 유지. T15 exporter는 구현됨; `vector_index.rs::exact_top_k`는 cfg(test) synthetic helper여서 외부 분해 도구는 아직 없음 |
+| [RBR-08](RBR-08-symbol-ranking.md) | 기존 symbol route 반환 순위 probe → 재현되면 bounded 후보-stage trace/한 후보, 아니면 관측 범위의 유지 결정 | reachable ranker 결함 미확정. 현재 diagnostics는 `returned_window_only`; 미반환 정답이 후보에 진입했는지/어디서 탈락했는지는 미관측. probe `NOT_RUN`; ranker 교체 금지 |
+| [RBR-09](RBR-09-query-performance.md) | bounded experimental floor25/50 selector 구현, 100/25/50 × k/filter·ANN guard·quiet-host p95 | core `MIN_INTERNAL_FETCH_K=100` 상수이며 현재 config/CLI에 selector 없음. top-k 변경을 floor 실험으로 대체하지 않음. production floor100 유지. observation on/off·overhead replay 구현과 실제 frontier/성능 자격 분리 |
+| [RBR-10](RBR-10-ingest-performance.md) | fresh 비용·T16 owner delta/full rows → 필요한 경우 daemon delta/fault/restart rail·한 최적화 후보 | public transient outcome 연결·manual serde policy 보완. 일반 runner는 fresh root/단일 publish이며 delta CLI 없음. T16은 precomputed vectors의 sealed owner-state·5mutation, provider embedding/activation/daemon fault·restart 증명이 아님. durable receipt에 elapsed 비혼입·activation null 유지 |
+| [RBR-11](RBR-11-resource-accounting.md) | 지원 플랫폼 owner proof 및 clean resource replay | ps PID-start identity 미보장 한계 유지. macOS live fixture는 child reaping·실제 PID/RSS를 검증하고 cleanup EPERM을 성공으로 바꾸지 않음 |
+| [RBR-12](RBR-12-evaluation-closeout.md) | final-source T15/T16 실제 양성/변조 거부·terminal custody, frozen admission/live replay·단일 final pair | exporters·typed operation/full-row consumer 구현. 독립 감사의 no-op/terminal/scalar/sentinel 거부 회수. 실제 T16 raw5/5 local 관측은 semicolon-only lint 수정 전 binary이며 최종-source 회수 별도. claim=false `NOT_APPLICABLE`; self-reported build/binary hash는 signed attestation 아님 |
 
-후속 dirty 변경: RBR-01 lexical/semantic/hybrid server stage DTO→SDK→diagnostic v4 및 replay guard를 코드에 추가했다. lexical 추가 후 contract IPC 55, search-plane 413, retrieval 83, searchctl 42 local tests와 실제 SDK 통합 16/16이 통과했다. raw `/private/tmp/rbr01-lexical-final.B3GlSv/`의 3-route replay와 6종 변조 거부는 [RBR-01](RBR-01-diagnostics.md)에 묶었다. Python 전체 두 실행은 각각 273 passed/1 failed·32 subtests이며 동시 canonical receipt schema 확장에 의한 한 필드 drift를 단계마다 수정하고 집중 테스트를 통과시켰다. 최신 schema bytes로 전체 재실행은 `NOT_RUN`. ingest stage와 on/off overhead, clean receipt는 미완료다.
+## 직렬 종료 순서
 
-추가 local 재검증: diagnostic v4의 stage↔engine/strategy 모순 거부를 보강했고 보존된 실제 3-route sidecar에서 9개 필드 변조를 거부했다. Python 전체 **275 passed/32 subtests**(exit 0)이나 실행 중 HEAD·test bytes가 이동해 source-stable receipt가 아니다. 현 bytes의 관련 6 tests, required inventory 275/275, Ruff는 통과했다. Rust search-plane 414/retrieval 83과 semantic 내부 ingest report 4는 local 통과. Clippy/fmt 전체는 별도 control/embed/semantic 파일 문제로 `FAILED`. 현재 명세와 코드 판정은 [CURRENT-AUDIT](CURRENT-AUDIT.md)를 우선한다.
+1. 현재 raw 실행의 실패를 RCA하고 소유 코드/fixture만 수정한다. producer→IPC/SDK→runner→diagnostic→Python replay와 실제 daemon을 확인한다. API/module/fuzz/daemon escalation gates 및 exact inventory를 최종 bytes에서 회수한다.
+2. 새 T15/T16 구현은 independent raw oracle, model/dependency/config/source/binary/environment, exact command 및 terminal custody를 묶어 양성/음성 모두 확인한다. exporter의 자기 보고와 임의 `pass`/count는 단독 증거가 아니다. Semble native `max_length=512`와 controlled `None`는 다른 정책이다.
+3. development에서 RBR-06/07/08/09/10의 유한 원인 matrix를 실행한다. 단일 후보 또는 근거 있는 유지 결정을 고정한다. 외부 gold가 없는 개발 진단과 qualified quality를 구분한다.
+4. 문서도 source closure 입력이므로 최종 문서 갱신 뒤 고정-source proof를 새로 발급한다. frozen corpus/model/spec·admission/독립 gold·holdout custody·quiet host가 충족된 때 한 final holdout pair/replay를 판정한다. 수동 승인·심사자·host 확보는 engineering 작업 티켓에 넣지 않는다.
 
-| ID | 우선순위 | 남은 코드/결정 | 현행 증거·종결 게이트 |
-| --- | --- | --- | --- |
-| [RBR-00](RBR-00-proof-contract.md) | P1 proof | 최종 source freeze 후 Python/Rust/SDK exact collection 및 계약 closure 재자격 | Python exact collection과 Rust collection local 통과; clean-source contract/SDK receipt `NOT_RUN` |
-| [RBR-01](RBR-01-diagnostics.md) | P1 코드+proof | ingest stage, diagnostic on/off overhead 및 frozen-source receipt | 세 query route stage·실제 SDK 16/16·raw 3-route replay local 확인; overhead·clean receipt `NOT_RUN` |
-| [RBR-02](RBR-02-query-policy.md) | P1 proof | 정책/identity/negative fixture 최종 revision 재실행 | current-source SDK/receipt `NOT_RUN`; native 제품 정책은 변경하지 않음 |
-| [RBR-03](RBR-03-semble-profiles.md) | P1 proof | pinned reference capture·phase event·raw hash 최종 revision 재발급 | 새 dirty lexical latency 코드 5 tests passed(focused local); GIN/ripgrep v4 영수증 digest 일치·탐색 `PAIR_VALID=pass`는 현 clean pinned/qualified pair proof 아님 |
-| [RBR-04](RBR-04-symbol-producer.md) | P1 proof | strict-full coverage/5언어 hand oracle·combined replace/reopen을 고정 revision에서 재실행 | failure path/SHA typed abort와 success-side 파일별 coverage→corpus replay 구현; Rust lib 82/live SDK 16 local, clean receipt `NOT_RUN` |
-| [RBR-05](RBR-05-symbol-route-proof.md) | P1 proof | live symbol route, forged/stale/no-answer/timeout, span identity를 RBR-06 출력과 연동 | 현 SDK receipt `NOT_RUN` |
-| [RBR-06](RBR-06-span-chunking.md) | P1 실험+proof | indexed-span 보조 지표의 live producer→merge→report/SDK 재증명과 fixed matrix | span 계약·rank-only 지표·context 계산 구현, Rust lib 82/chunking 25 및 Python 집중 fixture local 통과; 외부 matrix `NOT_RUN` |
-| [RBR-07](RBR-07-semantic-parity.md) | P1 코드+proof+실험 | pinned asset/256차원 parity 및 외부 per-query exact-vs-served delta; T15 raw vector·source/model receipt binding | 현 Rust/semantic/asset receipt와 외부 분해 `NOT_RUN`; summary-only 승인 차단, 양성 T15 raw protocol `NOT_RUN` |
-| [RBR-08](RBR-08-symbol-ranking.md) | P2 조건부 | 오순위 진입 probe 후 한 후보 또는 유지 결정 | probe/ranker/효과 `NOT_RUN`; 무근거 기본값 변경 금지 |
-| [RBR-09](RBR-09-query-performance.md) | P2 조건부 | RBR-01 후 fetch 100/25/50 × k/filter 및 ANN guard·quiet-host p95 | stage/matrix/효과 `NOT_RUN`; floor 100 유지 |
-| [RBR-10](RBR-10-ingest-performance.md) | P1 계측, P2 조건부 최적화 | 내부 `build_stream_reported`의 공개 caller 연결; fresh/delta 원본·row-set·fault/restart; 비용 확인 시 한 최적화 후보 | 내부 report 존재만 확인; 공개 stage/비용/효과 `NOT_RUN` |
-| [RBR-11](RBR-11-resource-accounting.md) | P1 proof, P2 한계 | 지원 플랫폼 owner proof와 clean contract/resource replay; ps PID 재사용 identity 미보장 한계 명시 | 최신 Python 전체 273 passed/1 schema drift fail·32 subtests; resource child fixture 오류 수정·집중 재통과, platform/clean receipt `NOT_RUN` |
-| [RBR-12](RBR-12-evaluation-closeout.md) | P1 코드+통합 | T15/T16 raw vector/row-set producer·validator·execution receipt; custody의 live frozen proof; 단일 최종 조합 | admission v2 dev/holdout custody 및 재바인딩 부정 fixture local 통과, summary-only false positive 차단; qualified final `PAIR_VALID`/quality/perf 및 양성 T15/T16 `NOT_RUN` |
+외부 corpus-set `/Users/songmin/Documents/code-new/qi-rb-coverage-set-2026-09-25/frozen-v4/corpus-set.json`은 SHA-256 `31c248d79ad908052018ee74279630b4b0bd77c5e3cd5ead31d1651b0eb71f33`, 10 repo/1,480파일의 `candidate_not_admitted_no_gold_no_pair` 후보다. manifest 확인은 현재 checkout/독립 gold/실제 pair 검증이 아니다. final `PAIR_VALID`, `QUALITY_DELTA`, `PERF_QUALIFIED`는 **NOT_RUN**이다.
 
-## 종결 순서와 판정 경계
-
-1. 현 코드의 RBR-04/06/12 소유 경로를 통합 검증하고, RBR-01/10 stage 공개, RBR-12 T15/T16 raw 양성 proof를 producer→schema→validator→negative fixture까지 구현한다. 기존 v3 suite나 primary NDCG 의미를 소급 변경하지 않는다.
-2. RBR-00 exact inventory·clean-source contract/SDK receipt와 RBR-02/03/04/05/07/11 owning rails를 **같은 revision**에서 발급한다. 국소 테스트 통과와 변경 전 receipt는 이 게이트를 대체하지 않는다.
-3. RBR-08/09/10은 development raw 실험 후 변경 하나 또는 유지 결정을 기록한다. 효과가 불확실하면 기본값을 유지한다.
-4. 외부 `frozen-v4/corpus-set.json` 후보(10 repo/1,480파일, 현 manifest SHA 재확인)는 이미 있으나 자체 상태가 `candidate_not_admitted_no_gold_no_pair`다. 독립 gold/admission·holdout split·고정 model/spec·quiet host가 갖춰질 때만 RBR-12 한 조합의 final holdout pair/replay 및 품질·성능 자격을 판정한다. 이는 수동 승인 작업 티켓이 아니라 qualified claim의 필수 입력이다. 없으면 세 final claim은 `NOT_RUN`이다.
-
-2026-09-26 이전 단계별 `OPEN`/`DONE` 스냅샷과 수행 기록은 Git 역사 및 [AUDIT.md](AUDIT.md)에 남는다. 이 표가 현 소스의 우선 상태다.
+수정 전 단계별 상태는 Git 역사와 [CURRENT-AUDIT](CURRENT-AUDIT.md)의 역사 절에 남는다. 현재 미구현 목록으로 재사용하지 않는다.

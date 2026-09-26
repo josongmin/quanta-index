@@ -200,3 +200,65 @@ def test_update_baseline_keeps_the_header(tmp_path: Path):
     MODULE.update_baseline([root], baseline)
     assert baseline.read_text(encoding="utf-8") == "# header line\n#\n# why a and b\ndemo: a, b\n"
     assert MODULE.check([root], baseline) == []
+
+
+def test_whitespace_paths_cannot_hide_a_cycle(tmp_path: Path):
+    root = crate(
+        tmp_path,
+        {
+            "lib.rs": "mod a; mod b;",
+            "a.rs": "pub struct A; fn f() -> crate :: b :: B { crate :: b :: B }",
+            "b.rs": "pub struct B; fn f() -> crate /* trivia */ :: a :: A { crate :: a :: A }",
+        },
+    )
+    assert keys(root) == ["demo: a, b"]
+
+
+def test_missing_or_duplicate_cycle_baseline_is_refused(tmp_path: Path):
+    import pytest
+
+    root = crate(tmp_path, {"lib.rs": ""})
+    path = tmp_path / "baseline.txt"
+    with pytest.raises(ValueError, match="missing"):
+        MODULE.check([root], path)
+    path.write_text("demo: a, b\ndemo: a, b\n")
+    with pytest.raises(ValueError, match="duplicate"):
+        MODULE.check([root], path)
+
+
+def test_empty_or_missing_source_inventory_is_refused(tmp_path: Path):
+    import pytest
+
+    path = tmp_path / "baseline.txt"
+    path.write_text("# no cycles\n")
+    with pytest.raises(ValueError, match="empty crate inventory"):
+        MODULE.check([], path)
+    with pytest.raises(ValueError, match="missing Rust source"):
+        MODULE.check([tmp_path / "missing"], path)
+
+
+def test_workspace_missing_source_cannot_be_silently_dropped(monkeypatch, tmp_path: Path):
+    import pytest
+
+    manifest = tmp_path / "Cargo.toml"
+    manifest.write_text('[workspace]\nmembers = ["missing"]\n')
+    monkeypatch.setattr(MODULE, "ROOT", tmp_path)
+    monkeypatch.setattr(MODULE, "WORKSPACE_TOML", manifest)
+    with pytest.raises(ValueError, match="no matching path"):
+        MODULE.workspace_crates()
+
+
+def test_deleted_declared_module_is_not_an_empty_graph(tmp_path: Path):
+    import pytest
+
+    root = crate(tmp_path, {"lib.rs": "mod missing;\n"})
+    with pytest.raises(ValueError, match="declared Rust module has no source"):
+        MODULE.find_cycles([root])
+
+
+def test_duplicate_module_sources_are_refused(tmp_path: Path):
+    import pytest
+
+    root = crate(tmp_path, {"lib.rs": "mod a;\n", "a.rs": "", "a/mod.rs": ""})
+    with pytest.raises(ValueError, match="duplicate Rust module source"):
+        MODULE.find_cycles([root])

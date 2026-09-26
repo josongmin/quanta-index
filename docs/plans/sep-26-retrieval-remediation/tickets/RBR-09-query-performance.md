@@ -2,8 +2,11 @@
 
 ## 현행 판정 — 2026-09-26, [중앙 코드 감사](CURRENT-AUDIT.md) 기준
 
-- 구현/검증: `MIN_INTERNAL_FETCH_K=100`은 그대로다. 서버 내부 단계 timing, floor 100/25/50 matrix, ANN quality guard, quiet-host p95와 정책 변경 proof는 `NOT_RUN`.
+- 구현/검증: `604149ed`에서 `MIN_INTERNAL_FETCH_K=100` 유지와 lexical/semantic/hybrid 서버 stage timing·SDK/diagnostic v4 전달 코드를 재확인했다. **stage 미구현 판정은 철회**한다. floor 100/25/50 matrix, 외부 ANN quality guard, quiet-host p95와 정책 변경 proof는 `NOT_RUN`.
 - 잔여 결정: RBR-01의 source-bound stage timing 후 같은 질의·filter·k에서 유한 matrix를 실행한다. 개선/품질/CI 근거가 부족하면 floor 100 **유지**. 측정 전 floor 축소나 순차 실행의 비용 비율 추정 금지. [현재 전수 판정](CURRENT-AUDIT.md).
+- 이번 구조 보완: 실제 stage Enabled/Disabled rail은 RBR-01의 dispatcher/daemon selector에 반영했다. Disabled는 stage clocks/storage를 생략하되 operational metrics와 deadline 검사를 끄지 않는다. lexical byte-budget도 동일 fixed reserve로 분리했다. `MIN_INTERNAL_FETCH_K=100` 및 ANN/admission 정책은 변경하지 않았다. experimental floor selector와 raw matrix/ANN quality guard/quiet-host p95는 여전히 `NOT_RUN`; stage-only rail 구현을 성능 개선 판정으로 승격하지 않는다.
+- local 회귀: 512-byte reserve에서 search-plane lib 425 tests(신설 observation 9개 및 기존 first-row/cursor guard 포함), daemon config 38 tests가 exit 0이었다. raw path와 최종-source 경계는 [RBR-01](RBR-01-diagnostics.md)을 따른다. 외부 latency/floor/ANN matrix 결과는 생성하지 않았다.
+- 실행 도구 감사: 현재 floor25/50 selector는 core/dispatcher/daemon/runner/spec 어느 경로에도 없다. `MIN_INTERNAL_FETCH_K=100`·`hybrid_probe_top_k_v1=max(overfetch,k+1)`은 그대로다. 이를 단순 matrix `NOT_RUN`으로만 표시하지 않고 실제 bounded experimental policy 구현 공백으로 남긴다. existing top-k 변경은 floor 비교의 대체가 아니다. `query_timing_overhead.py`는 on/off 결과·입력·sample equality를 검증하는 `diagnostic_unqualified` replay이며 quiet-host p95 자격이 아니다.
 
 - 우선순위: P2. fetch matrix·stage 비용·quiet-host 효과 측정 `NOT_RUN`; floor 100 유지. [현재 전수 판정](CURRENT-AUDIT.md). 선행: RBR-01/02/03/07.
 - 확인된 사실: hybrid fetch floor 100, semantic-only top-10 probe 11. 과거 지연의 원인 비율은 미측정.
@@ -18,7 +21,7 @@
 ## 실험과 결정
 
 1. RBR-01 trace로 lexical, embedding, dense/admission, fusion, projection/transport 비용과 호출/후보량을 분리한다. sequential 실행이라는 사실만으로 병렬화 이득을 계산하지 않는다.
-2. 첫 fetch matrix는 baseline floor=100과 explicit experimental floor={25,50}. 유효 top-k/probe/ceiling 규칙을 그대로 지키고 `k={1,10,100}` 및 sparse constraints를 포함한다. 실험 profile/config hash로 고정하고 기본값은 유지한다.
+2. 첫 fetch matrix는 baseline floor=100과 explicit experimental floor={25,50}. 현재 상수가 고정돼 있으므로 실제 실험을 위한 bounded experimental policy/변형 바이너리 및 config/source hash binding을 마련한다. 유효 top-k/probe/ceiling 규칙을 그대로 지키고 `k={1,10,100}` 및 sparse constraints를 포함한다. 제품 기본값은 유지한다.
 3. 요청 fetch가 ANN ef/refine에 미치는 비용도 기록한다. ANN effort 변경과 fetch 변경은 별도 실험이다. RBR-07의 exact oracle로 후보 누락을 감시한다.
 4. stage 데이터에서 lexical/dense 순차 실행이 지배적일 때만 bounded concurrency 한 후보를 추가한다. 동일 read view/pin/budget, cancellation, error precedence와 cleanup을 보존하고 무제한 spawn을 금지한다.
 5. development의 quality·warm p95·resource로 한 후보만 선택해 실험 profile에 고정한다. 기본 정책 승격은 RBR-12에서 다른 변경과 묶인 단일 holdout의 quality guard와 warm p95 판정 후 결정한다. Semble의 native-default와 순수 lane 시간을 혼합하지 않는다.

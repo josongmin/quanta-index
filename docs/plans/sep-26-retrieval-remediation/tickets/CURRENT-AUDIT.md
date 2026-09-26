@@ -2,7 +2,69 @@
 
 이 파일이 이 패킷의 **현재 상태표**다. 각 RBR 티켓의 합격 계약은 유지하고, [INDEX](INDEX.md)의 '2차 라운드' 표는 역사적 기록이며 [GAP-REGISTER](GAP-REGISTER.md)는 현행 잔여 작업만 기록한다. 코드 존재, focused test, clean-source proof, 실제 비교 자격을 혼동하지 않는다.
 
-## 2026-09-26 후속 정적 게이트 복구 — 공유 dirty local
+## 현재 구현 통합 — 2026-09-26, `f9c3b4dc` + 공유 dirty
+
+현재 요청은 잔여의 병렬 **구현**이다. [IMPLEMENTATION-WAVE](IMPLEMENTATION-WAVE.md)의 소유 경계에서 RBR-07 strict schema2 validator·실제 model 음성 거부, RBR-01 server query observation on/off·페이지 예산 동등성, RBR-10 canonical transient IPC/SDK outcome을 구현했다. 아래 `604149ed` 재감사는 수정 전 RCA이며 현 결함 상태로 읽지 않는다.
+
+- RBR-07: strict fixture를 manual typed serde로 구현해 derive 정책 위반도 제거했다. 최종 선택 소스 전후 동일한 asset-free6·actual pinned 정상1·invalid8+schema1의 exit101 거부 및 Clippy/fmt를 회수했다. `/private/tmp/qi-rbr07-manual-deserialize.xE4bW9/receipt.json`, SHA-256 `ee0572805ab6d41179038e3094f252510f3e9fcb60d8ad56c8781c263822fc4b`. Native capture는 T15 양성 qualification을 대신하지 않는다.
+- RBR-01/09: `enabled|disabled` exact startup policy, disabled stage `None`, 두 모드 동일512-byte stage reserve. request/deadline/운영 metric clock은 공통 유지한다. search-plane425·config38 및 소유 Clippy local 통과. 실제 SDK 17건의 첫 실행에 lexical/semantic/hybrid on/off 결과 동등성이 포함됐으나 transitive source drift가 있어 최종 manual-serde binary 재캡처는 별도다. floor100을 바꾸지 않았다. roomy deadline에서 결과 동등성을 검사하며 tight deadline·성능 우위를 주장하지 않는다.
+- RBR-10: producer→core/adapter→materializer→versioned wire→SDK→runner sidecar 경로가 연결됐다. durable receipt/journal은 elapsed와 분리했다. request/repo/revision/batch/generation binding; replay는 새 request ID와 explicit unmeasured stages. prepare/promotion fsync/전체 build·nested embedding 범위를 명시했다. 요청 태그 `PublishSearchCorpusBatchV2`는 old wire 요청을 dispatch 전에 거부한다. activation은 별도 control request여서 ingest server 시간 `None`이다.
+- RBR-10: DTO5 및 old-request test fixture를 manual serde로 교체했다. required-null/unknown/duplicate/strict numeric·wire order/status를 유지하고 allowlist를 완화하지 않았다. contract146+SDK110 및 all-target Clippy 최종 local 통과. `/private/tmp/qi-rbr10-observation.sW0yqY/manual-serde-contract-sdk.log`, SHA-256 `eb9a4487c7c4d2cd5ddbb7af7dbb665d1b3252d3ad810f2df2bad37b4cb2fb84`. installed SDK/daemon 재실행과 clean proof는 별도다.
+- 통합: diagnostic v5/protocol lock3에 server config SHA·ingest 원본 receipt/activation/observation·expected repo/revision/generation을 묶었다. 실제 Rust runner의 record/pack/sidecar를 Python으로 재생해 정상3 route 및 변조5종 거부를 회수했다. 이 과정에서 canonical TrackId `Lexical/Semantic`와 검증기의 소문자 alias 불일치를 수정했다. float protocol version·fresh activation sequence·cross-route hash drift도 거부한다. 첫 SDK17/17은 local 통과 관측이지만 소스 변경 중 결과여서 최종 source 자격으로 쓰지 않는다. Python283 exact collection은 회수했고 최종 strict-cell bytes의 전체 terminal은 진행 중이다. raw `/private/tmp/qi-rbr-integrate.Fg8v62/`.
+- RBR-12: raw vector/full-row exporters와 schema2 consumer를 연결했다. 독립 재감사에서 정상T16 5개 통과, no-op5·잘못된 terminal3·float dimension2·typed receipt3 거부, 무관 owner 삭제의 fresh5 거부·raw5 각각 실패 판정을 확인했다. strict row bool/u32와 typed operation oracle를 적용했다. `/private/tmp/qi-rbr-conditional-final.JNYc3M/raw.json`, SHA-256 `11555e3f546c6429b4f46ecb735d2ec4f47f81f93dc4199630dc0eb96cfcfb3a`. 실제 exporter terminal은 진행 중이며 local self-reported binary/build custody는 서명된 외부 attestation이 아니다.
+- 정적 escalation: 현재 API final gate exit0·source-stable; fallback/wire/no-allow gate local exit0. module/daemon/fuzz 최종-source 경계는 개별 receipt를 따른다. 확장 searchd Clippy의 state-migration/supervisor/request-events 7개 진단은 별도 소유와 조율하며 성공으로 숨기지 않는다.
+- 추가 구조 gate: 실제 `rust-module-cycles`에서 ingest→ingest_observation→ingest 역의존성을 발견했다. `BatchPublishReceipt` leaf 분리와 batch-bound validation의 ingest측 이동으로 보완 중이다. public export/wire/manual serde를 유지하고 cycle allowlist를 확대하지 않는다. catalog의 별도 cycle은 외부 owner가 수정한다. 이전 API/unit/module-tree 통과를 cycle gate 성공으로 대체하지 않는다.
+- 독립 scalar 재감사: 실제 T16 owner raw+plan baseline5/5, 모든 receipt/plan generation·counter·duration 부정 입력1900개 거부. 별도 synthetic triangle7·raw-summary alias2도 거부. `/private/tmp/qi-rbr-scalar-final.teJiks/raw.json`, SHA-256 `b30803e403b44eb683e2a5964f26bf43fa997220e100475341e554f5d25eb96a`. actual8D fixture/pure synthetic metadata/local execution custody의 범위를 구분하며 Potion pair·clean/source/binary qualification은 제외한다.
+- 공유 peer commit으로 시작 HEAD `7cefac4a`→`8eac12c5`→`f9c3b4dc487a1b54a260e4ab2d3dd199310d3a5e` 이동. source 전후 hash가 바뀐 실행은 qualification에 쓰지 않는다. 모든 결과는 source/환경/명령별 local diagnostic이며 clean-source proof·quiet-host perf·final pair는 `NOT_RUN`이다.
+
+## 수정 전 코드 재감사 — 2026-09-26, `604149ed` + 공유 dirty
+
+이 절은 수정 전 RCA다. 현행 판정은 위 현재 구현 통합 절과 [GAP-REGISTER](GAP-REGISTER.md)다. 아래 이전 수행 기록의 `현재`/`FAILED`/`NOT_RUN`은 **각 당시 입력**을 가리키며 최신 상태로 읽지 않는다. 당시 요청 범위는 retrieval RBR-00~12의 source audit·기존 티켓 갱신이었다. 당시 제품 코드는 변경하지 않았고 타 writer의 searchd/state-migration/CI/benchmark dirty를 보존했다. 저장소 전체 감사나 전체 자격을 수행한 것은 아니다.
+
+### 실제 잔여 코드 — 구현 위치와 종료 조건
+
+| 소유 티켓 | 현 코드 근거 / 판정 | 필요한 수정과 검증 |
+| --- | --- | --- |
+| RBR-07 | **FAILED**: `embed/src/model2vec.rs::full_vector_parity_against_pinned_reference`는 missing policy를 Null로 취급, schema/norms 미검증, pairwise 전체 shape·canonical input coverage 미강제 | strict typed fixture validator; required-key/explicit-null·canonical input·finite vector/norm·삼각형 전수 정합성. asset-free omission/partial/reorder/forgery 음성 tests와 actual-model 재검증. tolerance 확대 금지 |
+| RBR-01 | **NOT_RUN**: query stage는 구현돼 있으나 `stage_timing.rs`/세 route가 항상 수집. runner `main.rs:1087` 옵션은 sidecar 직렬화만 off | request-scoped server observation-off rail 또는 명시적 experimental binary; config/binary identity와 observed/not-observed binding. 동일 query/corpus에서 결과 동등성·계측/직렬화 overhead를 별도로 측정 |
+| RBR-10 | **NOT_RUN**: `semantic/build.rs:1776`에서 `_stage_report` 폐기. core `SemanticScopeStreamBuildPort`는 tally-only; adapter→materializer→publish→SDK는 durable receipt만 반환 | 내부 report부터 별도 public transient observation까지 request/repo/revision/batch/generation으로 연결. embedding/seal/activation·중첩·replay/error/partial 의미 명시. durable receipt에 elapsed를 넣거나 last-report 전역 캐시로 대체하지 않음 |
+| RBR-12 | 조건부 **NOT_RUN**: `run.py:6909~6937`은 T15/T16 shape/digest/source/model/dep 확인 후에도 raw 양성 protocol 미구현으로 fail-closed. claim=false는 **NOT_APPLICABLE** | same-model/incremental을 주장할 경우 독립 raw vector/row-set producer→validator와 collection/terminal execution custody 구현. local parity exit 0이나 자기 보고 pass/count JSON으로 대체 금지 |
+
+### 구현된 경로 — 중복 작업 제거
+
+- RBR-04: `symbols.rs::extract_corpus_symbols` strict-full typed abort, source path/SHA/text 확인, 파일별 phase coverage, `run.py::_verify_symbol_coverage_corpus`의 frozen corpus 대조 및 unsupported 거부가 있다. 잔여는 같은 revision의 5언어 hand oracle·combined replace/reopen·SDK proof다.
+- RBR-05/06: typed published-unit registry·symbol route·`record.rs::prove_hit`의 indexed/SDK/scored 분리·span 표식·merge 보존·evaluator rank-only exact-index/context 진단이 있다. full-line scored projection은 명시적 기존 정책이며 indexed span 미구현 주장은 철회한다. 잔여는 live propagation 재증명과 strict/line-aligned 1024·same overlap/whole-file development matrix다. primary density NDCG는 유지한다.
+- RBR-01/09: lexical/semantic/hybrid query stage DTO→SDK→diagnostic v4/replay가 있다. stage timing 자체를 다시 구현하지 않는다. hybrid floor 100은 유지; 100/25/50×k/filter matrix용 bounded experimental variant·외부 ANN guard·quiet-host p95는 미실행이다.
+- RBR-12: admission v2·`evaluator.validate_experiment_custody`의 cross-suite source/repo/file/exact-block/query-family/near-duplicate 거부가 있다. indexed corpus 공유는 허용한다. 단일-suite validator뿐이라는 구형 판정은 철회한다. 잔여는 frozen live admission/capture/replay와 단일 최종 조합이다.
+- RBR-11: malformed/duplicate PID·missing root·zero-RSS connector 및 incomplete resource 거부가 있다. Linux owner backend와 legacy macOS `ps` diagnostic을 구분한다. legacy PID-start identity 한계는 유지하며 과거 RSS를 소급 수정하지 않는다.
+
+### 실험·재자격 — 결함으로 과장하지 않는 잔여
+
+- RBR-07 외부 query/corpus exact-vs-served per-query 원인 분해. 이전 synthetic exhaustive 255/256·10,001-row 5 tests는 외부 모델/검색 품질 proof가 아니다.
+- RBR-08 실제 exact-name misranking 진입 probe → 한 후보 또는 raw-backed 유지 결정. 현재 reachable ranker defect를 확정하지 않았고 무조건 ranker 교체하지 않는다.
+- RBR-09/10 실제 비용·품질/row-set·fault/restart·resource를 먼저 측정하고 조건부 최적화 하나 또는 유지. 기존 embedding/append batching을 새 해결책으로 중복 구현하지 않는다.
+- RBR-00 및 RBR-02/03/04/05/07/11: 최종 source/document freeze 뒤 Python/Rust/SDK exact collection, 정책/coverage/resource/parity owning rails, 실제 pinned Semble phase/output capture, clean-source contract/SDK receipt를 같은 revision에서 발급한다. 현재 local/dirty proof와 새 live receipt는 별개다.
+- 외부 corpus-set SHA-256 `31c248d79ad908052018ee74279630b4b0bd77c5e3cd5ead31d1651b0eb71f33` 재확인: 10 repo/1,480파일, `candidate_not_admitted_no_gold_no_pair`. 독립 gold/admission·dev/holdout custody·고정 모델/lockfile·quiet host는 qualified claim 입력 조건이며 수동 작업 티켓에 추가하지 않는다. final `PAIR_VALID`/`QUALITY_DELTA`/`PERF_QUALIFIED`는 **NOT_RUN**이다.
+
+### 이번 감사의 새 실행 증거
+
+- raw root: `/private/tmp/qi-rbr-source-audit.p3VfSl/`. `parity-audit.json`에 실제 세 asset/원본 reference SHA, selected source/dependency 입력의 전후 SHA, full HEAD·dirty, host/runtime, exact command·env, fixture/log digests를 보존했다. 첫 parity 묶음의 HEAD와 selected inputs는 동일했다. 전체 source closure의 clean qualification은 아니다.
+- 정상 fixture SHA `1de240e14b83c0a4ef47f4122b17a5be90c06610efc4117ee8fa2b3ea503af84`의 9×256 actual-model test는 **1 passed**, exit 0. 하지만 empty pairwise·schema/policy/norms 삭제·개별 필드 누락·norms=999·adversarial 입력 축소+empty pairwise도 각각 1 passed다. **7개 invalid fixture의 거부 계약 FAILED**; `parity-mutation-audit.json`에 후속 다섯 변조 원본과 결과를 보존했다. 입력 축소+유효 pairwise 대조군은 cosine 차이로 exit 101이었으며 canonical input validator의 증거가 아니다. 모델/원본 fixture는 수정하지 않았다.
+- **VERIFIED — 좁은 local Python rail:** `uv run --frozen --extra dev python -m pytest tools/ci/tests/test_retrieval_benchmark.py -q -p no:cacheprovider`는 **276 passed, 32 subtests passed**, exit 0, 285.29s다. `uv run --frozen --extra dev python -m tools.benchmark.retrieval.proof_inventory --out /private/tmp/qi-rbr-source-audit.p3VfSl/python-inventory.json`은 authority와 정확한 ordered identity **276/276** 일치, exit 0이다. HEAD `604149ed3f6033e24a834ebaa86a596f7b8ed82d`와 선택한 Python modules/schemas·test·inventory·uv.lock/pyproject 입력 SHA는 실행 전후 같았다. full raw log SHA-256 `55e4da82698cc3a36438d30144c44be051092d44509f0abe5a93ab2d8ddc6522`; `python-audit.json`에 환경·정확한 명령·dirty 전후를 보존했다. 선택한 입력 밖의 peer 변경 및 문서 수정이 있으므로 clean-source closure/SDK receipt나 repository qualification은 아니다.
+- parity 실행 binary는 `/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-workspace-lane/debug/deps/quanta_index_embed-e67a4edbdacb2673`, SHA-256 `ed807651318d352ea856cfe77bd2267dd9b57a645ce8a95a59ab8a5e0b79682f`다. dependency/compiler/input binding의 자세한 범위와 제외는 raw audit JSON을 따른다.
+- 제외: Rust workspace/full integration, 현재 live SDK/daemon, clean contract/SDK receipts, 실제 on/off 또는 성능 측정, T15/T16 양성 custody, external chunking/fetch/quality matrix와 qualified final pair. 이들 **NOT_RUN**을 local 테스트 통과로 대체하지 않는다.
+
+## 과거 수행 기록 — 최신 판정 아님
+
+## 2026-09-26 수정 묶음 마무리 — local diagnostic, qualification 아님
+
+- 수정 범위: 정적 게이트 복구, request-event `u64` sequence 경계 회귀, Python reference의 실제 model2vec 버전·세 pinned asset SHA 검증, Rust full-vector fixture의 tokenizer/config 정확한 pin 비교. reference JSON 값은 `f64`로 보존해 `f32` 축소 변환을 제거했으며 tolerance 0.002/0.005는 변경하지 않았다. 새 asset/version 음성 fixture는 required inventory에 등록했다.
+- 실행 시작 HEAD `79bb8d23312d48d5ef8c0dba972e337c3e72e041` + dirty; 다른 writer의 state-migration 커밋 `43272f89` 및 공유 변경 커밋 `604149ed3f6033e24a834ebaa86a596f7b8ed82d`로 이동했다. `604149ed`에는 이 수정도 포함됐다. 최종 소유 파일·주요 빌드 입력 15개 SHA-256은 `inputs.final-before.sha256` 대조에서 일치한다. 이 확인은 전체 source closure·dependency/environment custody를 대신하지 않는다. 본 문서 갱신도 새 dirty source 입력이다.
+- raw root: `/private/tmp/qi-rbr-closeout.FMVGsN/`. 현 local exit 0: Python 집중 3 passed/273 deselected, inventory 276/276 exact, Ruff, fmt, contract/IPC/SDK/search-plane/retrieval-bench/embed 6개 crate all-targets Clippy, Rust lib contract 141/embed 70/IPC 55/SDK 109/search-plane 415 passed, LXE 통합 19 passed, semantic 내부 ingest report 4 passed. embed의 3 ignored는 성공에 포함하지 않는다. 정확한 명령·원본은 해당 root의 로그를 따른다.
+- exact/ANN integration `./scripts/cargow test -p quanta-index-semantic --test exact_ann_decomposition --locked -- --quiet`는 **5 passed**, exit 0, 125.31s다. 이전 실행의 유실된 session completion을 성공으로 재사용하지 않았고, 이 root의 새 `semantic-exact.log`로 결과를 회수했다. synthetic 255/256 row·scope·full-page·10,001-row 경계에서의 독립 exhaustive oracle 검증이며, 외부 corpus/query의 exact-vs-served delta나 실제 모델 parity를 검증한 것은 아니다. `artifacts.sha256`에 raw 로그·빌드 입력 목록·실행 바이너리 목록·환경의 digest를 보존했다.
+- **NOT_RUN:** RBR-01 on/off overhead, RBR-10 public transient ingest observation, T15/T16 독립 raw 양성 producer/실행 proof, RBR-06 fixed chunking matrix, 전체 Python 276건과 clean-source contract/SDK 재자격, admitted quiet-host final pair. RBR-08/09/10 제품 정책과 hybrid fetch floor 100은 실측 근거 없이 바꾸지 않았다. 전체 RBR 종결은 선언하지 않는다. 아래 이전 시점의 실패·통과 수치는 각 당시 snapshot에만 적용된다.
+
+## 2026-09-26 후속 정적 게이트 복구 — 이전 공유 dirty local snapshot
 
 - 관측 기준 HEAD `79bb8d23312d48d5ef8c0dba972e337c3e72e041`; 이 턴 시작의 `b7336a94`에서 다른 writer의 control 관측 커밋으로 이동했다. `tools/benchmark/benchctl.py`와 두 CI test 파일은 선행 dirty였고, 실행 중 searchd state-migration 경로도 다른 writer가 편집했다. 이들의 소유 변경은 수정하거나 retrieval 증거로 합치지 않았다.
 - `diagnostic_events.rs`의 closed enum/checked sequence/테스트 접근, IPC ring의 const `u16`→`usize` 변환, control test의 lint, SDK control response exhaustive match 및 `lxe_unified_surface`의 clone lint를 수정했다. embed/semantic 두 파일은 rustfmt 형식만 변경했다. 기능상 RBR-10 공개 ingest stage, RBR-01 on/off overhead, T15/T16 양성 producer를 구현한 변경은 아니다.
@@ -17,7 +79,7 @@
 - 후속 Python 전체 명령 `uv run --frozen --extra dev python -m pytest tools/ci/tests/test_retrieval_benchmark.py -q -p no:cacheprovider`: **275 passed, 32 subtests passed**, exit 0, 597.90s. 실행 중 HEAD가 `1245ea40`→`6a56488f`로 이동하고 test 파일 SHA-256이 `8a314164…`→`910b00d2…`로 바뀌었다. 따라서 결과는 통과 관측이나 현 HEAD의 source-stable full receipt는 아니다. 현 bytes에서 diagnostic, byte-span, T15/T16 조건부 집중 **6 passed**, Ruff exit 0, required Python inventory **275/275 exact**를 재확인했다. `run.py` SHA-256은 `51bfc4bc60ff8df8a23a56ed87b7801b37d733bcd02b49ef31782b09fe759819`로 유지되었다.
 - 현 공유 checkout의 Rust local rail: `./scripts/cargow test -p quanta-index-search-plane -p quanta-index-retrieval-bench --lib`는 search-plane 414/retrieval 83 passed; `./scripts/cargow test -p quanta-index-semantic --lib ingest_stage_report_ -- --nocapture`는 내부 report 4 passed. 이것은 public ingest stage propagation이나 full-source qualification이 아니다. scoped Clippy는 새 control request-event 파일 `crates/quanta-index-contract/src/ipc/diagnostic_events.rs`의 wildcard/checked arithmetic/형식/테스트 인덱싱 lint로 `FAILED`; `just fmt-check`도 별도 embed/control/semantic 형식 차이로 `FAILED`. retrieval 소유 Python 진단 변경과 별도 게이트로 남긴다.
 
-마지막 read-only 관측 HEAD는 `6a56488f`다. 그 위에 retrieval 및 다른 writer의 dirty가 계속 변한다. 아래 통과 수치는 해당 시점의 명시된 범위만 보증한다. 현 checkout의 source-stable 전체 Python·workspace Clippy·clean-source proof는 `VERIFIED`가 아니다.
+이 재감사 시점의 마지막 read-only 관측 HEAD는 `6a56488f`다. 아래 통과 수치는 해당 시점의 명시된 범위만 보증한다. 최신 판정은 이 파일 상단을 따른다. 현 checkout의 source-stable 전체 Python·workspace Clippy·clean-source proof는 `VERIFIED`가 아니다.
 
 ## 추가 코드 작업 — `f16bad93`→`51dcf346` 공유 main/dirty, 2026-09-26
 

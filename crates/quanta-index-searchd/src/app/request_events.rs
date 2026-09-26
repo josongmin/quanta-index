@@ -262,9 +262,9 @@ mod tests {
             "00000000000000000000000000000029"
         );
         assert_eq!(response.events.len(), 1);
-        let event = response.events.first().expect("one query event");
-        assert_eq!(event.request_id.get(), 7);
-        assert_eq!(event.route.as_deref(), Some("query.text"));
+        let first = response.events.first().expect("one event fixture");
+        assert_eq!(first.request_id.get(), 7);
+        assert_eq!(first.route.as_deref(), Some("query.text"));
     }
 
     #[test]
@@ -299,7 +299,11 @@ mod tests {
         assert_eq!(wrapped.events.len(), 2);
         assert_eq!(wrapped.oldest_retained_sequence, Some(3));
         assert_eq!(
-            wrapped.events.first().expect("wrapped tail event").sequence,
+            wrapped
+                .events
+                .first()
+                .expect("wrapped tail fixture")
+                .sequence,
             1025
         );
         assert_eq!(wrapped.next_sequence, 1027);

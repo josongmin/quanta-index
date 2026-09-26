@@ -1,5 +1,162 @@
 # SEP-21 execution evidence
 
+## 2026-09-26 follow-up manifest and execution-byte custody
+
+Base `f9c3b4dc487a1b54a260e4ab2d3dd199310d3a5e`, shared dirty main.
+Unrelated concurrent changes are preserved. No commit, deployment, push, real
+target-root mutation or passed qualification manifest was issued by this pass.
+Current implementation/actions: `CURRENT-RESIDUAL-2026-09-26.md`.
+
+- Local focused behavior: `python3 -m pytest
+  tools/ci/tests/test_proof_execution_result.py
+  tools/ci/tests/test_paired_cargo_resolution.py -q`: exit 0, 65 passed,
+  66.70s. Raw `/tmp/quanta-ss-rr-four.ZR5QK4/python-custody-final.log`, SHA-256
+  `68062cd5f311722193fe481eebae7c16af1476455c7090ee43ad904d21d7c657`.
+  Covers malformed/known Nextest exclusions, archive digest substitution,
+  no-follow symlink refusal, captured-byte parsing for Nextest and JUnit,
+  and real shell-script normal/alias-drift cases with fixture build/test tools.
+  The fixture shell run is not a live Semantica/daemon product proof.
+- Bound tested owner inputs: `nextest_events.py`
+  `faf932aa2e83da828a82896aade69b68ec6af33877aea269935843f79dd5314c`;
+  `proof_execution_result.py`
+  `6ee40dcf4ac484498c284db62caf23f3bebbee82bec0ddf16aa14f847138fd14`;
+  `binary_custody.py`
+  `2e7e3d08069dd9ae942f2e1526840a66b67f1152b93a539674f72e55a95b2d92`;
+  cross-repo shell wrapper
+  `d5303d069cea632bdd641c30a63b0d498d3174d082b68a1075e2fb92ac0439f9`.
+  Test files: execution
+  `c82a86256df22a853a70284278e474b7e08d500ffae3bda27e59976dbbaf0231`,
+  paired resolution
+  `7ae96798d5de99e2e28c7a0fabecf7457755b9a5dece981a9c0503fe66e1089a`.
+  Shared no-follow owner `handoff_validation.py`
+  `36d3f68a3f3580f2ffaf8f0bcfce22735c750b184ad14a4bd8f237d09c6031bf`.
+- Environment: `/usr/bin/python3` 3.9.6; Rust 1.92.0;
+  Cargo.lock SHA-256
+  `ff40c97922eb0c81ec1c46ca6bcc3e40e4b9d2d51ea497ec1a288cbb2b314837`;
+  canonical environment script
+  `26e171db52fa9d85d8065d57ff4424d19c766e8a4af46607b8c057513662ac26`.
+- Scoped Ruff check/format, shell syntax and whitespace checks exited 0.
+  `python3 tools/ci/lint/check-proof-authority.py` exited 0 with
+  `REGISTRY_ONLY`: 25 registered proofs, zero manifests validated. This result
+  establishes registry shape only, not execution or qualification.
+- Initial Rust regression command failed before executing tests with three
+  `unexpected cfg(feature="proof")` errors in `quanta-index-semantic`.
+  The concurrent owner subsequently restored the feature declaration; the
+  changed-input retry was `./scripts/cargow test -p
+  quanta-index-searchd-runtime --test state_migration_owner_v1 -- --nocapture`.
+  It exited 0: 55 passed, zero failed/ignored/filtered; test phase 57.50s,
+  build/lock wait 14m21s. Raw
+  `/tmp/quanta-ss-rr-four.ZR5QK4/state-owner.log`, SHA-256
+  `46bae422b08548f6e1a8c124509fdcf3eed7321507623021a88690c5a0173943`.
+  Bound migration owner
+  `6ad3721d7b8dad45bc0920e8dc698acb4f9b19dee8c67ce0abb405e253f11d5b`,
+  owner tests
+  `7ff0694e6b5c0f370ef0a35ced6b4664636488039b090c3bdd77cf488dce4997`.
+  No Rust behavioral RED is claimed from the initial compiler failure; the
+  original defect has source-path evidence and these post-patch regressions.
+- Expanded Python writer/checker/direct-consumer run exited 0, 222 passed,
+  316.03s:
+  execution result, verification receipt, proof authority, manifest writer,
+  paired resolution, retrieval contract and SDK proof test modules.
+  Raw `/tmp/quanta-ss-rr-four.ZR5QK4/python-full.log`, SHA-256
+  `17e833fbddaddb6848ff0eb1b0a2160b22d8d8a48cc0135abf4ce47bc640c8de`.
+  This is scoped local sibling regression, not whole-repository qualification.
+  The execution test module received
+  one additional JUnit custody case during this run; the separate 65-case
+  owner run above includes that final case.
+- Required residuals: required `just rust-profile test-daemon` terminal result,
+  final bounded RR pass and exact-source
+  owner issuance. Live pair, Linux release and operational inputs remain
+  separate staged/blocked requirements in the authoritative residual table.
+
+The daemon gate is running in the same `test-daemon-lane`, with raw
+`/tmp/quanta-ss-rr-four.ZR5QK4/test-daemon.log`. Initial output admits 23 catalog
+rows in three Cargo test binaries and one Cargo process. Selection/admission
+is not execution; no daemon-gate pass is claimed until terminal results.
+
+Descriptor-only imports now defer `jsonschema` to `validate_handoff` rather
+than loading schema machinery in each binary guard subprocess. This preserves
+one descriptor owner and one schema validator. The shared-leaf digest changed
+  to `014e6901cbf172fc098e524b15d5bba9280f506ff0fc985c0d88d7b109e9bbb8`;
+the earlier 65-case result predates this import-only change. The final leaf
+command `python3 -m pytest tools/ci/tests/test_proof_execution_result.py
+tools/ci/tests/test_paired_cargo_resolution.py
+tools/ci/tests/test_handoff_validation.py
+tools/ci/tests/test_check_lane_handoff.py -q` exited 0, 87 passed, 290.52s.
+Raw `/tmp/quanta-ss-rr-four.ZR5QK4/python-custody-leaf-final.log`, SHA-256
+`27b6cd136f11e0f4180c18b12380591c4100d49b3b65dc7cd181f2986832de8e`.
+This is final-snapshot local coverage of the new reader/pinning paths plus
+the schema validator and handoff CLI, not an execution-time or repository-wide
+performance qualification. No speedup factor is claimed from different scopes
+or concurrently loaded host timings.
+
+`python3 tools/ci/lint/check-test-authority.py` also exited 0 against the
+current dirty checkout. The new cases live in existing admitted target modules;
+there is no additional test target or duplicate test registry.
+
+## 2026-09-26 parallel residual structural repairs
+
+Current status/actions: [residual audit](CURRENT-RESIDUAL-2026-09-26.md).
+Review began on `7cefac4a10a06ed56b6f5b9f42b3726468b1f198`; concurrent
+work advanced main to `8eac12c5b45fedfa4aa7cb27da82979ecdbfbb10`. Named
+repairs remain a local dirty overlay; unrelated changes were preserved.
+At closeout, concurrent commit `4af3bb44ea4769205485a9ed4c7dddddb35a724f`
+captured these owner/proof repairs and ticket updates together with unrelated
+work; this progress entry remains uncommitted. That mixed ownership commit
+does not retroactively qualify the earlier moving-overlay results.
+Host: Darwin arm64, Python 3.9.6, Cargo 1.92.0. Cargo.lock SHA-256:
+`ff40c97922eb0c81ec1c46ca6bcc3e40e4b9d2d51ea497ec1a288cbb2b314837`.
+
+- Local focused `VERIFIED` behavior only:
+  `python3 -m pytest tools/ci/tests/test_proof_execution_result.py tools/ci/tests/test_paired_cargo_resolution.py -q`:
+  40 passed, 3.98s. Raw `/tmp/quanta-residual-audit.r8ZupY/negative-owners.log`,
+  SHA-256 `c4915b12510145f1415ff02d5d40e190a5a189df1ddc4e9b2c847384cfd7fa7c`.
+- Local focused `VERIFIED` supervisor behavior:
+  `./scripts/cargow test -p quanta-index-searchd-runtime --test runtime_supervisor_owner_v1`:
+  21 passed, zero failed/ignored/filtered; build 1m52s, cases 0.52s. Raw
+  `supervisor-owner.log` in that directory, SHA-256
+  `2380a72905a3dea40689d9ee969350b125c78fcc67ae253a0b30f40ea90a4c82`.
+  Bound owner bytes: supervisor SHA-256
+  `6d05e85abc6aa7e188c32be8d3978eb0e4484d483793fb3e3858876809892b7e`,
+  owner test `2919ef656f090ff95a98cb70a6921e21ec85cb5c6d819d4558bc75bd48c42c58`.
+  This is not an actual release-daemon maintenance-loss scenario.
+- Local focused `VERIFIED` exact-pair writer regression after fixture repair:
+  `python3 -m pytest tools/ci/tests/test_write_proof_manifest.py::test_exact_pair_manifest_is_live_bound_through_atomic_writer -q`:
+  1 passed, 5.16s; `exact-pair-regression.log` SHA-256
+  `5e8305ab5fe4d0b9626b3fdd9bc14ec7c91249c3c5bcadda9ed717b6ea50aaed`.
+  Earlier writer/checker run was `FAILED` (101 passed, one obsolete staged-reason
+  fixture failure). The fixture now matches the typed stanza independently of
+  human reason text; the focused rerun does not mean the whole scope was rerun.
+- Static local checks: scoped Ruff check/format and whitespace/shell syntax
+  exit 0; `python3 tools/ci/lint/check-test-authority.py` exit 0 after both
+  P00 inventory/execution and P12A recipe were connected to the new target.
+  `test-authority.log` SHA-256
+  `e04c60a38c36c65b6b659fc8ba2ad8360ec757a515b9104d4bf76e4f26daca02`.
+  Proof registry lint reports REGISTRY_ONLY, 25 proofs, zero validated manifests;
+  execution proof is explicitly not checked.
+- `FAILED` Clippy command:
+  `./scripts/cargow clippy -p quanta-index-searchd-runtime --test runtime_supervisor_owner_v1 -- -D warnings`
+  stopped in another writer's `ipc/ingest_observation.rs` at collapsible_if,
+  before qualifying the supervisor. Raw `clippy-supervisor.log` SHA-256
+  `7728e31122f87ffc3523eb04f4bfe977d44ff0183de290d34eeaff8c5685a4d0`.
+  Earlier compilation also hit a concurrently changed stream return-type
+  seam; its owner corrected it before the successful owner run. Neither
+  unrelated file was edited here. Supervisor Clippy qualification: NOT_RUN.
+- Complete aggregate suite: NOT_RUN to completion. An integration run during
+  registry edits failed on inconsistent P12A target snapshots and was interrupted.
+  A restarted final-target aggregate run passed its first six tests, then was
+  interrupted after 260.96s; never count that as aggregate PASS. Read-only
+  graph audit confirmed shared-ancestor revalidation cost; safe cache acceptance
+  is recorded as OPEN_PERFORMANCE in the residual table.
+- Full clean-source gate, actual live pair, Linux release, real provider,
+  authorized retained-root cutover, deployment/activation/rollback: NOT_RUN or
+  BLOCKED on the specific missing inputs listed in the residual table. No
+  qualification manifest, release verdict, remote push or operational action.
+
+Raw logs are temporary local evidence, not durable release receipts. Referenced
+source/config changes invalidate their applicability; concurrent dependency
+edits and the moving dirty source exclude repository qualification.
+
 This file indexes live evidence. The former dated execution ledger is available
 in Git history; its dirty-checkout observations and test counts are not current
 qualification.

@@ -21,5 +21,6 @@ mod request_correlation;
 mod rev_at_time;
 mod runtime_metadata;
 mod semantic;
+mod stage_observation;
 mod structural;
 mod window;

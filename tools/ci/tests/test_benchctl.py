@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 import hashlib
 import importlib.util
 import json
@@ -41,6 +40,32 @@ def install_control_plane(repo_root: Path) -> None:
     (repo_root / "Justfile").write_text(
         (REPO_ROOT / "Justfile").read_text(encoding="utf-8"), encoding="utf-8"
     )
+
+
+@pytest.mark.parametrize(
+    "flag,value",
+    [
+        ("--criterion-samples", "10"),
+        ("--producer-timeout", "1"),
+        ("--criterion-measurement", "0.01"),
+    ],
+)
+def test_criterion_controls_are_not_silently_ignored_on_native_profile(
+    monkeypatch, capsys, flag, value
+):
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("native producer ran with irrelevant Criterion controls")
+
+    monkeypatch.setattr(MODULE, "require_clean_worktree", forbidden)
+    assert MODULE.main(["run", "systems", flag, value]) == 2
+    assert "apply only to micro/dsl-diagnostic" in capsys.readouterr().err
+
+
+def test_criterion_compare_does_not_claim_a_missing_capture_adapter(capsys):
+    assert MODULE.main(["compare", "micro"]) == 2
+    error = capsys.readouterr().err
+    assert "no registered baseline/comparator" in error
+    assert "capture adapter" not in error
 
 
 def test_manifest_maps_profiles_to_explicit_recipes_and_validator_profiles() -> None:
@@ -308,6 +333,21 @@ def test_clean_label_with_overloaded_host_is_refused(tmp_path: Path) -> None:
     )
 
     with pytest.raises(RuntimeError, match="host load"):
+        MODULE.require_clean_preflight_receipt(receipt, "systems")
+
+
+def test_duplicate_preflight_status_is_refused(tmp_path: Path) -> None:
+    receipt = tmp_path / "preflight.json"
+    receipt.write_text(
+        """{"schema_version":1,"kind":"quanta-index-timing-preflight",
+        "run_id":"benchctl:systems","status":"contended","status":"clean",
+        "foreign_rust_processes":[],
+        "host":{"os":"darwin","cpu_count":8,"load_average":[1,1,1]},
+        "host_contention":{"one_minute_load":1,"one_minute_load_limit":4,"over_limit":false}}
+    """,
+        encoding="utf-8",
+    )
+    with pytest.raises(RuntimeError, match="duplicate"):
         MODULE.require_clean_preflight_receipt(receipt, "systems")
 
 
@@ -1025,7 +1065,7 @@ def test_promoted_run_validation_refuses_unverifiable_payloads_and_other_profile
         MODULE.validate_promoted_runs(root, "systems", manifest, expected_source, expected_lock)
         == 2
     )
-    assert "no native-to-typed payload oracle" in capsys.readouterr().err
+    assert "native artifact oracle failed" in capsys.readouterr().err
 
     # dsl-authority owns two different families; its runs are absent, so the
     # profile must refuse rather than accept the systems runs.
@@ -1190,80 +1230,100 @@ def test_promoted_profile_refuses_mixed_capture_even_with_same_source(
     assert "mixes different benchmark captures" in capsys.readouterr().err
 
 
-def test_promotion_is_scoped_to_the_profile_families(monkeypatch, tmp_path: Path) -> None:
-    """`run --evidence-root` may only promote the families the profile selects."""
-    sys.path.insert(0, str(REPO_ROOT / "tools" / "benchmark"))
+@pytest.mark.parametrize("profile_name", ["dsl-authority", "systems"])
+def test_promotion_is_scoped_to_the_profile_families(
+    monkeypatch, tmp_path: Path, profile_name: str
+) -> None:
+    """Real validator, bridge and store only publish the two selected families."""
     import evidence_bridge
 
-    manifest = copy.deepcopy(MODULE.load_manifest())
-    # This fixture exercises family scoping; the production bridge refuses
-    # non-latency families until it can derive their native payload faithfully.
-    for name in ("freshness", "open-loop"):
-        manifest["families"][name]["payload"] = "latency"
-    repo_root = tmp_path / "repo"
-    for family, path in (
-        ("freshness", "artifacts/search-quality/freshness/latest/summary.json"),
-        ("open-loop", "artifacts/search-quality/open-loop/latest/summary.json"),
-    ):
-        target = repo_root / path
+    from tools.ci.tests.test_check_bench_artifacts import HEAD, artifact
+
+    manifest = MODULE.load_manifest()
+    repo = tmp_path / "repo"
+    install_control_plane(repo)
+    selected = manifest["profiles"][profile_name]["families"]
+    for family in [*selected, "scale"]:
+        target = repo / manifest["families"][family]["artifact_glob"]
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(
-            json.dumps(
-                {
-                    "schema_version": 2,
-                    "dimension": family,
-                    "provenance": {"git_head": "a" * 40},
-                    "rows": [
-                        {
-                            "scenario_id": "s",
-                            "latency": {"p50_ms": 1.0, "p95_ms": 2.0, "p99_ms": 3.0, "samples": 25},
-                            "error_count": 0,
-                            "timeout_count": 0,
-                            "early_stop_reason": None,
-                        }
-                    ],
-                    "detail": {"passed": True},
-                }
-            ),
-            encoding="utf-8",
+        if profile_name == "systems" and family in selected:
+            from tools.ci.tests.test_benchmark_evidence_bridge import system_artifacts
+
+            native = system_artifacts(family)[0]
+            if family == "open-loop":
+                point = native["detail"]["points"][0]
+                native["detail"].update(
+                    {
+                        "arrival_model": "seeded_poisson",
+                        "duration_ms": 10_000,
+                        "points": [{**point, "target_qps": rate} for rate in (50, 100, 200, 400)],
+                    }
+                )
+        else:
+            native = artifact(family)
+        target.write_text(json.dumps(native), encoding="utf-8")
+    source = {
+        "revision": HEAD,
+        "dirty": False,
+        "dirty_paths_digest": None,
+        "closure_profile": "benchmark-control-plane",
+        "closure_digest": "sha256:" + "11" * 32,
+    }
+    # This is an artifact/store integration fixture; Git capture belongs to
+    # source_closure tests. No artifact validator, bridge or store is mocked.
+    monkeypatch.setattr(evidence_bridge, "source_identity", lambda *_args: source)
+    monkeypatch.setattr(MODULE, "_host_os", lambda: "linux")
+    checker = MODULE._load_lint_module(REPO_ROOT)
+    monkeypatch.setattr(MODULE, "_load_lint_module", lambda *_args: checker)
+    (repo / "Cargo.lock").write_text("# fixture\n", encoding="utf-8")
+    (repo / "rust-toolchain.toml").write_text('[toolchain]\nchannel = "1.92.0"\n')
+    receipt = repo / "preflight.json"
+    receipt.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "kind": "quanta-index-timing-preflight",
+                "run_id": f"benchctl:{profile_name}",
+                "status": "clean",
+                "foreign_rust_processes": [],
+                "host": {"os": "linux", "cpu_count": 8, "load_average": [1.0, 1.0, 1.0]},
+                "host_contention": {
+                    "one_minute_load": 1.0,
+                    "one_minute_load_limit": 4.0,
+                    "over_limit": False,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    root = tmp_path / "evidence"
+    assert (
+        MODULE.promote_profile_runs(
+            repo,
+            profile_name,
+            manifest,
+            root,
+            HEAD,
+            receipt,
+            "sha256:" + hashlib.sha256(receipt.read_bytes()).hexdigest(),
+            0,
+            MODULE.snapshot_profile_artifacts(repo, profile_name, manifest),
         )
-
-    calls: list[str] = []
-    monkeypatch.setattr(
-        evidence_bridge,
-        "promote_native_run",
-        lambda **kwargs: (
-            calls.append(kwargs["family"]),
-            {"run_dir": tmp_path, "run_id": kwargs["run_id"], "digest": "sha256:" + "0" * 64},
-        )[1],
+        == 0
     )
-    monkeypatch.setattr(
-        evidence_bridge,
-        "source_identity",
-        lambda *_args, **_kwargs: {"revision": "a" * 40, "dirty": False},
+    runs = [MODULE.RunStore(root).load(path.name) for path in (root / "runs").iterdir()]
+    assert {run["family"] for run in runs} == set(selected)
+    assert len(runs) == 2
+    assert (
+        MODULE.validate_promoted_runs(
+            root,
+            profile_name,
+            manifest,
+            source,
+            "sha256:" + hashlib.sha256((repo / "Cargo.lock").read_bytes()).hexdigest(),
+        )
+        == 0
     )
-    monkeypatch.setattr(
-        MODULE,
-        "_load_lint_module",
-        lambda *_args: SimpleNamespace(check_envelope=lambda *_args, **_kwargs: []),
-    )
-    (repo_root / "Cargo.lock").write_text("# fixture\n", encoding="utf-8")
-    receipt = repo_root / "preflight.json"
-    receipt.write_text(json.dumps({"status": "clean"}), encoding="utf-8")
-
-    monkeypatch.setattr(MODULE, "require_clean_preflight_receipt", lambda *_args: None)
-    MODULE.promote_profile_runs(
-        repo_root,
-        "systems",
-        manifest,
-        tmp_path / "evidence",
-        "a" * 40,
-        receipt,
-        "sha256:" + hashlib.sha256(receipt.read_bytes()).hexdigest(),
-        0,
-        MODULE.snapshot_profile_artifacts(repo_root, "systems", manifest),
-    )
-    assert calls == ["freshness", "open-loop"], calls
 
 
 def test_promotion_refuses_missing_preflight_and_partial_multi_artifact_claim(
@@ -1297,7 +1357,60 @@ def test_promotion_refuses_missing_preflight_and_partial_multi_artifact_claim(
         )
         == 2
     )
-    assert "multi-artifact promotion is not implemented" in capsys.readouterr().err
+    assert "artifact changed after validation" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "profile_name",
+    ["micro", "dsl-diagnostic", "recorded", "retrieval-contract", "retrieval-diagnostic"],
+)
+def test_non_native_profiles_require_adapter_or_explicit_root_before_execution(
+    monkeypatch, capsys, profile_name: str
+) -> None:
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("capture ran despite missing adapter")
+
+    monkeypatch.setattr(MODULE, "require_clean_worktree", forbidden)
+    assert MODULE.main(["run", profile_name]) == 2
+    error = capsys.readouterr().err
+    assert "no producer was executed" in error.lower()
+    if profile_name in {"micro", "dsl-diagnostic", "recorded"}:
+        assert "requires --evidence-root" in error
+    else:
+        assert "needs a non-native capture adapter" in error
+
+
+def test_native_fanout_rejects_mixed_inputs_and_incomplete_inventory() -> None:
+    from tools.ci.tests.test_benchmark_evidence_bridge import system_artifacts
+
+    artifacts = system_artifacts("concurrency")
+    entry = MODULE.load_manifest()["families"]["concurrency"]
+    checker = MODULE._load_lint_module(REPO_ROOT)
+    assert MODULE._check_native_inventory(artifacts, entry, checker.CONCURRENCY_COUNTS) is None
+    assert MODULE._check_native_inventory(artifacts[:-1], entry, checker.CONCURRENCY_COUNTS)
+    assert MODULE._check_native_inventory(
+        artifacts + [artifacts[0]], entry, checker.CONCURRENCY_COUNTS
+    )
+    artifacts[-1]["provenance"]["corpus_digest"] = "sha256:" + "77" * 32
+    with pytest.raises(MODULE.EvidenceError, match="mixes corpus_digest"):
+        MODULE._native_inputs(artifacts, "sha256:" + "33" * 32)
+
+
+@pytest.mark.parametrize(
+    "profile_name",
+    ["micro", "dsl-diagnostic", "retrieval-contract", "retrieval-diagnostic", "recorded"],
+)
+def test_non_native_read_commands_have_explicit_unmeasured_state(
+    tmp_path, capsys, profile_name: str
+) -> None:
+    assert MODULE.main(["summarize", profile_name]) == 0
+    observed = json.loads(capsys.readouterr().out)
+    assert observed["status"] == "registered_not_captured" and observed["measurement_count"] is None
+    assert (
+        MODULE.main(["preflight", profile_name, "--receipt", str(tmp_path / "preflight.json")]) == 2
+    )
+    assert "no native timing preflight" in capsys.readouterr().err
+    assert not (tmp_path / "preflight.json").exists()
 
 
 def test_promotion_refuses_stale_artifact_and_replaced_preflight(

@@ -337,6 +337,278 @@ fn delta_generation_inherits_base_dataset_by_link_without_touching_base_bytes() 
         )
         .into());
     }
+    #[cfg(feature = "proof")]
+    {
+        let mut before = sealed_replace_batch_v1(
+            repo_id(),
+            revision_id(),
+            base,
+            BASE_PATH,
+            vec![record("base-0", BASE_PATH, 0)?],
+            DIMENSION,
+        );
+        let sentinel = quanta_index_semantic::embedding_record_v1(
+            "sentinel",
+            BASE_PATH,
+            quanta_index_contract::OwnerDocKind::Module,
+            "unaffected-owner",
+            quanta_index_contract::SemanticCorpusKindV1::ModuleCard,
+            unit_vector(4),
+        )?;
+        before
+            .replace_scopes
+            .first_mut()
+            .ok_or("missing before scope")?
+            .embeddings
+            .push(sentinel.clone());
+        let mut delta_batch = sealed_replace_batch_v1(
+            repo_id(),
+            revision_id(),
+            delta,
+            DELTA_PATH,
+            vec![record("delta-only", DELTA_PATH, 9_000)?],
+            DIMENSION,
+        );
+        delta_batch.mode = BatchIngestMode::Delta;
+        delta_batch.base_generation = Some(base);
+        let mut fresh = before.clone();
+        fresh
+            .replace_scopes
+            .extend(delta_batch.replace_scopes.clone());
+        let mut cases = vec![serde_json::json!({
+            "case_id": "append", "fresh": fresh, "before": before, "delta": delta_batch,
+        })];
+        for operation in ["clear_surface", "replace", "tombstone"] {
+            let mut changed = before.clone();
+            changed.generation = delta;
+            changed.base_generation = Some(base);
+            changed.mode = BatchIngestMode::Delta;
+            if operation == "replace" {
+                changed.replace_scopes = sealed_replace_batch_v1(
+                    repo_id(),
+                    revision_id(),
+                    delta,
+                    BASE_PATH,
+                    vec![record("base-0", BASE_PATH, 5)?],
+                    DIMENSION,
+                )
+                .replace_scopes;
+            } else {
+                changed.replace_scopes.clear();
+                if operation == "clear_surface" {
+                    changed
+                        .clear_surfaces
+                        .push(quanta_index_contract::SearchScopeSurface::Chunk);
+                } else {
+                    changed.tombstone_scopes.push(
+                        quanta_index_semantic::tombstone_scope_with_semantic_owner_v1(
+                            quanta_index_contract::SemanticCorpusKindV1::RawCodeFallback,
+                            quanta_index_contract::OwnerDocKind::Chunk,
+                            "owner-base-0",
+                        ),
+                    );
+                }
+            }
+            let mut expected = changed.clone();
+            expected.mode = BatchIngestMode::ReplaceGeneration;
+            expected.base_generation = None;
+            expected.clear_surfaces.clear();
+            expected.tombstone_scopes.clear();
+            if expected.replace_scopes.is_empty() {
+                expected.replace_scopes = sealed_replace_batch_v1(
+                    repo_id(),
+                    revision_id(),
+                    delta,
+                    BASE_PATH,
+                    vec![sentinel.clone()],
+                    DIMENSION,
+                )
+                .replace_scopes;
+            } else {
+                expected
+                    .replace_scopes
+                    .first_mut()
+                    .ok_or("missing expected scope")?
+                    .embeddings
+                    .push(sentinel.clone());
+            }
+            cases.push(serde_json::json!({"case_id": operation,
+                "fresh": expected, "before": before, "delta": changed}));
+        }
+        let mut cluster_before = sealed_replace_batch_v1(
+            repo_id(),
+            revision_id(),
+            base,
+            BASE_PATH,
+            vec![quanta_index_semantic::embedding_record_v1(
+                "cluster",
+                BASE_PATH,
+                quanta_index_contract::OwnerDocKind::Module,
+                "cluster-owner",
+                quanta_index_contract::SemanticCorpusKindV1::ClusterCard,
+                unit_vector(1),
+            )?],
+            DIMENSION,
+        );
+        cluster_before.required_corpora =
+            vec![quanta_index_contract::SemanticCorpusKindV1::ClusterCard];
+        cluster_before.corpus_policy_digest = Some("policy:cluster:v1".to_string());
+        let scope = cluster_before
+            .replace_scopes
+            .first_mut()
+            .ok_or("missing cluster scope")?;
+        scope
+            .cluster_memberships
+            .push(quanta_index_contract::ClusterMembershipReplaceV1 {
+                cluster_record_id: "record-cluster".to_string(),
+                authority_digest: "auth:cluster".to_string(),
+                members: vec![quanta_index_contract::SymbolId::new("old-member")],
+            });
+        scope.embeddings.push(sentinel.clone());
+        let mut cluster_delta = cluster_before.clone();
+        cluster_delta.generation = delta;
+        cluster_delta.base_generation = Some(base);
+        cluster_delta.mode = BatchIngestMode::Delta;
+        cluster_delta
+            .replace_scopes
+            .first_mut()
+            .ok_or("missing delta cluster scope")?
+            .cluster_memberships
+            .first_mut()
+            .ok_or("missing membership")?
+            .members = vec![quanta_index_contract::SymbolId::new("new-member")];
+        cluster_delta
+            .replace_scopes
+            .first_mut()
+            .ok_or("missing cluster delta")?
+            .embeddings
+            .retain(|record| record.owner_id.as_ref() != "unaffected-owner");
+        let mut cluster_fresh = cluster_delta.clone();
+        cluster_fresh.base_generation = None;
+        cluster_fresh.mode = BatchIngestMode::ReplaceGeneration;
+        cluster_fresh
+            .replace_scopes
+            .first_mut()
+            .ok_or("missing cluster fresh")?
+            .embeddings
+            .push(sentinel);
+        cases.push(serde_json::json!({"case_id": "membership_replace",
+            "fresh": cluster_fresh, "before": cluster_before, "delta": cluster_delta}));
+        cases.sort_by_key(|case| {
+            case.get("case_id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        });
+        let plan = serde_json::json!({"schema_version": 1, "cases": cases});
+        let bytes = serde_json::to_vec(&plan)?;
+        let encoded = std::str::from_utf8(&bytes)?;
+        for invalid in [
+            encoded.replacen(
+                "\"schema_version\":1",
+                "\"schema_version\":1,\"schema_version\":1",
+                1,
+            ),
+            encoded.replacen(
+                "\"schema_version\":1",
+                "\"unexpected\":1,\"schema_version\":1",
+                1,
+            ),
+            "{\"schema_version\":1}".to_string(),
+        ] {
+            if quanta_index_semantic::proof::incremental_proof_v1(
+                invalid.as_bytes(),
+                &temp.path().join("invalid-plan"),
+            )
+            .is_ok()
+            {
+                return Err("proof accepted duplicate/missing/unknown plan fields".into());
+            }
+        }
+        for (index, original) in plan
+            .get("cases")
+            .and_then(serde_json::Value::as_array)
+            .ok_or("missing cases")?
+            .iter()
+            .enumerate()
+        {
+            let mut vacuous = original.clone();
+            let fresh_scopes = vacuous
+                .get("fresh")
+                .and_then(|batch| batch.get("replace_scopes"))
+                .ok_or("missing fresh scopes")?
+                .clone();
+            let _previous = vacuous
+                .get_mut("before")
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or("missing before batch")?
+                .insert("replace_scopes".to_string(), fresh_scopes);
+            let bytes =
+                serde_json::to_vec(&serde_json::json!({"schema_version": 1, "cases": [vacuous]}))?;
+            if quanta_index_semantic::proof::incremental_proof_v1(
+                &bytes,
+                &temp.path().join(format!("vacuous-{index}")),
+            )
+            .is_ok()
+            {
+                return Err("proof accepted a vacuous mutation".into());
+            }
+        }
+        let state = temp.path().join("proof");
+        let proof = quanta_index_semantic::proof::incremental_proof_v1(&bytes, &state)?;
+        for result in proof
+            .get("cases")
+            .and_then(serde_json::Value::as_array)
+            .ok_or("missing cases")?
+        {
+            if result.get("fresh") != result.get("incremental") {
+                return Err(format!(
+                    "complete fresh/delta state differs: {:?}",
+                    result.get("case_id")
+                )
+                .into());
+            }
+        }
+        if proof
+            .get("cases")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::len)
+            != Some(5)
+        {
+            return Err("proof omitted a mutation case".into());
+        }
+        if quanta_index_semantic::proof::incremental_proof_v1(&bytes, &state).is_ok() {
+            return Err("proof reused an existing state directory".into());
+        }
+        let mut corrupted = plan;
+        let raw = corrupted
+            .get_mut("cases")
+            .and_then(serde_json::Value::as_array_mut)
+            .and_then(|cases| cases.first_mut())
+            .ok_or("missing plan case")?;
+        let fresh = raw.get_mut("fresh").ok_or("missing fresh batch")?;
+        let scopes = fresh
+            .get_mut("replace_scopes")
+            .and_then(serde_json::Value::as_array_mut)
+            .and_then(|scopes| scopes.last_mut())
+            .ok_or("missing fresh scope")?;
+        let row = scopes
+            .get_mut("embeddings")
+            .and_then(serde_json::Value::as_array_mut)
+            .and_then(|rows| rows.first_mut())
+            .ok_or("missing fresh row")?;
+        let _previous = row
+            .as_object_mut()
+            .ok_or("fresh row object")?
+            .insert("snippet".to_string(), serde_json::json!("changed payload"));
+        if quanta_index_semantic::proof::incremental_proof_v1(
+            &serde_json::to_vec(&corrupted)?,
+            &temp.path().join("mutant"),
+        )
+        .is_ok()
+        {
+            return Err("proof accepted a fresh payload outside the operation oracle".into());
+        }
+    }
     Ok(())
 }
 

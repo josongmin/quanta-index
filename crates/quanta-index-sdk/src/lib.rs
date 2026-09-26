@@ -43,6 +43,10 @@ pub use lexical::{
 };
 pub(crate) use namespace::{NamespaceIngest, NamespaceQuery};
 pub use observability::ObservabilityNamespace;
+pub use quanta_index_contract::{
+    IngestObservationStatus, IngestStageDurations, IngestStageReport,
+    SearchCorpusIngestObservation, SearchCorpusPublishOutcome,
+};
 /// The canonical batch digest (QI-BB-032): the SDK builders stamp it on
 /// every batch they send; producers that assemble wire batches themselves
 /// stamp them with the same function before publishing.

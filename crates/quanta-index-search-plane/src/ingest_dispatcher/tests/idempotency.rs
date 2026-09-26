@@ -73,7 +73,7 @@ impl SearchCorpusIngestPort for Unreachable {
         &self,
         _batch: &SearchCorpusIngestBatch,
         _budget: &RequestBudgetV1,
-    ) -> Result<BatchPublishReceipt, CoreError> {
+    ) -> Result<quanta_index_contract::SearchCorpusPublishOutcome, CoreError> {
         Err(unreachable_route("search corpus"))
     }
 }
@@ -265,7 +265,7 @@ impl SearchCorpusIngestPort for CountingSearchCorpus {
         &self,
         batch: &SearchCorpusIngestBatch,
         budget: &RequestBudgetV1,
-    ) -> Result<BatchPublishReceipt, CoreError> {
+    ) -> Result<quanta_index_contract::SearchCorpusPublishOutcome, CoreError> {
         let _prior = self.applies.fetch_add(1, Ordering::SeqCst);
         self.inner.publish_batch(batch, budget)
     }
@@ -382,8 +382,8 @@ fn typed_code_of(
 
 fn receipt_of(response: SearchPlaneIngestIpcResponse) -> Result<BatchPublishReceipt, String> {
     match response {
-        SearchPlaneIngestIpcResponse::DirtyReceipt(receipt)
-        | SearchPlaneIngestIpcResponse::SearchCorpusReceipt(receipt) => Ok(receipt),
+        SearchPlaneIngestIpcResponse::DirtyReceipt(receipt) => Ok(receipt),
+        SearchPlaneIngestIpcResponse::SearchCorpusReceipt(outcome) => Ok(outcome.receipt),
         SearchPlaneIngestIpcResponse::Error(error) => {
             Err(format!("{}: {}", error.code, error.message))
         }
@@ -698,10 +698,24 @@ fn a_committed_replay_runs_no_preflight_apply_or_storage() -> TestRes {
     let budget = RequestBudgetV1::unbounded().with_diagnostics(stages.clone());
 
     let batch = fixture_search_corpus_batch()?;
-    let first = receipt_of(dispatcher.dispatch(
+    let first_response = dispatcher.dispatch(
         SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch.clone()),
         &budget,
-    ))?;
+    );
+    let SearchPlaneIngestIpcResponse::SearchCorpusReceipt(first) = first_response else {
+        return Err("expected observed first corpus receipt".into());
+    };
+    let first_observation = first
+        .observation
+        .as_ref()
+        .ok_or("first observation missing")?;
+    if first_observation.status != quanta_index_contract::IngestObservationStatus::FinalizeOnly
+        || first_observation.semantic.is_some()
+        || first_observation.lexical_build_ns.is_some()
+        || first_observation.finalize_ns.is_none()
+    {
+        return Err(format!("unexpected finalize-only observation: {first_observation:?}").into());
+    }
     if !first.applied || first.durable_sequence != 1 {
         return Err(format!("the first publish must apply at sequence 1: {first:?}").into());
     }
@@ -726,10 +740,27 @@ fn a_committed_replay_runs_no_preflight_apply_or_storage() -> TestRes {
         .map_err(|err| format!("fake lexical builder poisoned: {err}"))?
         .len();
 
-    let replay = receipt_of(dispatcher.dispatch(
+    let replay_response = dispatcher.dispatch(
         SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch.clone()),
         &budget,
-    ))?;
+    );
+    let SearchPlaneIngestIpcResponse::SearchCorpusReceipt(replay) = replay_response else {
+        return Err("expected observed replay corpus receipt".into());
+    };
+    let replay_observation = replay
+        .observation
+        .as_ref()
+        .ok_or("replay observation missing")?;
+    replay_observation.validate_for(budget.response_request_id(), &batch, &replay.receipt)?;
+    if replay_observation.status != quanta_index_contract::IngestObservationStatus::Replayed
+        || replay_observation.semantic.is_some()
+        || replay_observation.lexical_build_ns.is_some()
+        || replay_observation.finalize_ns.is_some()
+    {
+        return Err(
+            format!("cached/zero-filled replay measurement: {replay_observation:?}").into(),
+        );
+    }
     if replay.applied
         || replay.durable_sequence != 1
         || replay.accepted_replace_scopes != first.accepted_replace_scopes
@@ -774,7 +805,7 @@ fn a_committed_replay_runs_no_preflight_apply_or_storage() -> TestRes {
         SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch),
         &budget,
     ))?;
-    if cold_replay != replay {
+    if cold_replay != replay.receipt {
         return Err(format!(
             "a route-less dispatcher must answer the identical stored receipt: {cold_replay:?}"
         )

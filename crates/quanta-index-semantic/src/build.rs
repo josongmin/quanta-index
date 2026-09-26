@@ -36,9 +36,10 @@ use futures::TryStreamExt as _;
 use lancedb::connect;
 use lancedb::query::{ExecutableQuery as _, QueryBase as _};
 use quanta_index_contract::{
-    EmbeddingDistanceMetric, EmbeddingNormalization, EmbeddingRecord, OwnerDocKind,
-    SearchScopeSurface, SemanticCorpusKindV1, SemanticReplaceScope, SemanticTombstoneScope,
-    canonical_order::first_canonical_order_break_v1, cluster_membership_content_digest_v1,
+    EmbeddingDistanceMetric, EmbeddingNormalization, EmbeddingRecord, IngestStageReport,
+    OwnerDocKind, SearchScopeSurface, SemanticCorpusKindV1, SemanticReplaceScope,
+    SemanticTombstoneScope, canonical_order::first_canonical_order_break_v1,
+    cluster_membership_content_digest_v1,
 };
 use quanta_index_core::domains::semantic::SemanticPolicy;
 use quanta_index_core::{
@@ -274,73 +275,6 @@ fn monotonic_nanos_since(started: Instant) -> u64 {
         Ok(nanos) => nanos,
         Err(_) => u64::MAX,
     }
-}
-
-/// Monotonic wall-time durations of one ingest pass's storage stages, in
-/// nanoseconds (RBR-10 step 1).
-///
-/// Every value is an [`Instant`] delta, so the set is monotonic by
-/// construction — no wall-clock timestamp is recorded. The four
-/// storage-operation fields (`semantic_delete`, `membership_delete`,
-/// `semantic_append`, `membership_append`) accumulate inside the passes
-/// that contain them, so each stays at most the duration of the pass
-/// nesting it. Embedding time is owned by the caller above this crate —
-/// the source hands every window down already vectorized — so it is
-/// deliberately left unmeasured (`None`) rather than fabricated here.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub(crate) struct IngestStageDurations {
-    /// The clear-surface pass before the first window.
-    pub clear_surfaces: u64,
-    /// The whole streamed window pass: admission, validation, owner
-    /// deletes and appends of every window.
-    pub stream: u64,
-    /// Time inside semantic-table delete commits (owner and surface).
-    pub semantic_delete: u64,
-    /// Time inside membership-table delete commits (owner and surface).
-    pub membership_delete: u64,
-    /// Time inside semantic-table appends.
-    pub semantic_append: u64,
-    /// Time inside membership-table appends.
-    pub membership_append: u64,
-    /// The tombstone pass after the last window.
-    pub tombstones: u64,
-    /// The manifest commitment and vector-index seal; zero when the batch
-    /// does not seal.
-    pub seal: u64,
-    /// Never measured here: embedding happens above this crate.
-    pub embedding: Option<u64>,
-}
-
-/// What one ingest pass did to the generation's tables, and how long each
-/// stage took (RBR-10 step 1).
-///
-/// Pure observation: nothing in this report feeds a durability decision.
-/// The operations, their order, and every fsync/seal/promotion boundary
-/// are unchanged — the counters only watch them. Call-level counters
-/// tally helper invocations; commit-level counters tally the lancedb
-/// `delete` executions those helpers issued, so a helper covering several
-/// owners (or one that declines to delete) shows up as one call and
-/// zero-or-more commits.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub(crate) struct IngestStageReport {
-    /// Replace (owner) scopes admitted and applied across every window.
-    pub owner_scopes: u64,
-    /// Windows taken from the source.
-    pub windows: u64,
-    /// Semantic-table delete helper invocations.
-    pub semantic_delete_calls: u64,
-    /// Semantic-table `delete` commits issued to lancedb.
-    pub semantic_delete_commits: u64,
-    /// Membership-table delete helper invocations.
-    pub membership_delete_calls: u64,
-    /// Membership-table `delete` commits issued to lancedb.
-    pub membership_delete_commits: u64,
-    /// Semantic-table append calls (one `add` per window that has rows).
-    pub semantic_append_calls: u64,
-    /// Membership-table append calls (one `add` per scope with members).
-    pub membership_append_calls: u64,
-    /// Monotonic wall-time duration per stage.
-    pub durations: IngestStageDurations,
 }
 
 async fn open_connection(dataset_dir: &Path) -> Result<lancedb::Connection, CoreError> {
@@ -1760,11 +1694,9 @@ fn apply_scope_stream(
     Ok(tally)
 }
 
-/// Apply one streamed batch to the lancedb-backed durable generation,
-/// sealing on the header's `seal`.
-///
-/// Returns what was appended, counted on this side: the caller compares it
-/// with the source's own tally.
+/// Test-fixture projection of the canonical reported build. Production
+/// adapters retain the report through `SemanticScopeStreamBuildPort`.
+#[cfg(test)]
 pub(crate) fn build_stream(
     runtime: &tokio::runtime::Runtime,
     semantic_root: &Path,
@@ -1778,13 +1710,11 @@ pub(crate) fn build_stream(
     Ok(tally)
 }
 
-/// [`build_stream`] with the ingest-stage accounting handed back instead of
-/// discarded (RBR-10 step 1).
+/// The canonical storage build, returning tally and transient accounting.
 ///
 /// The [`IngestStageReport`] is observation only: the durability sequence
-/// below is exactly the one [`build_stream`] runs, un-reordered, with every
-/// seal/promotion step intact. Callers that do not want the report keep
-/// using [`build_stream`] unchanged.
+/// below is un-reordered, with every seal/promotion step intact. The test
+/// helper `build_stream` projects the tally without creating another build.
 pub(crate) fn build_stream_reported(
     runtime: &tokio::runtime::Runtime,
     semantic_root: &Path,
@@ -1793,6 +1723,7 @@ pub(crate) fn build_stream_reported(
     scopes: &mut dyn SemanticScopeSource,
     seal_tallies: &SealTalliesV1,
 ) -> Result<(SemanticStreamTallyV1, IngestStageReport), CoreError> {
+    let build_started = Instant::now();
     let mut report = IngestStageReport::default();
     let generation_dir = layout::generation_dir(
         semantic_root,
@@ -1833,6 +1764,7 @@ pub(crate) fn build_stream_reported(
     let (tally, manifest_bytes) = {
         let tables =
             crate::run_blocking(runtime, open_working_tables(&working_dataset, dimension))?;
+        report.durations.prepare = monotonic_nanos_since(build_started);
         let clear_started = Instant::now();
         crate::run_blocking(
             runtime,
@@ -1862,7 +1794,7 @@ pub(crate) fn build_stream_reported(
                 runtime,
                 seal_manifest_bytes(semantic_root, &tables, header, &generation_contract),
             )?;
-            report.durations.seal = monotonic_nanos_since(seal_started);
+            report.durations.seal = Some(monotonic_nanos_since(seal_started));
             Some(sealed)
         } else {
             None
@@ -1875,6 +1807,7 @@ pub(crate) fn build_stream_reported(
     // promotion; recovery promotes this staged sidecar only when the dataset is
     // already durable, so a rejected append/tombstone/seal cannot advance policy
     // independently of its rows.
+    let promotion_started = Instant::now();
     let staged_contract_path = stage_generation_contract(&generation_dir, &generation_contract)?;
     #[cfg(test)]
     exit_for_promotion_crash_boundary(PRE_DATASET_PROMOTION);
@@ -1945,6 +1878,8 @@ pub(crate) fn build_stream_reported(
             "write sealed marker",
         )?;
     }
+    report.durations.promotion = monotonic_nanos_since(promotion_started);
+    report.durations.total = monotonic_nanos_since(build_started);
     Ok((tally, report))
 }
 

@@ -1,6 +1,6 @@
 # RBR 공통 검증·완료 계약
 
-상태: 공통 완료 계약. 티켓별 구현·검증의 **현재 판정**은 [CURRENT-AUDIT.md](CURRENT-AUDIT.md)의 최신 코드 재감사를 따른다. 동일 Python 입력의 직전 `f1d041ff` 전체 계약 272 passed/32 subtests와 현재 dirty lexical 도구 5 passed는 local diagnostic이며 Rust/SDK exact collection, clean-source proof와 qualified final pair는 아직 검증되지 않았다. 두 bare-symbol 탐색 pair의 `PAIR_VALID=pass`는 이 게이트를 대체하지 않는다. 현재 dirty 및 이 문서 변경은 retrieval source closure에 포함된다. 기존 [RB TEST-PLAN](../../sep-23-retrieval-bench/tickets/TEST-PLAN.md)의 입력 격리·replay·성능 자격을 약화하지 않는다.
+상태: 공통 완료 계약. 현재 `f9c3b4dc` + 공유 dirty의 구현·명령별 실행 판정은 [CURRENT-AUDIT.md](CURRENT-AUDIT.md)의 최신 절을 따른다. strict fixture/manual serde 및 server observation/V2 ingest 연결을 구현했으나 focused/local 실행은 clean-source proof나 qualified final pair가 아니다. 두 bare-symbol 탐색 pair의 `PAIR_VALID=pass`는 이 게이트를 대체하지 않는다. 이 문서 변경도 retrieval source closure 입력이다. 기존 [RB TEST-PLAN](../../sep-23-retrieval-bench/tickets/TEST-PLAN.md)의 입력 격리·replay·성능 자격을 약화하지 않는다.
 
 ## 1. 공통 oracle와 부정 테스트
 
@@ -14,16 +14,16 @@
 | 티켓 | 독립 oracle / 핵심 반례 | 최소 owning rail |
 | --- | --- | --- |
 | 00 | 실제 pytest/nextest collection; 새 계약 파일 변경 시 closure 거부; profile 위조 | Python proof/receipt tests + contract |
-| 01 | SDK 응답과 sidecar 필드 대조; executed-but-empty lane; request 혼합; missing stage | contract + SDK |
+| 01 | SDK/sidecar 필드 대조; executed-but-empty lane; missing stage; exact enabled/disabled startup selector·config SHA; 실제 daemon 결과/페이지/cursor/failure 동등성, OFF explicit null. stage collection+DTO serialization/transport A/B와 runner sidecar 직렬화 분리 | contract + SDK + bounded overhead |
 | 02 | DSL AND 보존; literal escaping; sentence/identifier paired fixture; gold 비접근 | contract + SDK |
 | 03 | pinned reference 함수 출력과 lane 호출 spy; alpha endpoint도 dual execution | Python adapter + 실제 pinned Semble 개발 캡처 |
 | 04 | 5개 언어의 수작업 definition spans; symbol-only 변경의 digest 변경; combined replacement; unsupported admitted 파일별 path+SHA/skip reason과 partial/full capability 판정 | contract + storage + SDK |
 | 05 | forged symbol ID/path/span; wrong generation; no-answer/timeout; line-expanded context | contract + SDK |
 | 06 | UTF-8/CRLF/긴 줄/겹친 span의 손계산; rank와 density의 독립 계산 | chunking contract + Python scorer |
-| 07 | full vectors + exhaustive cosine; 255/256 boundary; short/full ANN result; 조건부 T15의 raw vector·asset·실행 context binding, 임의 `pass` 요약 거부 | embed focused + semantic integration + proof replay |
+| 07 | strict schema/required policy·명시적 null/canonical input·norm·pairwise triangle 검증과 omission/subset/reorder/forgery 거부; full vectors + exhaustive cosine; 255/256·short/full ANN; 조건부 T15 raw/asset/실행 custody | asset-free validator + actual asset embed + semantic integration + proof replay |
 | 08 | 정확 이름/동명이인/부분일치; stable tie; multi-page no duplication/omission | lexical fixtures + storage |
 | 09 | 동일 후보 fixture에서 fusion 불변식; sparse filters; deadlines; actual lane cost | semantic/storage + daemon |
-| 10 | fresh/delta/reopen/replay/tombstone/fault/restart의 최종 row set | semantic integration + daemon |
+| 10 | fresh/delta/reopen/replay/tombstone/fault/restart row set; transient observation의 request/repo/revision/batch/generation/receipt·activation digest 혼합·누락·partial/replay 거부; durable receipt timing 비혼입; V2 wire tag old request dispatch 전 거부·body digest 유지 | semantic integration + 실제 SDK/daemon |
 | 11 | 실제 프로세스 트리와 positive-RSS descendants; zero-RSS 연결 노드 | Python sampler + platform별 owner check |
 | 12 | cross-suite dev/holdout file·definition·query-family 누수 거부; raw receipts/records로 fresh-process verdict 재도출; wrong-source/admission 및 조건부 T15/T16 `pass` 요약 위조 거부 | contract proof + SDK proof + pair/replay |
 
@@ -32,8 +32,8 @@
 레포 루트에서 실행한다. `<...>`는 새 외부 경로/실제 spec으로 교체할 placeholder다.
 
 ```sh
-python3 -m pytest tools/ci/tests/test_retrieval_benchmark.py -q -p no:cacheprovider
-python3 -m pytest tools/ci/tests/test_retrieval_contract_proof.py tools/ci/tests/test_retrieval_sdk_proof.py tools/ci/tests/test_write_verification_receipt.py tools/ci/tests/test_portable_proof.py -q -p no:cacheprovider
+uv run --frozen --extra dev python -m pytest tools/ci/tests/test_retrieval_benchmark.py -q -p no:cacheprovider
+uv run --frozen --extra dev python -m pytest tools/ci/tests/test_retrieval_contract_proof.py tools/ci/tests/test_retrieval_sdk_proof.py tools/ci/tests/test_write_verification_receipt.py tools/ci/tests/test_portable_proof.py -q -p no:cacheprovider
 just retrieval-contract-local
 just rust-profile test-integration-storage
 just rust-profile test-integration-semantic
@@ -62,6 +62,8 @@ just retrieval-verdict <repo> <suite> <run-manifest> <fresh-external-verdict>
 
 각 결과에 full HEAD, 관련 dirty paths/source hash, 입력·모델·parser·dependency·설정·binary hash, host/runtime, 정확한 명령, raw 출력/종료 상태, 산출물 경로/SHA-256, covered/excluded scope를 남긴다. schema/config/policy 변경은 옛 증거 재사용을 무효화한다. 새 티켓 디렉터리가 source closure에 편입되면 이 문서의 사후 상태 변경도 receipt를 무효화한다. 최종 상태·결과표는 레포 외부의 digest-bound closeout artifact에 기록한다.
 
-조건부 T15(동일 모델)·T16(증분)의 `pass`/count JSON과 그 SHA-256은 독립 증거가 아니다. T15는 pinned 양쪽 모델·토크나이저·정밀도·입력·raw 전체 벡터·사전 선언 tolerance·실행 context로, T16은 동일 source/generation에서 before/after raw row-set·rename/delete/restart·실행 context로 재도출해야 한다. 임의 command 문자열 또는 새 digest를 붙인 요약만으로 조건부 claim을 승인하지 않는다. 현재 `run.py`는 raw 양성 프로토콜이 없어 두 조건부 claim을 fail-closed로 거부한다. 과거 summary-only 승인은 역사적 결함이며, 현 양성 proof는 `NOT_RUN`이다. [현재 감사](CURRENT-AUDIT.md)를 따른다.
+조건부 T15(동일 모델)·T16(증분)의 `pass`/count JSON과 그 SHA-256은 독립 증거가 아니다. T15는 pinned 양쪽 모델·토크나이저·정밀도·입력·raw 전체 벡터·사전 선언 tolerance·실행 context로, T16은 동일 source/generation에서 before/typed operation/fresh/incremental full rows·실행 context로 재도출한다. 현재 schema2 producers/consumer는 존재하며 typed operation의 의미 있는 변화·무관 owner 보존·정확 scalar type·단 하나의 마지막 successful build terminal을 요구한다. no-op·sentinel 삭제·모순/중복/후속 terminal·bool/float 대체를 거부해야 한다. 임의 command 문자열 또는 새 digest를 붙인 요약으로 승인하지 않는다. actual exporter terminal·binary bytes·config/dependency/환경·collection/command/source binding을 별도로 확인한다. local self-reported hash는 signed remote attestation이 아니다. fault/restart는 실제 owning fault rail이 있어야 보장하며 full-row5case만으로 증명하지 않는다. [현재 감사](CURRENT-AUDIT.md)를 따른다.
+
+`same_model=false`/`incremental=false`이면 각각 T15/T16은 `NOT_APPLICABLE`다. claim을 true로 여는 경우에만 해당 양성 protocol이 필수다. 이 조건을 일반 pair의 무조건 필수 gate로 늘리거나 protocol 없이 claim을 true로 설정하지 않는다.
 
 개발 작업의 종료와 `PAIR_VALID`, `QUALITY_DELTA`, `PERF_QUALIFIED`의 종료를 분리한다. 외부 독립 입력이 없으면 해당 qualification만 `BLOCKED` 또는 `NOT_RUN`으로 남기고, 개발 티켓에 가짜 승인·정답·quiet-host를 만드는 작업을 추가하지 않는다.

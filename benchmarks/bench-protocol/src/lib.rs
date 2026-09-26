@@ -38,7 +38,7 @@ pub use envelope::{
 pub use error::ProtocolError;
 pub use payloads::{
     AgentOutcomePayload, ExperimentPoint, FreshnessPayload, FreshnessPhase, LatencyPayload,
-    LatencyRow, LoadPayload, LoadPoint, MetricValue, MicroPayload, Payload,
+    LatencyRow, LoadPayload, LoadPoint, MetricValue, MicroPayload, Payload, ProofPayload,
     RecordedExperimentPayload, RetrievalPayload, RetrievalRow,
 };
 pub use run_store::{BaselineRecord, LatestPointer, Promotion, RunStore, StagingRun};

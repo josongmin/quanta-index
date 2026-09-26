@@ -556,6 +556,7 @@ def _canonical_receipt(
     summary: Path,
     inputs: dict[str, Path],
     closure: dict[str, object],
+    execution_root: Path | None = None,
 ) -> None:
     receipt = _json(path)
     if not isinstance(receipt, dict) or set(receipt) != {
@@ -585,7 +586,8 @@ def _canonical_receipt(
         or receipt["rail"] != rail
         or receipt["tier"] != "correctness"
         or receipt["command"] != command
-        or receipt["evidence_path"] != str(summary)
+        or receipt["evidence_path"]
+        != str((execution_root / summary.name) if execution_root else summary)
         or receipt["evidence_sha256"] != _sha(summary)
         or type(receipt["test_event_count"]) is not int
         or receipt["test_event_count"] != result.get("executed")
@@ -595,9 +597,23 @@ def _canonical_receipt(
         raise ValueError(f"canonical receipt differs from source and machine evidence: {path}")
 
 
-def validate(receipt_path: Path) -> dict[str, object]:
+def validate(
+    receipt_path: Path,
+    *,
+    execution_root: Path | None = None,
+    binary_files: dict[str, Path] | None = None,
+) -> dict[str, object]:
+    """Verify frozen bytes, retaining original command/path provenance.
+
+    Relocated immutable custody may supply the original absolute execution
+    root and frozen binary files. These affect lookup only; raw commands,
+    receipt paths, and native binary metadata are never rewritten.
+    """
     receipt_path = receipt_path.resolve(strict=True)
     out = receipt_path.parent.resolve()
+    execution_root = out if execution_root is None else execution_root
+    if not execution_root.is_absolute() or ".." in execution_root.parts:
+        raise ValueError("execution root must be an absolute canonical recorded path")
     context = _json(receipt_path)
     if (
         not isinstance(context, dict)
@@ -652,14 +668,17 @@ def validate(receipt_path: Path) -> dict[str, object]:
         {"runner", "searchd"} if context["rail"] == "sdk" else set()
     ):
         raise ValueError("invalid proof binary identities")
-    for binary in binaries.values():
+    if binary_files is not None and set(binary_files) != set(binaries):
+        raise ValueError("frozen proof binary inventory mismatch")
+    for name, binary in binaries.items():
         if (
             not isinstance(binary, dict)
             or set(binary) != {"path", "sha256"}
-            or _sha(Path(binary["path"])) != binary["sha256"]
+            or _sha(binary_files[name] if binary_files is not None else Path(binary["path"]))
+            != binary["sha256"]
         ):
             raise ValueError("proof binary identity changed")
-    expected_commands = _expected_commands(context["rail"], out, tools, binaries)
+    expected_commands = _expected_commands(context["rail"], execution_root, tools, binaries)
     expected_names = [name for name, _, _ in expected_commands]
     commands = context["commands"]
     if (
@@ -763,6 +782,7 @@ def validate(receipt_path: Path) -> dict[str, object]:
                 "execution-context": receipt_path,
             },
             closure=closure,
+            execution_root=execution_root,
         )
         _canonical_receipt(
             out / "contract_rust_receipt.json",
@@ -775,6 +795,7 @@ def validate(receipt_path: Path) -> dict[str, object]:
                 "execution-context": receipt_path,
             },
             closure=closure,
+            execution_root=execution_root,
         )
     else:
         proof_inventory.verify_inventory_authority(out / "nextest-inventory.json", "sdk")
@@ -796,9 +817,13 @@ def validate(receipt_path: Path) -> dict[str, object]:
             "sdk_results.json": sdk_proof.build_summary(
                 out / "actual-runner-record.json",
                 out / "nextest.jsonl",
-                Path(binaries["runner"]["path"]),
+                binary_files["runner"]
+                if binary_files is not None
+                else Path(binaries["runner"]["path"]),
                 out / "nextest-inventory.json",
-                searchd_path=Path(binaries["searchd"]["path"]),
+                searchd_path=binary_files["searchd"]
+                if binary_files is not None
+                else Path(binaries["searchd"]["path"]),
             )
         }
         _canonical_receipt(
@@ -813,6 +838,7 @@ def validate(receipt_path: Path) -> dict[str, object]:
                 "execution-context": receipt_path,
             },
             closure=closure,
+            execution_root=execution_root,
         )
     for name, summary in expected.items():
         if _json(out / name) != summary:
