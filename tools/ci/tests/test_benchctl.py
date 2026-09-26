@@ -809,16 +809,15 @@ def _promote_sample_run(root: Path, run_id: str) -> Path:
     )["run_dir"]
 
 
-def test_replay_validates_an_immutable_run_from_raw_evidence(tmp_path: Path, capsys) -> None:
+def test_replay_refuses_contract_only_claim_for_registered_native_family(
+    tmp_path: Path, capsys
+) -> None:
     sys.path.insert(0, str(REPO_ROOT / "tools" / "benchmark"))
     run_id = "dsl-warm-20260926T120000Z-deadbeef"
     run_dir = _promote_sample_run(tmp_path / "root", run_id)
-    assert MODULE.main(["replay", str(run_dir)]) == 0
-    receipt = json.loads(capsys.readouterr().out)
-    assert receipt["run_id"] == run_id
-    assert receipt["raw_verified"] is True
-    assert receipt["replay"] == "contract_only"
-    assert MODULE.main(["replay", "--evidence-root", str(tmp_path / "root"), run_id]) == 0
+    assert MODULE.main(["replay", str(run_dir)]) == 2
+    assert "cannot parse native raw" in capsys.readouterr().err
+    assert MODULE.main(["replay", "--evidence-root", str(tmp_path / "root"), run_id]) == 2
 
 
 def test_replay_refuses_a_tampered_run(tmp_path: Path, capsys) -> None:
@@ -1122,7 +1121,7 @@ def test_promotion_is_scoped_to_the_profile_families(monkeypatch, tmp_path: Path
                             "early_stop_reason": None,
                         }
                     ],
-                    "detail": {},
+                    "detail": {"passed": True},
                 }
             ),
             encoding="utf-8",
@@ -1138,7 +1137,14 @@ def test_promotion_is_scoped_to_the_profile_families(monkeypatch, tmp_path: Path
         )[1],
     )
     monkeypatch.setattr(
-        evidence_bridge, "source_identity", lambda *_args, **_kwargs: {"revision": "a" * 40}
+        evidence_bridge,
+        "source_identity",
+        lambda *_args, **_kwargs: {"revision": "a" * 40, "dirty": False},
+    )
+    monkeypatch.setattr(
+        MODULE,
+        "_load_lint_module",
+        lambda *_args: SimpleNamespace(check_envelope=lambda *_args, **_kwargs: []),
     )
     (repo_root / "Cargo.lock").write_text("# fixture\n", encoding="utf-8")
     receipt = repo_root / "preflight.json"
@@ -1173,7 +1179,9 @@ def test_promotion_refuses_missing_preflight_and_partial_multi_artifact_claim(
     monkeypatch.setattr(MODULE, "require_clean_preflight_receipt", lambda *_args: None)
     digest = "sha256:" + hashlib.sha256(b'{"status":"clean"}').hexdigest()
     assert (
-        MODULE.promote_profile_runs(repo, "fanout", manifest, root, "a" * 40, receipt, digest, 0, {})
+        MODULE.promote_profile_runs(
+            repo, "fanout", manifest, root, "a" * 40, receipt, digest, 0, {}
+        )
         == 2
     )
     assert "preflight receipt" in capsys.readouterr().err
@@ -1183,7 +1191,9 @@ def test_promotion_refuses_missing_preflight_and_partial_multi_artifact_claim(
     (output / "first.json").write_text("{}")
     (output / "second.json").write_text("{}")
     assert (
-        MODULE.promote_profile_runs(repo, "fanout", manifest, root, "a" * 40, receipt, digest, 0, {})
+        MODULE.promote_profile_runs(
+            repo, "fanout", manifest, root, "a" * 40, receipt, digest, 0, {}
+        )
         == 2
     )
     assert "multi-artifact promotion is not implemented" in capsys.readouterr().err
@@ -1235,3 +1245,36 @@ def test_promotion_refuses_stale_artifact_and_replaced_preflight(
         == 2
     )
     assert "artifact changed after validation" in capsys.readouterr().err
+
+
+def test_promotion_rechecks_the_exact_native_bytes(monkeypatch, tmp_path: Path, capsys) -> None:
+    repo = tmp_path / "repo"
+    artifact = repo / "artifacts" / "family" / "summary.json"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text('{"schema_version":2,"rows":[{"scenario_id":"s"}]}')
+    receipt = repo / "preflight.json"
+    receipt.write_text('{"status":"clean"}')
+    manifest = {
+        "families": {
+            "family": {
+                "artifact_glob": "artifacts/family/summary.json",
+                "host_policy": "any",
+                "requires_verdict": False,
+                "minimum_samples": None,
+                "payload": "latency",
+            }
+        },
+        "profiles": {"one": {"families": ["family"]}},
+    }
+    monkeypatch.setattr(MODULE, "require_clean_preflight_receipt", lambda *_args: None)
+    load_lint = MODULE._load_lint_module
+    monkeypatch.setattr(MODULE, "_load_lint_module", lambda *_args: load_lint(REPO_ROOT))
+    digest = "sha256:" + hashlib.sha256(receipt.read_bytes()).hexdigest()
+    frozen = MODULE.snapshot_profile_artifacts(repo, "one", manifest)
+    assert (
+        MODULE.promote_profile_runs(
+            repo, "one", manifest, tmp_path / "runs", "a" * 40, receipt, digest, 0, frozen
+        )
+        == 2
+    )
+    assert "native artifact refused" in capsys.readouterr().err

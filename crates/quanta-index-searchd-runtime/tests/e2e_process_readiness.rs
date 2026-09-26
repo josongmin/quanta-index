@@ -6,11 +6,10 @@ use std::time::Duration;
 
 use quanta_index_contract::{
     GenerationPin, ProcessReadinessReasonV1, ProcessReadinessV1, ProcessRequestEventPlaneV1,
-    ProcessRequestEventStageV1, QueryConstraintSetV1,
-    SearchPlaneControlIpcResponse, SearchPlaneRollbackSearchCorpusGenerationCasRequest,
-    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope,
-    SearchPlaneQueryIpcResponse, SearchPlaneQueryIpcResponseEnvelope, TextQueryRequest,
-    TextQuerySyntax,
+    ProcessRequestEventStageV1, QueryConstraintSetV1, SearchPlaneControlIpcResponse,
+    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
+    SearchPlaneQueryIpcResponseEnvelope, SearchPlaneRollbackSearchCorpusGenerationCasRequest,
+    SemanticQueryRequest, TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_core::GenerationStorageKeyV1;
 use quanta_index_searchd_harness::E2eRuntime;
@@ -130,6 +129,49 @@ fn operator_ring_correlates_queue_backend_and_terminal_by_request_id() -> TestRe
 }
 
 #[test]
+fn operator_ring_correlates_provider_ticket_with_query_terminal() -> TestResult {
+    let mut rt = E2eRuntime::boot()?;
+    rt.ingest_text("repo-provider-events", "src/provider.rs", "needle provider")?;
+    let _sealed = rt.seal()?;
+    rt.activate_last_sealed_generation()?;
+    let before = rt.process_request_events(ProcessRequestEventPlaneV1::Query, 1024)?;
+    let served = rt.query_semantic("needle", 5, None);
+    if let Some(error) = served.typed_error {
+        return Err(format!("semantic fixture query failed: {error:?}").into());
+    }
+    let after = rt.process_request_events(ProcessRequestEventPlaneV1::Query, 1024)?;
+    let Some(outcome) = after.events.iter().find(|event| {
+        event.sequence >= before.next_sequence
+            && event.stage == ProcessRequestEventStageV1::BackendOutcome
+            && event.route.as_deref() == Some("query.semantic")
+    }) else {
+        return Err("semantic backend outcome missing from operator ring".into());
+    };
+    let correlated: Vec<_> = after
+        .events
+        .iter()
+        .filter(|event| event.request_id == outcome.request_id)
+        .collect();
+    let started = correlated
+        .iter()
+        .find(|event| event.stage == ProcessRequestEventStageV1::ProviderStarted)
+        .ok_or("provider start missing for semantic request")?;
+    let returned = correlated
+        .iter()
+        .find(|event| event.stage == ProcessRequestEventStageV1::ProviderReturned)
+        .ok_or("provider return missing for semantic request")?;
+    require_eq(&started.ticket_id, &returned.ticket_id, "provider ticket")?;
+    if started.ticket_id.is_none()
+        || !correlated
+            .iter()
+            .any(|event| event.stage == ProcessRequestEventStageV1::ResponseWritten)
+    {
+        return Err("provider ticket or terminal response missing".into());
+    }
+    Ok(())
+}
+
+#[test]
 fn binary_daemon_exposes_one_correlated_query_without_payload() -> TestResult {
     let parent = quanta_index_searchd_harness::private_tempdir()?;
     let state_root = parent.path().join("state");
@@ -153,7 +195,7 @@ fn binary_daemon_exposes_one_correlated_query_without_payload() -> TestResult {
                 syntax: TextQuerySyntax::Native,
                 query_text: "needle".to_owned(),
                 constraints: QueryConstraintSetV1::unconstrained(),
-                generation: Some(pin),
+                generation: Some(pin.clone()),
                 generation_selector: None,
                 top_k: 5,
                 cursor: None,
@@ -165,7 +207,11 @@ fn binary_daemon_exposes_one_correlated_query_without_payload() -> TestResult {
             &query,
             quanta_index_ipc::ClientIoPolicy::default(),
         )?;
-        require_eq(&response.request_id, &request_id, "query response request ID")?;
+        require_eq(
+            &response.request_id,
+            &request_id,
+            "query response request ID",
+        )?;
         let text = match response.payload {
             SearchPlaneQueryIpcResponse::Text(text) => text,
             other => return Err(format!("binary query returned wrong response: {other:?}").into()),
@@ -202,6 +248,68 @@ fn binary_daemon_exposes_one_correlated_query_without_payload() -> TestResult {
             {
                 return Err(format!("binary query {} lacks {stage:?}", outcome.request_id).into());
             }
+        }
+
+        let semantic_before = client
+            .observability()
+            .request_events(ProcessRequestEventPlaneV1::Query, 1024)?;
+        let semantic_id = 0x5eee_u64;
+        let semantic_query = SearchPlaneQueryIpcRequestEnvelope {
+            request_id: semantic_id,
+            payload: SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
+                query_text: "needle".to_owned(),
+                constraints: QueryConstraintSetV1::unconstrained(),
+                generation: Some(pin),
+                generation_selector: None,
+                lexical_scope: None,
+                top_k: 5,
+            }),
+        };
+        let semantic_response: SearchPlaneQueryIpcResponseEnvelope =
+            quanta_index_ipc::send_request(
+                &sockets[0],
+                &semantic_query,
+                quanta_index_ipc::ClientIoPolicy::default(),
+            )?;
+        require_eq(
+            &semantic_response.request_id,
+            &semantic_id,
+            "semantic response request ID",
+        )?;
+        match semantic_response.payload {
+            SearchPlaneQueryIpcResponse::Semantic(_) => {}
+            other => return Err(format!("binary semantic query refused: {other:?}").into()),
+        }
+        let semantic_after = client
+            .observability()
+            .request_events(ProcessRequestEventPlaneV1::Query, 1024)?;
+        let correlated: Vec<_> = semantic_after
+            .events
+            .iter()
+            .filter(|event| {
+                event.sequence >= semantic_before.next_sequence
+                    && event.request_id.get() == semantic_id
+            })
+            .collect();
+        let started = correlated
+            .iter()
+            .find(|event| event.stage == ProcessRequestEventStageV1::ProviderStarted)
+            .ok_or("binary semantic provider start missing")?;
+        let returned = correlated
+            .iter()
+            .find(|event| event.stage == ProcessRequestEventStageV1::ProviderReturned)
+            .ok_or("binary semantic provider return missing")?;
+        require_eq(
+            &started.ticket_id,
+            &returned.ticket_id,
+            "binary provider ticket",
+        )?;
+        if started.ticket_id.is_none()
+            || !correlated
+                .iter()
+                .any(|event| event.stage == ProcessRequestEventStageV1::ResponseWritten)
+        {
+            return Err("binary semantic provider ticket or terminal response missing".into());
         }
         Ok(())
     })();

@@ -60,28 +60,43 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_crates(path: Path) -> dict[str, CrateRow]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    return parse_crates(path.read_bytes(), str(path))
+
+
+def parse_crates(raw: bytes, source: str) -> dict[str, CrateRow]:
+    def unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"{source}: duplicate JSON key {key!r}")
+            result[key] = value
+        return result
+
+    def reject_constant(value: str) -> None:
+        raise ValueError(f"{source}: non-finite JSON value {value}")
+
+    payload = json.loads(raw, object_pairs_hook=unique_object, parse_constant=reject_constant)
     if not isinstance(payload, dict) or not isinstance(payload.get("top_repo_crates"), list):
-        raise ValueError(f"{path}: missing top_repo_crates array")
+        raise ValueError(f"{source}: missing top_repo_crates array")
     rows = payload["top_repo_crates"]
     if not rows:
-        raise ValueError(f"{path}: top_repo_crates is empty")
+        raise ValueError(f"{source}: top_repo_crates is empty")
     crates: dict[str, CrateRow] = {}
     for row in rows:
         if not isinstance(row, dict):
-            raise ValueError(f"{path}: invalid crate row")
+            raise ValueError(f"{source}: invalid crate row")
         name, duration, units = row.get("name"), row.get("duration"), row.get("units")
         if not isinstance(name, str) or not name or name in crates:
-            raise ValueError(f"{path}: empty or duplicate crate name: {name!r}")
+            raise ValueError(f"{source}: empty or duplicate crate name: {name!r}")
         if (
             isinstance(duration, bool)
             or not isinstance(duration, (int, float))
             or not math.isfinite(duration)
             or duration < 0
         ):
-            raise ValueError(f"{path}: invalid duration for {name}")
+            raise ValueError(f"{source}: invalid duration for {name}")
         if type(units) is not int or units < 1:
-            raise ValueError(f"{path}: invalid units for {name}")
+            raise ValueError(f"{source}: invalid units for {name}")
         crates[name] = CrateRow(name=name, duration=float(duration), units=units)
     return crates
 
@@ -100,14 +115,12 @@ def main() -> int:
 
     if args.update_baseline:
         try:
-            load_crates(args.current)
+            candidate = args.current.read_bytes()
+            parse_crates(candidate, str(args.current))
         except (OSError, ValueError, json.JSONDecodeError) as error:
             print(f"invalid baseline candidate: {error}", file=sys.stderr)
             return 2
-        args.baseline.write_text(
-            args.current.read_text(encoding="utf-8"),
-            encoding="utf-8",
-        )
+        args.baseline.write_bytes(candidate)
         print(f"updated baseline {args.baseline}")
         return 0
 

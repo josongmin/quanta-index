@@ -4,6 +4,8 @@
 
 후속 dirty 변경: RBR-01 lexical/semantic/hybrid server stage DTO→SDK→diagnostic v4 및 replay guard를 코드에 추가했다. lexical 추가 후 contract IPC 55, search-plane 413, retrieval 83, searchctl 42 local tests와 실제 SDK 통합 16/16이 통과했다. raw `/private/tmp/rbr01-lexical-final.B3GlSv/`의 3-route replay와 6종 변조 거부는 [RBR-01](RBR-01-diagnostics.md)에 묶었다. Python 전체 두 실행은 각각 273 passed/1 failed·32 subtests이며 동시 canonical receipt schema 확장에 의한 한 필드 drift를 단계마다 수정하고 집중 테스트를 통과시켰다. 최신 schema bytes로 전체 재실행은 `NOT_RUN`. ingest stage와 on/off overhead, clean receipt는 미완료다.
 
+추가 local 재검증: diagnostic v4의 stage↔engine/strategy 모순 거부를 보강했고 보존된 실제 3-route sidecar에서 9개 필드 변조를 거부했다. Python 전체 **275 passed/32 subtests**(exit 0)이나 실행 중 HEAD·test bytes가 이동해 source-stable receipt가 아니다. 현 bytes의 관련 6 tests, required inventory 275/275, Ruff는 통과했다. Rust search-plane 414/retrieval 83과 semantic 내부 ingest report 4는 local 통과. Clippy/fmt 전체는 별도 control/embed/semantic 파일 문제로 `FAILED`. 현재 명세와 코드 판정은 [CURRENT-AUDIT](CURRENT-AUDIT.md)를 우선한다.
+
 | ID | 우선순위 | 남은 코드/결정 | 현행 증거·종결 게이트 |
 | --- | --- | --- | --- |
 | [RBR-00](RBR-00-proof-contract.md) | P1 proof | 최종 source freeze 후 Python/Rust/SDK exact collection 및 계약 closure 재자격 | Python exact collection과 Rust collection local 통과; clean-source contract/SDK receipt `NOT_RUN` |

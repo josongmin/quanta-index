@@ -7988,11 +7988,12 @@ def test_v3_byte_coverage_decides_credit():
 
     # The new diagnostic must not mistake the old scored-line projection
     # for the published indexed span or silently use a partial row set.
+    context_bytes = 1_000_000
     candidate = {
         "path": "a",
-        "start_byte": 5,
-        "end_byte": 25,
-        "tokens": 5,
+        "start_byte": 0,
+        "end_byte": context_bytes,
+        "tokens": 500_000,
         "rank": 1,
         "span_accounting": {
             "unit_id": "fixed-10-byte-span",
@@ -8000,7 +8001,7 @@ def test_v3_byte_coverage_decides_credit():
             "indexed_end_byte": 20,
             "sdk_start_line": 1,
             "sdk_end_line": 1,
-            "extra_context_bytes": 10,
+            "extra_context_bytes": context_bytes - 10,
         },
     }
     row = {"task_id": "T", "route": "q", "status": "success", "candidates": [candidate]}
@@ -8017,33 +8018,36 @@ def test_v3_byte_coverage_decides_credit():
         "rank_only_hit_at_1": 1.0,
         "exact_index_span_mrr_at_10": 1.0,
         "exact_index_span_recall_at_10": 1.0,
-        "scored_context_bytes_at_10": 20.0,
-        "scored_context_tokens_at_10": 5.0,
+        "scored_context_bytes_at_10": 1_000_000.0,
+        "scored_context_tokens_at_10": 500_000.0,
         "indexed_bytes_at_10": 10.0,
-        "extra_context_bytes_at_10": 10.0,
+        "extra_context_bytes_at_10": 999_990.0,
     }
     context = report["per_candidate"][0]
     assert context["indexed_bytes"] == 10
-    assert context["sdk_line_span_bytes"] == 20
-    assert context["scored_projection_bytes"] == 20
-    assert context["scored_to_indexed_expansion_ratio"] == 2.0
-    assert context["sdk_to_indexed_expansion_ratio"] == 2.0
+    assert context["sdk_line_span_bytes"] == 1_000_000
+    assert context["scored_projection_bytes"] == 1_000_000
+    assert context["scored_to_indexed_expansion_ratio"] == 100_000.0
+    assert context["sdk_to_indexed_expansion_ratio"] == 100_000.0
     exact = json.loads(json.dumps(candidate))
     exact["start_byte"] = 10
     exact["end_byte"] = 20
-    exact["tokens"] = 2
+    exact["tokens"] = 5
     exact["span_accounting"]["extra_context_bytes"] = 0
     exact["span_accounting"]["sdk_start_line"] = 0
     exact["span_accounting"]["sdk_end_line"] = 0
     row["candidates"] = [exact]
     exact_report = ev.indexed_span_diagnostics(run, {("T", "q"): row}, tasks)
-    assert exact_report["routes"]["q"]["mean"]["rank_only_hit_at_1"] == 1.0
+    for metric in (
+        "rank_only_hit_at_1", "exact_index_span_mrr_at_10", "exact_index_span_recall_at_10"
+    ):
+        assert exact_report["routes"]["q"]["mean"][metric] == report["routes"]["q"]["mean"][metric]
     assert exact_report["per_candidate"][0]["scored_projection_bytes"] == 10
     assert exact_report["per_candidate"][0]["scored_to_indexed_expansion_ratio"] == 1.0
     assert exact_report["per_candidate"][0]["sdk_line_span_bytes"] is None
     miss = json.loads(json.dumps(candidate))
     miss["span_accounting"]["indexed_start_byte"] = 12
-    miss["span_accounting"]["extra_context_bytes"] = 12
+    miss["span_accounting"]["extra_context_bytes"] = context_bytes - 8
     assert ev.covers(miss, gold) is True
     row["candidates"] = [miss]
     report = ev.indexed_span_diagnostics(run, {("T", "q"): row}, tasks)

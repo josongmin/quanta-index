@@ -93,6 +93,31 @@ def test_duplicate_and_empty_timing_rows_are_refused(tmp_path: Path) -> None:
         MODULE.load_crates(p)
 
 
+def test_ambiguous_timing_json_is_refused(tmp_path: Path) -> None:
+    import pytest
+
+    path = tmp_path / "summary.json"
+    path.write_text(
+        '{"top_repo_crates":[{"name":"demo","duration":1,"units":1}],'
+        '"top_repo_crates":[]}',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="duplicate JSON key"):
+        MODULE.load_crates(path)
+    path.write_text(
+        '{"top_repo_crates":[{"name":"demo","duration":1,"duration":0,"units":1}]}',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="duplicate JSON key"):
+        MODULE.load_crates(path)
+    path.write_text(
+        '{"top_repo_crates":[{"name":"demo","duration":1,"units":1}],"extra":NaN}',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="non-finite JSON value"):
+        MODULE.load_crates(path)
+
+
 def test_invalid_threshold_and_update_candidate_cannot_pass(tmp_path: Path) -> None:
     baseline = tmp_path / "baseline.json"
     current = tmp_path / "current.json"

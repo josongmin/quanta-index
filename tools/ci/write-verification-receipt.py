@@ -43,9 +43,7 @@ def _nextest_evidence_summary(
         parse_nextest(evidence)
         inventory_bytes = inventory.read_bytes() if inventory is not None else None
         expected = (
-            parse_nextest_inventory_bytes(inventory_bytes)
-            if inventory_bytes is not None
-            else None
+            parse_nextest_inventory_bytes(inventory_bytes) if inventory_bytes is not None else None
         )
         parsed = parse_nextest(evidence, expected=expected)
     except (NextestEvidenceError, OSError) as error:

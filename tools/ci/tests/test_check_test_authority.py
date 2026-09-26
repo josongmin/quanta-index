@@ -70,7 +70,13 @@ def test_rail_binding_requires_an_executed_command() -> None:
         "--message-format libtest-json-plus --message-format-version 0.1"
     )
     prefix, suffix = command.split(" --message-format ", 1)
-    executed = "set -o pipefail\n" + prefix + " \\\n    --message-format " + suffix + " \\\n    | tee evidence.jsonl"
+    executed = (
+        "set -o pipefail\n"
+        + prefix
+        + " \\\n    --message-format "
+        + suffix
+        + " \\\n    | tee evidence.jsonl"
+    )
     metadata_only = f'# {command}\npython3 writer.py --command "{command}"\n'
 
     assert module._executes_declared_command(executed, command)

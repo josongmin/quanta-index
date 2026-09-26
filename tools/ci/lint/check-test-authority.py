@@ -21,8 +21,8 @@ Python targets are opt-in owner files, not a repository-wide pytest inventory.
 
 from __future__ import annotations
 
-import ast
 import argparse
+import ast
 import re
 import shlex
 import sys

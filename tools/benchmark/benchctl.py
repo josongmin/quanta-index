@@ -714,32 +714,50 @@ def replay_command(repo_root: Path, reference: str, evidence_root: Path | None) 
     except EvidenceError as exc:
         print(f"ERROR: replay refused: {exc}", file=sys.stderr)
         return 2
+    native_families = load_manifest(repo_root=repo_root)["families"]
     artifact_oracle = "not_applicable"
-    native = None
-    for raw_reference in evidence["raw"]:
-        payload_path = run_dir / raw_reference["path"]
-        if payload_path.suffix == ".json":
-            native = payload_path
-            break
-    if native is not None:
+    if evidence["family"] in native_families:
+        if len(evidence["raw"]) != 1:
+            print("ERROR: replay requires exactly one native artifact", file=sys.stderr)
+            return 2
+        native = run_dir / evidence["raw"][0]["path"]
+        if native.suffix != ".json":
+            print("ERROR: replay native artifact is not JSON", file=sys.stderr)
+            return 2
         checker = _load_lint_module(repo_root)
         try:
-            payload = json.loads(native.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
+            payload = _strict_json_bytes(native.read_bytes())
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
             print(f"ERROR: replay cannot parse native raw {native}: {exc}", file=sys.stderr)
             return 2
-        if isinstance(payload, dict) and payload.get("schema_version") == 2:
-            refusals = checker.check_envelope(
-                payload, dimension=evidence["family"], head=evidence["source"]["revision"]
+        family = native_families[evidence["family"]]
+        refusals = checker.check_envelope(
+            payload,
+            dimension=evidence["family"],
+            head=evidence["source"]["revision"],
+            host_policy=family["host_policy"],
+        )
+        if refusals:
+            print(
+                "ERROR: replay refused: native artifact oracle failed: " + "; ".join(refusals),
+                file=sys.stderr,
             )
-            if refusals:
-                print(
-                    "ERROR: replay refused: native artifact oracle failed: "
-                    + "; ".join(refusal.reason for refusal in refusals),
-                    file=sys.stderr,
-                )
+            return 2
+        if family["payload"] != evidence["payload"]["kind"]:
+            print("ERROR: replay native payload kind differs from registry", file=sys.stderr)
+            return 2
+        if family["payload"] == "latency":
+            from evidence_bridge import latency_payload_from_artifact
+
+            try:
+                derived = latency_payload_from_artifact(payload)
+            except EvidenceError as exc:
+                print(f"ERROR: replay cannot derive native payload: {exc}", file=sys.stderr)
                 return 2
-            artifact_oracle = "pass"
+            if derived != evidence["payload"]:
+                print("ERROR: replay typed payload differs from native artifact", file=sys.stderr)
+                return 2
+        artifact_oracle = "pass"
     receipt = {
         "run_id": run_id,
         "family": evidence["family"],
@@ -754,6 +772,21 @@ def replay_command(repo_root: Path, reference: str, evidence_root: Path | None) 
     }
     print(json.dumps(receipt, sort_keys=True, indent=2))
     return 0
+
+
+def _strict_json_bytes(raw: bytes) -> object:
+    def unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate native JSON key: {key}")
+            result[key] = value
+        return result
+
+    def reject_constant(value: str) -> None:
+        raise ValueError(f"non-finite native JSON value: {value}")
+
+    return json.loads(raw, object_pairs_hook=unique_object, parse_constant=reject_constant)
 
 
 def _load_lint_module(repo_root: Path):
@@ -809,7 +842,7 @@ def promote_profile_runs(
     if digest_bytes(receipt_bytes) != preflight_digest:
         print("ERROR: benchmark preflight receipt changed during capture", file=sys.stderr)
         return 2
-    checker = _load_lint_module(repo_root)
+    checker = None
     lease_mode = "shared"
     lease_samples = 1
     promoted: list[str] = []
@@ -831,6 +864,7 @@ def promote_profile_runs(
             if (
                 path.is_symlink()
                 or not path.is_file()
+                or not path.resolve().is_relative_to(repo_root.resolve())
                 or path.stat().st_mtime_ns < capture_started_ns
             ):
                 print(
@@ -844,26 +878,42 @@ def promote_profile_runs(
             return 2
         relative_path = path.relative_to(repo_root).as_posix()
         if validated_artifacts.get(relative_path) != digest_bytes(native_bytes):
-            print(f"ERROR: family {family!r} artifact changed after validation: {path}", file=sys.stderr)
+            print(
+                f"ERROR: family {family!r} artifact changed after validation: {path}",
+                file=sys.stderr,
+            )
             return 2
         try:
             artifact = json.loads(native_bytes)
         except json.JSONDecodeError as exc:
             print(f"ERROR: family {family!r} native artifact is not JSON: {exc}", file=sys.stderr)
             return 2
+        if checker is None:
+            checker = _load_lint_module(repo_root)
         refusals = checker.check_envelope(
             artifact,
             dimension=family,
             head=initial_head,
             host_policy=entry["host_policy"],
         )
+        if refusals:
+            print(
+                f"ERROR: family {family!r} native artifact refused: {'; '.join(refusals)}",
+                file=sys.stderr,
+            )
+            return 2
+        assert isinstance(artifact, dict)
         if entry["requires_verdict"] and artifact.get("detail", {}).get("passed") is not True:
             refusals.append("required rail verdict is not true")
         minimum = entry["minimum_samples"]
         if minimum is not None:
             for row in artifact.get("rows", []):
                 latency = row.get("latency") if isinstance(row, dict) else None
-                if not isinstance(latency, dict) or type(latency.get("samples")) is not int or latency["samples"] < minimum:
+                if (
+                    not isinstance(latency, dict)
+                    or type(latency.get("samples")) is not int
+                    or latency["samples"] < minimum
+                ):
                     refusals.append(f"required measurement has fewer than {minimum} samples")
         if any(
             isinstance(row, dict) and row.get("early_stop_reason") is not None
@@ -871,7 +921,10 @@ def promote_profile_runs(
         ):
             refusals.append("required measurement contains an early stop")
         if refusals:
-            print(f"ERROR: family {family!r} native artifact refused: {'; '.join(refusals)}", file=sys.stderr)
+            print(
+                f"ERROR: family {family!r} native artifact refused: {'; '.join(refusals)}",
+                file=sys.stderr,
+            )
             return 2
         try:
             payload = latency_payload_from_artifact(artifact)
@@ -894,6 +947,9 @@ def promote_profile_runs(
             source = source_identity(repo_root, "benchmark-control-plane")
         except EvidenceError as exc:
             print(f"ERROR: cannot bind source closure: {exc}", file=sys.stderr)
+            return 2
+        if source.get("dirty") is not False or source.get("revision") != initial_head:
+            print("ERROR: benchmark source changed during promotion", file=sys.stderr)
             return 2
         # Promotion occurs only after the native validator and declared
         # comparator have both succeeded in this run.
@@ -1042,10 +1098,19 @@ def snapshot_profile_artifacts(
         if not paths:
             raise RuntimeError(f"family {family!r} has no validated artifact")
         for path in paths:
-            if path.is_symlink() or not path.is_file():
+            if (
+                path.is_symlink()
+                or not path.is_file()
+                or not path.resolve().is_relative_to(repo_root.resolve())
+            ):
                 raise RuntimeError(f"family {family!r} has non-regular artifact: {path}")
+            relative_path = path.relative_to(repo_root).as_posix()
+            if relative_path in frozen:
+                raise RuntimeError(
+                    f"artifact belongs to multiple profile families: {relative_path}"
+                )
             try:
-                frozen[path.relative_to(repo_root).as_posix()] = digest_bytes(path.read_bytes())
+                frozen[relative_path] = digest_bytes(path.read_bytes())
             except OSError as exc:
                 raise RuntimeError(f"cannot freeze artifact {path}: {exc}") from exc
     return frozen
@@ -1305,8 +1370,10 @@ def main(argv: list[str] | None = None) -> int:
                 return result
             if args.command == "run":
                 require_frozen_source(repo_root, initial_head)
-                if validated_artifacts is not None and validated_artifacts != snapshot_profile_artifacts(
-                    repo_root, args.profile, manifest
+                if (
+                    validated_artifacts is not None
+                    and validated_artifacts
+                    != snapshot_profile_artifacts(repo_root, args.profile, manifest)
                 ):
                     raise RuntimeError("benchmark artifacts changed during comparison")
         except RuntimeError as exc:
@@ -1327,6 +1394,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         if result:
             return result
+        try:
+            require_frozen_source(repo_root, initial_head)
+        except RuntimeError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
     if args.command in {"run", "compare"}:
         return 0
     return 0
