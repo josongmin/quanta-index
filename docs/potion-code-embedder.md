@@ -58,7 +58,7 @@ just proof-potion-code-parity \
   "$PWD/artifacts/potion-code/reference.json"
 ```
 
-This rail generates the Python 3.12 / `model2vec==0.9.0` reference for all nine fixed
+This rail generates the Python 3.13 / `model2vec==0.9.0` reference for all nine fixed
 inputs, then runs both ignored Rust tests. The weekly and manually dispatched
 `potion-code-parity` workflow fetches the exact upstream revision, verifies all
 three model file digests, and uploads the reference, command log, and SHA-256
