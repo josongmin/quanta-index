@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
+from importlib import import_module
 from pathlib import Path
 
 import pytest
@@ -16,16 +17,8 @@ if str(BENCHMARK_DIR) not in sys.path:
 
 
 def _bridge():
-    for name, path in (
-        ("evidence", BENCHMARK_DIR / "evidence.py"),
-        ("evidence_bridge", BENCHMARK_DIR / "evidence_bridge.py"),
-    ):
-        spec = importlib.util.spec_from_file_location(name, path)
-        assert spec and spec.loader
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[name] = module
-        spec.loader.exec_module(module)
-    return sys.modules["evidence_bridge"]
+    # Reloading canonical names leaves sibling owners bound to stale classes.
+    return import_module("evidence_bridge")
 
 
 def _artifact(rows: list[dict], schema_version: int = 2) -> dict:

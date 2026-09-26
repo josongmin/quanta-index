@@ -29,6 +29,7 @@ from tools.benchmark.retrieval import query_timing_overhead as overhead
 from tools.benchmark.retrieval import run as pairrun
 from tools.benchmark.retrieval import semble as semble_adapter
 from tools.ci import source_closure
+from tools.ci.tests.test_portable_proof import proof_actor_environment as proof_actor_environment
 
 
 def test_parity_reference_refuses_unpinned_assets_and_library(tmp_path, monkeypatch):
@@ -5464,7 +5465,7 @@ def test_verdict_refuses_frozen_command_log_tampering(tmp_path, mutation):
     assert (
         "frozen command output digest mismatch"
         if mutation == "digest"
-        else "cannot read frozen command output"
+        else "cannot inspect frozen command logs: Bad CRC-32"
         if mutation == "crc"
         else "frozen command logs missing or duplicated"
     ) in reason
@@ -9292,7 +9293,9 @@ def _conditional_vector_context_unit_bundle(observed, baseline):
         return add_custody_unit_fixture(bundle, Path(directory))
 
 
-def test_conditional_incremental_replay_compares_payload_membership_and_empty_state(monkeypatch, tmp_path):
+def test_conditional_incremental_replay_compares_payload_membership_and_empty_state(
+    monkeypatch, tmp_path, proof_actor_environment
+):
     plan, output = _conditional_incremental_unit_oracle()
     assert [case["before"]["semantic"]["count"] for case in output["cases"]] == [2, 2, 2, 2, 2]
     assert [case["fresh"]["semantic"]["count"] for case in output["cases"]] == [3, 1, 2, 2, 1]

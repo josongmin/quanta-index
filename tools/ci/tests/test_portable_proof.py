@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -216,7 +217,19 @@ def test_context_requires_actual_compiled_test_executable(fake_execution, rail, 
 
 
 @pytest.fixture
-def fake_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def proof_actor_environment(monkeypatch: pytest.MonkeyPatch):
+    """Separate the canonical pytest import path from the controlled actor.
+
+    This opt-in boundary only removes the runner's known import setting.
+    Other startup/selection overrides still reach the production refusal.
+    Monkeypatch restores the runner environment after the requesting test.
+    """
+    assert os.environ.get("PYTHONPATH") in (None, "."), "noncanonical pytest import path"
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+
+
+@pytest.fixture
+def fake_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, proof_actor_environment):
     out = tmp_path / "proof"
     target = tmp_path / "target"
     runner = target / "debug" / "quanta-index-retrieval-bench"

@@ -17,6 +17,7 @@ import pytest
 from tools.benchmark.retrieval import conditional_proof as cp
 from tools.benchmark.retrieval import portable_proof, tool_custody
 from tools.ci import source_closure
+from tools.ci.tests.test_portable_proof import proof_actor_environment as proof_actor_environment
 from tools.ci.tests.test_tool_custody import executable, selected_tools
 
 
@@ -101,7 +102,9 @@ def test_conditional_produce_refuses_function_exports_before_inputs_or_tools(mon
         cp.produce(None)
 
 
-def test_conditional_produce_enters_shared_context_and_resets_it_on_failure(monkeypatch, tmp_path):
+def test_conditional_produce_enters_shared_context_and_resets_it_on_failure(
+    monkeypatch, tmp_path, proof_actor_environment
+):
     tools = selected_tools(tmp_path)
     monkeypatch.setattr(portable_proof, "_tools", lambda: tools)
     reached = []
@@ -124,7 +127,9 @@ def test_conditional_produce_enters_shared_context_and_resets_it_on_failure(monk
 
 
 @pytest.mark.parametrize("drift", [False, True])
-def test_conditional_publishes_only_after_terminal_custody(monkeypatch, tmp_path, drift):
+def test_conditional_publishes_only_after_terminal_custody(
+    monkeypatch, tmp_path, drift, proof_actor_environment
+):
     tools = selected_tools(tmp_path)
     monkeypatch.setattr(portable_proof, "_tools", lambda: tools)
     out = tmp_path / "output"

@@ -14,6 +14,7 @@ from tools.ci.tests import test_portable_proof as producer_fixtures
 from tools.ci.tests.test_tool_custody import custody
 
 fake_execution = producer_fixtures.fake_execution
+proof_actor_environment = producer_fixtures.proof_actor_environment
 
 
 @pytest.mark.parametrize("failed_stage", range(7))
@@ -302,13 +303,20 @@ def test_command_digests_bind_execute_bytes_instead_of_reopened_paths(tmp_path, 
 
 def test_pythonpath_cannot_select_external_pytest_producer(tmp_path, monkeypatch):
     (tmp_path / "pytest.py").write_text('print("wrong-producer")')
-    monkeypatch.setenv("PYTHONPATH", str(tmp_path))
     monkeypatch.setattr(
         portable_proof, "_tools", lambda: pytest.fail("tool selection reached with injected pytest")
     )
-    with pytest.raises(ValueError, match="Python startup"):
-        with portable_proof.controlled_execution():
-            pytest.fail("injected producer admitted")
+    # The runner's canonical dot path is also forbidden for the producer;
+    # opt-in positive fixtures cannot weaken this admission boundary.
+    for key, value in (("PYTHONPATH", "."), ("PYTHONPATH", str(tmp_path)),
+                       ("PYTHONHOME", str(tmp_path)), ("PYTEST_ADDOPTS", "-k injected"),
+                       ("PYTEST_PLUGINS", "injected")):
+        with monkeypatch.context() as actor:
+            actor.delenv("PYTHONPATH", raising=False)
+            actor.setenv(key, value)
+            with pytest.raises(ValueError, match="Python startup"):
+                with portable_proof.controlled_execution():
+                    pytest.fail("injected producer admitted")
 
 
 def test_sdk_binds_both_native_executables_before_test(fake_execution, monkeypatch):

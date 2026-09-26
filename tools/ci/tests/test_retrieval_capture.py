@@ -14,6 +14,17 @@ from registry import load_registry
 from tools.ci.tests.test_portable_proof import fake_execution  # noqa: F401
 
 
+def test_bridge_fixture_preserves_canonical_evidence_identity():
+    from tools.ci.tests.test_benchmark_evidence_bridge import _bridge
+
+    evidence_module = sys.modules["evidence"]
+    assert capture.EvidenceError is evidence_module.EvidenceError
+    bridge = _bridge()
+    assert _bridge() is bridge
+    assert sys.modules["evidence"] is evidence_module
+    assert bridge.EvidenceError is capture.EvidenceError
+
+
 @pytest.mark.parametrize("rail", ["sdk", "contract"])
 def test_registration_requires_current_execution_context_version(rail):
     from evidence import EvidenceError
