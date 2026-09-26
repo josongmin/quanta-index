@@ -127,9 +127,9 @@ def parse_args(
     parser.add_argument("--repo-root", type=Path, default=repo_root, help="checkout to operate on")
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("list", help="show registered benchmark profiles and the registry digest")
-    subparsers.add_parser("plan", help="emit the resolved, digest-bound plan for a profile").add_argument(
-        "profile", choices=sorted(profiles)
-    )
+    subparsers.add_parser(
+        "plan", help="emit the resolved, digest-bound plan for a profile"
+    ).add_argument("profile", choices=sorted(profiles))
     replay = subparsers.add_parser(
         "replay", help="fresh-process re-validation of one immutable evidence run"
     )
@@ -775,6 +775,9 @@ def promote_profile_runs(
     evidence_root: Path,
     initial_head: str,
     receipt: Path,
+    preflight_digest: str,
+    capture_started_ns: int,
+    validated_artifacts: dict[str, str],
 ) -> int:
     """Promote each family *of this profile* into an immutable evidence run.
 
@@ -797,15 +800,18 @@ def promote_profile_runs(
     created = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     hostname = socket.gethostname() or "unknown"
-    lease_mode = "none"
-    lease_samples = 0
     try:
-        preflight_payload = json.loads(receipt.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        preflight_payload = None
-    if isinstance(preflight_payload, dict) and preflight_payload.get("status") == "clean":
-        lease_mode = "shared"
-        lease_samples = 1
+        require_clean_preflight_receipt(receipt, profile_name)
+        receipt_bytes = receipt.read_bytes()
+    except (RuntimeError, OSError) as exc:
+        print(f"ERROR: cannot read clean benchmark preflight receipt: {exc}", file=sys.stderr)
+        return 2
+    if digest_bytes(receipt_bytes) != preflight_digest:
+        print("ERROR: benchmark preflight receipt changed during capture", file=sys.stderr)
+        return 2
+    checker = _load_lint_module(repo_root)
+    lease_mode = "shared"
+    lease_samples = 1
     promoted: list[str] = []
     for family in selected:
         entry = families[family]
@@ -814,20 +820,75 @@ def promote_profile_runs(
         if not paths:
             print(f"ERROR: family {family!r} has no artifact at {pattern}", file=sys.stderr)
             return 2
+        if len(paths) != 1:
+            print(
+                f"ERROR: family {family!r} has {len(paths)} artifacts; multi-artifact promotion is not implemented",
+                file=sys.stderr,
+            )
+            return 2
         path = paths[0]
-        native_bytes = path.read_bytes()
+        try:
+            if (
+                path.is_symlink()
+                or not path.is_file()
+                or path.stat().st_mtime_ns < capture_started_ns
+            ):
+                print(
+                    f"ERROR: family {family!r} artifact is not fresh regular output: {path}",
+                    file=sys.stderr,
+                )
+                return 2
+            native_bytes = path.read_bytes()
+        except OSError as exc:
+            print(f"ERROR: family {family!r} artifact is unreadable: {exc}", file=sys.stderr)
+            return 2
+        relative_path = path.relative_to(repo_root).as_posix()
+        if validated_artifacts.get(relative_path) != digest_bytes(native_bytes):
+            print(f"ERROR: family {family!r} artifact changed after validation: {path}", file=sys.stderr)
+            return 2
         try:
             artifact = json.loads(native_bytes)
         except json.JSONDecodeError as exc:
             print(f"ERROR: family {family!r} native artifact is not JSON: {exc}", file=sys.stderr)
+            return 2
+        refusals = checker.check_envelope(
+            artifact,
+            dimension=family,
+            head=initial_head,
+            host_policy=entry["host_policy"],
+        )
+        if entry["requires_verdict"] and artifact.get("detail", {}).get("passed") is not True:
+            refusals.append("required rail verdict is not true")
+        minimum = entry["minimum_samples"]
+        if minimum is not None:
+            for row in artifact.get("rows", []):
+                latency = row.get("latency") if isinstance(row, dict) else None
+                if not isinstance(latency, dict) or type(latency.get("samples")) is not int or latency["samples"] < minimum:
+                    refusals.append(f"required measurement has fewer than {minimum} samples")
+        if any(
+            isinstance(row, dict) and row.get("early_stop_reason") is not None
+            for row in artifact.get("rows", [])
+        ):
+            refusals.append("required measurement contains an early stop")
+        if refusals:
+            print(f"ERROR: family {family!r} native artifact refused: {'; '.join(refusals)}", file=sys.stderr)
             return 2
         try:
             payload = latency_payload_from_artifact(artifact)
         except EvidenceError as exc:
             print(f"ERROR: family {family!r} cannot be promoted: {exc}", file=sys.stderr)
             return 2
-        if artifact.get("provenance", {}).get("git_head") not in {None, initial_head}:
-            print(f"ERROR: family {family!r} artifact is not from the frozen source", file=sys.stderr)
+        if payload["kind"] != entry["payload"]:
+            print(
+                f"ERROR: family {family!r} needs {entry['payload']!r} evidence, "
+                f"but the bridge produced {payload['kind']!r}",
+                file=sys.stderr,
+            )
+            return 2
+        if artifact.get("provenance", {}).get("git_head") != initial_head:
+            print(
+                f"ERROR: family {family!r} artifact is not from the frozen source", file=sys.stderr
+            )
             return 2
         try:
             source = source_identity(repo_root, "benchmark-control-plane")
@@ -862,7 +923,7 @@ def promote_profile_runs(
                     "flags": ["--locked"],
                     "binaries": [],
                 },
-                inputs=_declared_inputs(payload),
+                inputs=_declared_inputs(payload, preflight_digest),
                 host=host_identity(
                     policy=str(entry["host_policy"]),
                     os_name=_host_os(),
@@ -925,18 +986,23 @@ def _toolchain_identity(repo_root: Path) -> str:
                 channel = stripped.split("=", 1)[1].strip().strip('"')
     except (OSError, IndexError):
         channel = "unknown"
-    completed = subprocess.run(
-        ["rustc", "--version"], check=False, capture_output=True, text=True
-    )
+    completed = subprocess.run(["rustc", "--version"], check=False, capture_output=True, text=True)
     if completed.returncode == 0 and completed.stdout.strip():
         return f"{completed.stdout.strip()} (pinned {channel})"
     return f"unresolved rustc (pinned {channel})"
 
 
-def _declared_inputs(payload: dict[str, object]) -> list[dict[str, object]]:
+def _declared_inputs(payload: dict[str, object], preflight_digest: str) -> list[dict[str, object]]:
     """Inputs the payload actually binds; `corpus` is unavailable when unbound."""
+    preflight = {
+        "id": "benchmark-preflight",
+        "availability": "present",
+        "digest": preflight_digest,
+        "reason": None,
+    }
     if payload.get("kind") == "retrieval":
         return [
+            preflight,
             {
                 "id": "corpus",
                 "availability": "present",
@@ -951,13 +1017,38 @@ def _declared_inputs(payload: dict[str, object]) -> list[dict[str, object]]:
             },
         ]
     return [
+        preflight,
         {
             "id": "workspace-fixture",
             "availability": "unavailable",
             "digest": None,
             "reason": "the rail builds its deterministic fixture in-process; no external corpus",
-        }
+        },
     ]
+
+
+def snapshot_profile_artifacts(
+    repo_root: Path, profile_name: str, manifest: dict[str, object]
+) -> dict[str, str]:
+    """Freeze the exact native bytes accepted before a comparator runs."""
+    from evidence import digest_bytes
+
+    families = manifest["families"]
+    selected = manifest["profiles"][profile_name]["families"]
+    assert isinstance(families, dict)
+    frozen: dict[str, str] = {}
+    for family in selected:
+        paths = sorted(repo_root.glob(families[family]["artifact_glob"]))
+        if not paths:
+            raise RuntimeError(f"family {family!r} has no validated artifact")
+        for path in paths:
+            if path.is_symlink() or not path.is_file():
+                raise RuntimeError(f"family {family!r} has non-regular artifact: {path}")
+            try:
+                frozen[path.relative_to(repo_root).as_posix()] = digest_bytes(path.read_bytes())
+            except OSError as exc:
+                raise RuntimeError(f"cannot freeze artifact {path}: {exc}") from exc
+    return frozen
 
 
 def validate_promoted_runs(
@@ -975,6 +1066,7 @@ def validate_promoted_runs(
     selected = profiles[profile_name]["families"]
     receipts: list[dict[str, object]] = []
     missing: list[str] = []
+    capture_identity: tuple[str, str] | None = None
     for family in selected:
         try:
             run_id = latest_run_for_family(store, family)
@@ -998,8 +1090,25 @@ def validate_promoted_runs(
         if evidence["verdict"]["status"] != "pass":
             print(f"ERROR: run {run_id!r} has non-passing verdict", file=sys.stderr)
             return 2
+        if evidence["payload"]["kind"] != families[family]["payload"]:
+            print(f"ERROR: run {run_id!r} has wrong payload kind", file=sys.stderr)
+            return 2
         if evidence["host"]["policy"] != families[family]["host_policy"]:
             print(f"ERROR: run {run_id!r} has wrong host policy", file=sys.stderr)
+            return 2
+        preflights = [item for item in evidence["inputs"] if item["id"] == "benchmark-preflight"]
+        if (
+            len(preflights) != 1
+            or preflights[0]["availability"] != "present"
+            or not isinstance(preflights[0]["digest"], str)
+        ):
+            print(f"ERROR: run {run_id!r} lacks a unique preflight binding", file=sys.stderr)
+            return 2
+        identity = (preflights[0]["digest"], evidence["created_utc"])
+        if capture_identity is None:
+            capture_identity = identity
+        elif identity != capture_identity:
+            print("ERROR: promoted profile mixes different benchmark captures", file=sys.stderr)
             return 2
         receipts.append(
             {
@@ -1159,6 +1268,19 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
+    validated_artifacts = None
+    if args.command == "run" and evidence_root is not None:
+        if evidence_root == repo_root or repo_root in evidence_root.parents:
+            print(
+                "ERROR: --evidence-root must stay outside the checkout; run artifacts are external",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            validated_artifacts = snapshot_profile_artifacts(repo_root, args.profile, manifest)
+        except RuntimeError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
     if args.command == "run":
         try:
             require_frozen_source(repo_root, initial_head)
@@ -1183,18 +1305,25 @@ def main(argv: list[str] | None = None) -> int:
                 return result
             if args.command == "run":
                 require_frozen_source(repo_root, initial_head)
+                if validated_artifacts is not None and validated_artifacts != snapshot_profile_artifacts(
+                    repo_root, args.profile, manifest
+                ):
+                    raise RuntimeError("benchmark artifacts changed during comparison")
         except RuntimeError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 2
     if args.command == "run" and evidence_root is not None:
-        if evidence_root == repo_root or repo_root in evidence_root.parents:
-            print(
-                "ERROR: --evidence-root must stay outside the checkout; run artifacts are external",
-                file=sys.stderr,
-            )
-            return 2
+        assert validated_artifacts is not None
         result = promote_profile_runs(
-            repo_root, args.profile, manifest, evidence_root, initial_head, receipt
+            repo_root,
+            args.profile,
+            manifest,
+            evidence_root,
+            initial_head,
+            receipt,
+            "sha256:" + preflight_digest,
+            capture_started_ns,
+            validated_artifacts,
         )
         if result:
             return result

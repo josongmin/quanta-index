@@ -62,12 +62,12 @@ use quanta_index_search_plane::{
     DirectRuntimeMetadataMaterializer, DirectSearchCorpusMaterializer, DirectSemanticMaterializer,
     DirectStructuralMaterializer, HashingQueryTextEmbedder, HistoryIngestPort,
     HistoryTextIndexParts, Ledger, ObservabilityScrape, ProcessReadinessPort,
-    ProviderBoundaryQueryEmbedder, QuarantineService, QuarantineServiceParts, QueryObsSink,
-    QueryTextEmbedderPort, RuntimeMetadataIngestPort, SEARCH_OWNED_SEMANTIC_DIMENSION,
-    SearchCorpusAuthorityInspectPort, SearchCorpusAuthorityWritePort, SearchCorpusLifecycleOwner,
-    SearchCorpusLifecycleParts, SearchCorpusMaterializerParts, SearchPlaneControlDispatcher,
-    SearchPlaneControlDispatcherParts, SearchPlaneDispatcher, SearchPlaneIngestDispatcher,
-    SnapshotRegistries, StructuralIngestPort,
+    ProcessRequestEventsPort, ProviderBoundaryQueryEmbedder, QuarantineService,
+    QuarantineServiceParts, QueryObsSink, QueryTextEmbedderPort, RuntimeMetadataIngestPort,
+    SEARCH_OWNED_SEMANTIC_DIMENSION, SearchCorpusAuthorityInspectPort,
+    SearchCorpusAuthorityWritePort, SearchCorpusLifecycleOwner, SearchCorpusLifecycleParts,
+    SearchCorpusMaterializerParts, SearchPlaneControlDispatcher, SearchPlaneControlDispatcherParts,
+    SearchPlaneDispatcher, SearchPlaneIngestDispatcher, SnapshotRegistries, StructuralIngestPort,
 };
 use regex::Regex;
 
@@ -83,6 +83,7 @@ use crate::app::maintenance::{
     BackendProbeParts, MaintenanceMetricSource, MaintenanceParts, MaintenanceTimer,
 };
 use crate::app::readiness::{ProvenActive, RuntimeReadiness};
+use crate::app::request_events::RuntimeRequestEvents;
 use crate::app::semantic_boot;
 use crate::app::server::{
     SearchPlaneControlServer, SearchPlaneIngestServer, SearchPlaneQueryServer,
@@ -1627,6 +1628,12 @@ impl SearchdRuntime {
                     .then(|| ProvenActive::new(boot_proven_active, (0, 0))),
             ),
         });
+        let request_events: Arc<dyn ProcessRequestEventsPort> =
+            Arc::new(RuntimeRequestEvents::new(
+                Arc::clone(&query_counters),
+                Arc::clone(&control_counters),
+                Arc::clone(&ingest_counters),
+            ));
         let control_dispatcher = Arc::new(SearchPlaneControlDispatcher::new(
             SearchPlaneControlDispatcherParts {
                 repo_map_activate: repo_map_generation_activate_port,
@@ -1639,6 +1646,7 @@ impl SearchdRuntime {
                 observability,
                 quarantine,
                 readiness: Some(readiness),
+                request_events: Some(request_events),
             },
         ));
         let ingest_dispatcher = Arc::new(SearchPlaneIngestDispatcher::new(

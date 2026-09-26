@@ -34,7 +34,6 @@ helpers or factories.
 
 from __future__ import annotations
 
-import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -56,54 +55,6 @@ class Violation:
     path: Path
     line: int
     snippet: str
-
-
-# A line is "facade-acceptable" iff it matches one of these patterns when
-# leading whitespace is stripped.
-FACADE_PATTERNS: list[re.Pattern[str]] = [
-    re.compile(r"^\s*$"),  # blank
-    re.compile(r"^\s*//"),  # line comment / doc
-    re.compile(r"^\s*/\*"),  # block comment open
-    re.compile(r"^\s*\*"),  # block-comment continuation
-    re.compile(r"^\s*\*/"),  # block comment close
-    re.compile(r"^\s*#!?\["),  # attribute / inner attribute
-    re.compile(r"^\s*use\b"),  # use ...;
-    re.compile(r"^\s*pub\s+use\b"),  # pub use ...;
-    re.compile(r"^\s*pub\([^)]*\)\s+use\b"),  # pub(crate) use / pub(super) use
-    re.compile(r"^\s*mod\s+[A-Za-z_][\w]*\s*;"),  # mod foo;
-    re.compile(r"^\s*pub\s+mod\s+[A-Za-z_][\w]*\s*;"),  # pub mod foo;
-    re.compile(r"^\s*pub\s*\([^)]*\)\s+mod\s+[A-Za-z_][\w]*\s*;"),  # pub(crate) mod foo;
-    re.compile(r"^\s*\}"),  # closing brace from a use-tree
-    re.compile(r"^\s*[A-Za-z_][\w:]*\s*[,{]"),  # use-tree continuation
-]
-
-
-# Forbidden top-level item keywords — they indicate inline implementation.
-FORBIDDEN_PREFIXES: list[re.Pattern[str]] = [
-    re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?fn\s+"),
-    re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?struct\s+"),
-    re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?enum\s+"),
-    re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?trait\s+"),
-    re.compile(r"^\s*(?:unsafe\s+)?impl\b"),
-    re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?const\s+"),
-    re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?static\s+"),
-    re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?type\s+"),
-    re.compile(r"^\s*macro_rules!\s*"),
-    re.compile(r"^\s*extern\s+"),
-    re.compile(r"^\s*mod\s+[A-Za-z_][\w]*\s*\{"),  # inline mod foo {
-    re.compile(r"^\s*pub\s+mod\s+[A-Za-z_][\w]*\s*\{"),
-]
-
-
-def is_inside_use_tree(text_so_far: str) -> bool:
-    """Return True iff the cursor sits inside an unterminated `use { ... }` tree.
-
-    A naive line-by-line lint would flag the inner identifiers of a multi-line
-    `pub use channel::{\n    Foo,\n    Bar,\n};` block. Track brace depth to
-    suppress those false positives.
-    """
-    open_braces = text_so_far.count("{") - text_so_far.count("}")
-    return open_braces > 0
 
 
 def workspace_members() -> list[Path]:
@@ -130,7 +81,13 @@ def audit_facade(path: Path) -> list[Violation]:
     tree = get_parser("rust").parse(source)
     findings: list[Violation] = []
     for node in tree.root_node.children:
-        if node.type in {"line_comment", "block_comment", "attribute_item", "inner_attribute_item", "use_declaration"}:
+        if node.type in {
+            "line_comment",
+            "block_comment",
+            "attribute_item",
+            "inner_attribute_item",
+            "use_declaration",
+        }:
             continue
         if node.type == "mod_item" and any(child.type == ";" for child in node.children):
             continue

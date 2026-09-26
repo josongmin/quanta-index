@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
 import subprocess
@@ -17,6 +18,15 @@ from tools.ci import source_closure
 REPO_ROOT = Path(__file__).resolve().parents[3]
 WRITER = REPO_ROOT / "tools" / "ci" / "write-verification-receipt.py"
 SCHEMA = REPO_ROOT / "tools" / "ci" / "verification-receipt.schema.json"
+
+
+def _writer_module():
+    sys.path.insert(0, str(WRITER.parent))
+    spec = importlib.util.spec_from_file_location("write_verification_receipt", WRITER)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _writer_env(**overrides: str) -> dict[str, str]:
@@ -40,19 +50,48 @@ def _clean_repo(tmp_path: Path) -> Path:
     return repo
 
 
+def _one_test_nextest(path: Path) -> Path:
+    path.write_text(
+        '{"type":"suite","event":"started","test_count":1}\n'
+        '{"type":"test","event":"started","name":"first"}\n'
+        '{"type":"test","event":"ok","name":"first"}\n'
+        '{"type":"suite","event":"ok","passed":1,"failed":0,"ignored":0}\n',
+        encoding="utf-8",
+    )
+    return path
+
+
 def test_receipt_binds_revision_evidence_digest_and_test_count(tmp_path: Path) -> None:
     source = _clean_repo(tmp_path)
     evidence = tmp_path / "nextest.jsonl"
     evidence.write_text(
-        '{"type":"suite","event":"started"}\n'
-        '{"type":"test","event":"started","name":"first"}\n'
-        '{"type":"test","event":"ok","name":"first"}\n'
-        '{"type":"suite","event":"ok","passed":1,"failed":0,"ignored":0}\n'
-        '{"type":"suite","event":"started"}\n'
-        '{"type":"test","event":"started","name":"second"}\n'
-        '{"type":"test","event":"ok","name":"second"}\n'
-        '{"type":"test","event":"ignored","name":"third"}\n'
-        '{"type":"suite","event":"ok","passed":1,"failed":0,"ignored":1}\n',
+        '{"type":"suite","event":"started","test_count":2,"nextest":{"crate":"demo","test_binary":"demo","kind":"lib"}}\n'
+        '{"type":"test","event":"started","name":"demo::demo$first"}\n'
+        '{"type":"test","event":"ok","name":"demo::demo$first"}\n'
+        '{"type":"test","event":"started","name":"demo::demo$second"}\n'
+        '{"type":"test","event":"ok","name":"demo::demo$second"}\n'
+        '{"type":"suite","event":"ok","passed":2,"failed":0,"ignored":0,"nextest":{"crate":"demo","test_binary":"demo","kind":"lib"}}\n',
+        encoding="utf-8",
+    )
+    inventory = tmp_path / "inventory.json"
+    inventory.write_text(
+        json.dumps(
+            {
+                "test-count": 2,
+                "rust-suites": {
+                    "demo": {
+                        "package-name": "demo",
+                        "binary-name": "demo",
+                        "kind": "lib",
+                        "status": "listed",
+                        "testcases": {
+                            name: {"filter-match": {"status": "matches"}, "ignored": False}
+                            for name in ("first", "second")
+                        },
+                    }
+                },
+            }
+        ),
         encoding="utf-8",
     )
     output = tmp_path / "receipt.json"
@@ -68,6 +107,8 @@ def test_receipt_binds_revision_evidence_digest_and_test_count(tmp_path: Path) -
             "./scripts/cargow nextest run --workspace --all-features --locked",
             "--evidence",
             str(evidence),
+            "--inventory",
+            str(inventory),
             "--out",
             str(output),
         ],
@@ -78,19 +119,16 @@ def test_receipt_binds_revision_evidence_digest_and_test_count(tmp_path: Path) -
     receipt = json.loads(output.read_text(encoding="utf-8"))
     schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
     jsonschema.validate(receipt, schema)
-    assert receipt["test_event_count"] == 3
+    assert receipt["test_event_count"] == 2
     assert receipt["evidence_sha256"] == hashlib.sha256(evidence.read_bytes()).hexdigest()
+    assert receipt["inventory_sha256"] == hashlib.sha256(inventory.read_bytes()).hexdigest()
 
 
 @pytest.mark.parametrize("matching", [False, True])
 def test_receipt_binds_github_sha_to_checked_out_head(tmp_path: Path, matching: bool) -> None:
     source = _clean_repo(tmp_path)
     head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source, text=True).strip()
-    evidence = tmp_path / "summary.json"
-    evidence.write_text(
-        json.dumps({"command": "proof", "selected": 1, "executed": 1, "passed": 1, "failed": 0}),
-        encoding="utf-8",
-    )
+    evidence = _one_test_nextest(tmp_path / "nextest.jsonl")
     output = tmp_path / "receipt.json"
     result = subprocess.run(
         [
@@ -102,8 +140,6 @@ def test_receipt_binds_github_sha_to_checked_out_head(tmp_path: Path, matching: 
             "correctness",
             "--command",
             "proof",
-            "--evidence-format",
-            "summary-json",
             "--evidence",
             str(evidence),
             "--out",
@@ -185,7 +221,7 @@ def test_receipt_rejects_non_green_evidence(tmp_path: Path, events: str, error: 
             sys.executable,
             str(WRITER),
             "--rail",
-            "pr-workspace-nextest",
+            "proof-nextest",
             "--tier",
             "pr",
             "--command",
@@ -205,8 +241,7 @@ def test_receipt_rejects_non_green_evidence(tmp_path: Path, events: str, error: 
     assert not output.exists()
 
 
-def test_receipt_binds_valid_summary_json(tmp_path: Path) -> None:
-    source = _clean_repo(tmp_path)
+def test_summary_parser_binds_command_and_complete_counts(tmp_path: Path) -> None:
     evidence = tmp_path / "summary.json"
     evidence.write_text(
         json.dumps(
@@ -223,17 +258,62 @@ def test_receipt_binds_valid_summary_json(tmp_path: Path) -> None:
         + "\n",
         encoding="utf-8",
     )
+    digest, count = _writer_module()._summary_json_evidence_summary(
+        evidence, "just retrieval-sdk-proof"
+    )
+    assert count == 8
+    assert digest == hashlib.sha256(evidence.read_bytes()).hexdigest()
+
+
+def test_summary_parser_rejects_wrong_command_and_partial_execution(tmp_path: Path) -> None:
+    evidence = tmp_path / "summary.json"
+    evidence.write_text(
+        json.dumps({"command": "wrong", "selected": 100, "executed": 1, "passed": 1, "failed": 0})
+    )
+    module = _writer_module()
+    with pytest.raises(SystemExit, match="command differs"):
+        module._summary_json_evidence_summary(evidence, "expected")
+    with pytest.raises(SystemExit, match="execution differs from selection"):
+        module._summary_json_evidence_summary(evidence, "wrong")
+
+
+@pytest.mark.parametrize(
+    ("raw", "error"),
+    [
+        (
+            '{"command":"proof","selected":1,"selected":2,"executed":1,"passed":1,"failed":0}',
+            "duplicate summary JSON key",
+        ),
+        (
+            '{"command":"proof","selected":1,"executed":1,"passed":1,"failed":0,"extra":NaN}',
+            "non-finite summary JSON value",
+        ),
+    ],
+)
+def test_summary_parser_rejects_ambiguous_json(tmp_path: Path, raw: str, error: str) -> None:
+    evidence = tmp_path / "summary.json"
+    evidence.write_text(raw, encoding="utf-8")
+    with pytest.raises(SystemExit, match=error):
+        _writer_module()._summary_json_evidence_summary(evidence, "proof")
+
+
+def test_standalone_summary_cannot_issue_v1_receipt(tmp_path: Path) -> None:
+    source = _clean_repo(tmp_path)
+    evidence = tmp_path / "summary.json"
+    evidence.write_text(
+        json.dumps({"command": "proof", "selected": 1, "executed": 1, "passed": 1, "failed": 0})
+    )
     output = tmp_path / "receipt.json"
-    subprocess.run(
+    result = subprocess.run(
         [
             sys.executable,
             str(WRITER),
             "--rail",
-            "retrieval-sdk-proof",
+            "proof",
             "--tier",
             "correctness",
             "--command",
-            "just retrieval-sdk-proof",
+            "proof",
             "--evidence-format",
             "summary-json",
             "--evidence",
@@ -241,13 +321,72 @@ def test_receipt_binds_valid_summary_json(tmp_path: Path) -> None:
             "--out",
             str(output),
         ],
-        check=True,
         cwd=source,
         env=_writer_env(),
+        capture_output=True,
+        text=True,
     )
-    receipt = json.loads(output.read_text(encoding="utf-8"))
-    assert receipt["test_event_count"] == 8
-    assert receipt["evidence_sha256"] == hashlib.sha256(evidence.read_bytes()).hexdigest()
+    assert result.returncode != 0
+    assert "requires source closure" in result.stderr
+    assert not output.exists()
+
+
+def test_workspace_receipt_refuses_partial_nextest_execution(tmp_path: Path) -> None:
+    source = _clean_repo(tmp_path)
+    evidence = tmp_path / "nextest.jsonl"
+    identity = '"nextest":{"crate":"demo","test_binary":"demo","kind":"lib"}'
+    evidence.write_text(
+        f'{{"type":"suite","event":"started","test_count":1,{identity}}}\n'
+        '{"type":"test","event":"started","name":"demo::demo$first"}\n'
+        '{"type":"test","event":"ok","name":"demo::demo$first"}\n'
+        f'{{"type":"suite","event":"ok","passed":1,"failed":0,"ignored":0,{identity}}}\n'
+    )
+    inventory = tmp_path / "inventory.json"
+    inventory.write_text(
+        json.dumps(
+            {
+                "test-count": 2,
+                "rust-suites": {
+                    "demo": {
+                        "package-name": "demo",
+                        "binary-name": "demo",
+                        "kind": "lib",
+                        "status": "listed",
+                        "testcases": {
+                            name: {"filter-match": {"status": "matches"}, "ignored": False}
+                            for name in ("first", "second")
+                        },
+                    }
+                },
+            }
+        )
+    )
+    output = tmp_path / "receipt.json"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(WRITER),
+            "--rail",
+            "pr-workspace-nextest",
+            "--tier",
+            "pr",
+            "--command",
+            "./scripts/cargow nextest run --workspace --all-features --locked",
+            "--evidence",
+            str(evidence),
+            "--inventory",
+            str(inventory),
+            "--out",
+            str(output),
+        ],
+        cwd=source,
+        env=_writer_env(),
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "execution differs from collected tests" in result.stderr
+    assert not output.exists()
 
 
 @pytest.mark.parametrize(
@@ -264,7 +403,7 @@ def test_receipt_binds_valid_summary_json(tmp_path: Path) -> None:
         ),
         (
             {"command": "proof", "selected": 1, "executed": 2, "passed": 2, "failed": 0},
-            "executed more tests than selected",
+            "execution differs from selection",
         ),
         (
             {"command": "proof", "selected": True, "executed": 1, "passed": 1, "failed": 0},
@@ -275,46 +414,16 @@ def test_receipt_binds_valid_summary_json(tmp_path: Path) -> None:
 def test_receipt_rejects_invalid_summary_json(
     tmp_path: Path, payload: dict[str, object], error: str
 ) -> None:
-    source = _clean_repo(tmp_path)
     evidence = tmp_path / "summary.json"
     evidence.write_text(json.dumps(payload) + "\n", encoding="utf-8")
-    output = tmp_path / "receipt.json"
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(WRITER),
-            "--rail",
-            "retrieval-sdk-proof",
-            "--tier",
-            "correctness",
-            "--command",
-            "just retrieval-sdk-proof",
-            "--evidence-format",
-            "summary-json",
-            "--evidence",
-            str(evidence),
-            "--out",
-            str(output),
-        ],
-        cwd=source,
-        env=_writer_env(),
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode != 0
-    assert error in result.stderr
-    assert not output.exists()
+    with pytest.raises(SystemExit, match=error):
+        _writer_module()._summary_json_evidence_summary(evidence, "proof")
 
 
 def test_receipt_rejects_dirty_source_before_emitting(tmp_path: Path) -> None:
     source = _clean_repo(tmp_path)
     (source / "tracked.txt").write_text("changed\n", encoding="utf-8")
-    evidence = tmp_path / "summary.json"
-    evidence.write_text(
-        json.dumps({"command": "proof", "selected": 1, "executed": 1, "passed": 1, "failed": 0})
-        + "\n",
-        encoding="utf-8",
-    )
+    evidence = _one_test_nextest(tmp_path / "nextest.jsonl")
     output = tmp_path / "receipt.json"
     result = subprocess.run(
         [
@@ -326,8 +435,6 @@ def test_receipt_rejects_dirty_source_before_emitting(tmp_path: Path) -> None:
             "correctness",
             "--command",
             "proof",
-            "--evidence-format",
-            "summary-json",
             "--evidence",
             str(evidence),
             "--out",
@@ -410,9 +517,7 @@ def test_source_closure_rejects_remediation_contract_drift(
     ticket = tickets / "INDEX.md"
     ticket.write_text("# ticket contract\n", encoding="utf-8")
     subprocess.run(["git", "add", "docs"], cwd=source, check=True)
-    subprocess.run(
-        ["git", "commit", "--quiet", "-m", "tickets"], cwd=source, check=True
-    )
+    subprocess.run(["git", "commit", "--quiet", "-m", "tickets"], cwd=source, check=True)
     monkeypatch.setitem(
         source_closure.PROFILES,
         "fixture",
@@ -445,21 +550,14 @@ def test_source_closure_rejects_remediation_contract_drift(
     # must reject it even though the working tree is clean again.
     ticket.write_text("# ticket contract changed\n", encoding="utf-8")
     subprocess.run(["git", "add", "docs"], cwd=source, check=True)
-    subprocess.run(
-        ["git", "commit", "--quiet", "-m", "tickets changed"], cwd=source, check=True
-    )
+    subprocess.run(["git", "commit", "--quiet", "-m", "tickets changed"], cwd=source, check=True)
     with pytest.raises(source_closure.ClosureError, match="revision changed"):
         source_closure.verify_manifest(source, manifest)
 
 
 def test_receipt_refuses_overwriting_existing_output(tmp_path: Path) -> None:
     source = _clean_repo(tmp_path)
-    evidence = tmp_path / "summary.json"
-    evidence.write_text(
-        json.dumps({"command": "proof", "selected": 1, "executed": 1, "passed": 1, "failed": 0})
-        + "\n",
-        encoding="utf-8",
-    )
+    evidence = _one_test_nextest(tmp_path / "nextest.jsonl")
     output = tmp_path / "receipt.json"
     output.write_text("keep\n", encoding="utf-8")
     result = subprocess.run(
@@ -472,8 +570,6 @@ def test_receipt_refuses_overwriting_existing_output(tmp_path: Path) -> None:
             "correctness",
             "--command",
             "proof",
-            "--evidence-format",
-            "summary-json",
             "--evidence",
             str(evidence),
             "--out",

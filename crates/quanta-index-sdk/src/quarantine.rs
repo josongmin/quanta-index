@@ -36,6 +36,7 @@ impl<'a> QuarantineNamespace<'a> {
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
             | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
             | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)
+            | SearchPlaneControlIpcResponse::ProcessRequestEventsV1(_)
             | SearchPlaneControlIpcResponse::Error(_)) => Err(SdkError::Protocol(format!(
                 "expected quarantine inventory, got {}",
                 QuantaIndex::control_response_kind(&other)
@@ -74,6 +75,7 @@ impl<'a> QuarantineNamespace<'a> {
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
             | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)
+            | SearchPlaneControlIpcResponse::ProcessRequestEventsV1(_)
             | SearchPlaneControlIpcResponse::Error(_)) => Err(SdkError::Protocol(format!(
                 "expected quarantine discard ack, got {}",
                 QuantaIndex::control_response_kind(&other)

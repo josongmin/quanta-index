@@ -75,6 +75,12 @@ def test_multiline_derive_parses_each_entry(tmp_path: Path):
     assert "EnumIter" in findings[0]
 
 
+def test_cfg_attr_derive_cannot_bypass_allowlist(tmp_path: Path):
+    f = tmp_path / "conditional.rs"
+    f.write_text('#[cfg_attr(feature = "wire", derive(Serialize))]\nstruct X;\n')
+    assert "Serialize" in MODULE.audit_file(f)[0]
+
+
 def test_clippy_attribute_is_not_a_derive(tmp_path: Path):
     """Defensive: `#[derive(...)]` regex must not catch other attributes."""
     f = tmp_path / "attrs.rs"

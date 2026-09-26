@@ -16,6 +16,15 @@ SPEC.loader.exec_module(LINT)
 PARSER = get_parser("rust")
 
 
+def test_untracked_rust_source_is_scanned(tmp_path: Path, monkeypatch, capsys) -> None:
+    source = tmp_path / "crates" / "quanta-index-search-plane" / "src" / "hidden.rs"
+    source.parent.mkdir(parents=True)
+    source.write_text("fn f() { let _ = Err::<(), ()>(()).or_else(|_| Ok(())); }\n")
+    monkeypatch.setattr(LINT, "ROOT", tmp_path)
+    assert LINT.main() == 1
+    assert LINT.RULE_OR_ELSE in capsys.readouterr().out
+
+
 def scan(
     source: str, *, include_debug: bool = False, include_search_plane: bool = False
 ) -> list[tuple[int, str]]:

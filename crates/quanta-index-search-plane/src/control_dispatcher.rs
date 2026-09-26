@@ -44,6 +44,7 @@ pub struct SearchPlaneControlDispatcher {
     quarantine: QuarantineService,
     /// The process-wide readiness authority, when one is wired.
     readiness: Option<Arc<dyn ProcessReadinessPort>>,
+    request_events: Option<Arc<dyn ProcessRequestEventsPort>>,
 }
 
 /// The ports one [`SearchPlaneControlDispatcher`] is composed from.
@@ -55,6 +56,8 @@ pub struct SearchPlaneControlDispatcherParts {
     /// The process-wide readiness authority (S21-10). `None` means no
     /// authority is wired, and the readiness opcode refuses typed.
     pub readiness: Option<Arc<dyn ProcessReadinessPort>>,
+    /// The operator-only projection of the runtime-owned transport rings.
+    pub request_events: Option<Arc<dyn ProcessRequestEventsPort>>,
 }
 
 /// The readiness authority the control plane asks for (S21-10).
@@ -63,6 +66,15 @@ pub struct SearchPlaneControlDispatcherParts {
 /// request is refused typed instead of answered `ready`.
 pub trait ProcessReadinessPort: Send + Sync {
     fn readiness(&self) -> Result<quanta_index_contract::ProcessReadinessV1, CoreError>;
+}
+
+/// The control plane owns authorization; this port owns only a bounded read
+/// of the runtime's existing event rings, never a second diagnostic store.
+pub trait ProcessRequestEventsPort: Send + Sync {
+    fn request_events(
+        &self,
+        request: &quanta_index_contract::ProcessRequestEventsRequestV1,
+    ) -> Result<quanta_index_contract::ProcessRequestEventsV1, CoreError>;
 }
 
 /// The closed capability every control opcode requires (S21-10).
@@ -86,6 +98,7 @@ impl ControlCapabilityV1 {
             | SearchPlaneControlIpcRequest::MetricsSnapshot(_)
             | SearchPlaneControlIpcRequest::QuarantineInventory(_)
             | SearchPlaneControlIpcRequest::ProcessReadiness(_) => Self::Observe,
+            SearchPlaneControlIpcRequest::ProcessRequestEventsV1(_) => Self::Admin,
             SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(_)
             | SearchPlaneControlIpcRequest::RollbackSearchCorpusGenerationCas(_)
             | SearchPlaneControlIpcRequest::RepoMapActivateV2(_)
@@ -167,6 +180,7 @@ impl SearchPlaneControlDispatcher {
             observability,
             quarantine,
             readiness,
+            request_events,
         } = parts;
         let activation_catalog = Arc::clone(&lifecycle.activation_catalog);
         let search_corpus_lifecycle = SearchCorpusLifecycleService::new(lifecycle);
@@ -177,6 +191,7 @@ impl SearchPlaneControlDispatcher {
             observability,
             quarantine,
             readiness,
+            request_events,
         }
     }
 
@@ -188,6 +203,31 @@ impl SearchPlaneControlDispatcher {
             });
         };
         port.readiness()
+    }
+
+    fn process_request_events(
+        &self,
+        request: &quanta_index_contract::ProcessRequestEventsRequestV1,
+    ) -> Result<quanta_index_contract::ProcessRequestEventsV1, CoreError> {
+        request
+            .validate_v1()
+            .map_err(|error| CoreError::InvalidContract(error.to_owned()))?;
+        let Some(port) = self.request_events.as_ref() else {
+            return Err(CoreError::NotReady(
+                "control: no process request-event authority is wired".to_owned(),
+            ));
+        };
+        let response = port.request_events(request)?;
+        if response.plane != request.plane || response.events.len() > usize::from(request.limit) {
+            return Err(CoreError::InvalidContract(
+                "control: request-event projection does not match requested plane and limit"
+                    .to_owned(),
+            ));
+        }
+        response
+            .validate_encoded_size_v1()
+            .map_err(CoreError::InvalidContract)?;
+        Ok(response)
     }
 
     fn repo_map_activate_v2(
@@ -464,6 +504,12 @@ impl SearchPlaneControlDispatcher {
                     Err(err) => SearchPlaneControlIpcResponse::Error(core_error_to_ipc(err)),
                 }
             }
+            SearchPlaneControlIpcRequest::ProcessRequestEventsV1(request) => {
+                match self.process_request_events(&request) {
+                    Ok(events) => SearchPlaneControlIpcResponse::ProcessRequestEventsV1(events),
+                    Err(err) => SearchPlaneControlIpcResponse::Error(core_error_to_ipc(err)),
+                }
+            }
         }
     }
 }
@@ -487,7 +533,10 @@ mod tests {
     )]
     use std::sync::{Arc, Mutex, RwLock};
 
-    use super::{ControlAccessV1, ProcessReadinessPort, SearchPlaneControlDispatcher};
+    use super::{
+        ControlAccessV1, ProcessReadinessPort, ProcessRequestEventsPort,
+        SearchPlaneControlDispatcher,
+    };
     use quanta_index_contract::{
         GenerationSnapshot, ManifestGeneration, MetricsSnapshotRequest, MetricsSnapshotV1,
         QuarantineDiscardOutcomeDtoV1, QuarantineDiscardRequest, QuarantineInventoryRequest,
@@ -503,6 +552,7 @@ mod tests {
         QUARANTINE_TARGET_NOT_QUARANTINED_CODE, RepoMapGenerationActivatePort, RequestBudgetV1,
     };
     use quanta_index_lq_obs::{Dimensions, MetricKind, MetricSample};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::tempdir;
 
     use quanta_index_core::{
@@ -695,6 +745,7 @@ mod tests {
             observability: empty_scrape(),
             quarantine: empty_quarantine(),
             readiness: None,
+            request_events: None,
         };
         (parts, snapshots)
     }
@@ -757,6 +808,90 @@ mod tests {
         )
     }
 
+    struct CountingRequestEvents(AtomicUsize, bool);
+
+    impl ProcessRequestEventsPort for CountingRequestEvents {
+        fn request_events(
+            &self,
+            request: &quanta_index_contract::ProcessRequestEventsRequestV1,
+        ) -> Result<quanta_index_contract::ProcessRequestEventsV1, CoreError> {
+            let _previous = self.0.fetch_add(1, Ordering::Relaxed);
+            Ok(quanta_index_contract::ProcessRequestEventsV1 {
+                process_instance: "00000000000000000000000000000001".to_owned(),
+                plane: if self.1 {
+                    quanta_index_contract::ProcessRequestEventPlaneV1::Control
+                } else {
+                    request.plane
+                },
+                events: Vec::new(),
+                oldest_retained_sequence: None,
+                next_sequence: 1,
+                dropped_before: 0,
+                dropped_after: 0,
+                omitted_before_window: false,
+                sequence_exhausted: false,
+            })
+        }
+    }
+
+    #[test]
+    fn request_event_authorization_and_limit_precede_ring_read() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let activation_catalog =
+            Arc::new(ActivationCatalog::open(dir.path()).expect("activation catalog"));
+        let ledger = Arc::new(RwLock::new(Ledger::new()));
+        let (mut parts, _snapshots) = control_parts(activation_catalog, ledger);
+        let port = Arc::new(CountingRequestEvents(AtomicUsize::new(0), false));
+        parts.request_events = Some(port.clone());
+        let dispatcher = SearchPlaneControlDispatcher::new(parts);
+        let request = |limit| {
+            SearchPlaneControlIpcRequest::ProcessRequestEventsV1(
+                quanta_index_contract::ProcessRequestEventsRequestV1 {
+                    plane: quanta_index_contract::ProcessRequestEventPlaneV1::Query,
+                    limit,
+                },
+            )
+        };
+        let observer = ControlAccessV1::Peer {
+            uid: 2000,
+            owner_uid: 1000,
+        };
+        assert_eq!(
+            error_code(
+                dispatcher.dispatch_as(observer, request(1), &RequestBudgetV1::unbounded(),)
+            ),
+            quanta_index_contract::SearchPlaneErrorCodeV2::ControlAuthorizationDenied
+        );
+        assert_eq!(port.0.load(Ordering::Relaxed), 0);
+        assert!(matches!(
+            dispatcher.dispatch(request(0), &RequestBudgetV1::unbounded()),
+            SearchPlaneControlIpcResponse::Error(_)
+        ));
+        assert_eq!(port.0.load(Ordering::Relaxed), 0);
+        let SearchPlaneControlIpcResponse::ProcessRequestEventsV1(events) =
+            dispatcher.dispatch(request(1), &RequestBudgetV1::unbounded())
+        else {
+            panic!("operator must receive the bounded ring projection");
+        };
+        assert_eq!(
+            events.plane,
+            quanta_index_contract::ProcessRequestEventPlaneV1::Query
+        );
+        assert_eq!(port.0.load(Ordering::Relaxed), 1);
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let activation_catalog =
+            Arc::new(ActivationCatalog::open(dir.path()).expect("activation catalog"));
+        let ledger = Arc::new(RwLock::new(Ledger::new()));
+        let (mut parts, _snapshots) = control_parts(activation_catalog, ledger);
+        parts.request_events = Some(Arc::new(CountingRequestEvents(AtomicUsize::new(0), true)));
+        let forged = SearchPlaneControlDispatcher::new(parts);
+        assert!(matches!(
+            forged.dispatch(request(1), &RequestBudgetV1::unbounded()),
+            SearchPlaneControlIpcResponse::Error(_)
+        ));
+    }
+
     fn admin_request() -> SearchPlaneControlIpcRequest {
         SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(
             SearchPlaneActivateSearchCorpusGenerationCasRequest {
@@ -780,6 +915,7 @@ mod tests {
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
             | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
             | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)
+            | SearchPlaneControlIpcResponse::ProcessRequestEventsV1(_)
             | SearchPlaneControlIpcResponse::Error(_) => {
                 panic!("expected an error response, got {other:?}")
             }
@@ -801,7 +937,8 @@ mod tests {
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
             | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
-            | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)) => {
+            | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)
+            | SearchPlaneControlIpcResponse::ProcessRequestEventsV1(_)) => {
                 other_control_responses(other)
             }
         }
@@ -986,6 +1123,7 @@ mod tests {
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
             | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
+            | SearchPlaneControlIpcResponse::ProcessRequestEventsV1(_)
             | SearchPlaneControlIpcResponse::Error(_)) => other_control_responses(other),
         }
         let failing =
@@ -1007,7 +1145,8 @@ mod tests {
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
             | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
-            | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)) => {
+            | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)
+            | SearchPlaneControlIpcResponse::ProcessRequestEventsV1(_)) => {
                 other_control_responses(other)
             }
         }
@@ -1074,7 +1213,8 @@ mod tests {
             | SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(_)
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
             | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
-            | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)) => {
+            | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)
+            | SearchPlaneControlIpcResponse::ProcessRequestEventsV1(_)) => {
                 Err(SearchPlaneIpcError {
                     code: quanta_index_contract::SearchPlaneErrorCodeV2::Internal,
                     message: format!("{other:?}"),
@@ -1289,6 +1429,7 @@ mod tests {
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
             | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)
+            | SearchPlaneControlIpcResponse::ProcessRequestEventsV1(_)
             | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)) => {
                 Err(format!("expected repo-map mutation ack, got {other:?}").into())
             }
@@ -1310,7 +1451,8 @@ mod tests {
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
             | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
-            | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)) => {
+            | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)
+            | SearchPlaneControlIpcResponse::ProcessRequestEventsV1(_)) => {
                 Err(format!("expected error response, got {other:?}").into())
             }
         }

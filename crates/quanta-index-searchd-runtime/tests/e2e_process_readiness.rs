@@ -5,8 +5,12 @@ use std::os::unix::net::UnixListener;
 use std::time::Duration;
 
 use quanta_index_contract::{
-    ProcessReadinessReasonV1, ProcessReadinessV1, SearchPlaneControlIpcResponse,
-    SearchPlaneRollbackSearchCorpusGenerationCasRequest,
+    GenerationPin, ProcessReadinessReasonV1, ProcessReadinessV1, ProcessRequestEventPlaneV1,
+    ProcessRequestEventStageV1, QueryConstraintSetV1,
+    SearchPlaneControlIpcResponse, SearchPlaneRollbackSearchCorpusGenerationCasRequest,
+    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope,
+    SearchPlaneQueryIpcResponse, SearchPlaneQueryIpcResponseEnvelope, TextQueryRequest,
+    TextQuerySyntax,
 };
 use quanta_index_core::GenerationStorageKeyV1;
 use quanta_index_searchd_harness::E2eRuntime;
@@ -76,6 +80,133 @@ fn zero_active_repositories_are_ready_only_with_all_supervised_children() -> Tes
     )?;
     require_eq(&report.not_ready_reasons, &Vec::new(), "not-ready reasons")?;
     Ok(())
+}
+
+#[test]
+fn operator_ring_correlates_queue_backend_and_terminal_by_request_id() -> TestResult {
+    let mut rt = E2eRuntime::boot()?;
+    rt.ingest_text("repo-events", "src/events.rs", "needle events")?;
+    let _sealed = rt.seal()?;
+    rt.activate_last_sealed_generation()?;
+    let before = rt.process_request_events(ProcessRequestEventPlaneV1::Query, 1024)?;
+    let served = rt.query_text(TextQuerySyntax::Native, "needle", 5);
+    if let Some(error) = served.typed_error {
+        return Err(format!("fixture query failed: {error:?}").into());
+    }
+    let after = rt.process_request_events(ProcessRequestEventPlaneV1::Query, 1024)?;
+    if after.process_instance != before.process_instance {
+        return Err("query ring process instance changed during the probe".into());
+    }
+    let outcome = after.events.iter().find(|event| {
+        event.sequence >= before.next_sequence
+            && event.stage == ProcessRequestEventStageV1::BackendOutcome
+            && event.route.as_deref() == Some("query.text")
+    });
+    let Some(outcome) = outcome else {
+        return Err("query backend outcome missing from bounded operator ring".into());
+    };
+    let stages: Vec<_> = after
+        .events
+        .iter()
+        .filter(|event| event.request_id == outcome.request_id)
+        .map(|event| event.stage)
+        .collect();
+    for required in [
+        ProcessRequestEventStageV1::QueueAdmitted,
+        ProcessRequestEventStageV1::BackendStarted,
+        ProcessRequestEventStageV1::BackendReturned,
+        ProcessRequestEventStageV1::BackendOutcome,
+        ProcessRequestEventStageV1::ResponseWritten,
+    ] {
+        if !stages.contains(&required) {
+            return Err(format!(
+                "request {} lacks stage {required:?}: {stages:?}",
+                outcome.request_id
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn binary_daemon_exposes_one_correlated_query_without_payload() -> TestResult {
+    let parent = quanta_index_searchd_harness::private_tempdir()?;
+    let state_root = parent.path().join("state");
+    let mut prepared = E2eRuntime::boot_in(&state_root)?;
+    prepared.ingest_text("repo-binary-events", "src/events.rs", "needle events")?;
+    let sealed = prepared.seal()?;
+    prepared.activate_last_sealed_generation()?;
+    let pin = GenerationPin::new(prepared.repo(), prepared.revision(), sealed);
+    prepared.stop()?;
+
+    let process = SearchdBinaryProcess::start(&state_root)?;
+    let outcome = (|| -> TestResult {
+        let client = process.connect()?;
+        let before = client
+            .observability()
+            .request_events(ProcessRequestEventPlaneV1::Query, 1024)?;
+        let request_id = 0x5eed_u64;
+        let query = SearchPlaneQueryIpcRequestEnvelope {
+            request_id,
+            payload: SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
+                syntax: TextQuerySyntax::Native,
+                query_text: "needle".to_owned(),
+                constraints: QueryConstraintSetV1::unconstrained(),
+                generation: Some(pin),
+                generation_selector: None,
+                top_k: 5,
+                cursor: None,
+            }),
+        };
+        let sockets = daemon_socket_paths(&state_root);
+        let response: SearchPlaneQueryIpcResponseEnvelope = quanta_index_ipc::send_request(
+            &sockets[0],
+            &query,
+            quanta_index_ipc::ClientIoPolicy::default(),
+        )?;
+        require_eq(&response.request_id, &request_id, "query response request ID")?;
+        let text = match response.payload {
+            SearchPlaneQueryIpcResponse::Text(text) => text,
+            other => return Err(format!("binary query returned wrong response: {other:?}").into()),
+        };
+        if text.results.is_empty() {
+            return Err("binary query returned no fixture result".into());
+        }
+        let after = client
+            .observability()
+            .request_events(ProcessRequestEventPlaneV1::Query, 1024)?;
+        require_eq(
+            &after.process_instance,
+            &before.process_instance,
+            "process instance",
+        )?;
+        let Some(outcome) = after.events.iter().find(|event| {
+            event.sequence >= before.next_sequence
+                && event.request_id.get() == request_id
+                && event.stage == ProcessRequestEventStageV1::BackendOutcome
+                && event.route.as_deref() == Some("query.text")
+        }) else {
+            return Err("binary query outcome absent from operator ring".into());
+        };
+        for stage in [
+            ProcessRequestEventStageV1::QueueAdmitted,
+            ProcessRequestEventStageV1::BackendStarted,
+            ProcessRequestEventStageV1::BackendReturned,
+            ProcessRequestEventStageV1::ResponseWritten,
+        ] {
+            if !after
+                .events
+                .iter()
+                .any(|event| event.request_id == outcome.request_id && event.stage == stage)
+            {
+                return Err(format!("binary query {} lacks {stage:?}", outcome.request_id).into());
+            }
+        }
+        Ok(())
+    })();
+    let stopped = process.stop();
+    outcome.and(stopped)
 }
 
 #[test]

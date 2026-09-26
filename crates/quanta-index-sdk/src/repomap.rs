@@ -43,7 +43,8 @@ impl<'a> RepoMapNamespace<'a> {
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
             | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
-            | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)) => {
+            | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)
+            | SearchPlaneControlIpcResponse::ProcessRequestEventsV1(_)) => {
                 Err(SdkError::unexpected_response(
                     "repomap active head v2",
                     QuantaIndex::control_response_kind(&other),
@@ -106,7 +107,8 @@ impl<'a> RepoMapNamespace<'a> {
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
             | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
-            | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)) => {
+            | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)
+            | SearchPlaneControlIpcResponse::ProcessRequestEventsV1(_)) => {
                 Err(SdkError::unexpected_response(
                     "repomap V2 activate receipt",
                     QuantaIndex::control_response_kind(&other),

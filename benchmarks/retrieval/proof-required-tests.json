@@ -168,6 +168,7 @@
     "tools.ci.tests.test_retrieval_benchmark.test_receipt_shape_mirrors_canonical_schema",
     "tools.ci.tests.test_retrieval_benchmark.test_retrieval_diagnostic_binds_complete_record_and_lanes",
     "tools.ci.tests.test_retrieval_benchmark.test_retrieval_diagnostic_v3_replays_typed_window_and_empty_non_exhausted",
+    "tools.ci.tests.test_retrieval_benchmark.test_retrieval_diagnostic_v4_semantic_stages_bind_execution_and_strategy",
     "tools.ci.tests.test_retrieval_benchmark.test_retrieval_recipes_download_nothing",
     "tools.ci.tests.test_retrieval_benchmark.test_retrieval_source_closure_profile_covers_authority_surfaces",
     "tools.ci.tests.test_retrieval_benchmark.test_retrieval_verdict_recipe_matches_cli_parser",

@@ -4725,6 +4725,54 @@ fn process_readiness_binds_the_control_route_and_rejects_forged_green() {
     ));
 }
 
+#[test]
+fn request_events_bind_plane_and_limit_before_sdk_publication() {
+    use quanta_index_contract::{
+        ProcessRequestEventPlaneV1, ProcessRequestEventsV1, SearchPlaneControlIpcResponse,
+    };
+
+    let response = ProcessRequestEventsV1 {
+        process_instance: "0000000000000000000000000000002a".to_owned(),
+        plane: ProcessRequestEventPlaneV1::Query,
+        events: Vec::new(),
+        oldest_retained_sequence: None,
+        next_sequence: 1,
+        dropped_before: 0,
+        dropped_after: 0,
+        omitted_before_window: false,
+        sequence_exhausted: false,
+    };
+    let control = Arc::new(StubControlTransport::new(
+        SearchPlaneControlIpcResponse::ProcessRequestEventsV1(response.clone()),
+    ));
+    let client = QuantaIndex::from_transports(unused_query(), control, unused_ingest());
+    assert_eq!(
+        ok_or_fail!(
+            client
+                .observability()
+                .request_events(ProcessRequestEventPlaneV1::Query, 1)
+        ),
+        response
+    );
+
+    let control = Arc::new(StubControlTransport::new(
+        SearchPlaneControlIpcResponse::ProcessRequestEventsV1(response),
+    ));
+    let client = QuantaIndex::from_transports(unused_query(), control, unused_ingest());
+    assert!(matches!(
+        client
+            .observability()
+            .request_events(ProcessRequestEventPlaneV1::Control, 1),
+        Err(crate::SdkError::Binding { .. })
+    ));
+    assert!(matches!(
+        client
+            .observability()
+            .request_events(ProcessRequestEventPlaneV1::Query, 0),
+        Err(crate::SdkError::Protocol(_))
+    ));
+}
+
 /// QI-BB-026: the quarantine listing rides the control socket and comes
 /// back as the typed inventory; a discard sends the target verbatim and
 /// returns the daemon's ack once it names the same target.

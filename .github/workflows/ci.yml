@@ -81,6 +81,8 @@ jobs:
           mkdir -p artifacts/test-authority
           set -o pipefail
           export NEXTEST_EXPERIMENTAL_LIBTEST_JSON=1
+          ./scripts/cargow nextest list --workspace --all-features --locked \
+            --message-format json > artifacts/test-authority/inventory.json
           ./scripts/cargow nextest run --workspace --all-features --locked \
             --message-format libtest-json-plus --message-format-version 0.1 \
             | tee artifacts/test-authority/nextest.jsonl
@@ -90,15 +92,22 @@ jobs:
           if [ "${{ github.event_name }}" = "merge_group" ]; then
             tier="merge"
             rail="merge-workspace-nextest"
-          else
+          elif [ "${{ github.event_name }}" = "pull_request" ]; then
             tier="pr"
             rail="pr-workspace-nextest"
+          elif [ "${{ github.event_name }}" = "push" ] && [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            tier="main"
+            rail="main-workspace-nextest"
+          else
+            echo "No verification receipt is defined for ${{ github.event_name }} on ${{ github.ref }}" >&2
+            exit 2
           fi
           python3 tools/ci/write-verification-receipt.py \
             --rail "$rail" \
             --tier "$tier" \
             --command "./scripts/cargow nextest run --workspace --all-features --locked --message-format libtest-json-plus --message-format-version 0.1" \
             --evidence artifacts/test-authority/nextest.jsonl \
+            --inventory artifacts/test-authority/inventory.json \
             --out artifacts/test-authority/receipt.json
 
       - name: Upload verification receipt

@@ -177,15 +177,19 @@ per-system records (`merge`), re-scores immutable records into the TEST-PLAN
 §8 verdict artifact (`verdict`), records the host check (`host-probe`), and
 freezes a canonical machine/power fingerprint (`host-profile`).
 
-The current Quanta runner emits returned-window diagnostic v4. Semantic and
-hybrid responses carry measured server-side `stage_timings` (monotonic ns,
+The current Quanta runner emits returned-window diagnostic v4. Lexical,
+semantic, and hybrid responses carry measured server-side `stage_timings` (monotonic ns,
 backend call count, and stage output count) through the typed SDK response.
 Replay rejects missing, duplicate, reordered, malformed, or request-ID-mixed
 stages and final counts that differ from the returned window. Dense fetch can
 refill and repeat rows; its output count is cumulative, while admission is
 the final admitted set. The two timings overlap and must not be added.
-Lexical-only and ingest stages are still opaque; runner wall time cannot be
-split into those costs. These diagnostics do not qualify speed or relevance.
+Ingest stages are still opaque; runner wall time cannot be split into those
+costs. These diagnostics do not qualify speed or relevance. A lexical
+force-empty plan records prepare/project but no read-view/backend search.
+`lexical.project` time stops before response-budget fitting; its candidate
+count is reconciled to the final fitted page, so the count is not a wall-time
+claim for serialization or cursor budgeting.
 
 Each system consumes a projected pack (same tasks/universe/commit, narrowed
 routes, rebound suite commitment); the merge re-derives and re-validates

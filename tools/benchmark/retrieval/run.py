@@ -3109,18 +3109,47 @@ def _validate_explanation(
             ("lexical.read_view" in observed) != searched
             or (searched and (counts["lexical.project"] > counts["lexical.search"] or detail["engines_executed"] != ["lexical"]))
             or (not searched and (returned != 0 or detail["engines_executed"] != []))
+            or detail["engines_touched"] != (["lexical"] if returned else [])
             or detail["strategy"] != "lexical"
         ):
             raise RunError(f"{where} lexical stage execution contradicts response")
-    if route == "semantic" and counts["semantic.project"] > counts["semantic.dense_search"]:
-        raise RunError(f"{where} projection exceeds dense search rows")
+    if route == "semantic":
+        scoped = "semantic.lexical_scope" in counts
+        expected_executed = (["lexical"] if scoped else []) + ["semantic"]
+        expected_touched = (
+            (["lexical"] if counts.get("semantic.lexical_scope", 0) else [])
+            + (["semantic"] if counts["semantic.project"] else [])
+        )
+        expected_strategy = (
+            "empty" if returned == 0 else "semantic_scoped" if scoped else "semantic"
+        )
+        if (
+            counts["semantic.project"] > counts["semantic.dense_search"]
+            or detail["engines_executed"] != expected_executed
+            or detail["engines_touched"] != expected_touched
+            or detail["strategy"] != expected_strategy
+        ):
+            raise RunError(f"{where} semantic stage execution contradicts response")
     if route == "hybrid":
         lexical = counts.get("hybrid.lexical_search", 0)
         dense = counts["hybrid.dense_admission"]
+        expected_executed = (
+            (["lexical"] if "hybrid.lexical_search" in counts else [])
+            + (["semantic"] if "hybrid.dense_fetch" in counts else [])
+        )
+        expected_touched = (["lexical"] if lexical else []) + (["semantic"] if dense else [])
+        expected_strategy = (
+            "rrf" if lexical and dense else
+            "lexical_only" if lexical else
+            "semantic_only" if dense else "empty"
+        )
         if (
             ("hybrid.dense_fetch" in counts) != ("hybrid.lexical_search" in counts)
             or counts["hybrid.fusion"] > lexical + dense
             or ("hybrid.dense_fetch" in counts and dense > counts["hybrid.dense_fetch"])
+            or detail["engines_executed"] != expected_executed
+            or detail["engines_touched"] != expected_touched
+            or detail["strategy"] != expected_strategy
         ):
             raise RunError(f"{where} hybrid stage counts contradict lane execution")
     if timings[-1]["returned_candidates"] != returned:

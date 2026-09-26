@@ -7,6 +7,7 @@ mod ipc_dispatcher;
 pub mod maintenance;
 pub mod process_memory;
 mod readiness;
+mod request_events;
 pub mod runtime;
 pub mod searchd;
 pub mod semantic_boot;

@@ -10,7 +10,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from nextest_events import NextestEvidenceError, parse_nextest
+from nextest_events import NextestEvidenceError, parse_nextest, parse_nextest_inventory_bytes
 from source_closure import ClosureError, load_and_verify
 
 
@@ -34,19 +34,45 @@ def _revision() -> str:
     return head
 
 
-def _nextest_evidence_summary(evidence: Path) -> tuple[str, int]:
+def _nextest_evidence_summary(
+    evidence: Path, inventory: Path | None
+) -> tuple[str, int, str | None]:
     try:
-        parsed = parse_nextest(evidence)
-    except NextestEvidenceError as error:
+        # Parse execution first so malformed or failing runs remain the primary
+        # error even when their collection artifact is also missing.
+        parse_nextest(evidence)
+        inventory_bytes = inventory.read_bytes() if inventory is not None else None
+        expected = (
+            parse_nextest_inventory_bytes(inventory_bytes)
+            if inventory_bytes is not None
+            else None
+        )
+        parsed = parse_nextest(evidence, expected=expected)
+    except (NextestEvidenceError, OSError) as error:
         raise SystemExit(f"{error}: {evidence}") from error
-    return parsed.sha256, parsed.selected
+    inventory_digest = (
+        hashlib.sha256(inventory_bytes).hexdigest() if inventory_bytes is not None else None
+    )
+    return parsed.sha256, parsed.selected, inventory_digest
 
 
-def _summary_json_evidence_summary(evidence: Path) -> tuple[str, int]:
+def _summary_json_evidence_summary(evidence: Path, command: str) -> tuple[str, int]:
     raw = evidence.read_bytes()
+
+    def unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate summary JSON key: {key}")
+            result[key] = value
+        return result
+
+    def reject_constant(value: str) -> None:
+        raise ValueError(f"non-finite summary JSON value: {value}")
+
     try:
-        payload = json.loads(raw)
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        payload = json.loads(raw, object_pairs_hook=unique_object, parse_constant=reject_constant)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
         raise SystemExit(f"invalid summary JSON evidence {evidence}: {error}") from error
     if not isinstance(payload, dict):
         raise SystemExit(f"invalid summary JSON evidence {evidence}: expected an object")
@@ -58,6 +84,8 @@ def _summary_json_evidence_summary(evidence: Path) -> tuple[str, int]:
         )
     if not isinstance(payload["command"], str) or not payload["command"].strip():
         raise SystemExit(f"summary JSON evidence has invalid command: {evidence}")
+    if payload["command"] != command:
+        raise SystemExit(f"summary JSON evidence command differs from receipt command: {evidence}")
     for key in ("selected", "executed", "passed", "failed"):
         value = payload[key]
         if type(value) is not int or value < 0:
@@ -74,8 +102,8 @@ def _summary_json_evidence_summary(evidence: Path) -> tuple[str, int]:
         raise SystemExit(f"summary JSON evidence has no passing tests: {evidence}")
     if passed + failed != executed:
         raise SystemExit(f"summary JSON evidence has inconsistent execution counts: {evidence}")
-    if executed > selected:
-        raise SystemExit(f"summary JSON evidence executed more tests than selected: {evidence}")
+    if executed != selected:
+        raise SystemExit(f"summary JSON evidence execution differs from selection: {evidence}")
     return hashlib.sha256(raw).hexdigest(), executed
 
 
@@ -107,7 +135,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rail", required=True)
     parser.add_argument(
-        "--tier", required=True, choices=("pr", "merge", "correctness", "nightly", "weekly")
+        "--tier", required=True, choices=("pr", "merge", "main", "correctness", "nightly", "weekly")
     )
     parser.add_argument("--command", required=True)
     parser.add_argument(
@@ -116,6 +144,9 @@ def main() -> int:
         default="nextest-jsonl",
     )
     parser.add_argument("--evidence", required=True, type=Path)
+    parser.add_argument(
+        "--inventory", type=Path, help="nextest list JSON from the same workspace selection"
+    )
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument(
         "--source-closure",
@@ -148,9 +179,16 @@ def main() -> int:
     if source_closure is not None and not input_evidence:
         raise SystemExit("retrieval-authoritative receipt v2 requires raw --input-evidence")
     if args.evidence_format == "summary-json":
-        digest, test_event_count = _summary_json_evidence_summary(evidence)
+        if source_closure is None:
+            raise SystemExit("summary JSON requires source closure and raw input evidence")
+        if args.inventory is not None:
+            raise SystemExit("--inventory is only valid for nextest evidence")
+        digest, test_event_count = _summary_json_evidence_summary(evidence, args.command)
     else:
-        digest, test_event_count = _nextest_evidence_summary(evidence)
+        inventory = args.inventory.resolve() if args.inventory is not None else None
+        if "workspace-nextest" in args.rail and inventory is None:
+            raise SystemExit("workspace nextest receipt requires --inventory")
+        digest, test_event_count, inventory_digest = _nextest_evidence_summary(evidence, inventory)
     receipt = {
         "schema_version": 2 if source_closure is not None else 1,
         "revision": revision,
@@ -164,6 +202,10 @@ def main() -> int:
     if source_closure is not None:
         receipt["source_closure"] = source_closure
         receipt["input_evidence"] = input_evidence
+    if args.inventory is not None:
+        receipt["inventory_path"] = args.inventory.resolve().as_posix()
+        assert inventory_digest is not None
+        receipt["inventory_sha256"] = inventory_digest
     args.out.parent.mkdir(parents=True, exist_ok=True)
     try:
         with args.out.open("x", encoding="utf-8") as stream:

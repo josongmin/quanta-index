@@ -8,7 +8,6 @@ checks the governed shapes without Semgrep regex matches in comments/strings.
 from __future__ import annotations
 
 import re
-import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -531,7 +530,6 @@ def main() -> int:
         RuntimeError,
         UnicodeError,
         ValueError,
-        subprocess.CalledProcessError,
     ) as error:
         print(f"Rust syntax policy blocked: {error}", file=sys.stderr)
         return 2

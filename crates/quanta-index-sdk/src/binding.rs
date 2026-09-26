@@ -94,6 +94,7 @@ pub(crate) enum ExpectedControlResponseV1 {
     QuarantineInventory,
     QuarantineDiscardAck,
     ProcessReadinessReport,
+    ProcessRequestEventsV1,
 }
 
 impl ExpectedControlResponseV1 {
@@ -111,6 +112,7 @@ impl ExpectedControlResponseV1 {
             Self::QuarantineInventory => "quarantine_inventory",
             Self::QuarantineDiscardAck => "quarantine_discard_ack",
             Self::ProcessReadinessReport => "process_readiness_report",
+            Self::ProcessRequestEventsV1 => "process_request_events_v1",
         }
     }
 }
@@ -874,6 +876,7 @@ enum ControlCall {
         revision_id: RevisionId,
     },
     QuarantineDiscard(quanta_index_contract::QuarantineTargetV1),
+    RequestEvents(quanta_index_contract::ProcessRequestEventsRequestV1),
 }
 
 impl ControlCallBinding {
@@ -936,6 +939,10 @@ impl ControlCallBinding {
             SearchPlaneControlIpcRequest::ProcessReadiness(_) => Self {
                 expected: ExpectedControlResponseV1::ProcessReadinessReport,
                 inner: ControlCall::Intrinsic,
+            },
+            SearchPlaneControlIpcRequest::ProcessRequestEventsV1(payload) => Self {
+                expected: ExpectedControlResponseV1::ProcessRequestEventsV1,
+                inner: ControlCall::RequestEvents(*payload),
             },
         }
     }
@@ -1243,6 +1250,25 @@ pub(crate) fn bind_control_response(
                 return Err(variant("process_readiness_report"));
             }
             Ok(())
+        }
+        SearchPlaneControlIpcResponse::ProcessRequestEventsV1(events) => {
+            if binding.expected != ExpectedControlResponseV1::ProcessRequestEventsV1 {
+                return Err(variant("process_request_events_v1"));
+            }
+            let ControlCall::RequestEvents(request) = &binding.inner else {
+                return Err(variant("process_request_events_v1"));
+            };
+            if events.plane != request.plane || events.events.len() > usize::from(request.limit) {
+                return Err(binding_error(
+                    route,
+                    ResponseBindingAxis::TargetIdentity,
+                    "the requested plane and event limit",
+                    "a different plane or excessive event count",
+                ));
+            }
+            events.validate_encoded_size_v1().map_err(|error| {
+                SdkError::Protocol(format!("invalid process request events: {error}"))
+            })
         }
         // A remote refusal is not a binding mismatch; the dispatcher
         // lifts it to `SdkError::Remote`.

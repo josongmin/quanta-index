@@ -52,7 +52,7 @@ repos:
         entry: bash scripts/check-lock-freshness.sh
         language: system
         pass_filenames: false
-        files: ^(Cargo\.toml|Cargo\.lock|pyproject\.toml|crates/.*/Cargo\.toml|scripts/check-lock-freshness\.sh)$
+        files: ^(Cargo\.toml|Cargo\.lock|pyproject\.toml|(crates|benchmarks)/.*/Cargo\.toml|scripts/check-lock-freshness\.sh)$
         stages: [pre-commit]
 
       - id: doc-paths
@@ -77,7 +77,7 @@ repos:
         entry: ./scripts/cargow fmt --all -- --check
         language: system
         pass_filenames: false
-        files: ^(Cargo\.toml|Cargo\.lock|crates/.*/.*\.rs)$
+        files: ^(Cargo\.toml|Cargo\.lock|(crates|benchmarks)/.*(Cargo\.toml|\.rs))$
         stages: [pre-commit]
 
       - id: cargo-check
@@ -85,7 +85,7 @@ repos:
         entry: ./scripts/cargow check --workspace --all-targets --all-features --locked
         language: system
         pass_filenames: false
-        files: ^(Cargo\.toml|Cargo\.lock|crates/.*/.*\.rs)$
+        files: ^(Cargo\.toml|Cargo\.lock|(crates|benchmarks)/.*(Cargo\.toml|\.rs))$
         stages: [pre-commit]
 
       - id: cargo-clippy-strict
@@ -93,7 +93,7 @@ repos:
         entry: ./scripts/cargow clippy --workspace --all-targets --all-features --locked -- -D warnings
         language: system
         pass_filenames: false
-        files: ^(Cargo\.toml|Cargo\.lock|clippy\.toml|crates/.*/.*\.rs)$
+        files: ^(Cargo\.toml|Cargo\.lock|clippy\.toml|(crates|benchmarks)/.*(Cargo\.toml|\.rs))$
         stages: [pre-push]
 
       - id: cargo-test
@@ -101,7 +101,7 @@ repos:
         entry: ./scripts/cargow test --workspace --all-features --locked
         language: system
         pass_filenames: false
-        files: ^(Cargo\.toml|Cargo\.lock|crates/.*/.*\.rs)$
+        files: ^(Cargo\.toml|Cargo\.lock|(crates|benchmarks)/.*(Cargo\.toml|\.rs))$
         stages: [pre-push]
 
       - id: cargo-doc
@@ -109,7 +109,7 @@ repos:
         entry: bash -lc 'RUSTDOCFLAGS="-D warnings" ./scripts/cargow doc --workspace --all-features --no-deps --locked'
         language: system
         pass_filenames: false
-        files: ^(Cargo\.toml|Cargo\.lock|crates/.*/.*\.rs)$
+        files: ^(Cargo\.toml|Cargo\.lock|(crates|benchmarks)/.*(Cargo\.toml|\.rs))$
         stages: [pre-push]
 
       - id: workspace-lints
@@ -133,7 +133,7 @@ repos:
         entry: bash scripts/check-rust-allow-attributes.sh
         language: system
         pass_filenames: false
-        files: ^(crates/.*\.rs|scripts/check-rust-allow-attributes\.sh)$
+        files: ^((crates|benchmarks)/.*\.rs|scripts/check-rust-allow-attributes\.sh)$
         stages: [pre-push]
 
       - id: rust-derive-allowlist
@@ -149,7 +149,7 @@ repos:
         entry: python3 tools/ci/lint/check-cargo-toml-hygiene.py
         language: system
         pass_filenames: false
-        files: ^(Cargo\.toml|crates/.*/Cargo\.toml|tools/ci/lint/check-cargo-toml-hygiene\.py|tools/ci/tests/test_check_cargo_toml_hygiene\.py)$
+        files: ^(Cargo\.toml|(crates|benchmarks)/.*/Cargo\.toml|tools/ci/lint/check-cargo-toml-hygiene\.py|tools/ci/tests/test_check_cargo_toml_hygiene\.py)$
         stages: [pre-commit, pre-push]
 
       - id: rust-module-discipline

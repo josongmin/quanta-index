@@ -180,6 +180,7 @@ variants = [
   "QuarantineInventory",
   "QuarantineDiscard",
   "ProcessReadiness",
+  "ProcessRequestEventsV1",
 ]
 
 [[ipc]]
@@ -200,6 +201,7 @@ variants = [
   "QuarantineInventory",
   "QuarantineDiscardAck",
   "ProcessReadinessReport",
+  "ProcessRequestEventsV1",
 ]
 
 [[ipc]]

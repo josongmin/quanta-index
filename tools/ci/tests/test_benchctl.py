@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import importlib.util
 import json
@@ -880,7 +881,17 @@ def test_evidence_root_inside_the_checkout_is_refused(monkeypatch, tmp_path: Pat
     assert "outside the checkout" in capsys.readouterr().err
 
 
-def _promote_family_run(root: Path, family: str, run_id: str) -> Path:
+def _promote_family_run(
+    root: Path,
+    family: str,
+    run_id: str,
+    *,
+    revision: str = "a" * 40,
+    verdict_status: str = "pass",
+    preflight_digest: str = "sha256:" + "33" * 32,
+    created_utc: str = "2026-09-26T12:00:00Z",
+    wrong_payload: bool = False,
+) -> Path:
     import evidence as evidence_module
     import evidence_bridge
 
@@ -891,7 +902,7 @@ def _promote_family_run(root: Path, family: str, run_id: str) -> Path:
             "stale_hits": 0,
             "generation": "g1",
         }
-        if family == "freshness"
+        if (family == "freshness") != wrong_payload
         else {
             "kind": "load",
             "arrival": "open_loop",
@@ -913,12 +924,12 @@ def _promote_family_run(root: Path, family: str, run_id: str) -> Path:
         run_id=run_id,
         family=family,
         profile="systems",
-        created_utc="2026-09-26T12:00:00Z",
+        created_utc=created_utc,
         native_path=Path(f"{family}-summary.json"),
         native_bytes=evidence_module.SAMPLE_RAW,
         payload=payload,
         source={
-            "revision": "a" * 40,
+            "revision": revision,
             "dirty": False,
             "dirty_paths_digest": None,
             "closure_profile": "benchmark-control-plane",
@@ -934,11 +945,17 @@ def _promote_family_run(root: Path, family: str, run_id: str) -> Path:
         },
         inputs=[
             {
+                "id": "benchmark-preflight",
+                "availability": "present",
+                "digest": preflight_digest,
+                "reason": None,
+            },
+            {
                 "id": "workspace-fixture",
                 "availability": "unavailable",
                 "digest": None,
                 "reason": "in-process deterministic fixture",
-            }
+            },
         ],
         host=evidence_bridge.host_identity(
             policy="local-diagnostic",
@@ -963,7 +980,12 @@ def _promote_family_run(root: Path, family: str, run_id: str) -> Path:
             "start_event": "producer_exec",
             "end_event": "artifact_written",
         },
-        verdict={"scope": "diagnostic", "status": "pass", "reason": None, "metrics": []},
+        verdict={
+            "scope": "diagnostic",
+            "status": verdict_status,
+            "reason": None if verdict_status == "pass" else "regression",
+            "metrics": [],
+        },
     )["run_dir"]
 
 
@@ -983,14 +1005,89 @@ def test_promoted_run_validation_is_scoped_to_the_profile(tmp_path: Path, capsys
         "closure_digest": "sha256:" + "11" * 32,
     }
     expected_lock = "sha256:" + "22" * 32
-    assert MODULE.validate_promoted_runs(root, "systems", manifest, expected_source, expected_lock) == 0
+    assert (
+        MODULE.validate_promoted_runs(root, "systems", manifest, expected_source, expected_lock)
+        == 0
+    )
     receipts = json.loads(capsys.readouterr().out)
     assert [entry["family"] for entry in receipts["runs"]] == ["freshness", "open-loop"]
 
     # dsl-authority owns two different families; its runs are absent, so the
     # profile must refuse rather than accept the systems runs.
-    assert MODULE.validate_promoted_runs(root, "dsl-authority", manifest, expected_source, expected_lock) == 2
+    assert (
+        MODULE.validate_promoted_runs(
+            root, "dsl-authority", manifest, expected_source, expected_lock
+        )
+        == 2
+    )
     assert "dsl-warm" in capsys.readouterr().err
+
+
+def test_promoted_run_validation_rejects_failed_wrong_source_and_tampered_runs(
+    tmp_path: Path, capsys
+) -> None:
+    manifest = MODULE.load_manifest()
+    expected_source = {
+        "revision": "a" * 40,
+        "dirty": False,
+        "dirty_paths_digest": None,
+        "closure_profile": "benchmark-control-plane",
+        "closure_digest": "sha256:" + "11" * 32,
+    }
+    lock = "sha256:" + "22" * 32
+    root = tmp_path / "failed"
+    _promote_family_run(
+        root, "freshness", "freshness-20260926T120000Z-failed01", verdict_status="fail"
+    )
+    _promote_family_run(root, "open-loop", "open-loop-20260926T120000Z-passed01")
+    assert MODULE.validate_promoted_runs(root, "systems", manifest, expected_source, lock) == 2
+    assert "non-passing verdict" in capsys.readouterr().err
+
+    root = tmp_path / "wrong-source"
+    _promote_family_run(root, "freshness", "freshness-20260926T120000Z-wrong001", revision="b" * 40)
+    _promote_family_run(root, "open-loop", "open-loop-20260926T120000Z-passed02")
+    assert MODULE.validate_promoted_runs(root, "systems", manifest, expected_source, lock) == 2
+    assert "wrong profile or source" in capsys.readouterr().err
+
+    root = tmp_path / "tampered"
+    _promote_family_run(root, "freshness", "freshness-20260926T120000Z-old00001")
+    new = _promote_family_run(root, "freshness", "freshness-20260926T130000Z-new00001")
+    _promote_family_run(root, "open-loop", "open-loop-20260926T120000Z-passed03")
+    (new / "raw" / "freshness-summary.json").write_bytes(b"tampered")
+    assert MODULE.validate_promoted_runs(root, "systems", manifest, expected_source, lock) == 2
+    assert "invalid run" in capsys.readouterr().err
+
+    root = tmp_path / "wrong-payload"
+    _promote_family_run(root, "freshness", "freshness-wrong-payload", wrong_payload=True)
+    _promote_family_run(root, "open-loop", "open-loop-correct-payload")
+    assert MODULE.validate_promoted_runs(root, "systems", manifest, expected_source, lock) == 2
+    assert "wrong payload kind" in capsys.readouterr().err
+
+
+def test_promoted_profile_refuses_mixed_capture_even_with_same_source(
+    tmp_path: Path, capsys
+) -> None:
+    manifest = MODULE.load_manifest()
+    root = tmp_path / "mixed"
+    _promote_family_run(root, "freshness", "freshness-first")
+    _promote_family_run(
+        root,
+        "open-loop",
+        "open-loop-second",
+        preflight_digest="sha256:" + "44" * 32,
+        created_utc="2026-09-26T13:00:00Z",
+    )
+    source = {
+        "revision": "a" * 40,
+        "dirty": False,
+        "dirty_paths_digest": None,
+        "closure_profile": "benchmark-control-plane",
+        "closure_digest": "sha256:" + "11" * 32,
+    }
+    assert (
+        MODULE.validate_promoted_runs(root, "systems", manifest, source, "sha256:" + "22" * 32) == 2
+    )
+    assert "mixes different benchmark captures" in capsys.readouterr().err
 
 
 def test_promotion_is_scoped_to_the_profile_families(monkeypatch, tmp_path: Path) -> None:
@@ -998,7 +1095,11 @@ def test_promotion_is_scoped_to_the_profile_families(monkeypatch, tmp_path: Path
     sys.path.insert(0, str(REPO_ROOT / "tools" / "benchmark"))
     import evidence_bridge
 
-    manifest = MODULE.load_manifest()
+    manifest = copy.deepcopy(MODULE.load_manifest())
+    # This fixture exercises family scoping; the production bridge refuses
+    # non-latency families until it can derive their native payload faithfully.
+    for name in ("freshness", "open-loop"):
+        manifest["families"][name]["payload"] = "latency"
     repo_root = tmp_path / "repo"
     for family, path in (
         ("freshness", "artifacts/search-quality/freshness/latest/summary.json"),
@@ -1043,7 +1144,94 @@ def test_promotion_is_scoped_to_the_profile_families(monkeypatch, tmp_path: Path
     receipt = repo_root / "preflight.json"
     receipt.write_text(json.dumps({"status": "clean"}), encoding="utf-8")
 
+    monkeypatch.setattr(MODULE, "require_clean_preflight_receipt", lambda *_args: None)
     MODULE.promote_profile_runs(
-        repo_root, "systems", manifest, tmp_path / "evidence", "a" * 40, receipt
+        repo_root,
+        "systems",
+        manifest,
+        tmp_path / "evidence",
+        "a" * 40,
+        receipt,
+        "sha256:" + hashlib.sha256(receipt.read_bytes()).hexdigest(),
+        0,
+        MODULE.snapshot_profile_artifacts(repo_root, "systems", manifest),
     )
     assert calls == ["freshness", "open-loop"], calls
+
+
+def test_promotion_refuses_missing_preflight_and_partial_multi_artifact_claim(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    root = tmp_path / "runs"
+    manifest = {
+        "families": {"fanout": {"artifact_glob": "artifacts/fanout/*.json"}},
+        "profiles": {"fanout": {"families": ["fanout"]}},
+    }
+    receipt = repo / "preflight.json"
+    monkeypatch.setattr(MODULE, "require_clean_preflight_receipt", lambda *_args: None)
+    digest = "sha256:" + hashlib.sha256(b'{"status":"clean"}').hexdigest()
+    assert (
+        MODULE.promote_profile_runs(repo, "fanout", manifest, root, "a" * 40, receipt, digest, 0, {})
+        == 2
+    )
+    assert "preflight receipt" in capsys.readouterr().err
+    receipt.write_text('{"status":"clean"}')
+    output = repo / "artifacts" / "fanout"
+    output.mkdir(parents=True)
+    (output / "first.json").write_text("{}")
+    (output / "second.json").write_text("{}")
+    assert (
+        MODULE.promote_profile_runs(repo, "fanout", manifest, root, "a" * 40, receipt, digest, 0, {})
+        == 2
+    )
+    assert "multi-artifact promotion is not implemented" in capsys.readouterr().err
+
+
+def test_promotion_refuses_stale_artifact_and_replaced_preflight(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    repo = tmp_path / "repo"
+    artifact = repo / "artifacts" / "family" / "summary.json"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text("{}", encoding="utf-8")
+    receipt = repo / "preflight.json"
+    receipt.write_text('{"status":"clean"}', encoding="utf-8")
+    manifest = {
+        "families": {"family": {"artifact_glob": "artifacts/family/summary.json"}},
+        "profiles": {"one": {"families": ["family"]}},
+    }
+    monkeypatch.setattr(MODULE, "require_clean_preflight_receipt", lambda *_args: None)
+    digest = "sha256:" + hashlib.sha256(receipt.read_bytes()).hexdigest()
+    assert (
+        MODULE.promote_profile_runs(
+            repo,
+            "one",
+            manifest,
+            tmp_path / "runs",
+            "a" * 40,
+            receipt,
+            digest,
+            artifact.stat().st_mtime_ns + 1,
+            {},
+        )
+        == 2
+    )
+    assert "not fresh regular output" in capsys.readouterr().err
+    receipt.write_text('{"status":"clean","replaced":true}', encoding="utf-8")
+    assert (
+        MODULE.promote_profile_runs(
+            repo, "one", manifest, tmp_path / "runs", "a" * 40, receipt, digest, 0, {}
+        )
+        == 2
+    )
+    assert "changed during capture" in capsys.readouterr().err
+    receipt.write_text('{"status":"clean"}', encoding="utf-8")
+    assert (
+        MODULE.promote_profile_runs(
+            repo, "one", manifest, tmp_path / "runs", "a" * 40, receipt, digest, 0, {}
+        )
+        == 2
+    )
+    assert "artifact changed after validation" in capsys.readouterr().err

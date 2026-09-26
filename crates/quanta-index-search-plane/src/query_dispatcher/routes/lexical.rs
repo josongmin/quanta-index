@@ -103,12 +103,13 @@ impl SearchPlaneDispatcher {
             self.cursors()?
                 .require_context(opened, &cursor_context, Vec::new())?;
         }
-        let mut stage_timings = vec![elapsed(
+        let mut stage_timings = Vec::with_capacity(4);
+        stage_timings.push(elapsed(
             QueryStageKindV1::LexicalPrepare,
             prepare_started,
             1,
             None,
-        )];
+        ));
         let wants_file_owner_projection = query_selects_file_owner_projection(&planned.query);
         if planned.force_empty {
             let project_started = Instant::now();
@@ -218,10 +219,11 @@ impl SearchPlaneDispatcher {
             .stage_timings
             .as_mut()
             .and_then(|stages| stages.last_mut())
-            .ok_or_else(|| CoreError::InvalidContract("lexical project stage missing".to_string()))?;
-        final_stage.returned_candidates = Some(
-            u64::try_from(response.results.len()).map_or(u64::MAX, |count| count),
-        );
+            .ok_or_else(|| {
+                CoreError::InvalidContract("lexical project stage missing".to_string())
+            })?;
+        final_stage.returned_candidates =
+            Some(u64::try_from(response.results.len()).map_or(u64::MAX, |count| count));
         Ok((response, summary))
     }
 

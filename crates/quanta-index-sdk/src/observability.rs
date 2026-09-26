@@ -1,5 +1,6 @@
 use quanta_index_contract::ipc::{
     MetricsSnapshotRequest, MetricsSnapshotV1, ProcessReadinessRequest, ProcessReadinessV1,
+    ProcessRequestEventPlaneV1, ProcessRequestEventsRequestV1, ProcessRequestEventsV1,
     SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse,
 };
 
@@ -35,7 +36,8 @@ impl<'a> ObservabilityNamespace<'a> {
             | SearchPlaneControlIpcResponse::Error(_)
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
             | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
-            | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)) => {
+            | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)
+            | SearchPlaneControlIpcResponse::ProcessRequestEventsV1(_)) => {
                 Err(SdkError::Protocol(format!(
                     "expected metrics snapshot, got {}",
                     QuantaIndex::control_response_kind(&other)
@@ -68,12 +70,37 @@ impl<'a> ObservabilityNamespace<'a> {
             | SearchPlaneControlIpcResponse::Error(_)
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
-            | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)) => {
+            | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
+            | SearchPlaneControlIpcResponse::ProcessRequestEventsV1(_)) => {
                 Err(SdkError::Protocol(format!(
                     "expected process readiness report, got {}",
                     QuantaIndex::control_response_kind(&other)
                 )))
             }
+        }
+    }
+
+    /// Bounded, payload-free process-local request trace. The daemon requires
+    /// Admin capability; this client-side API does not grant that capability.
+    pub fn request_events(
+        &self,
+        plane: ProcessRequestEventPlaneV1,
+        limit: u16,
+    ) -> Result<ProcessRequestEventsV1, SdkError> {
+        let request = ProcessRequestEventsRequestV1 { plane, limit };
+        request
+            .validate_v1()
+            .map_err(|error| SdkError::Protocol(error.to_owned()))?;
+        match self
+            .client
+            .dispatch_control(SearchPlaneControlIpcRequest::ProcessRequestEventsV1(
+                request,
+            ))? {
+            SearchPlaneControlIpcResponse::ProcessRequestEventsV1(events) => Ok(events),
+            other => Err(SdkError::Protocol(format!(
+                "expected process request events, got {}",
+                QuantaIndex::control_response_kind(&other)
+            ))),
         }
     }
 }

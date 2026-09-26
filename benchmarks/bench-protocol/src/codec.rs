@@ -185,8 +185,7 @@ impl Wire for f64 {
 
 impl<T: Wire> Wire for Option<T> {
     fn encode(&self) -> Result<Value, ProtocolError> {
-        self.as_ref()
-            .map_or(Ok(Value::Null), |inner| inner.encode())
+        self.as_ref().map_or(Ok(Value::Null), Wire::encode)
     }
 
     fn decode(value: &Value) -> Result<Self, ProtocolError> {

@@ -70,11 +70,65 @@ def test_rail_binding_requires_an_executed_command() -> None:
         "--message-format libtest-json-plus --message-format-version 0.1"
     )
     prefix, suffix = command.split(" --message-format ", 1)
-    executed = prefix + " \\\n    --message-format " + suffix + " \\\n    | tee evidence.jsonl"
+    executed = "set -o pipefail\n" + prefix + " \\\n    --message-format " + suffix + " \\\n    | tee evidence.jsonl"
     metadata_only = f'# {command}\npython3 writer.py --command "{command}"\n'
 
     assert module._executes_declared_command(executed, command)
     assert not module._executes_declared_command(metadata_only, command)
+    assert not module._executes_declared_command(command + " -E 'test(one)'", command)
+    assert not module._executes_declared_command(command + " || true", command)
+    assert not module._executes_declared_command(command + " | tee evidence.jsonl", command)
+    assert not module._executes_declared_command(
+        "set -o pipefail\n" + command + " | tee evidence.jsonl || true", command
+    )
+    assert not module._executes_declared_command(
+        command + " | tee evidence.jsonl\nset -o pipefail", command
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "on: [push]",
+        "    if: false",
+        "        if: false",
+        "    if: github.event_name == 'schedule'",
+        "    if: github.event_name == 'pull_request' && false",
+        "        if: ${{ github.event_name == 'pull_request' && !true }}",
+    ],
+)
+def test_rail_binding_rejects_unreachable_workflow(tmp_path: Path, mutation: str) -> None:
+    module = _load_module()
+    workflow = tmp_path / ".github" / "workflows" / "test.yml"
+    workflow.parent.mkdir(parents=True)
+    body = (
+        "on: [pull_request]\n"
+        "jobs:\n  test:\n    steps:\n"
+        "      - name: run\n"
+        "        run: ./scripts/cargow nextest run --workspace --all-features --locked\n"
+    )
+    if mutation.startswith("on:"):
+        body = body.replace("on: [pull_request]", mutation)
+    elif mutation.startswith("    if:"):
+        body = body.replace("    steps:", mutation + "\n    steps:")
+    else:
+        body = body.replace("        run:", mutation + "\n        run:")
+    workflow.write_text(body)
+    violations = []
+    module._validate_rail_binding(
+        root=tmp_path,
+        catalog=tmp_path / "authority.toml",
+        rail_id="pr-workspace",
+        raw_rail={
+            "workflow": ".github/workflows/test.yml",
+            "job": "test",
+            "step": "run",
+            "tier": "pr",
+        },
+        command="./scripts/cargow nextest run --workspace --all-features --locked",
+        violations=violations,
+    )
+    assert violations
 
 
 def test_python_owner_target_requires_real_file_scope_and_ci_rail(tmp_path: Path) -> None:

@@ -109,6 +109,7 @@ impl PlaneDispatch<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse>
             SearchPlaneControlIpcRequest::QuarantineInventory(_) => "control.quarantine_inventory",
             SearchPlaneControlIpcRequest::QuarantineDiscard(_) => "control.quarantine_discard",
             SearchPlaneControlIpcRequest::ProcessReadiness(_) => "control.process_readiness",
+            SearchPlaneControlIpcRequest::ProcessRequestEventsV1(_) => "control.request_events_v1",
         }
     }
 
@@ -126,6 +127,7 @@ impl PlaneDispatch<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse>
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
             | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
             | SearchPlaneControlIpcResponse::ProcessReadinessReport(_) => None,
+            SearchPlaneControlIpcResponse::ProcessRequestEventsV1(_) => None,
         }
     }
 

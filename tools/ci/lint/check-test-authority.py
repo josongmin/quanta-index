@@ -21,6 +21,7 @@ Python targets are opt-in owner files, not a repository-wide pytest inventory.
 
 from __future__ import annotations
 
+import ast
 import argparse
 import re
 import shlex
@@ -37,7 +38,7 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
 
 ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_CATALOG = ROOT / "tools" / "ci" / "test-authority.toml"
-SUPPORTED_TIERS = frozenset({"pr", "merge", "correctness", "nightly", "weekly"})
+SUPPORTED_TIERS = frozenset({"pr", "merge", "main", "correctness", "nightly", "weekly"})
 SUPPORTED_TARGET_KINDS = frozenset({"integration", "fuzz", "python"})
 PROOF_ROLES = (
     "positive_target",
@@ -176,15 +177,26 @@ def _validate_rail_binding(
     required_events = {
         "pr": {"pull_request"},
         "merge": {"merge_group"},
+        "main": {"push"},
         "nightly": {"schedule"},
         "weekly": {"schedule"},
         "correctness": {"schedule", "workflow_dispatch"},
     }.get(raw_rail.get("tier"), set())
-    enabled_events = set(trigger) if isinstance(trigger, dict) else (
-        {trigger} if isinstance(trigger, str) else set(trigger) if isinstance(trigger, list) else set()
+    enabled_events = (
+        set(trigger)
+        if isinstance(trigger, dict)
+        else (
+            {trigger}
+            if isinstance(trigger, str)
+            else set(trigger)
+            if isinstance(trigger, list)
+            else set()
+        )
     )
     if not enabled_events.intersection(required_events):
-        violations.append(_violation(catalog, f"rail {rail_id} workflow cannot run for its tier event"))
+        violations.append(
+            _violation(catalog, f"rail {rail_id} workflow cannot run for its tier event")
+        )
         return
     jobs = workflow.get("jobs")
     if not isinstance(jobs, dict) or not isinstance(jobs.get(job_id), dict):
@@ -192,7 +204,7 @@ def _validate_rail_binding(
             _violation(catalog, f"rail {rail_id} workflow job does not exist: {job_id}")
         )
         return
-    if _is_disabled(jobs[job_id].get("if")):
+    if not _condition_allows_tier(jobs[job_id].get("if"), required_events):
         violations.append(_violation(catalog, f"rail {rail_id} workflow job is disabled"))
         return
     steps = jobs[job_id].get("steps")
@@ -202,7 +214,7 @@ def _validate_rail_binding(
     for step in steps:
         if not isinstance(step, dict) or step.get("name") != step_name:
             continue
-        if _is_disabled(step.get("if")):
+        if not _condition_allows_tier(step.get("if"), required_events):
             violations.append(_violation(catalog, f"rail {rail_id} workflow step is disabled"))
             return
         run = step.get("run")
@@ -223,16 +235,25 @@ def _validate_rail_binding(
 def _executes_declared_command(run: str, command: str) -> bool:
     """Match a logical shell command, not a comment or receipt metadata string."""
     logical_lines = re.sub(r"\\\r?\n[ \t]*", " ", run)
+    pipefail_enabled = False
     for raw_line in logical_lines.splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
         for statement in re.split(r"&&|;", line):
             statement = " ".join(statement.split())
+            if statement == "set -o pipefail":
+                pipefail_enabled = True
+                continue
+            if statement == "set +o pipefail":
+                pipefail_enabled = False
+                continue
             if statement.startswith(command):
                 suffix = statement[len(command) :]
-                if "nextest run" in command and suffix.strip() and not suffix.strip().startswith("|"):
-                    continue
+                if "nextest run" in command and suffix.strip():
+                    tail = suffix.strip()
+                    if "||" in tail or not tail.startswith("|") or not pipefail_enabled:
+                        continue
                 if not suffix or suffix[0].isspace() or suffix[0] == "|":
                     return True
     return False
@@ -244,6 +265,79 @@ def _is_disabled(value: object) -> bool:
     if not isinstance(value, str):
         return False
     return value.strip().lower() in {"false", "${{ false }}"}
+
+
+def _condition_allows_tier(value: object, events: set[str]) -> bool:
+    if _is_disabled(value):
+        return False
+    if value is None or value is True:
+        return True
+    if not isinstance(value, str):
+        return False
+    expression = value.strip()
+    if expression.startswith("${{") and expression.endswith("}}"):
+        expression = expression[3:-2].strip()
+    if not expression:
+        return False
+
+    def possible_for_event(event: str) -> bool:
+        def replace_event(match: re.Match[str]) -> str:
+            comparison = match.group(1)
+            matches = event == match.group(3)
+            return "True" if matches == (comparison == "==") else "False"
+
+        resolved = re.sub(
+            r"github\.event_name\s*(==|!=)\s*(['\"])([^'\"]+)\2",
+            replace_event,
+            expression,
+        )
+        if "github.event_name" in resolved:
+            return False
+        resolved = re.sub(r"\btrue\b", "True", resolved, flags=re.IGNORECASE)
+        resolved = re.sub(r"\bfalse\b", "False", resolved, flags=re.IGNORECASE)
+        resolved = resolved.replace("&&", " and ").replace("||", " or ")
+        resolved = re.sub(r"!(?!=)", " not ", resolved).strip()
+        try:
+            tree = ast.parse(resolved, mode="eval")
+        except SyntaxError:
+            return False
+
+        def possible(node: ast.AST) -> set[bool]:
+            if isinstance(node, ast.Expression):
+                return possible(node.body)
+            if isinstance(node, ast.Constant) and isinstance(node.value, bool):
+                return {node.value}
+            if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.And):
+                values = {True}
+                for part in node.values:
+                    values = {left and right for left in values for right in possible(part)}
+                return values
+            if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.Or):
+                values = {False}
+                for part in node.values:
+                    values = {left or right for left in values for right in possible(part)}
+                return values
+            if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+                return {not item for item in possible(node.operand)}
+            if isinstance(node, ast.Compare):
+                if (
+                    len(node.ops) == 1
+                    and len(node.comparators) == 1
+                    and isinstance(node.left, ast.Constant)
+                    and isinstance(node.comparators[0], ast.Constant)
+                    and isinstance(node.op, (ast.Eq, ast.NotEq))
+                ):
+                    equal = node.left.value == node.comparators[0].value
+                    return {equal if isinstance(node.op, ast.Eq) else not equal}
+                return {False, True}
+            if isinstance(node, (ast.Name, ast.Attribute, ast.Call)):
+                # Non-event inputs remain unknown at static-analysis time.
+                return {False, True}
+            return set()
+
+        return True in possible(tree)
+
+    return any(possible_for_event(event) for event in events)
 
 
 def _validate_rails(

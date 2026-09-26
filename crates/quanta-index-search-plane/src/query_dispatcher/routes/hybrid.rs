@@ -88,7 +88,7 @@ impl SearchPlaneDispatcher {
         budget: &RequestBudgetV1,
     ) -> Result<HybridFusion, CoreError> {
         let pin = selection.pin.clone();
-        let mut stage_timings = Vec::with_capacity(6);
+        let mut stage_timings = Vec::with_capacity(7);
         let prepare_started = Instant::now();
         let lexical_query = lower_lexical_text_query(text_query)?;
         let filter_plan = HybridFilterPlanV1::plan(&lexical_query)?;

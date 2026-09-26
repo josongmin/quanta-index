@@ -121,6 +121,8 @@ jobs:
           mkdir -p artifacts/test-authority
           set -o pipefail
           export NEXTEST_EXPERIMENTAL_LIBTEST_JSON=1
+          ./scripts/cargow nextest list --workspace --all-features --locked \
+            --message-format json > artifacts/test-authority/inventory.json
           ./scripts/cargow nextest run --workspace --all-features --locked \
             --message-format libtest-json-plus --message-format-version 0.1 \
             | tee artifacts/test-authority/nextest.jsonl
@@ -129,6 +131,7 @@ jobs:
             --tier nightly \
             --command "./scripts/cargow nextest run --workspace --all-features --locked --message-format libtest-json-plus --message-format-version 0.1" \
             --evidence artifacts/test-authority/nextest.jsonl \
+            --inventory artifacts/test-authority/inventory.json \
             --out artifacts/test-authority/receipt.json
 
       - name: Upload verification receipt

@@ -220,6 +220,28 @@ def test_wire_inventory_scope_includes_tool_format_dependencies() -> None:
         assert pattern.search(path), path
 
 
+def test_benchmark_source_and_manifest_select_cargo_hooks() -> None:
+    config = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
+    hooks = {
+        hook["id"]: hook
+        for repo in config["repos"]
+        if repo["repo"] == "local"
+        for hook in repo["hooks"]
+    }
+    for hook_id in (
+        "cargo-fmt-check",
+        "cargo-check",
+        "cargo-clippy-strict",
+        "cargo-test",
+        "cargo-doc",
+    ):
+        pattern = re.compile(hooks[hook_id]["files"])
+        assert pattern.search("benchmarks/bench-protocol/Cargo.toml"), hook_id
+        assert pattern.search("benchmarks/bench-protocol/src/lib.rs"), hook_id
+    for hook_id in ("lock-freshness", "rust-cargo-toml-hygiene"):
+        assert re.compile(hooks[hook_id]["files"]).search("benchmarks/bench-protocol/Cargo.toml")
+
+
 def test_semgrep_keeps_code_scope_but_expands_policy_changes(tmp_path: Path) -> None:
     fake_semgrep = tmp_path / "semgrep"
     fake_semgrep.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n', encoding="utf-8")

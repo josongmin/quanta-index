@@ -260,7 +260,8 @@ fn expect_snapshot(response: SearchPlaneControlIpcResponse, repo: &str) -> TestR
         | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
         | SearchPlaneControlIpcResponse::QuarantineInventory(_)
         | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
-        | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)) => {
+        | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)
+        | SearchPlaneControlIpcResponse::ProcessRequestEventsV1(_)) => {
             Err(format!("expected a snapshot for {repo}, got {other:?}").into())
         }
     }
@@ -281,7 +282,8 @@ fn expect_error(
         | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
         | SearchPlaneControlIpcResponse::QuarantineInventory(_)
         | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
-        | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)) => {
+        | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)
+        | SearchPlaneControlIpcResponse::ProcessRequestEventsV1(_)) => {
             Err(format!("expected a typed error, got {other:?}").into())
         }
     }

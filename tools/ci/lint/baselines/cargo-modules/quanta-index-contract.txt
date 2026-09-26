@@ -109,6 +109,12 @@ crate quanta_index_contract
 │   │   ├── struct TrackReadinessRecord: pub
 │   │   └── struct TrackReadinessRecordVisitor: pub(self)
 │   │       └── type Value: pub(self)
+│   ├── mod diagnostic_events: pub(self)
+│   │   ├── enum ProcessRequestEventPlaneV1: pub
+│   │   ├── enum ProcessRequestEventStageV1: pub
+│   │   ├── struct ProcessRequestEventV1: pub
+│   │   ├── struct ProcessRequestEventsRequestV1: pub
+│   │   └── struct ProcessRequestEventsV1: pub
 │   ├── mod error: pub(self)
 │   │   ├── struct QueryErrorRepair: pub
 │   │   ├── struct QueryErrorRepairVisitor: pub(self)

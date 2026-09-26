@@ -10,10 +10,10 @@ use std::num::{NonZeroU64, NonZeroU128};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, TryLockError};
 
-use quanta_index_contract::SearchPlaneErrorCodeV2;
+use quanta_index_contract::{MAX_PROCESS_REQUEST_EVENTS_V1, SearchPlaneErrorCodeV2};
 use quanta_index_core::{CoreError, MetricPointV1, MetricSourcePort};
 
-const REQUEST_EVENT_CAPACITY_V1: usize = 1024;
+const REQUEST_EVENT_CAPACITY_V1: usize = MAX_PROCESS_REQUEST_EVENTS_V1 as usize;
 
 /// Fixed, payload-free stages of one admitted envelope. The caller's ID is
 /// never synthesized by diagnostics; it is the validated wire envelope ID.

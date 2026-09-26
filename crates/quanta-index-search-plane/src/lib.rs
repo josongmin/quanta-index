@@ -32,8 +32,8 @@ mod single_flight;
 mod snapshot_registry;
 
 pub use control_dispatcher::{
-    ControlAccessV1, ControlCapabilityV1, ProcessReadinessPort, SearchPlaneControlDispatcher,
-    SearchPlaneControlDispatcherParts,
+    ControlAccessV1, ControlCapabilityV1, ProcessReadinessPort, ProcessRequestEventsPort,
+    SearchPlaneControlDispatcher, SearchPlaneControlDispatcherParts,
 };
 pub use history_text::{HistoryTextHandles, HistoryTextIndexParts};
 pub use ingest_dispatcher::{

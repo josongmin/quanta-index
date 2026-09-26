@@ -24,6 +24,14 @@ workflow = ".github/workflows/ci.yml"
 job = "rust-test"
 step = "rust nextest"
 
+[rails.main-workspace-nextest]
+tier = "main"
+command = "./scripts/cargow nextest run --workspace --all-features --locked --message-format libtest-json-plus --message-format-version 0.1"
+target_kind = "integration"
+workflow = ".github/workflows/ci.yml"
+job = "rust-test"
+step = "rust nextest"
+
 [rails.nightly-workspace-nextest]
 tier = "nightly"
 command = "./scripts/cargow nextest run --workspace --all-features --locked --message-format libtest-json-plus --message-format-version 0.1"
@@ -602,6 +610,12 @@ rail = "pr-workspace-nextest"
 [[integration_targets]]
 id = "semantic-score-candidate"
 path = "crates/quanta-index-semantic/tests/score_candidate.rs"
+owner = "quanta-index-semantic"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "semantic-exact-ann-decomposition"
+path = "crates/quanta-index-semantic/tests/exact_ann_decomposition.rs"
 owner = "quanta-index-semantic"
 rail = "pr-workspace-nextest"
 
@@ -1330,6 +1344,24 @@ rail = "pr-workspace-nextest"
 id = "retrieval-bench-sdk-roundtrip"
 path = "benchmarks/retrieval/tests/sdk_roundtrip.rs"
 owner = "quanta-index-retrieval-bench"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "bench-protocol-roundtrip"
+path = "benchmarks/bench-protocol/tests/roundtrip.rs"
+owner = "quanta-index-bench-protocol"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "bench-protocol-adversarial"
+path = "benchmarks/bench-protocol/tests/adversarial.rs"
+owner = "quanta-index-bench-protocol"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "bench-protocol-conformance-vectors"
+path = "benchmarks/bench-protocol/tests/conformance_vectors.rs"
+owner = "quanta-index-bench-protocol"
 rail = "pr-workspace-nextest"
 
 [[fuzz_targets]]

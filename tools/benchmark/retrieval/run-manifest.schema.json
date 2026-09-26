@@ -321,10 +321,12 @@
         "schema_version": {"enum": [1, 2]},
         "revision": {"type": "string", "minLength": 7},
         "rail": {"type": "string", "minLength": 1},
-        "tier": {"enum": ["pr", "merge", "correctness", "nightly", "weekly"]},
+        "tier": {"enum": ["pr", "merge", "main", "correctness", "nightly", "weekly"]},
         "command": {"type": "string", "minLength": 1},
         "evidence_path": {"type": "string", "minLength": 1},
         "evidence_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "inventory_path": {"type": "string", "minLength": 1},
+        "inventory_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
         "test_event_count": {"type": "integer", "minimum": 1},
         "source_closure": {
           "type": "object", "additionalProperties": false,

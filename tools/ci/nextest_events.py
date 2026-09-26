@@ -44,11 +44,17 @@ class NextestEvidence:
 def parse_nextest_inventory(path: Path) -> dict[str, tuple[str, str, str]]:
     """Return selected event names and their suite identity from nextest list JSON."""
     try:
-        with path.open("r", encoding="utf-8") as stream:
-            payload = json.load(
-                stream, object_pairs_hook=_unique_object, parse_constant=_reject_constant
-            )
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raw = path.read_bytes()
+    except OSError as error:
+        raise NextestEvidenceError(f"invalid nextest inventory: {error}") from error
+    return parse_nextest_inventory_bytes(raw)
+
+
+def parse_nextest_inventory_bytes(raw: bytes) -> dict[str, tuple[str, str, str]]:
+    """Parse exactly the bytes whose digest is recorded by the receipt writer."""
+    try:
+        payload = json.loads(raw, object_pairs_hook=_unique_object, parse_constant=_reject_constant)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise NextestEvidenceError(f"invalid nextest inventory: {error}") from error
     if (
         not isinstance(payload, dict)

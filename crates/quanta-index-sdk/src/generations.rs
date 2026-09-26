@@ -45,6 +45,7 @@ impl<'a> GenerationNamespace<'a> {
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
             | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)
+            | SearchPlaneControlIpcResponse::ProcessRequestEventsV1(_)
             | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)) => {
                 Err(SdkError::Protocol(format!(
                     "expected rollback ack, got {}",
@@ -82,6 +83,7 @@ impl<'a> GenerationNamespace<'a> {
             | SearchPlaneControlIpcResponse::Error(_)
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
             | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)
+            | SearchPlaneControlIpcResponse::ProcessRequestEventsV1(_)
             | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)) => {
                 Err(SdkError::Protocol(format!(
                     "expected current generation snapshot, got {}",
@@ -117,6 +119,7 @@ impl<'a> GenerationNamespace<'a> {
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
             | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
             | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)
+            | SearchPlaneControlIpcResponse::ProcessRequestEventsV1(_)
             | SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(_)) => {
                 Err(SdkError::Protocol(format!(
                     "expected generation status report, got {}",
@@ -155,7 +158,8 @@ impl<'a> GenerationNamespace<'a> {
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
             | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
-            | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)) => {
+            | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)
+            | SearchPlaneControlIpcResponse::ProcessRequestEventsV1(_)) => {
                 Err(SdkError::Protocol(format!(
                     "expected search-corpus active-head observation, got {}",
                     QuantaIndex::control_response_kind(&other)

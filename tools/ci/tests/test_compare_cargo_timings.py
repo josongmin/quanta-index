@@ -80,6 +80,33 @@ def test_load_crates_rejects_missing_top_repo_crates_key(tmp_path: Path) -> None
         MODULE.load_crates(p)
 
 
+def test_duplicate_and_empty_timing_rows_are_refused(tmp_path: Path) -> None:
+    import pytest
+
+    p = tmp_path / "summary.json"
+    _write_json(p, [])
+    with pytest.raises(ValueError, match="empty"):
+        MODULE.load_crates(p)
+    row = {"name": "demo", "duration": 1.0, "units": 1}
+    _write_json(p, [row, row])
+    with pytest.raises(ValueError, match="duplicate"):
+        MODULE.load_crates(p)
+
+
+def test_invalid_threshold_and_update_candidate_cannot_pass(tmp_path: Path) -> None:
+    baseline = tmp_path / "baseline.json"
+    current = tmp_path / "current.json"
+    _write_json(baseline, [{"name": "demo", "duration": 1.0, "units": 1}])
+    _write_json(current, [])
+    before = baseline.read_bytes()
+    update = _run(str(baseline), str(current), "--update-baseline")
+    assert update.returncode == 2
+    assert baseline.read_bytes() == before
+    _write_json(current, [{"name": "demo", "duration": 2.0, "units": 1}])
+    threshold = _run(str(baseline), str(current), "--rel-threshold", "nan")
+    assert threshold.returncode == 2
+
+
 # ---------------------------------------------------------------------------
 # Case 1: OK — current is within thresholds of baseline
 # ---------------------------------------------------------------------------

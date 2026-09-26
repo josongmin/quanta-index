@@ -60,6 +60,18 @@ def test_live_control_plane_satisfies_policy() -> None:
     assert module.check(REPO_ROOT, metadata=_metadata_for(module)) == []
 
 
+def test_inline_benchctl_comment_cannot_hide_direct_producer(tmp_path: Path) -> None:
+    module = _policy_module()
+    workflow = tmp_path / ".github" / "workflows" / "benchmark.yml"
+    workflow.parent.mkdir(parents=True)
+    workflow.write_text(
+        "jobs:\n  bench:\n    steps:\n      - run: just rust-bench-dsl-warm # benchctl\n",
+        encoding="utf-8",
+    )
+    registry = {"producers": {"warm": {"kind": "just-recipe", "recipe": "rust-bench-dsl-warm"}}}
+    assert module.workflow_bypasses(tmp_path, registry)
+
+
 def test_every_cargo_bench_target_is_registered() -> None:
     module = _policy_module()
     registry = module.load_registry(REPO_ROOT / "tools" / "benchmark" / "registry.toml")

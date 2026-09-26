@@ -69,7 +69,7 @@ impl SearchPlaneDispatcher {
         let selection =
             resolve_semantic_request_selection(self.activation_catalog.as_ref(), request)?;
         let pin = selection.pin.clone();
-        let mut stage_timings = Vec::with_capacity(5);
+        let mut stage_timings = Vec::with_capacity(6);
         let prepare_started = Instant::now();
         let scope_plan = match request.lexical_scope.as_ref() {
             Some(scope) => Some(plan_semantic_scope(request, scope)?),

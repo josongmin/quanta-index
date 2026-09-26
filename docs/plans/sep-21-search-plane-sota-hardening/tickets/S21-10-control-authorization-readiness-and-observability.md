@@ -2,6 +2,23 @@
 
 Status: historical design record; current implementation and proof state must be read from source and `tools/ci/proof-authority.toml`.
 
+2026-09-26 local progress (shared dirty `main`, not qualification): one new
+`ProcessRequestEventsV1` control wire artifact projects the existing
+`IpcServerCounters` query/control/ingest rings; it does not add a second ring
+or internal event IR. The control dispatcher requires its existing `Admin`
+capability before reading the ring. The request caps event count at 1024 and
+the response caps encoded CBOR at 1 MiB; process instance, sequence window,
+drop before/after and omission are explicit. The SDK binds response plane and
+limit to its request; `searchctl events --plane query|control|ingest --limit N`
+is the operator entrypoint. Focused contract, dispatcher, SDK, CLI parser and
+in-process correlation checks ran on a dirty overlay. A Cargo-built local
+daemon-process test also observed the same request ID across queue admission,
+backend start/outcome/return and response completion over the real sockets.
+The listed DoD still requires provider-stage correlation, ring wrap/drop and
+restart checks on their final source, observer zero-disclosure at the socket,
+child and maintenance loss, plus frozen-source Linux release qualification.
+Do not mark P09 closed from this paragraph.
+
 2026-09-24 adversarial plan correction: the current exhaustive dispatcher
 capability enum is only `Observe`/`Admin`; `Admin` is restricted to the owner
 UID/root peer. The older `Operate`/`MutateGeneration` proposal below is not

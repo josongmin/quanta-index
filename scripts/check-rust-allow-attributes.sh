@@ -5,7 +5,7 @@ ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT_DIR}"
 
 set +e
-rg -n '^\s*#!?\[allow\(' crates --glob '*.rs'
+rg -n '^\s*#!?\[allow\(' crates benchmarks --glob '*.rs'
 rg_status=$?
 set -e
 if [[ ${rg_status} -eq 0 ]]; then

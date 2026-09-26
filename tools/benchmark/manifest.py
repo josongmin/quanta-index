@@ -62,7 +62,9 @@ def _baseline(family: dict[str, Any]) -> dict[str, str] | None:
         raise ManifestError(
             f"family baseline {path!r} needs a registered comparator, found {scorer!r}"
         )
-    admission = "canonical-linux" if family["host_policy"] == "canonical-linux" else "local-diagnostic"
+    admission = (
+        "canonical-linux" if family["host_policy"] == "canonical-linux" else "local-diagnostic"
+    )
     return {"path": path, "comparator": scorer, "admission": admission}
 
 
@@ -82,6 +84,7 @@ def load_manifest(path: Path | None = None, repo_root: Path | None = None) -> di
             "dimension": name,
             "artifact_glob": glob,
             "producer": name,
+            "payload": family["payload"],
             "minimum_samples": family["sample_floor"] or None,
             "host_policy": family["host_policy"],
             "requires_verdict": family["purpose"] in VERDICT_PURPOSES,

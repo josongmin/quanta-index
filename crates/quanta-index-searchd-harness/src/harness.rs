@@ -31,11 +31,13 @@ use quanta_index_contract::{
     GenerationSnapshot, GenerationStatusReport, GenerationStatusRequest, HistoryOrderV1,
     HistoryQueryRequest, HistoryScoreV1, HybridCandidateV1, HybridQueryRequest, LexicalCandidate,
     ManifestGeneration, MetricsSnapshotRequest, MetricsSnapshotV1, OwnerDocKind,
-    ProcessReadinessRequest, ProcessReadinessV1, QuarantineDiscardAck, QuarantineDiscardRequest,
-    QuarantineInventoryRequest, QuarantineInventoryV1, QuarantineTargetV1, QueryResultWindowV2,
-    RawFallbackReasonV1, RepoId, RepoRelativePath, RevisionId, RuntimeMetadataQueryRequest,
-    SearchCorpusActiveHeadV1, SearchCorpusGenerationIdentityV1, SearchCorpusIngestBatch,
-    SearchCorpusReplaceScope, SearchCorpusTombstoneScope, SearchExplanation,
+    ProcessReadinessRequest, ProcessReadinessV1, ProcessRequestEventPlaneV1,
+    ProcessRequestEventsRequestV1, ProcessRequestEventsV1, QuarantineDiscardAck,
+    QuarantineDiscardRequest, QuarantineInventoryRequest, QuarantineInventoryV1,
+    QuarantineTargetV1, QueryResultWindowV2, RawFallbackReasonV1, RepoId, RepoRelativePath,
+    RevisionId, RuntimeMetadataQueryRequest, SearchCorpusActiveHeadV1,
+    SearchCorpusGenerationIdentityV1, SearchCorpusIngestBatch, SearchCorpusReplaceScope,
+    SearchCorpusTombstoneScope, SearchExplanation,
     SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneControlIpcRequest,
     SearchPlaneControlIpcRequestEnvelope, SearchPlaneControlIpcResponse,
     SearchPlaneControlIpcResponseEnvelope, SearchPlaneErrorCodeV2, SearchPlaneExplainQueryRequest,
@@ -945,7 +947,8 @@ impl E2eRuntime {
             | SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(_)
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
-            | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)) => Err(anyhow::anyhow!(
+            | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)
+            | SearchPlaneControlIpcResponse::ProcessRequestEventsV1(_)) => Err(anyhow::anyhow!(
                 "e2e-harness: quarantine discard returned an unexpected control response: {other:?}"
             )),
         }
@@ -976,6 +979,24 @@ impl E2eRuntime {
             ));
         };
         Ok(report)
+    }
+
+    /// Read the operator-only process ring through the real control UDS.
+    pub fn process_request_events(
+        &mut self,
+        plane: ProcessRequestEventPlaneV1,
+        limit: u16,
+    ) -> AnyResult<ProcessRequestEventsV1> {
+        let response =
+            self.dispatch_control(SearchPlaneControlIpcRequest::ProcessRequestEventsV1(
+                ProcessRequestEventsRequestV1 { plane, limit },
+            ))?;
+        let SearchPlaneControlIpcResponse::ProcessRequestEventsV1(events) = response else {
+            return Err(anyhow::anyhow!(
+                "e2e-harness: request-event read returned unexpected control response: {response:?}"
+            ));
+        };
+        Ok(events)
     }
 
     /// Promote a sealed harness generation as one lexical plus semantic corpus.
@@ -1105,7 +1126,8 @@ impl E2eRuntime {
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
             | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
-            | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)) => Err(anyhow::anyhow!(
+            | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)
+            | SearchPlaneControlIpcResponse::ProcessRequestEventsV1(_)) => Err(anyhow::anyhow!(
                 "e2e-harness: active-head read returned an unexpected control response: {other:?}"
             )),
         }

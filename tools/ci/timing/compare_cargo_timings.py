@@ -73,7 +73,12 @@ def load_crates(path: Path) -> dict[str, CrateRow]:
         name, duration, units = row.get("name"), row.get("duration"), row.get("units")
         if not isinstance(name, str) or not name or name in crates:
             raise ValueError(f"{path}: empty or duplicate crate name: {name!r}")
-        if isinstance(duration, bool) or not isinstance(duration, (int, float)) or not math.isfinite(duration) or duration < 0:
+        if (
+            isinstance(duration, bool)
+            or not isinstance(duration, (int, float))
+            or not math.isfinite(duration)
+            or duration < 0
+        ):
             raise ValueError(f"{path}: invalid duration for {name}")
         if type(units) is not int or units < 1:
             raise ValueError(f"{path}: invalid units for {name}")
@@ -84,7 +89,21 @@ def load_crates(path: Path) -> dict[str, CrateRow]:
 def main() -> int:
     args = parse_args()
 
+    if (
+        not math.isfinite(args.rel_threshold)
+        or args.rel_threshold < 0
+        or not math.isfinite(args.abs_threshold)
+        or args.abs_threshold < 0
+    ):
+        print("timing thresholds must be finite and non-negative", file=sys.stderr)
+        return 2
+
     if args.update_baseline:
+        try:
+            load_crates(args.current)
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            print(f"invalid baseline candidate: {error}", file=sys.stderr)
+            return 2
         args.baseline.write_text(
             args.current.read_text(encoding="utf-8"),
             encoding="utf-8",
@@ -100,7 +119,9 @@ def main() -> int:
         return 2
     missing = sorted(set(baseline) - set(current))
     if missing:
-        print(f"current timing evidence omits baseline crates: {', '.join(missing)}", file=sys.stderr)
+        print(
+            f"current timing evidence omits baseline crates: {', '.join(missing)}", file=sys.stderr
+        )
         return 2
 
     all_crates = sorted(set(baseline) | set(current))

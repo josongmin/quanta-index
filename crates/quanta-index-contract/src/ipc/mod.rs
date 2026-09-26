@@ -1,5 +1,6 @@
 mod batch_body;
 mod control;
+mod diagnostic_events;
 mod error;
 mod ingest;
 mod metrics;
@@ -10,6 +11,7 @@ mod split;
 pub use crate::semantic_kinds::{CapabilityStatusV1, SemanticCorpusKindV1, SourceRoleV1};
 pub use batch_body::*;
 pub use control::*;
+pub use diagnostic_events::*;
 pub use error::*;
 pub use ingest::*;
 pub use metrics::*;

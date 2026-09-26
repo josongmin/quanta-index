@@ -881,10 +881,9 @@ mod tests {
             return Err("retire did not fence the open in flight".into());
         }
         let promptly_retired = retired_rx.recv_timeout(Duration::from_millis(500));
-        let repeated = if promptly_retired.is_ok() {
-            Some(registry.retire(&key(9))?)
-        } else {
-            None
+        let repeated = match &promptly_retired {
+            Ok(_) => Some(registry.retire(&key(9))?),
+            Err(_) => None,
         };
         let _released = release.wait();
         retirer.join().map_err(|_panic| "retirer panicked")?;

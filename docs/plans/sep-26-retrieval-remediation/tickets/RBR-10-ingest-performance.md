@@ -5,6 +5,7 @@
 - 구현: `build.rs::build_stream_reported`가 내부 delete/append 등 stage report를 만들지만 기본 `build_stream`은 보고값을 폐기하고 공개 SDK/runner까지 전달하지 않는다. delete 최적화나 제품 기본값 변경은 아직 없다.
 - 검증: 현 frozen-source semantic integration, 공개 stage identity, fresh/delta raw 측정, row-set/fault/restart oracle은 `NOT_RUN`.
 - 잔여: semantic owner→search-plane/SDK→runner의 stage provenance를 먼저 연결하고 비용 비중을 재현한다. 유의한 delete 비용이 확인된 경우에만 bounded predicate 한 후보를 시험하고 durability/재시작/원자적 visibility 및 fresh-root 시간을 검증한다. 아니면 유지 결정. [현재 전수 판정](CURRENT-AUDIT.md).
+- 구현 경계: `BatchPublishReceipt`는 replay 가능한 durable acknowledgement라 비결정적 elapsed/call count를 여기에 넣지 않는다. `SemanticScopeStreamBuildPort`의 tally/report, search-corpus publish 호출, IPC/SDK의 **별도 transient observation** 및 runner sidecar를 동일 batch/generation/request identity로 연결해야 한다. 전역 last-report 캐시나 프로세스 누적 metric은 병렬 publish에서 batch provenance를 보장하지 못한다. 이 경로와 embedding·seal·activation 시계의 포함 범위를 정하기 전에는 내부 `build_stream_reported` 수치만으로 ingest 병목을 단정하지 않는다.
 
 - 우선순위: P2. 내부 storage stage 계측 코드는 관측됨; 공개 경로·실측·조건부 결정은 `NOT_RUN`. [현재 전수 판정](CURRENT-AUDIT.md). 선행: RBR-01.
 - 확인된 사실: 임베딩은 이미 window batching, storage는 scope별 delete 후 batch append. 비용 비중은 아직 미측정.

@@ -15,7 +15,6 @@ The allowlist is intentionally small. Adding a new entry requires:
 
 from __future__ import annotations
 
-import re
 import sys
 from pathlib import Path
 
@@ -40,10 +39,6 @@ ALLOWED_DERIVES: frozenset[str] = frozenset(
     }
 )
 
-# Matches `#[derive(...)]` allowing nested parens via greedy capture across
-# whitespace. We capture the comma-separated identifier list inside the parens.
-DERIVE_RE = re.compile(r"#\[\s*derive\s*\(([^)]+)\)\s*\]", re.MULTILINE)
-
 # Banned outright within the single owned derive policy.
 EXPLICIT_BAN: dict[str, str] = {
     "Serialize": "manual `impl serde::Serialize` is required",
@@ -64,6 +59,7 @@ def derives_in(text: str) -> list[tuple[int, list[str]]]:
 
     sites: list[tuple[int, list[str]]] = []
     tree = get_parser("rust").parse(text.encode("utf-8"))
+
     # Other source syntax errors are owned by rustc. An invalid derive site must
     # still be rejected here because the parser may otherwise omit it.
     def invalid_derive(node: object) -> bool:
@@ -80,16 +76,17 @@ def derives_in(text: str) -> list[tuple[int, list[str]]]:
             while stack:
                 current = stack.pop()
                 children = current.children
-                for index, child in enumerate(children[:-1]):
+                for index, child in enumerate(children):
                     if child.type == "identifier" and child.text == b"derive":
-                        argument = children[index + 1]
+                        argument = children[index + 1] if index + 1 < len(children) else None
+                        if argument is None:
+                            raise ValueError("derive attribute has no argument list")
                         if argument.type != "token_tree":
                             raise ValueError("derive attribute has no argument list")
                         body = argument.text.decode("utf-8")[1:-1]
                         names = [name.strip() for name in body.split(",") if name.strip()]
                         sites.append((child.start_point.row + 1, names))
-                    else:
-                        stack.append(child)
+                    stack.append(child)
             return
         for child in node.children:
             visit(child)

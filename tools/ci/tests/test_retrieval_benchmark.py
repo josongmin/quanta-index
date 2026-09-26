@@ -296,6 +296,9 @@ def test_retrieval_diagnostic_v3_replays_typed_window_and_empty_non_exhausted():
     for mutate in (
         lambda value: value["results"][0]["response"].update(explanation=None),
         lambda value: value["results"][0]["response"]["explanation"].update(request_id=0),
+        lambda value: value["results"][0]["response"]["explanation"].update(engines_executed=[]),
+        lambda value: value["results"][0]["response"]["explanation"].update(engines_touched=[]),
+        lambda value: value["results"][0]["response"]["explanation"].update(strategy="rrf"),
         lambda value: value["results"][0]["response"]["explanation"]["stage_timings"].pop(),
         lambda value: value["results"][0]["response"]["explanation"]["stage_timings"].reverse(),
         lambda value: value["results"][0]["response"]["explanation"]["stage_timings"][-1].update(returned_candidates=2),
@@ -396,6 +399,52 @@ def test_retrieval_diagnostic_v3_replays_typed_window_and_empty_non_exhausted():
     rejected["results"][0]["response"]["expected_generation"]["manifest_generation"] = 6
     with pytest.raises(pairrun.RunError, match="bound to capture generation"):
         pairrun.validate_retrieval_diagnostic(rejected, rejected_record, "b" * 64, pack)
+
+
+def test_retrieval_diagnostic_v4_semantic_stages_bind_execution_and_strategy():
+    stages = [
+        {"stage": f"semantic.{name}", "elapsed_ns": 100, "calls": 1,
+         "returned_candidates": 1 if name in ("dense_search", "project") else None}
+        for name in ("prepare", "read_view", "embedding", "dense_search", "project")
+    ]
+    explanation = {
+        "request_id": 22,
+        "early_stop_reason": None,
+        "engines_executed": ["semantic"],
+        "engines_touched": ["semantic"],
+        "strategy": "semantic",
+        "stage_timings": stages,
+    }
+    pairrun._validate_explanation(explanation, "semantic fixture", "semantic", 4, 1)
+    for field, value in (
+        ("engines_executed", []),
+        ("engines_touched", []),
+        ("strategy", "semantic_scoped"),
+    ):
+        changed = json.loads(json.dumps(explanation))
+        changed[field] = value
+        with pytest.raises(pairrun.RunError, match="semantic stage execution"):
+            pairrun._validate_explanation(changed, "semantic fixture", "semantic", 4, 1)
+
+    scoped = json.loads(json.dumps(explanation))
+    scoped["stage_timings"].insert(2, {
+        "stage": "semantic.lexical_scope", "elapsed_ns": 100, "calls": 1,
+        "returned_candidates": 2,
+    })
+    scoped["engines_executed"] = ["lexical", "semantic"]
+    scoped["engines_touched"] = ["lexical", "semantic"]
+    scoped["strategy"] = "semantic_scoped"
+    pairrun._validate_explanation(scoped, "semantic scoped fixture", "semantic", 4, 1)
+
+    empty = json.loads(json.dumps(scoped))
+    empty["stage_timings"][-2]["returned_candidates"] = 0
+    empty["stage_timings"][-1]["returned_candidates"] = 0
+    empty["engines_touched"] = ["lexical"]
+    empty["strategy"] = "empty"
+    pairrun._validate_explanation(empty, "semantic zero-hit fixture", "semantic", 4, 0)
+    empty["engines_touched"] = ["lexical", "semantic"]
+    with pytest.raises(pairrun.RunError, match="semantic stage execution"):
+        pairrun._validate_explanation(empty, "semantic zero-hit fixture", "semantic", 4, 0)
 
 
 def test_pair_record_identity_accepts_multi_route_quanta_and_rejects_mixed_captures():

@@ -12,10 +12,11 @@ use crate::{
     GenerationSnapshot, GenerationStatusReport, GenerationStatusRequest, HistoryQueryRequest,
     HybridQueryRequest, HybridQueryResponse, HybridSeedQueryRequest, HybridSeedQueryResponse,
     MetricsSnapshotRequest, MetricsSnapshotV1, ProcessReadinessRequest, ProcessReadinessV1,
-    QuarantineDiscardAck, QuarantineDiscardRequest, QuarantineInventoryRequest,
-    QuarantineInventoryV1, RepoMapActivateGenerationRequestV2, RepoMapActiveHeadRequestV2,
-    RepoMapActiveHeadResponseV2, RepoMapQueryRequest, RepoMapQueryResponse,
-    RepoMapTerminalReceiptV2, RuntimeMetadataQueryRequest, SearchCorpusActiveHeadObservationV1,
+    ProcessRequestEventsRequestV1, ProcessRequestEventsV1, QuarantineDiscardAck,
+    QuarantineDiscardRequest, QuarantineInventoryRequest, QuarantineInventoryV1,
+    RepoMapActivateGenerationRequestV2, RepoMapActiveHeadRequestV2, RepoMapActiveHeadResponseV2,
+    RepoMapQueryRequest, RepoMapQueryResponse, RepoMapTerminalReceiptV2,
+    RuntimeMetadataQueryRequest, SearchCorpusActiveHeadObservationV1,
     SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneExplainQueryRequest,
     SearchPlaneExplainQueryResponse, SearchPlaneHistoryQueryResponse, SearchPlaneIpcError,
     SearchPlaneRollbackSearchCorpusGenerationCasRequest, SearchPlaneRuntimeMetadataQueryResponse,
@@ -70,6 +71,7 @@ const SEARCH_PLANE_CONTROL_IPC_REQUEST_VARIANTS: &[&str] = &[
     "QuarantineInventory",
     "QuarantineDiscard",
     "ProcessReadiness",
+    "ProcessRequestEventsV1",
 ];
 const SEARCH_PLANE_CONTROL_IPC_RESPONSE_VARIANTS: &[&str] = &[
     "SearchCorpusActivationCasAck",
@@ -84,6 +86,7 @@ const SEARCH_PLANE_CONTROL_IPC_RESPONSE_VARIANTS: &[&str] = &[
     "QuarantineInventory",
     "QuarantineDiscardAck",
     "ProcessReadinessReport",
+    "ProcessRequestEventsV1",
 ];
 
 #[derive(Clone, Debug, PartialEq)]
@@ -194,6 +197,8 @@ pub enum SearchPlaneControlIpcRequest {
     /// planes, maintenance, backend, provider, candidate integrity).
     /// Deliberately distinct from repository generation status.
     ProcessReadiness(ProcessReadinessRequest),
+    /// Operator-only, bounded projection of the existing transport event ring.
+    ProcessRequestEventsV1(ProcessRequestEventsRequestV1),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -222,6 +227,7 @@ pub enum SearchPlaneControlIpcResponse {
     QuarantineDiscardAck(QuarantineDiscardAck),
     /// S21-10: response to [`SearchPlaneControlIpcRequest::ProcessReadiness`].
     ProcessReadinessReport(ProcessReadinessV1),
+    ProcessRequestEventsV1(ProcessRequestEventsV1),
 }
 
 fn serialize_envelope<S, Payload>(
@@ -885,6 +891,12 @@ impl Serialize for SearchPlaneControlIpcRequest {
                 payload,
                 serializer,
             ),
+            Self::ProcessRequestEventsV1(payload) => serialize_adjacent_tagged(
+                "SearchPlaneControlIpcRequest",
+                "ProcessRequestEventsV1",
+                payload,
+                serializer,
+            ),
         }
     }
 }
@@ -956,6 +968,9 @@ impl<'de> Visitor<'de> for SearchPlaneControlIpcRequestVisitor {
                         }
                         "ProcessReadiness" => {
                             SearchPlaneControlIpcRequest::ProcessReadiness(map.next_value()?)
+                        }
+                        "ProcessRequestEventsV1" => {
+                            SearchPlaneControlIpcRequest::ProcessRequestEventsV1(map.next_value()?)
                         }
                         other => {
                             return Err(de::Error::unknown_variant(
@@ -1124,6 +1139,12 @@ impl Serialize for SearchPlaneControlIpcResponse {
                 payload,
                 serializer,
             ),
+            Self::ProcessRequestEventsV1(payload) => serialize_adjacent_tagged(
+                "SearchPlaneControlIpcResponse",
+                "ProcessRequestEventsV1",
+                payload,
+                serializer,
+            ),
         }
     }
 }
@@ -1202,6 +1223,9 @@ impl<'de> Visitor<'de> for SearchPlaneControlIpcResponseVisitor {
                         }
                         "ProcessReadinessReport" => {
                             SearchPlaneControlIpcResponse::ProcessReadinessReport(map.next_value()?)
+                        }
+                        "ProcessRequestEventsV1" => {
+                            SearchPlaneControlIpcResponse::ProcessRequestEventsV1(map.next_value()?)
                         }
                         other => {
                             return Err(de::Error::unknown_variant(

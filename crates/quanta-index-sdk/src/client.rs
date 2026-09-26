@@ -381,7 +381,8 @@ impl QuantaIndex {
             | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
             | SearchPlaneControlIpcResponse::QuarantineInventory(_)
             | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_)
-            | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)) => Ok(payload),
+            | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)
+            | SearchPlaneControlIpcResponse::ProcessRequestEventsV1(_)) => Ok(payload),
         }
     }
 
@@ -500,6 +501,7 @@ impl QuantaIndex {
             SearchPlaneControlIpcResponse::QuarantineInventory(_) => "quarantine_inventory",
             SearchPlaneControlIpcResponse::QuarantineDiscardAck(_) => "quarantine_discard_ack",
             SearchPlaneControlIpcResponse::ProcessReadinessReport(_) => "process_readiness_report",
+            SearchPlaneControlIpcResponse::ProcessRequestEventsV1(_) => "process_request_events_v1",
             SearchPlaneControlIpcResponse::Error(_) => "error",
         }
     }
@@ -819,6 +821,15 @@ impl<'a> ControlClient<'a> {
     /// Process-wide readiness, separate from per-repository generation status.
     pub fn process_readiness(&self) -> Result<quanta_index_contract::ProcessReadinessV1, SdkError> {
         self.client.observability().process_readiness()
+    }
+
+    /// Read a bounded request-event window; requires daemon-side Admin capability.
+    pub fn request_events(
+        &self,
+        plane: quanta_index_contract::ProcessRequestEventPlaneV1,
+        limit: u16,
+    ) -> Result<quanta_index_contract::ProcessRequestEventsV1, SdkError> {
+        self.client.observability().request_events(plane, limit)
     }
 
     /// What the daemon quarantines right now (QI-BB-026).

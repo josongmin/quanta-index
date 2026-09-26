@@ -14,14 +14,14 @@ use quanta_index_contract::{
     AuxEpochV1, ContinuationTokenV2, EarlyStopReason, EngineTouched, ExplainCandidateV1,
     GenerationPin, HistoryOrderV1, HistoryQueryRequest, HybridCandidateV1, HybridQueryRequest,
     HybridQueryResponse, HybridSeedQueryRequest, HybridSeedQueryResponse, LexicalCandidate,
-    ManifestGeneration, PlannerTraceEntry, ProcessReadinessV1, QueryConstraintSetV1,
-    QueryErrorRepair, QueryResultWindowV2, RepoId, RepoMapDocType, RepoMapFocusSubjectDto,
-    RepoMapQueryRequest, RevisionId, RuntimeMetadataQueryRequest, SearchExplanation,
-    SearchPlaneHistoryQueryResponse, SearchPlaneQueryIpcResponse,
-    SearchPlaneQueryIpcResponseEnvelope, SearchPlaneRuntimeMetadataQueryResponse,
-    SearchPlaneStructuralQueryResponse, SemanticQueryRequest, StructuralQueryRequest,
-    SymbolCandidate, SymbolQueryRequest, SymbolQueryResponse, TextQueryRequest, TextQueryResponse,
-    TextQuerySyntax,
+    ManifestGeneration, PlannerTraceEntry, ProcessReadinessV1, ProcessRequestEventPlaneV1,
+    ProcessRequestEventsV1, QueryConstraintSetV1, QueryErrorRepair, QueryResultWindowV2, RepoId,
+    RepoMapDocType, RepoMapFocusSubjectDto, RepoMapQueryRequest, RevisionId,
+    RuntimeMetadataQueryRequest, SearchExplanation, SearchPlaneHistoryQueryResponse,
+    SearchPlaneQueryIpcResponse, SearchPlaneQueryIpcResponseEnvelope,
+    SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneStructuralQueryResponse,
+    SemanticQueryRequest, StructuralQueryRequest, SymbolCandidate, SymbolQueryRequest,
+    SymbolQueryResponse, TextQueryRequest, TextQueryResponse, TextQuerySyntax,
     ipc::{
         GenerationStatusReport, MetricHistogramV1, MetricsSnapshotV1, QuarantineDiscardAck,
         QuarantineDiscardOutcomeDtoV1, QuarantineInventoryV1, QuarantineTargetV1,
@@ -93,6 +93,14 @@ where
                 .process_readiness()
                 .map_err(map_sdk_error)?;
             write_stdout(stdout, &render_process_readiness(&report, output)?)?;
+            Ok(ExitCode::SUCCESS)
+        }
+        CliRequest::RequestEvents { plane, limit } => {
+            let events = client
+                .observability()
+                .request_events(plane, limit)
+                .map_err(map_sdk_error)?;
+            write_stdout(stdout, &render_request_events(&events, output)?)?;
             Ok(ExitCode::SUCCESS)
         }
         CliRequest::Doctor {
@@ -197,6 +205,7 @@ enum CommandKind {
     History,
     Structural,
     Readiness,
+    RequestEvents,
     GenerationStatus,
     Doctor,
     Metrics,
@@ -280,6 +289,10 @@ enum CliRequest {
         revision_id: RevisionId,
     },
     ProcessReadiness,
+    RequestEvents {
+        plane: ProcessRequestEventPlaneV1,
+        limit: u16,
+    },
     Doctor {
         repo_id: RepoId,
         revision_id: RevisionId,
@@ -349,6 +362,10 @@ impl ParsedCommand {
                 CommandKind::Readiness,
                 parse_process_readiness(&mut common, &mut rest)?,
             ),
+            "events" => (
+                CommandKind::RequestEvents,
+                parse_request_events(&mut common, &mut rest)?,
+            ),
             "generation-status" => (
                 CommandKind::GenerationStatus,
                 parse_generation_status(&mut common, &mut rest)?,
@@ -361,7 +378,7 @@ impl ParsedCommand {
             ),
             other => {
                 return Err(CliError::usage(format!(
-                    "unknown subcommand `{other}`; expected lexical|symbol|semantic|hybrid|hybrid-seed|explain|repomap|runtime-metadata|history|structural|readiness|generation-status|doctor|metrics|quarantine"
+                    "unknown subcommand `{other}`; expected lexical|symbol|semantic|hybrid|hybrid-seed|explain|repomap|runtime-metadata|history|structural|readiness|events|generation-status|doctor|metrics|quarantine"
                 )));
             }
         };
@@ -669,6 +686,48 @@ fn parse_process_readiness(
         )));
     }
     Ok(CliRequest::ProcessReadiness)
+}
+
+fn parse_request_events(
+    common: &mut CommonOptions,
+    rest: &mut VecDeque<String>,
+) -> CliResult<CliRequest> {
+    let mut plane = None;
+    let mut limit = None;
+    while let Some(current) = rest.pop_front() {
+        if common.parse_flag(&current, rest)? {
+            continue;
+        }
+        match current.as_str() {
+            "--plane" if plane.is_none() => {
+                plane = Some(match take_value(rest, "--plane")?.as_str() {
+                    "query" => ProcessRequestEventPlaneV1::Query,
+                    "control" => ProcessRequestEventPlaneV1::Control,
+                    "ingest" => ProcessRequestEventPlaneV1::Ingest,
+                    other => return Err(CliError::usage(format!("invalid event plane `{other}`"))),
+                });
+            }
+            "--limit" if limit.is_none() => {
+                let raw = take_value(rest, "--limit")?;
+                let parsed = raw
+                    .parse::<u16>()
+                    .map_err(|_| CliError::usage(format!("invalid event limit `{raw}`")))?;
+                if parsed == 0 || parsed > quanta_index_contract::MAX_PROCESS_REQUEST_EVENTS_V1 {
+                    return Err(CliError::usage("event limit must be 1..=1024".to_owned()));
+                }
+                limit = Some(parsed);
+            }
+            _ => {
+                return Err(CliError::usage(format!(
+                    "unknown or duplicate events flag `{current}`"
+                )));
+            }
+        }
+    }
+    Ok(CliRequest::RequestEvents {
+        plane: plane.ok_or_else(|| CliError::usage("events requires --plane".to_owned()))?,
+        limit: limit.ok_or_else(|| CliError::usage("events requires --limit".to_owned()))?,
+    })
 }
 
 /// QI-BB-015: parse `metrics`, which takes only the global flags.
@@ -1315,12 +1374,13 @@ fn dispatch_query_request(
         // query.
         CliRequest::GenerationStatus { .. }
         | CliRequest::ProcessReadiness
+        | CliRequest::RequestEvents { .. }
         | CliRequest::Doctor { .. }
         | CliRequest::Metrics
         | CliRequest::QuarantineList
         | CliRequest::QuarantineDiscard(_) => {
             return Err(CliError::protocol(
-                "readiness/generation-status/doctor/metrics/quarantine are control-plane commands and must not reach the query dispatcher"
+                "readiness/events/generation-status/doctor/metrics/quarantine are control-plane commands and must not reach the query dispatcher"
                     .to_string(),
             ));
         }
@@ -1625,6 +1685,74 @@ fn render_process_readiness(report: &ProcessReadinessV1, output: OutputMode) -> 
             ))?;
             for reason in &report.not_ready_reasons {
                 fmt_ok(writeln!(rendered, "not_ready: {}", reason.as_code_str()))?;
+            }
+            Ok(rendered)
+        }
+    }
+}
+
+fn render_request_events(events: &ProcessRequestEventsV1, output: OutputMode) -> CliResult<String> {
+    match output {
+        OutputMode::Json => serde_json::to_string_pretty(events)
+            .map(|mut text| {
+                text.push('\n');
+                text
+            })
+            .map_err(|error| CliError::protocol(format!("failed to encode event JSON: {error}"))),
+        OutputMode::Prometheus => Err(prometheus_is_metrics_only("events")),
+        OutputMode::Pretty => {
+            let mut rendered = String::new();
+            fmt_ok(writeln!(rendered, "kind: process-request-events-v1"))?;
+            fmt_ok(writeln!(
+                rendered,
+                "process_instance: {}",
+                events.process_instance
+            ))?;
+            fmt_ok(writeln!(rendered, "plane: {}", events.plane.as_code_str()))?;
+            fmt_ok(writeln!(
+                rendered,
+                "oldest_retained_sequence: {:?}",
+                events.oldest_retained_sequence
+            ))?;
+            fmt_ok(writeln!(
+                rendered,
+                "next_sequence: {}",
+                events.next_sequence
+            ))?;
+            fmt_ok(writeln!(
+                rendered,
+                "dropped_before: {}",
+                events.dropped_before
+            ))?;
+            fmt_ok(writeln!(
+                rendered,
+                "dropped_after: {}",
+                events.dropped_after
+            ))?;
+            fmt_ok(writeln!(
+                rendered,
+                "omitted_before_window: {}",
+                events.omitted_before_window
+            ))?;
+            fmt_ok(writeln!(
+                rendered,
+                "sequence_exhausted: {}",
+                events.sequence_exhausted
+            ))?;
+            for event in &events.events {
+                fmt_ok(writeln!(
+                    rendered,
+                    "sequence={} request_id={} connection_id={} stage={} elapsed_micros={} route={:?} error={:?} ticket_id={:?} window_ordinal={:?}",
+                    event.sequence,
+                    event.request_id,
+                    event.connection_id,
+                    event.stage.as_code_str(),
+                    event.elapsed_micros,
+                    event.route,
+                    event.error,
+                    event.ticket_id,
+                    event.window_ordinal,
+                ))?;
             }
             Ok(rendered)
         }
@@ -2662,6 +2790,7 @@ fn command_kind_name(kind: CommandKind) -> &'static str {
         CommandKind::History => "history",
         CommandKind::Structural => "structural",
         CommandKind::Readiness => "readiness",
+        CommandKind::RequestEvents => "events",
         CommandKind::GenerationStatus => "generation-status",
         CommandKind::Doctor => "doctor",
         CommandKind::Metrics => "metrics",
@@ -2774,6 +2903,7 @@ Read-only subcommands:
   repomap          --repo-id ID --revision-id REV --manifest-generation N --query-text TEXT --top-k N --token-budget N [--focus-subject subject_identity:subject_doc_type]
     history          --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N --order recency|relevance, history          --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N [--cursor-json PATH|-], runtime-metadata --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N, runtime-metadata --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N [--cursor-json PATH|-], structural       --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N, structural       --repo-id ID --revision-id REV --manifest-generation N --syntax native|sourcegraph --query-text TEXT --top-k N [--cursor-json PATH|-],
   readiness
+  events           --plane query|control|ingest --limit 1..1024
   generation-status --repo-id ID --revision-id REV
   doctor           --repo-id ID --revision-id REV
   metrics
@@ -3831,6 +3961,53 @@ mod tests {
         assert_eq!(parsed.request, CliRequest::ProcessReadiness);
         let with_repo = ParsedCommand::parse(["readiness", "--repo-id", "repo-1"]);
         assert!(with_repo.is_err());
+    }
+
+    #[test]
+    fn events_require_bounded_plane_and_limit() {
+        let parsed = ParsedCommand::parse([
+            "events", "--plane", "query", "--limit", "32", "--output", "json",
+        ])
+        .expect("bounded event request");
+        assert_eq!(parsed.kind, CommandKind::RequestEvents);
+        assert_eq!(
+            parsed.request,
+            CliRequest::RequestEvents {
+                plane: ProcessRequestEventPlaneV1::Query,
+                limit: 32,
+            }
+        );
+        for args in [
+            vec!["events", "--plane", "query"],
+            vec!["events", "--plane", "query", "--limit", "0"],
+            vec!["events", "--plane", "query", "--limit", "1025"],
+            vec!["events", "--plane", "unknown", "--limit", "1"],
+        ] {
+            assert!(ParsedCommand::parse(args).is_err());
+        }
+    }
+
+    #[test]
+    fn events_renderer_keeps_loss_and_process_identity_visible() {
+        let events = ProcessRequestEventsV1 {
+            process_instance: "0000000000000000000000000000002a".to_owned(),
+            plane: ProcessRequestEventPlaneV1::Query,
+            events: Vec::new(),
+            oldest_retained_sequence: None,
+            next_sequence: 1,
+            dropped_before: 2,
+            dropped_after: 2,
+            omitted_before_window: false,
+            sequence_exhausted: false,
+        };
+        let pretty = render_request_events(&events, OutputMode::Pretty).expect("pretty events");
+        assert!(pretty.contains("process_instance: 0000000000000000000000000000002a"));
+        assert!(pretty.contains("dropped_before: 2"));
+        assert!(pretty.contains("omitted_before_window: false"));
+        let json = render_request_events(&events, OutputMode::Json).expect("JSON events");
+        let decoded: ProcessRequestEventsV1 =
+            serde_json::from_str(&json).expect("typed JSON events");
+        assert_eq!(decoded, events);
     }
 
     fn metrics_fixture() -> MetricsSnapshotV1 {

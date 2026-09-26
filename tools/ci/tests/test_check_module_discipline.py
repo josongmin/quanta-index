@@ -164,6 +164,11 @@ def test_macro_rules_flagged(tmp_path: Path):
     assert any("macro_rules!" in v.snippet for v in findings)
 
 
+def test_comment_brace_cannot_hide_implementation(tmp_path: Path):
+    p = write(tmp_path, "// {\npub fn hidden() {}\n")
+    assert any("pub fn hidden" in item.snippet for item in MODULE.audit_facade(p))
+
+
 def test_lint_loads_workspace_members():
     """The lint correctly reads workspace.members and produces a non-empty
     facade-file list. Intentionally not asserting the tree itself passes —

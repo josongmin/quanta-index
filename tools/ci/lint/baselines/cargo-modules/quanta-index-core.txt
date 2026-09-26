@@ -26,6 +26,7 @@ crate quanta_index_core
 │   │   ├── struct QuarantinedGenerationV1: pub
 │   │   ├── struct SealedArtifactCommitmentV1: pub
 │   │   ├── struct SealedGenerationBytesV1: pub
+│   │   ├── trait SealedGenerationIdentityProbePort: pub
 │   │   ├── struct SealedGenerationInventoryV1: pub
 │   │   ├── enum SealedGenerationReclaimOutcomeV1: pub
 │   │   ├── trait SealedGenerationReclaimPort: pub

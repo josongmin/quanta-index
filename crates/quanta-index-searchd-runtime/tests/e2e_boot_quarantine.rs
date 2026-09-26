@@ -622,6 +622,7 @@ fn control_refusal(response: &SearchPlaneControlIpcResponse) -> Option<(&'static
         | SearchPlaneControlIpcResponse::SearchCorpusActiveHeadObservation(_)
         | SearchPlaneControlIpcResponse::MetricsSnapshot(_)
         | SearchPlaneControlIpcResponse::ProcessReadinessReport(_)
+        | SearchPlaneControlIpcResponse::ProcessRequestEventsV1(_)
         | SearchPlaneControlIpcResponse::QuarantineInventory(_)
         | SearchPlaneControlIpcResponse::QuarantineDiscardAck(_) => None,
     }
