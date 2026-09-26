@@ -7,14 +7,20 @@ partial family/case output never replaces the previous complete capture.
 
 from __future__ import annotations
 
+import functools
+import inspect
 import os
+import time
+import uuid
 from collections.abc import Callable
+from contextvars import ContextVar
 from copy import deepcopy
 from pathlib import Path
 
 from custody import publication
 from evidence import (
     EvidenceError,
+    RawFile,
     RunStore,
     _check_control_size,
     _read_control_file,
@@ -24,12 +30,182 @@ from evidence import (
     canonical_json,
     digest_bytes,
     parse_json,
+    write_raw_file,
 )
+
+_active_capture = ContextVar("benchmark_capture_epoch", default=None)
+
+
+def current_capture():
+    epoch = _active_capture.get()
+    if epoch is None:
+        raise EvidenceError("capture operation has no owning epoch")
+    return epoch
+
+
+def capture_error(error):
+    """Keep a primary error even when the CLI converts it to a nonzero status."""
+    if (epoch := _active_capture.get()) is not None:
+        epoch.reject(error)
+
+
+def capture_phase(phase, **observations):
+    if (epoch := _active_capture.get()) is not None:
+        epoch.step(phase, **observations)
+
+
+class CaptureEpoch:
+    """Diagnostic custody spanning preparation through the sole pointer commit.
+
+    Failure records are not BenchmarkEvidence and never enter capture inventory.
+    Unobserved identities/terminal states stay absent, not fabricated successes.
+    """
+
+    def __init__(self, repo: Path, root: Path, profile: str, *, capture_id=None):
+        self.root = root.absolute()
+        if self.root.resolve().is_relative_to(repo.resolve()):
+            raise EvidenceError("capture evidence root must stay outside the checkout")
+        _directories(self.root)
+        self.profile = _run_id(profile)
+        self.capture_id = _run_id(capture_id or f"{profile}-{uuid.uuid4().hex}")
+        self.work = self.root / "work" / self.capture_id
+        self.failure = self.root / "failures" / f"{self.capture_id}.json"
+        self.primary = None
+        self.state = {
+            "schema_version": 1, "kind": "capture-diagnostic",
+            "capture_id": self.capture_id, "profile": self.profile,
+            "status": "active", "phase": "admission", "sequence": 0,
+            "started_ns": time.time_ns(), "updated_ns": time.time_ns(),
+            "work_root": str(self.work), "observations": {},
+            "history": [],
+            "commit_state": "not_started", "error": None,
+        }
+
+    def __enter__(self):
+        self.work.mkdir(parents=True, exist_ok=False)
+        self.token = _active_capture.set(self)
+        try:
+            self.step("admission")
+        except BaseException as error:
+            self.__exit__(type(error), error, error.__traceback__)
+            raise
+        return self
+
+    def step(self, phase, **observations):
+        _run_id(phase)
+        self.state.update(phase=phase, sequence=self.state["sequence"] + 1, updated_ns=time.time_ns())
+        self.state["history"].append({
+            "sequence": self.state["sequence"], "phase": phase, "observed_ns": self.state["updated_ns"],
+        })
+        self.state["observations"].update(deepcopy(observations))
+        _write_atomic(self.work / "capture.json", canonical_json(self.state).encode())
+
+    def reject(self, error):
+        if self.primary is None:
+            self.primary = error
+
+    def inputs(self, files):
+        self.step("preparation", inputs={
+            name: {"path": str(raw.path), "sha256": raw.sha256, "bytes": raw.size}
+            for name, raw in files.items()
+        })
+
+    def execute(self, owner, *args, **kwargs):
+        log_dir = kwargs["log_dir"].absolute()
+        if not log_dir.is_relative_to(self.work):
+            raise EvidenceError("producer logs escape their capture epoch")
+        execution = {"state": "attempted", "log_dir": str(log_dir)}
+        self.state["observations"].setdefault("executions", []).append(execution)
+        self.step("execution", execution=execution)
+        try:
+            result = owner(*args, **kwargs)
+        except BaseException as error:
+            self.reject(error)
+            # The execution owner retains its own terminal/output record. Pin
+            # it if available, but never turn absent terminal evidence into 0.
+            try:
+                raw = RawFile.capture(log_dir / "execution.json")
+                execution["record"] = {
+                    "path": str(raw.path), "sha256": raw.sha256, "bytes": raw.size,
+                }
+            except (OSError, ValueError) as record_error:
+                execution["record_unavailable"] = str(record_error)[:4096]
+            self.state["observations"]["execution"] = deepcopy(execution)
+            raise
+        execution.update({
+            "state": "returned", "log_dir": str(log_dir), "command": result[2],
+            "stdout": {"sha256": result[0].sha256, "bytes": result[0].size},
+            "stderr": {"sha256": result[1].sha256, "bytes": result[1].size},
+        })
+        self.step("preparation", execution=execution)
+        return result
+
+    def committed(self, document):
+        self.state["commit_state"] = "returned"
+        self.state["status"] = "committed"
+        self.step("committed", capture_digest=document["digest"])
+
+    def __exit__(self, kind, error, traceback):
+        try:
+            primary = self.primary or error
+            missing_commit = primary is None and self.state["commit_state"] != "returned"
+            if missing_commit:
+                primary = EvidenceError("capture returned without a complete profile commit")
+            if primary is not None:
+                message = str(primary)
+                self.state.update(status="failed", updated_ns=time.time_ns(), error={
+                    "type": type(primary).__name__, "message": message[:16384],
+                    "message_truncated": len(message) > 16384,
+                })
+                if error is not None and error is not primary:
+                    self.state["error"]["secondary"] = {
+                        "type": type(error).__name__, "message": str(error)[:16384],
+                    }
+                try:
+                    encoded = canonical_json(self.state).encode()
+                    _check_control_size(len(encoded), self.failure)
+                    write_raw_file(self.failure, [encoded])
+                except BaseException as persistence:
+                    raise EvidenceError(
+                        f"capture failed: {primary}; failure record NOT_PERSISTED: {persistence}; "
+                        f"retained work: {self.work}"
+                    ) from primary
+                primary.add_note(f"capture failure record: {self.failure}")
+                if missing_commit:
+                    raise primary
+        finally:
+            _active_capture.reset(self.token)
+        return False
+
+
+def capture_entrypoint(profile=None, *, profile_argument="profile", repo_argument="repo", root_argument="root"):
+    """Bind all adapter/CLI entrypoints to one epoch, including nested promotion."""
+    def decorate(function):
+        signature = inspect.signature(function)
+
+        @functools.wraps(function)
+        def wrapped(*args, **kwargs):
+            arguments = signature.bind(*args, **kwargs).arguments
+            repo, root = arguments[repo_argument], arguments[root_argument]
+            selected = profile if profile is not None else arguments[profile_argument]
+            existing = _active_capture.get()
+            if existing is not None:
+                if existing.root != root.absolute() or existing.profile != selected:
+                    raise EvidenceError("nested publication differs from its capture epoch")
+                return function(*args, **kwargs)
+            with CaptureEpoch(repo, root, selected) as epoch:
+                result = function(*args, **kwargs)
+                if type(result) is int and result != 0:
+                    epoch.reject(EvidenceError(f"{function.__name__} returned exit {result} during {epoch.state['phase']}"))
+                return result
+
+        return wrapped
+    return decorate
 
 
 def _directories(root: Path) -> None:
     # Reject intermediate links as well as linked final documents.
-    for path in (root, root / "captures", root / "profiles", root / "work"):
+    for path in (root, root / "captures", root / "profiles", root / "work", root / "failures"):
         if path.is_symlink():
             raise EvidenceError(f"capture directory is a symlink: {path}")
         if path.exists() and not path.is_dir():
@@ -59,6 +235,10 @@ def publish_capture(
     """
     from evidence_bridge import promote_native_run
 
+    epoch = current_capture()
+    if (epoch.root, epoch.profile, epoch.capture_id) != (root.absolute(), profile, capture_id):
+        raise EvidenceError("publication differs from its capture epoch")
+    epoch.step("publication_inventory")
     _run_id(capture_id)
     _run_id(profile)
     if not isinstance(runs, list) or not runs:
@@ -88,13 +268,20 @@ def publish_capture(
     (root / "captures").mkdir(exist_ok=True)
     store, promoted = RunStore(root), []
     for run in prepared:
+        epoch.step("publication_source", run_id=run["run_id"])
         verify_source()
+        epoch.step("promotion", source=run["source"], inputs=run.get("inputs"), command=run.get("command"))
         result = promote_native_run(evidence_root=root, **run)
+        epoch.step("promoted_load", run_id=result["run_id"])
         record = store.load(result["run_id"])
+        epoch.step("domain_replay")
         replay(store, record)
         promoted.append(record["run_id"])
+    epoch.step("final_source", promoted_run_ids=promoted)
     verify_source()
-    return commit_capture(
+    epoch.state["commit_state"] = "attempted"
+    epoch.step("commit")
+    document = commit_capture(
         root,
         capture_id=capture_id,
         profile=profile,
@@ -102,6 +289,8 @@ def publish_capture(
         expected_cases=expected,
         run_ids=promoted,
     )
+    epoch.committed(document)
+    return document
 
 
 @publication

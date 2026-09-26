@@ -12,7 +12,6 @@ import platform
 import socket
 import sys
 import time
-import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -33,7 +32,13 @@ from evidence_bridge import (
     latency_payload_from_artifact,
     source_identity,
 )
-from profile_capture import _directories, load_capture, publish_capture
+from profile_capture import (
+    _directories,
+    capture_entrypoint,
+    current_capture,
+    load_capture,
+    publish_capture,
+)
 from registry import registry_digest
 
 
@@ -212,6 +217,7 @@ def replay_run(store: RunStore, evidence: dict) -> None:
         raise EvidenceError("recorded input identity differs from native bytes")
 
 
+@capture_entrypoint("recorded")
 def capture(
     repo: Path, root: Path, registry: dict, agent: Path, scan: Path, authenticity: str
 ) -> dict:
@@ -227,17 +233,20 @@ def capture(
     _directories(root)
     if any(path.resolve().is_relative_to(repo.resolve()) for path in (agent, scan)):
         raise EvidenceError("recorded inputs must stay outside the checkout")
+    current_capture().step("source")
     require_clean_worktree(repo)
     head = resolve_checkout_head(repo)
     source = source_identity(repo, "benchmark-control-plane")
+    current_capture().step("inputs", source=source)
     agent_raw, scan_raw = RawFile.capture(agent), RawFile.capture(scan)
+    current_capture().inputs({"agent": agent_raw, "scan": scan_raw})
     # Validate every family before promoting any run or replacing the pointer.
     agent_result, agent_summary = agent_payload(agent_raw)
     scan_result = scan_payload(scan_raw)
     cpu = os.cpu_count()
     if type(cpu) is not int or cpu < 1:
         raise EvidenceError("cannot establish importer CPU inventory")
-    capture_id = f"recorded-{uuid.uuid4().hex}"
+    capture_id = current_capture().capture_id
     prepared = (
         ("agent-outcome", "agent.jsonl", agent_raw, agent_result),
         ("scan-vs-index", "scan.json", scan_raw, scan_result),

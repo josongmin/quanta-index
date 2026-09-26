@@ -299,6 +299,7 @@ struct SearchCorpusFakes {
     semantic_builder: Arc<FakeSemanticBuilder>,
     embedder: Arc<CountingEmbedder>,
     authority: Arc<RecordingSearchCorpusAuthority>,
+    ledger: Arc<RwLock<Ledger>>,
 }
 
 fn search_corpus_materializer(
@@ -319,10 +320,11 @@ fn search_corpus_materializer(
     let semantic_materializer: Arc<dyn SemanticIngestPort + Send + Sync> =
         Arc::new(DirectSemanticMaterializer::new(semantic_builder.clone()));
     let embedder_port: Arc<dyn TextEmbeddingProvider + Send + Sync> = embedder.clone();
+    let ledger = Arc::new(RwLock::new(Ledger::new()));
     let materializer = DirectSearchCorpusMaterializer::new_with_search_owned_semantics(
         SearchCorpusMaterializerParts {
             builder: lexical_builder.clone(),
-            ledger: Arc::new(RwLock::new(Ledger::new())),
+            ledger: ledger.clone(),
             semantic_ingest: semantic_materializer,
             semantic_embedder: embedder_port,
             authority: authority.clone(),
@@ -359,6 +361,7 @@ fn search_corpus_materializer(
             semantic_builder,
             embedder,
             authority,
+            ledger,
         },
     )
 }
@@ -1214,15 +1217,6 @@ fn source_event_repair_refusal_leaves_the_stream_available_for_a_new_publication
         delta.validate_v1()?;
         let catalog = memory_catalog();
         let ledger = Arc::new(RwLock::new(Ledger::new()));
-        ledger
-            .write()
-            .map_err(|error| format!("test ledger poisoned: {error}"))?
-            .record_historically_sealed_search_corpus(
-                &delta.repo_id,
-                &delta.revision_id,
-                ManifestGeneration::new(6),
-                "manifest:base",
-            );
         let validator = Arc::new(CorruptTarget {
             generation: delta.generation,
             track,
@@ -1261,6 +1255,20 @@ fn source_event_repair_refusal_leaves_the_stream_available_for_a_new_publication
                 auxiliary_coordinator: AuxiliaryMutationCoordinator::shared(),
             },
         );
+        let mut base = fixture_search_corpus_batch()?;
+        base.generation = ManifestGeneration::new(6);
+        base.manifest_digest = "manifest:base".into();
+        super::support::restamp_search_corpus_fixture(&mut base)?;
+        materializer.finalize_generation_v1(
+            &base,
+            Some(
+                &crate::readiness::SearchCorpusHistoryRetentionReceiptV1::retaining_generations_v1(
+                    &base.repo_id,
+                    &base.revision_id,
+                    [base.generation],
+                ),
+            ),
+        )?;
         let counting = Arc::new(CountingSearchCorpus::new(materializer));
         let dispatcher = search_corpus_dispatcher_with_port(counting.clone(), catalog.clone());
         let budget = RequestBudgetV1::unbounded();
@@ -1375,6 +1383,183 @@ fn source_event_semantic_admission_refusal_leaves_no_reservation_or_track_work()
             "semantic admission failure reserved or mutated before refusal: {response:?}"
         )
         .into());
+    }
+    Ok(())
+}
+
+/// Failure after materialization is not proof that a source event never ran.
+#[test]
+fn completed_delta_recovers_after_retention_retires_base_before_journal_ack() -> TestRes {
+    use quanta_index_core::{
+        IdempotencyCatalogPort as _, OperationInspectV1, SourceEventPhaseV1,
+        SourcePublicationCatalogPort as _,
+    };
+    struct FailAfterRetirement {
+        inner: DirectSearchCorpusMaterializer,
+        failures: AtomicUsize,
+    }
+    impl SearchCorpusIngestPort for FailAfterRetirement {
+        fn preflight_batch(&self, batch: &SearchCorpusIngestBatch) -> Result<(), CoreError> {
+            self.inner.preflight_batch(batch)
+        }
+        fn publish_batch(
+            &self,
+            batch: &SearchCorpusIngestBatch,
+            budget: &RequestBudgetV1,
+        ) -> Result<quanta_index_contract::SearchCorpusPublishOutcome, CoreError> {
+            let outcome = self.inner.publish_batch(batch, budget)?;
+            if batch.base_generation.is_some() && self.failures.fetch_add(1, Ordering::SeqCst) == 0
+            {
+                let retention = crate::readiness::SearchCorpusHistoryRetentionReceiptV1::retaining_generations_v1(
+                    &batch.repo_id, &batch.revision_id, [batch.generation],
+                );
+                self.inner.finalize_generation_v1(batch, Some(&retention))?;
+                return Err(CoreError::Storage(
+                    "injected failure after delta base retirement".into(),
+                ));
+            }
+            Ok(outcome)
+        }
+    }
+    let catalog = memory_catalog();
+    let (inner, fakes) = search_corpus_materializer(catalog.clone(), true, false);
+    let port = Arc::new(FailAfterRetirement {
+        inner,
+        failures: AtomicUsize::new(0),
+    });
+    let dispatcher = search_corpus_dispatcher_with_port(port.clone(), catalog.clone());
+    let base = super::support::multi_scope_corpus_batch()?;
+    let budget = RequestBudgetV1::unbounded();
+    let receipt = receipt_of(dispatcher.dispatch(
+        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(base.clone()),
+        &budget,
+    ))?;
+    let staged = catalog
+        .source_publication
+        .inspect_source_event(&base.repo_id, &base.source_event)?
+        .ok_or("base source event absent")?;
+    catalog.source_publication.activate_staged(
+        &staged.binding,
+        receipt
+            .semantic_content
+            .ok_or("sealed semantic content absent")?,
+    )?;
+
+    let mut delta = base.clone();
+    delta.generation = ManifestGeneration::new(base.generation.get() + 1);
+    delta.manifest_digest = "manifest:retained-delta".into();
+    delta.base_generation = Some(base.generation);
+    delta.mode = quanta_index_contract::BatchIngestMode::Delta;
+    delta.source_event.expected_base_event_id = Some(base.source_event.event_id.clone());
+    delta.source_event.event_id = "event-after-base".into();
+    delta.replace_scopes.truncate(1);
+    super::support::restamp_search_corpus_fixture(&mut delta)?;
+    let request = SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(delta.clone());
+    let failed = dispatcher.dispatch(request.clone(), &budget);
+    if !matches!(&failed, SearchPlaneIngestIpcResponse::Error(error)
+        if error.message.contains("injected failure after delta base retirement"))
+    {
+        return Err(format!("failure injection did not execute: {failed:?}").into());
+    }
+    let pending = catalog
+        .source_publication
+        .inspect_source_event(&delta.repo_id, &delta.source_event)?
+        .ok_or("delta source event absent")?;
+    if pending.phase != SourceEventPhaseV1::Pending
+        || !matches!(
+            catalog.inspect(&pending.binding.journal_key)?,
+            OperationInspectV1::Uncertain { .. }
+        )
+    {
+        return Err("delta must remain retryable under its original journal".into());
+    }
+    {
+        let ledger = fakes.ledger.read().map_err(|e| e.to_string())?;
+        if ledger
+            .structural_state(&base.repo_id, &base.revision_id, base.generation)
+            .is_some()
+            || ledger
+                .sealed_track_identity_digest(
+                    &base.repo_id,
+                    &base.revision_id,
+                    quanta_index_contract::SearchPlaneTrackKind::Lexical,
+                    base.generation,
+                )
+                .is_some()
+        {
+            return Err("the test did not retire the base".into());
+        }
+        let ids: Vec<_> = ledger
+            .structural_state(&delta.repo_id, &delta.revision_id, delta.generation)
+            .ok_or("target chunk universe absent")?
+            .chunks()
+            .keys()
+            .map(|id| id.as_str())
+            .collect();
+        if ids != ["a-1", "a-2", "b-1", "c-1", "c-2"] {
+            return Err(format!("target lost inherited chunks: {ids:?}").into());
+        }
+    }
+    // Neither an exact sealed pair without chunk completion, nor a completion
+    // marker without the original source reservation may waive the base check.
+    let set_marker = |digest: Option<String>| -> TestRes {
+        fakes
+            .ledger
+            .write()
+            .map_err(|e| e.to_string())?
+            .aux_restore_mut::<crate::readiness::StructuralAuthorityState>(
+                &delta.repo_id,
+                &delta.revision_id,
+                delta.generation,
+            )
+            .restore_meta(crate::readiness::StructuralStateMeta {
+                seal_requested: false,
+                source_batch_digest: digest,
+            });
+        Ok(())
+    };
+    set_marker(None)?;
+    if !matches!(
+        port.preflight_batch(&delta),
+        Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusDeltaBaseNotSealed,
+            ..
+        })
+    ) {
+        return Err("sealed tracks waived an absent chunk completion marker".into());
+    }
+    let mut unreserved = delta.clone();
+    unreserved.source_event.event_id = "unreserved-target".into();
+    super::support::restamp_search_corpus_fixture(&mut unreserved)?;
+    set_marker(Some(unreserved.batch_digest.clone()))?;
+    if !matches!(
+        port.preflight_batch(&unreserved),
+        Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusDeltaBaseNotSealed,
+            ..
+        })
+    ) {
+        return Err("completion marker waived an absent original source reservation".into());
+    }
+    set_marker(Some(delta.batch_digest.clone()))?;
+    let recovered = receipt_of(dispatcher.dispatch(request.clone(), &budget))?;
+    let replay = receipt_of(dispatcher.dispatch(request, &budget))?;
+    if !recovered.applied
+        || replay.applied
+        || recovered.durable_sequence != replay.durable_sequence
+        || port.failures.load(Ordering::SeqCst) != 2
+    {
+        return Err("original completed delta did not recover and replay once".into());
+    }
+    if !fakes
+        .lexical_builder
+        .batches
+        .lock()
+        .map_err(|e| e.to_string())?
+        .is_empty()
+        || !fakes.semantic_builder.take()?.is_empty()
+    {
+        return Err("completed delta recovery rebuilt sealed tracks".into());
     }
     Ok(())
 }

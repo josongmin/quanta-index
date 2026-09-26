@@ -13,7 +13,6 @@ import socket
 import stat
 import sys
 import tempfile
-import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -32,7 +31,13 @@ from evidence import (
 )
 from evidence_bridge import host_identity, source_identity
 from producer_execution import execute
-from profile_capture import _directories, load_capture, publish_capture
+from profile_capture import (
+    _directories,
+    capture_entrypoint,
+    current_capture,
+    load_capture,
+    publish_capture,
+)
 from raw_archive import ArchiveLimits
 from raw_archive import pack as pack_archive
 from raw_archive import unpack as unpack_archive
@@ -422,6 +427,10 @@ class _ReplayWorkspace:
             bundle = self.root / "corpus.bundle"
             archives[0].copy_to(bundle)
             restore_corpus(bundle, corpus)
+            # Git now owns a complete object database. This staging copy is not
+            # a replay input; discard it before repeated workspace byte checks.
+            # The original raw bundle is still rehashed on every restore call.
+            bundle.unlink()
             unpack_native(archives[1], native)
             self.archives = commitments
             self.identity = _replay_tree_identity(self.root)
@@ -530,12 +539,11 @@ def _replay_run(store: RunStore, evidence: dict, workspace: _ReplayWorkspace) ->
 
 
 def capture(repo: Path, root: Path, registry: dict, spec_path: Path, timeout: int) -> dict:
-    from benchctl import require_clean_worktree, require_frozen_source, resolve_checkout_head
-
+    # Reject unsafe input/output overlap before the diagnostic epoch writes to
+    # the evidence root. The admitted spec bytes stay bound through preparation.
     require_registration(registry)
     if repo.resolve() != ROOT or root.resolve().is_relative_to(repo.resolve()):
         raise EvidenceError("pair requires its own checkout and an external evidence root")
-    require_clean_worktree(repo)
     original = _read_regular_file(spec_path)
     with tempfile.TemporaryDirectory(prefix="quanta-pair-spec-") as scratch:
         frozen_input = Path(scratch).resolve() / "spec.json"
@@ -560,12 +568,25 @@ def capture(repo: Path, root: Path, registry: dict, spec_path: Path, timeout: in
     output = Path(spec["output_root"]).resolve()
     require_disjoint_paths(root, output, Path(spec["repo"]))
     _directories(root)
+    return _capture_admitted(repo, root, registry, spec_path, timeout, original, spec, output)
+
+
+@capture_entrypoint(PROFILE)
+def _capture_admitted(
+    repo: Path, root: Path, registry: dict, spec_path: Path, timeout: int,
+    original: bytes, spec: dict, output: Path,
+) -> dict:
+    from benchctl import require_clean_worktree, require_frozen_source, resolve_checkout_head
+
+    current_capture().step("source")
+    require_clean_worktree(repo)
     head = resolve_checkout_head(repo)
     source = source_identity(repo, "benchmark-retrieval")
-    capture_id = f"pair-{uuid.uuid4().hex}"
+    current_capture().step("inputs", source=source)
+    capture_id = current_capture().capture_id
     work = root / "work" / capture_id
-    work.mkdir(parents=True, exist_ok=False)
     contents = {role: _read_regular_file(Path(spec[role])) for role in INPUT_ROLES}
+    current_capture().inputs({role: RawFile.capture(Path(spec[role])) for role in INPUT_ROLES})
     for role, content in contents.items():
         (work / f"input-{role}").write_bytes(content)
     commit, _files = owner._manifest_rows(work / "input-manifest")
@@ -589,7 +610,7 @@ def capture(repo: Path, root: Path, registry: dict, spec_path: Path, timeout: in
     (work / "frozen-spec.json").write_text(canonical_json(frozen), encoding="utf-8")
     if _read_regular_file(spec_path) != original:
         raise EvidenceError("pair spec changed while freezing inputs")
-    _stdout, _stderr, command = execute(
+    _stdout, _stderr, command = current_capture().execute(execute,
         [sys.executable, "-m", MODULE, "pair", "--spec", str(work / "frozen-spec.json")],
         cwd=repo,
         env={**os.environ, **GIT_ENV},
@@ -603,7 +624,7 @@ def capture(repo: Path, root: Path, registry: dict, spec_path: Path, timeout: in
         raise EvidenceError("pair producer belongs to a different source revision")
     payloads = typed_payloads(output, manifest)
     inventory = bound_inputs(output, manifest, work)
-    execute(
+    current_capture().execute(execute,
         [
             "git",
             "-C",
@@ -620,7 +641,10 @@ def capture(repo: Path, root: Path, registry: dict, spec_path: Path, timeout: in
     )
     spool = work / "prepared"
     raw = {"native-tree.zip": pack_native(output, spool / "native-tree.zip")}
-    raw.update({path.name: RawFile.capture(path) for path in work.iterdir() if path.is_file()})
+    # The epoch journal changes during publication and is not immutable input
+    # evidence. Keep capture-origin.json and all actual producer inputs bound.
+    raw.update({path.name: RawFile.capture(path) for path in work.iterdir()
+                if path.is_file() and path.name != "capture.json"})
     binary_inventory = [{"name": name, "sha256": sha} for name, sha in sorted(binaries.items())]
     bind_runtime(output, manifest, binary_inventory, head)
     toolchain = f"Python {platform.python_version()}"

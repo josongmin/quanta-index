@@ -95,7 +95,6 @@ impl TantivySearcher {
     }
 
     pub(crate) fn manual_filter_regex(
-        &self,
         pattern: &str,
         filter_name: &str,
     ) -> Result<RegexExecutor, CoreError> {
@@ -227,7 +226,7 @@ impl TantivySearcher {
         scope: LqFileScope,
         repo_relative_path: &str,
     ) -> Result<bool, CoreError> {
-        let executor = self.manual_filter_regex(pattern, "file")?;
+        let executor = Self::manual_filter_regex(pattern, "file")?;
         Ok(Self::file_filter_scope_matches(
             &executor,
             scope,
@@ -509,7 +508,7 @@ impl TantivySearcher {
                             .to_string(),
                     });
                 }
-                let executor = self.manual_filter_regex(pattern, "repo")?;
+                let executor = Self::manual_filter_regex(pattern, "repo")?;
                 Ok(executor.verify(source_repo_id.as_bytes()))
             }
             LqFilter::File { pattern, scope } => {

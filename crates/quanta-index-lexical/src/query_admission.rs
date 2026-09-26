@@ -46,8 +46,11 @@ impl LexicalPlanner {
             )]
             match filter {
                 LqFilter::Content { leaf } => admit_leaf(query, leaf, regex_policy, budget)?,
-                LqFilter::Repo { pattern, .. } | LqFilter::File { pattern, .. } => {
-                    admit_scope_regex(pattern)?;
+                LqFilter::Repo { pattern, .. } => {
+                    admit_query_scope_regex(query, pattern, "repo")?;
+                }
+                LqFilter::File { pattern, .. } => {
+                    admit_query_scope_regex(query, pattern, "file")?;
                 }
                 // Remaining filters have no content primitive. Their scalar
                 // contracts are validated by domain/filter planning above.
@@ -203,8 +206,17 @@ fn admit_metadata_regex(source: &str) -> Result<(), CoreError> {
     Ok(())
 }
 
+fn admit_query_scope_regex(query: &LqQuery, source: &str, name: &str) -> Result<(), CoreError> {
+    if TantivySearcher::uses_unindexed_scan(&query.options) {
+        let _executor = TantivySearcher::manual_filter_regex(source, name)?;
+        Ok(())
+    } else {
+        admit_scope_regex(source)
+    }
+}
+
 fn admit_scope_regex(source: &str) -> Result<(), CoreError> {
-    // Scope execution uses Tantivy's regex grammar. The field ordinal does not
+    // Indexed scope execution uses Tantivy's grammar. The field ordinal does not
     // affect compilation and this constructs no index or reader.
     let _query =
         tantivy::query::RegexQuery::from_pattern(source, tantivy::schema::Field::from_field_id(0))

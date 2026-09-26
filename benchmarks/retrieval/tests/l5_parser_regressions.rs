@@ -152,6 +152,190 @@ fn private_methods_preserve_definition_identity_across_js_and_ts() {
     }
 }
 
+// Handwritten inventories are independent of the producer query. Check exact
+// multiplicity, ownership, kinds, source spans, and the published coverage count.
+fn assert_definition_inventory(path: &str, source: &str, expected: &[(&str, &str, &str)]) {
+    let files = BTreeMap::from([(path.to_string(), source_file(path, source))]);
+    let preflight = preflight_corpus_symbols(&files, &SymbolPreflightOptions::default())
+        .expect("valid fixture preflight");
+    preflight
+        .admit(SymbolCoveragePolicy::RequireComplete)
+        .expect("complete inventory");
+    let records = preflight.symbols().get(path).expect("admitted file");
+    let actual = records
+        .iter()
+        .map(|record| {
+            let start = usize::try_from(record.definition_span.byte_start).expect("small offset");
+            let end = usize::try_from(record.definition_span.byte_end).expect("small offset");
+            (
+                record.qualified_name.as_ref(),
+                record.symbol_kind.as_str(),
+                source.get(start..end).expect("source-bound UTF-8 span"),
+            )
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        actual,
+        expected.iter().copied().collect(),
+        "inventory: {path}"
+    );
+    assert_eq!(records.len(), expected.len(), "no duplicate definitions");
+    for record in records {
+        let qualified = record.qualified_name.as_ref();
+        let owner = qualified.rsplit_once('.').map(|(owner, _)| owner);
+        assert_eq!(record.container_qualified_name.as_deref(), owner);
+        assert_eq!(
+            record.local_name.as_ref(),
+            qualified.rsplit('.').next().expect("name")
+        );
+    }
+    assert_eq!(
+        preflight.report().files[0].coverage,
+        SymbolCoverage::Complete {
+            symbol_count: u64::try_from(expected.len()).expect("count")
+        }
+    );
+}
+
+#[test]
+fn go_aliases_and_local_types_keep_function_and_receiver_ownership() {
+    let source = "package p\ntype Value struct{}\ntype Alias = Value\ntype Shape = struct{}\nfunc Outer() { type Local struct{}; type Copy = Local }\nfunc (v *Value) Read() { type Local struct{}; type Copy = Local }\n";
+    assert_definition_inventory(
+        "scope.go",
+        source,
+        &[
+            ("Value", "struct", "Value struct{}"),
+            ("Alias", "type_alias", "Alias = Value"),
+            ("Shape", "type_alias", "Shape = struct{}"),
+            (
+                "Outer",
+                "function",
+                "func Outer() { type Local struct{}; type Copy = Local }",
+            ),
+            ("Outer.Local", "struct", "Local struct{}"),
+            ("Outer.Copy", "type_alias", "Copy = Local"),
+            (
+                "Value.Read",
+                "method",
+                "func (v *Value) Read() { type Local struct{}; type Copy = Local }",
+            ),
+            ("Value.Read.Local", "struct", "Local struct{}"),
+            ("Value.Read.Copy", "type_alias", "Copy = Local"),
+        ],
+    );
+}
+
+#[test]
+fn go_named_interfaces_emit_owned_method_contracts() {
+    let source = "package p\ntype Reader interface { Read() int }\ntype Alias = interface { Read() int }\nfunc Outer() { type Local interface { Read() int } }\n";
+    assert_definition_inventory(
+        "contracts.go",
+        source,
+        &[
+            ("Reader", "interface", "Reader interface { Read() int }"),
+            ("Reader.Read", "method", "Read() int"),
+            ("Alias", "type_alias", "Alias = interface { Read() int }"),
+            ("Alias.Read", "method", "Read() int"),
+            (
+                "Outer",
+                "function",
+                "func Outer() { type Local interface { Read() int } }",
+            ),
+            ("Outer.Local", "interface", "Local interface { Read() int }"),
+            ("Outer.Local.Read", "method", "Read() int"),
+        ],
+    );
+}
+
+#[test]
+fn named_expressions_keep_their_names_without_naming_anonymous_bindings() {
+    let source = "const c = class Inner { run() {} };\nconst f = function Named() { function nested() {} };\nconst g = function* Generate() { function nested() {} };\nconst anonymousClass = class {};\nconst anonymousFunction = function() { function child() {} };\nconst anonymousGenerator = function*() {};\n";
+    for path in ["expr.js", "expr.jsx", "expr.ts", "expr.tsx"] {
+        assert_definition_inventory(
+            path,
+            source,
+            &[
+                ("Inner", "class", "class Inner { run() {} }"),
+                ("Inner.run", "method", "run() {}"),
+                (
+                    "Named",
+                    "function",
+                    "function Named() { function nested() {} }",
+                ),
+                ("Named.nested", "function", "function nested() {}"),
+                (
+                    "Generate",
+                    "function",
+                    "function* Generate() { function nested() {} }",
+                ),
+                ("Generate.nested", "function", "function nested() {}"),
+                ("child", "function", "function child() {}"),
+            ],
+        );
+    }
+}
+
+#[test]
+fn typescript_callable_declarations_keep_owners_and_overload_spans() {
+    let source = "interface Reader { read(): string; }\nabstract class Base { abstract read(): string; }\ndeclare function load(): string;\nfunction pick(x: string): string;\nfunction pick(x: number): number;\nfunction pick(x: any): any { return x; }\nclass Impl { read(x: string): string; read(x: any): any { return x; } }\n";
+    for path in ["decl.ts", "decl.tsx"] {
+        assert_definition_inventory(
+            path,
+            source,
+            &[
+                (
+                    "Reader",
+                    "interface",
+                    "interface Reader { read(): string; }",
+                ),
+                ("Reader.read", "method", "read(): string"),
+                (
+                    "Base",
+                    "class",
+                    "abstract class Base { abstract read(): string; }",
+                ),
+                ("Base.read", "method", "abstract read(): string"),
+                ("load", "function", "function load(): string;"),
+                ("pick", "function", "function pick(x: string): string;"),
+                ("pick", "function", "function pick(x: number): number;"),
+                (
+                    "pick",
+                    "function",
+                    "function pick(x: any): any { return x; }",
+                ),
+                (
+                    "Impl",
+                    "class",
+                    "class Impl { read(x: string): string; read(x: any): any { return x; } }",
+                ),
+                ("Impl.read", "method", "read(x: string): string"),
+                ("Impl.read", "method", "read(x: any): any { return x; }"),
+            ],
+        );
+    }
+}
+
+#[test]
+fn typescript_named_modules_and_enums_are_definitions_too() {
+    let source =
+        "namespace Outer { export enum Color { Red, Blue } export function inside() {} }\n";
+    for path in ["ns.ts", "ns.tsx"] {
+        assert_definition_inventory(
+            path,
+            source,
+            &[
+                (
+                    "Outer",
+                    "module",
+                    "namespace Outer { export enum Color { Red, Blue } export function inside() {} }",
+                ),
+                ("Outer.Color", "enum", "enum Color { Red, Blue }"),
+                ("Outer.inside", "function", "function inside() {}"),
+            ],
+        );
+    }
+}
+
 #[test]
 fn empty_and_zero_definition_files_differ_from_parse_failure() {
     for path in ["src/empty.ts", "src/empty.tsx"] {

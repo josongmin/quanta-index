@@ -1,11 +1,14 @@
 # L4_HANDOFF — matcher-aligned source previews
 
-State: **VERIFIED for the recorded L4 owner/native scope**. Final source inputs
-match the current shared tree at closeout. The user authorized shared-file edits;
-the former ownership/lint blocker is superseded. Aggregate regex heap proof is
-BLOCKED; public SDK/daemon/workspace qualification is NOT_RUN.
+Latest audit: [L4_ADDITIONAL_AUDIT.md](L4_ADDITIONAL_AUDIT.md) records two further
+P2 fixes: lazy preview admission/output retention and wire-local emitted-byte
+validation. Its receipts supersede the historical closeout below for those
+changes. Current shared-tree qualification is **BLOCKED** by concurrent source
+and dependency changes; frozen owner/contract proof is not whole-tree proof.
+Aggregate regex heap proof remains BLOCKED; SDK/daemon/workspace qualification
+is NOT_RUN. The user authorized shared-file edits; no coordination is required.
 
-## Source and scope
+## Historical p02 source and scope
 
 - Shared dirty `main@98601a66d8cab9c86232b3e62ce490c8b43b71b6`; preserve concurrent
   work. No agents, task messages/reads/polling, commit, push or reset were used.
@@ -43,7 +46,7 @@ BLOCKED; public SDK/daemon/workspace qualification is NOT_RUN.
    A later frozen lint run found one added wildcard enum arm in `symbol.rs`;
    it now enumerates the unchanged fallback variants. These are not sixteen
    independently classified correctness defects.
-4. Second source pass covered Boolean rollback/NOT, original/NFC/folded byte
+4. That historical source pass covered Boolean rollback/NOT, original/NFC/folded byte
    coordinates, 240-byte focus, source binding, optional refusal, request leases
    and cancellation. No additional reachable P0–P2 was identified in that
    reviewed scope. Aggregate regex allocation remains the explicit proof gap
@@ -61,7 +64,7 @@ BLOCKED; public SDK/daemon/workspace qualification is NOT_RUN.
   intervals through composition, reordering and expanding lowercase. Maps cannot
   be deserialized or paired with caller-supplied source intervals.
 - Boolean truth is recomposed per request. False branches and NOT retain no
-  positive highlights. Content-filter leaves contribute mandatory AND witnesses.
+   positive highlights. Content-filter leaves contribute mandatory AND witnesses.
   The legacy center-term collector/window renderer was removed; fixed regression oracles remain.
 - A complete focus fitting 240 bytes is preserved before context. Larger focus,
   zero-width, no-positive, source-not-provided and optional resource refusal have
@@ -84,17 +87,19 @@ BLOCKED; public SDK/daemon/workspace qualification is NOT_RUN.
   heap-bound qualification is NOT_RUN. Existing leaf document-bitmap cache is
   unchanged; there is no global compiled or whole-query witness cache.
 - Output guard-vector capacity is precharged. Request output-group slots are
-  reserved before rendering. Exhaustion degrades preview without losing hits;
+  reserved only when rendering produced an output with a live allocation lease.
+  Empty or unavailable-only pages consume no slot. Exhaustion degrades preview without losing hits;
   transfer into the request lifetime allocates nothing. Native direct callers
   must keep RequestBudget alive while retaining outputs. DTO clones are excluded.
 
-## Executed proof
+## Historical p02 proof
 
 [Final receipt](l4-proof/p02/receipt.json) binds exact commands/environment,
 source/config/dependency inputs, toolchain, raw logs, binary hashes, dirty state
-and final revalidation. The verification copy is a filesystem snapshot, not a
-new branch or commit. All 338 bound inputs were unchanged during each final run
-and still matched the original checkout at closeout.
+and historical revalidation. The verification copy is a filesystem snapshot,
+not a new branch or commit. All 338 bound inputs were unchanged during those
+runs and matched the original checkout at that closeout. Subsequent changes
+mean this is not current shared-tree evidence; use the additional audit above.
 
 All commands below ran with `CARGO_BUILD_JOBS=2`, the canonical resource-admission
 lock, an explicit 900-second admission wait, and the recorded preserved target
@@ -179,8 +184,11 @@ does not prove producer/SDK checkout routing.
 
 ## Remaining qualification
 
-- Public SDK/daemon, wire/facade/public-API escalation and workspace qualification:
-  **NOT_RUN by L4**. Native owner/adapter evidence does not prove these rails.
+- Additional wire tests and fuzz escalation were executed in the deeper audit;
+  public API escalation failed on baseline drift. Exact source/status receipts
+  are in [L4_ADDITIONAL_AUDIT.md](L4_ADDITIONAL_AUDIT.md).
+- Public SDK/daemon and workspace qualification: **NOT_RUN by L4**. Native
+  owner/adapter and wire evidence does not prove those rails.
 - Aggregate regex compilation/cache heap upper bound: **BLOCKED on missing
   allocation proof**, distinct from the fixed capture amplification defect.
   See [L4_REGEX_BUDGET_RESIDUAL.md](L4_REGEX_BUDGET_RESIDUAL.md).

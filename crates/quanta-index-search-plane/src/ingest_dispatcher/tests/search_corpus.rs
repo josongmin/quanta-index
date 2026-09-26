@@ -74,13 +74,18 @@ fn search_corpus_receipt_exactly_acknowledges_semantic_replace_and_tombstone_mut
 }
 
 #[test]
-fn delta_finalization_inherits_untouched_chunk_authority_and_retries_after_base_retirement() -> TestRes {
+fn delta_finalization_inherits_untouched_chunk_authority_and_retries_after_base_retirement()
+-> TestRes {
     let probe = ZeroMutationProbe::new(always_valid_generation());
     let base = multi_scope_corpus_batch()?;
     let retain_base = SearchCorpusHistoryRetentionReceiptV1::retaining_generations_v1(
-        &base.repo_id, &base.revision_id, [base.generation],
+        &base.repo_id,
+        &base.revision_id,
+        [base.generation],
     );
-    probe.materializer.finalize_generation_v1(&base, Some(&retain_base))?;
+    probe
+        .materializer
+        .finalize_generation_v1(&base, Some(&retain_base))?;
     let mut delta = base.clone();
     delta.generation = ManifestGeneration::new(base.generation.get() + 1);
     delta.base_generation = Some(base.generation);
@@ -89,26 +94,125 @@ fn delta_finalization_inherits_untouched_chunk_authority_and_retries_after_base_
     delta.source_event.event_id = "next-event".into();
     delta.manifest_digest = "manifest:delta".into();
     delta.replace_scopes.truncate(1);
-    for chunk in &mut delta.replace_scopes.first_mut().ok_or("fixture a.rs")?.chunks {
-        chunk.chunk_id = quanta_index_contract::ChunkId::new(format!("new-{}", chunk.chunk_id.as_str()));
+    for chunk in &mut delta
+        .replace_scopes
+        .first_mut()
+        .ok_or("fixture a.rs")?
+        .chunks
+    {
+        chunk.chunk_id =
+            quanta_index_contract::ChunkId::new(format!("new-{}", chunk.chunk_id.as_str()));
     }
     delta.tombstone_scopes = vec![quanta_index_contract::SearchCorpusTombstoneScope {
-        file: base.replace_scopes.get(2).ok_or("fixture c.rs")?.coverage.source.file.clone(),
+        file: base
+            .replace_scopes
+            .get(2)
+            .ok_or("fixture c.rs")?
+            .coverage
+            .source
+            .file
+            .clone(),
     }];
     delta.semantic_replace_scopes.clear();
     restamp_search_corpus_fixture(&mut delta)?;
     let retain_delta = SearchCorpusHistoryRetentionReceiptV1::retaining_generations_v1(
-        &delta.repo_id, &delta.revision_id, [delta.generation],
+        &delta.repo_id,
+        &delta.revision_id,
+        [delta.generation],
     );
+    probe.auxiliary_catalog.fail_next_apply();
+    assert!(
+        probe
+            .materializer
+            .finalize_generation_v1(&delta, Some(&retain_delta))
+            .is_err()
+    );
+    {
+        let guard = probe.ledger.read().map_err(|e| e.to_string())?;
+        assert!(
+            guard
+                .structural_state(&base.repo_id, &base.revision_id, base.generation)
+                .is_some()
+        );
+        assert!(
+            guard
+                .structural_state(&delta.repo_id, &delta.revision_id, delta.generation)
+                .is_none()
+        );
+    }
     // The retention transaction can retire the original base. Reconciliation
     // must retain the complete already-published target chunk universe.
-    for _attempt in 0..2 {
-        probe.materializer.finalize_generation_v1(&delta, Some(&retain_delta))?;
+    for attempt in 0..2 {
+        probe
+            .materializer
+            .finalize_generation_v1(&delta, Some(&retain_delta))?;
         let guard = probe.ledger.read().map_err(|e| e.to_string())?;
-        let state = guard.structural_state(&delta.repo_id, &delta.revision_id, delta.generation)
+        let state = guard
+            .structural_state(&delta.repo_id, &delta.revision_id, delta.generation)
             .ok_or("missing delta chunk authority")?;
         let ids: Vec<_> = state.chunks().keys().map(|id| id.as_str()).collect();
         assert_eq!(ids, vec!["b-1", "new-a-1", "new-a-2"]);
+        assert_eq!(
+            state.source_batch_digest(),
+            Some(delta.batch_digest.as_str())
+        );
+        drop(guard);
+        if attempt == 0 {
+            use crate::ingest_dispatcher::ports::StructuralIngestPort as _;
+            // A separate parse-tree update must preserve the chunk completion
+            // marker in both live state and the persisted state-meta row.
+            let structural = crate::ingest_dispatcher::auxiliary::DirectStructuralMaterializer::new(
+                crate::ingest_dispatcher::auxiliary::AuxiliaryMaterializerParts {
+                    catalog: probe.auxiliary_catalog.clone(),
+                    ledger: probe.ledger.clone(),
+                    coordinator: AuxiliaryMutationCoordinator::shared(),
+                },
+            );
+            let _receipt =
+                structural.publish_batch(&quanta_index_contract::StructuralIngestBatch {
+                    repo_id: delta.repo_id.clone(),
+                    revision_id: delta.revision_id.clone(),
+                    generation: delta.generation,
+                    base_generation: None,
+                    manifest_digest: delta.manifest_digest.clone(),
+                    batch_digest: "structural:clear".into(),
+                    mode: BatchIngestMode::ReplaceGeneration,
+                    replace_scopes: Vec::new(),
+                    tombstone_scopes: vec![quanta_index_contract::StructuralTombstoneScope {
+                        scope: quanta_index_contract::SearchScopeKey {
+                            doc_surface: SearchScopeSurface::Chunk,
+                            repo_relative_path: delta
+                                .replace_scopes
+                                .first()
+                                .ok_or("a.rs")?
+                                .coverage
+                                .source
+                                .file
+                                .repo_relative_path
+                                .clone(),
+                        },
+                    }],
+                    seal: false,
+                })?;
+            let mut restored = Ledger::new();
+            let _rows = crate::readiness::restore_auxiliary_rows_into(
+                &mut restored,
+                probe.auxiliary_catalog.as_ref(),
+            )?;
+            assert!(
+                restored
+                    .structural_state(&base.repo_id, &base.revision_id, base.generation)
+                    .is_none()
+            );
+            assert_eq!(
+                restored
+                    .structural_state(&delta.repo_id, &delta.revision_id, delta.generation)
+                    .ok_or("restored delta")?
+                    .source_batch_digest(),
+                Some(delta.batch_digest.as_str())
+            );
+            *probe.ledger.write().map_err(|e| e.to_string())? = restored;
+        }
     }
     Ok(())
 }
@@ -167,6 +271,30 @@ fn malformed_or_baseless_batches_change_zero_bytes() -> TestRes {
         other => return Err(format!("unsealed base answered {other:?}").into()),
     }
     probe.assert_nothing_touched("base never sealed")?;
+
+    probe
+        .ledger
+        .write()
+        .map_err(|e| e.to_string())?
+        .record_historically_sealed_search_corpus(
+            &unsealed_base.repo_id,
+            &unsealed_base.revision_id,
+            ManifestGeneration::new(3),
+            "manifest:base",
+        );
+    for result in [
+        probe.materializer.preflight_batch(&unsealed_base),
+        probe
+            .materializer
+            .publish_batch(&unsealed_base, &RequestBudgetV1::unbounded())
+            .map(|_| ()),
+    ] {
+        assert!(matches!(result, Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusDeltaBaseNotSealed,
+            message,
+        }) if message.contains("complete chunk authority")));
+    }
+    probe.assert_nothing_touched("base has no complete chunk authority")?;
 
     // The ledger knows the base, but the physical identity disagrees: the
     // base is sealed under another digest, so it is refused with the
@@ -857,15 +985,20 @@ fn a_sealed_but_corrupt_track_is_rebuilt_by_a_replace_seal_and_refused_for_a_del
     delta.base_generation = Some(ManifestGeneration::new(6));
     restamp_search_corpus_fixture(&mut delta)?;
     delta.validate_v1()?;
-    ledger
-        .write()
-        .map_err(|err| format!("ledger poisoned: {err}"))?
-        .record_historically_sealed_search_corpus(
-            &delta.repo_id,
-            &delta.revision_id,
-            ManifestGeneration::new(6),
-            "manifest:base",
-        );
+    let mut base = batch.clone();
+    base.generation = ManifestGeneration::new(6);
+    base.manifest_digest = "manifest:base".into();
+    restamp_search_corpus_fixture(&mut base)?;
+    materializer.finalize_generation_v1(
+        &base,
+        Some(
+            &SearchCorpusHistoryRetentionReceiptV1::retaining_generations_v1(
+                &base.repo_id,
+                &base.revision_id,
+                [base.generation],
+            ),
+        ),
+    )?;
     match materializer.publish_batch(&delta, &RequestBudgetV1::unbounded()) {
         Err(CoreError::Typed { code, message })
             if code == quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusGenerationRepairRequired
@@ -1189,6 +1322,40 @@ fn durable_retention_error_fences_same_process_rollback_authority() -> TestRes {
             "retention failure",
         );
     assert!(matches!(rollback, Err(CoreError::NotReady(_))));
+    // Retention can durably remove a delta's base before reporting an I/O
+    // failure. Complete target chunks must already survive that boundary.
+    let guard = ledger.read().map_err(|e| e.to_string())?;
+    let state = guard
+        .structural_state(&batch.repo_id, &batch.revision_id, batch.generation)
+        .ok_or("retention ran before target chunks became durable")?;
+    assert_eq!(
+        state.source_batch_digest(),
+        Some(batch.batch_digest.as_str())
+    );
+    assert_eq!(
+        state
+            .chunks()
+            .keys()
+            .map(|id| id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["chunk-1"]
+    );
+    for track in [
+        SearchPlaneTrackKind::Lexical,
+        SearchPlaneTrackKind::Semantic,
+    ] {
+        assert!(
+            guard
+                .track_state(&batch.repo_id, &batch.revision_id, track)
+                .is_none()
+        );
+    }
+    assert!(
+        serde_json::from_str::<crate::readiness::StructuralStateMeta>(
+            r#"{"seal_requested":false}"#,
+        )
+        .is_err()
+    );
     Ok(())
 }
 

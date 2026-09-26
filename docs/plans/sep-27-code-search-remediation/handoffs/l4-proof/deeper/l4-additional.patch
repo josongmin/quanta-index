@@ -1,0 +1,1004 @@
+--- a/crates/quanta-index-lexical/src/searcher/candidates.rs
++++ b/crates/quanta-index-lexical/src/searcher/candidates.rs
+@@ -23,7 +23,7 @@
+ use std::collections::BTreeMap;
+ use tantivy::schema::{Field, OwnedValue, TantivyDocument, Value};
+ 
+-/// One optional-preview account and executor pool for the complete request.
++/// One selected page's executor pool sharing the request's preview account.
+ /// Retained output leases remain here until the caller transfers the response.
+ pub(crate) struct SelectedPreviewContext<'a> {
+     query: &'a LqQuery,
+@@ -34,6 +34,7 @@
+     executor_reservations: Vec<LexicalMemoryReservation>,
+     output_reservations: Vec<LexicalMemoryReservation>,
+     output_slot: Option<usize>,
++    prepared_for_render: bool,
+     unavailable: Option<PreviewUnavailableReason>,
+ }
+ 
+@@ -70,16 +71,33 @@
+ }
+ 
+ impl SelectedPreviewContext<'_> {
++    /// Empty selections and unrenderable rows need no executor or output slot.
++    fn prepare_for_render(&mut self) -> Result<(), CoreError> {
++        self.request.checkpoint("lexical:preview-prepare")?;
++        if self.prepared_for_render {
++            return Ok(());
++        }
++        self.prepared_for_render = true;
++        self.prepare_expr(&self.prepared.expr, 0)?;
++        for filter in &self.query.filters {
++            if let LqFilter::Content { leaf } = filter {
++                self.prepare_leaf(leaf)?;
++            }
++        }
++        Ok(())
++    }
++
+     /// Keep emitted allocations charged through the caller's request lifetime.
+     pub(crate) fn retain_output_for_request(&mut self) -> Result<(), CoreError> {
++        self.request.checkpoint("lexical:preview-output")?;
++        // A finished context cannot emit additional unretained outputs.
++        self.unavailable = Some(PreviewUnavailableReason::WorkBudget);
+         let Some(slot) = self.output_slot.take() else {
+             if self.output_reservations.is_empty() {
+                 return Ok(());
+             }
+             return Err(integrity("preview output has no reserved request slot"));
+         };
+-        // A finished context cannot emit additional unretained outputs.
+-        self.unavailable = Some(PreviewUnavailableReason::WorkBudget);
+         self.request
+             .retain_lexical_output(slot, core::mem::take(&mut self.output_reservations))
+     }
+@@ -185,8 +203,7 @@
+         request: &'a RequestBudgetV1,
+     ) -> Result<SelectedPreviewContext<'a>, CoreError> {
+         let ledger = request.lexical_preview_budget(10_000_000, 64 * 1024 * 1024)?;
+-        let output_slot = request.reserve_lexical_output_group()?;
+-        let mut context = SelectedPreviewContext {
++        Ok(SelectedPreviewContext {
+             query,
+             prepared,
+             request,
+@@ -194,18 +211,10 @@
+             executors: BTreeMap::new(),
+             executor_reservations: Vec::new(),
+             output_reservations: Vec::new(),
+-            output_slot,
+-            unavailable: output_slot
+-                .is_none()
+-                .then_some(PreviewUnavailableReason::WorkBudget),
+-        };
+-        context.prepare_expr(&prepared.expr, 0)?;
+-        for filter in &query.filters {
+-            if let LqFilter::Content { leaf } = filter {
+-                context.prepare_leaf(leaf)?;
+-            }
+-        }
+-        Ok(context)
++            output_slot: None,
++            prepared_for_render: false,
++            unavailable: None,
++        })
+     }
+ 
+     fn selected_source_identity(
+@@ -302,6 +311,17 @@
+         } else {
+             (None, None)
+         };
++        let limits = SnippetLimits::default();
++        if raw.len() > limits.source_bytes || indexed.len() > limits.transformed_bytes {
++            context.request.checkpoint("lexical:preview-unavailable")?;
++            candidate.preview = Some(PreviewMetadata::unavailable(
++                kind,
++                PreviewUnavailableReason::WorkBudget,
++                None,
++            ));
++            return Ok(candidate);
++        }
++        context.prepare_for_render()?;
+         if let Some(reason) = context.unavailable {
+             candidate.preview = Some(PreviewMetadata::unavailable(kind, reason, None));
+             return Ok(candidate);
+@@ -311,7 +331,7 @@
+                 expr: &context.prepared.expr,
+                 filters: &context.query.filters,
+                 options: &context.query.options,
+-                limits: SnippetLimits::default(),
++                limits,
+                 ledger: &context.ledger,
+                 request: context.request,
+             },
+@@ -332,10 +352,17 @@
+             },
+             &|_leaf| Err(integrity("residual authority leaf was not refused")),
+         )?;
+-        // The renderer's retained lease includes this vector slot. Allocation
+-        // refusal is still optional and must preserve the selected identity.
++        // Only actual output needs a retention slot. A page consisting entirely
++        // of unavailable previews must not exhaust the request's output carrier.
++        // The renderer's lease charges the transient output through admission.
++        if rendered.reservation.is_some() && context.output_slot.is_none() {
++            context.output_slot = context.request.reserve_lexical_output_group()?;
++        }
++        // The retained lease includes this vector slot. Allocation/slot refusal
++        // is still optional and must preserve the selected identity.
+         if rendered.reservation.is_some()
+-            && context.output_reservations.try_reserve_exact(1).is_err()
++            && (context.output_slot.is_none()
++                || context.output_reservations.try_reserve_exact(1).is_err())
+         {
+             context
+                 .request
+--- a/crates/quanta-index-lexical/tests/l4_match_anchored_preview.rs
++++ b/crates/quanta-index-lexical/tests/l4_match_anchored_preview.rs
+@@ -38,7 +38,7 @@
+             symbols: SymbolCoverage::Complete { symbol_count: 1 },
+         },
+         chunks: vec![ChunkRecord {
+-            chunk_id: ChunkId::new("chunk-source"),
++            chunk_id: ChunkId::new(format!("chunk-{path}")),
+             repo_relative_path: RepoRelativePath::new(path),
+             language: LanguageCode::new("rust")?,
+             start_byte: 0,
+@@ -51,7 +51,7 @@
+             source_repo_id: None,
+         }],
+         symbols: vec![SymbolRecord {
+-            symbol_id: SymbolId::new("symbol-needle"),
++            symbol_id: SymbolId::new(format!("symbol-{path}")),
+             repo_relative_path: RepoRelativePath::new(path),
+             language: LanguageCode::new("rust")?,
+             symbol_kind: SymbolKindCode::new("function")?,
+@@ -334,6 +334,45 @@
+ }
+ 
+ #[test]
++fn l4_preview_admission_unavailable_pages_do_not_exhaust_output_slots() -> TestResult {
++    let dir = tempfile::tempdir()?;
++    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
++    let batch = batch(1, None, vec![file_scope("source.rs", "needle")?])?;
++    adapter.build_batch(&batch)?;
++    let view = adapter.open(&batch.repo_id, &batch.revision_id, batch.generation)?;
++    for index_mode in [None, Some(LqYesNoOnly::No)] {
++        let request = RequestBudgetV1::unbounded();
++        let mut absence = query("unused");
++        absence.expr = LqExpr::Not(Box::new(LqExpr::Leaf(LqLeaf::Keyword("absent".into()))));
++        absence.options.index_mode = index_mode;
++        for _ in 0..256 {
++            let hits = view.search(&absence, 1, &request)?;
++            assert_eq!(hits.len(), 1);
++            assert_eq!(
++                hits.first()
++                    .and_then(|hit| hit.preview.as_ref())
++                    .ok_or("preview missing")?
++                    .unavailable_reason,
++                Some(PreviewUnavailableReason::NoPositiveWitness)
++            );
++        }
++        let mut present = query("needle");
++        present.options.index_mode = index_mode;
++        let hits = view.search(&present, 1, &request)?;
++        assert_eq!(hits.len(), 1);
++        assert_eq!(
++            hits.first()
++                .and_then(|hit| hit.preview.as_ref())
++                .ok_or("preview missing")?
++                .unavailable_reason,
++            None,
++            "unavailable previews retained no output"
++        );
++    }
++    Ok(())
++}
++
++#[test]
+ fn l4_preview_admission_skips_oversized_source_before_regex_compile() -> TestResult {
+     let dir = tempfile::tempdir()?;
+     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+@@ -363,3 +402,47 @@
+     }
+     Ok(())
+ }
++
++#[test]
++fn l4_preview_admission_oversized_row_does_not_refuse_other_selected_rows() -> TestResult {
++    let dir = tempfile::tempdir()?;
++    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
++    let oversized = format!("needle{}", " ".repeat(65_536));
++    let batch = batch(
++        1,
++        None,
++        vec![
++            file_scope("a-large.rs", &oversized)?,
++            file_scope("b-small.rs", "needle")?,
++        ],
++    )?;
++    adapter.build_batch(&batch)?;
++    let view = adapter.open(&batch.repo_id, &batch.revision_id, batch.generation)?;
++    for index_mode in [None, Some(LqYesNoOnly::No)] {
++        let mut present = query("unused");
++        present.expr = LqExpr::Leaf(LqLeaf::Regex("needle".into()));
++        present.options.index_mode = index_mode;
++        let request = RequestBudgetV1::unbounded();
++        let hits = view.search(&present, 2, &request)?;
++        assert_eq!(hits.len(), 2);
++        for hit in &hits {
++            let preview = hit.preview.as_ref().ok_or("preview missing")?;
++            if hit.repo_relative_path.as_str() == "a-large.rs" {
++                assert_eq!(
++                    preview.unavailable_reason,
++                    Some(PreviewUnavailableReason::WorkBudget)
++                );
++                assert!(hit.snippet.is_empty());
++            } else {
++                assert_eq!(hit.repo_relative_path.as_str(), "b-small.rs");
++                assert_eq!(preview.unavailable_reason, None);
++                assert_eq!(hit.snippet, "needle");
++                assert_eq!(
++                    preview.original_focus.map(|range| (range.start, range.end)),
++                    Some((0, 6))
++                );
++            }
++        }
++    }
++    Ok(())
++}
+--- a/crates/quanta-index-contract-base/src/results/preview.rs
++++ b/crates/quanta-index-contract-base/src/results/preview.rs
+@@ -1,8 +1,9 @@
+ //! Preview provenance, independent of ranked-hit identity and completeness.
++//!
+ //! Ranges are chunk-relative byte intervals; a file offset exists only when a
+ //! verified chunk base and immutable source identity are supplied together.
+ 
+-use crate::SourceFileRevision;
++use crate::{HighlightSpan, SourceFileRevision};
+ use core::fmt;
+ use serde::{
+     Deserialize, Deserializer, Serialize, Serializer,
+@@ -90,6 +91,9 @@
+         }
+         if self.chunk_start_byte.is_some() && self.source.is_none() {
+             return Err("chunk base requires source identity");
++        }
++        if self.kind != PreviewKind::SourceChunk && self.chunk_start_byte.is_some() {
++            return Err("path/synthetic previews cannot claim a chunk base");
+         }
+         if self.unavailable_reason.is_some() || self.kind != PreviewKind::SourceChunk {
+             if self.original_focus.is_some()
+@@ -126,6 +130,110 @@
+             let _file_end = base
+                 .checked_add(context.end)
+                 .ok_or("source file byte offset overflow")?;
++        }
++        Ok(())
++    }
++
++    /// Check the emitted excerpt against this metadata.
++    ///
++    /// This proves wire-local byte lengths and UTF-8 boundaries, not agreement
++    /// with an immutable source file or the independently indexed NFC text.
++    pub fn validate_emission(&self, snippet: &str) -> Result<(), &'static str> {
++        self.validate()?;
++        if self.unavailable_reason.is_some() {
++            if !snippet.is_empty() {
++                return Err("unavailable preview cannot emit text");
++            }
++            return Ok(());
++        }
++        if self.kind == PreviewKind::Path {
++            let source = self.source.as_ref().ok_or("path preview requires source")?;
++            if snippet != source.file.repo_relative_path.as_str() {
++                return Err("path preview must emit its bound source path");
++            }
++            return Ok(());
++        }
++        if self.kind == PreviewKind::SourceChunk {
++            let context = self.original_context.ok_or("source context missing")?;
++            let focus = self.original_focus.ok_or("source focus missing")?;
++            let size =
++                u64::try_from(snippet.len()).map_err(|_overflow| "snippet length overflow")?;
++            if context.end.checked_sub(context.start) != Some(size) {
++                return Err("source context length disagrees with emitted snippet");
++            }
++            let start = focus
++                .start
++                .checked_sub(context.start)
++                .ok_or("focus before context")?;
++            let end = focus
++                .end
++                .checked_sub(context.start)
++                .ok_or("focus before context")?;
++            let local_start = usize::try_from(start).map_err(|_overflow| "focus start overflow")?;
++            let local_end = usize::try_from(end).map_err(|_overflow| "focus end overflow")?;
++            if snippet.get(local_start..local_end).is_none() {
++                return Err("source focus is not UTF-8 aligned within emitted snippet");
++            }
++        }
++        Ok(())
++    }
++
++    pub(super) fn validate_highlight_ranges(
++        snippet: &str,
++        snippet_hit_offset: Option<u32>,
++        highlights: &[HighlightSpan],
++    ) -> Result<(), &'static str> {
++        let mut previous = None;
++        for span in highlights {
++            let start =
++                usize::try_from(span.start).map_err(|_overflow| "highlight start overflow")?;
++            let len = usize::try_from(span.len).map_err(|_overflow| "highlight length overflow")?;
++            let end = start.checked_add(len).ok_or("highlight end overflow")?;
++            if len == 0 || snippet.get(start..end).is_none() {
++                return Err("highlight must cover nonempty UTF-8-aligned snippet bytes");
++            }
++            let key = (span.start, span.len);
++            if previous.is_some_and(|prior| prior >= key) {
++                return Err("preview highlights must be sorted and unique");
++            }
++            previous = Some(key);
++        }
++        if snippet_hit_offset != highlights.first().map(|span| span.start) {
++            return Err("preview hit offset must identify its first highlight");
++        }
++        Ok(())
++    }
++
++    pub(super) fn validate_highlights(
++        &self,
++        snippet: &str,
++        snippet_hit_offset: Option<u32>,
++        highlights: &[HighlightSpan],
++    ) -> Result<(), &'static str> {
++        self.validate_emission(snippet)?;
++        if self.unavailable_reason.is_some() || self.kind == PreviewKind::Path {
++            if snippet_hit_offset.is_some() || !highlights.is_empty() {
++                return Err("unavailable/path previews cannot emit highlights");
++            }
++            return Ok(());
++        }
++        if self.kind == PreviewKind::SourceChunk {
++            let context = self.original_context.ok_or("source context missing")?;
++            let focus = self.original_focus.ok_or("source focus missing")?;
++            let start = focus
++                .start
++                .checked_sub(context.start)
++                .ok_or("focus before context")?;
++            let len = focus
++                .end
++                .checked_sub(focus.start)
++                .ok_or("focus is inverted")?;
++            let primary = highlights
++                .first()
++                .ok_or("source focus has no primary highlight")?;
++            if u64::from(primary.start) != start || u64::from(primary.len) != len {
++                return Err("source focus disagrees with the primary snippet highlight");
++            }
+         }
+         Ok(())
+     }
+--- a/crates/quanta-index-contract-base/src/results/candidates.rs
++++ b/crates/quanta-index-contract-base/src/results/candidates.rs
+@@ -325,7 +325,7 @@
+ }
+ 
+ impl LexicalCandidate {
+-    /// Check identity agreement; source bytes and rendering are verified by the reader.
++    /// Check identity and emitted-byte consistency; immutable bytes remain reader-owned.
+     pub fn validate_source_metadata(&self) -> Result<(), &'static str> {
+         if let Some(source) = &self.source {
+             if source.file.source_repo_id != self.source_repo_id {
+@@ -336,8 +336,17 @@
+                 return Err("candidate path disagrees with source file identity");
+             }
+         }
++        PreviewMetadata::validate_highlight_ranges(
++            &self.snippet,
++            self.snippet_hit_offset,
++            &self.highlights,
++        )?;
+         if let Some(preview) = &self.preview {
+-            preview.validate()?;
++            preview.validate_highlights(
++                &self.snippet,
++                self.snippet_hit_offset,
++                &self.highlights,
++            )?;
+             if preview.source != self.source
+                 && (preview.unavailable_reason.is_none() || preview.source.is_some())
+             {
+--- a/crates/quanta-index-contract/src/results/query_responses.rs
++++ b/crates/quanta-index-contract/src/results/query_responses.rs
+@@ -268,7 +268,7 @@
+ impl_symbol_candidate_serde!(SYMBOL_CANDIDATE_FIELDS, SymbolCandidateVisitor);
+ 
+ impl SymbolCandidate {
+-    /// Check identity agreement; source bytes and rendering are verified by the reader.
++    /// Check identity and emitted-byte consistency; immutable bytes remain reader-owned.
+     pub fn validate_source_metadata(&self) -> Result<(), &'static str> {
+         if let Some(source) = &self.source {
+             if source.file.source_repo_id != self.source_repo_id {
+@@ -280,7 +280,7 @@
+             }
+         }
+         if let Some(preview) = &self.preview {
+-            preview.validate()?;
++            preview.validate_emission(&self.snippet)?;
+             if preview.source != self.source
+                 && (preview.unavailable_reason.is_none() || preview.source.is_some())
+             {
+--- a/crates/quanta-index-contract/src/source_coverage.rs
++++ b/crates/quanta-index-contract/src/source_coverage.rs
+@@ -216,8 +216,8 @@
+     ($name:ident { $($field:ident: $ty:ty),+ $(,)? } validate $validate:expr) => {
+         impl Serialize for $name {
+             fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
++                const FIELDS: &[&str] = &[$(stringify!($field)),+];
+                 ($validate)(self).map_err(serde::ser::Error::custom)?;
+-                const FIELDS: &[&str] = &[$(stringify!($field)),+];
+                 let mut record = serializer.serialize_struct(stringify!($name), FIELDS.len())?;
+                 $(record.serialize_field(stringify!($field), &self.$field)?;)+
+                 record.end()
+@@ -289,6 +289,7 @@
+ }
+ 
+ /// SHA-256 of the domain followed by a fixed-order CBOR pair `(chunks, symbols)`.
++///
+ /// Each vector is sorted by its typed ID and uses the complete record's manual
+ /// wire serializer. Input order has no authority; duplicate IDs never collapse.
+ pub fn source_file_unit_set_sha256(
+--- a/crates/quanta-index-contract/src/source_event_payload.rs
++++ b/crates/quanta-index-contract/src/source_event_payload.rs
+@@ -9,6 +9,7 @@
+ use crate::{SearchCorpusIngestBatch, SourceCoverageError};
+ 
+ /// Hash the complete source mutation payload, not its materialization target.
++///
+ /// Source revisions are carried by file coverage; containing revision/generation,
+ /// manifest identity, transport digest and seal state are excluded. The event's
+ /// stream/id/base are separately bound by the durable publication catalog.
+--- a/crates/quanta-index-contract/src/ipc/ingest.rs
++++ b/crates/quanta-index-contract/src/ipc/ingest.rs
+@@ -877,9 +877,9 @@
+         }
+         self.source_event
+             .validate()
+-            .map_err(|_| SearchCorpusBatchShapeErrorV1::SourceEventInvalid)?;
++            .map_err(|_invalid| SearchCorpusBatchShapeErrorV1::SourceEventInvalid)?;
+         if crate::source_event_payload_sha256(self)
+-            .map_err(|_| SearchCorpusBatchShapeErrorV1::SourceEventInvalid)?
++            .map_err(|_invalid| SearchCorpusBatchShapeErrorV1::SourceEventInvalid)?
+             != self.source_event.payload_sha256
+         {
+             return Err(SearchCorpusBatchShapeErrorV1::SourceEventPayloadMismatch);
+@@ -938,7 +938,7 @@
+         scope
+             .coverage
+             .validate()
+-            .map_err(|_| SearchCorpusSurfaceMutationConflictV1::InvalidCoverage)?;
++            .map_err(|_invalid| SearchCorpusSurfaceMutationConflictV1::InvalidCoverage)?;
+         let key = &scope.coverage.source.file;
+         if !replace_scope_keys.insert(key) {
+             return Err(
+@@ -963,8 +963,9 @@
+             if chunk.language != scope.coverage.language {
+                 return Err(SearchCorpusSurfaceMutationConflictV1::RecordLanguageMismatch);
+             }
+-            if chunk.end_byte.checked_sub(chunk.start_byte).map(u64::from)
+-                != u64::try_from(chunk.text.len()).ok()
++            let text_bytes = u64::try_from(chunk.text.len())
++                .map_err(|_overflow| SearchCorpusSurfaceMutationConflictV1::InvalidRecordRange)?;
++            if chunk.end_byte.checked_sub(chunk.start_byte).map(u64::from) != Some(text_bytes)
+                 || chunk.end_line < chunk.start_line
+             {
+                 return Err(SearchCorpusSurfaceMutationConflictV1::InvalidRecordRange);
+@@ -994,15 +995,18 @@
+             }
+         }
+         let count = u64::try_from(scope.symbols.len())
+-            .map_err(|_| SearchCorpusSurfaceMutationConflictV1::CoverageUnitMismatch)?;
++            .map_err(|_overflow| SearchCorpusSurfaceMutationConflictV1::CoverageUnitMismatch)?;
+         let symbols_match = match scope.coverage.symbols {
+             crate::SymbolCoverage::Complete { symbol_count } => symbol_count == count,
+-            _ => count == 0,
++            crate::SymbolCoverage::NotRequested
++            | crate::SymbolCoverage::Unsupported
++            | crate::SymbolCoverage::ParseFailed
++            | crate::SymbolCoverage::ProducerFailed => count == 0,
+         };
+         if !symbols_match
+             || (!scope.coverage.text_admitted && !scope.chunks.is_empty())
+             || crate::source_file_unit_set_sha256(&scope.chunks, &scope.symbols)
+-                .map_err(|_| SearchCorpusSurfaceMutationConflictV1::CoverageUnitMismatch)?
++                .map_err(|_invalid| SearchCorpusSurfaceMutationConflictV1::CoverageUnitMismatch)?
+                 != scope.coverage.unit_set_sha256
+         {
+             return Err(SearchCorpusSurfaceMutationConflictV1::CoverageUnitMismatch);
+@@ -1013,7 +1017,7 @@
+         scope
+             .file
+             .validate()
+-            .map_err(|_| SearchCorpusSurfaceMutationConflictV1::InvalidCoverage)?;
++            .map_err(|_invalid| SearchCorpusSurfaceMutationConflictV1::InvalidCoverage)?;
+         let key = &scope.file;
+         if !tombstone_scope_keys.insert(key) {
+             return Err(
+@@ -4525,6 +4529,10 @@
+ 
+ /// Typed ingest response payload returned by `ingest.sock`.
+ #[derive(Clone, Debug, PartialEq)]
++#[expect(
++    clippy::large_enum_variant,
++    reason = "wire payloads retain the existing by-value API; boxing adds allocation and changes construction across unrelated ingest routes"
++)]
+ pub enum SearchPlaneIngestIpcResponse {
+     SearchCorpusReceipt(super::SearchCorpusPublishOutcome),
+     HistoryReceipt(BatchPublishReceipt),
+--- a/crates/quanta-index-contract/src/ipc/split.rs
++++ b/crates/quanta-index-contract/src/ipc/split.rs
+@@ -96,6 +96,10 @@
+ }
+ 
+ #[derive(Clone, Debug, PartialEq)]
++#[expect(
++    clippy::large_enum_variant,
++    reason = "wire payloads retain the existing by-value API; boxing adds allocation and changes construction across unrelated query routes"
++)]
+ pub enum SearchPlaneQueryIpcRequest {
+     ResolveActiveGeneration(CurrentGenerationRequest),
+     ResolveLexicalGeneration(TextQueryRequest),
+--- /dev/null
++++ b/crates/quanta-index-contract-base/tests/l4_preview_emission.rs
+@@ -0,0 +1,182 @@
++//! Wire-local excerpt invariants do not require reopening immutable source files.
++#![expect(
++    clippy::expect_used,
++    reason = "fixed fixture construction and wire field assertions"
++)]
++use quanta_index_contract_base::{
++    HighlightSpan, LexicalCandidate, ManifestGeneration, PreviewByteRange, PreviewKind,
++    PreviewMetadata, PreviewUnavailableReason, RepoId, RepoRelativePath, RevisionId, SourceFileKey,
++    SourceFileRevision,
++};
++
++fn candidate() -> LexicalCandidate {
++    let source = SourceFileRevision {
++        file: SourceFileKey {
++            source_repo_id: RepoId::new("source").expect("repo"),
++            repo_relative_path: RepoRelativePath::new("src/a.rs"),
++        },
++        revision_id: RevisionId::new("source-rev").expect("revision"),
++        source_sha256: [3; 32],
++    };
++    LexicalCandidate {
++        source_repo_id: source.file.source_repo_id.clone(),
++        source: Some(source.clone()),
++        preview: Some(PreviewMetadata {
++            kind: PreviewKind::SourceChunk,
++            source: Some(source),
++            chunk_start_byte: Some(100),
++            original_focus: Some(PreviewByteRange { start: 13, end: 19 }),
++            original_context: Some(PreviewByteRange { start: 10, end: 19 }),
++            normalized_focus: Some(PreviewByteRange { start: 13, end: 19 }),
++            normalization_equivalent: false,
++            unavailable_reason: None,
++        }),
++        candidate_id: "c".into(),
++        repo_id: RepoId::new("container").expect("repo"),
++        revision_id: RevisionId::new("snapshot").expect("revision"),
++        manifest_generation: ManifestGeneration::new(1),
++        repo_relative_path: RepoRelativePath::new("src/a.rs"),
++        start_line: 1,
++        end_line: 1,
++        score: 1.0,
++        snippet: "é needle".into(),
++        snippet_hit_offset: Some(3),
++        highlights: vec![HighlightSpan { start: 3, len: 6 }],
++    }
++}
++
++#[test]
++fn l4_wire_rejects_inconsistent_emitted_bytes() {
++    let row = candidate();
++    let valid = serde_json::to_value(&row).expect("valid source excerpt");
++    assert_eq!(
++        serde_json::from_value::<LexicalCandidate>(valid.clone()).expect("roundtrip"),
++        row
++    );
++    for (pointer, forged) in [
++        ("/preview/original_context/end", serde_json::json!(20)),
++        ("/preview/original_focus/start", serde_json::json!(11)),
++        ("/highlights/0/start", serde_json::json!(1)),
++        ("/highlights/0/len", serde_json::json!(7)),
++        ("/highlights/0/len", serde_json::json!(0)),
++        ("/snippet_hit_offset", serde_json::json!(4)),
++        ("/snippet", serde_json::json!("")),
++    ] {
++        let mut wire = valid.clone();
++        *wire.pointer_mut(pointer).expect("fixture field") = forged;
++        assert!(
++            serde_json::from_value::<LexicalCandidate>(wire).is_err(),
++            "accepted inconsistent emission at {pointer}"
++        );
++    }
++}
++
++#[test]
++fn l4_wire_cannot_bypass_highlight_validation_with_absent_preview_metadata() {
++    let mut row = candidate();
++    row.preview = None;
++    let valid = serde_json::to_value(&row).expect("legacy preview metadata is optional");
++    assert_eq!(
++        serde_json::from_value::<LexicalCandidate>(valid.clone()).expect("roundtrip"),
++        row
++    );
++    for (pointer, forged) in [
++        ("/highlights/0/start", serde_json::json!(1)),
++        ("/highlights/0/len", serde_json::json!(7)),
++        ("/snippet_hit_offset", serde_json::json!(4)),
++    ] {
++        let mut wire = valid.clone();
++        *wire.pointer_mut(pointer).expect("fixture field") = forged;
++        assert!(
++            serde_json::from_value::<LexicalCandidate>(wire).is_err(),
++            "accepted unbound highlight {pointer}"
++        );
++    }
++}
++
++#[test]
++fn l4_wire_rejects_text_claimed_as_unavailable() {
++    let mut row = candidate();
++    row.preview = Some(PreviewMetadata::unavailable(
++        PreviewKind::SourceChunk,
++        PreviewUnavailableReason::WorkBudget,
++        None,
++    ));
++    row.snippet.clear();
++    row.snippet_hit_offset = None;
++    row.highlights.clear();
++    let mut wire = serde_json::to_value(&row).expect("unavailable");
++    *wire.pointer_mut("/snippet").expect("snippet") = serde_json::json!("forged excerpt");
++    assert!(serde_json::from_value::<LexicalCandidate>(wire).is_err());
++    row.snippet = "forged excerpt".into();
++    assert!(serde_json::to_value(&row).is_err());
++}
++
++#[test]
++fn l4_wire_requires_primary_highlight_to_match_declared_focus() {
++    let mut row = candidate();
++    let valid = serde_json::to_value(&row).expect("source excerpt");
++    for highlights in [
++        serde_json::json!([{"start": 0, "len": 2}]),
++        serde_json::json!([{"start": 0, "len": 2}, {"start": 3, "len": 6}]),
++    ] {
++        let mut wire = valid.clone();
++        *wire.pointer_mut("/highlights").expect("highlights") = highlights;
++        *wire.pointer_mut("/snippet_hit_offset").expect("offset") = serde_json::json!(0);
++        assert!(serde_json::from_value::<LexicalCandidate>(wire).is_err());
++    }
++    row.highlights = vec![HighlightSpan { start: 0, len: 2 }];
++    row.snippet_hit_offset = Some(0);
++    assert!(serde_json::to_value(&row).is_err());
++}
++
++#[test]
++fn l4_wire_preserves_overlaps_but_rejects_duplicate_or_reordered_highlights() {
++    let mut row = candidate();
++    row.highlights.insert(0, HighlightSpan { start: 0, len: 9 });
++    row.snippet_hit_offset = Some(0);
++    let preview = row.preview.as_mut().expect("preview");
++    preview.original_focus = Some(PreviewByteRange { start: 10, end: 19 });
++    preview.normalized_focus = Some(PreviewByteRange { start: 10, end: 19 });
++    let valid = serde_json::to_value(&row).expect("overlapping highlights are distinct witnesses");
++    assert_eq!(
++        serde_json::from_value::<LexicalCandidate>(valid).expect("roundtrip"),
++        row
++    );
++    row.highlights.reverse();
++    assert!(serde_json::to_value(&row).is_err());
++    row.highlights = vec![HighlightSpan { start: 3, len: 6 }; 2];
++    row.snippet_hit_offset = Some(3);
++    assert!(serde_json::to_value(&row).is_err());
++}
++
++#[test]
++fn l4_wire_path_labels_cannot_claim_other_text_or_chunk_coordinates() {
++    let mut row = candidate();
++    let preview = row.preview.as_mut().expect("preview");
++    preview.kind = PreviewKind::Path;
++    preview.chunk_start_byte = None;
++    preview.original_context = None;
++    preview.original_focus = None;
++    preview.normalized_focus = None;
++    row.snippet = "src/a.rs".into();
++    row.snippet_hit_offset = None;
++    row.highlights.clear();
++    let valid = serde_json::to_value(&row).expect("path preview");
++    assert_eq!(
++        serde_json::from_value::<LexicalCandidate>(valid.clone()).expect("roundtrip"),
++        row
++    );
++    for (pointer, forged) in [
++        ("/snippet", serde_json::json!("different.rs")),
++        ("/preview/chunk_start_byte", serde_json::json!(100)),
++        ("/highlights", serde_json::json!([{"start": 0, "len": 3}])),
++    ] {
++        let mut wire = valid.clone();
++        *wire.pointer_mut(pointer).expect("fixture field") = forged;
++        assert!(
++            serde_json::from_value::<LexicalCandidate>(wire).is_err(),
++            "accepted path mutation {pointer}"
++        );
++    }
++}
+--- /dev/null
++++ b/crates/quanta-index-contract/tests/l4_preview_wire.rs
+@@ -0,0 +1,77 @@
++//! Exercise the response codec used by IPC, including the symbol DTO boundary.
++#![expect(
++    clippy::expect_used,
++    reason = "fixed wire fixture and codec assertions"
++)]
++use quanta_index_contract::{LexicalCandidate, SymbolCandidate};
++use serde_json::{Value, json};
++
++fn source_excerpt() -> Value {
++    let digest = [3_u8; 32];
++    let source = json!({
++        "file": {"source_repo_id": "source", "repo_relative_path": "src/a.rs"},
++        "revision_id": "source-r1", "source_sha256": digest,
++    });
++    json!({
++        "source_repo_id": "source", "source": source,
++        "preview": {
++            "kind": "source_chunk", "source": source, "chunk_start_byte": 100,
++            "original_focus": {"start": 13, "end": 19},
++            "original_context": {"start": 10, "end": 19},
++            "normalized_focus": {"start": 13, "end": 19},
++            "normalization_equivalent": false, "unavailable_reason": null,
++        },
++        "candidate_id": "c", "repo_id": "container", "revision_id": "snapshot",
++        "manifest_generation": 1, "repo_relative_path": "src/a.rs",
++        "start_line": 1, "end_line": 1, "score": 1.0, "snippet": "é needle",
++    })
++}
++
++fn cbor(value: &Value) -> Vec<u8> {
++    let mut bytes = Vec::new();
++    ciborium::ser::into_writer(value, &mut bytes).expect("encode wire map");
++    bytes
++}
++
++#[test]
++fn symbol_cbor_rejects_context_length_and_focus_boundary_mismatch() {
++    let mut valid = source_excerpt();
++    let fields = valid.as_object_mut().expect("map");
++    let _kind = fields.insert("symbol_kind".into(), json!("function"));
++    let _family = fields.insert("symbol_kind_family".into(), Value::Null);
++    let row: SymbolCandidate =
++        ciborium::de::from_reader(cbor(&valid).as_slice()).expect("valid excerpt");
++    assert_eq!(row.snippet, "é needle");
++    for (pointer, forged) in [
++        ("/preview/original_context/end", json!(20)),
++        ("/preview/original_focus/start", json!(11)),
++        ("/snippet", json!("")),
++    ] {
++        let mut wire = valid.clone();
++        *wire.pointer_mut(pointer).expect("field") = forged;
++        assert!(ciborium::de::from_reader::<SymbolCandidate, _>(cbor(&wire).as_slice()).is_err());
++    }
++    let mut row = row;
++    row.snippet.clear();
++    assert!(ciborium::ser::into_writer(&row, Vec::new()).is_err());
++}
++
++#[test]
++fn lexical_cbor_rejects_invalid_highlight_boundaries() {
++    let mut valid = source_excerpt();
++    let fields = valid.as_object_mut().expect("map");
++    let _offset = fields.insert("snippet_hit_offset".into(), json!(3));
++    let _highlights = fields.insert("highlights".into(), json!([{"start": 3, "len": 6}]));
++    let row: LexicalCandidate =
++        ciborium::de::from_reader(cbor(&valid).as_slice()).expect("valid excerpt");
++    assert_eq!(row.snippet, "é needle");
++    for (pointer, forged) in [
++        ("/highlights/0/start", json!(1)),
++        ("/highlights/0/len", json!(7)),
++        ("/snippet_hit_offset", json!(4)),
++    ] {
++        let mut wire = valid.clone();
++        *wire.pointer_mut(pointer).expect("field") = forged;
++        assert!(ciborium::de::from_reader::<LexicalCandidate, _>(cbor(&wire).as_slice()).is_err());
++    }
++}
+--- a/crates/quanta-index-core/src/domains/lexical/collection_budget.rs
++++ b/crates/quanta-index-core/src/domains/lexical/collection_budget.rs
+@@ -140,10 +140,7 @@
+     }
+ 
+     fn check_live(&self) -> Result<(), CoreError> {
+-        match self.failure() {
+-            Some(error) => Err(error),
+-            None => Ok(()),
+-        }
++        self.failure().map_or(Ok(()), Err)
+     }
+ 
+     fn fail(&self, reason: u8) -> CoreError {
+@@ -167,37 +164,44 @@
+         overflow_reason: u8,
+     ) -> Result<u64, CoreError> {
+         self.check_live()?;
+-        match counter.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+-            current.checked_add(amount).filter(|next| *next <= maximum)
+-        }) {
+-            Ok(prior) => prior
++        let mut current = counter.load(Ordering::Acquire);
++        loop {
++            let next = current
+                 .checked_add(amount)
+-                .ok_or_else(|| self.fail(overflow_reason)),
+-            Err(prior) => Err(self.fail(if prior.checked_add(amount).is_none() {
+-                overflow_reason
+-            } else {
+-                limit_reason
+-            })),
++                .ok_or_else(|| self.fail(overflow_reason))?;
++            if next > maximum {
++                return Err(self.fail(limit_reason));
++            }
++            match counter.compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Acquire)
++            {
++                Ok(_) => return Ok(next),
++                Err(observed) => current = observed,
++            }
+         }
+     }
+ 
+     fn release(&self, bytes: u64) {
+-        if self
+-            .state
+-            .resident
+-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |resident| {
+-                resident.checked_sub(bytes)
+-            })
+-            .is_err()
+-        {
+-            let _failure = self.fail(RELEASE_UNDERFLOW);
+-        }
+-    }
+-}
+-
+-/// Non-cloneable ownership of one byte reservation. Moving the guard transfers
+-/// the reservation; dropping it releases exactly once, even after a refusal or
+-/// while unwinding. There is no public manual release or disarm operation.
++        let counter = &self.state.resident;
++        let mut current = counter.load(Ordering::Acquire);
++        loop {
++            let Some(next) = current.checked_sub(bytes) else {
++                let _failure = self.fail(RELEASE_UNDERFLOW);
++                return;
++            };
++            match counter.compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Acquire)
++            {
++                Ok(_) => return,
++                Err(observed) => current = observed,
++            }
++        }
++    }
++}
++
++/// Non-cloneable ownership of one byte reservation.
++///
++/// Moving the guard transfers the reservation; dropping it releases exactly once,
++/// even after a refusal or while unwinding. There is no public manual release or
++/// disarm operation.
+ #[must_use = "retain the reservation guard until the admitted allocation is released"]
+ #[derive(Debug)]
+ pub struct LexicalMemoryReservation {
+--- a/crates/quanta-index-core/src/request_budget.rs
++++ b/crates/quanta-index-core/src/request_budget.rs
+@@ -254,9 +254,12 @@
+         let ledger = LexicalCollectionBudget::new(max_work, max_bytes)?;
+         let bytes = u64::try_from(
+             LEXICAL_OUTPUT_GROUP_LIMIT
+-                * std::mem::size_of::<Option<Vec<LexicalMemoryReservation>>>(),
++                .checked_mul(std::mem::size_of::<Option<Vec<LexicalMemoryReservation>>>())
++                .ok_or_else(|| {
++                    CoreError::InvalidContract("preview carrier size overflow".into())
++                })?,
+         )
+-        .map_err(|_| CoreError::InvalidContract("preview carrier size overflow".into()))?;
++        .map_err(|_overflow| CoreError::InvalidContract("preview carrier size overflow".into()))?;
+         let carrier = ledger.reserve_bytes(bytes)?;
+         let mut groups = Vec::new();
+         groups
+@@ -269,6 +272,7 @@
+             groups,
+             _carrier: carrier,
+         });
++        drop(state);
+         Ok(ledger)
+     }
+ 
+@@ -289,11 +293,12 @@
+         }
+         let slot = retained.groups.len();
+         retained.groups.push(None);
++        drop(state);
+         Ok(Some(slot))
+     }
+ 
+-    /// Fill a slot reserved before rendering. This performs no allocation or
+-    /// budget admission after the optional renderer has produced valid output.
++    /// Fill a previously reserved request slot with live allocation leases.
++    /// This transfer performs no allocation or further budget admission.
+     pub fn retain_lexical_output(
+         &self,
+         slot: usize,
+@@ -315,6 +320,7 @@
+             ));
+         }
+         *group = Some(reservations);
++        drop(state);
+         Ok(())
+     }
+ 
+@@ -520,7 +526,7 @@
+     }
+ 
+     #[test]
+-    fn preview_group_exhaustion_is_explicit_before_optional_rendering() {
++    fn preview_group_exhaustion_is_explicit_without_poisoning_ledger() {
+         let request = RequestBudgetV1::unbounded();
+         let ledger = request
+             .lexical_preview_budget(10, 100_000)
+--- a/crates/quanta-index-core/src/domains/lexical/coverage.rs
++++ b/crates/quanta-index-core/src/domains/lexical/coverage.rs
+@@ -9,8 +9,10 @@
+ use crate::{CoreError, RequestBudgetV1};
+ 
+ /// Require completeness for every potentially in-scope admitted file, including
+-/// zero-unit files and inherited entries. A proved contradictory request scope
+-/// may be resolved by the validated planner before calling this function; no
++/// zero-unit files and inherited entries.
++///
++/// A proved contradictory request scope may be resolved by the validated planner
++/// before calling this function; no
+ /// untrusted `empty` flag can bypass it here.
+ pub fn require_complete_symbol_coverage(
+     snapshot: Option<&FileCoverageSnapshot>,
+--- a/crates/quanta-index-core/src/domains/lexical/outbound.rs
++++ b/crates/quanta-index-core/src/domains/lexical/outbound.rs
+@@ -207,8 +207,9 @@
+     pub exact_total: Option<u64>,
+ }
+ 
+-/// Symbol pages carry the same count authority as text pages. This is one
+-/// generic page contract, not a second result-window IR. Adapter and route
++/// Symbol pages carry the same count authority as text pages.
++///
++/// This is one generic page contract, not a second result-window IR. Adapter and route
+ /// signatures must cut over together; a truncated vector cannot supply it.
+ pub type SymbolSearchPageV1 = LexicalSearchPageV1<SymbolCandidate>;
+ 
+--- a/crates/quanta-index-core/src/domains/lexical/service.rs
++++ b/crates/quanta-index-core/src/domains/lexical/service.rs
+@@ -73,8 +73,9 @@
+     ) -> Result<super::collection_budget::LexicalCollectionBudget, CoreError> {
+         let overflow =
+             || CoreError::InvalidContract("lexical collection work limit overflow".to_string());
+-        let candidates = u64::try_from(self.max_examined_candidates).map_err(|_| overflow())?;
+-        let segments = u64::try_from(max_segments).map_err(|_| overflow())?;
++        let candidates =
++            u64::try_from(self.max_examined_candidates).map_err(|_conversion| overflow())?;
++        let segments = u64::try_from(max_segments).map_err(|_conversion| overflow())?;
+         let work = candidates
+             .checked_mul(4)
+             .and_then(|work| work.checked_add(segments))

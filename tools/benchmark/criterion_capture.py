@@ -12,7 +12,6 @@ import platform
 import socket
 import statistics
 import sys
-import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -34,7 +33,13 @@ from evidence_bridge import (
     source_identity,
 )
 from producer_execution import execute
-from profile_capture import _directories, load_capture, publish_capture
+from profile_capture import (
+    _directories,
+    capture_entrypoint,
+    current_capture,
+    load_capture,
+    publish_capture,
+)
 from registry import registry_digest
 
 
@@ -332,6 +337,7 @@ def validate(repo: Path, root: Path, profile: str, registry: dict) -> dict:
     return document
 
 
+@capture_entrypoint()
 def capture(
     repo: Path,
     root: Path,
@@ -361,9 +367,11 @@ def capture(
         or any(not math.isfinite(value) or value <= 0 for value in (warmup, measurement))
     ):
         raise EvidenceError("invalid Criterion diagnostic sampling parameters")
+    current_capture().step("source")
     require_clean_worktree(repo)
     head = resolve_checkout_head(repo)
     source = source_identity(repo, "benchmark-micro")
+    current_capture().step("inputs", source=source)
     cpu_count = os.cpu_count()
     if type(cpu_count) is not int or cpu_count < 1:
         raise EvidenceError("cannot establish the capture host CPU inventory")
@@ -376,9 +384,8 @@ def capture(
         lease_mode="none",
         lease_samples=0,
     )
-    capture_id = f"{profile}-{uuid.uuid4().hex}"
+    capture_id = current_capture().capture_id
     scratch = root / "work" / capture_id
-    scratch.mkdir(parents=True, exist_ok=False)
     # Mark custody before any run promotion, including for the Rust collector.
     (root / "captures").mkdir(exist_ok=True)
     prepared, expected = [], {}
@@ -409,12 +416,12 @@ def capture(
             "--no-run",
             "--message-format=json",
         ]
-        output, stderr, build_command = execute(
+        output, stderr, build_command = current_capture().execute(execute,
             build_argv, cwd=repo, env=env, timeout=timeout, log_dir=work / "execution" / "build"
         )
         binary, features = _binary(output, producer["target"])
         binary_digest = RawFile.capture(binary).sha256
-        rustc, rustc_stderr, _ = execute(
+        rustc, rustc_stderr, _ = current_capture().execute(execute,
             ["rustc", "-vV"],
             cwd=repo,
             env=env,
@@ -432,7 +439,7 @@ def capture(
         )
         if target is None:
             raise EvidenceError("rustc did not report a target triple")
-        listing, list_stderr, _ = execute(
+        listing, list_stderr, _ = current_capture().execute(execute,
             [str(binary), "--list", "--format", "terse"],
             cwd=repo,
             env=env,
@@ -446,7 +453,7 @@ def capture(
             file=sys.stderr,
             flush=True,
         )
-        smoke, smoke_stderr, _ = execute(
+        smoke, smoke_stderr, _ = current_capture().execute(execute,
             [str(binary), "--test"],
             cwd=repo,
             env=env,
@@ -466,7 +473,7 @@ def capture(
             "--nresamples",
             str(resamples),
         ]
-        measured, measure_stderr, command = execute(
+        measured, measure_stderr, command = current_capture().execute(execute,
             measure_argv,
             cwd=repo,
             env=env,

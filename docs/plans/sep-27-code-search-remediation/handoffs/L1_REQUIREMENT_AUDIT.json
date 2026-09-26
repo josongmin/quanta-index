@@ -1,12 +1,15 @@
 {
-  "classification": "FAILED",
+  "classification": "VERIFIED",
   "evidence_scope": "Individual owner-local passing regressions only. VERIFIED requirement rows are scoped to these listed cases, not exhaustive or installed product qualification.",
-  "head": "98601a66d8cab9c86232b3e62ce490c8b43b71b6",
+  "head": "5571132655a83824731e7909b0e310951edad52b",
+  "historical_classification": "FAILED",
+  "historical_head": "98601a66d8cab9c86232b3e62ce490c8b43b71b6",
+  "historical_source_union_sha256": "f441ed82d5dfe9ee3f4034820603734e182c47a403224c03bf3fef15720ed593",
+  "latest_evidence": "L1_RCA.json",
   "purpose": "Requirement-to-evidence map; test existence and this file do not establish completion.",
   "remaining": [
-    "L0 shared pure primitive admission and L1 call-site integration",
-    "final-source package lint (latest attempts failed on external-owner diagnostics)",
-    "clean-source repository and daemon/SDK qualification"
+    "Repository/daemon/SDK qualification NOT_RUN",
+    "Full repository lint NOT_RUN; scoped lint in L1_RCA.json"
   ],
   "requirements": [
     {
@@ -89,6 +92,27 @@
     },
     {
       "evidence": [
+        {
+          "proof": "L1_RCA.json",
+          "required_passed_tests": {
+            "rca-dispatcher-all-1": [
+              "query_dispatcher::tests::l1_query_domain_window::contradictory_languages_do_not_hide_tokenless_phrase",
+              "query_dispatcher::tests::l1_query_domain_window::valid_language_contradiction_has_no_executed_lane_or_backend_search"
+            ],
+            "rca-dispatcher-regression-1": [
+              "query_dispatcher::tests::l1_query_domain_window::l1_real_adapter_admits_primitives_before_language_empty_or_generation_open"
+            ],
+            "rca-native-controls-1": [
+              "predicate_result_empty_cannot_hide_keyword_or_content_tokens",
+              "l1_primitive_admission_is_independent_of_boolean_order_and_leaf_location",
+              "l1_opener_primitive_admission_never_opens_a_generation",
+              "l1_primitive_admission_uses_adapter_regex_policy_and_literal_limits"
+            ]
+          },
+          "status": "VERIFIED"
+        }
+      ],
+      "historical_evidence": [
         {
           "log": {
             "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/native-all-resume-3.log.gz",
@@ -218,10 +242,27 @@
           "test": "predicate_result_empty_cannot_hide_keyword_or_content_tokens"
         }
       ],
+      "historical_status": "FAILED",
       "id": "2",
+      "latest_evidence": "L1_RCA.json",
+      "latest_tests": {
+        "rca-dispatcher-all-1": [
+          "query_dispatcher::tests::l1_query_domain_window::contradictory_languages_do_not_hide_tokenless_phrase",
+          "query_dispatcher::tests::l1_query_domain_window::valid_language_contradiction_has_no_executed_lane_or_backend_search"
+        ],
+        "rca-dispatcher-regression-1": [
+          "query_dispatcher::tests::l1_query_domain_window::l1_real_adapter_admits_primitives_before_language_empty_or_generation_open"
+        ],
+        "rca-native-controls-1": [
+          "predicate_result_empty_cannot_hide_keyword_or_content_tokens",
+          "l1_primitive_admission_is_independent_of_boolean_order_and_leaf_location",
+          "l1_opener_primitive_admission_never_opens_a_generation",
+          "l1_primitive_admission_uses_adapter_regex_policy_and_literal_limits"
+        ]
+      },
       "requirement": "Empty shortcuts cannot hide invalid input.",
-      "scope": "Native Keyword/expression and Content-filter token validation: eight invalid empty-predicate requests incorrectly succeed (indexed/manual, search/search_all). Dispatcher phrase is hidden by contradictory language. Shared canonical primitive admission is required. Consult individual evidence validity.",
-      "status": "FAILED",
+      "scope": "Canonical primitive admission; native indexed/manual and real LexicalAdapter + dispatcher, before predicate/language empty. Daemon transport excluded.",
+      "status": "VERIFIED",
       "tests": [
         "empty_repo_predicate_cannot_hide_invalid_count",
         "invalid_fetch_cannot_mint_zero_exact_count_before_execution",
@@ -529,6 +570,5 @@
       ]
     }
   ],
-  "source_union_sha256": "f441ed82d5dfe9ee3f4034820603734e182c47a403224c03bf3fef15720ed593",
-  "state": "partial"
+  "state": "owner-local verified"
 }

@@ -71,17 +71,22 @@ pub struct StructuralAuthorityState {
     chunks: OrdMap<ChunkId, ChunkRecord>,
     parse_trees: OrdMap<ChunkId, ParseTreeRecord>,
     seal_requested: bool,
+    source_batch_digest: Option<String>,
 }
 
 /// The part of a structural generation's state that is not a record.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct StructuralStateMeta {
     pub(crate) seal_requested: bool,
+    /// The source batch whose complete chunk universe was committed with this
+    /// metadata in the same auxiliary transaction. None is unproved.
+    pub(crate) source_batch_digest: Option<String>,
 }
 
 impl StructuralAuthorityState {
-    pub(crate) const fn restore_meta(&mut self, meta: StructuralStateMeta) {
+    pub(crate) fn restore_meta(&mut self, meta: StructuralStateMeta) {
         self.seal_requested = meta.seal_requested;
+        self.source_batch_digest = meta.source_batch_digest;
     }
 
     pub(crate) fn restore_chunk(&mut self, chunk_id: ChunkId, chunk: ChunkRecord) {
@@ -102,6 +107,8 @@ impl StructuralAuthorityState {
             self.restore_parse_tree(chunk_id.clone(), record.clone());
         }
         self.seal_requested = delta.seal_requested;
+        self.source_batch_digest
+            .clone_from(&delta.source_batch_digest);
     }
 
     /// Apply a chunk-universe delta: clear, removals, then upserts.
@@ -115,6 +122,7 @@ impl StructuralAuthorityState {
         for chunk in &delta.upserts {
             self.restore_chunk(chunk.chunk_id.clone(), chunk.clone());
         }
+        self.restore_meta(delta.meta.clone());
     }
 
     /// Drop one chunk from the universe (absent is fine).
@@ -231,6 +239,10 @@ impl StructuralAuthorityState {
         self.seal_requested
     }
 
+    pub(crate) fn source_batch_digest(&self) -> Option<&str> {
+        self.source_batch_digest.as_deref()
+    }
+
     pub fn request_seal(&mut self) {
         self.seal_requested = true;
     }
@@ -238,12 +250,14 @@ impl StructuralAuthorityState {
 
 impl_struct_serde!(StructuralStateMeta {
     seal_requested: bool,
+    source_batch_digest: Option<String>,
 });
 
 impl_struct_serde!(StructuralAuthorityState {
     chunks: OrdMap<ChunkId, ChunkRecord>,
     parse_trees: OrdMap<ChunkId, ParseTreeRecord>,
     seal_requested: bool,
+    source_batch_digest: Option<String>,
 });
 
 /// What one structural batch changes: parse trees removed and written,
@@ -257,6 +271,7 @@ pub(crate) struct StructuralTreesDelta {
     pub(crate) removed: BTreeSet<ChunkId>,
     pub(crate) upserts: Vec<(ChunkId, ParseTreeRecord)>,
     pub(crate) seal_requested: bool,
+    pub(crate) source_batch_digest: Option<String>,
     pub(crate) track: TrackAuthorityState,
     /// Whether the track sealed in this batch (the seal was requested and
     /// trees exist), which the caller reports on its receipt.

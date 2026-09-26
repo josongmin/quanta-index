@@ -73,8 +73,9 @@ impl LexicalExecutionBudgetV1 {
     ) -> Result<super::collection_budget::LexicalCollectionBudget, CoreError> {
         let overflow =
             || CoreError::InvalidContract("lexical collection work limit overflow".to_string());
-        let candidates = u64::try_from(self.max_examined_candidates).map_err(|_| overflow())?;
-        let segments = u64::try_from(max_segments).map_err(|_| overflow())?;
+        let candidates =
+            u64::try_from(self.max_examined_candidates).map_err(|_conversion| overflow())?;
+        let segments = u64::try_from(max_segments).map_err(|_conversion| overflow())?;
         let work = candidates
             .checked_mul(4)
             .and_then(|work| work.checked_add(segments))

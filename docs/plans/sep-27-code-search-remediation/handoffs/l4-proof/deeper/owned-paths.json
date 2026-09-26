@@ -1,0 +1,18 @@
+[
+  "crates/quanta-index-lexical/src/searcher/candidates.rs",
+  "crates/quanta-index-lexical/tests/l4_match_anchored_preview.rs",
+  "crates/quanta-index-contract-base/src/results/preview.rs",
+  "crates/quanta-index-contract-base/src/results/candidates.rs",
+  "crates/quanta-index-contract/src/results/query_responses.rs",
+  "crates/quanta-index-contract/src/source_coverage.rs",
+  "crates/quanta-index-contract/src/source_event_payload.rs",
+  "crates/quanta-index-contract/src/ipc/ingest.rs",
+  "crates/quanta-index-contract/src/ipc/split.rs",
+  "crates/quanta-index-contract-base/tests/l4_preview_emission.rs",
+  "crates/quanta-index-contract/tests/l4_preview_wire.rs",
+  "crates/quanta-index-core/src/domains/lexical/collection_budget.rs",
+  "crates/quanta-index-core/src/request_budget.rs",
+  "crates/quanta-index-core/src/domains/lexical/coverage.rs",
+  "crates/quanta-index-core/src/domains/lexical/outbound.rs",
+  "crates/quanta-index-core/src/domains/lexical/service.rs"
+]

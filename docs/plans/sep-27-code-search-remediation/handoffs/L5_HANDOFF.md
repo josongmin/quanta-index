@@ -1,8 +1,8 @@
 # L5 — Parser and source-fact remediation
 
-Current follow-up: [L5_ADVERSARIAL_AUDIT](L5_ADVERSARIAL_AUDIT.md) records four
-additional P2 counterexamples, fixes and current verification. The earlier
-completion below remains bound to its original frozen snapshot.
+Current follow-up: [L5_FINAL_CODE_AUDIT](L5_FINAL_CODE_AUDIT.md) records five
+additional reproduced defects, fixes and source-bound verification. Earlier
+completion and audit receipts below remain bound to their original snapshots.
 
 Status: **VERIFIED for the L5 and integration scope below**. No confirmed open
 P0–P2 finding remains in that scope. Whole-repository CI and release qualification

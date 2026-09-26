@@ -55,6 +55,13 @@ from evidence import (  # noqa: E402
     file_digest,
 )
 from manifest import DEFAULT_MANIFEST_PATH, ManifestError, load_manifest  # noqa: E402
+from producer_execution import execute  # noqa: E402
+from profile_capture import (  # noqa: E402
+    capture_entrypoint,
+    capture_error,
+    capture_phase,
+    current_capture,
+)
 from registry import load_registry, registry_digest  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -948,6 +955,7 @@ def _capture_native_family(
     return captures, artifacts, native_payload_from_artifacts(artifacts, entry["payload"])
 
 
+@capture_entrypoint(profile_argument="profile_name", repo_argument="repo_root", root_argument="evidence_root")
 def promote_profile_runs(
     repo_root: Path,
     profile_name: str,
@@ -974,12 +982,14 @@ def promote_profile_runs(
     assert isinstance(families, dict) and isinstance(profiles, dict)
     selected = profiles[profile_name]["families"]
     created = datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
-    stamp = f"{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}-{time.time_ns()}"
+    stamp = current_capture().capture_id
+    capture_phase("native_preparation")
     hostname = socket.gethostname() or "unknown"
     try:
         require_clean_preflight_receipt(receipt, profile_name)
         receipt_digest, _ = file_digest(receipt)
     except (RuntimeError, OSError, ValueError) as exc:
+        capture_error(exc)
         print(f"ERROR: cannot read clean benchmark preflight receipt: {exc}", file=sys.stderr)
         return 2
     if receipt_digest != preflight_digest:
@@ -1005,6 +1015,7 @@ def promote_profile_runs(
                 raise EvidenceError("native raw inventory repeats a destination filename")
             _native_inputs(prepared[family][1], preflight_digest)
     except (EvidenceError, OSError, ValueError) as exc:
+        capture_error(exc)
         print(f"ERROR: profile native capture refused: {exc}", file=sys.stderr)
         return 2
     for family in selected:
@@ -1019,6 +1030,7 @@ def promote_profile_runs(
         try:
             source = source_identity(repo_root, "benchmark-control-plane")
         except EvidenceError as exc:
+            capture_error(exc)
             print(f"ERROR: cannot bind source closure: {exc}", file=sys.stderr)
             return 2
         if source.get("dirty") is not False or source.get("revision") != initial_head:
@@ -1088,6 +1100,7 @@ def promote_profile_runs(
                 case_id=None,
             )
         except EvidenceError as exc:
+            capture_error(exc)
             print(f"ERROR: family {family!r} promotion refused: {exc}", file=sys.stderr)
             return 2
         runs.append(prepared_run)
@@ -1106,7 +1119,7 @@ def promote_profile_runs(
             raise EvidenceError("native profile differs from registry family inventory")
         document = publish_capture(
             evidence_root,
-            capture_id=f"{profile_name}-{stamp}",
+            capture_id=current_capture().capture_id,
             profile=profile_name,
             registry_digest=registry_digest(registry),
             expected_cases={family: [None] for family in selected},
@@ -1115,6 +1128,7 @@ def promote_profile_runs(
             verify_source=verify_source,
         )
     except (EvidenceError, OSError, ValueError) as exc:
+        capture_error(exc)
         print(f"ERROR: native profile publication refused: {exc}", file=sys.stderr)
         return 2
     print(
@@ -1881,6 +1895,25 @@ def main(argv: list[str] | None = None) -> int:
         return preflight(repo_root, args.profile, args.receipt, manifest)
     if args.command == "summarize":
         return summarize(repo_root, profile, manifest)
+    if args.command == "run" and args.evidence_root is not None:
+        try:
+            return _capture_native_run(
+                repo_root, resolve_evidence_root(args.evidence_root), args.profile,
+                args=args, argv=argv, profile=profile, manifest=manifest,
+                artifact_profile=artifact_profile,
+            )
+        except (ValueError, RuntimeError, OSError) as exc:
+            print(f"ERROR: native capture refused: {exc}", file=sys.stderr)
+            return 2
+    return _native_tail(args, argv, repo_root, profile, manifest, artifact_profile)
+
+
+@capture_entrypoint(profile_argument="profile_name", repo_argument="repo_root", root_argument="evidence_root")
+def _capture_native_run(repo_root, evidence_root, profile_name, *, args, argv, profile, manifest, artifact_profile):
+    return _native_tail(args, argv, repo_root, profile, manifest, artifact_profile)
+
+
+def _native_tail(args, argv, repo_root, profile, manifest, artifact_profile):
     if args.command == "run":
         requested_root = resolve_evidence_root(args.evidence_root)
         if requested_root is not None and (
@@ -1911,14 +1944,17 @@ def main(argv: list[str] | None = None) -> int:
         if args.admit_baseline and args.profile != "dsl-authority":
             print("ERROR: --admit-baseline is only valid for dsl-authority", file=sys.stderr)
             return 2
+        capture_phase("source")
         try:
             if not args.admit_baseline:
                 require_declared_baselines(repo_root, profile, manifest)
             require_clean_worktree(repo_root)
             initial_head = resolve_checkout_head(repo_root)
         except RuntimeError as exc:
+            capture_error(exc)
             print(f"ERROR: {exc}", file=sys.stderr)
             return 2
+        capture_phase("preflight", source_revision=initial_head)
         receipt = repo_root / "artifacts" / "benchmark-receipts" / args.profile / "preflight.json"
         preflight_result = preflight(repo_root, args.profile, receipt, manifest)
         if preflight_result:
@@ -1932,11 +1968,14 @@ def main(argv: list[str] | None = None) -> int:
             require_frozen_source(repo_root, initial_head)
             preflight_digest = file_digest(receipt)[0].removeprefix("sha256:")
         except RuntimeError as exc:
+            capture_error(exc)
             print(f"ERROR: {exc}", file=sys.stderr)
             return 2
         except (OSError, ValueError) as exc:
+            capture_error(exc)
             print(f"ERROR: timing preflight receipt disappeared: {exc}", file=sys.stderr)
             return 2
+        capture_phase("preparation", preflight_digest="sha256:" + preflight_digest)
         recipes = profile["recipes"]
         assert isinstance(recipes, list)
         if not recipes:
@@ -1950,16 +1989,26 @@ def main(argv: list[str] | None = None) -> int:
             if recipe == "rust-bench-dsl-cold" and cold_samples is not None:
                 command.append(str(cold_samples))
             try:
-                completed = subprocess.run(command, cwd=repo_root, check=False, timeout=3600)
-            except subprocess.TimeoutExpired:
-                print(f"ERROR: producer recipe {recipe!r} timed out", file=sys.stderr)
+                capture_phase("execution", recipe=recipe)
+                if requested_root is not None:
+                    current_capture().execute(
+                        execute, command, cwd=repo_root, env=dict(os.environ),
+                        timeout=3600, log_dir=current_capture().work / "execution" / recipe,
+                    )
+                    returncode = 0
+                else:
+                    returncode = subprocess.run(command, cwd=repo_root, check=False, timeout=3600).returncode
+            except (subprocess.TimeoutExpired, OSError, ValueError) as exc:
+                capture_error(exc)
+                print(f"ERROR: producer recipe {recipe!r} refused: {exc}", file=sys.stderr)
                 return 2
-            if completed.returncode:
+            if returncode:
                 print(f"ERROR: producer recipe {recipe!r} failed", file=sys.stderr)
-                return completed.returncode
+                return returncode
             try:
                 require_frozen_source(repo_root, initial_head)
             except RuntimeError as exc:
+                capture_error(exc)
                 print(f"ERROR: {exc}", file=sys.stderr)
                 return 2
         execution = {
@@ -1983,11 +2032,13 @@ def main(argv: list[str] | None = None) -> int:
             expected_source = source_identity(repo_root, "benchmark-control-plane")
             expected_lock = file_digest(repo_root / "Cargo.lock")[0]
         except (RuntimeError, EvidenceError, OSError) as exc:
+            capture_error(exc)
             print(f"ERROR: cannot establish current validation identity: {exc}", file=sys.stderr)
             return 2
         return validate_promoted_runs(
             evidence_root, args.profile, manifest, expected_source, expected_lock, repo_root
         )
+    capture_phase("native_validation")
     if artifact_profile in manifest["profiles"]:
         validation = validate(repo_root, artifact_profile)
         if validation:
@@ -2013,6 +2064,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             validated_artifacts = snapshot_profile_artifacts(repo_root, args.profile, manifest)
         except RuntimeError as exc:
+            capture_error(exc)
             print(f"ERROR: {exc}", file=sys.stderr)
             return 2
     if args.command == "run":
@@ -2030,8 +2082,10 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 return 0
         except RuntimeError as exc:
+            capture_error(exc)
             print(f"ERROR: {exc}", file=sys.stderr)
             return 2
+    capture_phase("comparison")
     if args.command in {"run", "compare"}:
         try:
             result = compare(repo_root, profile, manifest)
@@ -2046,6 +2100,7 @@ def main(argv: list[str] | None = None) -> int:
                 ):
                     raise RuntimeError("benchmark artifacts changed during comparison")
         except RuntimeError as exc:
+            capture_error(exc)
             print(f"ERROR: {exc}", file=sys.stderr)
             return 2
     if args.command == "run" and evidence_root is not None:
@@ -2067,6 +2122,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             require_frozen_source(repo_root, initial_head)
         except RuntimeError as exc:
+            capture_error(exc)
             print(f"ERROR: {exc}", file=sys.stderr)
             return 2
     if args.command in {"run", "compare"}:

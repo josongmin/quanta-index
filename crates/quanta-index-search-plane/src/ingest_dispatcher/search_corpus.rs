@@ -460,7 +460,9 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
         Self::validate_batch_shape_v1(batch)?;
         self.admit_resource_envelope(batch)?;
         self.builder.preflight_batch(batch)?;
-        if let Some(base_generation) = batch.base_generation {
+        if let Some(base_generation) = batch.base_generation
+            && !self.can_recover_completed_target_v1(batch)?
+        {
             self.preflight_delta_base_v1(batch, base_generation)?;
         }
         Ok(())
@@ -500,13 +502,14 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
             ))
         })?;
 
-        if let Some(base_generation) = batch.base_generation {
-            self.preflight_delta_base_v1(batch, base_generation)?;
-        }
-
         // Repeat immutable base/candidate ownership admission under this
         // operation's lock before reservation, provider calls or either builder.
         self.builder.preflight_batch(batch)?;
+        if let Some(base_generation) = batch.base_generation
+            && !self.can_recover_completed_target_v1(batch)?
+        {
+            self.preflight_delta_base_v1(batch, base_generation)?;
+        }
         if !batch.seal {
             let (lexical, semantic) = generation_pair_from_batch_v1(batch);
             ensure_generation_is_mutable_v1(
@@ -549,18 +552,7 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
         };
         // Known admission refusals must not consume a stream slot. Once
         // admitted, reserve before reclaim, discard, or any provider/build work.
-        let (target, _) = generation_pair_from_batch_v1(batch);
-        let binding = quanta_index_core::SourceEventBindingV1 {
-            event: batch.source_event.clone(),
-            target,
-            journal_key: quanta_index_core::IdempotencyKeyV1 {
-                kind: quanta_index_contract::IngestOperationKindV1::SearchCorpus,
-                repo_id: batch.repo_id.clone(),
-                revision_id: batch.revision_id.clone(),
-                generation: batch.generation,
-                batch_digest: batch.batch_digest.clone(),
-            },
-        };
+        let binding = Self::source_binding_v1(batch);
         match self.source_publication.reserve_source_event(&binding)? {
             quanta_index_core::SourceEventReservationV1::Reserved(_) => {}
             quanta_index_core::SourceEventReservationV1::Existing(record) => {
@@ -670,6 +662,58 @@ fn elapsed_ingest_ns(started: std::time::Instant) -> Result<u64, CoreError> {
 }
 
 impl DirectSearchCorpusMaterializer {
+    fn source_binding_v1(
+        batch: &SearchCorpusIngestBatch,
+    ) -> quanta_index_core::SourceEventBindingV1 {
+        let (target, _) = generation_pair_from_batch_v1(batch);
+        quanta_index_core::SourceEventBindingV1 {
+            event: batch.source_event.clone(),
+            target,
+            journal_key: quanta_index_core::IdempotencyKeyV1 {
+                kind: quanta_index_contract::IngestOperationKindV1::SearchCorpus,
+                repo_id: batch.repo_id.clone(),
+                revision_id: batch.revision_id.clone(),
+                generation: batch.generation,
+                batch_digest: batch.batch_digest.clone(),
+            },
+        }
+    }
+
+    /// A completed original target can outlive its base after retention, before
+    /// the operation journal acknowledges it. A sealed pair alone is not proof
+    /// that its complete chunk transaction ran. Require that durable marker and
+    /// the exact pending source reservation, then validate both physical tracks.
+    /// The caller has already validated the lexical source-event binding.
+    fn can_recover_completed_target_v1(
+        &self,
+        batch: &SearchCorpusIngestBatch,
+    ) -> Result<bool, CoreError> {
+        if !batch.seal {
+            return Ok(false);
+        }
+        let complete = self.ledger.read().map_err(|error| {
+            CoreError::Storage(format!("direct search-corpus materialize: ledger poisoned while inspecting completed target: {error}"))
+        })?.structural_state(&batch.repo_id, &batch.revision_id, batch.generation)
+            .is_some_and(|state| state.source_batch_digest() == Some(batch.batch_digest.as_str()));
+        if !complete {
+            return Ok(false);
+        }
+        let Some(record) = self
+            .source_publication
+            .inspect_source_event(&batch.repo_id, &batch.source_event)?
+        else {
+            return Ok(false);
+        };
+        if record.phase != quanta_index_core::SourceEventPhaseV1::Pending
+            || record.binding != Self::source_binding_v1(batch)
+        {
+            return Ok(false);
+        }
+        Ok(self
+            .preflight_sealed_generation_v1(batch)?
+            .is_finalize_only())
+    }
+
     /// The receipt of a sealed batch, attesting the content roots the
     /// semantic generation sealed (QI-BB-028) so the producer can name
     /// them when it activates. Read from the sealed manifest the seal
@@ -757,6 +801,15 @@ impl DirectSearchCorpusMaterializer {
             };
             validate_delta_base_v1(validator.as_ref(), &base, &format!("{label} delta base"))?;
         }
+        if !self.ledger.read().map_err(|error| CoreError::Storage(format!(
+            "direct search-corpus materialize: ledger poisoned while inspecting base chunk authority: {error}"
+        )))?.structural_state(&batch.repo_id, &batch.revision_id, base_generation)
+            .is_some_and(|state| state.source_batch_digest().is_some()) {
+            return Err(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusDeltaBaseNotSealed,
+                message: "source delta base has no complete chunk authority; rebuild the source generation before publication".into(),
+            });
+        }
         Ok(())
     }
 
@@ -803,6 +856,11 @@ impl DirectSearchCorpusMaterializer {
         &self,
         batch: &SearchCorpusIngestBatch,
     ) -> Result<(), CoreError> {
+        // Retention can retire the base authority before its receipt returns,
+        // including an I/O failure after a durable removal. Checkpoint the
+        // complete target chunks first, while the base is still available.
+        // This does not publish either track or advance rollback history.
+        self.apply_source_finalization_v1(batch, None, false)?;
         // Fence rollback before entering the durable retention owner. A
         // delete may succeed while the following directory fsync fails; in
         // that state the old same-process ledger is not authoritative. Only a
@@ -850,13 +908,22 @@ impl DirectSearchCorpusMaterializer {
         batch: &SearchCorpusIngestBatch,
         retention: Option<&SearchCorpusHistoryRetentionReceiptV1>,
     ) -> Result<(), CoreError> {
-        const WHAT: &str = "direct search-corpus materialize";
         if batch.seal && retention.is_none() {
             return Err(CoreError::InvalidContract(
                 "direct search-corpus materialize: sealed generation requires durable retention receipt"
                     .to_string(),
             ));
         }
+        self.apply_source_finalization_v1(batch, retention, true)
+    }
+
+    fn apply_source_finalization_v1(
+        &self,
+        batch: &SearchCorpusIngestBatch,
+        retention: Option<&SearchCorpusHistoryRetentionReceiptV1>,
+        publish_tracks: bool,
+    ) -> Result<(), CoreError> {
+        const WHAT: &str = "direct search-corpus materialize";
         // The chunk universe and the reap of the auxiliary generations the
         // retention receipt retired are one durable transaction before the
         // generation is visible (QI-BB-020): validated against the ledger,
@@ -879,11 +946,51 @@ impl DirectSearchCorpusMaterializer {
                 &batch.revision_id,
                 batch.generation,
             )?;
-            let chunks = structural_chunks_transition(
-                guard.structural_state(&batch.repo_id, &batch.revision_id, batch.generation),
-                epoch,
-                batch,
-            );
+            let current =
+                guard.structural_state(&batch.repo_id, &batch.revision_id, batch.generation);
+            let already_complete = current.is_some_and(|state| {
+                state.source_batch_digest() == Some(batch.batch_digest.as_str())
+            });
+            if !publish_tracks && already_complete {
+                return Ok(());
+            }
+            let mut chunks = if already_complete {
+                // The previous atomic chunk transaction may have retired the
+                // base before the operation journal acknowledged this batch.
+                // Reuse only a complete target bound to this original body.
+                let mut delta = structural_chunks_transition(current, epoch, batch);
+                delta.removed.clear();
+                delta.upserts.clear();
+                delta.clear = false;
+                delta
+            } else {
+                let inherited = match batch.base_generation {
+                    Some(base) => {
+                        let state = guard
+                            .structural_state(&batch.repo_id, &batch.revision_id, base)
+                            .filter(|state| state.source_batch_digest().is_some())
+                            .ok_or_else(|| CoreError::NotReady(
+                                "source delta has no complete base chunk authority; rebuild the source generation".into(),
+                            ))?;
+                        Some(state)
+                    }
+                    None => None,
+                };
+                let mut delta = structural_chunks_transition(inherited, epoch, batch);
+                if let Some(base) = inherited {
+                    let mut next = base.clone();
+                    next.apply_chunks_delta(&delta);
+                    delta.upserts = next.chunks().values().cloned().collect();
+                }
+                // This is the whole target chunk universe, not a patch against
+                // an empty target. Persist inherited rows in the same existing
+                // auxiliary transaction before retirement removes their base.
+                delta.clear = true;
+                delta.removed.clear();
+                delta
+            };
+            chunks.meta.seal_requested = current.is_some_and(|state| state.seal_requested());
+            chunks.meta.source_batch_digest = Some(batch.batch_digest.clone());
             // Auxiliary generations older than the one being sealed that the
             // retention receipt does not retain go with it; a newer
             // generation still being staged is never touched.
@@ -928,6 +1035,9 @@ impl DirectSearchCorpusMaterializer {
                 )?;
             }
             guard.apply_structural_chunks_delta(&chunks, std::time::Instant::now())?;
+            if !publish_tracks {
+                return Ok(());
+            }
             // Both tracks of the pair are recorded here and only here,
             // whether this batch built them or found them sealed on disk: a
             // seal retried after a crash does not rebuild a track the crash

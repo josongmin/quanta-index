@@ -8,8 +8,8 @@ use quanta_index_contract::{
     SearchPlaneTrackKind, TextQueryRequest,
 };
 use quanta_index_core::{
-    CoreError, LexicalEndpoint, LexicalPolicy, QueryRouteV1, ReadDomainV1, RequestBudgetV1,
-    RequiredDomainsV1, declare_required_domains_v1,
+    CoreError, HybridFilterPlanV1, LexicalEndpoint, LexicalPolicy, QueryRouteV1, ReadDomainV1,
+    RequestBudgetV1, RequiredDomainsV1, declare_required_domains_v1,
 };
 
 use crate::lower_lexical_text_query;
@@ -21,6 +21,31 @@ use crate::query_dispatcher::rev_at_time::{
 use crate::query_dispatcher::selection::resolve_lexical_request_pin;
 
 impl SearchPlaneDispatcher {
+    /// Admit the original lexical request before composing language constraints.
+    /// Composite routes must not erase invalid primitives through a contradiction.
+    pub(super) fn prepare_lexical_language_query(
+        &self,
+        query: LqQuery,
+        constraints: &QueryConstraintSetV1,
+        budget: &RequestBudgetV1,
+    ) -> Result<PreparedLanguageQueryV1, CoreError> {
+        let plan = LexicalPolicy::plan_query(&query, constraints, LexicalEndpoint::Text)?;
+        self.lex_opener.preflight_query_primitives(&plan, budget)?;
+        prepare_language_query_v1(query, constraints)
+    }
+
+    /// Shared lexical plan for hybrid search, seed search and hybrid explain.
+    pub(super) fn plan_hybrid_lexical_query(
+        &self,
+        request: &TextQueryRequest,
+        budget: &RequestBudgetV1,
+    ) -> Result<(HybridFilterPlanV1, PreparedLanguageQueryV1), CoreError> {
+        let query = lower_lexical_text_query(request)?;
+        let filters = HybridFilterPlanV1::plan(&query)?;
+        let prepared = self.prepare_lexical_language_query(query, &request.constraints, budget)?;
+        Ok((filters, prepared))
+    }
+
     /// Lower a text request into the one executable lexical plan: lowered
     /// query, composed constraints, the generation it runs against and the
     /// domains it declares.

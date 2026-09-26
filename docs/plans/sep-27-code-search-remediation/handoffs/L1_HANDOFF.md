@@ -1,20 +1,24 @@
 # L1_HANDOFF — query/domain/window
 
-Latest audit: **VERIFIED** for two additional native exact-all corrections.
-Primitive admission remains **FAILED**, so the full L1 remediation is incomplete.
-The earlier statement that no further safe L1 work existed was too broad: this
-audit repaired two owned-port defects without changing a shared public API.
-See `L1_CODE_AUDIT.md` and `L1_CODE_AUDIT.json` for the current audit results.
+Latest RCA: **VERIFIED** for primitive admission before predicate/language
+emptiness. The native and dispatcher failures are repaired. A mandatory opener
+method delegates to one canonical lexical validator; all eight implementations
+are connected, with no default-success fallback. See `L1_RCA.md` and
+`L1_RCA.json` for the cause, contract change, exact commands and raw evidence.
 
-The user explicitly accepts a successful execution even when concurrent sources
-change. Those observed passes are accepted; source changes remain provenance and
-do not trigger further reruns. `L1_GOAL_BLOCKED_AUDIT.json` and `L1_PROOF.json`
-record earlier work and are historical, not an exhaustive audit or a prerequisite
-to accepting the new regressions. The former vendor compilation blocker was
-repaired externally. This remains owner-local evidence; repository and actual
-daemon/SDK gates have not been executed for this audit.
+Native L1: **17/17**. Other native integration controls: **71 passed**, then
+migrated pre-interruption controls **3/3** and direct budget/collector controls
+**4/4**. Dispatcher: **462 passed** in the aggregate; the corrected new
+real-adapter test passed **1/1** separately. First aggregate failures remain
+recorded; no single-invocation green aggregate is claimed.
 
-## Latest adversarial code audit
+The user accepts a successful execution despite concurrent edits. Source state
+remains provenance and does not trigger reruns. Earlier API-freeze/blocker and
+FAILED records are historical. Full repository and actual daemon/SDK gates
+remain outside this owner-local result.
+
+## Previous adversarial code audit (historical)
+
 
 - Exact-all Text search now applies the canonical Symbol-name predicate rewrite.
   Eight indexed/manual, count and domain combinations previously refused valid
@@ -34,7 +38,8 @@ daemon/SDK gates have not been executed for this audit.
 
 ## Source and ownership
 
-- HEAD: `98601a66d8cab9c86232b3e62ce490c8b43b71b6`, shared dirty checkout.
+- RCA start HEAD: `98601a66d8cab9c86232b3e62ce490c8b43b71b6`; closeout HEAD:
+  `5571132655a83824731e7909b0e310951edad52b`, shared checkout. No commit was created by this task.
   Exact commands, source closures, dependency/config/toolchain identity, dirty
   inventory, executable hashes and compressed/raw log digests:
   `L1_CODE_AUDIT.json` for this audit; `L1_PROOF.json` for earlier work.
@@ -43,7 +48,8 @@ daemon/SDK gates have not been executed for this audit.
 - Previously leased shared production files:
   core `domains/lexical/{outbound,query_plan,service}.rs` and contract-base
   `results/query_window.rs`. Their public contracts remain frozen for L0.
-  A new primitive API has not been applied or given a default-success fallback.
+  The later structural RCA adds the mandatory primitive API under explicit user
+  authorization. No default-success fallback was added.
 - Rust commands run sequentially through `./scripts/cargow --locked -j 2` and its
   canonical `resource_admission.py` lock. No lock/cache bypass.
 
@@ -52,7 +58,7 @@ daemon/SDK gates have not been executed for this audit.
 | Requirement | Implemented behavior / remaining failure | Evidence boundary |
 | --- | --- | --- |
 | 1: Domain/decoder | Immutable validated plan rejects Text projections/types on Symbol and preserves generic Text select/type Symbol | Native indexed/manual fixtures, core plan tests, instrumented dispatcher |
-| 2: Validate before empty | Domain/count/Symbol text/predicate/phrase/explicit-regex checks run before emptiness; **native Keyword/Content and dispatcher phrase gaps remain** | Two failing regressions; no complete validation claim |
+| 2: Validate before empty | Mandatory canonical primitive admission runs before predicate/language emptiness; native Keyword/Content and dispatcher phrase gaps repaired | Native indexed/manual and real-adapter dispatcher regressions in L1_RCA.json |
 | 3: Unsupported Symbol regex | Projection cannot reroute an unsupported Symbol request to Text execution | Native indexed/manual and native/Sourcegraph dispatcher controls |
 | 4: Execution facts | Valid language contradiction has LogicalEmpty proof with no executed lane | Instrumented ports plus strict proof decoder negatives |
 | 5: Count/window | Exact count is authoritative and separate from capped rows; invalid/missing facts refuse; cursor binds source identity | Independent cardinality fixtures, cap/top-k and byte clipping, complete cursor walks |
@@ -139,7 +145,7 @@ local registry patches. It captures patch manifests/build scripts/src while
 excluding unrelated vendor documentation/provenance from query behavior input.
 Older conservative snapshots remain historical; they are not silently promoted.
 
-Latest package clippy attempts failed on external-owner diagnostics: Symbol
+Earlier package clippy attempts failed on external-owner diagnostics: Symbol
 wildcard matching and ingest/readiness test lints. Raw failed receipts remain
 archived. Subsequent source changes mean complete final-source lint is **NOT_RUN**.
 No suppression or ignored failure was promoted to success.
@@ -150,16 +156,8 @@ historical evidence. Initial RED receipt SHA-256:
 
 ## Remaining integration and exclusions
 
-1. **FAILED:** Tokenless Keyword and Content filters after an empty repo-content
-   predicate incorrectly return `[]` in indexed/manual search/search_all. The
-   paired nonempty controls return `LEX_TEXT_QUERY_NO_TOKENS`.
-2. **FAILED:** Text `lang:python "!!!"` plus typed Rust returns LogicalEmpty
-   instead of `LEX_TEXT_QUERY_NO_TOKENS`. L0 owns the shared primitive-admission
-   boundary. Exact proposed signature, eight implementations and L1 call sites
-   are in `L1_PRIMITIVE_ADMISSION_REQUEST.md`. Both native and dispatcher must
-   consume one canonical pure owner; metadata/coverage remain view-dependent.
-3. **NOT_RUN:** Final-source full lint, clean integration/repository gates and
-   assembled daemon/SDK error mapping, malformed stored Symbol/public transport,
-   producer parser publication and witness lifetime proof. L0 must freeze the
-   integrated source and run the relevant gates. No ranking quality, memory,
-   performance, release or deployment claim.
+- The native Keyword/Content and dispatcher phrase defects are **VERIFIED** as
+  repaired by `L1_RCA.json`; the prior shared-API request is resolved.
+- Full repository CI, daemon/SDK transport assembly, release/deployment and
+  performance qualification remain **NOT_RUN** in this task.
+- Scoped lint results are recorded separately in the RCA receipt.

@@ -207,8 +207,9 @@ pub struct LexicalSearchPageV1<Candidate = LexicalCandidate> {
     pub exact_total: Option<u64>,
 }
 
-/// Symbol pages carry the same count authority as text pages. This is one
-/// generic page contract, not a second result-window IR. Adapter and route
+/// Symbol pages carry the same count authority as text pages.
+///
+/// This is one generic page contract, not a second result-window IR. Adapter and route
 /// signatures must cut over together; a truncated vector cannot supply it.
 pub type SymbolSearchPageV1 = LexicalSearchPageV1<SymbolCandidate>;
 

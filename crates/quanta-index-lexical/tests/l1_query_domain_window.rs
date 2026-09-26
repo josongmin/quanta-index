@@ -185,6 +185,39 @@ fn query(term: &str, manual: bool, sensitive: bool) -> LqQuery {
     }
 }
 
+#[test]
+fn l1_manual_scope_admission_preserves_supported_regex_grammar() -> TestResult {
+    let (_dir, searcher) = fixture()?;
+    for pattern in [r"^src/file_00\.rs$", r"\bsrc/file_00\.rs\b"] {
+        let mut request = query("needle", true, false);
+        request.filters.push(LqFilter::File {
+            pattern: pattern.into(),
+            scope: quanta_index_contract::LqFileScope::PathOnly,
+        });
+        let rows = searcher.search(&request, 10, &RequestBudgetV1::unbounded())?;
+        if rows.len() != 1
+            || rows
+                .first()
+                .is_none_or(|row| row.repo_relative_path.as_str() != "src/file_00.rs")
+        {
+            return Err(format!("manual scope {pattern:?} lost its fixture row: {rows:?}").into());
+        }
+    }
+    for manual in [false, true] {
+        let mut request = query("needle", manual, false);
+        request.filters.push(LqFilter::File {
+            pattern: "[".into(),
+            scope: quanta_index_contract::LqFileScope::PathOnly,
+        });
+        require_code(
+            searcher.search(&request, 10, &RequestBudgetV1::unbounded()),
+            SearchPlaneErrorCodeV2::InvalidRequest,
+            "malformed scope regex",
+        )?;
+    }
+    Ok(())
+}
+
 fn require_code<T: Debug>(
     outcome: Result<T, CoreError>,
     expected: SearchPlaneErrorCodeV2,

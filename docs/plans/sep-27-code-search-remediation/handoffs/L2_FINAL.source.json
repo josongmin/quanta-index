@@ -1,15 +1,15 @@
 {
-  "updated_utc": "2026-09-26T22:31:35.822679+00:00",
-  "head": "98601a66d8cab9c86232b3e62ce490c8b43b71b6",
+  "updated_utc": "2026-09-26T23:00:10.323026+00:00",
+  "head": "5571132655a83824731e7909b0e310951edad52b",
   "branch": "main",
   "worktree": "/Users/songmin/Documents/code-new/quanta-index",
   "overall_status": "BLOCKED",
-  "reason": "Owner tests execute successfully, but shared-source changes prevent final-source qualification and the runtime scenario cannot compile the old harness contract.",
-  "ownership": "L2 source/consumer inventory; full file diffs can include preserved concurrent edits. No commit, push, reset or additional agent.",
+  "reason": "Five audited code defects repaired with owner regressions. Composed daemon execution is NOT_RUN due to 16 shared harness contract compile errors; scoped lint fails in core. Whole-engine qualification remains separate.",
+  "ownership": "L2 edits only; unrelated concurrent work preserved. Shared HEAD moved by another worker. No commit/push/reset/new agent by L2.",
   "files": [
     {
       "path": "crates/quanta-index-contract/src/ipc/ingest.rs",
-      "sha256": "ecd2fe1ac81d026dd85f151bffddf6f0909eaf61376052b836dd7ab532fcd142"
+      "sha256": "a44c0fac876972856adb70052dfc92d08d06d4130531d4ac52b93a65d0558ad3"
     },
     {
       "path": "crates/quanta-index-contract/src/ipc/ingest_observation.rs",
@@ -17,7 +17,7 @@
     },
     {
       "path": "crates/quanta-index-contract/src/source_coverage.rs",
-      "sha256": "c23eda3f83654eac3a3176f334ae305a2c1f4a06f705d0c6eeaf222ff458b04e"
+      "sha256": "868b1bb9e19efb6a9ab61e32b2938119edb0073b3a14fd09fbf8ee6e2fc168ab"
     },
     {
       "path": "crates/quanta-index-core/src/domains/lexical/coverage.rs",
@@ -33,7 +33,7 @@
     },
     {
       "path": "crates/quanta-index-lexical/src/adapter_ingest.rs",
-      "sha256": "3c330681ce87a7e0ca83b1bc0be6b708b40704cee489d8d75deaa9acab75fb02"
+      "sha256": "6cb99554b09ff1ccf400671189383b67e12e2b9211281140f79deffd230c9a51"
     },
     {
       "path": "crates/quanta-index-lexical/src/generation_dir.rs",
@@ -81,7 +81,7 @@
     },
     {
       "path": "crates/quanta-index-lexical/tests/l2_file_mutation.rs",
-      "sha256": "c9f118f1b0efcaed8f01cf254491e2199a8a0ae940c7b96c6e6d8542f22c4929"
+      "sha256": "98d507c4a1a312a89f2454b1f3c9540c49d36866a593dead289fe7cb31fc890a"
     },
     {
       "path": "crates/quanta-index-sdk/src/binding.rs",
@@ -98,6 +98,10 @@
     {
       "path": "crates/quanta-index-sdk/src/tests.rs",
       "sha256": "4765d8e5d02687634f8427432ac6d7eae2be12e0a2b347fbcdd75f06e30a1aee"
+    },
+    {
+      "path": "crates/quanta-index-search-plane/src/auxiliary_authority.rs",
+      "sha256": "2d333b8292c072ef0b3f0eaf30cc63b2b62a755cc223140635b921b35ad8c990"
     },
     {
       "path": "crates/quanta-index-search-plane/src/control_dispatcher.rs",
@@ -129,7 +133,7 @@
     },
     {
       "path": "crates/quanta-index-search-plane/src/ingest_dispatcher/search_corpus.rs",
-      "sha256": "92258fbe464facf4242aa197a62a939990e1031319f2c97b8042f055714af5f0"
+      "sha256": "fe31a35a0b8858bc19fe311c07c89bb0b657f841c3c2ae8094826c03f5b2c83c"
     },
     {
       "path": "crates/quanta-index-search-plane/src/ingest_dispatcher/semantic.rs",
@@ -145,7 +149,7 @@
     },
     {
       "path": "crates/quanta-index-search-plane/src/ingest_dispatcher/tests/idempotency.rs",
-      "sha256": "2205cac1919d13c71fb3938a8bf8a51138a29f8e228f7c3c817e013ef59585ce"
+      "sha256": "a22a55acdcc157f88472440c15862e0d97e860f393a85416ac8db15d1ce625c9"
     },
     {
       "path": "crates/quanta-index-search-plane/src/ingest_dispatcher/tests/l2_file_mutation.rs",
@@ -157,7 +161,7 @@
     },
     {
       "path": "crates/quanta-index-search-plane/src/ingest_dispatcher/tests/search_corpus.rs",
-      "sha256": "d4c04b16da5aba411ba7c684bf53fa8a1fd7564e5811b1e8658c62a0bee74299"
+      "sha256": "db24c68b65e824e9f4e5c3ae9531f25b0bcc361f29002672b2deb507e5e4a63f"
     },
     {
       "path": "crates/quanta-index-search-plane/src/ingest_dispatcher/tests/semantic.rs",
@@ -165,7 +169,7 @@
     },
     {
       "path": "crates/quanta-index-search-plane/src/ingest_dispatcher/tests/support.rs",
-      "sha256": "e99ecc5e26ccdd7d78bb51eb69fc98bb88fc52b31e8aa809597b8a5f2992defd"
+      "sha256": "e8e82a6c18a8cf47d7127c2aea3a63a27d2f961388e40a2afcd7ba463737f831"
     },
     {
       "path": "crates/quanta-index-search-plane/src/readiness/activation_catalog.rs",
@@ -184,6 +188,10 @@
       "sha256": "412fbcceb566029bd0ab0233d147c04083bac0595debc263609d16001c190806"
     },
     {
+      "path": "crates/quanta-index-search-plane/src/readiness/structural_state.rs",
+      "sha256": "e38b83439a75fbd32627900abe40bd54d025310f1c466132d38a69464ae919f6"
+    },
+    {
       "path": "crates/quanta-index-search-plane/src/readiness/tests/activation.rs",
       "sha256": "4842f9dd99625bc30782eaef934726e85c19aa548cf3198d742e7004a4f3b6ba"
     },
@@ -200,423 +208,27 @@
       "sha256": "3f6bfd03fe0d1e0a4fe9396acf8ed9b4a3e8b7fcdd1da320119f59e1b6d07e28"
     }
   ],
-  "source_manifest_sha256": "00e183c17656ca039ff97d85932cb72ff49607d263ba7675263ea21c39b14ddd",
-  "owner_execution": {
-    "command": [
-      "bash",
-      "-c",
-      "set -e; ./scripts/cargow --lane test-integration-lane test -p quanta-index-contract -p quanta-index-sdk -p quanta-index-search-plane --lib --locked -- --skip query_dispatcher::; ./scripts/cargow --lane test-integration-lane test -p quanta-index-lexical --test l2_file_mutation --locked"
-    ],
-    "environment_overrides": {
-      "QUANTA_INDEX_RESOURCE_ADMISSION": "0",
-      "CARGO_BUILD_JOBS": "2"
-    },
-    "exit_code": 0,
-    "passed": 556,
-    "failed": 0,
-    "filtered": 203,
-    "counts_by_target": {
-      "contract_lib": 163,
-      "sdk_lib": 114,
-      "search_plane_lib_excluding_query_dispatcher": 259,
-      "lexical_l2_file_mutation": 20
-    },
-    "result": "executed tests passed; no repository qualification claim",
-    "qualification_status": "BLOCKED",
-    "source_changes_during_run": [
-      "benchmarks/retrieval/proof-required-tests.json",
-      "crates/quanta-index-contract-base/src/results/candidates.rs",
-      "crates/quanta-index-contract-base/src/results/preview.rs",
-      "crates/quanta-index-contract-base/tests/l4_preview_emission.rs",
-      "crates/quanta-index-lexical/src/searcher/candidates.rs",
-      "tools/benchmark/retrieval/run.py",
-      "tools/ci/tests/test_retrieval_benchmark.py"
-    ],
-    "receipt": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/owner-terminal.json",
-    "receipt_sha256": "3ae358d6605c49be399e1d9110884a3fa8614b3e4cca20fca762ad3458420f34"
+  "latest_audit": {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/L2_FINAL_AUDIT.json",
+    "sha256": "4346a828b0b1a8c6279b06df5730eb987fac1c8bb5c8276f83bb8f06d346d8f8"
   },
-  "runtime_scenario": {
-    "status": "BLOCKED",
-    "compile": "FAILED",
-    "tests": "NOT_RUN",
-    "command": [
-      "./scripts/cargow",
-      "--lane",
-      "test-daemon-lane",
-      "test",
-      "-p",
-      "quanta-index-searchd-runtime",
-      "--test",
-      "runtime_fast_suite",
-      "l2_source_replay_keeps_original_publication_through_sdk_activation_and_restart",
-      "--locked"
-    ],
-    "reason": "quanta-index-searchd-harness/src/harness.rs has 16 old scope/scope_digest/missing source_event compile errors",
-    "receipt": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/sdk-runtime-l2.json",
-    "receipt_sha256": "e79d91d6bca1030e359157dec4cbd0577189c09cc33d3d3555ffebdfc473b982"
+  "latest_owner_receipt": {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-owner-closeout.json",
+    "sha256": "75ced992ff696d4d14f6a08d50c8ec44471b7dc6385decb42cafd6adea106217",
+    "status": "VERIFIED_AT_RECORDED_INPUTS"
   },
-  "additional_gates": {
-    "public_api": "FAILED: expected contract drift plus SDK pinned-nightly compilation rejects collection_budget fetch_update deprecation",
-    "cargo_modules": "FAILED: shared contract/core baseline drift",
-    "hexagonal": "FAILED: ranked_page_tests.rs segment_id boundary token",
-    "module_cycles": "FAILED: workspace scanner cannot resolve lexical ranked_page::rows; targeted contract check confirms observation module no longer participates in a request cycle",
-    "daemon_profile": "FAILED: initial resource admission timed out; owner runtime compile attempt above provides the concrete integration blocker",
-    "fuzz": "Exit 0: four targets completed, 4346090 total inputs, no observed crash. Final-source qualification BLOCKED by source drift; initial corpus not frozen."
-  },
-  "excluded": [
-    "203 query_dispatcher tests in final owner command; earlier full-library run had one L1 failure, handed to L1",
-    "Physical daemon restart scenario blocked before test execution",
-    "Repository-wide CI, installed-process proof, performance, deployment and Semantica downstream migration"
+  "supersedes": [
+    "L2_HANDOFF.source.json",
+    "L2_RR_REOPEN.source.json",
+    "previous L2_FINAL.source.json snapshot at 98601a66d8ca"
   ],
-  "artifacts": [
+  "dirty": "M .cargo/config.toml\n M .github/workflows/ci.yml\n M .github/workflows/correctness.yml\n M .github/workflows/potion-code-parity.yml\n M .gitignore\n M Cargo.lock\n M Cargo.toml\n M benchmarks/retrieval/src/symbols.rs\n M crates/quanta-index-core/src/domains/lexical/collection_budget.rs\n M crates/quanta-index-core/src/request_budget.rs\n M crates/quanta-index-lexical/src/budgeted_search.rs\n M crates/quanta-index-lexical/src/ranked_page.rs\n M crates/quanta-index-lexical/src/ranked_page_tests.rs\n M crates/quanta-index-lexical/tests/l1_query_domain_window.rs\n M crates/quanta-index-search-plane/src/auxiliary_authority.rs\n M crates/quanta-index-search-plane/src/ingest_dispatcher/search_corpus.rs\n M crates/quanta-index-search-plane/src/ingest_dispatcher/tests/idempotency.rs\n M crates/quanta-index-search-plane/src/ingest_dispatcher/tests/search_corpus.rs\n M crates/quanta-index-search-plane/src/ingest_dispatcher/tests/support.rs\n M crates/quanta-index-search-plane/src/query_dispatcher/tests/execution_truth.rs\n M crates/quanta-index-search-plane/src/readiness/structural_state.rs\n M deny.toml\n M docs/build-resource-budget.md\n M docs/plans/sep-27-code-search-remediation/handoffs/L1_CLOSEOUT.json\n M docs/plans/sep-27-code-search-remediation/handoffs/L1_HANDOFF.md\n M docs/plans/sep-27-code-search-remediation/handoffs/L1_PRIMITIVE_ADMISSION_REQUEST.md\n M docs/plans/sep-27-code-search-remediation/handoffs/L1_REQUIREMENT_AUDIT.json\n M docs/plans/sep-27-code-search-remediation/handoffs/L4_HANDOFF.md\n M docs/plans/sep-27-code-search-remediation/handoffs/L5_HANDOFF.md\n M docs/plans/sep-27-code-search-remediation/handoffs/L5_HANDOFF.source.json\n M docs/plans/sep-27-code-search-remediation/handoffs/L5_TEST_MIGRATION.json\n M docs/plans/sep-27-code-search-remediation/rfcs/CS-PROD-01-parser-coverage-and-vite.md\n M docs/plans/sep-27-misc/tickets/INDEX.md\n M tools/benchmark/pair_capture.py\n M tools/benchmark/profile_capture.py\n M tools/ci/resource_admission.py\n M tools/ci/tests/test_pair_replay_workspace.py\n M tools/ci/tests/test_recorded_capture.py\n M tools/ci/tests/test_resource_admission.py\n D vendor/tantivy-sstable/AUTHORS\n D vendor/tantivy-sstable/Cargo.toml\n D vendor/tantivy-sstable/Cargo.toml.orig\n D vendor/tantivy-sstable/LICENSE\n D vendor/tantivy-sstable/QUANTA.md\n D vendor/tantivy-sstable/README.md\n D vendor/tantivy-sstable/benches/ord_to_term.rs\n D vendor/tantivy-sstable/benches/stream_bench.rs\n D vendor/tantivy-sstable/quanta-provenance.json\n D vendor/tantivy-sstable/src/block_reader.rs\n D vendor/tantivy-sstable/src/delta.rs\n D vendor/tantivy-sstable/src/dictionary.rs\n D vendor/tantivy-sstable/src/lib.rs\n D vendor/tantivy-sstable/src/merge/heap_merge.rs\n D vendor/tantivy-sstable/src/merge/mod.rs\n D vendor/tantivy-sstable/src/sstable_index_v2.rs\n D vendor/tantivy-sstable/src/sstable_index_v3.rs\n D vendor/tantivy-sstable/src/streamer.rs\n D vendor/tantivy-sstable/src/value/index.rs\n D vendor/tantivy-sstable/src/value/mod.rs\n D vendor/tantivy-sstable/src/value/range.rs\n D vendor/tantivy-sstable/src/value/u64_monotonic.rs\n D vendor/tantivy-sstable/src/value/void.rs\n D vendor/tantivy-sstable/src/vint.rs\n?? .github/actions/\n?? crates/quanta-index-sdk/tests/l1_daemon_query_contract.rs\n?? docs/plans/sep-27-code-search-remediation/handoffs/L1_RCA.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/L1_RCA.md\n?? docs/plans/sep-27-code-search-remediation/handoffs/L5_FINAL_CODE_AUDIT.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/L5_FINAL_CODE_AUDIT.md\n?? docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/rca/\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-chunk-inheritance-green.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-chunk-inheritance-green.started.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-chunk-inheritance-red.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-clippy-terminal.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-clippy-terminal.started.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-owner-closeout.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-owner-closeout.started.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-retention-order-green.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-retention-order-green.started.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-retention-order-red-executed.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-retention-order-red-executed.started.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-retention-order-red.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-retention-order-red.started.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-retired-base-green.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-retired-base-green.started.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-retired-base-red.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-retired-base-red.started.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-sdk-runtime-terminal.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-sdk-runtime-terminal.started.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-search-plane-owner-final.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-search-plane-owner-final.started.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-search-plane-owner-terminal.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-search-plane-owner-terminal.started.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-search-plane-owner.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-search-plane-owner.started.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/deeper/\n?? docs/plans/sep-27-code-search-remediation/handoffs/l5-proof/final-code-audit-20260927/\n?? docs/private-cargo-dependencies.md",
+  "closeout_source_equivalence": "BLOCKED",
+  "observed_source_drift": [
     {
-      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/capture.py",
-      "sha256": "4d911aa913f289d15428a5950e02e0a1c85798f64d0f33fa5ace504f78ebc60d"
-    },
-    {
-      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/cargo-modules.log",
-      "sha256": "a291cc02821d2210bae588cd2a69aef0be35e54eaf175f22af5bcb2f30b26c04"
-    },
-    {
-      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/contract-lib.log",
-      "sha256": "5d4bd7facf3e645d8d2b4287c6b0d3bbeca2f47d01accf20a7f035d3ec635de0"
-    },
-    {
-      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/contract-module-cycles.json",
-      "sha256": "88400428ee30eb678e5c869cf834a99ff533301b44e9a6cbe75f249d2fc35c8f"
-    },
-    {
-      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/contract-observation.log",
-      "sha256": "31fdddcb6d2dee200e97732e7feadb6b0233bfef3bbfe9911f732d6e2a932bd8"
-    },
-    {
-      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/contract-sdk-final.log",
-      "sha256": "48b48fed5b868eaf1177d9c14e9c91b4fc1211be5c499c228659c1315a69864a"
-    },
-    {
-      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/daemon.log",
-      "sha256": "9aff702b60780a2a1a31b474cdaf5cd2db6e241d253dafd6050bc6e7f5ec3cae"
-    },
-    {
-      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/format.log",
-      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-    },
-    {
-      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/fuzz-current-summary.json",
-      "sha256": "6fbade24805d55550cfc30eb4051ba92529008123ebafc65ea293b2e1b87a8b1"
-    },
-    {
-      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/fuzz-current.json",
-      "sha256": "59f288ff8da246391875c6bf55988c5943f703c6de99aecf93d658f2ae3ae8ec"
-    },
-    {
-      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/fuzz-current.log",
-      "sha256": "63b2a81926e8859381e7afa005d382fd9bcd3ac0ae464531e2cefe9ad7608da1"
-    },
-    {
-      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/fuzz-smoke.log",
-      "sha256": "3f6e744de593ac3fdb8f5959a9542d2f73cf26304d842dfd13b3d006a252e8f8"
-    },
-    {
-      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/hexagonal.log",
-      "sha256": "74e72718b9fac47e64459751feae7ed8168bf8e7e86105cdabe8f1f17a73eb1b"
-    },
-    {
-      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/lexical-final.log",
-      "sha256": "4c8910f0893bfce6cfb6ff8bff80991d5560881ea634f0904b0d51ed2be2998f"
-    },
-    {
-      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/lexical-initial.log",
-      "sha256": "20e3a0d67900ac1f30f875283a2fc4bf771775d952cc3fbb52c82244a3825bef"
-    },
-    {
-      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/owner-current.log",
-      "sha256": "8aaa6242f0e54e538b1cd6a302a780b5f2e322f01b5118a71b09e863ecb5a7de"
-    },
-    {
-      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/owner-stable.log",
-      "sha256": "2d05083bbb91f477e1e395b8f87548ba15bea918f875b3893342c36b579a5f79"
-    },
-    {
-      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/owner-terminal.log",
-      "sha256": "396793c5e40fe14c433bddc1f3952d27897801216d6e9e5c50172c7dd56dc7f4"
-    },
-    {
-      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/plane-final.log",
-      "sha256": "33b5993a1235a32fad1c658875977c3bdd948cc869af731157ac2c18379036e1"
-    },
-    {
-      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/public-api.log",
-      "sha256": "e0eacba78ea8f044b090a4177b1748158d0fb684c88550a75ab5524c8ba284b3"
-    },
-    {
-      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/sdk-lib-retry.log",
-      "sha256": "4456717318b6d6a28ea6f7a68e480558c6e0e3050213a57a29f6c9719859a300"
-    },
-    {
-      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/sdk-lib.log",
-      "sha256": "b626cfa5ec901da932e5410c901a0e1f9c23cc4d84e1f626fb62c03b758e153e"
-    },
-    {
-      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/sdk-runtime-l2.log",
-      "sha256": "76f2a4ba2fc8e23788a26260ae8827bfc370a22d6eacde306b41167446835f67"
-    },
-    {
-      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/search-plane-lib-retry.log",
-      "sha256": "3c2fcfd5a5480cef2bec640257f5dee39bf20ac3d1b375788ec9d57fc454411a"
-    },
-    {
-      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/search-plane-lib.log",
-      "sha256": "8dfce567f4b94b827380b195f0861f0793521970ef456ffa0edf86ff412dd57e"
-    },
-    {
-      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/whitespace.log",
-      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-    }
-  ],
-  "coordination": {
-    "L1": "Observed full-library query failure handed off without requesting a rerun; L1 source left untouched.",
-    "Semantica": "Replied with RFC, port and source-events implementation paths; no verified Semantica issuance-owner agreement exists in the examined Index docs.",
-    "L0": "No proactive message sent."
-  },
-  "source_inventory_changes_since_previous_snapshot": [
-    {
-      "path": "crates/quanta-index-search-plane/src/control_dispatcher.rs",
-      "previous_sha256": "f301491125131c3d2b1c647cfa988f1a6afc8e276813bb52098e5b1926cd83db",
-      "current_sha256": "6e4a753bc051517bd0a059408134a510e8fbaf3536fa35e6fd10d288d6dc6314"
-    },
-    {
-      "path": "crates/quanta-index-search-plane/src/search_corpus_lifecycle.rs",
-      "previous_sha256": "d03143a7208631c5cde7f3aa00710674aaa90ffc51e5e514fba9e468573caf76",
-      "current_sha256": "061913a84c124425f6847e240d213f2ac2454092a0acf9a251411062c752e2fd"
-    }
-  ],
-  "source_manifest_digest_algorithm": "SHA-256 of UTF-8 sorted lines: sha256 + two spaces + repository-relative path + newline",
-  "dirty_status_porcelain_v1": [
-    " M Cargo.lock",
-    " M Cargo.toml",
-    " M Justfile",
-    " M benchmarks/retrieval/build.rs",
-    " M benchmarks/retrieval/proof-required-tests.json",
-    " M benchmarks/retrieval/src/batch.rs",
-    " M benchmarks/retrieval/src/diagnostics.rs",
-    " M benchmarks/retrieval/src/main.rs",
-    " M benchmarks/retrieval/src/symbols.rs",
-    " M benchmarks/retrieval/src/symbols/preflight.rs",
-    " M benchmarks/retrieval/tests/l5_parser_regressions.rs",
-    " M benchmarks/retrieval/tests/sdk_roundtrip.rs",
-    " M crates/quanta-index-contract-base/src/results/candidates.rs",
-    " M crates/quanta-index-contract-base/src/results/preview.rs",
-    " M crates/quanta-index-contract/src/ipc/ingest.rs",
-    " M crates/quanta-index-contract/src/ipc/ingest_observation.rs",
-    " M crates/quanta-index-contract/src/results/query_responses.rs",
-    " M crates/quanta-index-contract/tests/hybrid_candidate_contract.rs",
-    " M crates/quanta-index-contract/tests/ipc_query_result_v2_contract.rs",
-    " M crates/quanta-index-contract/tests/lexical_cursor_contract.rs",
-    " M crates/quanta-index-core/src/domains/lexical/outbound.rs",
-    " M crates/quanta-index-core/tests/hybrid_policy.rs",
-    " M crates/quanta-index-lexical/src/adapter_ingest.rs",
-    " M crates/quanta-index-lexical/src/adapter_open.rs",
-    " M crates/quanta-index-lexical/src/budgeted_search.rs",
-    " M crates/quanta-index-lexical/src/lib.rs",
-    " M crates/quanta-index-lexical/src/planner.rs",
-    " M crates/quanta-index-lexical/src/ranked_page.rs",
-    " M crates/quanta-index-lexical/src/ranked_page_tests.rs",
-    " M crates/quanta-index-lexical/src/ranked_rows.rs",
-    " M crates/quanta-index-lexical/src/sealed_generation/coverage.rs",
-    " M crates/quanta-index-lexical/src/searcher/candidates.rs",
-    " M crates/quanta-index-lexical/src/searcher/compile.rs",
-    " M crates/quanta-index-lexical/src/searcher/manual_scan.rs",
-    " M crates/quanta-index-lexical/src/searcher/match_sets.rs",
-    " M crates/quanta-index-lexical/src/searcher/paging.rs",
-    " M crates/quanta-index-lexical/src/searcher/planner_errors.rs",
-    " M crates/quanta-index-lexical/src/searcher/port.rs",
-    " M crates/quanta-index-lexical/src/searcher/predicate_plan.rs",
-    " M crates/quanta-index-lexical/src/searcher/snippets.rs",
-    " M crates/quanta-index-lexical/src/symbol.rs",
-    " M crates/quanta-index-lexical/tests/cancellation_inside_search.rs",
-    " M crates/quanta-index-lexical/tests/execution_budget.rs",
-    " M crates/quanta-index-lexical/tests/explain_candidate.rs",
-    " M crates/quanta-index-lexical/tests/l1_query_domain_window.rs",
-    " M crates/quanta-index-lexical/tests/l2_file_mutation.rs",
-    " M crates/quanta-index-lexical/tests/l3_exact_source.rs",
-    " M crates/quanta-index-lexical/tests/l4_match_anchored_preview.rs",
-    " M crates/quanta-index-lexical/tests/planner_authority.rs",
-    " M crates/quanta-index-lexical/tests/ranked_pages.rs",
-    " M crates/quanta-index-lexical/tests/regex_cache_bounds.rs",
-    " M crates/quanta-index-lexical/tests/regex_literal_alternation.rs",
-    " M crates/quanta-index-lexical/tests/tantivy_smoke.rs",
-    " M crates/quanta-index-lexical/tests/unicode_normalization_goldens.rs",
-    " M crates/quanta-index-lq-regex/src/executor.rs",
-    " M crates/quanta-index-lq-text-normalizer/src/provenance.rs",
-    " M crates/quanta-index-lq-text-normalizer/src/tokens.rs",
-    " M crates/quanta-index-sdk/src/binding.rs",
-    " M crates/quanta-index-sdk/src/lexical.rs",
-    " M crates/quanta-index-sdk/src/namespace.rs",
-    " M crates/quanta-index-sdk/src/tests.rs",
-    " M crates/quanta-index-sdk/tests/sdk_binding_owner_v1.rs",
-    " M crates/quanta-index-search-plane/Cargo.toml",
-    " M crates/quanta-index-search-plane/src/auxiliary_authority.rs",
-    " M crates/quanta-index-search-plane/src/control_dispatcher.rs",
-    " M crates/quanta-index-search-plane/src/ingest_dispatcher/dispatcher.rs",
-    " M crates/quanta-index-search-plane/src/ingest_dispatcher/generation_plan.rs",
-    " M crates/quanta-index-search-plane/src/ingest_dispatcher/search_corpus.rs",
-    " M crates/quanta-index-search-plane/src/ingest_dispatcher/tests/idempotency.rs",
-    " M crates/quanta-index-search-plane/src/ingest_dispatcher/tests/l2_file_mutation.rs",
-    " M crates/quanta-index-search-plane/src/ingest_dispatcher/tests/search_corpus.rs",
-    " M crates/quanta-index-search-plane/src/ingest_dispatcher/tests/support.rs",
-    " M crates/quanta-index-search-plane/src/query_dispatcher/continuation.rs",
-    " M crates/quanta-index-search-plane/src/query_dispatcher/planning.rs",
-    " M crates/quanta-index-search-plane/src/query_dispatcher/routes/lexical.rs",
-    " M crates/quanta-index-search-plane/src/query_dispatcher/semantic_query.rs",
-    " M crates/quanta-index-search-plane/src/query_dispatcher/tests/l1_query_domain_window.rs",
-    " M crates/quanta-index-search-plane/src/query_dispatcher/tests/lexical.rs",
-    " M crates/quanta-index-search-plane/src/query_dispatcher/tests/lexical_pages.rs",
-    " M crates/quanta-index-search-plane/src/query_dispatcher/tests/structural.rs",
-    " M crates/quanta-index-search-plane/src/query_dispatcher/tests/support/common.rs",
-    " M crates/quanta-index-search-plane/src/query_dispatcher/tests/support/lexical.rs",
-    " M crates/quanta-index-search-plane/src/readiness/activation_catalog.rs",
-    " M crates/quanta-index-search-plane/src/readiness/activation_catalog/repository_envelope.rs",
-    " M crates/quanta-index-search-plane/src/readiness/activation_catalog/source_events.rs",
-    " M crates/quanta-index-search-plane/src/readiness/activation_catalog/tests.rs",
-    " M crates/quanta-index-search-plane/src/readiness/ledger_apply.rs",
-    " M crates/quanta-index-search-plane/src/readiness/structural_state.rs",
-    " M crates/quanta-index-search-plane/src/readiness/tests/mod.rs",
-    " M crates/quanta-index-search-plane/src/readiness/tests/search_corpus_history.rs",
-    " M crates/quanta-index-search-plane/src/readiness/tests/support.rs",
-    " M crates/quanta-index-search-plane/src/search_corpus_lifecycle.rs",
-    " M crates/quanta-index-search-plane/src/semantic_derive.rs",
-    " M crates/quanta-index-searchctl/src/lib.rs",
-    " M crates/quanta-index-searchctl/tests/cli_smoke.rs",
-    " M crates/quanta-index-searchd-runtime/tests/sdk_frontdoor.rs",
-    " M crates/quanta-index-searchd/src/app/runtime.rs",
-    " M docs/build-resource-budget.md",
-    " M docs/plans/sep-27-code-search-remediation/handoffs/L1_HANDOFF.md",
-    " M docs/plans/sep-27-code-search-remediation/handoffs/L2_HANDOFF.md",
-    " M docs/plans/sep-27-code-search-remediation/handoffs/L2_HANDOFF.source.json",
-    " M docs/plans/sep-27-code-search-remediation/handoffs/L3_HANDOFF.md",
-    " M docs/plans/sep-27-code-search-remediation/handoffs/L3_HANDOFF.source.json",
-    " M docs/plans/sep-27-code-search-remediation/handoffs/L4_HANDOFF.md",
-    " M docs/plans/sep-27-code-search-remediation/handoffs/L5_HANDOFF.md",
-    " M docs/plans/sep-27-code-search-remediation/handoffs/L5_HANDOFF.source.json",
-    " M docs/plans/sep-27-code-search-remediation/readme.md",
-    " M docs/plans/sep-27-code-search-remediation/rfcs/CS-PROD-01-parser-coverage-and-vite.md",
-    " M docs/plans/sep-27-misc/tickets/INDEX.md",
-    " M tools/benchmark/agent_outcome/__main__.py",
-    " M tools/benchmark/benchctl.py",
-    " M tools/benchmark/compare_dsl_bench.py",
-    " M tools/benchmark/criterion_capture.py",
-    " M tools/benchmark/evidence.py",
-    " M tools/benchmark/lexical_capture.py",
-    " M tools/benchmark/raw_archive.py",
-    " M tools/benchmark/recorded_capture.py",
-    " M tools/benchmark/retrieval/README.md",
-    " M tools/benchmark/retrieval/contract_proof.py",
-    " M tools/benchmark/retrieval/lexical_file_comparison.py",
-    " M tools/benchmark/retrieval/pair-spec.schema.json",
-    " M tools/benchmark/retrieval/portable_proof.py",
-    " M tools/benchmark/retrieval/proof_inventory.py",
-    " M tools/benchmark/retrieval/query_timing_overhead.py",
-    " M tools/benchmark/retrieval/run-manifest.schema.json",
-    " M tools/benchmark/retrieval/run.py",
-    " M tools/benchmark/retrieval/sdk_proof.py",
-    " M tools/benchmark/retrieval_capture.py",
-    " M tools/ci/lint/check-bench-artifacts.py",
-    " M tools/ci/nextest_events.py",
-    " M tools/ci/source_closure.py",
-    " M tools/ci/test-authority.toml",
-    " M tools/ci/tests/test_agent_outcome_benchmark.py",
-    " M tools/ci/tests/test_bench_protocol_conformance.py",
-    " M tools/ci/tests/test_benchctl.py",
-    " M tools/ci/tests/test_benchmark_source_closure.py",
-    " M tools/ci/tests/test_cargo_preparation.py",
-    " M tools/ci/tests/test_check_bench_artifacts.py",
-    " M tools/ci/tests/test_compare_dsl_bench.py",
-    " M tools/ci/tests/test_criterion_capture.py",
-    " M tools/ci/tests/test_lexical_capture.py",
-    " M tools/ci/tests/test_lexical_file_comparison.py",
-    " M tools/ci/tests/test_nextest_ignored_inventory.py",
-    " M tools/ci/tests/test_pair_capture.py",
-    " M tools/ci/tests/test_portable_proof.py",
-    " M tools/ci/tests/test_portable_tool_execution.py",
-    " M tools/ci/tests/test_proof_command_timings.py",
-    " M tools/ci/tests/test_recorded_capture.py",
-    " M tools/ci/tests/test_retrieval_benchmark.py",
-    " M tools/ci/tests/test_retrieval_capture.py",
-    " M tools/ci/tests/test_retrieval_contract_proof.py",
-    " M tools/ci/tests/test_retrieval_sdk_proof.py",
-    " M tools/ci/tests/test_write_verification_receipt.py",
-    " M tools/ci/write-verification-receipt.py",
-    " M vendor/tree-sitter-typescript/QUANTA.md",
-    " M vendor/tree-sitter-typescript/bindings/rust/lib.rs",
-    " M vendor/tree-sitter-typescript/quanta-provenance.json",
-    "?? crates/quanta-index-contract-base/tests/l4_preview_emission.rs",
-    "?? crates/quanta-index-contract/tests/l4_preview_wire.rs",
-    "?? crates/quanta-index-lexical/src/query_admission.rs",
-    "?? crates/quanta-index-lexical/tests/support/",
-    "?? crates/quanta-index-search-plane/src/readiness/tests/source_file_chunks.rs",
-    "?? docs/plans/sep-27-code-search-remediation/handoffs/L1_ALL_RESULTS_CALLERS.json",
-    "?? docs/plans/sep-27-code-search-remediation/handoffs/L1_BUILD_BLOCKER.md",
-    "?? docs/plans/sep-27-code-search-remediation/handoffs/L1_CLOSEOUT.json",
-    "?? docs/plans/sep-27-code-search-remediation/handoffs/L1_CODE_AUDIT.json",
-    "?? docs/plans/sep-27-code-search-remediation/handoffs/L1_CODE_AUDIT.md",
-    "?? docs/plans/sep-27-code-search-remediation/handoffs/L1_FIXTURE_MIGRATION.json",
-    "?? docs/plans/sep-27-code-search-remediation/handoffs/L1_GOAL_BLOCKED_AUDIT.json",
-    "?? docs/plans/sep-27-code-search-remediation/handoffs/L1_PRIMITIVE_ADMISSION_REQUEST.md",
-    "?? docs/plans/sep-27-code-search-remediation/handoffs/L1_PROOF.json",
-    "?? docs/plans/sep-27-code-search-remediation/handoffs/L1_REQUIREMENT_AUDIT.json",
-    "?? docs/plans/sep-27-code-search-remediation/handoffs/L2_FINAL.source.json",
-    "?? docs/plans/sep-27-code-search-remediation/handoffs/L2_REPLAY_BINDING_REQUEST.md",
-    "?? docs/plans/sep-27-code-search-remediation/handoffs/L2_RR_REOPEN.source.json",
-    "?? docs/plans/sep-27-code-search-remediation/handoffs/L3_EXACT_MANUAL_HOOK.json",
-    "?? docs/plans/sep-27-code-search-remediation/handoffs/L3_EXACT_MANUAL_HOOK.patch",
-    "?? docs/plans/sep-27-code-search-remediation/handoffs/L3_EXACT_PLAN_HOOK.json",
-    "?? docs/plans/sep-27-code-search-remediation/handoffs/L3_EXACT_PLAN_HOOK.patch",
-    "?? docs/plans/sep-27-code-search-remediation/handoffs/L3_FOLLOWUP.source.json",
-    "?? docs/plans/sep-27-code-search-remediation/handoffs/L3_FOLLOWUP_AUDIT.md",
-    "?? docs/plans/sep-27-code-search-remediation/handoffs/L3_GOAL_AUDIT.json",
-    "?? docs/plans/sep-27-code-search-remediation/handoffs/L3_PREDECODE_BOUNDARY.json",
-    "?? docs/plans/sep-27-code-search-remediation/handoffs/L3_RR_AUDIT.json",
-    "?? docs/plans/sep-27-code-search-remediation/handoffs/L4_REGEX_BUDGET_RESIDUAL.md",
-    "?? docs/plans/sep-27-code-search-remediation/handoffs/L5_BLOCKED_AUDIT.json",
-    "?? docs/plans/sep-27-code-search-remediation/handoffs/L5_COMPLETION.json",
-    "?? docs/plans/sep-27-code-search-remediation/handoffs/L5_GOAL_AUDIT.json",
-    "?? docs/plans/sep-27-code-search-remediation/handoffs/L5_TEST_MIGRATION.json",
-    "?? docs/plans/sep-27-code-search-remediation/handoffs/L5_VENDOR_MANIFEST.json",
-    "?? docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/",
-    "?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/",
-    "?? docs/plans/sep-27-code-search-remediation/handoffs/l3-proof/",
-    "?? docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/current/",
-    "?? docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/p02/",
-    "?? docs/plans/sep-27-code-search-remediation/handoffs/l5-proof/",
-    "?? tools/benchmark/retrieval/symbol_coverage.py",
-    "?? vendor/tantivy-sstable/"
-  ],
-  "fuzz_execution": {
-    "exit_code": 0,
-    "qualification_status": "BLOCKED",
-    "total_inputs": 4346090,
-    "counts_by_target": {
-      "ipc_request_decode": 404124,
-      "ipc_response_decode": 501619,
-      "search_corpus_ingest_decode": 3382806,
-      "lq_parse_pipeline": 57541
-    },
-    "summary": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/fuzz-current-summary.json",
-    "summary_sha256": "6fbade24805d55550cfc30eb4051ba92529008123ebafc65ea293b2e1b87a8b1",
-    "receipt": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/fuzz-current.json",
-    "receipt_sha256": "59f288ff8da246391875c6bf55988c5943f703c6de99aecf93d658f2ae3ae8ec",
-    "log": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/fuzz-current.log",
-    "log_sha256": "63b2a81926e8859381e7afa005d382fd9bcd3ac0ae464531e2cefe9ad7608da1"
-  },
-  "handoff_documents": [
-    {
-      "path": "docs/plans/sep-27-code-search-remediation/handoffs/L2_HANDOFF.md",
-      "sha256": "69cf173d66b6906ccd9c1e791fbc61b708363a6878af9355cf59861512f3aea0"
-    },
-    {
-      "path": "docs/plans/sep-27-code-search-remediation/handoffs/L2_REPLAY_BINDING_REQUEST.md",
-      "sha256": "7b1477d9e5edea52f7465a9df0e49e680545f8eed3eca63d9ac447c0d11d1e9a"
+      "path": "crates/quanta-index-core/src/domains/lexical/coverage.rs",
+      "recorded_sha256": "356f331d536fda59f2bc315de04c9e361df14b7d942151cf99768fa075e747cd",
+      "observed_sha256": "ac8a74ee6cb0441518e0548dd54aee50557e916d83ee55d2f1057bafd88c5a46"
     }
   ]
 }

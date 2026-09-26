@@ -1,5 +1,11 @@
 # L1 -> L0: pure primitive admission before LogicalEmpty
 
+**RESOLVED by the later user-authorized structural RCA.** The mandatory opener
+method and canonical lexical implementation are connected to native, Text,
+Symbol and explain paths. Native and real-adapter dispatcher regressions passed.
+See `L1_RCA.md` / `L1_RCA.json`. The request and failures below are historical.
+
+
 State: **FAILED**, reproduced on a source-stable dispatcher run. Shared API
 change is **NOT_RUN / not applied** because L0 owns the interface freeze.
 No cross-task message was sent.

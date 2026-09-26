@@ -10,7 +10,6 @@ import os
 import platform
 import socket
 import sys
-import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -29,7 +28,13 @@ from evidence import (
 )
 from evidence_bridge import host_identity, source_identity
 from producer_execution import execute
-from profile_capture import _directories, load_capture, publish_capture
+from profile_capture import (
+    _directories,
+    capture_entrypoint,
+    current_capture,
+    load_capture,
+    publish_capture,
+)
 from registry import registry_digest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -192,6 +197,7 @@ def replay_run(store: RunStore, evidence: dict) -> None:
         raise EvidenceError("retrieval proof binary/toolchain inventory mismatch")
 
 
+@capture_entrypoint(PROFILE)
 def capture(repo: Path, root: Path, registry: dict, timeout: int) -> dict:
     from benchctl import require_clean_worktree, require_frozen_source, resolve_checkout_head
 
@@ -202,14 +208,16 @@ def capture(repo: Path, root: Path, registry: dict, timeout: int) -> dict:
     if root.resolve().is_relative_to(repo.resolve()):
         raise EvidenceError("retrieval evidence root must stay outside the checkout")
     _directories(root)
+    current_capture().step("source")
     require_clean_worktree(repo)
     head = resolve_checkout_head(repo)
     source = source_identity(repo, "benchmark-retrieval")
+    current_capture().step("inputs", source=source)
     native_source = source_identity(repo, "retrieval")
     cpu = os.cpu_count()
     if type(cpu) is not int or cpu < 1:
         raise EvidenceError("cannot establish proof host CPU inventory")
-    capture_id = f"retrieval-contract-{uuid.uuid4().hex}"
+    capture_id = current_capture().capture_id
     prepared = []
     selected = registry["profiles"][PROFILE]["families"]
     if set(selected) != set(RAILS):
@@ -221,7 +229,7 @@ def capture(repo: Path, root: Path, registry: dict, timeout: int) -> dict:
         native = root / "work" / capture_id / family
         native.parent.mkdir(parents=True, exist_ok=True)
         print(f"Retrieval contract capture: {family}", flush=True)
-        stdout, stderr, command = execute(
+        stdout, stderr, command = current_capture().execute(execute,
             ["just", producer["recipe"], str(native)],
             cwd=repo,
             env=dict(os.environ),

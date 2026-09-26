@@ -11,6 +11,82 @@ import evidence
 import profile_capture as capture
 
 
+@pytest.mark.parametrize("error_type", [ValueError, KeyboardInterrupt])
+def test_capture_epoch_retains_early_failure_without_inventing_observations(tmp_path, error_type):
+    root = tmp_path / "evidence"
+    with pytest.raises(error_type, match="input oracle"):
+        with capture.CaptureEpoch(tmp_path / "repo", root, "profile", capture_id="failed") as epoch:
+            epoch.step("inputs")
+            raise error_type("input oracle")
+    failure = json.loads((root / "failures/failed.json").read_text())
+    assert failure["status"] == "failed"
+    assert failure["phase"] == "inputs"
+    assert failure["commit_state"] == "not_started"
+    assert failure["observations"] == {}
+    assert failure["error"]["type"] == error_type.__name__
+    assert [row["phase"] for row in failure["history"]] == ["admission", "inputs"]
+    assert [row["sequence"] for row in failure["history"]] == [1, 2]
+    assert not (root / "captures").exists()
+    assert not (root / "profiles").exists()
+
+
+def test_capture_epoch_refuses_uncommitted_success(tmp_path):
+    root = tmp_path / "evidence"
+    with pytest.raises(evidence.EvidenceError, match="without a complete profile commit"):
+        with capture.CaptureEpoch(tmp_path / "repo", root, "profile", capture_id="failed"):
+            pass
+    assert json.loads((root / "failures/failed.json").read_text())["status"] == "failed"
+
+
+def test_capture_marker_failure_preserves_primary_and_secondary(tmp_path, monkeypatch):
+    root = tmp_path / "evidence"
+    primary = ValueError("primary oracle")
+
+    def cannot_write(*args, **kwargs):
+        raise OSError("marker oracle")
+
+    monkeypatch.setattr(capture, "write_raw_file", cannot_write)
+    with pytest.raises(evidence.EvidenceError, match="primary oracle.*NOT_PERSISTED.*marker oracle") as caught:
+        with capture.CaptureEpoch(tmp_path / "repo", root, "profile", capture_id="failed"):
+            raise primary
+    assert caught.value.__cause__ is primary
+    assert not (root / "failures/failed.json").exists()
+    with pytest.raises(evidence.EvidenceError, match="no owning epoch"):
+        capture.current_capture()
+
+
+@pytest.mark.parametrize("unsafe", ["checkout", "symlink"])
+def test_capture_epoch_does_not_write_through_unsafe_namespace(tmp_path, unsafe):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    if unsafe == "checkout":
+        root = repo / "evidence"
+    else:
+        real = tmp_path / "real"
+        real.mkdir()
+        root = tmp_path / "alias"
+        root.symlink_to(real, target_is_directory=True)
+    with pytest.raises(evidence.EvidenceError):
+        with capture.CaptureEpoch(repo, root, "profile"):
+            pytest.fail("unsafe capture admitted")
+    assert not (root / "work").exists()
+    assert not (root / "failures").exists()
+
+
+def test_capture_cli_return_keeps_the_primary_failure(tmp_path):
+    @capture.capture_entrypoint("profile")
+    def command(repo, root):
+        capture.capture_phase("preflight")
+        capture.capture_error(ValueError("real preflight refusal"))
+        return 2
+
+    root = tmp_path / "evidence"
+    assert command(tmp_path / "repo", root) == 2
+    failure = json.loads(next((root / "failures").glob("*.json")).read_text())
+    assert failure["phase"] == "preflight"
+    assert failure["error"]["message"] == "real preflight refusal"
+
+
 def add_run(root, name="r1", family="family", case="case"):
     store = evidence.RunStore(root)
     staged = store.stage(name)
@@ -236,7 +312,8 @@ def publish_prepared(root, **overrides):
         verify_source=lambda: None,
     )
     options.update(overrides)
-    return capture.publish_capture(root, **options)
+    with capture.CaptureEpoch(root.parent / "source", root, options["profile"], capture_id=options["capture_id"]):
+        return capture.publish_capture(root, **options)
 
 
 @pytest.mark.parametrize(
@@ -300,6 +377,8 @@ def test_publication_failures_preserve_or_recover_a_complete_pointer(
         real = capture._write_atomic
 
         def fail_pointer(path, raw):
+            if path.parent.name != "profiles":
+                return real(path, raw)
             if boundary == "after-pointer":
                 real(path, raw)
             raise OSError(f"injected {boundary}")
@@ -344,6 +423,8 @@ if boundary == 'before-capture':
 else:
     real = capture._write_atomic
     def die(path, raw):
+        if path.parent.name != 'profiles':
+            return real(path, raw)
         if boundary == 'after-pointer':
             real(path, raw)
         os._exit(91)

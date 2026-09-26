@@ -1,5 +1,8 @@
 # CS-PROD-01 — Parser coverage and Vite admission
 
+Latest code audit: [L5_FINAL_CODE_AUDIT](../handoffs/L5_FINAL_CODE_AUDIT.md).
+The older execution totals below remain bound to the original completion snapshot.
+
 Status: **VERIFIED for the L5 producer and shared integration scope** on the
 frozen dirty snapshot at `98601a66d8cab9c86232b3e62ce490c8b43b71b6`.
 Exact source identities, commands and raw evidence are in

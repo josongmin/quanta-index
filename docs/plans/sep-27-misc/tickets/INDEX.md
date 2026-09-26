@@ -1,8 +1,12 @@
 # SEP-27 benchmark / retrieval / test-optimization — execution SSOT
 
 Status: `ACTIVE`. Latest documentation/source re-audit: 2026-09-27 KST,
-Current source-inspection baseline and latest archive checkpoint source:
-`main@98601a66d8cab9c86232b3e62ce490c8b43b71b6`, shared dirty checkout.
+Latest paired checkpoint source transition:
+`main@98601a66d8cab9c86232b3e62ce490c8b43b71b6` →
+`main@5571132655a83824731e7909b0e310951edad52b`, shared dirty checkout.
+Another writer committed during the owner run; owned code/test bytes did not
+change. Whole-source/revision stability is not claimed. Earlier checkpoints
+below retain their own source revisions.
 The earlier documentation-only audit used `106d7abe`.
 The latest documentation-only refresh owned only this file. The subsequent
 IO-2 implementation owns the shared raw/archive modules, pair/corpus/lexical
@@ -43,8 +47,10 @@ before freezing; put post-freeze results in external digest-bound receipts.
 ### Latest code-first checkpoint: paired-verdict file custody
 
 The paired-verdict tail now uses `RawFile` for receipt/binary/log copies and the
-shared `raw_archive` pack/unpack implementation. Portable owner tests: 100
-selected/executed/passed; expanded caller verification is pending at this edit.
+shared `raw_archive` pack/unpack implementation, including isolated runner
+bundles. Final owner/caller selection: **447 selected/executed/passed**, zero
+failure/error/skip, unchanged owner/test bytes across dirty
+`main@98601a66` → `55711326`.
 The earlier 628-case checkpoint has a different source/selection and remains
 historical. No full-source, actual Rust/SDK/searchd, whole-capture resource or
 integrated qualification is claimed.
@@ -115,14 +121,14 @@ in the repository has been ruled out.
 
 | Scope | Current status | Evidence / next condition |
 | --- | --- | --- |
-| Python owner tests | Portable checkpoint: 628 selected/executed/passed, zero failure/error/skip; final closure/integrated-source qualification `NOT_RUN` | This seventeen-module selection has unchanged owner/test bytes across execution. Concurrent engine changes and subsequent normative-document edits prevent whole-source qualification. Earlier 520, 606, 368, 617 and 460 selections are different historical scopes, not additive counts. |
+| Python owner tests | Paired ZIP checkpoint: 447 selected/executed/passed, zero failure/error/skip; final closure/integrated-source qualification `NOT_RUN` | This nine-module selection (focused retrieval-benchmark subset) has unchanged owner/test bytes across execution. Concurrent engine/Cargo/config changes and normative-document edits prevent whole-source qualification. The earlier 746-case run drifted during execution; 628 and older selections have different source/scope and are not additive counts. |
 | MISC-01 Rust shared GC lock | Current implementation confirmed by source inspection; execution `NOT_RUN` in this refresh | Earlier 51-case result below is historical owner evidence, not a new Rust run. |
 | MISC-02 native lifecycle and host observations | Implementation `NOT_RUN` | Native recipe still calls `subprocess.run`; `shared` / one sample is assigned, not observed; `host_monitor.py` is absent. |
 | MISC-03 bounded I/O and retained failure epoch | Partially implemented; final-source qualification `NOT_RUN` | File-backed staging, execution, pair/corpus archives, native preparation, recorded/Cargo/lexical JSONL, portable producer/receipt/replay and paired-verdict command-log ZIP paths are implemented. Capture-wide failure records and end-to-end resource proof remain open. No measured OOM claim. |
 | C5 canonical test selection/source custody | Partial concurrent repair observed; acceptance `NOT_RUN` | Both modules now occur in the canonical command and affected closures, but still lack `python_targets` entries. Complete owner/scope registration and omission/mutation regression proof before canonical closure. |
 | MISC-04 through MISC-07 final-source acceptance | `NOT_RUN`; input-dependent claims become `BLOCKED` only when their actual prerequisite is missing | Execute the inline ticket-specific oracles after the shared API cutover; do not rerun already sufficient owner checks under multiple ticket names. |
 | Superseded document removal | `VERIFIED` filesystem census | No Markdown bodies remain in the five replaced directory groups; exact external backup SHA-256 rechecked. No additional deletion was needed in this refresh. |
-| Documentation/policy epochs | Latest portable postcheck: test-authority `FAILED`; other five checks exit zero | Concurrent `quanta-index-contract-base/tests/l4_preview_emission.rs` and `quanta-index-contract/tests/l4_preview_wire.rs` have no catalog entry. Record their exact owner enrollment under the existing integration boundary; do not count the Python owner pass as governance closure. Earlier policy epochs remain historical. |
+| Documentation/policy epochs | Paired checkpoint: doc paths, test-authority and whole touched-file Ruff `FAILED`; five other checks exit zero | Two broken links in another owner's archived L3 handoff, two orphan Rust targets, and 19 lint findings in preserved engine edits remain. Exact paths and commands are inline in the paired checkpoint. Python owner success is not governance closure. Earlier policy epochs remain historical. |
 
 Earlier documentation audit evidence root:
 `/private/tmp/qi-misc-final-doc-audit.oO2YSv`. `inventory.json` records the
@@ -753,7 +759,7 @@ and are not additive. `bundle-red.xml` records the undeclared-member read
 reproduction; `bundle-first.xml` records its repair plus the existing actual
 isolated zipapp command test. Bundle refusal tests initially passed 8 cases;
 final selection also includes post-domain archive mutation. Expanded
-final-source owner proof is pending below.
+final-source owner proof is recorded below.
 
 The first expanded nine-module run selected/executed/passed 746 tests with
 zero failures/errors/skips (`owners.json`, pytest exit 0, 692.15 seconds).
@@ -766,6 +772,65 @@ directly affected execution-context, frozen-command, freeze-receipt,
 OS-attestation and runner-bundle cases in `test_retrieval_benchmark.py`.
 This avoids repeating its unrelated expensive isolation/search-policy cases;
 it is not a final-source whole-retrieval-suite claim.
+
+Final command:
+
+```text
+uv run --frozen --extra dev python /private/tmp/qi-misc-paired-io.SAWvM7/final_verify.py source-final
+```
+
+`source-final.json` records the exact pytest argument vector and selection,
+before/after tracked/untracked file hashes and dirty status, environment and
+dependency identities, and raw/JUnit digests. Result: **447 selected, executed
+and passed; zero failed/error/skipped; pytest exit 0**, 354.68 seconds. All six
+listed production owners and nine selected test modules remained byte-stable;
+HEAD changed from `98601a66d8cab9c86232b3e62ce490c8b43b71b6` to
+`5571132655a83824731e7909b0e310951edad52b`. Foreign Rust/Cargo/vendor/
+CI inputs and this normative document changed. Therefore the owner/caller
+selection is verified, but integrated/source-closure qualification is `NOT_RUN`.
+Python 3.13.9 on macOS 15.6 arm64; no actual Rust/SDK/searchd qualification run.
+
+- Receipt SHA-256: `97715fd632a4ad3f43cfde72de679b50d48022d85c7e9a589fca42429ad4b44c`.
+- JUnit SHA-256: `cb72d558e216d4d2493c1db8864cee91c60646b31242835094cbed4976da8d55`.
+- Raw log SHA-256: `9aac494316ad0ee07a99039c70c38a055e349e72b00e065a1f9ec12fe9ba96b5`.
+
+This checkpoint closes the identified IO-3 implementation tail, not IO-4,
+EXEC-1, IO-5, C5 or MISC-04 through MISC-07. Whole-capture failure custody is the
+next implementation boundary. No earlier counts are added to 447.
+
+Final postcheck command:
+
+```text
+uv run --frozen --extra dev python /private/tmp/qi-misc-paired-io.SAWvM7/final_post.py
+```
+
+`final-post.json` SHA-256:
+`91662b9df2185736902973cc3a78f01fff15bc0ad6c99d9755abd9c444dbad0c`.
+It records eight commands, exact raw output hashes and monitored source state.
+Five commands exit zero: benchmark policy, prompt-manager lint, diff whitespace,
+direct-script help and static import closure probe. Three checks are `FAILED`:
+
+1. Doc paths: another owner's retained proof copy,
+   `docs/plans/sep-27-code-search-remediation/handoffs/l3-proof/adversarial/prior-L3_HANDOFF.md`,
+   has unresolved relative references at lines 3 and 5 to the follow-up audit
+   Markdown and source JSON. The L3 proof owner must make the archival copy
+   self-contained or preserve correctly rooted references; do not delete the
+   active proof packet or misclassify this as a new runtime bug.
+2. Test authority: `crates/quanta-index-contract-base/tests/l4_preview_emission.rs`
+   and `crates/quanta-index-contract/tests/l4_preview_wire.rs` remain orphan
+   integration targets. Their owning integration lane must register exact
+   scope/authority. This is the existing MISC-04 governance boundary.
+3. Ruff over four touched files: two I001 import-order findings in the preserved
+   symbol-coverage additions of `retrieval/run.py`, and 17 E701 findings in the
+   independently edited symbol-coverage tests of `test_retrieval_benchmark.py`.
+   The shared archive and portable regression modules separately pass Ruff.
+   Fix the foreign owner hunks during serial integration; do not overwrite
+   their in-flight semantics or claim whole-file lint success.
+
+Another writer's `55711326` commit included the code/test changes while this
+task was executing. This task did not stage or commit them. Only the normative
+document remained dirty among this checkpoint's four code/test files and SSOT
+at the post-run check. A commit is not an additional test or release receipt.
 
 ### Portable producer, receipt and replay: earlier file-backed checkpoint
 

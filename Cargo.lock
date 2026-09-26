@@ -5964,6 +5964,7 @@ dependencies = [
 [[package]]
 name = "tantivy-sstable"
 version = "0.3.0"
+source = "git+https://github.com/josongmin/quanta-tantivy-sstable.git?rev=22b3c0e3b554faa8de7a55f917f90c90f2af7050#22b3c0e3b554faa8de7a55f917f90c90f2af7050"
 dependencies = [
  "tantivy-bitpacker",
  "tantivy-common",

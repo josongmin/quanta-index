@@ -254,9 +254,12 @@ impl RequestBudgetV1 {
         let ledger = LexicalCollectionBudget::new(max_work, max_bytes)?;
         let bytes = u64::try_from(
             LEXICAL_OUTPUT_GROUP_LIMIT
-                * std::mem::size_of::<Option<Vec<LexicalMemoryReservation>>>(),
+                .checked_mul(std::mem::size_of::<Option<Vec<LexicalMemoryReservation>>>())
+                .ok_or_else(|| {
+                    CoreError::InvalidContract("preview carrier size overflow".into())
+                })?,
         )
-        .map_err(|_| CoreError::InvalidContract("preview carrier size overflow".into()))?;
+        .map_err(|_overflow| CoreError::InvalidContract("preview carrier size overflow".into()))?;
         let carrier = ledger.reserve_bytes(bytes)?;
         let mut groups = Vec::new();
         groups
@@ -269,6 +272,7 @@ impl RequestBudgetV1 {
             groups,
             _carrier: carrier,
         });
+        drop(state);
         Ok(ledger)
     }
 
@@ -289,11 +293,12 @@ impl RequestBudgetV1 {
         }
         let slot = retained.groups.len();
         retained.groups.push(None);
+        drop(state);
         Ok(Some(slot))
     }
 
-    /// Fill a slot reserved before rendering. This performs no allocation or
-    /// budget admission after the optional renderer has produced valid output.
+    /// Fill a previously reserved request slot with live allocation leases.
+    /// This transfer performs no allocation or further budget admission.
     pub fn retain_lexical_output(
         &self,
         slot: usize,
@@ -315,6 +320,7 @@ impl RequestBudgetV1 {
             ));
         }
         *group = Some(reservations);
+        drop(state);
         Ok(())
     }
 
@@ -520,7 +526,7 @@ mod tests {
     }
 
     #[test]
-    fn preview_group_exhaustion_is_explicit_before_optional_rendering() {
+    fn preview_group_exhaustion_is_explicit_without_poisoning_ledger() {
         let request = RequestBudgetV1::unbounded();
         let ledger = request
             .lexical_preview_budget(10, 100_000)

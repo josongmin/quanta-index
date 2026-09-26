@@ -54,7 +54,8 @@ def run(lock: Path, wait_seconds: int, timeout_seconds: int, command: list[str])
     lock = Path(os.path.abspath(lock))
     lock.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
-    admitted = False
+    waiting_since = time.monotonic_ns()
+    acquired_at = None
     try:
         identity = check_lock(fd, lock)
         deadline = time.monotonic() + wait_seconds
@@ -66,7 +67,7 @@ def run(lock: Path, wait_seconds: int, timeout_seconds: int, command: list[str])
                 raise ValueError("resource lock identity changed while waiting")
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                admitted = True
+                acquired_at = time.monotonic_ns()
                 break
             except BlockingIOError:
                 remaining = deadline - time.monotonic()
@@ -75,7 +76,8 @@ def run(lock: Path, wait_seconds: int, timeout_seconds: int, command: list[str])
                 time.sleep(min(0.05, remaining))
         if check_lock(fd, lock) != identity:
             raise ValueError("resource lock identity changed during admission")
-        print(f"resource admission: admitted lock={lock}", file=sys.stderr, flush=True)
+        print(f"resource admission: admitted lock={lock} wait_ns={acquired_at - waiting_since}",
+              file=sys.stderr, flush=True)
         result = _execute_owned(
             command, cwd=Path.cwd(), env=dict(os.environ), timeout=timeout_seconds,
             sinks=(LiveSink(sys.stdout.buffer), LiveSink(sys.stderr.buffer)),
@@ -90,8 +92,14 @@ def run(lock: Path, wait_seconds: int, timeout_seconds: int, command: list[str])
         # Closing our copy follows guard cleanup; the guard independently keeps
         # its copy until group termination if this controller is killed.
         os.close(fd)
-        if admitted:
-            print(f"resource admission: released lock={lock}", file=sys.stderr, flush=True)
+        released_at = time.monotonic_ns()
+        if acquired_at is not None:
+            # Includes child setup and group cleanup, not only child CPU/runtime.
+            print(f"resource admission: released lock={lock} held_ns={released_at - acquired_at}",
+                  file=sys.stderr, flush=True)
+        else:
+            print(f"resource admission: not-admitted lock={lock} wait_ns={released_at - waiting_since}",
+                  file=sys.stderr, flush=True)
 
 
 def main(argv=None) -> int:

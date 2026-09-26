@@ -1,0 +1,50 @@
+name: Private Cargo dependencies
+description: Fetch the exact SSTable patch with a repository-scoped read-only deploy key
+inputs:
+  sstable-ssh-key:
+    description: Read-only deploy key for josongmin/quanta-tantivy-sstable
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Read the pinned SSTable revision
+      id: pin
+      shell: bash
+      run: |
+        python3 - <<'PY'
+        import os
+        import re
+        import tomllib
+        from pathlib import Path
+
+        patch = tomllib.loads(Path("Cargo.toml").read_text())["patch"]["crates-io"]["tantivy-sstable"]
+        if patch.get("git") != "https://github.com/josongmin/quanta-tantivy-sstable.git":
+            raise SystemExit("unexpected SSTable repository")
+        revision = patch.get("rev", "")
+        if not re.fullmatch(r"[0-9a-f]{40}", revision):
+            raise SystemExit("SSTable revision must be a full commit hash")
+        with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+            output.write(f"revision={revision}\n")
+        PY
+
+    - name: Checkout the private SSTable patch
+      uses: actions/checkout@v4
+      with:
+        repository: josongmin/quanta-tantivy-sstable
+        ref: ${{ steps.pin.outputs.revision }}
+        ssh-key: ${{ inputs.sstable-ssh-key }}
+        persist-credentials: false
+        fetch-depth: 0
+        path: .cargo-deps/tantivy-sstable
+
+    - name: Resolve Cargo fetches from the verified checkout
+      shell: bash
+      env:
+        EXPECTED_REVISION: ${{ steps.pin.outputs.revision }}
+      run: |
+        set -euo pipefail
+        dependency="$GITHUB_WORKSPACE/.cargo-deps/tantivy-sstable"
+        test "$(git -C "$dependency" rev-parse HEAD)" = "$EXPECTED_REVISION"
+        git config --global \
+          "url.file://$dependency/.git.insteadOf" \
+          https://github.com/josongmin/quanta-tantivy-sstable.git

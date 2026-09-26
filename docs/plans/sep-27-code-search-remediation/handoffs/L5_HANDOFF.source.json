@@ -41,5 +41,10 @@
     "path": "L5_ADVERSARIAL_AUDIT.json",
     "sha256": "1942309e4941ccfa52e3406624e5d36686fc3cfb0eee5c6e86ded917e7d42edf",
     "status": "VERIFIED for scoped owner/consumer audit"
+  },
+  "final_code_audit": {
+    "path": "L5_FINAL_CODE_AUDIT.json",
+    "sha256": "c59c230cb0fd2704500685416bb7fda5c2266e0eb66d44b9a1fb5c7124a70f07",
+    "head": "5571132655a83824731e7909b0e310951edad52b"
   }
 }

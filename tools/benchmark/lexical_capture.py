@@ -11,7 +11,6 @@ import os
 import platform
 import socket
 import sys
-import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -30,7 +29,13 @@ from evidence import (
 )
 from evidence_bridge import host_identity, source_identity
 from producer_execution import execute
-from profile_capture import _directories, load_capture, publish_capture
+from profile_capture import (
+    _directories,
+    capture_entrypoint,
+    current_capture,
+    load_capture,
+    publish_capture,
+)
 from registry import registry_digest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -235,8 +240,6 @@ def replay_run(store: RunStore, evidence: dict) -> None:
 
 
 def capture(repo: Path, root: Path, registry: dict, spec_path: Path, timeout: int) -> dict:
-    from benchctl import require_clean_worktree, require_frozen_source, resolve_checkout_head
-
     require_registration(registry)
     if repo.resolve() != ROOT:
         raise EvidenceError("lexical driver must come from the requested checkout")
@@ -251,16 +254,26 @@ def capture(repo: Path, root: Path, registry: dict, spec_path: Path, timeout: in
         raise EvidenceError("lexical evidence and corpus release roots overlap")
     if any(path.resolve().is_relative_to(repo.resolve()) for path in (spec_path, *paths.values())):
         raise EvidenceError("lexical spec and observations must stay outside the checkout")
+    _directories(root)
+    return _capture_admitted(repo, root, registry, spec_path, timeout, original, selection, paths, release)
+
+
+@capture_entrypoint(PROFILE)
+def _capture_admitted(repo, root, registry, spec_path, timeout, original, selection, paths, release):
+    from benchctl import require_clean_worktree, require_frozen_source, resolve_checkout_head
+
+    current_capture().step("source")
     require_clean_worktree(repo)
     head = resolve_checkout_head(repo)
     source = source_identity(repo, "benchmark-retrieval")
+    current_capture().step("inputs", source=source)
     contents = {role: RawFile.capture(path) for role, path in paths.items()}
+    current_capture().inputs(contents)
     if _read_control_file(spec_path) != original:
         raise EvidenceError("lexical spec changed during freeze")
     _directories(root)
-    capture_id = f"lexical-{uuid.uuid4().hex}"
+    capture_id = current_capture().capture_id
     native = root / "work" / capture_id
-    native.mkdir(parents=True, exist_ok=False)
     binding, capsule = corpus_binding.capture(
         release,
         selection,
@@ -282,7 +295,7 @@ def capture(repo: Path, root: Path, registry: dict, spec_path: Path, timeout: in
         encoding="utf-8",
     )
     python_digest = RawFile.capture(Path(sys.executable).resolve()).sha256
-    stdout, stderr, command = execute(
+    stdout, stderr, command = current_capture().execute(execute,
         [
             sys.executable,
             "-m",
@@ -295,7 +308,7 @@ def capture(repo: Path, root: Path, registry: dict, spec_path: Path, timeout: in
         cwd=repo,
         env=dict(os.environ),
         timeout=timeout,
-        log_dir=native.parent / f"{capture_id}-execution",
+        log_dir=native / "execution",
     )
     if python_digest != RawFile.capture(Path(sys.executable).resolve()).sha256:
         raise EvidenceError("lexical Python executable changed during scoring")
@@ -305,7 +318,8 @@ def capture(repo: Path, root: Path, registry: dict, spec_path: Path, timeout: in
     typed = payloads(summary, owner._read(native / "input-query_pack"))
     if any(file_digest(raw.path) != (raw.sha256, raw.size) for raw in frozen.values()):
         raise EvidenceError("lexical frozen inputs changed during scoring")
-    raw = {path.name: RawFile.capture(path) for path in native.iterdir()}
+    raw = {path.name: RawFile.capture(path) for path in native.iterdir()
+           if path.name not in {"capture.json", "execution"}}
     spool = root / "work" / capture_id / "prepared"
     toolchain = f"Python {platform.python_version()}"
     raw.update(

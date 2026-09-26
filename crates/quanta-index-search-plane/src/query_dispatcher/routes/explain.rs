@@ -18,16 +18,13 @@ use quanta_index_contract::{
 };
 use quanta_index_core::{
     CoreError, ExplainQueryPort, HybridFilterPlanV1, HybridOrchestratorPolicy,
-    LexicalCandidateExplanationV1, LexicalPageSpec, LexicalPolicy, LexicalScoreEngineV1,
-    LexicalScoreTraceV1, LexicalSearcher, QueryRouteV1, RequestBudgetV1, SemanticSearcher,
-    validate_query_top_k,
+    LexicalCandidateExplanationV1, LexicalPageSpec, LexicalScoreEngineV1, LexicalScoreTraceV1,
+    LexicalSearcher, QueryRouteV1, RequestBudgetV1, SemanticSearcher, validate_query_top_k,
 };
 
-use crate::lower_lexical_text_query;
 use crate::query_dispatcher::dense_admission::admit_dense_lane_v1;
 use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
 use crate::query_dispatcher::execution_trace::{LaneExecutionRecorderV1, LaneExecutionSummaryV1};
-use crate::query_dispatcher::planning::prepare_language_query_v1;
 use crate::query_dispatcher::ranking::stabilize_ranked_candidates;
 use crate::query_dispatcher::read_view::{ReadViewRequestV1, attach_read_view_trace};
 use crate::query_dispatcher::window::hybrid_probe_top_k_v1;
@@ -166,7 +163,7 @@ impl SearchPlaneDispatcher {
                             .to_string(),
                     ));
                 };
-                let lanes = HybridLanePlanV1::prepare(&pinned_query, self.hybrid_fetch_floor)?;
+                let lanes = HybridLanePlanV1::prepare(self, &pinned_query, budget)?;
                 let view = self.acquire_read_view(
                     &ReadViewRequestV1::declare(
                         "explain",
@@ -245,9 +242,8 @@ impl SearchPlaneDispatcher {
 /// The two lanes' plan exactly as the hybrid route prepares it.
 ///
 /// See `routes/hybrid.rs`: the lowered text query, its filter
-/// classification for the dense lane, and the language-prepared query and
-/// constraints both lanes run under. Kept step for step with the route so
-/// the lanes an explain re-runs are the lanes the hybrid ran.
+/// classification for the dense lane, and the admitted query and constraints.
+/// The same planner serves every hybrid entry point.
 struct HybridLanePlanV1 {
     filter_plan: HybridFilterPlanV1,
     query: quanta_index_contract::LqQuery,
@@ -258,19 +254,17 @@ struct HybridLanePlanV1 {
 
 impl HybridLanePlanV1 {
     fn prepare(
+        dispatcher: &SearchPlaneDispatcher,
         text_query: &TextQueryRequest,
-        fetch_floor: quanta_index_core::HybridFetchFloorPolicy,
+        budget: &RequestBudgetV1,
     ) -> Result<Self, CoreError> {
-        let lexical_query = lower_lexical_text_query(text_query)?;
-        let filter_plan = HybridFilterPlanV1::plan(&lexical_query)?;
-        let prepared = prepare_language_query_v1(lexical_query, &text_query.constraints)?;
-        LexicalPolicy::validate_query(&prepared.query)?;
+        let (filter_plan, prepared) = dispatcher.plan_hybrid_lexical_query(text_query, budget)?;
         Ok(Self {
             filter_plan,
             query: prepared.query,
             constraints: prepared.constraints,
             force_empty: prepared.force_empty,
-            fetch_floor,
+            fetch_floor: dispatcher.hybrid_fetch_floor,
         })
     }
 }

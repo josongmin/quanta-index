@@ -23,7 +23,7 @@ use quanta_index_core::{
     CoreError, LexicalCollectionBudget, LexicalExecutionBudgetV1, LexicalMemoryReservation,
     RequestBudgetV1,
 };
-use tantivy::collector::Collector;
+use tantivy::collector::{Collector, SegmentCollector};
 use tantivy::query::{EmptyScorer, EnableScoring, Explanation, Query, Scorer, TermQuery, Weight};
 use tantivy::{DocId, DocSet, Score, Searcher, SegmentReader, TERMINATED};
 
@@ -257,11 +257,20 @@ pub(crate) fn budgeted_search<C: Collector>(
     budget: &RequestBudgetV1,
     stage: &'static str,
 ) -> Result<C::Fruit, CoreError> {
-    search_with_probe(searcher, query, collector, &BudgetProbe::new(budget), stage)
+    search_with_probe(
+        searcher,
+        query,
+        collector,
+        &BudgetProbe::new(budget),
+        Ok,
+        stage,
+    )
 }
 
 /// Exact-set variant: a collector's resource refusal terminates the scorer and
 /// discards every segment fruit before merge; it is never successful exhaustion.
+/// Fallible child fruits are checked at the segment boundary, so an integrity
+/// error cannot reach later collection or merge work that might mask its cause.
 pub(crate) fn budgeted_collection<C: Collector>(
     searcher: &Searcher,
     query: &dyn Query,
@@ -269,17 +278,30 @@ pub(crate) fn budgeted_collection<C: Collector>(
     budget: &RequestBudgetV1,
     collection: CollectionBudget,
     stage: &'static str,
-) -> Result<C::Fruit, CoreError> {
+) -> Result<C::Fruit, CoreError>
+where
+    C::Child: SegmentCollector<Fruit = tantivy::Result<C::Fruit>>,
+{
     let mut probe = BudgetProbe::new(budget);
     probe.collection = Some(collection);
-    search_with_probe(searcher, query, collector, &probe, stage)
+    search_with_probe(
+        searcher,
+        query,
+        collector,
+        &probe,
+        |fruit| fruit.map(Ok),
+        stage,
+    )
 }
+
+type SegmentFruit<C> = <<C as Collector>::Child as SegmentCollector>::Fruit;
 
 fn search_with_probe<C: Collector>(
     searcher: &Searcher,
     query: &dyn Query,
     collector: &C,
     probe: &BudgetProbe,
+    validate_segment: impl Fn(SegmentFruit<C>) -> tantivy::Result<SegmentFruit<C>>,
     stage: &'static str,
 ) -> Result<C::Fruit, CoreError> {
     // Refuse an already interrupted request before weight construction or any
@@ -342,7 +364,9 @@ fn search_with_probe<C: Collector>(
         let segment_ord = u32::try_from(segment_ord).map_err(|err| {
             CoreError::Storage(format!("lexical: {stage}: segment ordinal overflow: {err}"))
         })?;
-        let fruit = collector.collect_segment(&weight, segment_ord, reader);
+        let fruit = collector
+            .collect_segment(&weight, segment_ord, reader)
+            .and_then(&validate_segment);
         if let Some(error) = probe.error(stage) {
             return Err(error);
         }

@@ -7,14 +7,14 @@ use quanta_index_contract::{
     SemanticQueryResponse,
 };
 use quanta_index_core::{
-    CoreError, LexicalPageSpec, LexicalPolicy, QueryRouteV1, RequestBudgetV1, SemanticPolicy,
-    SemanticQueryPort, SemanticSearcher, validate_query_top_k,
+    CoreError, LexicalPageSpec, QueryRouteV1, RequestBudgetV1, SemanticPolicy, SemanticQueryPort,
+    SemanticSearcher, validate_query_top_k,
 };
 
 use crate::lower_lexical_text_query;
 use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
 use crate::query_dispatcher::execution_trace::LaneExecutionRecorderV1;
-use crate::query_dispatcher::planning::{PreparedLanguageQueryV1, prepare_language_query_v1};
+use crate::query_dispatcher::planning::PreparedLanguageQueryV1;
 use crate::query_dispatcher::ranking::stabilize_ranked_candidates;
 use crate::query_dispatcher::read_view::{ReadViewRequestV1, attach_read_view_trace};
 use crate::query_dispatcher::semantic_query::{
@@ -71,7 +71,7 @@ impl SearchPlaneDispatcher {
         let mut stage_timings = StageTimings::new(self.query_stage_observation, 6);
         let prepare_started = self.query_stage_observation.start();
         let scope_plan = match request.lexical_scope.as_ref() {
-            Some(scope) => Some(plan_semantic_scope(request, scope)?),
+            Some(scope) => Some(plan_semantic_scope(self, request, scope, budget)?),
             None => None,
         };
         let effective_constraints: QueryConstraintSetV1 = scope_plan.as_ref().map_or_else(
@@ -236,8 +236,10 @@ impl SearchPlaneDispatcher {
 /// under the shared public gate, constraints equal to the outer request's,
 /// and the plan the lexical lane will run.
 fn plan_semantic_scope(
+    dispatcher: &SearchPlaneDispatcher,
     request: &SemanticQueryRequest,
     scope: &quanta_index_contract::TextQueryRequest,
+    budget: &RequestBudgetV1,
 ) -> Result<SemanticScopePlan, CoreError> {
     let cap = validate_query_top_k(scope.top_k)?;
     if scope.constraints != request.constraints {
@@ -246,8 +248,8 @@ fn plan_semantic_scope(
         ));
     }
     let lowered_scope = lower_lexical_text_query(scope)?;
-    let prepared = prepare_language_query_v1(lowered_scope, &request.constraints)?;
-    LexicalPolicy::validate_query(&prepared.query)?;
+    let prepared =
+        dispatcher.prepare_lexical_language_query(lowered_scope, &request.constraints, budget)?;
     Ok(SemanticScopePlan { cap, prepared })
 }
 

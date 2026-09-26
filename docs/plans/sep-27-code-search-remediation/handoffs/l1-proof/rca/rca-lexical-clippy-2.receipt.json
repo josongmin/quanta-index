@@ -1,0 +1,33 @@
+{
+  "after": "/tmp/quanta-l1-rca.h1y4pja7/rca-lexical-clippy-2.after.json",
+  "artifacts": [],
+  "before": "/tmp/quanta-l1-rca.h1y4pja7/rca-lexical-clippy-2.before.json",
+  "classification": "UNCLASSIFIED: inspect execution count, outcome, inputs and source drift before promoting evidence",
+  "command": [
+    "./scripts/cargow",
+    "clippy",
+    "--locked",
+    "-j",
+    "2",
+    "-p",
+    "quanta-index-lexical",
+    "--lib",
+    "--test",
+    "l1_query_domain_window",
+    "--test",
+    "cancellation_inside_search",
+    "--no-deps",
+    "--message-format=json",
+    "--",
+    "-D",
+    "warnings"
+  ],
+  "ended_unix": 1790462586.349688,
+  "executed_result_lines": [],
+  "exit_code": 101,
+  "head_changed": false,
+  "log": "/tmp/quanta-l1-rca.h1y4pja7/rca-lexical-clippy-2.log",
+  "log_sha256": "ffaa18ef890a3e65b684d8ef98f0b000691a9f6dc30b7fad4c3b171bc01d2556",
+  "source_changed": [],
+  "started_unix": 1790462492.784238
+}

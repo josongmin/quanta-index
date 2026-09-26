@@ -1,25 +1,38 @@
 {
   "state": "BLOCKED",
-  "scope": "Current shared-source qualification; the L3 repair is verified on the separately bound frozen snapshot",
-  "head": "98601a66d8cab9c86232b3e62ce490c8b43b71b6",
+  "scope": "Current shared-source selected lexical qualification; the RCA repair and 193 selected tests are VERIFIED on the referenced frozen snapshot",
+  "head": "5571132655a83824731e7909b0e310951edad52b",
   "current_receipt": {
-    "path": "docs/plans/sep-27-code-search-remediation/handoffs/L3_ADVERSARIAL.source.json",
-    "sha256": "6be54ab43a1a76d66b01cb6073d351d0261ebcbad15c6ad3cd63cc3f8a442310"
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/L3_RCA.source.json",
+    "sha256": "2b3f7806f19bfed5bfdd2b0a507b736dd1cfaa82180c7100f4af5d736c3c81d0"
   },
   "claims": {
-    "repair_on_frozen_source": "VERIFIED",
-    "adversarial_order_oracle_on_frozen_source": "VERIFIED",
-    "current_selected_lexical_tests": "BLOCKED",
+    "reproduced_defect": "VERIFIED",
     "whole_repository_CI": "NOT_RUN",
     "installed_daemon_E2E": "NOT_RUN",
-    "performance_RSS_ranking_quality": "NOT_RUN"
+    "performance_RSS_ranking_quality": "NOT_RUN",
+    "sealed_generation_bypass": "NOT_APPLICABLE",
+    "selected_lexical_tests_on_frozen_source": "VERIFIED",
+    "current_selected_lexical_tests": "BLOCKED",
+    "owned_files_match_verified_snapshot": "VERIFIED"
   },
   "last_verified_snapshot": {
-    "run": "audit3-final-2",
-    "passed": 190,
+    "run": "rca-final-2",
+    "passed": 193,
     "failed": 0,
-    "selected_input_sha256": "546cc7b000c7f0bbee6d7ac64725789d81acf1eacc6056aef735b419600b04c8",
-    "receipt": "docs/plans/sep-27-code-search-remediation/handoffs/l3-proof/adversarial/verified-snapshot-L3_ADVERSARIAL.source.json",
-    "sha256": "db2cae59afe32e1a09818ef5a5f31c65ab698c293e2028c5fdbb3685b555da83"
-  }
+    "ignored": 0,
+    "selected_input_sha256": "13437d4c36caeeb10f716d9f1e0610cd77ed32c37a1f4418a6ff75e7b874435b",
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l3-proof/rca/verified-snapshot-L3_RCA.source.json",
+    "sha256": "1866a1bd32858204d0d30f9997899ffbef2cd0f34aa7e02cb2758005cfc22eba"
+  },
+  "current_changed_selected_inputs": [
+    "crates/quanta-index-core/src/domains/lexical/collection_budget.rs",
+    "crates/quanta-index-core/src/domains/lexical/coverage.rs",
+    "crates/quanta-index-core/src/domains/lexical/outbound.rs",
+    "crates/quanta-index-core/src/domains/lexical/service.rs",
+    "crates/quanta-index-core/src/request_budget.rs",
+    "crates/quanta-index-lexical/src/query_admission.rs",
+    "crates/quanta-index-lexical/src/searcher/manual_scan.rs",
+    "crates/quanta-index-lexical/src/searcher/prepare.rs"
+  ]
 }

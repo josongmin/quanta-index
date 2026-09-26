@@ -1,0 +1,6 @@
+{
+  "status": "BLOCKED",
+  "utc": "2026-09-26T22:58:23.562690+00:00",
+  "phase": "resource-admission wait before compilation",
+  "reason": "Own process group stopped to synchronize output-retention documentation and regression name with the implemented behavior. No tests executed; no other process group signaled."
+}

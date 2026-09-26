@@ -30,6 +30,22 @@ Unsupported Phrase, RawString, Regex, regexp-keyword and per-result content-filt
 route return `LEX_PLANNER_UNSUPPORTED_FILTER_COMBO`. They cannot become empty exhaustive success or silently fall
 back to chunk search. Repository and file predicates remain chunk-owned constraints.
 
+Every lexical lane validates its domain and all query primitives before language
+intersection or result-dependent empty shortcuts. This includes lexical and
+Symbol search, semantic lexical scopes, hybrid search, hybrid seed search, and
+query-based explanations. Hybrid search, seed and explain use one lexical
+planning owner. Primitive admission uses the adapter's execution policy without
+opening a generation; source capability checks still require the pinned reader.
+Top-level repo/file regex admission uses the actual execution grammar: Tantivy
+for indexed search and the manual regex executor for `index:no`. A valid manual
+anchor or word boundary must not be rejected by the indexed grammar.
+
+Symbol result endpoints reject text projections with `INVALID_REQUEST` before
+acquiring a search view. Bounded `count:N` limits rows, not the match universe:
+producer count evidence and continuation survive both the count cap and response
+clipping. A valid language contradiction carries logical-empty proof and no
+executed search lane. Changed cursor context returns `CURSOR_CONTEXT_MISMATCH`.
+
 ### Publication authority
 
 An admitted source file produces chunks and source-bound symbols in one combined replacement. The scope digest binds

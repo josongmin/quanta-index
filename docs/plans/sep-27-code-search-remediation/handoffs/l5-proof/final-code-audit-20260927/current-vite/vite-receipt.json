@@ -1,0 +1,56 @@
+{
+  "status": "VERIFIED",
+  "scope": "fresh CLI parser census and strict/allow admission; no daemon/query/metrics execution",
+  "snapshot": "/Users/songmin/.codex/worktrees/l5-final-current-head/quanta-index",
+  "head": "5571132655a83824731e7909b0e310951edad52b",
+  "binary_sha256": "ee15c3decf9910c66c6d569dbf2126c82a8f9da93f021850be7bdf1937637eba",
+  "manifest_sha256": "87ad16fe0c5626ee8ff625ddccf1645558c0b019d9229c5adcf24ffd0cbf7705",
+  "corpus_commit": "bc598a6a8a6b7d6e157e9f19c16911cff8d2360c",
+  "admitted_files": 256,
+  "complete_files": 255,
+  "parse_failed_files": 1,
+  "symbol_count": 2006,
+  "policy_sha256": "b801cd2ed0b0c02313d8e32adad6bf3ced94e527d7e432647c30ff787abde43e",
+  "commands": [
+    {
+      "command": [
+        "/private/tmp/quanta-index-l5-final-audit-20260927/current-vite/quanta-index-retrieval-bench",
+        "preflight",
+        "--repo",
+        "/private/tmp/qi-full-lexical-20260927/full-repos/vite",
+        "--manifest",
+        "/Users/songmin/Documents/code-new/qi-rb-coverage-set-2026-09-25/frozen-external-check/manifests/vite.json",
+        "--symbol-coverage",
+        "allow-incomplete",
+        "--out",
+        "/private/tmp/quanta-index-l5-final-audit-20260927/current-vite/vite-allow-incomplete.json"
+      ],
+      "cwd": "/Users/songmin/.codex/worktrees/l5-final-current-head/quanta-index",
+      "started_utc": "2026-09-26T22:58:21.360276+00:00",
+      "exit_code": 0,
+      "expected_exit": 0,
+      "output_sha256": "b014cacbf097551b947b0619b621bdab4f711011f77dafcda43c635de1938b97",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": [
+        "/private/tmp/quanta-index-l5-final-audit-20260927/current-vite/quanta-index-retrieval-bench",
+        "preflight",
+        "--repo",
+        "/private/tmp/qi-full-lexical-20260927/full-repos/vite",
+        "--manifest",
+        "/Users/songmin/Documents/code-new/qi-rb-coverage-set-2026-09-25/frozen-external-check/manifests/vite.json",
+        "--symbol-coverage",
+        "require-complete",
+        "--out",
+        "/private/tmp/quanta-index-l5-final-audit-20260927/current-vite/vite-require-complete.json"
+      ],
+      "cwd": "/Users/songmin/.codex/worktrees/l5-final-current-head/quanta-index",
+      "started_utc": "2026-09-26T22:58:29.191517+00:00",
+      "exit_code": 2,
+      "expected_exit": 2,
+      "output_sha256": "f1c690ca40547716e104067db10145e0ce9cb3d2a399fcd871035837290e0c21",
+      "log_sha256": "ab90fbe050e80d2d5649c361224c2e9d09930266c8785ad855942d4e1e8bf9f0"
+    }
+  ]
+}

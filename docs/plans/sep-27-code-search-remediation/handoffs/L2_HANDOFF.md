@@ -1,20 +1,35 @@
-# L2 handoff — implementation connected, integration proof blocked
+# L2 handoff — final code audit repaired five additional defects
 
-Status: **BLOCKED** for final-source and composed-process qualification.
-The latest owner command exited 0 with **556 selected tests passed**, but relevant
-shared dependencies changed during that run. The composed SDK replay/restart
-scenario is authored and **NOT_RUN** because its harness compilation **FAILED**.
-No repository-wide, installed-process, performance, deployment or release claim.
+Latest audit: [L2_FINAL_AUDIT.md](L2_FINAL_AUDIT.md) and
+[L2_FINAL_AUDIT.json](L2_FINAL_AUDIT.json). These supersede earlier verification
+statements below. Five additional defects (RR-10 through RR-14) were reproduced
+and repaired: physical Delta lineage, malformed bundle admission, inherited
+structural chunks, retry after base retirement, and checkpoint-before-retention
+ordering.
 
-Source: shared dirty `main`, HEAD
-`98601a66d8cab9c86232b3e62ce490c8b43b71b6`.
-The user's concurrent-work authorization superseded the earlier native-slot and
-public replay-contract ownership block. Existing concurrent edits were preserved;
-no commit, push, reset, additional agent or proactive L0 message was performed.
+Latest owner result: **261 passed, 0 failed, 0 ignored, 205 filtered**, with no
+input changes during execution. **VERIFIED** is limited to the exact recorded
+owner-test snapshot in `l2-proof/audit-owner-closeout.json`.
+Overall integration qualification remains **BLOCKED**: the SDK scenario again
+failed harness compilation on 16 old DTO uses; scoped lint stopped on 11 core
+dependency errors. Behavior and target lint execution were **NOT_RUN**.
 
-Current source inventory and evidence: [L2_FINAL.source.json](L2_FINAL.source.json).
-Earlier `L2_HANDOFF.source.json`, `L2_RR_REOPEN.source.json` and preparation receipts
-are historical, superseded snapshots. They do not describe current execution.
+Source snapshot: shared dirty `main`, HEAD
+`5571132655a83824731e7909b0e310951edad52b`.
+Recorded owner source inventory: [L2_FINAL.source.json](L2_FINAL.source.json).
+Closeout revalidation observed later `core/domains/lexical/coverage.rs` drift.
+Shared source continues to change; do not promote snapshot receipts into current
+whole-repository qualification. Existing concurrent work was preserved. L2 did
+not commit, push, reset, create an agent or send a proactive L0 message.
+
+The strict existing auxiliary state/meta rows now require nullable
+`source_batch_digest`; missing legacy fields reject and require an offline rebuild.
+A new target checkpoints complete chunks before retention, then records track
+and rollback authority after the reconciled receipt. No new generation/IR scheme
+or performance claim was introduced.
+
+Earlier `L2_HANDOFF.source.json`, `L2_RR_REOPEN.source.json`, the 98601a66 source
+snapshot, 556-test execution and fuzz receipts are historical baselines.
 
 ## Implementation and contract effects
 
@@ -53,7 +68,7 @@ are historical, superseded snapshots. They do not describe current execution.
 
 Changed-source inventory spans lexical mutation/sealing, ingest dispatch and
 materialization, activation catalog/lifecycle, contract request/observation,
-SDK receipt/activation binding and dedicated regressions. The exact 48-path
+SDK receipt/activation binding and dedicated regressions. The exact 50-path
 inventory and per-file SHA-256 values are in `L2_FINAL.source.json`; whole-file
 changes may include preserved edits from other owners.
 
@@ -76,9 +91,9 @@ failed `z.rs`; production regex semantics were not changed. Batch-dependent
 observation helpers live beside the request DTO to avoid adding a request-module
 cycle through the observation module.
 
-## Executed owner checks
+## Prior owner checks — historical snapshot
 
-The final command used canonical tooling with explicitly authorized concurrent
+The earlier command used canonical tooling with explicitly authorized concurrent
 execution: `QUANTA_INDEX_RESOURCE_ADMISSION=0 CARGO_BUILD_JOBS=2`.
 No other worker's admission lock was removed.
 
@@ -109,7 +124,7 @@ L1 received that observed failure and raw log without a rerun request. Its statu
 on later L1 source is not asserted here. Selected formatting/whitespace commands
 exited 0; those are source hygiene, not behavioral proof.
 
-## Composed runtime and shared gates
+## Earlier composed runtime and shared gate results
 
 The authored
 `sdk_frontdoor::l2_source_replay_keeps_original_publication_through_sdk_activation_and_restart`
@@ -150,7 +165,7 @@ No API/module baseline was changed by L2.
 
 ## Remaining integration and evidence limits
 
-1. Migrate the shared searchd-harness producer fixtures and sealing protocol;
+1. Migrate the shared searchd-harness producer fixtures and sealing protocol (the final audit reattempt still found 16 compile errors);
    then execute the composed SDK replay/activation/restart scenario and required
    daemon profile on fixed, recorded inputs.
 2. Integrate shared API/module baselines and resolve the recorded shared gate
@@ -161,7 +176,8 @@ No API/module baseline was changed by L2.
 4. Semantica producer issuance and downstream migration remain external. The
    peer owner received verified Index RFC/port/catalog paths. No inspected Index
    document assigns a concrete Semantica durable event-issuance owner; none is
-   claimed agreed. Generation-derived event IDs remain invalid.
+   claimed agreed. No public SDK source-base/high-water lookup or event issuer
+   exists; the peer was given that current-source boundary. Generation-derived event IDs remain invalid.
 
 Catalog mutation is serialized; no throughput claim is made. Per-repository
 limits remain 16 MiB encoded envelope, 256 revision roots, 256 streams and 8192

@@ -49,13 +49,13 @@ impl TantivySearcher {
                                 .into(),
                         });
                     }
-                    scope_filters.push(CoverageScopeFilter::Repo(
-                        self.manual_filter_regex(pattern, "repo")?,
-                    ));
+                    scope_filters.push(CoverageScopeFilter::Repo(Self::manual_filter_regex(
+                        pattern, "repo",
+                    )?));
                 }
                 LqFilter::File { pattern, scope } => {
                     scope_filters.push(CoverageScopeFilter::File(
-                        self.manual_filter_regex(pattern, "file")?,
+                        Self::manual_filter_regex(pattern, "file")?,
                         *scope,
                     ));
                 }

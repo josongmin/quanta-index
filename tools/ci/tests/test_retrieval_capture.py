@@ -267,7 +267,12 @@ def test_cli_dirty_source_is_typed_refusal_before_producer(monkeypatch, capsys, 
     root = tmp_path / "evidence"
     assert benchctl.main(["run", "retrieval-contract", "--evidence-root", str(root)]) == 2
     assert "retrieval proof refused: worktree is dirty" in capsys.readouterr().err
-    assert not root.exists()
+    failures = list((root / "failures").glob("*.json"))
+    assert len(failures) == 1
+    failure = json.loads(failures[0].read_text())
+    assert failure["phase"] == "source"
+    assert "worktree is dirty" in failure["error"]["message"]
+    assert not (root / "profiles").exists()
 
 
 @pytest.mark.parametrize(

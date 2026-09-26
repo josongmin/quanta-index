@@ -5,6 +5,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -66,6 +67,8 @@ with Path({str(events)!r}).open('a') as stream:
             assert process.returncode == 0, stderr.decode()
             assert b"visible stdout" in stdout
             assert all(word in stderr for word in (b"waiting", b"admitted", b"released"))
+            assert re.search(rb"admitted lock=.* wait_ns=[0-9]+", stderr)
+            assert re.search(rb"released lock=.* held_ns=[0-9]+", stderr)
         rows = [line.split() for line in events.read_text().splitlines()]
         assert [row[0] for row in rows] == ["start", "end", "start", "end"]
         assert rows[0][1] == rows[1][1] and rows[2][1] == rows[3][1]
@@ -90,6 +93,8 @@ def test_wait_timeout_or_cancellation_never_launches_command(tmp_path, cancel):
             _, stderr = process.communicate(timeout=5)
             assert process.returncode == (143 if cancel else 124), stderr.decode()
             assert not marker.exists()
+            assert re.search(rb"not-admitted lock=.* wait_ns=[0-9]+", stderr)
+            assert b"held_ns=" not in stderr
         finally:
             finish(process)
 
@@ -99,6 +104,18 @@ def test_real_child_exit_code_is_preserved(tmp_path, exit_code):
     result = subprocess.run(command(tmp_path / "slot", f"raise SystemExit({exit_code})"),
                             capture_output=True, timeout=10)
     assert result.returncode == exit_code, result.stderr.decode()
+
+
+def test_phase_durations_use_one_controller_clock_without_changing_exit_status(tmp_path, monkeypatch, capsys):
+    from tools.ci import resource_admission as admission
+
+    ticks = iter([100, 180, 430])
+    monkeypatch.setattr(admission.time, "monotonic_ns", lambda: next(ticks))
+    monkeypatch.setattr(admission, "_execute_owned", lambda *args, **kwargs: {"exit_code": 7})
+    assert admission.run(tmp_path / "slot", 5, 10, ["unused"]) == 7
+    error = capsys.readouterr().err
+    assert "wait_ns=80" in error
+    assert "held_ns=250" in error
 
 
 def test_child_signal_exit_is_preserved(tmp_path):

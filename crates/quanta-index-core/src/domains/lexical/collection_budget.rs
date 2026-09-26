@@ -140,10 +140,7 @@ impl LexicalCollectionBudget {
     }
 
     fn check_live(&self) -> Result<(), CoreError> {
-        match self.failure() {
-            Some(error) => Err(error),
-            None => Ok(()),
-        }
+        self.failure().map_or(Ok(()), Err)
     }
 
     fn fail(&self, reason: u8) -> CoreError {
@@ -167,37 +164,44 @@ impl LexicalCollectionBudget {
         overflow_reason: u8,
     ) -> Result<u64, CoreError> {
         self.check_live()?;
-        match counter.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-            current.checked_add(amount).filter(|next| *next <= maximum)
-        }) {
-            Ok(prior) => prior
+        let mut current = counter.load(Ordering::Acquire);
+        loop {
+            let next = current
                 .checked_add(amount)
-                .ok_or_else(|| self.fail(overflow_reason)),
-            Err(prior) => Err(self.fail(if prior.checked_add(amount).is_none() {
-                overflow_reason
-            } else {
-                limit_reason
-            })),
+                .ok_or_else(|| self.fail(overflow_reason))?;
+            if next > maximum {
+                return Err(self.fail(limit_reason));
+            }
+            match counter.compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => return Ok(next),
+                Err(observed) => current = observed,
+            }
         }
     }
 
     fn release(&self, bytes: u64) {
-        if self
-            .state
-            .resident
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |resident| {
-                resident.checked_sub(bytes)
-            })
-            .is_err()
-        {
-            let _failure = self.fail(RELEASE_UNDERFLOW);
+        let counter = &self.state.resident;
+        let mut current = counter.load(Ordering::Acquire);
+        loop {
+            let Some(next) = current.checked_sub(bytes) else {
+                let _failure = self.fail(RELEASE_UNDERFLOW);
+                return;
+            };
+            match counter.compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => return,
+                Err(observed) => current = observed,
+            }
         }
     }
 }
 
-/// Non-cloneable ownership of one byte reservation. Moving the guard transfers
-/// the reservation; dropping it releases exactly once, even after a refusal or
-/// while unwinding. There is no public manual release or disarm operation.
+/// Non-cloneable ownership of one byte reservation.
+///
+/// Moving the guard transfers the reservation; dropping it releases exactly once,
+/// even after a refusal or while unwinding. There is no public manual release or
+/// disarm operation.
 #[must_use = "retain the reservation guard until the admitted allocation is released"]
 #[derive(Debug)]
 pub struct LexicalMemoryReservation {

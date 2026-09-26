@@ -1,0 +1,367 @@
+--- before/benchmarks/retrieval/src/symbols.rs
++++ after/benchmarks/retrieval/src/symbols.rs
+@@ -196,6 +196,7 @@
+                 "function_declaration"
+                 | "generator_function_declaration"
+                 | "function_item"
++                | "function_signature_item"
+                 | "function_definition",
+             ) => Some(if container_is_type {
+                 "method"
+@@ -356,6 +357,7 @@
+ 
+ const RUST_QUERY: &str = r"
+ (function_item name: (identifier) @name) @def
++(trait_item body: (declaration_list (function_signature_item name: (identifier) @name) @def))
+ (struct_item name: (type_identifier) @name) @def
+ (enum_item name: (type_identifier) @name) @def
+ (trait_item name: (type_identifier) @name) @def
+@@ -378,7 +380,7 @@
+ (function_declaration name: (identifier) @name) @def
+ (generator_function_declaration name: (identifier) @name) @def
+ (class_declaration name: (identifier) @name) @def
+-(method_definition name: (property_identifier) @name) @def
++(method_definition name: [(property_identifier) (private_property_identifier)] @name) @def
+ ";
+ 
+ const TYPESCRIPT_QUERY: &str = r"
+@@ -1095,6 +1097,18 @@
+         let source = "trait Store {\n    fn load(&self);\n}\nimpl Store for u8 {\n    fn load(&self) {\n        let helper = || 1;\n        fn nested() {}\n    }\n}\n";
+         let records = extract_symbols("src/store.rs", source).expect("rust parses");
+         assert_eq!(
++            records.len(),
++            4,
++            "trait, trait method, impl method, local fn"
++        );
++        for name in ["Store::load", "u8::load"] {
++            let method = records
++                .iter()
++                .find(|record| qualified(record) == name)
++                .expect("each distinct method definition must be present");
++            assert_eq!(method.symbol_kind.as_str(), "method");
++        }
++        assert_eq!(
+             find(&records, "load").symbol_kind.as_str(),
+             "method",
+             "trait methods and impl methods share the method kind"
+--- before/benchmarks/retrieval/tests/l5_parser_regressions.rs
++++ after/benchmarks/retrieval/tests/l5_parser_regressions.rs
+@@ -96,6 +96,59 @@
+ fn ordinary_typescript_and_tsx_definitions_remain_source_bound() {
+     for path in ["src/control.ts", "src/control.tsx"] {
+         assert_only_sentinel(path, SENTINEL, 1);
++    }
++}
++
++#[test]
++fn private_methods_preserve_definition_identity_across_js_and_ts() {
++    let source = "class Vault { #read() { function nested() {} } read() {} }";
++    for path in [
++        "vault.js",
++        "vault.mjs",
++        "vault.cjs",
++        "vault.jsx",
++        "vault.ts",
++        "vault.tsx",
++    ] {
++        let files = BTreeMap::from([(path.to_string(), source_file(path, source))]);
++        let preflight = preflight_corpus_symbols(&files, &SymbolPreflightOptions::default())
++            .expect("valid private method source");
++        preflight
++            .admit(SymbolCoveragePolicy::RequireComplete)
++            .expect("complete coverage");
++        let records = preflight.symbols().get(path).expect("admitted file");
++        let actual = records
++            .iter()
++            .map(|record| (record.qualified_name.as_ref(), record.symbol_kind.as_str()))
++            .collect::<std::collections::BTreeSet<_>>();
++        assert_eq!(
++            records.len(),
++            4,
++            "every named definition exactly once: {path}"
++        );
++        assert_eq!(
++            actual,
++            std::collections::BTreeSet::from([
++                ("Vault", "class"),
++                ("Vault.#read", "method"),
++                ("Vault.#read.nested", "function"),
++                ("Vault.read", "method"),
++            ])
++        );
++        let method = records
++            .iter()
++            .find(|record| record.local_name.as_ref() == "#read")
++            .expect("private method definition");
++        let start = usize::try_from(method.definition_span.byte_start).expect("offset");
++        let end = usize::try_from(method.definition_span.byte_end).expect("offset");
++        assert_eq!(
++            source.get(start..end),
++            Some("#read() { function nested() {} }")
++        );
++        assert_eq!(
++            preflight.report().files.first().expect("one file").coverage,
++            SymbolCoverage::Complete { symbol_count: 4 }
++        );
+     }
+ }
+ 
+--- before/tools/benchmark/retrieval/symbol_coverage.py
++++ after/tools/benchmark/retrieval/symbol_coverage.py
+@@ -2,13 +2,20 @@
+ from __future__ import annotations
+ 
+ import hashlib
+-import json
++import os
+ import re
+ import stat
++import sys
+ import tomllib
+ from pathlib import Path
+ 
+ ROOT = Path(__file__).resolve().parents[3]
++try:
++    from tools.benchmark.evidence import _consume_regular_file, parse_json
++except ModuleNotFoundError:  # direct retrieval script invocation
++    sys.path.insert(0, str(ROOT))
++    from tools.benchmark.evidence import _consume_regular_file, parse_json
++
+ PRODUCER = "source-bound-symbols-v2"
+ LANGUAGES = {
+     "rs": "rust", "go": "go", "py": "python", "js": "javascript",
+@@ -37,10 +44,21 @@
+     return type(value) is int and 0 <= value < 2**64
+ 
+ 
+-def regular_bytes(path: Path) -> bytes:
+-    if not stat.S_ISREG(path.lstat().st_mode):
+-        raise ValueError(f"source/evidence is not a regular file: {path}")
+-    return path.read_bytes()
++def regular_bytes(path: Path, *, max_bytes: int | None = None) -> bytes:
++    def consume(handle):
++        if max_bytes is None:
++            return handle.read()
++        if os.fstat(handle.fileno()).st_size > max_bytes:
++            raise ValueError("preflight artifact exceeds evidence budget")
++        data = handle.read(max_bytes + 1)
++        if len(data) > max_bytes:
++            raise ValueError("preflight artifact exceeds evidence budget")
++        return data
++
++    # Keep descriptor identity and ancestor custody through the entire read.
++    # A pathname stat followed by read_bytes can consume a replacement or grow
++    # past the checked size. The shared reader also refuses symlink ancestors.
++    return _consume_regular_file(path, consume)
+ 
+ 
+ def grammar_identity(root: Path = ROOT) -> str:
+@@ -106,7 +124,9 @@
+ def validate_row(row: dict) -> tuple[str, int | None]:
+     path = row["path"]
+     if (not isinstance(path, str) or not path or path.startswith("/") or "\\" in path
+-            or any(ord(c) < 32 for c in path) or any(p in ("", ".", "..") for p in path.split("/"))):
++            or len(path.encode("utf-8")) > 4096 or re.match(r"[A-Za-z]:", path)
++            or any(ord(c) < 32 or 0x7f <= ord(c) <= 0x9f for c in path)
++            or any(p in ("", ".", "..") for p in path.split("/"))):
+         raise ValueError("symbol coverage path is invalid")
+     if not is_sha(row["source_sha256"]):
+         raise ValueError("symbol coverage source hash is invalid")
+@@ -212,24 +232,13 @@
+         raise ValueError("unsupported coverage must have exactly one diagnostic")
+ 
+ 
+-def _closed_json(pairs):
+-    result = {}
+-    for key, value in pairs:
+-        if key in result:
+-            raise ValueError(f"duplicate preflight field: {key}")
+-        result[key] = value
+-    return result
+-
+-
+ def verify_artifact(metrics: dict, phase_path: Path, corpus: dict, root: Path = ROOT) -> Path:
+     validate_metrics(metrics, grammar_identity(root))
+     artifact = phase_path.parent / metrics["symbol_preflight_out"]
+-    if artifact.lstat().st_size > 64 * 1024 * 1024:
+-        raise ValueError("preflight artifact exceeds evidence budget")
+-    raw = regular_bytes(artifact)
++    raw = regular_bytes(artifact, max_bytes=64 * 1024 * 1024)
+     if hashlib.sha256(raw).hexdigest() != metrics["symbol_preflight_sha256"]:
+         raise ValueError("preflight artifact digest mismatch")
+-    value = json.loads(raw, object_pairs_hook=_closed_json)
++    value = parse_json(raw)
+     exact(value, {"symbol_coverage_policy", "repository_commit", "file_universe_sha256", "preflight"}, "preflight envelope")
+     expected = sorted((row["path"], row["file_sha256"]) for row in corpus["files"])
+     if len({path for path, _ in expected}) != len(expected):
+--- before/tools/ci/tests/test_retrieval_benchmark.py
++++ after/tools/ci/tests/test_retrieval_benchmark.py
+@@ -110,7 +110,7 @@
+                      "wrong_commit", "wrong_universe", "wrong_hash", "wrong_grammar", "wrong_lock",
+                      "changed_policy", "missing_policy", "unknown_state", "boolean_count", "bool_file_count",
+                      "false_complete", "truncated", "wrong_language", "parent_path", "absolute_path",
+-                     "non_string_state"):
++                     "non_string_state", "deep_json"):
+         candidate = copy.deepcopy(metrics)
+         report = json.loads(raw)
+         if mutation == "missing":
+@@ -149,6 +149,8 @@
+             encoded = json.dumps(report).encode()
+             if mutation == "duplicate_json":
+                 encoded = b'{"repository_commit":"' + b'a' * 40 + b'",' + encoded[1:]
++            elif mutation == "deep_json":
++                encoded = b"[" * 10000 + b"0" + b"]" * 10000
+             artifact.write_bytes(encoded)
+             candidate["symbol_preflight_sha256"] = pairrun.sha_file(artifact)
+         with pytest.raises((ValueError, OSError), match="."):
+@@ -156,6 +158,102 @@
+         if artifact.is_symlink(): artifact.unlink()
+         artifact.write_bytes(raw)
+     assert verify(metrics, phase, corpus) == artifact
++
++
++def _complete_preflight_case(directory, path="a.rs"):
++    phase = directory / "phase.json"
++    corpus = {"repository_commit": "a" * 40, "files": [
++        {"path": path, "file_sha256": "b" * 64},
++    ]}
++    phase.write_text(json.dumps({
++        "file_count": 1, "symbol_count": 0, "symbol_only_scopes": 0,
++        "symbol_producer_identity": pairrun.QUANTA_SYMBOL_PRODUCER_IDENTITY,
++        "symbol_grammars": pairrun.QUANTA_SYMBOL_GRAMMARS, "phases_ms": {},
++        "symbol_coverage": [
++            {"path": path, "source_sha256": "b" * 64, "language": "rust", "definition_count": 0},
++        ],
++    }))
++    artifact = _bind_preflight_fixture(phase, corpus["repository_commit"])
++    return json.loads(phase.read_text()), phase, corpus, artifact
++
++
++@pytest.mark.parametrize("path", ["C:/a.rs", "z:a.rs", "a\x7f.rs", "a\x80.rs", "a\x9f.rs",
++                                  "a" * 4094 + ".rs", "가" * 1365 + ".rs"],
++                         ids=["absolute-drive", "relative-drive", "del", "c1-start", "c1-end",
++                              "ascii-byte-limit", "utf8-byte-limit"])
++def test_symbol_preflight_rejects_paths_outside_producer_contract(tmp_path, path):
++    # Rebind every digest and census to the candidate: path syntax itself must
++    # match ExactRepoRelativePathV1, independently of matching artifact hashes.
++    metrics, phase, corpus, _ = _complete_preflight_case(tmp_path, path)
++    with pytest.raises(ValueError, match="path"):
++        pairrun.symbol_coverage.verify_artifact(metrics, phase, corpus)
++
++
++def test_symbol_preflight_accepts_exact_path_byte_boundary_and_unicode(tmp_path):
++    for path in ["src/검색.rs", "가" * 1364 + "a.rs", "a" * 4093 + ".rs", "ab:c.rs"]:
++        metrics, phase, corpus, artifact = _complete_preflight_case(tmp_path, path)
++        assert pairrun.symbol_coverage.verify_artifact(metrics, phase, corpus) == artifact
++
++
++def test_symbol_preflight_rejects_ancestor_symlink(tmp_path):
++    metrics, phase, corpus, artifact = _complete_preflight_case(tmp_path)
++    alias = tmp_path / "alias"
++    alias.symlink_to(tmp_path, target_is_directory=True)
++    with pytest.raises(ValueError, match="symlink"):
++        pairrun.symbol_coverage.verify_artifact(metrics, alias / phase.name, corpus)
++    assert pairrun.symbol_coverage.verify_artifact(metrics, phase, corpus) == artifact
++
++
++def test_symbol_preflight_rejects_replaced_file_during_admission(tmp_path, monkeypatch):
++    metrics, phase, corpus, artifact = _complete_preflight_case(tmp_path)
++    raw = artifact.read_bytes()
++    lstat = Path.lstat
++    replaced = False
++
++    def replace_after_stat(path, *args, **kwargs):
++        nonlocal replaced
++        info = lstat(path, *args, **kwargs)
++        if path == artifact and not replaced:
++            replaced = True
++            replacement = artifact.with_suffix(".replacement")
++            replacement.write_bytes(raw)
++            replacement.replace(artifact)
++        return info
++
++    monkeypatch.setattr(Path, "lstat", replace_after_stat)
++    with pytest.raises(ValueError, match="changed"):
++        pairrun.symbol_coverage.verify_artifact(metrics, phase, corpus)
++    assert replaced
++
++
++def test_symbol_preflight_budget_cannot_be_bypassed_by_file_growth(tmp_path, monkeypatch):
++    metrics, phase, corpus, artifact = _complete_preflight_case(tmp_path)
++    raw = artifact.read_bytes()
++    budget = 64 * 1024 * 1024
++    # Whitespace preserves a valid report. The limit is inclusive and applies
++    # to actual consumed bytes, including bytes appended after path inspection.
++    at_limit = raw + b" " * (budget - len(raw))
++    artifact.write_bytes(at_limit)
++    metrics["symbol_preflight_sha256"] = hashlib.sha256(at_limit).hexdigest()
++    assert pairrun.symbol_coverage.verify_artifact(metrics, phase, corpus) == artifact
++    oversized = at_limit + b" "
++    artifact.write_bytes(raw)
++    metrics["symbol_preflight_sha256"] = hashlib.sha256(oversized).hexdigest()
++    lstat = Path.lstat
++    grown = False
++
++    def grow_after_stat(path, *args, **kwargs):
++        nonlocal grown
++        info = lstat(path, *args, **kwargs)
++        if path == artifact and not grown:
++            grown = True
++            artifact.write_bytes(oversized)
++        return info
++
++    monkeypatch.setattr(Path, "lstat", grow_after_stat)
++    with pytest.raises(ValueError, match="budget|changed"):
++        pairrun.symbol_coverage.verify_artifact(metrics, phase, corpus)
++    assert grown
+ 
+ 
+ def test_symbol_preflight_enforces_diagnostic_retention_policy(tmp_path):
+@@ -233,11 +331,12 @@
+     # even when the outer phase digest has been updated to those exact bytes.
+     malformed = json.loads(original)
+     malformed["preflight"]["files"][0]["coverage"] = {"state": []}
+-    artifact.write_text(json.dumps(malformed))
+-    phase = json.loads(phase_path.read_text())
+-    phase["symbol_preflight_sha256"] = pairrun.sha_file(artifact)
+-    phase_path.write_text(json.dumps(phase))
+-    assert _stage_verdict(st)["states"]["PAIR_VALID"] == "fail"
++    for encoded in (json.dumps(malformed).encode(), b"[" * 10000 + b"0" + b"]" * 10000):
++        artifact.write_bytes(encoded)
++        phase = json.loads(phase_path.read_text())
++        phase["symbol_preflight_sha256"] = pairrun.sha_file(artifact)
++        phase_path.write_text(json.dumps(phase))
++        assert _stage_verdict(st)["states"]["PAIR_VALID"] == "fail"
+ 
+ 
+ def test_parity_reference_refuses_unpinned_assets_and_library(tmp_path, monkeypatch):
+--- before/benchmarks/retrieval/proof-required-tests.json
++++ after/benchmarks/retrieval/proof-required-tests.json
+@@ -241,8 +241,19 @@
+     "tools.ci.tests.test_retrieval_benchmark.test_spec_evidence_content_is_removed_receipts_are_frozen",
+     "tools.ci.tests.test_retrieval_benchmark.test_stratified_delta_summary_binds_category_language_and_repository",
+     "tools.ci.tests.test_retrieval_benchmark.test_successful_promotion_replays_identically_in_new_process",
++    "tools.ci.tests.test_retrieval_benchmark.test_symbol_preflight_accepts_exact_path_byte_boundary_and_unicode",
++    "tools.ci.tests.test_retrieval_benchmark.test_symbol_preflight_budget_cannot_be_bypassed_by_file_growth",
+     "tools.ci.tests.test_retrieval_benchmark.test_symbol_preflight_enforces_diagnostic_retention_policy",
++    "tools.ci.tests.test_retrieval_benchmark.test_symbol_preflight_rejects_ancestor_symlink",
+     "tools.ci.tests.test_retrieval_benchmark.test_symbol_preflight_rejects_missing_tampered_stale_and_partial_evidence",
++    "tools.ci.tests.test_retrieval_benchmark.test_symbol_preflight_rejects_paths_outside_producer_contract[absolute-drive]",
++    "tools.ci.tests.test_retrieval_benchmark.test_symbol_preflight_rejects_paths_outside_producer_contract[ascii-byte-limit]",
++    "tools.ci.tests.test_retrieval_benchmark.test_symbol_preflight_rejects_paths_outside_producer_contract[c1-end]",
++    "tools.ci.tests.test_retrieval_benchmark.test_symbol_preflight_rejects_paths_outside_producer_contract[c1-start]",
++    "tools.ci.tests.test_retrieval_benchmark.test_symbol_preflight_rejects_paths_outside_producer_contract[del]",
++    "tools.ci.tests.test_retrieval_benchmark.test_symbol_preflight_rejects_paths_outside_producer_contract[relative-drive]",
++    "tools.ci.tests.test_retrieval_benchmark.test_symbol_preflight_rejects_paths_outside_producer_contract[utf8-byte-limit]",
++    "tools.ci.tests.test_retrieval_benchmark.test_symbol_preflight_rejects_replaced_file_during_admission",
+     "tools.ci.tests.test_retrieval_benchmark.test_symbol_route_records_validate_without_schema_forks",
+     "tools.ci.tests.test_retrieval_benchmark.test_token_unit_uses_explicit_ascii_ranges",
+     "tools.ci.tests.test_retrieval_benchmark.test_ucd17_scalar_property_and_normalization_oracle_is_pinned",
+@@ -369,6 +380,7 @@
+     "quanta-index-retrieval-bench::l5_parser_regressions$preflight_preserves_existing_supported_language_extraction",
+     "quanta-index-retrieval-bench::l5_parser_regressions$preflight_rejects_forged_source_before_reporting_coverage",
+     "quanta-index-retrieval-bench::l5_parser_regressions$preflight_reports_every_admitted_file_even_after_the_first_failure",
++    "quanta-index-retrieval-bench::l5_parser_regressions$private_methods_preserve_definition_identity_across_js_and_ts",
+     "quanta-index-retrieval-bench::l5_parser_regressions$producer_policy_records_and_commits_effective_extraction_limits",
+     "quanta-index-retrieval-bench::l5_parser_regressions$symbol_limit_refuses_partial_definition_output",
+     "quanta-index-retrieval-bench::l5_parser_regressions$type_namespace_reexport_accepts_valid_syntax_without_inventing_a_definition",

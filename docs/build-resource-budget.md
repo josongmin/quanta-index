@@ -32,6 +32,12 @@ preparation releases its slot before the main test command acquires it.
 - Only leaf Cargo commands acquire the slot. Wrapping a whole benchmark or
   test orchestrator in the same non-reentrant lock would deadlock when it calls
   `cargow`. Python orchestration remains outside the slot.
+- Admission diagnostics report `wait_ns` before acquisition and `held_ns`
+  after release, measured with the same controller's monotonic clock. Held
+  time includes command setup and process-group cleanup. A command that never
+  acquired the slot reports only waiting time. These fields separate queue
+  contention from time holding the slot; they are not success or performance
+  qualification evidence, and absent diagnostics must not be treated as zero.
 
 This is cooperative admission, not a host resource quota. Direct Cargo calls,
 different cache roots, compiler services, unrelated processes, and descendants
@@ -51,7 +57,7 @@ the two selected packages can change dependency features in the runner even
 when both binary targets retain their default features.
 
 The 2026-09-27 diagnostic on Darwin (Cargo/Rust 1.92.0, lockfile SHA-256
-`05044065eae52f79a67378cfa995414c08f77e6910e30bd8bb36dae92ef362d5`)
+`58dda6f980fd3d2ad4975b3be18c74e60351be045d78206728f88475a6ba6bbc`)
 compared Cargo unit graphs for each binary separately and both together. The
 runner's reachable unit count changed from 298 to 339. For example,
 `hyper-rustls` gained `http2`, `native-tokio`, and `rustls-native-certs`, while

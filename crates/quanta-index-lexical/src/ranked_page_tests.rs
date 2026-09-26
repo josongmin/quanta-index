@@ -221,6 +221,7 @@ fn l3_budgeted_dictionary_rejects_bad_headers_and_varints() -> TestResult {
 struct MeasuredQuery {
     high_segment: Option<tantivy::SegmentId>,
     first_score: Option<f32>,
+    cancel_on_terminal: Option<quanta_index_core::CancelHandleV1>,
     scored: Arc<AtomicUsize>,
     advanced: Arc<AtomicUsize>,
     opened: Arc<AtomicUsize>,
@@ -267,6 +268,11 @@ impl DocSet for MeasuredScorer {
     fn advance(&mut self) -> DocId {
         let _prior = self.query.advanced.fetch_add(1, Ordering::Relaxed);
         self.doc = self.doc.saturating_add(1);
+        if self.doc >= self.end
+            && let Some(cancel) = &self.query.cancel_on_terminal
+        {
+            cancel.cancel();
+        }
         self.doc()
     }
 
@@ -559,6 +565,59 @@ fn l3_grouped_cancellation_and_deadline_remain_typed() -> TestResult {
 }
 
 #[test]
+fn l3_terminal_cancellation_precedes_harvest_and_merge_resources() -> TestResult {
+    let index = index_with(&[&["a.rs"]])?;
+    let searcher = index.reader()?.searcher();
+    for grouped in [false, true] {
+        for work in [2, 100] {
+            let request = RequestBudgetV1::unbounded();
+            let query = MeasuredQuery {
+                cancel_on_terminal: Some(request.cancel_handle()),
+                ..MeasuredQuery::default()
+            };
+            let resources = LexicalCollectionBudget::new(work, 1_000_000)?;
+            let ledger =
+                CollectionBudget::new(LexicalExecutionBudgetV1::new(10)?, resources.clone());
+            let result = if grouped {
+                budgeted_collection(
+                    &searcher,
+                    &query,
+                    &GroupedPageCollector::new(ProjectionGroup::Path, 1.0, ledger.clone()),
+                    &request,
+                    ledger,
+                    "test:terminal-cancel",
+                )
+                .map(|fruit| fruit.matched)
+            } else {
+                budgeted_collection(
+                    &searcher,
+                    &query,
+                    &RankedPageCollector::new(1, None, 1.0, true)
+                        .with_resource_budget(ledger.clone()),
+                    &request,
+                    ledger,
+                    "test:terminal-cancel",
+                )
+                .map(|fruit| fruit.matched)
+            };
+            assert!(
+                matches!(result, Err(CoreError::Typed { code, .. }) if code == REQUEST_CANCELLED_CODE),
+                "grouped={grouped} work={work}: {result:?}"
+            );
+            assert_eq!(query.scored.load(Ordering::Relaxed), 1);
+            assert_eq!(
+                resources.used_work(),
+                2,
+                "no harvest or merge work after cancellation"
+            );
+            assert_eq!(resources.resident_bytes(), 0);
+            assert!(resources.failure().is_none());
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn l3_failed_admission_never_builds_group_output() -> TestResult {
     let index = index_with(&[&["a", "b"]])?;
     let searcher = index.reader()?.searcher();
@@ -670,18 +729,16 @@ fn l3_duplicate_line_keys_are_rejected_by_ranked_and_grouped_collectors() -> Tes
     Ok(())
 }
 
-#[test]
-fn l3_group_harvest_corruption_stops_before_the_next_segment() -> TestResult {
+fn corrupt_group_key(index: &Index, segment: usize) -> TestResult {
     use tantivy::SegmentComponent;
     use tantivy::directory::Directory;
 
-    let index = index_with(&[&["first.rs"], &["second.rs"]])?;
-    let first = index.reader()?.searcher().segment_readers()[0].segment_id();
+    let target = index.reader()?.searcher().segment_readers()[segment].segment_id();
     let meta = index
         .searchable_segment_metas()?
         .into_iter()
-        .find(|meta| meta.id() == first)
-        .ok_or("first segment metadata")?;
+        .find(|meta| meta.id() == target)
+        .ok_or("target segment metadata")?;
     let file = meta.relative_path(SegmentComponent::FastFields);
     let mut bytes = index.directory().atomic_read(&file)?;
     let marker = b"fixture-repo";
@@ -695,9 +752,19 @@ fn l3_group_harvest_corruption_stops_before_the_next_segment() -> TestResult {
     // Ordinals can still be collected; decoding fails only during harvest.
     bytes[locations[0]] = 0xff;
     index.directory().atomic_write(&file, &bytes)?;
-    let searcher = index.reader()?.searcher();
-    assert_eq!(searcher.segment_readers()[0].segment_id(), first);
+    assert_eq!(
+        index.reader()?.searcher().segment_readers()[segment].segment_id(),
+        target
+    );
 
+    Ok(())
+}
+
+#[test]
+fn l3_group_harvest_corruption_stops_before_the_next_segment() -> TestResult {
+    let index = index_with(&[&["first.rs"], &["second.rs"]])?;
+    corrupt_group_key(&index, 0)?;
+    let searcher = index.reader()?.searcher();
     for work in [3, 100] {
         let query = MeasuredQuery::default();
         let resources = LexicalCollectionBudget::new(work, 1_000_000)?;
@@ -718,6 +785,181 @@ fn l3_group_harvest_corruption_stops_before_the_next_segment() -> TestResult {
         assert_eq!(query.opened.load(Ordering::Relaxed), 1);
         assert_eq!(query.scored.load(Ordering::Relaxed), 1);
         assert_eq!(resources.used_work(), 3);
+        assert_eq!(resources.resident_bytes(), 0);
+        assert!(resources.failure().is_none());
+    }
+    Ok(())
+}
+
+#[test]
+fn l3_later_group_corruption_is_not_masked_by_merge_work() -> TestResult {
+    // Independent oracle: each one-document segment takes scorer init,
+    // terminal advance, and one harvest decode. A failed harvest permits
+    // neither another segment nor global merge work.
+    for failed_segment in 0..3 {
+        let index = index_with(&[&["first.rs"], &["middle.rs"], &["last.rs"]])?;
+        corrupt_group_key(&index, failed_segment)?;
+        let searcher = index.reader()?.searcher();
+        let visited = failed_segment + 1;
+        let expected_work = u64::try_from(3 * visited)?;
+        for group in [ProjectionGroup::Path, ProjectionGroup::Repo] {
+            for work in [expected_work, 100] {
+                let query = MeasuredQuery::default();
+                let resources = LexicalCollectionBudget::new(work, 1_000_000)?;
+                let ledger =
+                    CollectionBudget::new(LexicalExecutionBudgetV1::new(10)?, resources.clone());
+                let result = budgeted_collection(
+                    &searcher,
+                    &query,
+                    &GroupedPageCollector::new(group, 1.0, ledger.clone()),
+                    &RequestBudgetV1::unbounded(),
+                    ledger,
+                    "test:later-harvest-corruption",
+                );
+                assert!(
+                    matches!(result, Err(CoreError::Storage(ref message))
+                        if message.contains("utf-8")),
+                    "segment={failed_segment} group={group:?} work={work}: {result:?}"
+                );
+                assert_eq!(query.opened.load(Ordering::Relaxed), visited);
+                assert_eq!(query.scored.load(Ordering::Relaxed), visited);
+                assert_eq!(resources.used_work(), expected_work);
+                assert_eq!(resources.resident_bytes(), 0);
+                assert!(resources.failure().is_none());
+            }
+        }
+    }
+    Ok(())
+}
+
+struct HarvestResultCollector {
+    fail_at: Option<tantivy::SegmentOrdinal>,
+    merges: Arc<AtomicUsize>,
+}
+
+struct HarvestResultSegment {
+    fail: bool,
+    count: usize,
+}
+
+impl tantivy::collector::SegmentCollector for HarvestResultSegment {
+    type Fruit = tantivy::Result<usize>;
+
+    fn collect(&mut self, _: DocId, _: Score) {
+        self.count += 1;
+    }
+
+    fn harvest(self) -> Self::Fruit {
+        if self.fail {
+            // No collection-budget handle: returning Err must be sufficient.
+            Err(tantivy::TantivyError::InternalError(
+                "harvest sentinel".into(),
+            ))
+        } else {
+            Ok(self.count)
+        }
+    }
+}
+
+impl Collector for HarvestResultCollector {
+    type Fruit = usize;
+    type Child = HarvestResultSegment;
+
+    fn for_segment(
+        &self,
+        segment: tantivy::SegmentOrdinal,
+        _: &SegmentReader,
+    ) -> tantivy::Result<Self::Child> {
+        Ok(HarvestResultSegment {
+            fail: self.fail_at == Some(segment),
+            count: 0,
+        })
+    }
+
+    fn requires_scoring(&self) -> bool {
+        true
+    }
+
+    fn merge_fruits(&self, fruits: Vec<tantivy::Result<usize>>) -> tantivy::Result<usize> {
+        let _prior = self.merges.fetch_add(1, Ordering::Relaxed);
+        fruits
+            .into_iter()
+            .try_fold(0, |sum, fruit| Ok(sum + fruit?))
+    }
+}
+
+#[test]
+fn l3_harvest_error_needs_no_abort_side_channel_and_never_reaches_merge() -> TestResult {
+    let index = index_with(&[&["first.rs"], &["middle.rs"], &["last.rs"]])?;
+    let searcher = index.reader()?.searcher();
+    for fail_at in [Some(0), Some(1), Some(2), None] {
+        let visited = fail_at.map_or(3, |segment| segment + 1);
+        let expected_work = u64::from(2 * visited);
+        for work in [expected_work, 100] {
+            let query = MeasuredQuery::default();
+            let resources = LexicalCollectionBudget::new(work, 1_000_000)?;
+            let ledger =
+                CollectionBudget::new(LexicalExecutionBudgetV1::new(10)?, resources.clone());
+            let collector = HarvestResultCollector {
+                fail_at,
+                merges: Arc::default(),
+            };
+            let result = budgeted_collection(
+                &searcher,
+                &query,
+                &collector,
+                &RequestBudgetV1::unbounded(),
+                ledger,
+                "test:harvest-boundary",
+            );
+            if fail_at.is_some() {
+                assert!(
+                    matches!(result, Err(CoreError::Storage(ref message))
+                    if message.contains("harvest sentinel")),
+                    "{result:?}"
+                );
+                assert_eq!(collector.merges.load(Ordering::Relaxed), 0);
+            } else {
+                assert_eq!(result?, 3);
+                assert_eq!(collector.merges.load(Ordering::Relaxed), 1);
+            }
+            assert_eq!(
+                query.opened.load(Ordering::Relaxed),
+                usize::try_from(visited)?
+            );
+            assert_eq!(resources.used_work(), expected_work);
+            assert_eq!(resources.resident_bytes(), 0);
+            assert!(resources.failure().is_none());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn l3_direct_group_merge_rejects_first_error_before_spending_resources() -> TestResult {
+    let index = index_with(&[&["a.rs"]])?;
+    let searcher = index.reader()?.searcher();
+    for group in [ProjectionGroup::Path, ProjectionGroup::Repo] {
+        let query = MeasuredQuery::default();
+        let resources = LexicalCollectionBudget::new(1, 1_000_000)?;
+        let ledger = CollectionBudget::new(LexicalExecutionBudgetV1::new(10)?, resources.clone());
+        let collector = GroupedPageCollector::new(group, 1.0, ledger);
+        // Native weight: only the single harvest decode charges work.
+        let weight = query.weight(EnableScoring::enabled_from_searcher(&searcher))?;
+        let fruit =
+            collector.collect_segment(weight.as_ref(), 0, &searcher.segment_readers()[0])??;
+        assert_eq!(resources.used_work(), 1);
+        let result = collector.merge_fruits(vec![
+            Ok(fruit),
+            Err(tantivy::TantivyError::InternalError("first failure".into())),
+            Err(tantivy::TantivyError::InternalError("later failure".into())),
+        ]);
+        assert!(
+            matches!(result, Err(tantivy::TantivyError::InternalError(ref message))
+            if message == "first failure"),
+            "{result:?}"
+        );
+        assert_eq!(resources.used_work(), 1);
         assert_eq!(resources.resident_bytes(), 0);
         assert!(resources.failure().is_none());
     }

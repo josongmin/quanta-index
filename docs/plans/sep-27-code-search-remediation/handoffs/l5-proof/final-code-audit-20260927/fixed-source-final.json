@@ -1,0 +1,7 @@
+{
+  "benchmarks/retrieval/src/symbols.rs": "8d5d8792057bb1ad7cedc68dd9aa719508c615b58eb494cb6eb8f8c3e8ebcb7b",
+  "benchmarks/retrieval/tests/l5_parser_regressions.rs": "b839b0326acbd33435e7d190665ee60cafb86ce4789f7265685e545e354bbf28",
+  "tools/benchmark/retrieval/symbol_coverage.py": "2be722e246bd35e397088f5dfa38c6d1eaa663310a9d9c942bcdca766a21915b",
+  "tools/ci/tests/test_retrieval_benchmark.py": "73b4fc9e2595df2563cdf63b5bc9e3a24cbe0d0255cb2fc80c56d4a4c7e329d2",
+  "benchmarks/retrieval/proof-required-tests.json": "38dcf3e5466cdfec02bdc660d9786a250a1dfaf5babfd0f2986523e66ad226b3"
+}

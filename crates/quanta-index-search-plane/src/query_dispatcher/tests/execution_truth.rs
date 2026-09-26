@@ -478,6 +478,63 @@ fn explain_request(
     })
 }
 
+// CASE-COVERS: CS-ENG-01 — every lexical lane admits primitives before a
+// language contradiction can erase execution, including composite routes.
+#[test]
+fn l1_composite_routes_admit_primitives_before_language_shortcut() -> TestResult {
+    let mut failures = Vec::new();
+    for constraints in [QueryConstraintSetV1::unconstrained(), rust_constraints()] {
+        for primitive in ["...", "\"!!!\"", "content:!!!"] {
+            let query = format!("lang:python {primitive}");
+            let requests = [
+                ("hybrid", hybrid_request(&query, constraints.clone())),
+                (
+                    "seed",
+                    seed_request(&query, constraints.clone(), Vec::new()),
+                ),
+                (
+                    "semantic scope",
+                    semantic_request(
+                        Some(text_query(&query, constraints.clone())),
+                        constraints.clone(),
+                    ),
+                ),
+                (
+                    "hybrid explain",
+                    explain_request(
+                        ExplainCandidateV1::Hybrid(hybrid_candidate_for("alpha")),
+                        Some(text_query(&query, constraints.clone())),
+                        Some("needle"),
+                    ),
+                ),
+            ];
+            for (route, request) in requests {
+                let lanes = truth_dispatcher(Vec::new(), Vec::new())?;
+                let response = lanes
+                    .dispatcher
+                    .dispatch(request, &RequestBudgetV1::unbounded());
+                let lexical = lanes.lexical.lock().map_err(|err| err.to_string())?;
+                if !matches!(
+                    &response,
+                    SearchPlaneQueryIpcResponse::Error(error)
+                        if error.code == quanta_index_contract::SearchPlaneErrorCodeV2::LexTextQueryNoTokens
+                ) || !lexical.opened_pins.is_empty()
+                    || lexical.primitive_queries.len() != 1
+                {
+                    failures.push(format!(
+                        "{route} {query:?} {constraints:?}: response={response:?}, opens={}, admissions={}",
+                        lexical.opened_pins.len(), lexical.primitive_queries.len(),
+                    ));
+                }
+            }
+        }
+    }
+    if !failures.is_empty() {
+        return Err(failures.join("\n").into());
+    }
+    Ok(())
+}
+
 // CASE-COVERS: W10-R1 — the recorder counts invocations, never plans.
 #[test]
 fn recorder_counts_backend_calls_and_nothing_else() {

@@ -195,6 +195,9 @@ impl SymbolLanguage {
                 _,
                 "function_declaration"
                 | "generator_function_declaration"
+                | "function_expression"
+                | "generator_function"
+                | "function_signature"
                 | "function_item"
                 | "function_signature_item"
                 | "function_definition",
@@ -203,16 +206,24 @@ impl SymbolLanguage {
             } else {
                 "function"
             }),
-            (_, "method_declaration" | "method_definition") => Some("method"),
-            (_, "class_declaration" | "abstract_class_declaration" | "class_definition") => {
-                Some("class")
-            }
+            (
+                _,
+                "method_declaration"
+                | "method_definition"
+                | "method_elem"
+                | "method_signature"
+                | "abstract_method_signature",
+            ) => Some("method"),
+            (
+                _,
+                "class" | "class_declaration" | "abstract_class_declaration" | "class_definition",
+            ) => Some("class"),
             (_, "struct_item") => Some("struct"),
-            (_, "enum_item") => Some("enum"),
+            (_, "enum_item" | "enum_declaration") => Some("enum"),
             (_, "trait_item") => Some("trait"),
             (_, "interface_declaration") => Some("interface"),
-            (_, "type_item" | "type_alias_declaration") => Some("type_alias"),
-            (_, "mod_item") => Some("module"),
+            (_, "type_item" | "type_alias" | "type_alias_declaration") => Some("type_alias"),
+            (_, "mod_item" | "module" | "internal_module") => Some("module"),
             _ => None,
         }
     }
@@ -243,14 +254,21 @@ impl SymbolLanguage {
                     | "mod_item"
                     | "function_item"
             ),
-            Self::Go => matches!(node_kind, "method_declaration"),
+            Self::Go => matches!(
+                node_kind,
+                "function_declaration" | "method_declaration" | "type_spec" | "type_alias"
+            ),
             Self::Python => matches!(node_kind, "class_definition" | "function_definition"),
             Self::JavaScript | Self::TypeScript { .. } => matches!(
                 node_kind,
                 "class_declaration"
+                    | "class"
                     | "abstract_class_declaration"
+                    | "interface_declaration"
                     | "function_declaration"
                     | "generator_function_declaration"
+                    | "function_expression"
+                    | "generator_function"
                     | "method_definition"
                     | "module"
                     | "internal_module"
@@ -369,6 +387,9 @@ const GO_QUERY: &str = r"
 (function_declaration name: (identifier) @name) @def
 (method_declaration name: (field_identifier) @name) @def
 (type_spec name: (type_identifier) @name) @def
+(type_alias name: (type_identifier) @name) @def
+(type_spec type: (interface_type (method_elem name: (field_identifier) @name) @def))
+(type_alias type: (interface_type (method_elem name: (field_identifier) @name) @def))
 ";
 
 const PYTHON_QUERY: &str = r"
@@ -379,6 +400,9 @@ const PYTHON_QUERY: &str = r"
 const JAVASCRIPT_QUERY: &str = r"
 (function_declaration name: (identifier) @name) @def
 (generator_function_declaration name: (identifier) @name) @def
+(function_expression name: (identifier) @name) @def
+(generator_function name: (identifier) @name) @def
+(class name: (identifier) @name) @def
 (class_declaration name: (identifier) @name) @def
 (method_definition name: [(property_identifier) (private_property_identifier)] @name) @def
 ";
@@ -386,11 +410,21 @@ const JAVASCRIPT_QUERY: &str = r"
 const TYPESCRIPT_QUERY: &str = r"
 (function_declaration name: (identifier) @name) @def
 (generator_function_declaration name: (identifier) @name) @def
+(function_expression name: (identifier) @name) @def
+(generator_function name: (identifier) @name) @def
+(function_signature name: (identifier) @name) @def
+(class name: (type_identifier) @name) @def
 (class_declaration name: (type_identifier) @name) @def
 (abstract_class_declaration name: (type_identifier) @name) @def
 (method_definition name: [(property_identifier) (private_property_identifier)] @name) @def
+(interface_declaration body: (interface_body (method_signature name: (property_identifier) @name) @def))
+(class_body (method_signature name: [(property_identifier) (private_property_identifier)] @name) @def)
+(abstract_method_signature name: (property_identifier) @name) @def
 (interface_declaration name: (type_identifier) @name) @def
 (type_alias_declaration name: (type_identifier) @name) @def
+(enum_declaration name: (identifier) @name) @def
+(internal_module name: [(identifier) (nested_identifier) (string)] @name) @def
+(module name: [(identifier) (nested_identifier) (string)] @name) @def
 ";
 
 struct LineIndex {
@@ -542,12 +576,30 @@ fn query_definitions(
                 control.check()?;
             }
             if language.is_container(node.kind()) {
+                // Expressions may have an explicit inner name. Anonymous
+                // expressions do not acquire the surrounding variable's name.
+                if matches!(
+                    language,
+                    SymbolLanguage::JavaScript | SymbolLanguage::TypeScript { .. }
+                ) && matches!(
+                    node.kind(),
+                    "class" | "function_expression" | "generator_function"
+                ) && node.child_by_field_name("name").is_none()
+                {
+                    parent = node.parent();
+                    continue;
+                }
                 let name = language.container_name(node, source)?;
                 if !seen_container {
                     seen_container = true;
                     nearest_type_container = language.is_type_container(node.kind());
                 }
                 containers.push(name);
+                if language == SymbolLanguage::Go && node.kind() == "method_declaration" {
+                    // Descendants need the same receiver owner as the method
+                    // itself. The list is reversed once after the walk.
+                    containers.push(go_receiver_type(node, source)?);
+                }
             }
             parent = node.parent();
         }
@@ -842,7 +894,15 @@ mod tests {
                       func (r *Rect) Area() float64 { return r.W }\n\n\
                       func NewRect(w float64) *Rect { return &Rect{W: w} }\n";
         let records = extract_symbols("geom/rect.go", source).expect("go parses");
-        let method = find(&records, "Area");
+        let method = records
+            .iter()
+            .find(|record| qualified(record) == "Rect.Area")
+            .expect("concrete receiver method");
+        assert!(
+            records
+                .iter()
+                .any(|record| qualified(record) == "Shape.Area")
+        );
         assert_eq!(method.symbol_kind.as_str(), "method");
         let free = find(&records, "NewRect");
         assert_eq!(free.symbol_kind.as_str(), "function");
@@ -1078,7 +1138,15 @@ mod tests {
         assert_eq!(find(&records, "Rect").symbol_kind.as_str(), "struct");
         assert_eq!(find(&records, "Shape").symbol_kind.as_str(), "interface");
         assert_eq!(find(&records, "Config").symbol_kind.as_str(), "struct");
-        let area = find(&records, "Area");
+        let area = records
+            .iter()
+            .find(|record| qualified(record) == "Rect.Area")
+            .expect("concrete receiver method");
+        assert!(
+            records
+                .iter()
+                .any(|record| qualified(record) == "Shape.Area")
+        );
         assert_eq!(area.symbol_kind.as_str(), "method");
         assert_eq!(qualified(area), "Rect.Area", "value receivers qualify too");
     }
@@ -1096,7 +1164,11 @@ mod tests {
     fn rust_trait_methods_are_methods_and_body_fns_stay_functions() {
         let source = "trait Store {\n    fn load(&self);\n}\nimpl Store for u8 {\n    fn load(&self) {\n        let helper = || 1;\n        fn nested() {}\n    }\n}\n";
         let records = extract_symbols("src/store.rs", source).expect("rust parses");
-        assert_eq!(records.len(), 4, "trait, trait method, impl method, local fn");
+        assert_eq!(
+            records.len(),
+            4,
+            "trait, trait method, impl method, local fn"
+        );
         for name in ["Store::load", "u8::load"] {
             let method = records
                 .iter()

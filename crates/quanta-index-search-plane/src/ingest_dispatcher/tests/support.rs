@@ -1360,6 +1360,7 @@ pub(super) struct ZeroMutationProbe {
     pub(super) semantic_builder: Arc<FakeSemanticBuilder>,
     pub(super) authority: Arc<RecordingSearchCorpusAuthority>,
     pub(super) ledger: Arc<RwLock<Ledger>>,
+    pub(super) auxiliary_catalog: Arc<MemoryAuxiliaryCatalog>,
 }
 
 impl ZeroMutationProbe {
@@ -1375,6 +1376,7 @@ impl ZeroMutationProbe {
         let semantic_builder = Arc::new(FakeSemanticBuilder::default());
         let authority = Arc::new(RecordingSearchCorpusAuthority::default());
         let ledger = Arc::new(RwLock::new(Ledger::new()));
+        let auxiliary_catalog = memory_aux_catalog();
         let semantic_materializer: Arc<dyn SemanticIngestPort + Send + Sync> =
             Arc::new(DirectSemanticMaterializer::new(semantic_builder.clone()));
         let materializer = DirectSearchCorpusMaterializer::new_with_search_owned_semantics(
@@ -1400,7 +1402,7 @@ impl ZeroMutationProbe {
                 resource_policy,
                 semantic_stream_policy: SemanticStreamWindowPolicy::DEFAULT,
                 source_egress_policy: None,
-                auxiliary_catalog: memory_aux_catalog(),
+                auxiliary_catalog: auxiliary_catalog.clone(),
                 auxiliary_coordinator: AuxiliaryMutationCoordinator::shared(),
             },
         );
@@ -1410,6 +1412,7 @@ impl ZeroMutationProbe {
             semantic_builder,
             authority,
             ledger,
+            auxiliary_catalog,
         }
     }
 
@@ -2067,6 +2070,27 @@ impl Default for TestSourceCatalog {
             catalog,
             _directory: directory,
         }
+    }
+}
+impl TestSourceCatalog {
+    pub(crate) fn activate_staged(
+        &self,
+        binding: &quanta_index_core::SourceEventBindingV1,
+        roots: quanta_index_contract::SemanticContentRootsV1,
+    ) -> Result<(), CoreError> {
+        let coordinator = self.catalog.lifecycle_coordinator();
+        let guard = coordinator.lock_pair(&binding.target.repo_id, &binding.target.revision_id)?;
+        let mut semantic = binding.target.clone();
+        semantic.track = SearchPlaneTrackKind::Semantic;
+        let candidate =
+            crate::SearchCorpusGenerationV1::new(binding.target.clone(), semantic, roots)?;
+        let prepared = crate::PreparedSearchCorpusGenerationV1::new(candidate, None)?;
+        let _activation = self.catalog.activate_prepared_under_guard_v1(
+            &guard,
+            &prepared,
+            Some(&binding.event),
+        )?;
+        Ok(())
     }
 }
 impl quanta_index_core::SourcePublicationCatalogPort for TestSourceCatalog {

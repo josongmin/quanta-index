@@ -597,3 +597,20 @@ def test_capture_roots_refuse_overlap_before_mutation(tmp_path, nested_pair, rev
 
 def test_capture_roots_allow_disjoint_external_roots(tmp_path):
     bridge.require_disjoint_paths(*(tmp_path / name for name in ("evidence", "output", "corpus")))
+
+
+@pytest.mark.parametrize("nested_pair", [(0, 1), (0, 2), (1, 2)])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_capture_entrypoint_rejects_overlap_before_epoch_writes(tmp_path, monkeypatch, nested_pair, reverse):
+    paths = [tmp_path / "evidence", tmp_path / "output", tmp_path / "corpus"]
+    parent, child = nested_pair[::-1] if reverse else nested_pair
+    paths[child] = paths[parent] / "nested"
+    spec_path = tmp_path / "spec.json"
+    spec_path.write_text("{}")
+    # Spec semantics are independent of this pre-mutation path boundary.
+    spec = {role: str(tmp_path / role) for role in bridge.INPUT_ROLES}
+    spec.update(repo=str(paths[2]), output_root=str(paths[1]), semble_python="python")
+    monkeypatch.setattr(bridge.owner, "load_spec", lambda _: spec)
+    with pytest.raises(bridge.EvidenceError, match="roots overlap"):
+        bridge.capture(bridge.ROOT, paths[0], registry_fixture(), spec_path, 1)
+    assert not any(path.exists() for path in paths)

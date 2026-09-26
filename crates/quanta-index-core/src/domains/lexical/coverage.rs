@@ -9,8 +9,10 @@ use quanta_index_contract::{
 use crate::{CoreError, RequestBudgetV1};
 
 /// Require completeness for every potentially in-scope admitted file, including
-/// zero-unit files and inherited entries. A proved contradictory request scope
-/// may be resolved by the validated planner before calling this function; no
+/// zero-unit files and inherited entries.
+///
+/// A proved contradictory request scope may be resolved by the validated planner
+/// before calling this function; no
 /// untrusted `empty` flag can bypass it here.
 pub fn require_complete_symbol_coverage(
     snapshot: Option<&FileCoverageSnapshot>,

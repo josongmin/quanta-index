@@ -81,3 +81,46 @@ def test_changed_corpus_bundle_is_not_hidden_by_identical_native_archive(raw_arc
         (raw_archives / "corpus.bundle").write_bytes(b"different corpus")
         with pytest.raises(bridge.EvidenceError, match="archives differ"):
             workspace.restore(raw_archives)
+
+
+def test_replay_discards_staging_bundle_but_rechecks_raw_archive(raw_archives, monkeypatch):
+    raw_bundle = raw_archives / "corpus.bundle"
+    expected_head = subprocess.run(
+        ["git", "bundle", "list-heads", str(raw_bundle), "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.split()[0]
+    captured = []
+    original_capture = bridge.RawFile.capture
+
+    def capture(cls, path):
+        captured.append(path)
+        return original_capture(path)
+
+    monkeypatch.setattr(bridge.RawFile, "capture", classmethod(capture))
+    with bridge._ReplayWorkspace() as workspace:
+        corpus, native = workspace.restore(raw_archives)
+        assert not (workspace.root / "corpus.bundle").exists()
+        assert "corpus.bundle" not in workspace.identity
+        assert not (corpus / ".git" / "objects" / "info" / "alternates").exists()
+        actual_head = subprocess.run(
+            ["git", "-C", str(corpus), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        assert actual_head == expected_head
+        # The restored object database remains usable without the staging input.
+        subprocess.run(
+            ["git", "-C", str(corpus), "fsck", "--full"],
+            check=True,
+            capture_output=True,
+        )
+        assert workspace.restore(raw_archives) == (corpus, native)
+        assert captured.count(raw_bundle) == 2
+        original_bytes = raw_bundle.read_bytes()
+        raw_bundle.write_bytes(original_bytes[:-1] + bytes([original_bytes[-1] ^ 1]))
+        with pytest.raises(bridge.EvidenceError, match="archives differ"):
+            workspace.restore(raw_archives)
+        assert captured.count(raw_bundle) == 3

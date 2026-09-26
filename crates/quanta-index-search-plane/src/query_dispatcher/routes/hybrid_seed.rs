@@ -6,15 +6,13 @@ use quanta_index_contract::{
     CandidateCountV1, EarlyStopReason, HybridSeedQueryRequest, HybridSeedQueryResponse, LaneTraceV1,
 };
 use quanta_index_core::{
-    CoreError, DenseAdmissionOutcomeV1, HybridFilterPlanV1, HybridOrchestratorPolicy,
-    LexicalPageSpec, LexicalPolicy, QueryRouteV1, RequestBudgetV1, SemanticSearchHitV1,
+    CoreError, DenseAdmissionOutcomeV1, HybridOrchestratorPolicy, LexicalPageSpec, QueryRouteV1,
+    RequestBudgetV1, SemanticSearchHitV1,
 };
 
-use crate::lower_lexical_text_query;
 use crate::query_dispatcher::dense_admission::admit_dense_lane_v1;
 use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
 use crate::query_dispatcher::execution_trace::LaneExecutionRecorderV1;
-use crate::query_dispatcher::planning::prepare_language_query_v1;
 use crate::query_dispatcher::ranking::{
     stabilize_ranked_candidates, stabilize_semantic_seed_hits_v1,
 };
@@ -45,11 +43,8 @@ impl SearchPlaneDispatcher {
         let selection =
             resolve_hybrid_seed_request_selection(self.activation_catalog.as_ref(), request)?;
         let pin = selection.pin.clone();
-        let lexical_query = lower_lexical_text_query(&request.text_query)?;
-        let filter_plan = HybridFilterPlanV1::plan(&lexical_query)?;
-        let prepared_language =
-            prepare_language_query_v1(lexical_query, &request.text_query.constraints)?;
-        LexicalPolicy::validate_query(&prepared_language.query)?;
+        let (filter_plan, prepared_language) =
+            self.plan_hybrid_lexical_query(&request.text_query, budget)?;
         let view = self.acquire_read_view(
             &ReadViewRequestV1::declare(
                 "hybrid seed",

@@ -1,7 +1,7 @@
 {
   "schema": "l5-required-test-migration-v1",
   "before_sha256": "de9c06b467ccdc8541ff89ec9c773d2b2c77a0433078fa5bc5f7b300932c1a50",
-  "after_sha256": "5980297775da57abdd5d04a2e7711df7ab2c07fb544442b18c46fd54b88cddc5",
+  "after_sha256": "38dcf3e5466cdfec02bdc660d9786a250a1dfaf5babfd0f2986523e66ad226b3",
   "mapping": [
     {
       "old": "quanta-index-retrieval-bench::quanta_index_retrieval_bench$batch::tests::combined_replacement_carries_chunks_and_symbols_together",
@@ -50,11 +50,11 @@
     "incomplete_symbol_profile_publishes_malformed_text_and_refuses_symbol_authority"
   ],
   "counts": {
-    "python": 328,
-    "rust": 129,
+    "python": 339,
+    "rust": 130,
     "sdk": 20
   },
-  "execution_status": "Current follow-up: 132 Rust owner and 477 Python tests passed; registered Python 328. SDK process proof remains on the earlier frozen snapshot and was not rerun.",
+  "execution_status": "Final code audit: Rust 133 and current Python integration 16 passed at 55711326 plus overlay; full Python consumers 541 passed at the separate 98601a66 snapshot. Fresh Vite preflight 256 files passed both policy oracles. Fresh SDK/daemon tests NOT_RUN.",
   "followup_added_tests": [
     "batch::tests::duplicate_unit_ids_across_source_files_refuse",
     "batch::tests::incomplete_profile_preserves_plain_and_unclassified_text",
@@ -82,5 +82,14 @@
     ]
   },
   "completion": "L5_COMPLETION.json",
-  "followup_audit": "L5_ADVERSARIAL_AUDIT.json"
+  "followup_audit": "L5_ADVERSARIAL_AUDIT.json",
+  "final_code_audit": "L5_FINAL_CODE_AUDIT.json",
+  "final_added_tests": [
+    "private_methods_preserve_definition_identity_across_js_and_ts",
+    "test_symbol_preflight_rejects_paths_outside_producer_contract (7 cases)",
+    "test_symbol_preflight_accepts_exact_path_byte_boundary_and_unicode",
+    "test_symbol_preflight_rejects_ancestor_symlink",
+    "test_symbol_preflight_rejects_replaced_file_during_admission",
+    "test_symbol_preflight_budget_cannot_be_bypassed_by_file_growth"
+  ]
 }

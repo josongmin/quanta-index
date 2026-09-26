@@ -764,8 +764,13 @@ impl Collector for GroupedPageCollector {
 
     fn merge_fruits(
         &self,
-        segment_fruits: Vec<tantivy::Result<GroupedPageFruit>>,
+        mut segment_fruits: Vec<tantivy::Result<GroupedPageFruit>>,
     ) -> tantivy::Result<GroupedPageFruit> {
+        // Native callers can pass failed fruits directly. Reject the first
+        // failure before successful fruits consume any merge resources.
+        if let Some(failed) = segment_fruits.iter().position(Result::is_err) {
+            return segment_fruits.swap_remove(failed);
+        }
         let mut map_memory = CollectionMemory::new(self.collection.resources.clone());
         let mut groups: BTreeMap<(String, String), RankedRow> = BTreeMap::new();
         let mut matched = 0_u64;

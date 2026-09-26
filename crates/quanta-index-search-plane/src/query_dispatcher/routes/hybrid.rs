@@ -8,15 +8,13 @@ use quanta_index_contract::{
     TextQueryRequest,
 };
 use quanta_index_core::{
-    CoreError, HybridFilterPlanV1, HybridOrchestratorPolicy, HybridQueryPort, LexicalPageSpec,
-    LexicalPolicy, QueryRouteV1, RequestBudgetV1,
+    CoreError, HybridOrchestratorPolicy, HybridQueryPort, LexicalPageSpec, QueryRouteV1,
+    RequestBudgetV1,
 };
 
-use crate::lower_lexical_text_query;
 use crate::query_dispatcher::dense_admission::admit_dense_lane_v1;
 use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
 use crate::query_dispatcher::execution_trace::{LaneExecutionRecorderV1, LaneExecutionSummaryV1};
-use crate::query_dispatcher::planning::prepare_language_query_v1;
 use crate::query_dispatcher::ranking::stabilize_ranked_candidates;
 use crate::query_dispatcher::read_view::{ReadViewRequestV1, attach_read_view_trace};
 use crate::query_dispatcher::selection::SemanticSelection;
@@ -90,10 +88,8 @@ impl SearchPlaneDispatcher {
         let pin = selection.pin.clone();
         let mut stage_timings = StageTimings::new(self.query_stage_observation, 7);
         let prepare_started = self.query_stage_observation.start();
-        let lexical_query = lower_lexical_text_query(text_query)?;
-        let filter_plan = HybridFilterPlanV1::plan(&lexical_query)?;
-        let prepared_language = prepare_language_query_v1(lexical_query, &text_query.constraints)?;
-        LexicalPolicy::validate_query(&prepared_language.query)?;
+        let (filter_plan, prepared_language) =
+            self.plan_hybrid_lexical_query(text_query, budget)?;
         stage_timings.record_elapsed(QueryStageKindV1::HybridPrepare, prepare_started, 1, None);
         let view_started = self.query_stage_observation.start();
         let view = self.acquire_read_view(

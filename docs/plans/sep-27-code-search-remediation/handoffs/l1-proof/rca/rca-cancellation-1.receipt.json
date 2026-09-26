@@ -1,0 +1,122 @@
+{
+  "after": "/tmp/quanta-l1-rca.h1y4pja7/rca-cancellation-1.after.json",
+  "artifacts": [
+    {
+      "features": [],
+      "fresh": true,
+      "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical#0.1.0",
+      "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-integration-lane/debug/dump_predicate_capabilities",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 1,
+        "opt_level": "0",
+        "overflow_checks": true,
+        "test": false
+      },
+      "sha256": "812f12ec2447eb8a17c9d6537b0f674b148b07e0bb1014e96512100b2bde99d7",
+      "target": {
+        "crate_types": [
+          "bin"
+        ],
+        "doc": true,
+        "doctest": false,
+        "edition": "2024",
+        "kind": [
+          "bin"
+        ],
+        "name": "dump_predicate_capabilities",
+        "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical/src/bin/dump_predicate_capabilities.rs",
+        "test": true
+      }
+    },
+    {
+      "features": [],
+      "fresh": false,
+      "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical#0.1.0",
+      "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-integration-lane/debug/deps/cancellation_inside_search-cde64eb65e1e78f4",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 1,
+        "opt_level": "0",
+        "overflow_checks": true,
+        "test": true
+      },
+      "sha256": "bb2d00835ba00dbf6c99846fb578be709a31fd77dceffbaa35458854176657d0",
+      "target": {
+        "crate_types": [
+          "bin"
+        ],
+        "doc": false,
+        "doctest": false,
+        "edition": "2024",
+        "kind": [
+          "test"
+        ],
+        "name": "cancellation_inside_search",
+        "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical/tests/cancellation_inside_search.rs",
+        "test": true
+      }
+    },
+    {
+      "features": [],
+      "fresh": false,
+      "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical#0.1.0",
+      "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-integration-lane/debug/deps/quanta_index_lexical-6629bfdc6c01f3f4",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 1,
+        "opt_level": "0",
+        "overflow_checks": true,
+        "test": true
+      },
+      "sha256": "c121d85d3cbd8b9c9b3c6ce55a34b7ee39f11f9135735261c971d3e18552543c",
+      "target": {
+        "crate_types": [
+          "lib"
+        ],
+        "doc": true,
+        "doctest": true,
+        "edition": "2024",
+        "kind": [
+          "lib"
+        ],
+        "name": "quanta_index_lexical",
+        "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical/src/lib.rs",
+        "test": true
+      }
+    }
+  ],
+  "before": "/tmp/quanta-l1-rca.h1y4pja7/rca-cancellation-1.before.json",
+  "classification": "UNCLASSIFIED: inspect execution count, outcome, inputs and source drift before promoting evidence",
+  "command": [
+    "./scripts/cargow",
+    "test",
+    "--locked",
+    "-j",
+    "2",
+    "-p",
+    "quanta-index-lexical",
+    "--message-format=json",
+    "--lib",
+    "--test",
+    "cancellation_inside_search",
+    "--",
+    "budgeted_search::tests::",
+    "a_cancelled"
+  ],
+  "ended_unix": 1790462185.162325,
+  "executed_result_lines": [
+    "running 4 tests",
+    "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 168 filtered out; finished in 0.44s",
+    "running 3 tests",
+    "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.86s"
+  ],
+  "exit_code": 0,
+  "head_changed": false,
+  "log": "/tmp/quanta-l1-rca.h1y4pja7/rca-cancellation-1.log",
+  "log_sha256": "077dc51e323d05987f921b389262faabd571032f93b4a0e4dcfd3f3a22ca570f",
+  "source_changed": [
+    "crates/quanta-index-lexical/src/adapter_ingest.rs"
+  ],
+  "started_unix": 1790462144.302233
+}

@@ -1,0 +1,220 @@
+{
+  "schema": "l5-final-code-audit-v1",
+  "status": "VERIFIED",
+  "scope": "five reproduced L5 producer/consumer defects and the stated verification rails only",
+  "captured_utc": "2026-09-26T22:59:01.085918+00:00",
+  "initial_head": "98601a66d8cab9c86232b3e62ce490c8b43b71b6",
+  "head": "5571132655a83824731e7909b0e310951edad52b",
+  "dirty": true,
+  "current_snapshot": "/Users/songmin/.codex/worktrees/l5-final-current-head/quanta-index",
+  "source_sha256": {
+    "benchmarks/retrieval/src/symbols.rs": "8d5d8792057bb1ad7cedc68dd9aa719508c615b58eb494cb6eb8f8c3e8ebcb7b",
+    "benchmarks/retrieval/tests/l5_parser_regressions.rs": "b839b0326acbd33435e7d190665ee60cafb86ce4789f7265685e545e354bbf28",
+    "tools/benchmark/retrieval/symbol_coverage.py": "2be722e246bd35e397088f5dfa38c6d1eaa663310a9d9c942bcdca766a21915b",
+    "tools/ci/tests/test_retrieval_benchmark.py": "73b4fc9e2595df2563cdf63b5bc9e3a24cbe0d0255cb2fc80c56d4a4c7e329d2",
+    "benchmarks/retrieval/proof-required-tests.json": "38dcf3e5466cdfec02bdc660d9786a250a1dfaf5babfd0f2986523e66ad226b3"
+  },
+  "shared_input_matches": {
+    "Cargo.toml": true,
+    "Cargo.lock": true,
+    ".cargo/config.toml": true,
+    "tools/benchmark/evidence.py": true,
+    "tools/ci/lint/handoff_validation.py": true,
+    "tools/benchmark/retrieval/run.py": true
+  },
+  "findings": [
+    {
+      "id": "L5-FINAL-01",
+      "priority": "P2",
+      "status": "VERIFIED",
+      "problem": "JavaScript private method definitions were omitted",
+      "files": [
+        "benchmarks/retrieval/src/symbols.rs",
+        "benchmarks/retrieval/tests/l5_parser_regressions.rs"
+      ]
+    },
+    {
+      "id": "L5-FINAL-02",
+      "priority": "P2",
+      "status": "VERIFIED",
+      "problem": "Bodyless Rust trait methods were omitted and a same-name impl masked the test",
+      "files": [
+        "benchmarks/retrieval/src/symbols.rs"
+      ]
+    },
+    {
+      "id": "L5-FINAL-03",
+      "priority": "P2",
+      "status": "VERIFIED",
+      "problem": "Consumer path admission differed from ExactRepoRelativePathV1",
+      "files": [
+        "tools/benchmark/retrieval/symbol_coverage.py"
+      ]
+    },
+    {
+      "id": "L5-FINAL-04",
+      "priority": "P2",
+      "status": "VERIFIED",
+      "problem": "Unpinned evidence reads accepted aliases/replacement and post-stat growth beyond 64MiB",
+      "files": [
+        "tools/benchmark/retrieval/symbol_coverage.py"
+      ]
+    },
+    {
+      "id": "L5-FINAL-05",
+      "priority": "P2",
+      "status": "VERIFIED",
+      "problem": "Deep preflight JSON crashed the pair verdict with uncaught RecursionError",
+      "files": [
+        "tools/benchmark/retrieval/symbol_coverage.py"
+      ]
+    }
+  ],
+  "checks": {
+    "rust-current-head": {
+      "status": "VERIFIED",
+      "command": [
+        "./scripts/cargow",
+        "--lane",
+        "test-daemon-lane",
+        "test",
+        "-p",
+        "quanta-index-retrieval-bench",
+        "--lib",
+        "--bins",
+        "--test",
+        "chunking_contract",
+        "--test",
+        "l5_parser_regressions",
+        "--all-features",
+        "--locked"
+      ],
+      "cwd": "/Users/songmin/.codex/worktrees/l5-final-current-head/quanta-index",
+      "head": "5571132655a83824731e7909b0e310951edad52b",
+      "receipt": "l5-proof/final-code-audit-20260927/rust-current-head.json",
+      "receipt_sha256": "e3af1b581bb9baef7abf57cbb99aae7dc11f3e03f213ccbff897e1ab6efe9d6c",
+      "log_sha256": "ad478ca087562fb0e7aeb006474afcb0595ba5be2da41084a28d6c016c82c610",
+      "passed": 133
+    },
+    "python-consumers-final": {
+      "status": "VERIFIED",
+      "command": [
+        "/Users/songmin/Documents/code-new/quanta-index/.venv/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "tools/ci/tests/test_retrieval_benchmark.py",
+        "tools/ci/tests/test_retrieval_contract_proof.py",
+        "tools/ci/tests/test_retrieval_sdk_proof.py",
+        "tools/ci/tests/test_portable_proof.py",
+        "tools/ci/tests/test_benchmark_source_closure.py",
+        "--tb=short",
+        "--junitxml=/private/tmp/quanta-index-l5-final-audit-20260927/python-consumers-final.junit.xml"
+      ],
+      "cwd": "/Users/songmin/.codex/worktrees/l5-final-consumer-audit/quanta-index",
+      "head": "98601a66d8cab9c86232b3e62ce490c8b43b71b6",
+      "receipt": "l5-proof/final-code-audit-20260927/python-consumers-final.json",
+      "receipt_sha256": "829f2b1353ef75495c8fb2910998b459843c6673761ee1a5394cb9b3ea3ce466",
+      "log_sha256": "cd9e9420fb7091bad5fd62be15a0ca644a03db1860bf3134c9b08c383f34f7f7",
+      "passed": 541
+    },
+    "python-current-head": {
+      "status": "VERIFIED",
+      "command": [
+        "/Users/songmin/Documents/code-new/quanta-index/.venv/bin/python",
+        "-m",
+        "pytest",
+        "-q",
+        "tools/ci/tests/test_retrieval_benchmark.py",
+        "-k",
+        "symbol_preflight or required_inventory_uses_canonical_internal_temporary_path or verdict_full_receipts_all_green",
+        "--tb=short",
+        "--junitxml=/private/tmp/quanta-index-l5-final-audit-20260927/python-current-head.junit.xml"
+      ],
+      "cwd": "/Users/songmin/.codex/worktrees/l5-final-current-head/quanta-index",
+      "head": "5571132655a83824731e7909b0e310951edad52b",
+      "receipt": "l5-proof/final-code-audit-20260927/python-current-head.json",
+      "receipt_sha256": "99a53fde2e446a1b5d8b3075290f485c1e0a80579051c126566b7f2fab2e06e0",
+      "log_sha256": "eaaadfcc1d46b9865b2450ddcfc37e6f6363068c56012a1736b68bbe592dd2d6",
+      "passed": 16
+    },
+    "vite-current-head": {
+      "status": "VERIFIED",
+      "command": [
+        "/Users/songmin/Documents/code-new/quanta-index/.venv/bin/python",
+        "/private/tmp/quanta-index-l5-final-audit-20260927/vite_current.py"
+      ],
+      "cwd": "/Users/songmin/.codex/worktrees/l5-final-current-head/quanta-index",
+      "head": "5571132655a83824731e7909b0e310951edad52b",
+      "receipt": "l5-proof/final-code-audit-20260927/vite-current-head.json",
+      "receipt_sha256": "4e4f142080c426f31789833074acc76ddafcbda0641b51377b234d0a53db8d83",
+      "log_sha256": "22277c6928e4ed7c06cabd004f9ef7ed5fce1e96c34346250f05d8ab4f565c90",
+      "census": {
+        "admitted_files": 256,
+        "complete_files": 255,
+        "parse_failed_files": 1,
+        "symbol_count": 2006,
+        "policy_sha256": "b801cd2ed0b0c02313d8e32adad6bf3ced94e527d7e432647c30ff787abde43e",
+        "binary_sha256": "ee15c3decf9910c66c6d569dbf2126c82a8f9da93f021850be7bdf1937637eba"
+      }
+    }
+  },
+  "open_confirmed_findings": [],
+  "registry": {
+    "python": 339,
+    "rust": 130,
+    "sdk": 20
+  },
+  "exclusions": {
+    "whole_repository_ci": "NOT_RUN",
+    "fresh_sdk_daemon_queries": "NOT_RUN",
+    "clean_release_deployment": "NOT_RUN",
+    "ranking_performance": "NOT_APPLICABLE"
+  },
+  "source_boundary": "The full 541-case consumer run is frozen at 98601a66 plus its overlay. Rust 133, consumer integration 16 and fresh Vite census use 55711326 plus its current overlay. These are separate receipts, not a combined whole-product qualification.",
+  "interrupted_runs": [
+    "python-consumers interrupted for the final JSON fix",
+    "rust-owner-final interrupted before build because it used the live shared cwd",
+    "rust-formatted-final superseded by the changed HEAD/dependency snapshot"
+  ],
+  "artifact_sha256": {
+    "audit-changes-final.patch": "7016905e57ea78f773adb7658487d4625aeb7b3398fff8be3f919caa6564a6cd",
+    "consumer-overlay.json": "c4b2880cefe3bd9e48d46e39c9ff9213a8ebafc6f9292d4061e7c2dd60504de5",
+    "current-head-overlay.json": "fe816d46aeb4e4255df9e88baf6f637d23bafee702d706d4eaeae2f6d10f0367",
+    "current-vite/vite-allow-incomplete.json": "b014cacbf097551b947b0619b621bdab4f711011f77dafcda43c635de1938b97",
+    "current-vite/vite-allow-incomplete.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "current-vite/vite-receipt.json": "22277c6928e4ed7c06cabd004f9ef7ed5fce1e96c34346250f05d8ab4f565c90",
+    "current-vite/vite-require-complete.json": "f1c690ca40547716e104067db10145e0ce9cb3d2a399fcd871035837290e0c21",
+    "current-vite/vite-require-complete.log": "ab90fbe050e80d2d5649c361224c2e9d09930266c8785ad855942d4e1e8bf9f0",
+    "environment.json": "79c36f36a2386e73cfc7280c8f86ce562fde912e9c480efcdb9d799fefcfccd0",
+    "fixed-source-final.json": "f4806b092ac9736a58d0a2f95d5380ea8df2b84b519efc8cc60c4f2aee6fdd5a",
+    "format-update.json": "b024f1e33cbd36f96dd26802263ee68d056af2d16b84927973e1facec387d76f",
+    "freeze.py": "413a611fd59494ce7d2b579b89d87e7cf770f0af3e29d146a80390a9e27d06e5",
+    "frozen-overlay.json": "2b217870cc2deefef2a63e612a25ada358182bd83c1f8f824d1b27e61b6426a1",
+    "initial.json": "a12d717fceaaf8f8eaf82fc95a36c682c37f8634617b06f850faf877d350c847",
+    "python-consumers-final.json": "829f2b1353ef75495c8fb2910998b459843c6673761ee1a5394cb9b3ea3ce466",
+    "python-consumers-final.junit.xml": "bef7217c54f097537d106f64962730371f670fb32a95817a40b1b000a03a2044",
+    "python-consumers-final.log": "cd9e9420fb7091bad5fd62be15a0ca644a03db1860bf3134c9b08c383f34f7f7",
+    "python-current-head.json": "99a53fde2e446a1b5d8b3075290f485c1e0a80579051c126566b7f2fab2e06e0",
+    "python-current-head.junit.xml": "198c62554ea4553b85c612dba0ce581b8e38133eff884bb275e1d4e83c7ce2a8",
+    "python-current-head.log": "eaaadfcc1d46b9865b2450ddcfc37e6f6363068c56012a1736b68bbe592dd2d6",
+    "python-deep-json-red.json": "4e017ba4f98cf7f3c970b186d4fe9653d645b334783699badb045d4333909de2",
+    "python-deep-json-red.log": "e24abdab70768c4ff47b73f6b3d0ea0a4e99185f1202c9c6d221e4839ed2b9f4",
+    "python-inventory.json": "9c35f133a9681d590d99a1037f7fdf3c4976fc734ae1ec936ddc3e448d270e77",
+    "python-red.json": "8fefd8081aaf224d2a932e06f46b4da8aafde560f109f9e11bc0d934b273db02",
+    "python-red.log": "86e28b409cbca9239c119855e98e48854aed029e797b4bba669550e02c84855a",
+    "run_check.py": "3c62e1f94b97fefe0fa9314855a393acf0a808ab9fff743c0d7423f65a64c55a",
+    "rust-current-head.json": "e3af1b581bb9baef7abf57cbb99aae7dc11f3e03f213ccbff897e1ab6efe9d6c",
+    "rust-current-head.log": "ad478ca087562fb0e7aeb006474afcb0595ba5be2da41084a28d6c016c82c610",
+    "rust-red.json": "f533335221e5ba3d96e92353c1221ddf7e8a32a03d30ae6168bfab511e6787ad",
+    "rust-red.log": "a0e19e2c7b78abf9a490e22bd04e1f163f4e28e7ad7830a51e519c44582913b3",
+    "summarize_tests.py": "162c3a585b7c6f765f36125bf6df3c243e4557aaf1551f45d97ca4fc5add510c",
+    "symbols-before-format.rs": "8890a27fc4918778a374322e4b765271b1fc8b37652f4876f9d49b3c6f2b2051",
+    "test-summary.json": "905b706dd4523e08ea94f97039375e4a27c1f4004165ada2ae38a542866da662",
+    "vite-current-head.json": "4e4f142080c426f31789833074acc76ddafcbda0641b51377b234d0a53db8d83",
+    "vite-current-head.log": "22277c6928e4ed7c06cabd004f9ef7ed5fce1e96c34346250f05d8ab4f565c90",
+    "vite_current.py": "27c27b7386e530e4b496c34777a39a941a1dbf8e48dda8cde93073061de9e4a9",
+    "vite_preflight.py": "fc84540d40ff5fda96694e7910e2705056da5f18aec6b2aeb53de1f8bce9a1f2"
+  },
+  "binary_external_path": "/private/tmp/quanta-index-l5-final-audit-20260927/current-vite/quanta-index-retrieval-bench"
+}

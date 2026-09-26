@@ -149,6 +149,21 @@ def test_complete_recorded_capture_and_replay_contract(tmp_path, monkeypatch):
     scan = tmp_path / "scan.json"
     scan.write_bytes(scan_bytes())
     root = tmp_path / "evidence"
+    def fail_source(*_args):
+        raise ValueError("source acquisition oracle failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(capture, "source_identity", fail_source)
+        with pytest.raises(ValueError, match="source acquisition oracle failure"):
+            capture.capture(repo, root, registry, agent, scan, "recorded_unauthenticated")
+    failures = list((root / "failures").glob("*.json"))
+    assert len(failures) == 1
+    failure = json.loads(failures[0].read_text())
+    assert failure["status"] == "failed"
+    assert failure["phase"] == "source"
+    assert failure["observations"].get("source") is None
+    assert failure["error"]["message"] == "source acquisition oracle failure"
+    assert not (root / "profiles/recorded.json").exists()
     with pytest.raises(ValueError, match="authenticated imports are refused"):
         capture.capture(repo, root, registry, agent, scan, "authenticated")
     assert not (root / "profiles/recorded.json").exists()

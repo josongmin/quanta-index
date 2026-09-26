@@ -10,3 +10,7 @@
 # Default cache roots:
 #   macOS: ~/Library/Caches/quanta-index
 #   Linux: ${XDG_CACHE_HOME:-~/.cache}/quanta-index
+
+# Use the configured Git credential helper for the private SSTable patch.
+[net]
+git-fetch-with-cli = true

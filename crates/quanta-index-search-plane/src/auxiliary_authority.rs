@@ -482,6 +482,7 @@ pub(crate) fn structural_transition(
         removed,
         upserts,
         seal_requested,
+        source_batch_digest: state.source_batch_digest().map(str::to_owned),
         track,
         sealed_track,
     })
@@ -545,6 +546,7 @@ pub(crate) fn structural_chunks_transition(
         upserts,
         meta: StructuralStateMeta {
             seal_requested: current.is_some_and(StructuralAuthorityState::seal_requested),
+            source_batch_digest: None,
         },
     }
 }
@@ -768,6 +770,7 @@ pub(crate) fn structural_delta_rows(
         Vec::new(),
         &StructuralStateMeta {
             seal_requested: delta.seal_requested,
+            source_batch_digest: delta.source_batch_digest.clone(),
         },
     )?);
     rows.push(epoch_row(DOMAIN, generation, delta.epoch)?);
@@ -973,6 +976,7 @@ pub(crate) fn structural_state_rows(
         Vec::new(),
         &StructuralStateMeta {
             seal_requested: state.seal_requested(),
+            source_batch_digest: state.source_batch_digest().map(str::to_owned),
         },
     )?);
     rows.push(epoch_row(DOMAIN, generation, epoch)?);

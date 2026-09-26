@@ -294,7 +294,7 @@ fn hybrid_repo_filter_excluding_the_generation_empties_both_lanes() -> TestResul
         Some(&[]),
     )?;
     let response = hybrid_response(lanes.dispatcher.dispatch(
-        hybrid_request("repo:^other$ needle", 10),
+        hybrid_request("repo:other needle", 10),
         &RequestBudgetV1::unbounded(),
     ))?;
     if !response.results.is_empty() {
@@ -327,7 +327,7 @@ fn hybrid_repo_filter_excluding_the_generation_empties_both_lanes() -> TestResul
     if calls.len() != 1
         || !matches!(
             calls.first().map(|(plan, _)| plan.filters.as_slice()),
-            Some([LqFilter::Repo { pattern, .. }]) if pattern == "^other$"
+            Some([LqFilter::Repo { pattern, .. }]) if pattern == "other"
         )
     {
         return Err(format!("the repo filter must reach the admission plan: {calls:?}").into());
