@@ -356,6 +356,76 @@ def _promote(module, store, evidence) -> dict:
     return store.promote(staged)
 
 
+def test_run_store_refuses_same_bytes_raw_symlink_swap_after_file_check(tmp_path, monkeypatch):
+    module = _load_evidence_module()
+    store = module.RunStore(tmp_path / "store")
+    sealed = module.seal(module.sample_evidence())
+    _promote(module, store, sealed)
+    path = store.run_dir(sealed["run_id"]) / "raw/warm-matrix.json"
+    replacement = tmp_path / "same-bytes"
+    replacement.write_bytes(module.SAMPLE_RAW)
+    original = Path.is_file
+    swapped = False
+
+    def race(candidate):
+        nonlocal swapped
+        result = original(candidate)
+        if candidate == path and not swapped:
+            swapped = True
+            path.unlink()
+            path.symlink_to(replacement)
+        return result
+
+    monkeypatch.setattr(Path, "is_file", race)
+    with pytest.raises(module.EvidenceError, match="symlink"):
+        store.load(sealed["run_id"])
+    assert swapped
+
+
+def test_run_store_refuses_linked_evidence_with_identical_valid_bytes(tmp_path):
+    module = _load_evidence_module()
+    store = module.RunStore(tmp_path / "store")
+    sealed = module.seal(module.sample_evidence())
+    _promote(module, store, sealed)
+    path = store.run_dir(sealed["run_id"]) / "evidence.json"
+    replacement = tmp_path / "same-valid-evidence"
+    path.rename(replacement)
+    path.symlink_to(replacement)
+    with pytest.raises(module.EvidenceError, match="symlink"):
+        store.load(sealed["run_id"])
+
+
+@pytest.mark.parametrize("pointer", ["latest", "baseline"])
+def test_run_store_absent_optional_pointer_is_none(tmp_path, pointer):
+    module = _load_evidence_module()
+    store = module.RunStore(tmp_path / "absent-store")
+    value = store.read_latest() if pointer == "latest" else store.read_baseline("family")
+    assert value is None
+
+
+@pytest.mark.parametrize("pointer", ["latest", "baseline"])
+def test_run_store_dangling_optional_pointer_is_refused(tmp_path, pointer):
+    module = _load_evidence_module()
+    store = module.RunStore(tmp_path / "store")
+    path = store.latest_path if pointer == "latest" else store.baselines_dir / "family.json"
+    path.parent.mkdir(parents=True)
+    path.symlink_to(tmp_path / "absent-target")
+    with pytest.raises(module.EvidenceError, match="symlink"):
+        store.read_latest() if pointer == "latest" else store.read_baseline("family")
+
+
+@pytest.mark.parametrize("pointer", ["latest", "baseline"])
+def test_run_store_absent_pointer_under_linked_ancestor_is_refused(tmp_path, pointer):
+    module = _load_evidence_module()
+    target = tmp_path / "target"
+    target.mkdir()
+    linked = tmp_path / "linked-store"
+    linked.symlink_to(target, target_is_directory=True)
+    store = module.RunStore(linked)
+    with pytest.raises(module.EvidenceError, match="unsafe optional benchmark pointer"):
+        store.read_latest() if pointer == "latest" else store.read_baseline("family")
+
+
 def test_run_store_promotes_replays_and_retains_baselines(tmp_path: Path) -> None:
     module = _load_evidence_module()
     store = module.RunStore(tmp_path)

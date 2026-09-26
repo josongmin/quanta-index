@@ -230,46 +230,12 @@ impl SymbolLanguage {
             // Generic argument lists (`Foo<T>`) are stripped so the same
             // logical type yields one qualified-name spelling.
             let ty = required_child(node, "type", "Rust impl container")?;
-            let text = node_text(ty, source, "Rust impl type")?;
-            let Some(open) = text.find('<') else {
-                return Ok(text.to_string());
+            let base = if ty.kind() == "generic_type" {
+                required_child(ty, "type", "Rust impl generic type")?
+            } else {
+                ty
             };
-            let mut depth = 0_u32;
-            let mut balanced = false;
-            for (index, byte) in text.bytes().enumerate().skip(open) {
-                match byte {
-                    b'<' => {
-                        let Some(next_depth) = depth.checked_add(1) else {
-                            return Ok(text.to_string());
-                        };
-                        depth = next_depth;
-                    }
-                    b'>' => {
-                        if depth == 0 {
-                            break;
-                        }
-                        let Some(next_depth) = depth.checked_sub(1) else {
-                            return Ok(text.to_string());
-                        };
-                        depth = next_depth;
-                        if depth == 0 {
-                            balanced = index == text.len().saturating_sub(1);
-                            break;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            if !balanced {
-                // Keep malformed or operator-heavy type text intact.
-                return Ok(text.to_string());
-            }
-            let Some(base) = text.get(..open) else {
-                return Err(SymbolExtractError::ProducerDefect {
-                    detail: format!("Rust impl generic boundary {open} is not valid UTF-8"),
-                });
-            };
-            return Ok(base.to_string());
+            return Ok(node_text(base, source, "Rust impl type")?.to_string());
         }
         let name = required_child(node, "name", "named container")?;
         Ok(node_text(name, source, "container name")?.to_string())
@@ -495,11 +461,10 @@ fn query_definitions(
         })?;
         let local_name = node_text(name_node, source, "definition name")?;
         let mut containers: Vec<String> = Vec::new();
-        // The method/function decision uses the NEAREST container
-        // ancestor's kind: a fn whose innermost enclosing container is a
-        // type-like scope (impl/trait/class) is a method; a fn nested in
-        // a method body has the enclosing function as its nearest
-        // container and stays a function.
+        // Named ancestors qualify definitions without inventing names for
+        // anonymous scopes. Python class bodies share their namespace through
+        // control-flow blocks, so its method decision uses the nearest named
+        // scope. Rust requires direct impl/trait declaration ownership below.
         let mut nearest_type_container = false;
         let mut seen_container = false;
         let mut parent = def_node.parent();
@@ -522,6 +487,18 @@ fn query_definitions(
             containers.push(receiver_type);
         }
         containers.reverse();
+        let container_is_type = match language {
+            SymbolLanguage::Rust => def_node.parent().is_some_and(|body| {
+                body.kind() == "declaration_list"
+                    && body
+                        .parent()
+                        .is_some_and(|owner| language.is_type_container(owner.kind()))
+            }),
+            // Function declarations are local functions even inside class
+            // initializers; actual methods use method_definition explicitly.
+            SymbolLanguage::JavaScript | SymbolLanguage::TypeScript { .. } => false,
+            SymbolLanguage::Go | SymbolLanguage::Python => nearest_type_container,
+        };
         let kind = if language == SymbolLanguage::Go && def_node.kind() == "type_spec" {
             // `type X ...` is classified by its type child: struct_type,
             // interface_type, or a plain definition (type_alias).
@@ -533,7 +510,7 @@ fn query_definitions(
                 },
             )
         } else {
-            language.kind_for(def_node.kind(), nearest_type_container)
+            language.kind_for(def_node.kind(), container_is_type)
         };
         let kind = kind.ok_or_else(|| SymbolExtractError::ProducerDefect {
             detail: format!(
@@ -1071,6 +1048,37 @@ mod tests {
         assert_eq!(qualified(find(&records, "first")), "Vec2::first");
         assert_eq!(qualified(find(&records, "second")), "Vec2::second");
         assert_eq!(qualified(find(&records, "nested")), "Vec2::nested");
+        for source in [
+            "struct Foo<T>(T); impl Foo<fn() -> ()> { fn first(&self) {} }",
+            "struct Foo<const B: bool>; impl Foo<{1 < 2}> { fn first(&self) {} }",
+            "struct Foo<const B: bool>; impl Foo<{2 > 1}> { fn first(&self) {} }",
+            "struct Foo<const B: bool>; impl Foo<{1 << 2 == 4}> { fn first(&self) {} }",
+        ] {
+            let records = extract_symbols("src/generic.rs", source).expect("rust parses");
+            assert_eq!(qualified(find(&records, "first")), "Foo::first");
+        }
+        for (source, expected) in [
+            (
+                "impl module::Foo<fn() -> ()> { fn first(&self) {} }",
+                "module::Foo::first",
+            ),
+            (
+                "impl Foo<Bar>::Assoc { fn first(&self) {} }",
+                "Foo<Bar>::Assoc::first",
+            ),
+        ] {
+            let records = extract_symbols("src/generic.rs", source).expect("rust parses");
+            assert_eq!(qualified(find(&records, "first")), expected);
+        }
+        // The pinned grammar rejects a turbofish in this type position.
+        // Do not weaken strict parsing to manufacture another positive.
+        assert!(matches!(
+            extract_symbols(
+                "src/generic.rs",
+                "struct Foo<T>(T); impl Foo::<u8> { fn first(&self) {} }"
+            ),
+            Err(SymbolExtractError::ParseFailure { path }) if path == "src/generic.rs"
+        ));
     }
 
     #[test]
@@ -1078,6 +1086,47 @@ mod tests {
         let python = "class Service:\n    def run(self):\n        def helper():\n            pass\n        helper()\n";
         let records = extract_symbols("src/service.py", python).expect("python parses");
         assert_eq!(find(&records, "run").symbol_kind.as_str(), "method");
+        assert_eq!(find(&records, "helper").symbol_kind.as_str(), "function");
+        assert_eq!(qualified(find(&records, "helper")), "Service.run.helper");
+        for path in ["src/service.ts", "src/service.js", "src/service.tsx"] {
+            for source in [
+                "class Service { field = () => { function helper() {} }; }",
+                "class Service { field = function () { function helper() {} }; }",
+                "class Service { field = function* () { function helper() {} }; }",
+                "class Service { static { function helper() {} } }",
+            ] {
+                let records = extract_symbols(path, source).expect("javascript/typescript parses");
+                assert_eq!(find(&records, "helper").symbol_kind.as_str(), "function");
+                assert_eq!(qualified(find(&records, "helper")), "Service.helper");
+            }
+            let source = "class Service { field = () => { class Inner { run() {} } }; }";
+            let records = extract_symbols(path, source).expect("nested class parses");
+            assert_eq!(find(&records, "run").symbol_kind.as_str(), "method");
+            assert_eq!(qualified(find(&records, "run")), "Service.Inner.run");
+        }
+        for source in [
+            "struct Service; impl Service { const F: fn() = || { fn helper() {} }; }",
+            "struct Service; impl Service { const F: () = { fn helper() {} }; }",
+            "trait T { type Item; } struct Service; impl T for Service { type Item = [(); { fn helper() {} 0 }]; }",
+        ] {
+            let records = extract_symbols("src/service.rs", source).expect("rust parses");
+            assert_eq!(find(&records, "helper").symbol_kind.as_str(), "function");
+            assert_eq!(qualified(find(&records, "helper")), "Service::helper");
+        }
+        for source in [
+            "trait Service { fn run(&self) { fn helper() {} } }",
+            "struct Service; impl Service { fn run(&self) { fn helper() {} } }",
+        ] {
+            let records = extract_symbols("src/service.rs", source).expect("rust method parses");
+            assert_eq!(find(&records, "run").symbol_kind.as_str(), "method");
+            assert_eq!(find(&records, "helper").symbol_kind.as_str(), "function");
+            assert_eq!(qualified(find(&records, "helper")), "Service::run::helper");
+        }
+
+        let python = "class Service:\n    if True:\n        @staticmethod\n        def run():\n            def helper():\n                pass\n";
+        let records = extract_symbols("src/service.py", python).expect("decorated python parses");
+        assert_eq!(find(&records, "run").symbol_kind.as_str(), "method");
+        assert_eq!(qualified(find(&records, "run")), "Service.run");
         assert_eq!(find(&records, "helper").symbol_kind.as_str(), "function");
         assert_eq!(qualified(find(&records, "helper")), "Service.run.helper");
 

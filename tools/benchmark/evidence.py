@@ -829,8 +829,8 @@ def open_evidence(text: str) -> dict[str, Any]:
 
 def read_evidence(path: Path) -> dict[str, Any]:
     try:
-        return open_evidence(path.read_text(encoding="utf-8"))
-    except OSError as exc:
+        return open_evidence(_read_regular_file(path).decode("utf-8"))
+    except (OSError, UnicodeError) as exc:
         raise EvidenceError(f"cannot read evidence {path}: {exc}") from exc
 
 
@@ -883,6 +883,24 @@ def _read_regular_file(path: Path) -> bytes:
         return raw
     except (OSError, ValueError) as error:
         raise EvidenceError(f"unsafe benchmark evidence {path}: {error}") from error
+
+
+def _entry_present_no_follow(path: Path) -> bool:
+    try:
+        from tools.ci.lint.handoff_validation import _repo_entry_present_no_follow
+    except ModuleNotFoundError:  # standalone evidence CLI
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+        from tools.ci.lint.handoff_validation import _repo_entry_present_no_follow
+
+    path = path.absolute()
+    try:
+        return _repo_entry_present_no_follow(
+            Path(path.anchor),
+            path.relative_to(path.anchor).as_posix(),
+            label="optional benchmark pointer",
+        )
+    except (OSError, ValueError) as error:
+        raise EvidenceError(f"unsafe optional benchmark pointer {path}: {error}") from error
 
 
 def _write_atomic(path: Path, data: bytes) -> None:
@@ -979,7 +997,7 @@ class RunStore:
         return evidence
 
     def read_latest(self) -> dict[str, Any] | None:
-        if not self.latest_path.exists():
+        if not _entry_present_no_follow(self.latest_path):
             return None
         payload = json.loads(_read_regular_file(self.latest_path).decode("utf-8"))
         if not isinstance(payload, dict):
@@ -1021,7 +1039,7 @@ class RunStore:
 
     def read_baseline(self, family: str) -> dict[str, Any] | None:
         path = self.baselines_dir / f"{family}.json"
-        if not path.exists():
+        if not _entry_present_no_follow(path):
             return None
         payload = json.loads(_read_regular_file(path).decode("utf-8"))
         if not isinstance(payload, dict):
@@ -1082,7 +1100,7 @@ class RunStore:
                 raise EvidenceError(f"raw reference {reference['path']!r} is a symlink")
             if not path.is_file():
                 raise EvidenceError(f"referenced raw file {reference['path']!r} is missing")
-            data = path.read_bytes()
+            data = _read_regular_file(path)
             if len(data) != reference["bytes"]:
                 raise EvidenceError(
                     f"raw file {reference['path']!r} length mismatch: "
