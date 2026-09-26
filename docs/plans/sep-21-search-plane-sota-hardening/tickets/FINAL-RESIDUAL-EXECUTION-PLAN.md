@@ -154,11 +154,14 @@ Owners: `crates/quanta-index-searchd/src/app/readiness.rs`,
   before any generation has been published. Define and test a maximum
   root-loss detection interval, including recovery after an authorized
   restore, without a full physical re-open on every readiness poll.
-- The local implementation in progress probes each active sealed identity on
-  the maintenance timer and binds the observation to the activation token;
-  the default readiness staleness horizon is three five-second maintenance
-  ticks. This closes the missing-root/marker liveness case in a dirty-overlay
-  runtime test, not the full P09 event/provenance scope or clean-HEAD proof.
+- The committed implementation probes each active sealed identity on the
+  maintenance timer and binds the observation to the activation token; the
+  default readiness staleness horizon is three five-second maintenance ticks.
+  The owner rail now includes in-process lexical/semantic root-loss and a
+  separate Cargo-built daemon restart followed by active lexical root-loss
+  and recovery. Both ran successfully only on a shared dirty overlay; no
+  clean-HEAD receipt, complete backend-content liveness guarantee, or P09
+  event/provenance closure follows from those focused results.
 - Define a bounded control DTO and adapter projection from the *existing*
   `IpcServerCounters` ring. Bound event count and encoded bytes below the
   transport's 16 MiB frame cap; carry process instance, plane, sequence gap
