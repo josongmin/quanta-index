@@ -195,13 +195,14 @@ impl SymbolLanguage {
                     | "function_item"
             ),
             Self::Go => matches!(node_kind, "method_declaration"),
-            Self::Python => matches!(node_kind, "class_definition"),
+            Self::Python => matches!(node_kind, "class_definition" | "function_definition"),
             Self::JavaScript | Self::TypeScript { .. } => matches!(
                 node_kind,
                 "class_declaration"
                     | "abstract_class_declaration"
                     | "function_declaration"
                     | "generator_function_declaration"
+                    | "method_definition"
                     | "module"
                     | "internal_module"
                     | "enum_declaration"
@@ -220,9 +221,26 @@ impl SymbolLanguage {
             let Some(open) = text.find('<') else {
                 return Ok(text.to_string());
             };
-            if !text.ends_with('>') || text.bytes().filter(|b| *b == b'<').count() != 1 {
-                // Malformed or operator-heavy generics: keep the raw text
-                // rather than mangling it.
+            let mut depth = 0_u32;
+            let mut balanced = false;
+            for (index, byte) in text.bytes().enumerate().skip(open) {
+                match byte {
+                    b'<' => depth += 1,
+                    b'>' => {
+                        if depth == 0 {
+                            break;
+                        }
+                        depth -= 1;
+                        if depth == 0 {
+                            balanced = index == text.len() - 1;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if !balanced {
+                // Keep malformed or operator-heavy type text intact.
                 return Ok(text.to_string());
             }
             let Some(base) = text.get(..open) else {
@@ -281,6 +299,9 @@ fn find_descendant_kind<'tree>(node: Node<'tree>, kind: &str) -> Option<Node<'tr
             continue;
         }
         loop {
+            if cursor.node().id() == node.id() {
+                return None;
+            }
             // Never leave the subtree: sibling moves are only valid from
             // a child of `node`, and returning to `node` itself means the
             // walk is exhausted.
@@ -484,13 +505,13 @@ fn query_definitions(
         if language == SymbolLanguage::Go && def_node.kind() == "type_spec" {
             // `type X ...` is classified by its type child: struct_type,
             // interface_type, or a plain definition (type_alias).
-            if find_descendant_kind(def_node, "interface_type").is_some() {
-                kind = Some("interface");
-            } else if find_descendant_kind(def_node, "struct_type").is_some() {
-                kind = Some("struct");
-            } else {
-                kind = Some("type_alias");
-            }
+            kind = Some(
+                match required_child(def_node, "type", "Go type specification")?.kind() {
+                    "interface_type" => "interface",
+                    "struct_type" => "struct",
+                    _ => "type_alias",
+                },
+            );
         }
         let kind = kind.ok_or_else(|| SymbolExtractError::ProducerDefect {
             detail: format!(
@@ -658,11 +679,15 @@ pub fn extract_corpus_symbols(
             unsupported_files.push(path.clone());
             continue;
         }
-        let records =
-            extract_symbols(path, &file.text).map_err(|error| crate::BenchError::Chunk {
+        let records = extract_symbols(path, &file.text).map_err(|error| match error {
+            SymbolExtractError::ProducerDefect { detail } => crate::BenchError::Protocol(format!(
+                "symbol producer defect for {path}: {detail}"
+            )),
+            _ => crate::BenchError::Chunk {
                 path: path.clone(),
                 message: format!("symbol extraction coverage failure: {error}"),
-            })?;
+            },
+        })?;
         let _previous = symbols.insert(path.clone(), records);
     }
     Ok(CorpusSymbolExtraction {
@@ -894,7 +919,7 @@ mod tests {
 
     #[test]
     fn go_value_receivers_and_plain_type_definitions() {
-        let source = "package t\n\ntype Celsius float64\n\ntype Rect struct { W float64 }\n\nfunc (r Rect) Area() float64 { return r.W }\n";
+        let source = "package t\n\ntype Celsius float64\n\ntype Rect struct { W float64 }\n\ntype Shape interface { Area() float64 }\n\ntype Config struct { logger interface{} }\n\nfunc (r Rect) Area() float64 { return r.W }\n";
         let records = extract_symbols("t/temp.go", source).expect("go parses");
         assert_eq!(
             find(&records, "Celsius").symbol_kind.as_str(),
@@ -902,6 +927,8 @@ mod tests {
             "plain Go type definitions are not structs"
         );
         assert_eq!(find(&records, "Rect").symbol_kind.as_str(), "struct");
+        assert_eq!(find(&records, "Shape").symbol_kind.as_str(), "interface");
+        assert_eq!(find(&records, "Config").symbol_kind.as_str(), "struct");
         let area = find(&records, "Area");
         assert_eq!(area.symbol_kind.as_str(), "method");
         assert_eq!(qualified(area), "Rect.Area", "value receivers qualify too");
@@ -938,10 +965,27 @@ mod tests {
 
     #[test]
     fn rust_impl_generics_stripped_from_container_names() {
-        let source = "struct Vec2<T> { x: T }\nimpl<T> Vec2<T> {\n    fn first(&self) -> &T { &self.x }\n}\nimpl Vec2<u8> {\n    fn second(&self) {}\n}\n";
+        let source = "struct Vec2<T> { x: T }\nstruct Bar<T>(T);\nstruct Baz;\nimpl<T> Vec2<T> {\n    fn first(&self) -> &T { &self.x }\n}\nimpl Vec2<u8> {\n    fn second(&self) {}\n}\nimpl Vec2<Bar<Baz>> {\n    fn nested(&self) {}\n}\n";
         let records = extract_symbols("src/generic.rs", source).expect("rust parses");
         assert_eq!(qualified(find(&records, "first")), "Vec2::first");
         assert_eq!(qualified(find(&records, "second")), "Vec2::second");
+        assert_eq!(qualified(find(&records, "nested")), "Vec2::nested");
+    }
+
+    #[test]
+    fn nested_python_and_typescript_functions_stay_functions() {
+        let python = "class Service:\n    def run(self):\n        def helper():\n            pass\n        helper()\n";
+        let records = extract_symbols("src/service.py", python).expect("python parses");
+        assert_eq!(find(&records, "run").symbol_kind.as_str(), "method");
+        assert_eq!(find(&records, "helper").symbol_kind.as_str(), "function");
+        assert_eq!(qualified(find(&records, "helper")), "Service.run.helper");
+
+        let typescript =
+            "class Service {\n  run() {\n    function helper() {}\n    helper();\n  }\n}\n";
+        let records = extract_symbols("src/service.ts", typescript).expect("typescript parses");
+        assert_eq!(find(&records, "run").symbol_kind.as_str(), "method");
+        assert_eq!(find(&records, "helper").symbol_kind.as_str(), "function");
+        assert_eq!(qualified(find(&records, "helper")), "Service.run.helper");
     }
 
     #[test]

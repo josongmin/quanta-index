@@ -49,6 +49,12 @@ Rust-heavy 검증과 성능 측정은 경쟁 writer/build가 없는 구간에 �
 
 각 티켓은 구현, focused verification, integration, qualification을 별도 상태로 갱신한다. 상태 값은 `VERIFIED / FAILED / BLOCKED / NOT_RUN / NOT_APPLICABLE`이다. 조건부 티켓은 실험 근거와 유지 결정이 검증되면 종료할 수 있으나, 실행하지 않은 최적화를 완료라고 쓰지 않는다.
 
+### 2026-09-26 보완 작업 현행 상태
+
+| 티켓 | 구현·소유 rail | clean-source proof·잔여 게이트 |
+| --- | --- | --- |
+| RBR-04 | `VERIFIED` — A1 Go 직접 type 분류, 중첩 함수·제네릭, cursor 경계, producer defect 전파; retrieval-bench lib 83/83 (공유 dirty local), 새 테스트의 nextest identity 확인 | `NOT_RUN` — 고정 소스 전체 inventory·SDK·clean receipt와 외부 coverage admission |
+
 ### 2026-09-26 2차 라운드 상태 (역사적 기록; 현 상태 아님)
 
 | 티켓 | 구현 | focused verification | integration | qualification |

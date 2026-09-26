@@ -372,6 +372,7 @@
     "quanta-index-retrieval-bench::quanta_index_retrieval_bench$symbols::tests::javascript_and_typescript_definitions",
     "quanta-index-retrieval-bench::quanta_index_retrieval_bench$symbols::tests::jsx_and_versioned_ts_extensions_map",
     "quanta-index-retrieval-bench::quanta_index_retrieval_bench$symbols::tests::lone_cr_line_model_matches_the_corpus_splitter",
+    "quanta-index-retrieval-bench::quanta_index_retrieval_bench$symbols::tests::nested_python_and_typescript_functions_stay_functions",
     "quanta-index-retrieval-bench::quanta_index_retrieval_bench$symbols::tests::python_definitions_and_decorator_span",
     "quanta-index-retrieval-bench::quanta_index_retrieval_bench$symbols::tests::rust_definitions_qualify_methods_inside_impls",
     "quanta-index-retrieval-bench::quanta_index_retrieval_bench$symbols::tests::rust_impl_generics_stripped_from_container_names",
