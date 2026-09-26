@@ -57,6 +57,9 @@ impl SqliteCatalog {
             .execute_batch(crate::candidate::SCHEMA)
             .map_err(|error| engine_error("create repomap candidate schema", &path, &error))?;
         crate::candidate::verify_installed_schema(&connection, &path)?;
+        // A missing or recast GC floor must refuse before recovery mutates
+        // journal rows or clears old mutation leases.
+        crate::sequence::verify_gc_floor_domain_integrity(&connection, &path)?;
         // Seed the allocator row (self-digested), then reconcile it from
         // the generic ledger and verify the event↔domain pairs
         // (SEP-21-002).

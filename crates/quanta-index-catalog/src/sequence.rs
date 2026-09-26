@@ -9,15 +9,19 @@
 //!                     row_sha256 BLOB CHECK(length(row_sha256)=32))
 //! catalog_sequence_event_v2(sequence INTEGER UNIQUE
 //!                     CHECK(sequence BETWEEN 1 AND 9223372036854775807),
-//!                     kind INTEGER CHECK(kind IN (1..=11)),
+//!                     kind INTEGER CHECK(kind IN (1..=12)),
 //!                     identity_digest BLOB CHECK(length=32),
 //!                     payload_digest BLOB CHECK(length=32),
 //!                     event_commitment BLOB CHECK(length=32),
 //!                     row_sha256 BLOB CHECK(length=32))
+//! operation_gc_floor_v1(identity_digest BLOB PRIMARY KEY,
+//!                     invalidation_sequence INTEGER UNIQUE,
+//!                     target_commitment BLOB CHECK(length=32),
+//!                     row_sha256 BLOB CHECK(length=32))
 //! ```
 //!
-//! Only the current allocator and event ledger are read. Their exhausted
-//! flag and self-digests are mandatory; no legacy allocator is accepted.
+//! Only the current allocator, event ledger and GC floor domain are read.
+//! Their self-digests are mandatory; no legacy allocator is accepted.
 //!
 //! The only allocation path is [`append_sequence_event`]: it reads the
 //! allocator row (verifying its self-digest), refuses
@@ -45,7 +49,9 @@ use crate::connection::{SqliteCatalog, blob32, engine_error};
 const ALLOCATOR_DOMAIN: &[u8] = b"quanta-index:catalog:sequence-row:v1\0";
 const EVENT_COMMITMENT_DOMAIN: &[u8] = b"quanta-index:catalog:sequence-event-commitment:v1\0";
 const EVENT_ROW_DOMAIN: &[u8] = b"quanta-index:catalog:sequence-event-row:v1\0";
+const GC_FLOOR_ROW_DOMAIN: &[u8] = b"quanta-index:catalog:operation-gc-floor-row:v1\0";
 const FIELD_SEPARATOR: &[u8] = b"\x1f";
+pub(crate) const NO_TERMINAL_TARGET: [u8; 32] = [0_u8; 32];
 
 /// The tables, created at open.
 pub(crate) const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS catalog_sequence_v2 (
@@ -57,14 +63,20 @@ pub(crate) const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS catalog_sequence_v2 
          CREATE TABLE IF NOT EXISTS catalog_sequence_event_v2 (
              sequence INTEGER PRIMARY KEY
                  CHECK (sequence BETWEEN 1 AND 9223372036854775807),
-             kind INTEGER NOT NULL CHECK (kind IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11)),
+             kind INTEGER NOT NULL CHECK (kind IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12)),
              identity_digest BLOB NOT NULL CHECK (length(identity_digest) = 32),
              payload_digest BLOB NOT NULL CHECK (length(payload_digest) = 32),
              event_commitment BLOB NOT NULL CHECK (length(event_commitment) = 32),
              row_sha256 BLOB NOT NULL CHECK (length(row_sha256) = 32)
          ) WITHOUT ROWID;
          CREATE INDEX IF NOT EXISTS catalog_sequence_event_v2_identity_sequence
-             ON catalog_sequence_event_v2 (kind, identity_digest, sequence);";
+             ON catalog_sequence_event_v2 (kind, identity_digest, sequence);
+         CREATE TABLE IF NOT EXISTS operation_gc_floor_v1 (
+             identity_digest BLOB PRIMARY KEY CHECK (length(identity_digest) = 32),
+             invalidation_sequence INTEGER NOT NULL UNIQUE CHECK (invalidation_sequence > 0),
+             target_commitment BLOB NOT NULL CHECK (length(target_commitment) = 32),
+             row_sha256 BLOB NOT NULL CHECK (length(row_sha256) = 32)
+         ) WITHOUT ROWID;";
 
 /// The closed set of event kinds the generic ledger admits (SEP-21-002).
 ///
@@ -85,10 +97,11 @@ pub(crate) enum SequenceEventKindV1 {
     QuarantineDiscard = 9,
     RepoMapInvalidation = 10,
     RepoMapCandidateQuarantine = 11,
+    OperationGcInvalidation = 12,
 }
 
 impl SequenceEventKindV1 {
-    pub(crate) const ALL: [Self; 11] = [
+    pub(crate) const ALL: [Self; 12] = [
         Self::OperationCommitted,
         Self::OperationRefused,
         Self::OperationAborted,
@@ -100,10 +113,11 @@ impl SequenceEventKindV1 {
         Self::QuarantineDiscard,
         Self::RepoMapInvalidation,
         Self::RepoMapCandidateQuarantine,
+        Self::OperationGcInvalidation,
     ];
 
     #[must_use]
-    /// The enum's discriminants are the closed 1..=11 `CHECK` set; the
+    /// The enum's discriminants are the closed 1..=12 `CHECK` set; the
     /// explicit match keeps the cast side-effect-free (no `as`).
     pub(crate) fn as_code(self) -> i64 {
         match self {
@@ -118,6 +132,7 @@ impl SequenceEventKindV1 {
             Self::QuarantineDiscard => 9,
             Self::RepoMapInvalidation => 10,
             Self::RepoMapCandidateQuarantine => 11,
+            Self::OperationGcInvalidation => 12,
         }
     }
 
@@ -145,6 +160,7 @@ impl SequenceEventKindV1 {
             9 => Ok(Self::QuarantineDiscard),
             10 => Ok(Self::RepoMapInvalidation),
             11 => Ok(Self::RepoMapCandidateQuarantine),
+            12 => Ok(Self::OperationGcInvalidation),
             other => Err(corrupt(&format!("event kind code {other} is not known"))),
         }
     }
@@ -175,6 +191,28 @@ pub(crate) fn verify_installed_schema(
             "catalog: {} has an unsupported event-kind schema; this build has no migration reader",
             path.display()
         )));
+    }
+    let floor_sql: String = connection
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'operation_gc_floor_v1'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| engine_error("read installed GC floor schema", path, &error))?;
+    let floor_sql = compact(&floor_sql);
+    for required in [
+        "identity_digestBLOBPRIMARYKEYCHECK(length(identity_digest)=32)",
+        "invalidation_sequenceINTEGERNOTNULLUNIQUECHECK(invalidation_sequence>0)",
+        "target_commitmentBLOBNOTNULLCHECK(length(target_commitment)=32)",
+        "row_sha256BLOBNOTNULLCHECK(length(row_sha256)=32)",
+        "WITHOUTROWID",
+    ] {
+        if !floor_sql.contains(required) {
+            return Err(CoreError::Storage(format!(
+                "catalog: {} has an unsupported operation-GC-floor schema; this build has no migration reader",
+                path.display()
+            )));
+        }
     }
     Ok(())
 }
@@ -252,6 +290,91 @@ pub(crate) fn event_row_digest(
     hasher.update(FIELD_SEPARATOR);
     hasher.update(commitment);
     hasher.finalize().into()
+}
+
+fn gc_floor_row_digest(sequence: i64, identity: &[u8; 32], target: &[u8; 32]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(GC_FLOOR_ROW_DOMAIN);
+    hasher.update(sequence.to_le_bytes());
+    hasher.update(FIELD_SEPARATOR);
+    hasher.update(identity);
+    hasher.update(FIELD_SEPARATOR);
+    hasher.update(target);
+    hasher.finalize().into()
+}
+
+fn read_gc_floor(
+    connection: &Connection,
+    path: &std::path::Path,
+    identity: &[u8; 32],
+) -> Result<Option<(i64, [u8; 32])>, CoreError> {
+    let row: Option<(i64, Vec<u8>, Vec<u8>)> = connection
+        .query_row(
+            "SELECT invalidation_sequence, target_commitment, row_sha256
+             FROM operation_gc_floor_v1 WHERE identity_digest = ?1",
+            params![identity.as_slice()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()
+        .map_err(|error| engine_error("read operation GC floor", path, &error))?;
+    let Some((sequence, target, digest)) = row else {
+        return Ok(None);
+    };
+    let target = blob32("operation GC target", &target)?;
+    let digest = blob32("operation GC row digest", &digest)?;
+    if digest != gc_floor_row_digest(sequence, identity, &target) {
+        return Err(corrupt("operation GC floor row has a wrong digest"));
+    }
+    verify_event_reference(
+        connection,
+        path,
+        SequenceEventKindV1::OperationGcInvalidation,
+        sequence,
+        identity,
+        &target,
+    )?;
+    Ok(Some((sequence, target)))
+}
+
+/// Check both directions of the durable replay-floor relation before recovery.
+pub(crate) fn verify_gc_floor_domain_integrity(
+    connection: &Connection,
+    path: &std::path::Path,
+) -> Result<(), CoreError> {
+    let mut statement = connection
+        .prepare("SELECT identity_digest FROM operation_gc_floor_v1")
+        .map_err(|error| engine_error("prepare operation GC floor scan", path, &error))?;
+    let identities = statement
+        .query_map([], |row| row.get::<_, Vec<u8>>(0))
+        .map_err(|error| engine_error("scan operation GC floors", path, &error))?;
+    for identity in identities {
+        let identity =
+            identity.map_err(|error| engine_error("read GC floor identity", path, &error))?;
+        let identity = blob32("operation GC identity", &identity)?;
+        if read_gc_floor(connection, path, &identity)?.is_none() {
+            return Err(corrupt(
+                "operation GC floor disappeared during integrity scan",
+            ));
+        }
+    }
+    let missing_floor: Option<i64> = connection
+        .query_row(
+            "SELECT e.sequence FROM catalog_sequence_event_v2 AS e
+             WHERE e.kind = ?1 AND NOT EXISTS (
+                 SELECT 1 FROM operation_gc_floor_v1 AS f
+                 WHERE f.invalidation_sequence = e.sequence
+             ) LIMIT 1",
+            params![SequenceEventKindV1::OperationGcInvalidation.as_code()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| engine_error("find GC event without floor", path, &error))?;
+    if let Some(sequence) = missing_floor {
+        return Err(corrupt(&format!(
+            "operation GC event {sequence} has no durable floor row"
+        )));
+    }
+    Ok(())
 }
 
 struct AllocatorRow {
@@ -517,6 +640,7 @@ pub(crate) fn verify_integrity(
     connection: &Connection,
     path: &std::path::Path,
 ) -> Result<(), CoreError> {
+    verify_gc_floor_domain_integrity(connection, path)?;
     crate::candidate::verify_repomap_domain_integrity(connection, path)?;
     crate::idempotency::verify_terminal_domain_integrity(connection, path)?;
     let mut statement = connection
@@ -554,6 +678,7 @@ pub(crate) fn verify_integrity(
                     | SequenceEventKindV1::Activation
                     | SequenceEventKindV1::Rollback
                     | SequenceEventKindV1::OperationInvalidation
+                    | SequenceEventKindV1::OperationGcInvalidation
                     | SequenceEventKindV1::RepoMapInvalidation
                     | SequenceEventKindV1::RepoMapCandidateQuarantine
                     | SequenceEventKindV1::QuarantineRecord
@@ -563,7 +688,9 @@ pub(crate) fn verify_integrity(
                 // retry superseded, is exactly attributable through its
                 // Invalidation event (same identity digest). Every other
                 // missing pair is corruption.
-                let invalidated = has_later_invalidation(connection, path, sequence, &identity)?;
+                let commitment = event_commitment(sequence, kind, &identity, &payload);
+                let invalidated =
+                    has_later_invalidation(connection, path, sequence, &identity, &commitment)?;
                 let paired =
                     crate::idempotency::verify_terminal_event_pair(connection, path, sequence)?;
                 match (paired, invalidated) {
@@ -585,8 +712,9 @@ pub(crate) fn verify_integrity(
             // incident's record sequence and QuarantineDiscard its
             // discard sequence. RepoMapInvalidation pairs the inactive
             // activation row; RepoMapCandidateQuarantine pairs the sealed
-            // candidate's quarantine sequence. OperationInvalidation is an
-            // idempotency-lane event and has no surviving row after GC.
+            // candidate's quarantine sequence. OperationGcInvalidation pairs
+            // a retained replay-floor row; retry supersession binds the
+            // removed historical terminal through its event commitment.
             // Rollback is not emitted by any current owner; the
             // ledger row and its digests are its record until one is.
             SequenceEventKindV1::CandidateSeal => crate::candidate::verify_candidate_event_pair(
@@ -597,10 +725,15 @@ pub(crate) fn verify_integrity(
                     connection, path, kind, sequence, &identity, &payload,
                 )?;
             }
-            // OperationInvalidation is itself the idempotency lane's terminal
-            // record: GC removes its row, and an uncertain supersession may
-            // have no earlier terminal event. Rollback has no current owner.
-            SequenceEventKindV1::Rollback | SequenceEventKindV1::OperationInvalidation => {}
+            // Invalidation carries either the immediately preceding terminal
+            // event commitment or the explicit no-terminal marker. GC has a
+            // distinct kind so replay-floor checks cannot mistake a retry
+            // supersession for retention GC. Rollback has no current owner.
+            SequenceEventKindV1::Rollback => {}
+            SequenceEventKindV1::OperationInvalidation
+            | SequenceEventKindV1::OperationGcInvalidation => {
+                verify_invalidation_target(connection, path, sequence, kind, &identity, &payload)?;
+            }
             SequenceEventKindV1::RepoMapCandidateQuarantine => {
                 crate::candidate::verify_candidate_event_pair(
                     connection, path, kind, sequence, &identity, &payload,
@@ -616,8 +749,7 @@ pub(crate) fn verify_integrity(
     Ok(())
 }
 
-/// Whether the generic ledger records a generation-GC invalidation whose
-/// identity is `identity_digest` and whose payload digest matches.
+/// Whether the verified catalog domain owns a generation-GC replay floor.
 ///
 /// The replay-floor check: only a generation GC invalidates a key's
 /// replays; a superseded-abort invalidation attributes history without
@@ -626,22 +758,28 @@ pub(crate) fn is_invalidated_for_floor(
     connection: &Connection,
     path: &std::path::Path,
     identity_digest: &[u8; 32],
-    payload_digest: &[u8; 32],
 ) -> Result<bool, CoreError> {
-    let found: Option<i64> = connection
+    if read_gc_floor(connection, path, identity_digest)?.is_some() {
+        return Ok(true);
+    }
+    let orphan_event: Option<i64> = connection
         .query_row(
-            "SELECT 1 FROM catalog_sequence_event_v2
-             WHERE kind = ?1 AND identity_digest = ?2 AND payload_digest = ?3 LIMIT 1",
+            "SELECT sequence FROM catalog_sequence_event_v2
+             WHERE kind = ?1 AND identity_digest = ?2 LIMIT 1",
             params![
-                SequenceEventKindV1::OperationInvalidation.as_code(),
+                SequenceEventKindV1::OperationGcInvalidation.as_code(),
                 identity_digest.as_slice(),
-                payload_digest.as_slice()
             ],
             |row| row.get(0),
         )
         .optional()
-        .map_err(|error| engine_error("read invalidation", path, &error))?;
-    Ok(found.is_some())
+        .map_err(|error| engine_error("check GC floor absence", path, &error))?;
+    if let Some(sequence) = orphan_event {
+        return Err(corrupt(&format!(
+            "operation GC event {sequence} lost its replay-floor row"
+        )));
+    }
+    Ok(false)
 }
 
 /// Whether a later invalidation event names the operation identity.
@@ -654,24 +792,29 @@ fn has_later_invalidation(
     path: &std::path::Path,
     terminal_sequence: i64,
     identity_digest: &[u8; 32],
+    target_commitment: &[u8; 32],
 ) -> Result<bool, CoreError> {
-    let next_invalidation: Option<i64> = connection
+    let next_invalidation: Option<(i64, Vec<u8>)> = connection
         .query_row(
-            "SELECT sequence FROM catalog_sequence_event_v2
-             WHERE kind = ?1 AND identity_digest = ?2 AND sequence > ?3
+            "SELECT sequence, payload_digest FROM catalog_sequence_event_v2
+             WHERE kind IN (?1, ?2) AND identity_digest = ?3 AND sequence > ?4
              ORDER BY sequence ASC LIMIT 1",
             params![
                 SequenceEventKindV1::OperationInvalidation.as_code(),
+                SequenceEventKindV1::OperationGcInvalidation.as_code(),
                 identity_digest.as_slice(),
                 terminal_sequence,
             ],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()
         .map_err(|error| engine_error("read invalidation", path, &error))?;
-    let Some(invalidation_sequence) = next_invalidation else {
+    let Some((invalidation_sequence, payload)) = next_invalidation else {
         return Ok(false);
     };
+    if blob32("invalidation target", &payload)? != *target_commitment {
+        return Ok(false);
+    }
     let intervening_terminal: Option<i64> = connection
         .query_row(
             "SELECT 1 FROM catalog_sequence_event_v2
@@ -690,6 +833,153 @@ fn has_later_invalidation(
         .optional()
         .map_err(|error| engine_error("read intervening terminal event", path, &error))?;
     Ok(intervening_terminal.is_none())
+}
+
+/// Check the invalidation-to-terminal direction of the ledger relation.
+///
+/// A target is the latest terminal since the prior invalidation of this
+/// identity. A nonterminal row has no terminal event and uses the explicit
+/// marker. The forward terminal scan checks the other direction.
+fn verify_invalidation_target(
+    connection: &Connection,
+    path: &std::path::Path,
+    sequence: i64,
+    kind: SequenceEventKindV1,
+    identity: &[u8; 32],
+    payload: &[u8; 32],
+) -> Result<(), CoreError> {
+    if kind == SequenceEventKindV1::OperationGcInvalidation {
+        match read_gc_floor(connection, path, identity)? {
+            Some((floor_sequence, floor_target))
+                if floor_sequence == sequence && floor_target == *payload => {}
+            _ => {
+                return Err(corrupt(&format!(
+                    "operation GC event {sequence} has no exact floor row"
+                )));
+            }
+        }
+    }
+    let (expected, target_sequence) = prior_operation_target(connection, path, sequence, identity)?;
+    if *payload != expected {
+        return Err(corrupt(&format!(
+            "operation invalidation {sequence} does not bind its prior terminal event"
+        )));
+    }
+    if let Some(target_sequence) = target_sequence {
+        let retained: Option<i64> = connection
+            .query_row(
+                "SELECT 1 FROM idempotency_v2 WHERE durable_sequence = ?1 LIMIT 1",
+                params![target_sequence],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| engine_error("read invalidated journal row", path, &error))?;
+        if retained.is_some() {
+            return Err(corrupt(&format!(
+                "operation invalidation {sequence} targets a retained terminal row"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn prior_operation_target(
+    connection: &Connection,
+    path: &std::path::Path,
+    before_sequence: i64,
+    identity: &[u8; 32],
+) -> Result<([u8; 32], Option<i64>), CoreError> {
+    let previous = connection
+        .query_row(
+            "SELECT sequence, kind, identity_digest, payload_digest, event_commitment, row_sha256
+             FROM catalog_sequence_event_v2
+             WHERE identity_digest = ?1 AND sequence < ?2
+               AND kind IN (?3, ?4, ?5, ?6, ?7)
+             ORDER BY sequence DESC LIMIT 1",
+            params![
+                identity.as_slice(),
+                before_sequence,
+                SequenceEventKindV1::OperationCommitted.as_code(),
+                SequenceEventKindV1::OperationRefused.as_code(),
+                SequenceEventKindV1::OperationAborted.as_code(),
+                SequenceEventKindV1::OperationInvalidation.as_code(),
+                SequenceEventKindV1::OperationGcInvalidation.as_code(),
+            ],
+            event_raw_row,
+        )
+        .optional()
+        .map_err(|error| engine_error("read invalidation predecessor", path, &error))?;
+    let result = if let Some(previous) = previous {
+        let (prior_sequence, prior_kind, prior_identity, prior_payload) =
+            checked_event_row(previous)?;
+        match prior_kind {
+            SequenceEventKindV1::OperationCommitted
+            | SequenceEventKindV1::OperationRefused
+            | SequenceEventKindV1::OperationAborted => (
+                event_commitment(prior_sequence, prior_kind, &prior_identity, &prior_payload),
+                Some(prior_sequence),
+            ),
+            SequenceEventKindV1::OperationInvalidation
+            | SequenceEventKindV1::OperationGcInvalidation => (NO_TERMINAL_TARGET, None),
+            SequenceEventKindV1::CandidateSeal
+            | SequenceEventKindV1::Activation
+            | SequenceEventKindV1::Rollback
+            | SequenceEventKindV1::QuarantineRecord
+            | SequenceEventKindV1::QuarantineDiscard
+            | SequenceEventKindV1::RepoMapInvalidation
+            | SequenceEventKindV1::RepoMapCandidateQuarantine => {
+                return Err(corrupt(
+                    "invalidation predecessor has an unrelated event kind",
+                ));
+            }
+        }
+    } else {
+        (NO_TERMINAL_TARGET, None)
+    };
+    Ok(result)
+}
+
+/// Append the owning invalidation envelope with its target commitment.
+///
+/// The caller must remove or replace the matching journal row in this same
+/// transaction. The generic event ledger remains the sole sequence owner.
+pub(crate) fn append_operation_invalidation(
+    transaction: &Transaction<'_>,
+    kind: SequenceEventKindV1,
+    identity: &[u8; 32],
+) -> Result<i64, CoreError> {
+    if !matches!(
+        kind,
+        SequenceEventKindV1::OperationInvalidation | SequenceEventKindV1::OperationGcInvalidation
+    ) {
+        return Err(corrupt(
+            "non-invalidation kind reached operation invalidation writer",
+        ));
+    }
+    let path = std::path::Path::new(":catalog:");
+    if kind == SequenceEventKindV1::OperationGcInvalidation
+        && is_invalidated_for_floor(transaction, path, identity)?
+    {
+        return Err(corrupt("operation identity already has a GC invalidation"));
+    }
+    let (payload, _target) = prior_operation_target(transaction, path, i64::MAX, identity)?;
+    let sequence = append_sequence_event(transaction, kind, identity, &payload)?;
+    if kind == SequenceEventKindV1::OperationGcInvalidation {
+        let _inserted = transaction
+            .execute(
+                "INSERT INTO operation_gc_floor_v1
+                     (identity_digest, invalidation_sequence, target_commitment, row_sha256)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    identity.as_slice(),
+                    sequence,
+                    payload.as_slice(),
+                    gc_floor_row_digest(sequence, identity, &payload).as_slice(),
+                ],
+            )
+            .map_err(|error| engine_error("write operation GC floor", path, &error))?;
+    }
+    Ok(sequence)
 }
 
 impl SqliteCatalog {
@@ -1061,6 +1351,199 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn invalidation_binds_removed_terminal_event_commitment() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let catalog = SqliteCatalog::open(root.path(), Duration::from_millis(100))?;
+        let key = IdempotencyKeyV1 {
+            kind: IngestOperationKindV1::History,
+            repo_id: RepoId::new("repo")?,
+            revision_id: RevisionId::new("revision")?,
+            generation: ManifestGeneration::new(1),
+            batch_digest: "digest".to_string(),
+        };
+        let body = [1_u8; 32];
+        let claim =
+            match catalog.claim_prepared(&key, &body, "owner", i64::MAX.unsigned_abs(), &body)? {
+                ClaimOutcomeV1::Claimed(claim) => claim,
+                ClaimOutcomeV1::Replay { .. } | ClaimOutcomeV1::ReplayRepoMap { .. } => {
+                    return Err("fixture expected a fresh claim".into());
+                }
+            };
+        catalog.mark_applying(&claim)?;
+        let mut receipt =
+            BatchPublishReceipt::empty_for(ManifestGeneration::new(1), None, "digest".to_string());
+        receipt.accept_replace_scope();
+        let sequence = i64::try_from(catalog.commit(&claim, &receipt)?)?;
+        if catalog.forget_generation(&key.repo_id, &key.revision_id, key.generation)? != 1 {
+            return Err("fixture must remove one terminal row".into());
+        }
+        {
+            let connection = catalog.lock()?;
+            let identity = key.identity_digest();
+            let payload = [9_u8; 32];
+            let kind = SequenceEventKindV1::OperationCommitted;
+            let commitment = event_commitment(sequence, kind, &identity, &payload);
+            let digest = event_row_digest(sequence, kind, &identity, &payload, &commitment);
+            let changed = connection.execute(
+                "UPDATE catalog_sequence_event_v2
+                 SET payload_digest = ?1, event_commitment = ?2, row_sha256 = ?3
+                 WHERE sequence = ?4",
+                rusqlite::params![
+                    payload.as_slice(),
+                    commitment.as_slice(),
+                    digest.as_slice(),
+                    sequence,
+                ],
+            )?;
+            if changed != 1 {
+                return Err("fixture must rewrite exactly one terminal event".into());
+            }
+            drop(connection);
+        }
+        drop(catalog);
+        if !matches!(
+            SqliteCatalog::open(root.path(), Duration::from_millis(100)),
+            Err(quanta_index_core::CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+                ..
+            })
+        ) {
+            return Err("GC invalidation accepted a replaced terminal commitment".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn gc_floor_cannot_be_recast_as_retry_supersession() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let catalog = SqliteCatalog::open(root.path(), Duration::from_millis(100))?;
+        let key = IdempotencyKeyV1 {
+            kind: IngestOperationKindV1::History,
+            repo_id: RepoId::new("repo")?,
+            revision_id: RevisionId::new("revision")?,
+            generation: ManifestGeneration::new(1),
+            batch_digest: "digest".to_string(),
+        };
+        let body = [1_u8; 32];
+        let claim =
+            match catalog.claim_prepared(&key, &body, "owner", i64::MAX.unsigned_abs(), &body)? {
+                ClaimOutcomeV1::Claimed(claim) => claim,
+                ClaimOutcomeV1::Replay { .. } | ClaimOutcomeV1::ReplayRepoMap { .. } => {
+                    return Err("fixture expected a fresh claim".into());
+                }
+            };
+        catalog.mark_applying(&claim)?;
+        let mut receipt =
+            BatchPublishReceipt::empty_for(ManifestGeneration::new(1), None, "digest".to_string());
+        receipt.accept_replace_scope();
+        let _committed = catalog.commit(&claim, &receipt)?;
+        if catalog.forget_generation(&key.repo_id, &key.revision_id, key.generation)? != 1 {
+            return Err("fixture must GC one terminal row".into());
+        }
+        {
+            let connection = catalog.lock()?;
+            let (sequence, payload): (i64, Vec<u8>) = connection.query_row(
+                "SELECT sequence, payload_digest FROM catalog_sequence_event_v2
+                 WHERE kind = ?1 AND identity_digest = ?2",
+                rusqlite::params![
+                    SequenceEventKindV1::OperationGcInvalidation.as_code(),
+                    key.identity_digest().as_slice(),
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            let identity = key.identity_digest();
+            let payload = blob32("GC payload", &payload)?;
+            let kind = SequenceEventKindV1::OperationInvalidation;
+            let commitment = event_commitment(sequence, kind, &identity, &payload);
+            let digest = event_row_digest(sequence, kind, &identity, &payload, &commitment);
+            let changed = connection.execute(
+                "UPDATE catalog_sequence_event_v2
+                 SET kind = ?1, event_commitment = ?2, row_sha256 = ?3
+                 WHERE sequence = ?4",
+                rusqlite::params![
+                    kind.as_code(),
+                    commitment.as_slice(),
+                    digest.as_slice(),
+                    sequence,
+                ],
+            )?;
+            if changed != 1 {
+                return Err("fixture must rewrite exactly one GC event".into());
+            }
+            drop(connection);
+        }
+        drop(catalog);
+        if !matches!(
+            SqliteCatalog::open(root.path(), Duration::from_millis(100)),
+            Err(quanta_index_core::CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+                ..
+            })
+        ) {
+            return Err("GC floor was erased by a self-digested kind substitution".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn deleting_gc_floor_refuses_replay_and_reopen() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let catalog = SqliteCatalog::open(root.path(), Duration::from_millis(100))?;
+        let key = IdempotencyKeyV1 {
+            kind: IngestOperationKindV1::History,
+            repo_id: RepoId::new("repo")?,
+            revision_id: RevisionId::new("revision")?,
+            generation: ManifestGeneration::new(1),
+            batch_digest: "digest".to_string(),
+        };
+        let body = [1_u8; 32];
+        let _prepared = catalog.prepare(&key, &body, "owner", i64::MAX.unsigned_abs(), &body)?;
+        if catalog.forget_generation(&key.repo_id, &key.revision_id, key.generation)? != 1 {
+            return Err("fixture must GC one nonterminal row".into());
+        }
+        {
+            let connection = catalog.lock()?;
+            let target: Vec<u8> = connection.query_row(
+                "SELECT target_commitment FROM operation_gc_floor_v1
+                 WHERE identity_digest = ?1",
+                rusqlite::params![key.identity_digest().as_slice()],
+                |row| row.get(0),
+            )?;
+            if blob32("nonterminal GC target", &target)? != super::NO_TERMINAL_TARGET {
+                return Err("nonterminal GC must carry the no-target marker".into());
+            }
+            let deleted = connection.execute(
+                "DELETE FROM operation_gc_floor_v1 WHERE identity_digest = ?1",
+                rusqlite::params![key.identity_digest().as_slice()],
+            )?;
+            if deleted != 1 {
+                return Err("fixture must delete exactly one GC floor".into());
+            }
+            drop(connection);
+        }
+        if !matches!(
+            catalog.claim_prepared(&key, &body, "retry", i64::MAX.unsigned_abs(), &body),
+            Err(quanta_index_core::CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+                ..
+            })
+        ) {
+            return Err("missing GC floor must not become a fresh claim".into());
+        }
+        drop(catalog);
+        if !matches!(
+            SqliteCatalog::open(root.path(), Duration::from_millis(100)),
+            Err(quanta_index_core::CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+                ..
+            })
+        ) {
+            return Err("missing GC floor must refuse catalog reopen".into());
+        }
+        Ok(())
+    }
+
     fn append_orphan_operation_event(
         catalog: &SqliteCatalog,
         key: &IdempotencyKeyV1,
@@ -1132,7 +1615,7 @@ mod tests {
         connection.execute_batch(
             "CREATE TABLE catalog_sequence_event_v2 (
                  sequence INTEGER PRIMARY KEY CHECK (sequence BETWEEN 1 AND 9223372036854775807),
-                 kind INTEGER NOT NULL CHECK (kind IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10)),
+                 kind INTEGER NOT NULL CHECK (kind IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11)),
                  identity_digest BLOB NOT NULL CHECK (length(identity_digest) = 32),
                  payload_digest BLOB NOT NULL CHECK (length(payload_digest) = 32),
                  event_commitment BLOB NOT NULL CHECK (length(event_commitment) = 32),
@@ -1147,6 +1630,40 @@ mod tests {
                 if message.contains("unsupported event-kind schema")
         ) {
             return Err("prior event-kind schema must refuse open".into());
+        }
+        let connection = rusqlite::Connection::open(path)?;
+        let allocator_rows: i64 =
+            connection.query_row("SELECT COUNT(*) FROM catalog_sequence_v2", [], |row| {
+                row.get(0)
+            })?;
+        if allocator_rows != 0 {
+            return Err("schema refusal must precede allocator seed".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn incomplete_gc_floor_schema_refuses_open_before_allocator_seed() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let directory = catalog_dir(root.path());
+        std::fs::create_dir_all(&directory)?;
+        let path = directory.join(CATALOG_FILE_NAME);
+        let connection = rusqlite::Connection::open(&path)?;
+        connection.execute_batch(
+            "CREATE TABLE operation_gc_floor_v1 (
+                 identity_digest BLOB PRIMARY KEY,
+                 invalidation_sequence INTEGER NOT NULL,
+                 target_commitment BLOB NOT NULL,
+                 row_sha256 BLOB NOT NULL
+             ) WITHOUT ROWID;",
+        )?;
+        drop(connection);
+        if !matches!(
+            SqliteCatalog::open(root.path(), Duration::from_millis(100)),
+            Err(quanta_index_core::CoreError::Storage(message))
+                if message.contains("unsupported operation-GC-floor schema")
+        ) {
+            return Err("incomplete GC floor schema must refuse before recovery".into());
         }
         let connection = rusqlite::Connection::open(path)?;
         let allocator_rows: i64 =

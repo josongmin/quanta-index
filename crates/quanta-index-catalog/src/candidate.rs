@@ -609,6 +609,7 @@ pub(crate) fn verify_candidate_event_pair(
         | SequenceEventKindV1::Activation
         | SequenceEventKindV1::Rollback
         | SequenceEventKindV1::OperationInvalidation
+        | SequenceEventKindV1::OperationGcInvalidation
         | SequenceEventKindV1::QuarantineRecord
         | SequenceEventKindV1::QuarantineDiscard
         | SequenceEventKindV1::RepoMapInvalidation => {

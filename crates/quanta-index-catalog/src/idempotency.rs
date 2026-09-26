@@ -46,7 +46,8 @@ use sha2::{Digest, Sha256};
 
 use crate::connection::{SqliteCatalog, blob32, engine_error, generation_i64};
 use crate::sequence::{
-    SequenceEventKindV1, append_sequence_event, is_invalidated_for_floor, verify_event_reference,
+    SequenceEventKindV1, append_operation_invalidation, append_sequence_event,
+    is_invalidated_for_floor, verify_event_reference,
 };
 
 const ROW_DIGEST_DOMAIN: &[u8] = b"quanta-index:catalog:idempotency-row:v2\0";
@@ -1146,8 +1147,7 @@ impl IdempotencyCatalogPort for SqliteCatalog {
             .map_err(|error| engine_error("begin transaction", &path, &error))?;
         // Replay floor first, exactly as `claim_prepared`: an invalidated
         // key refuses before any storage work.
-        let gc_payload = payload_digest_of_parts(&[key.batch_digest.as_bytes()]);
-        if is_invalidated_for_floor(&transaction, &path, &key.identity_digest(), &gc_payload)? {
+        if is_invalidated_for_floor(&transaction, &path, &key.identity_digest())? {
             return Err(replay_floor(key));
         }
         let now = self.clock.now_unix_ms();
@@ -1230,7 +1230,11 @@ impl IdempotencyCatalogPort for SqliteCatalog {
                             None,
                             None,
                         )?;
-                        append_supersession_invalidation(&transaction, key, stored.fence_token)?;
+                        let _invalidation = append_operation_invalidation(
+                            &transaction,
+                            SequenceEventKindV1::OperationInvalidation,
+                            &identity,
+                        )?;
                         prepare_fresh(
                             &transaction,
                             key,
@@ -1244,7 +1248,11 @@ impl IdempotencyCatalogPort for SqliteCatalog {
                         // Superseded: the event ledger keeps the terminal
                         // history (attributable through this invalidation),
                         // and the row is reclaimed by the new prepare.
-                        append_supersession_invalidation(&transaction, key, stored.fence_token)?;
+                        let _invalidation = append_operation_invalidation(
+                            &transaction,
+                            SequenceEventKindV1::OperationInvalidation,
+                            &key.identity_digest(),
+                        )?;
                         prepare_fresh(
                             &transaction,
                             key,
@@ -1278,12 +1286,10 @@ impl IdempotencyCatalogPort for SqliteCatalog {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| engine_error("begin transaction", &path, &error))?;
         // Replay floor first: an invalidated key refuses before any
-        // storage work. A generation GC recorded its invalidation with
-        // this key's identity and batch-digest payload; a superseded
-        // abort's invalidation carries a fence payload and does not raise
-        // the floor.
-        let gc_payload = payload_digest_of_parts(&[key.batch_digest.as_bytes()]);
-        if is_invalidated_for_floor(&transaction, &path, &key.identity_digest(), &gc_payload)? {
+        // storage work. Only the retained GC floor row, paired with its
+        // target-bound ledger event, blocks replay; retry supersession does
+        // not raise that floor.
+        if is_invalidated_for_floor(&transaction, &path, &key.identity_digest())? {
             return Err(replay_floor(key));
         }
         let now = self.clock.now_unix_ms();
@@ -1393,7 +1399,11 @@ impl IdempotencyCatalogPort for SqliteCatalog {
                             None,
                             None,
                         )?;
-                        append_supersession_invalidation(&transaction, key, stored.fence_token)?;
+                        let _invalidation = append_operation_invalidation(
+                            &transaction,
+                            SequenceEventKindV1::OperationInvalidation,
+                            &identity,
+                        )?;
                         claim_fresh(
                             &transaction,
                             key,
@@ -1408,7 +1418,11 @@ impl IdempotencyCatalogPort for SqliteCatalog {
                         // event ledger keeps their terminal history
                         // (attributable through this invalidation), and
                         // the row is reclaimed by the new claim.
-                        append_supersession_invalidation(&transaction, key, stored.fence_token)?;
+                        let _invalidation = append_operation_invalidation(
+                            &transaction,
+                            SequenceEventKindV1::OperationInvalidation,
+                            &key.identity_digest(),
+                        )?;
                         claim_fresh(
                             &transaction,
                             key,
@@ -1878,16 +1892,14 @@ impl IdempotencyCatalogPort for SqliteCatalog {
                 "catalog: forget generation deleted {removed} rows but listed {listed}"
             )));
         }
-        // Every dropped record keeps its exact attribution: one
-        // Invalidation event per dropped key, keyed by the key's identity
-        // digest — the replay-floor entry the integrity pass pairs with.
+        // Each dropped record gets a GC-only invalidation. Its payload
+        // binds the latest terminal commitment, or the explicit no-terminal
+        // marker for an unfinished row, without retaining a second row owner.
         for key in &keys {
-            let payload = payload_digest_of_parts(&[key.batch_digest.as_bytes()]);
-            let _invalidated = append_sequence_event(
+            let _invalidated = append_operation_invalidation(
                 &transaction,
-                SequenceEventKindV1::OperationInvalidation,
+                SequenceEventKindV1::OperationGcInvalidation,
                 &key.identity_digest(),
-                &payload,
             )?;
         }
         transaction
@@ -1897,23 +1909,6 @@ impl IdempotencyCatalogPort for SqliteCatalog {
         // `removed` is already a u64 row count; no conversion is needed.
         Ok(removed)
     }
-}
-
-/// Attribute a superseded terminal abort (or uncertain claim) before its row
-/// is replaced. The event and replacement remain in the caller's transaction.
-fn append_supersession_invalidation(
-    transaction: &rusqlite::Transaction<'_>,
-    key: &IdempotencyKeyV1,
-    fence_token: u64,
-) -> Result<(), CoreError> {
-    let payload = payload_digest_of_parts(&[&fence_token.to_le_bytes()]);
-    let _sequence = append_sequence_event(
-        transaction,
-        SequenceEventKindV1::OperationInvalidation,
-        &key.identity_digest(),
-        &payload,
-    )?;
-    Ok(())
 }
 
 /// Write a fresh immutable prepared row: the `prepare` half of the
