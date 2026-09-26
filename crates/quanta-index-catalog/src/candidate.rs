@@ -12,11 +12,13 @@
 //!                      terminal_sequence UNIQUE, quarantine_sequence UNIQUE NULL,
 //!                      row_sha256 CHECK(len=32),
 //!                      UNIQUE(repo_id, revision_id, manifest_generation))
-//! repomap_activation_v1(repo_id, revision_id UNIQUE(repo_id, revision_id),
+//! repomap_activation_v1(repo_id, revision_id,
 //!                       epoch CHECK(epoch >= 1), manifest_generation,
 //!                       candidate_commitment CHECK(len=32),
 //!                       active CHECK(active IN (0,1)), invalidation_reason,
-//!                       terminal_sequence UNIQUE, row_sha256 CHECK(len=32))
+//!                       activation_sequence UNIQUE, terminal_sequence UNIQUE,
+//!                       row_sha256 CHECK(len=32),
+//!                       UNIQUE(repo_id, revision_id, epoch))
 //! repomap_quarantine_event_v1(incident_digest PK CHECK(len=32),
 //!                       payload_digest CHECK(len=32), envelope_bytes,
 //!                       incident_time_unix_nanos, sequence UNIQUE, reason_code,
@@ -736,7 +738,58 @@ fn read_activation_row(
         )
         .optional()
         .map_err(|error| engine_error("read repomap activation", path, &error))?;
-    fetched.map(checked_activation_row).transpose()
+    let latest = fetched.map(checked_activation_row).transpose()?;
+    if let Some(row) = latest.as_ref() {
+        let other_active: Option<i64> = connection
+            .query_row(
+                "SELECT 1 FROM repomap_activation_v1
+                 WHERE repo_id = ?1 AND revision_id = ?2 AND active = 1 AND epoch <> ?3
+                 LIMIT 1",
+                params![
+                    repo_id,
+                    revision_id,
+                    i64::try_from(row.epoch)
+                        .map_err(|_error| { corrupt("activation epoch does not fit i64") })?
+                ],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| engine_error("read other active repomap head", path, &error))?;
+        if other_active.is_some() {
+            return Err(corrupt(
+                "repo revision has an active nonlatest activation row",
+            ));
+        }
+    }
+    Ok(latest)
+}
+
+/// The newest epoch is the only row allowed to be active for a logical head.
+/// Event-to-row pairing alone cannot detect two independently self-digested
+/// active epochs with valid activation events.
+pub(crate) fn verify_activation_head_integrity(
+    connection: &Connection,
+    path: &std::path::Path,
+) -> Result<(), CoreError> {
+    let conflicting: Option<(String, String)> = connection
+        .query_row(
+            "SELECT repo_id, revision_id FROM repomap_activation_v1
+             GROUP BY repo_id, revision_id
+             HAVING SUM(active) > 1
+                 OR (SUM(active) = 1
+                     AND MAX(CASE WHEN active = 1 THEN epoch END) <> MAX(epoch))
+             LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|error| engine_error("verify repomap active head shape", path, &error))?;
+    if let Some((repo_id, revision_id)) = conflicting {
+        return Err(corrupt(&format!(
+            "repo={repo_id} revision={revision_id} has multiple or nonlatest active activation rows"
+        )));
+    }
+    Ok(())
 }
 
 /// Check both historical activation and later invalidation events against
@@ -2002,6 +2055,141 @@ mod tests {
             return Err(
                 "activation sequence changed without its row digest must be corrupt".into(),
             );
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the connection guard must outlive the transaction that borrows it"
+    )]
+    fn two_self_digested_active_heads_refuse_reopen() -> Result<(), Box<dyn Error>> {
+        for retire_latest in [false, true] {
+            let root = tempfile::tempdir()?;
+            let catalog = SqliteCatalog::open(root.path(), Duration::from_millis(100))?;
+            for generation in [1_u64, 2] {
+                let _sealed = catalog.seal_repomap_candidate(
+                    "repo",
+                    "revision",
+                    generation,
+                    &[u8::try_from(generation)?; 32],
+                    &[3_u8; 32],
+                    &[4_u8; 32],
+                    5,
+                    "{}",
+                )?;
+            }
+            let _first =
+                catalog.activate_repomap_candidate("repo", "revision", 1, &[1_u8; 32], None)?;
+            {
+                let mut connection = catalog.lock()?;
+                let transaction = connection.transaction()?;
+                let identity = logical_key_digest("repo", "revision", 2);
+                let sequence = append_sequence_event(
+                    &transaction,
+                    SequenceEventKindV1::Activation,
+                    &identity,
+                    &[2_u8; 32],
+                )?;
+                let second = RepoMapActivationRowV1 {
+                    repo_id: "repo".to_string(),
+                    revision_id: "revision".to_string(),
+                    epoch: 2,
+                    manifest_generation: 2,
+                    candidate_commitment: [2_u8; 32],
+                    active: true,
+                    invalidation_reason: None,
+                    activation_sequence: sequence,
+                    terminal_sequence: sequence,
+                };
+                let inserted = transaction.execute(
+                    "INSERT INTO repomap_activation_v1
+                 (repo_id, revision_id, epoch, manifest_generation, candidate_commitment,
+                  active, invalidation_reason, activation_sequence, terminal_sequence, row_sha256)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 1, NULL, ?6, ?6, ?7)",
+                    params![
+                        second.repo_id,
+                        second.revision_id,
+                        i64::try_from(second.epoch)?,
+                        i64::try_from(second.manifest_generation)?,
+                        second.candidate_commitment.as_slice(),
+                        sequence,
+                        activation_row_digest(&second).as_slice(),
+                    ],
+                )?;
+                if inserted != 1 {
+                    return Err("hostile fixture must insert one activation".into());
+                }
+                let sealed = read_candidate_row(&transaction, "repo", "revision", 2)?
+                    .ok_or("second candidate disappeared")?;
+                let activated = RepoMapCandidateRowV1 {
+                    state: RepoMapCandidateStateV1::Activated,
+                    ..sealed
+                };
+                let updated = transaction.execute(
+                    "UPDATE repomap_candidate_v1 SET state = 2, row_sha256 = ?1
+                 WHERE repo_id = 'repo' AND revision_id = 'revision' AND manifest_generation = 2",
+                    params![candidate_row_digest(&activated).as_slice()],
+                )?;
+                if updated != 1 {
+                    return Err("hostile fixture must update one candidate".into());
+                }
+                if retire_latest {
+                    let invalidation_sequence = append_sequence_event(
+                        &transaction,
+                        SequenceEventKindV1::RepoMapInvalidation,
+                        &identity,
+                        &[2_u8; 32],
+                    )?;
+                    let retired = RepoMapActivationRowV1 {
+                        active: false,
+                        invalidation_reason: Some("damaged".to_string()),
+                        terminal_sequence: invalidation_sequence,
+                        ..second
+                    };
+                    let retired_count = transaction.execute(
+                        "UPDATE repomap_activation_v1 SET active = 0,
+                     invalidation_reason = 'damaged', terminal_sequence = ?1, row_sha256 = ?2
+                     WHERE repo_id = 'repo' AND revision_id = 'revision' AND epoch = 2",
+                        params![
+                            invalidation_sequence,
+                            activation_row_digest(&retired).as_slice(),
+                        ],
+                    )?;
+                    if retired_count != 1 {
+                        return Err("hostile fixture must retire its latest activation".into());
+                    }
+                    let invalidated = RepoMapCandidateRowV1 {
+                        state: RepoMapCandidateStateV1::ActivationInvalidated,
+                        ..activated
+                    };
+                    let invalidated_count = transaction.execute(
+                    "UPDATE repomap_candidate_v1 SET state = 3, row_sha256 = ?1
+                     WHERE repo_id = 'repo' AND revision_id = 'revision' AND manifest_generation = 2",
+                    params![candidate_row_digest(&invalidated).as_slice()],
+                )?;
+                    if invalidated_count != 1 {
+                        return Err("hostile fixture must retire its latest candidate".into());
+                    }
+                }
+                transaction.commit()?;
+            }
+            drop(catalog);
+            let reopened = SqliteCatalog::open(root.path(), Duration::from_millis(100));
+            if !matches!(
+                reopened,
+                Err(CoreError::Typed {
+                    code: SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+                    ..
+                })
+            ) {
+                return Err(format!(
+                    "self-digested {} active head must refuse reopen",
+                    if retire_latest { "nonlatest" } else { "second" }
+                )
+                .into());
+            }
         }
         Ok(())
     }

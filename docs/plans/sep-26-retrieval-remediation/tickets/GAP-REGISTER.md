@@ -1,79 +1,28 @@
-# SEP-26 Gap Register — P0~P2 전수 감사 (2026-09-26)
+# SEP-26 RBR 잔여 공백 등록부 — 2026-09-26
 
-각 티켓의 작업 항목·합격 기준·테스트 글머리를 구현 상태와 대조한 빵꾸 목록.
-상태: `OPEN`(미해결) / `CLEAN_FILE`(지금 작업 가능) / `BLOCKED-DIRTY`(공유 dirty 파일 대기) / `EXTERNAL`(레포 외부 입력 필요) / `DONE`.
+감사 시작 HEAD `af6405629ec09219e02c0a2bdb36a4cfe29ac4ba`, RBR 코드 재검사 HEAD `619292caadf108662c22fbb9992560056a70a5bd` + dirty overlay. 그 커밋의 RBR-04 unsupported coverage finding은 재확인했으나 새 Rust rail은 `NOT_RUN`. 이후 unrelated `9af01c75`로 HEAD가 이동했으며 qualification은 재발급하지 않았다. 이 파일은 과거 `OPEN` 스냅샷을 대체한다. 티켓별 계약과 증거 한계는 [CURRENT-AUDIT.md](CURRENT-AUDIT.md), [RBR-00~12](INDEX.md), [TEST-PLAN.md](TEST-PLAN.md)을 따른다. 코드 관측을 `VERIFIED`나 qualified 비교로 승격하지 않는다. 아래 상태는 **남은 작업**의 상태다.
 
-## RBR-00 (P0) — proof contract
-- inventory 3역할 exact-match(python 231 / rust 89 / sdk 12) — DONE
-- sep-26 closure 등록 + 거부 테스트 — DONE
-- PROFILE-CONTRACT 정의 — DONE
-- receipt 최신 HEAD 재발급 — BLOCKED-DIRTY(타 writer)
+| ID | 우선순위 | 남은 코드/결정 | 현행 증거·종결 게이트 |
+| --- | --- | --- | --- |
+| [RBR-00](RBR-00-proof-contract.md) | P1 proof | Python 272/272 exact; Rust/SDK exact collection 및 최종 계약 closure 재자격 | 최종 Python 272 passed/32 subtests는 해시 고정 dirty 진단; clean-source contract/SDK receipt `NOT_RUN` |
+| [RBR-01](RBR-01-diagnostics.md) | P1 코드 | 서버 query stage duration/calls·source binding, RBR-10 ingest stage 공개, diagnostic on/off overhead | current-source SDK/daemon roundtrip·overhead `NOT_RUN` |
+| [RBR-02](RBR-02-query-policy.md) | P1 proof | 정책/identity/negative fixture 최종 revision 재실행 | current-source SDK/receipt `NOT_RUN`; native 제품 정책은 변경하지 않음 |
+| [RBR-03](RBR-03-semble-profiles.md) | P1 proof | pinned reference capture·phase event·raw hash 최종 revision 재발급 | 과거 0.6.0 개발 캡처는 현 clean proof 아님; qualified pair `NOT_RUN` |
+| [RBR-04](RBR-04-symbol-producer.md) | P1 코드+proof | unsupported admitted 파일의 path+SHA/skip reason·partial/full capability admission을 묶고, 5언어 hand oracle·combined replace/reopen을 한 revision에서 재실행 | 현재 unsupported 파일은 count만 남기고 skip해 계약 불일치; 현 storage/SDK receipt `NOT_RUN` |
+| [RBR-05](RBR-05-symbol-route-proof.md) | P1 proof | live symbol route, forged/stale/no-answer/timeout, span identity를 RBR-06 출력과 연동 | 현 SDK receipt `NOT_RUN` |
+| [RBR-06](RBR-06-span-chunking.md) | P1 코드+실험 | indexed/SDK/scored span 분리; rank-only Hit@1/MRR·exact-index-span Recall@10·context; fixed matrix | dirty chunking 25 passed는 부분 진단; end-to-end 지표/외부 matrix `NOT_RUN` |
+| [RBR-07](RBR-07-semantic-parity.md) | P1 코드+proof+실험 | pinned asset/256차원 parity 및 외부 per-query exact-vs-served delta; T15 raw vector·source/model receipt binding | 현 Rust/semantic/asset receipt와 외부 분해 `NOT_RUN`; 조건부 T15 summary-only verdict `FAILED` |
+| [RBR-08](RBR-08-symbol-ranking.md) | P2 조건부 | 오순위 진입 probe 후 한 후보 또는 유지 결정 | probe/ranker/효과 `NOT_RUN`; 무근거 기본값 변경 금지 |
+| [RBR-09](RBR-09-query-performance.md) | P2 조건부 | RBR-01 후 fetch 100/25/50 × k/filter 및 ANN guard·quiet-host p95 | stage/matrix/효과 `NOT_RUN`; floor 100 유지 |
+| [RBR-10](RBR-10-ingest-performance.md) | P1 계측, P2 조건부 최적화 | 내부 `build_stream_reported`의 공개 caller 연결; fresh/delta 원본·row-set·fault/restart; 비용 확인 시 한 최적화 후보 | 내부 report 존재만 확인; 공개 stage/비용/효과 `NOT_RUN` |
+| [RBR-11](RBR-11-resource-accounting.md) | P1 proof, P2 한계 | 지원 플랫폼 owner proof와 clean contract/resource replay; ps PID 재사용 identity 미보장 한계 명시 | 최종 dirty Python 272 passed/32 subtests, inventory 272/272; clean receipt `NOT_RUN` |
+| [RBR-12](RBR-12-evaluation-closeout.md) | P1 코드+통합 | cross-suite dev/holdout file·definition·family custody validator, frozen digest binding, T15/T16 raw proof, 단일 최종 조합 | 현재 단일-suite train/eval만 검사; 조건부 T15/T16 summary-only verdict `FAILED`; final `PAIR_VALID`/`QUALITY_DELTA`/`PERF_QUALIFIED` `NOT_RUN` |
 
-## RBR-01 (P0) — diagnostics
-- 응답 보존(explanation/window/executed engines) — DONE (v2 diagnostic)
-- query 단계별 elapsed/call counts 계측 — PARTIAL(응답 단계 보존은 v2/v3 diagnostic으로 DONE; 단계별 timing은 PRODUCT-API 대기)
-- publish 내부 단계 timing — 계측 엔진 DONE(RBR-10 `build_stream_reported`, 63 passed); 공개 SDK 노출은 PRODUCT-API 대기
-- bounded opt-in stage trace — 조건부(원인 분리 실패 시만), 보류 정당
-- diagnostic on/off overhead 측정 — OPEN · BLOCKED-DIRTY
+## 종결 순서와 판정 경계
 
-## 감사·보완 이력 (2026-09-26 라운드 11-12)
+1. source/dirty ownership을 고정한 뒤 RBR-04 coverage authority, RBR-06 span 계측, RBR-01/10 stage 연결, RBR-12 cross-suite custody와 T15/T16 raw proof를 producer→schema→validator→negative fixture까지 구현한다. 기존 v3 suite나 primary NDCG 의미를 소급 변경하지 않는다.
+2. RBR-00 exact inventory·clean-source contract/SDK receipt와 RBR-02/03/04/05/07/11 owning rails를 **같은 revision**에서 발급한다. 국소 테스트 통과와 변경 전 receipt는 이 게이트를 대체하지 않는다.
+3. RBR-08/09/10은 development raw 실험 후 변경 하나 또는 유지 결정을 기록한다. 효과가 불확실하면 기본값을 유지한다.
+4. 외부 독립 gold/admission·고정 corpus/model/spec·quiet host가 갖춰질 때만 RBR-12 한 조합의 final holdout pair/replay 및 품질·성능 자격을 판정한다. 이는 수동 승인 작업 티켓이 아니라 qualified claim의 필수 입력이다. 없으면 세 final claim은 `NOT_RUN`이다.
 
-- 적대적 감사 16건 중 14건 수정 완료(발견 8·16은 이 라운드에 종결; 잔여 없음). 커밋 `36b2f8c5`, `2a2b296f`.
-- RBR-07 분해 레일 상륙(5 passed, 192s): short-result exact completion이 sealed effort에서 발동하지 않음을 실측 고정. RBR-10 계측 상륙(63 passed).
-- RBR-01 잔여(서버 내부 publish 단계 timing의 공개 노출)은 공개 SDK API 변경을 수반하므로 별도 계약 작업으로 분리 — `OPEN · PRODUCT-API`.
-- RBR-06 evaluator 지표·RBR-12 준비는 여전히 공유 dirty 대기(evaluator.py/run.py v5 진화 중).
-
-## RBR-02 (P0) — query policy
-- 정책 엔진·v4 identity·재도출 oracle·tamper 거부 — DONE
-- 실daemon 문장 vs 식별자 distractor fixture — DONE(`2a2b296f`)
-
-## RBR-03 (P0) — Semble profiles
-- 4 프로파일 dispatch·lane 격리·위조 거부 — DONE(stub)
-- **실제 pinned Semble 개발 캡처 + raw output** — OPEN · EXTERNAL(외부 venv 실행) + BLOCKED-DIRTY(semble.py/run.py)
-
-## RBR-04 (P1) — symbol producer — DONE
-- 5개 언어 fixture, combined 게시, digest 바인딩, 실daemon publish/reopen — DONE
-
-## RBR-05 (P1) — symbol route
-- registry·route·증명·no-answer·capture 모델·route-generic — DONE
-- receipt — BLOCKED-DIRTY
-- 동명이인 실daemon 케이스 — DONE(`2a2b296f`)
-
-## RBR-06 (P1) — span 회계·청커 대조
-- indexed vs SDK line span vs scored bytes + expansion ratio 기록 — OPEN
-- **rank-only MRR/Hit@1, exact-span Recall@10, context bytes 보조 지표** — OPEN · BLOCKED-DIRTY(evaluator.py)
-- **청커 A/B matrix(strict vs line-aligned, whole_file 대조)** — OPEN · CLEAN_FILE(chunking/*)+ EXTERNAL(실 코퍼스 실행)
-- **손계산 fixture(mid-line UTF-8/CRLF/1024초과 한 줄/nested 긴 함수/attributes/다중 정의)** — OPEN · CLEAN_FILE(chunking_contract.rs)
-- 지표 이름·scorer identity 분리 — BLOCKED-DIRTY(evaluator.py)
-
-## RBR-07 (P1) — parity·exact/ANN
-- **encoder full-vector parity harness(pinned Python ref vs Rust)** — OPEN · CLEAN_FILE(crates/quanta-index-embed/model2vec.rs) + EXTERNAL(venv 모델)
-- manifest에 encoder/tokenizer/정밀도/truncation 고정 — OPEN
-- exact exhaustive cosine oracle vs 실제 dense lane 분해 — OPEN · semantic crate(CLEAN_FILE 여부 확인 필요)
-- 255/256 경계·short-result 테스트 — OPEN
-
-## RBR-08 (P2 조건부) — exact-name ranking
-- 진입 조건 probe(심볼 route에서 정답 후보가 참조/부분일치보다 낮은 재현 사례) — OPEN · RBR-05 완료로 이제 가능 · BLOCKED-DIRTY(sdk_roundtrip.rs)
-- 진입 조건 없으면 유지 결정으로 종료 — probe 결과에 따라
-
-## RBR-09 (P2 조건부) — fetch 비용
-- RBR-01 stage timing이 전제 — 01 완성 후 실험 · EXTERNAL(실측)
-- fetch matrix harness 코드 — OPEN (04 완료 후 우선순위)
-
-## RBR-10 (P2 조건부) — ingest delete 비용
-- owner/window 수·delete 호출/commit·단계별 시간 계측 코드 — OPEN · semantic crate 확인 필요
-- 실험·최적화 후보 — EXTERNAL
-
-## RBR-12 (P1) — 평가 종료
-- task family 정의·split key·leakage validator 확장 — OPEN · BLOCKED-DIRTY(evaluator.py)
-- holdout 고정 manifest — EXTERNAL(외부 설계)
-- 최종 pair/replay — 적용 티켓 종료 후
-
-## 우선순위 실행 순서 (지금 가능한 것 먼저)
-
-1. **RBR-06 손계산 청킹 fixture** — CLEAN_FILE — 이번 라운드 착수
-2. **RBR-07 parity harness 구조** — CLEAN_FILE(embed crate)
-3. 타 writer 커밋 → **RBR-01 stage timing + RBR-06 evaluator 지표 + RBR-02/05 실daemon fixture** 일괄
-4. RBR-08 probe → 측정 근거 확보
-5. RBR-09/10 계측 → 실험
-6. RBR-12 준비
+2026-09-26 이전 단계별 `OPEN`/`DONE` 스냅샷과 수행 기록은 Git 역사 및 [AUDIT.md](AUDIT.md)에 남는다. 이 표가 현 소스의 우선 상태다.

@@ -445,13 +445,15 @@ pub(crate) fn reconcile(
 /// Every event row matches its own commitment and digest. Operation-kind
 /// events pair with their terminal idempotency row or an invalidation;
 /// `RepoMap` candidate events pair with a self-digested candidate row whose
-/// logical identity and commitment match the event. Other `RepoMap` events
-/// pair with their activation or quarantine-incident rows by sequence.
+/// logical identity and commitment match the event. Activation and invalidation
+/// events pair with their activation row by sequence, identity and commitment;
+/// quarantine events pair with their incident row.
 /// Rollback has no current producer and is represented only by its ledger row.
 pub(crate) fn verify_integrity(
     connection: &Connection,
     path: &std::path::Path,
 ) -> Result<(), CoreError> {
+    crate::candidate::verify_activation_head_integrity(connection, path)?;
     let mut statement = connection
         .prepare(
             "SELECT sequence, kind, identity_digest, payload_digest, event_commitment, row_sha256

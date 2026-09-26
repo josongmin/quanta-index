@@ -1,6 +1,13 @@
 # RBR-06 — Span 회계 분리와 기존 청커 대조 실험
 
-- 우선순위: P1. 계측/실험: `NOT_RUN`. 선행: RBR-01/02/03.
+## 현행 판정 — 2026-09-26, `af640562` + dirty overlay
+
+- 구현: strict/line-aligned/whole-file 청커와 손계산 fixture가 있다. `published_units.rs`에는 indexed byte span이 남지만 `record.rs::prove_hit`은 SDK line span을 `line_span_bytes`로 확장하여 **그 한 span만** scorer에 출력한다. `evaluator.py::recall_at_k`/`mrr_at_k`는 이 projected span에 `covers`를 적용한다.
+- 검증: dirty local chunking contract 25 passed는 진단 결과다. 현 frozen-source producer→schema→replay→scorer integration 및 외부 matrix는 `NOT_RUN`.
+- 잔여 코드: `record.rs`·record schema/validator·`evaluator.py`에 indexed/SDK/scored span 세 축, expansion/context bytes·tokens, rank-only Hit@1/MRR, exact-index-span Recall@10을 명시적으로 연결한다. old density-aware NDCG를 조용히 재정의하지 말고 별도 scorer identity와 mutation fixture를 추가한다.
+- 잔여 실험: 같은 질의/모델/route의 strict vs line-aligned vs whole-file 원본 matrix·coverage·fall-back을 외부 코퍼스에서 실행하고 한 후보를 development에서 선택한다. [현재 전수 판정](CURRENT-AUDIT.md).
+
+- 우선순위: P1. 손계산 청커 fixture는 있으나 span 분리·보조 지표·matrix는 미완료. [현재 전수 판정](CURRENT-AUDIT.md). 선행: RBR-01/02/03.
 - 성격: 확인된 회계 차이의 관측 강화. 현재 density scorer를 버그로 단정하지 않는다.
 
 ## 파일·함수

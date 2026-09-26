@@ -1,8 +1,8 @@
 # SEP-26 Retrieval Remediation — 작업 티켓
 
-작성일: 2026-09-26. 상태: **RBR-00 일부·RBR-11 구현 완료(2026-09-26 2차), 나머지 구현 NOT_RUN**.
+작성일: 2026-09-26. **현재 상태는 [CURRENT-AUDIT.md](CURRENT-AUDIT.md)의 RBR-00~12 전수 표와 각 티켓의 `현행 판정`을 사용한다.** 남은 작업만의 현행 등록부는 [GAP-REGISTER.md](GAP-REGISTER.md)다. 아래 2차 라운드 표는 당시 관측 기록이며 현재 완료 판정이 아니다. 최종 Python 입력의 전체 suite는 dirty diagnostic으로 통과했으나, clean-source proof와 qualified pair는 발급되지 않았다.
 
-최종 감사 기준: `33b24dd5df959f38c0df4717ff834b96750faf34` + 기존 dirty 변경. 시작 기준은 `e38e07865daf19661deaa5d1e580acc5814504ef`였으며, 공유 main 커밋 후 검사 입력 57개의 해시를 재대조하고 집중 테스트를 재실행했다. 이 패킷은 구현 완료나 비교 우위의 증거가 아니다. 최종 재감사 근거는 [AUDIT.md](AUDIT.md), 실제 관측값·파일 해시는 [audit-evidence.json](audit-evidence.json), 공통 완료 계약은 [TEST-PLAN.md](TEST-PLAN.md)에 있다.
+최초 티켓 작성 감사 기준: `33b24dd5df959f38c0df4717ff834b96750faf34` + 당시 dirty 변경. 시작 기준은 `e38e07865daf19661deaa5d1e580acc5814504ef`였으며, 공유 main 커밋 후 검사 입력 57개의 해시를 재대조하고 집중 테스트를 재실행했다. **이번 코드 감사 시작 기준은 `af6405629ec09219e02c0a2bdb36a4cfe29ac4ba` + dirty overlay, RBR 코드 재검사 기준은 `619292caadf108662c22fbb9992560056a70a5bd`**이며 이동한 Rust source의 proof는 재발급하지 않았다. 상세는 [CURRENT-AUDIT.md](CURRENT-AUDIT.md). 이 패킷은 구현 완료나 비교 우위의 증거가 아니다. 최초 감사 근거는 [AUDIT.md](AUDIT.md), 당시 관측값·파일 해시는 [audit-evidence.json](audit-evidence.json), 공통 완료 계약은 [TEST-PLAN.md](TEST-PLAN.md)에 있다.
 
 기존 [RB-00~RB-06](../../sep-23-retrieval-bench/tickets/INDEX.md)의 fail-closed 계약은 유지한다. 이 패킷은 후속 개선의 현재 작업 순서다. 과거 캡처·verdict는 수정하지 않는다.
 
@@ -49,7 +49,7 @@ Rust-heavy 검증과 성능 측정은 경쟁 writer/build가 없는 구간에 �
 
 각 티켓은 구현, focused verification, integration, qualification을 별도 상태로 갱신한다. 상태 값은 `VERIFIED / FAILED / BLOCKED / NOT_RUN / NOT_APPLICABLE`이다. 조건부 티켓은 실험 근거와 유지 결정이 검증되면 종료할 수 있으나, 실행하지 않은 최적화를 완료라고 쓰지 않는다.
 
-### 2026-09-26 2차 라운드 상태
+### 2026-09-26 2차 라운드 상태 (역사적 기록; 현 상태 아님)
 
 | 티켓 | 구현 | focused verification | integration | qualification |
 | --- | --- | --- | --- | --- |

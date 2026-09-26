@@ -1,6 +1,12 @@
 # RBR-03 — Semble native-default와 통제 실험 분리
 
-- 우선순위: P0. 구현 및 dirty-source 실핀 프로파일 진단: `VERIFIED`; 두 레포의 exploratory pair: `VERIFIED`; 현재 소스의 clean-source receipt와 W0-B pair 자격 판정: `NOT_RUN`. 선행: RBR-00.
+## 현행 판정 — 2026-09-26, `af640562` + dirty overlay
+
+- 구현: 네 profile dispatch와 phase execution event 검증 경로 확인. 아래 99파일·20질의 Semble 0.6.0 캡처와 exploratory pair는 **과거 개발 관측**이다.
+- 검증: 현 source에서 pinned adapter fixture·원본 output hash 재검증과 clean receipt는 `NOT_RUN`; qualified `PAIR_VALID`/quality/performance는 모두 `NOT_RUN`.
+- 잔여: 같은 frozen source/spec에서 실제 pinned reference output·lane 호출·phase event를 재대조한다. 독립 gold/admission/quiet-host가 없는 개발 캡처를 qualified pair로 승격하지 않는다. [현재 전수 판정](CURRENT-AUDIT.md).
+
+- 우선순위: P0. 과거 pinned 개발 캡처와 exploratory pair는 역사적 증거; local 계약은 이후 통과, clean-source receipt와 qualified pair는 `NOT_RUN`. [현재 전수 판정](CURRENT-AUDIT.md). 선행: RBR-00.
 - 성격: 비교 모드 표기/실행 계약 공백. 설치된 Semble 0.6.0을 기준으로 한다.
 
 ## 파일·함수

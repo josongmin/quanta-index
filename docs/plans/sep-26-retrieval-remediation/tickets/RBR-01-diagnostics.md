@@ -1,6 +1,12 @@
 # RBR-01 — SDK 응답과 단계별 실행 정보 보존
 
-- 우선순위: P0. 구현/검증: `NOT_RUN`. 선행: RBR-00 계약.
+## 현행 판정 — 2026-09-26, `af640562` + dirty overlay
+
+- 구현: `sdk.rs`/`diagnostics.rs`의 response·window·executed/contributed 분리와 `run.py` diagnostic v3 검증은 확인. runner-level phase wall time은 서버 내부 query/ingest stage 비용이 아니다.
+- 검증: 이 감사의 current-source SDK roundtrip, stage timing 및 diagnostic on/off overhead는 `NOT_RUN`. 과거 local contract 숫자는 현 bytes의 proof가 아니다.
+- 잔여: 서버 경계에서 query 단계별 duration/calls·candidate counts를 source-bound DTO/sidecar로 공개하고, RBR-10 ingest stage report와 연결한다. missing/partial/timeout 및 overhead 부정 테스트와 daemon roundtrip을 같은 revision에서 실행한다. [현재 전수 판정](CURRENT-AUDIT.md).
+
+- 우선순위: P0. 응답 진단은 구현 관측, 내부 stage timing·overhead는 잔여. 현 소스 proof 미발급. [현재 전수 판정](CURRENT-AUDIT.md). 선행: RBR-00 계약.
 - 성격: 확정 관측성 공백. [TEST-PLAN](TEST-PLAN.md) 적용.
 
 ## 파일·함수

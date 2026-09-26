@@ -1,12 +1,20 @@
 # RBR-11 — Zero-RSS live parent 아래 프로세스 누락 수정
 
-- 우선순위: P0. 구현/회귀 검증: `NOT_RUN`. 선행: 없음; inventory는 RBR-00과 함께 갱신.
-- 감사 상태: 현재 dirty 코드에서 deterministic fixture 반례 `FAILED` 재현. 실제 과거 캡처의 누락량은 미측정.
+## 현행 판정 — 2026-09-26, `af640562` + dirty overlay
+
+- 구현: live zero-RSS connector·malformed/duplicate PID·missing root의 fail-closed 처리는 `run.py` dirty bytes에 있다. 아래 `rss_kib > 0` 선필터와 `[100]` 결과는 **수정 전 재현 기록**이다.
+- 검증: 최종 테스트 bytes의 focused 4 passed/268 deselected와 Quanta resource verdict 변조 1 passed/271 deselected, inventory 272/272. 같은 Python 입력 해시로 전체 272 passed/32 subtests(exit 0)까지 실행. Rust source는 실행 중 이동했으므로 dirty Python 진단이며 플랫폼별 owner proof·clean receipt는 `NOT_RUN`.
+- 잔여: ps snapshot은 PID 시작시각/identity를 묶지 않으므로 빠른 PID 재사용까지 증명하지 못한다. 이를 legacy diagnostic 한계로 명시하고, 지원 플랫폼 owner evidence·완전성 부정 fixture·최종 source 전체 contract를 재검증한다. 과거 peak RSS는 소급 교정 불가. [현재 전수 판정](CURRENT-AUDIT.md).
+
+- 우선순위: P0. sampler 수정 코드는 관측됨; 현 소스 전체 proof는 미발급. [현재 전수 판정](CURRENT-AUDIT.md). 선행: 없음; inventory는 RBR-00과 함께 갱신.
+- 원 감사 상태: 수정 전 dirty 코드에서 deterministic fixture 반례 `FAILED` 재현. 아래 원인·반례는 역사적 입력이며 현 코드는 수정됨. 실제 과거 캡처의 누락량은 미측정.
+
+2026-09-26 후속 감사: `ps`의 malformed/duplicate PID 및 root 미관측을 성공 snapshot으로 해석하는 두 번째 fail-open 경로를 RED로 확인했다. `_process_tree_sample`은 이제 이 입력을 `RunError`로 거부하고 `run_monitored_process`는 artifact `complete=false`와 error를 남긴다. 정상 종료 직후 root가 사라졌지만 process group도 비어 있는 경우는 앞선 유효 sample을 무효화하지 않는다; 남은 자식 group이 있으면 불완전으로 처리한다. 시간 의존 테스트는 deterministic process state fixture로 바꿨다. Quanta resource를 불완전으로 변조한 final verdict도 `resource_accounting_incomplete`를 반환한다. 새 회귀 identity를 Python proof inventory에 등록했다. 최종 테스트 bytes의 dirty focused 결과 4 passed/268 deselected와 verdict 1 passed/271 deselected, Python inventory 272/272 일치. 이어 동일 Python 입력 해시의 전체 suite는 272 passed/32 subtests(exit 0, 165.75s)였다. Rust source가 실행 중 이동해 clean-source receipt는 `NOT_RUN`.
 
 ## 파일·함수와 원인
 
-- [run.py](../../../../tools/benchmark/retrieval/run.py) `_process_tree_sample`: `rss_kib > 0` 조건으로 그래프 노드를 제외한 뒤 PPID reachability를 계산한다.
-- [test_retrieval_benchmark.py](../../../../tools/ci/tests/test_retrieval_benchmark.py) `test_process_tree_sampler_excludes_zombie_processes`: 현재 fixture의 살아 있는 startup parent/descendant까지 제외하는 expectation이 들어 있다.
+- [run.py](../../../../tools/benchmark/retrieval/run.py) `_process_tree_sample`: 수정 전에는 `rss_kib > 0` 조건으로 그래프 노드를 제외한 뒤 PPID reachability를 계산했다.
+- [test_retrieval_benchmark.py](../../../../tools/ci/tests/test_retrieval_benchmark.py) `test_process_tree_sampler_excludes_zombie_processes`: 수정 전 fixture의 살아 있는 startup parent/descendant까지 제외하는 expectation이 있었다.
 
 독립 불변식: 살아 있는 PID 104가 root 100의 자식이고 PID 105가 104의 자식이면, 104의 RSS가 0이어도 positive-RSS 105는 소유 프로세스다.
 
@@ -17,7 +25,7 @@ PID  PPID  RSS_KiB  STATE
 105  104   4096     S
 ```
 
-현재 결과 `[100]`, 기대 positive-RSS 측정 PID `[100, 105]`. 입력과 실제 출력은 [감사 근거](audit-evidence.json)에 고정한다.
+수정 전 결과 `[100]`, 기대 positive-RSS 측정 PID `[100, 105]`. 입력과 당시 실제 출력은 [감사 근거](audit-evidence.json)에 고정한다.
 
 ## 수정 설계
 

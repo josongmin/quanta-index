@@ -1,5 +1,7 @@
 # 최종 코드 감사 — SEP-26 Retrieval Remediation
 
+> 아래는 티켓 작성 당시의 역사적 감사다. `8d9b9f37` 이후를 포함한 티켓별 현재 상태와 남은 게이트는 [CURRENT-AUDIT.md](CURRENT-AUDIT.md)에 기록한다. 이 문서의 '최종'은 현 소스 전체 검증·비교 자격을 뜻하지 않는다.
+
 감사일: 2026-09-26. 최종 기준 HEAD: `33b24dd5df959f38c0df4717ff834b96750faf34` + 기존 dirty overlay. 시작 HEAD는 `e38e07865daf19661deaa5d1e580acc5814504ef`였고 작업 중 공유 main에서 다른 작업의 커밋이 들어왔다. 최종 검사 입력 57개를 해시 재대조하여 일치함을 확인하고 Python 집중 테스트를 다시 실행했다. 코드 구현은 이 작업에서 수정하지 않았다. 새 티켓 패킷만 작성했다.
 
 2026-09-26 패킷 재감사: 관측 HEAD `937403350911ffe29246cc68c18f13da098f4991`, 작업 트리 clean 상태에서 아래 57개 검사 입력 및 설치 reference bytes를 재대조하여 drift 0개를 확인했다. `33b24dd5` 이후 새 커밋은 이 입력 밖의 searchd-runtime E2E 테스트를 수정했다. 이 재대조는 최신 HEAD의 전체 Rust/daemon 검증이 아니며, 아래 집중 Python 결과의 실행 revision도 변경하지 않는다.

@@ -2422,38 +2422,118 @@ def test_process_tree_sampler_zero_rss_root_reports_positive_children_only(monke
     assert sample[0]["rss_bytes"] == 2048 * 1024
 
 
-def test_process_tree_sampler_skips_malformed_rows_and_is_deterministic_on_duplicate_pid(monkeypatch):
+def test_process_tree_sampler_rejects_malformed_and_duplicate_pid(monkeypatch):
     _patch_ps_snapshot(
         monkeypatch,
         "100 50 1024 1.0 S runner\n"
         "101 100 not-a-number 1.0 S bad-rss\n"
-        "102 100\n"
-        "103 100 4096 2.0 S worker\n"
-        "103 100 512 0.5 S worker-retaken\n"
-        "104 103 2048 1.0 S inner\n",
     )
+    with pytest.raises(pairrun.RunError, match="malformed ps process row"):
+        pairrun._process_tree_sample(100)
+    _patch_ps_snapshot(
+        monkeypatch,
+        "100 50 1024 1.0 S runner\n"
+        "103 100 4096 2.0 S worker\n"
+        "103 100 512 0.5 S worker-retaken\n",
+    )
+    with pytest.raises(pairrun.RunError, match="duplicate ps process PID"):
+        pairrun._process_tree_sample(100)
 
-    sample = pairrun._process_tree_sample(100)
 
-    # Malformed rows are skipped without disconnecting the tree, and a
-    # duplicate PID deterministically keeps the last ps row (512 KiB), so
-    # the subtree under it stays owned and measurable.
-    assert [process["pid"] for process in sample] == [100, 103, 104]
-    assert sample[1]["rss_bytes"] == 512 * 1024
-
-
-def test_process_tree_sampler_missing_root_still_links_observed_children(monkeypatch):
+def test_process_tree_sampler_missing_root_refuses_complete_snapshot(monkeypatch):
     _patch_ps_snapshot(
         monkeypatch,
         "101 999 2048 1.0 S orphaned-worker\n"
         "102 1 4096 2.0 S unrelated\n",
     )
 
-    sample = pairrun._process_tree_sample(999)
+    # An unobserved root may have exited or been reused. The observed child
+    # alone cannot prove a complete owner tree.
+    with pytest.raises(pairrun.RunError, match="root process is absent"):
+        pairrun._process_tree_sample(999)
 
-    # An unobserved or already-exited root still owns the processes that
-    # report it as their parent.
-    assert [process["pid"] for process in sample] == [101]
+
+@pytest.mark.skipif(sys.platform == "linux", reason="legacy ps sampler is not Linux owner evidence")
+def test_process_tree_invalid_snapshot_marks_resource_artifact_incomplete(tmp_path, monkeypatch):
+    _patch_ps_snapshot(monkeypatch, "not a valid ps row\n")
+    metrics = pairrun.run_monitored_process(
+        [sys.executable, "-c", "import time; time.sleep(0.05)"],
+        stdout_path=tmp_path / "stdout.log",
+        stderr_path=tmp_path / "stderr.log",
+        resource_path=tmp_path / "resource.json",
+        timeout_secs=2,
+        sample_interval_ms=10,
+    )
+    assert metrics["complete"] is False
+    assert "malformed ps process row" in metrics["error"]
+    assert metrics["cleanup_complete"] is True
+    assert json.loads((tmp_path / "resource.json").read_text()) == metrics
+
+
+def _monitored_root_exit_snapshot(tmp_path, monkeypatch, *, group_survives):
+    class FinishedRoot:
+        pid = 43821
+        returncode = 0
+        polls = 0
+
+        def poll(self):
+            self.polls += 1
+            return None if self.polls == 1 else 0
+
+    root = FinishedRoot()
+    calls = 0
+
+    def sample(root_pid):
+        nonlocal calls
+        assert root_pid == root.pid
+        calls += 1
+        if calls == 1:
+            return [{
+                "pid": root_pid,
+                "ppid": 1,
+                "rss_bytes": 1024,
+                "cpu_percent": 0.0,
+                "command": "python",
+            }]
+        raise pairrun.ProcessRootAbsent("root process is absent from live ps snapshot")
+
+    def group_probe(_pgid, sig):
+        assert sig == 0
+        if group_survives:
+            return None
+        raise ProcessLookupError
+
+    monkeypatch.setattr(pairrun.subprocess, "Popen", lambda *_args, **_kwargs: root)
+    monkeypatch.setattr(pairrun, "_process_tree_sample", sample)
+    monkeypatch.setattr(pairrun, "_cleanup_process_group", lambda _pgid: (True, False, None))
+    monkeypatch.setattr(pairrun.os, "killpg", group_probe)
+    metrics = pairrun.run_monitored_process(
+        [sys.executable, "-c", "pass"],
+        stdout_path=tmp_path / "stdout.log",
+        stderr_path=tmp_path / "stderr.log",
+        resource_path=tmp_path / "resource.json",
+        timeout_secs=2,
+        sample_interval_ms=1,
+    )
+    assert calls == 2
+    assert root.polls >= 3
+    assert metrics["exit_code"] == 0
+    assert metrics["samples"] == 1
+    return metrics
+
+
+@pytest.mark.skipif(sys.platform == "linux", reason="legacy ps sampler is not Linux owner evidence")
+def test_process_tree_completed_root_does_not_invalidate_prior_samples(tmp_path, monkeypatch):
+    metrics = _monitored_root_exit_snapshot(tmp_path, monkeypatch, group_survives=False)
+    assert metrics["complete"] is True
+    assert metrics["error"] is None
+
+
+@pytest.mark.skipif(sys.platform == "linux", reason="legacy ps sampler is not Linux owner evidence")
+def test_process_tree_exited_root_with_surviving_group_is_incomplete(tmp_path, monkeypatch):
+    metrics = _monitored_root_exit_snapshot(tmp_path, monkeypatch, group_survives=True)
+    assert metrics["complete"] is False
+    assert "root process is absent" in metrics["error"]
 
 
 def test_process_tree_sampler_propagates_ps_failure(monkeypatch):
@@ -4918,6 +4998,22 @@ def test_verdict_host_profile_fingerprint_is_enforced(tmp_path, monkeypatch):
 
 def test_verdict_rejects_forged_phase_and_process_tree_resources(tmp_path, monkeypatch):
     _allow_minimal_speed_fixture(monkeypatch)
+
+    quanta_stage = _pair_stage(tmp_path / "quanta-resource", scope="qualified", claims={"speed": True})
+    quanta_path = (
+        quanta_stage["stage"]
+        / "rep-00"
+        / "quanta"
+        / "strategy-00-whole_file"
+        / "resource-metrics.json"
+    )
+    quanta_resource = json.loads(quanta_path.read_text(encoding="utf-8"))
+    quanta_resource.update(complete=False, error="malformed ps process row")
+    quanta_path.write_text(json.dumps(quanta_resource), encoding="utf-8")
+    quanta_verdict = _stage_verdict(quanta_stage)
+    assert quanta_verdict["state_evidence"]["PERF_QUALIFIED"]["reason"] == (
+        "resource_accounting_incomplete"
+    )
 
     resource_stage = _pair_stage(tmp_path / "resource", scope="qualified", claims={"speed": True})
     resource_path = resource_stage["stage"] / "rep-00" / "semble-resource-metrics.json"

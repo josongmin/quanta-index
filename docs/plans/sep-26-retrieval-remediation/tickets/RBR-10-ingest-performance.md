@@ -1,6 +1,12 @@
 # RBR-10 — Semantic owner delete 비용과 replacement 안전성
 
-- 우선순위: P2. 계측/조건부 구현: `NOT_RUN`. 선행: RBR-01.
+## 현행 판정 — 2026-09-26, `af640562` + dirty overlay
+
+- 구현: `build.rs::build_stream_reported`가 내부 delete/append 등 stage report를 만들지만 기본 `build_stream`은 보고값을 폐기하고 공개 SDK/runner까지 전달하지 않는다. delete 최적화나 제품 기본값 변경은 아직 없다.
+- 검증: 현 frozen-source semantic integration, 공개 stage identity, fresh/delta raw 측정, row-set/fault/restart oracle은 `NOT_RUN`.
+- 잔여: semantic owner→search-plane/SDK→runner의 stage provenance를 먼저 연결하고 비용 비중을 재현한다. 유의한 delete 비용이 확인된 경우에만 bounded predicate 한 후보를 시험하고 durability/재시작/원자적 visibility 및 fresh-root 시간을 검증한다. 아니면 유지 결정. [현재 전수 판정](CURRENT-AUDIT.md).
+
+- 우선순위: P2. 내부 storage stage 계측 코드는 관측됨; 공개 경로·실측·조건부 결정은 `NOT_RUN`. [현재 전수 판정](CURRENT-AUDIT.md). 선행: RBR-01.
 - 확인된 사실: 임베딩은 이미 window batching, storage는 scope별 delete 후 batch append. 비용 비중은 아직 미측정.
 
 ## 파일·함수

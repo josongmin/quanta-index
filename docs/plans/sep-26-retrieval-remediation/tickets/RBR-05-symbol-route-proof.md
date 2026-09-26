@@ -1,6 +1,12 @@
 # RBR-05 — Symbol route와 공통 published-unit 증명
 
-- 우선순위: P1. 구현/검증: `NOT_RUN`. 선행: RBR-01/02/04.
+## 현행 판정 — 2026-09-26, `af640562` + dirty overlay
+
+- 구현: `published_units.rs` typed registry, SDK `symbol` route와 `record.rs::prove_hit`의 published-unit 증명 경로 확인. `prove_hit`의 **scored byte span은 full-line projection**이므로 indexed span 품질은 RBR-06 미해결.
+- 검증: 과거 live SDK 기록은 현 source의 forged/stale/timeout/no-answer·동명이인 proof가 아니다. 현재 SDK rail/receipt는 `NOT_RUN`.
+- 잔여: RBR-06 span 스키마와 맞춰 producer→validator를 고정하고 현 daemon route·negative fixtures를 재실행한다. [현재 전수 판정](CURRENT-AUDIT.md).
+
+- 우선순위: P1. typed registry·symbol route 코드 관측; 현 소스 SDK proof 미발급. [현재 전수 판정](CURRENT-AUDIT.md). 선행: RBR-01/02/04.
 - 성격: 심볼 기능을 실제 평가까지 연결하는 필수 작업.
 
 ## 파일·함수

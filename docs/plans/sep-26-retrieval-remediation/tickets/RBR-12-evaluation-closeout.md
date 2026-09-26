@@ -1,8 +1,17 @@
 # RBR-12 — 사전 고정 평가 설계와 실제 비교·문서 종료
 
-- 우선순위: P1. 준비/최종 검증: `NOT_RUN`.
+## 현행 판정 — 2026-09-26, `af640562` + dirty overlay
+
+- 구현: 단일 suite의 train/eval 질의 가족·겹친 gold span 검사는 있다. 서로 다른 development/holdout suite의 file·definition·task-family custody 경계는 없다.
+- 검증: cross-suite leakage fixture 및 final `PAIR_VALID`/`QUALITY_DELTA`/`PERF_QUALIFIED`는 모두 `NOT_RUN`. 조건부 T15/T16은 `run.py`가 임의 `pass` 요약만으로 받아들일 수 있어 proof-integrity `FAILED`; 일반 pair 판정과 구분한다. 과거 exploratory verdict의 `PAIR_VALID=pass`를 이 판정으로 옮기지 않는다.
+- 잔여 코드: 기존 v3 suite를 소급 변형하지 않고 별도 frozen experiment/admission schema에 development·holdout suite digest, repo/source identity, 정의/file/query-family split key를 묶는다. `evaluator.py`에 cross-suite validator, `run.py` freeze/replay 결합, 동일 파일의 disjoint span·근접 질의·위조/순서변경/교체 부정 fixture와 proof inventory를 추가한다. T15/T16은 raw vector/증분 row-set, 정확한 실행 명령·source/model/dependency, collection/terminal receipt와 결합하고 조작된 `pass` JSON을 거부한다.
+- 잔여 외부 자격: 독립 gold·admission, frozen corpus/model/spec, quiet host와 final single holdout pair/replay. 이는 개발 티켓의 수동 작업 항목이 아니라 qualified claim의 입력 조건이다. [현재 전수 판정](CURRENT-AUDIT.md).
+
+- 우선순위: P1. 기존 split 검증·verdict framework는 관측됨; 독립 holdout·최종 pair/replay는 `NOT_RUN`. [현재 전수 판정](CURRENT-AUDIT.md).
 - 선행: 설계·분리는 즉시. 최종 capture는 적용된 RBR-00~11 통합·검증 후.
 - 성격: 개발 구현 완료와 외부 비교 자격을 분리하는 통합 티켓.
+
+현재 코드 감사(2026-09-26): `evaluator.validate_suite`는 한 suite의 train/eval만 검사한다. `suite.schema.json`에는 holdout split/외부 experiment identity가 없고, 현재 mutant fixture는 같은 파일의 disjoint train/eval을 통과시킨다. 따라서 두 별도 suite 사이의 같은 파일·정의·질의 가족 누수를 현 validator로 증명할 수 없다. 역사 v3 의미를 사후 변경하기보다, 개발 suite와 최종 holdout suite의 digest·repo/source identity·split key를 함께 받는 새로운 frozen admission 경계가 필요하다. 이는 독립 gold·quiet host 부재와 별개의 **코드 P1** 잔여다.
 
 ## 파일·함수
 

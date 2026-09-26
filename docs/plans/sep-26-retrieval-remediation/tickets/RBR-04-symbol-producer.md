@@ -1,6 +1,13 @@
 # RBR-04 — 소스 기반 심볼 생성과 파일 단위 combined publication
 
-- 우선순위: P1. 구현/검증: `NOT_RUN`. 선행: RBR-00.
+## 현행 판정 — 2026-09-26, `af640562` + dirty overlay
+
+- 구현: `symbols.rs`의 다언어 definition producer, `batch.rs::assemble_batch`의 파일당 combined `replace_scope`, symbol payload/producer identity가 포함된 digest를 코드에서 확인. 단, `extract_corpus_symbols`는 **지원하지 않는 admitted 파일을 skip하고 경로 목록은 count만** phase metrics에 남긴다. 아래 작업 3의 `unsupported grammar ... explicit coverage failure` 계약과 다르다.
+- 검증: 이전 5언어/SDK 수행 기록은 현 source의 storage·daemon proof가 아니다. 현 frozen-source 수작업 span, replace/reopen, source/grammar mutation, exact nextest receipt는 `NOT_RUN`.
+- 잔여 코드: 지원 범위·admitted 파일별 path+SHA/skip reason을 source-bound manifest로 고정하고 validator가 재도출해야 한다. unsupported 파일을 full symbol coverage 성공으로 세지 않으며, 명시적 partial capability profile이 없다면 거부한다. supported parse failure는 이미 typed abort이다.
+- 잔여 proof: 5언어 fixture와 실 daemon 게시·교체·재개방을 같은 revision/binary에서 다시 증명하고 parser/grammar/coverage manifest를 묶는다. [현재 전수 판정](CURRENT-AUDIT.md).
+
+- 우선순위: P1. producer·combined publication 코드 관측; 현 소스 storage/SDK proof 미발급. [현재 전수 판정](CURRENT-AUDIT.md). 선행: RBR-00.
 - 성격: 기존 chunk-only 벤치의 기능 확장. 제품에 심볼 계약이 없다는 주장이 아니다.
 
 ## 파일·함수

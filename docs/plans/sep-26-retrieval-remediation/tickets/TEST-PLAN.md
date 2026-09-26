@@ -1,6 +1,6 @@
 # RBR 공통 검증·완료 계약
 
-상태: 테스트 설계 작성. 아래 후속 구현 검증은 `NOT_RUN`이다. 기존 [RB TEST-PLAN](../../sep-23-retrieval-bench/tickets/TEST-PLAN.md)의 입력 격리·replay·성능 자격을 약화하지 않는다.
+상태: 공통 완료 계약. 티켓별 구현·검증의 **현재 판정**은 [CURRENT-AUDIT.md](CURRENT-AUDIT.md)에 있다. 현 소스의 전체 proof와 qualified pair는 아직 검증되지 않았다. 기존 [RB TEST-PLAN](../../sep-23-retrieval-bench/tickets/TEST-PLAN.md)의 입력 격리·replay·성능 자격을 약화하지 않는다.
 
 ## 1. 공통 oracle와 부정 테스트
 
@@ -17,15 +17,15 @@
 | 01 | SDK 응답과 sidecar 필드 대조; executed-but-empty lane; request 혼합; missing stage | contract + SDK |
 | 02 | DSL AND 보존; literal escaping; sentence/identifier paired fixture; gold 비접근 | contract + SDK |
 | 03 | pinned reference 함수 출력과 lane 호출 spy; alpha endpoint도 dual execution | Python adapter + 실제 pinned Semble 개발 캡처 |
-| 04 | 5개 언어의 수작업 definition spans; symbol-only 변경의 digest 변경; combined replacement | contract + storage + SDK |
+| 04 | 5개 언어의 수작업 definition spans; symbol-only 변경의 digest 변경; combined replacement; unsupported admitted 파일별 path+SHA/skip reason과 partial/full capability 판정 | contract + storage + SDK |
 | 05 | forged symbol ID/path/span; wrong generation; no-answer/timeout; line-expanded context | contract + SDK |
 | 06 | UTF-8/CRLF/긴 줄/겹친 span의 손계산; rank와 density의 독립 계산 | chunking contract + Python scorer |
-| 07 | full vectors + exhaustive cosine; 255/256 boundary; short/full ANN result | embed focused + semantic integration |
+| 07 | full vectors + exhaustive cosine; 255/256 boundary; short/full ANN result; 조건부 T15의 raw vector·asset·실행 context binding, 임의 `pass` 요약 거부 | embed focused + semantic integration + proof replay |
 | 08 | 정확 이름/동명이인/부분일치; stable tie; multi-page no duplication/omission | lexical fixtures + storage |
 | 09 | 동일 후보 fixture에서 fusion 불변식; sparse filters; deadlines; actual lane cost | semantic/storage + daemon |
 | 10 | fresh/delta/reopen/replay/tombstone/fault/restart의 최종 row set | semantic integration + daemon |
 | 11 | 실제 프로세스 트리와 positive-RSS descendants; zero-RSS 연결 노드 | Python sampler + platform별 owner check |
-| 12 | raw receipts/records로 fresh-process verdict 재도출; wrong-source/admission 거부 | contract proof + SDK proof + pair/replay |
+| 12 | cross-suite dev/holdout file·definition·query-family 누수 거부; raw receipts/records로 fresh-process verdict 재도출; wrong-source/admission 및 조건부 T15/T16 `pass` 요약 위조 거부 | contract proof + SDK proof + pair/replay |
 
 ## 3. 실행 명령
 
@@ -61,5 +61,7 @@ just retrieval-verdict <repo> <suite> <run-manifest> <fresh-external-verdict>
 ## 5. 증거 묶음과 완료
 
 각 결과에 full HEAD, 관련 dirty paths/source hash, 입력·모델·parser·dependency·설정·binary hash, host/runtime, 정확한 명령, raw 출력/종료 상태, 산출물 경로/SHA-256, covered/excluded scope를 남긴다. schema/config/policy 변경은 옛 증거 재사용을 무효화한다. 새 티켓 디렉터리가 source closure에 편입되면 이 문서의 사후 상태 변경도 receipt를 무효화한다. 최종 상태·결과표는 레포 외부의 digest-bound closeout artifact에 기록한다.
+
+조건부 T15(동일 모델)·T16(증분)의 `pass`/count JSON과 그 SHA-256은 독립 증거가 아니다. T15는 pinned 양쪽 모델·토크나이저·정밀도·입력·raw 전체 벡터·사전 선언 tolerance·실행 context로, T16은 동일 source/generation에서 before/after raw row-set·rename/delete/restart·실행 context로 재도출해야 한다. 임의 command 문자열 또는 새 digest를 붙인 요약만으로 조건부 claim을 승인하지 않는다. 현 validator의 이 경계는 [현재 감사](CURRENT-AUDIT.md)에서 `FAILED`로 기록했다.
 
 개발 작업의 종료와 `PAIR_VALID`, `QUALITY_DELTA`, `PERF_QUALIFIED`의 종료를 분리한다. 외부 독립 입력이 없으면 해당 qualification만 `BLOCKED` 또는 `NOT_RUN`으로 남기고, 개발 티켓에 가짜 승인·정답·quiet-host를 만드는 작업을 추가하지 않는다.

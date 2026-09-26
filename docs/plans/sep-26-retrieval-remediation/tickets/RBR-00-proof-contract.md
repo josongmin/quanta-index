@@ -1,15 +1,21 @@
 # RBR-00 — Proof inventory와 새 실행 계약의 증거 바인딩
 
-- 우선순위: P0. 구현/통합 검증: `NOT_RUN`.
+## 현행 판정 — 2026-09-26, `af640562` + dirty overlay
+
+- 구현: Python authority·sep-26 source closure·profile 계약은 코드에서 확인. 아래 210/211 및 closure 미포함은 **티켓 작성 당시 반례**이며 현 상태가 아니다.
+- 검증: `uv run --frozen --extra dev python -c '...collect_pytest()...'` exit 0, Python collected/required **272/272**, missing/extra/duplicate 0, 순서 일치. 최종 Python 입력 해시 불변의 전체 suite는 272 passed/32 subtests(exit 0), 다만 Rust source가 실행 중 이동한 dirty diagnostic이다. Rust 106·SDK 16은 manifest 수량 관측일 뿐 현재 source의 nextest collection과 clean receipt는 `NOT_RUN`.
+- 잔여: 최종 dirty bytes 고정 → 3역할 exact collection·negative fixture → clean-source contract/SDK receipt. 현재 구현/문서 변경 뒤 이전 receipt 재사용 금지. [현재 전수 판정](CURRENT-AUDIT.md).
+
+- 우선순위: P0. Python inventory·closure 코드는 관측됨; 현 소스 전체 proof는 미발급. [현재 전수 판정](CURRENT-AUDIT.md).
 - 선행조건: 없음. 공통 완료 조건: [TEST-PLAN](TEST-PLAN.md).
-- 성격: 현재 inventory 불일치 수정 + 새 티켓 계약을 위한 필수 통합.
+- 성격: 작성 당시 inventory 불일치 수정 + 새 티켓 계약을 위한 필수 통합. 현행 inventory 판정은 위 상태를 따른다.
 
 ## 근거와 수정 지점
 
-- [proof-required-tests.json](../../../../benchmarks/retrieval/proof-required-tests.json): 현재 Python authority 210개, 실제 collection 211개. zombie sampler 테스트 1개 미등록.
-- [diagnostics.rs](../../../../benchmarks/retrieval/src/diagnostics.rs): `uses_record_span_when_sdk_hit_is_unanchored`가 Rust authority에 없다. 이 항목은 static 확인이며 실제 nextest inventory는 아직 실행하지 않았다.
+- [proof-required-tests.json](../../../../benchmarks/retrieval/proof-required-tests.json): 작성 당시 Python authority 210개, 실제 collection 211개였고 zombie sampler 테스트 1개가 미등록이었다. 현행 수량은 위 판정을 따른다.
+- [diagnostics.rs](../../../../benchmarks/retrieval/src/diagnostics.rs): 작성 당시 `uses_record_span_when_sdk_hit_is_unanchored`가 Rust authority에 없었다. 현행 Rust exact collection은 아직 재실행하지 않았다.
 - [proof_inventory.py](../../../../tools/benchmark/retrieval/proof_inventory.py) `collect_pytest`, `verify_inventory_authority`: 정확한 집합 일치를 유지해야 한다.
-- [source_closure.py](../../../../tools/ci/source_closure.py) `PROFILES["retrieval"]`: 현재 계약 문서 경로는 sep-23만 포함한다. 새 티켓 계약을 사용하기 전에 이 패킷도 closure에 포함시킨다.
+- [source_closure.py](../../../../tools/ci/source_closure.py) `PROFILES["retrieval"]`: 작성 당시에는 sep-23만 포함했다. 현행 코드에는 sep-26 경로가 포함된다.
 - [run.py](../../../../tools/benchmark/retrieval/run.py) `freeze_inputs`, protocol/spec 검증 및 replay; 같은 디렉터리의 pair-spec/run-manifest/runner schemas.
 
 ## 작업

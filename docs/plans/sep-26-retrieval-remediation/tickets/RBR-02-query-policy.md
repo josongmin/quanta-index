@@ -1,6 +1,12 @@
 # RBR-02 — 자연어·literal·native DSL 입력 계약 분리
 
-- 우선순위: P0. 구현/검증: `NOT_RUN`. 선행: RBR-00.
+## 현행 판정 — 2026-09-26, `af640562` + dirty overlay
+
+- 구현: `query_plan.rs`의 native/literal/NL 분기, effective/original identity, Python 재도출 oracle 및 distractor fixture 경로 확인. 벤치 opt-in 정책이지 제품 기본값 변경이 아니다.
+- 검증: 과거 dirty local contract 결과는 기록되어 있으나 현 frozen-source 정책/identity 부정 테스트와 live daemon SDK proof는 `NOT_RUN`.
+- 잔여: 최종 source에서 query-plan·v4/v5 record/replay tamper fixture, 실제 daemon 문장/식별자 distractor 및 exact inventory/receipt를 함께 재실행한다. [현재 전수 판정](CURRENT-AUDIT.md).
+
+- 우선순위: P0. 정책·identity 구현 관측; local 계약 통과, clean-source proof 미발급. [현재 전수 판정](CURRENT-AUDIT.md). 선행: RBR-00.
 - 성격: 벤치 호출 계약 불일치. 기존 native AND는 결함이 아니다.
 
 ## 파일·함수

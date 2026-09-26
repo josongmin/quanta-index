@@ -254,6 +254,10 @@ class RunError(ValueError):
     """Paired-run evidence is absent, inconsistent or ineligible."""
 
 
+class ProcessRootAbsent(RunError):
+    """A ps snapshot has no live row for the monitored root PID."""
+
+
 QUERY_PROTOCOL_VERSION = 1
 
 
@@ -377,6 +381,8 @@ def _process_tree_sample(root_pid: int) -> list[dict]:
     process rows, so connector nodes stay in the ownership graph without
     producing metric rows, and no descendant is dropped with them.
     """
+    if type(root_pid) is not int or root_pid < 1:
+        raise RunError("ps process root PID must be positive")
     output = subprocess.check_output(
         ["ps", "-axo", "pid=,ppid=,rss=,pcpu=,stat=,comm="],
         text=True,
@@ -384,26 +390,36 @@ def _process_tree_sample(root_pid: int) -> list[dict]:
     )
     topology: dict[int, tuple[int, int, float, str, str]] = {}
     for line in output.splitlines():
+        if not line.strip():
+            continue
         fields = line.split(maxsplit=5)
         if len(fields) != 6:
-            continue
+            raise RunError(f"malformed ps process row: {line!r}")
         try:
             pid, ppid, rss_kib = (int(field) for field in fields[:3])
             cpu_percent = float(fields[3])
-        except ValueError:
-            continue
+        except ValueError as exc:
+            raise RunError(f"malformed ps process row: {line!r}") from exc
         state, command = fields[4], fields[5]
         if (
-            pid > 0
-            and ppid >= 0
-            and rss_kib >= 0
-            and math.isfinite(cpu_percent)
-            and state
-            and not state.startswith("Z")
+            pid < 1
+            or ppid < 0
+            or rss_kib < 0
+            or not math.isfinite(cpu_percent)
+            or cpu_percent < 0
+            or not state
+            or not command
         ):
-            # Duplicate PID rows keep the last occurrence: dropping an
-            # ambiguous PID could disconnect and hide its descendants.
-            topology[pid] = (ppid, rss_kib, max(cpu_percent, 0.0), state, command)
+            raise RunError(f"malformed ps process row: {line!r}")
+        if pid in topology:
+            raise RunError(f"duplicate ps process PID: {pid}")
+        topology[pid] = (ppid, rss_kib, cpu_percent, state, command)
+    if root_pid not in topology or topology[root_pid][3].startswith("Z"):
+        raise ProcessRootAbsent(f"root process is absent from live ps snapshot: {root_pid}")
+    # A zombie cannot bridge ownership to a live descendant.
+    topology = {
+        pid: row for pid, row in topology.items() if not row[3].startswith("Z")
+    }
     owned = {root_pid}
     changed = True
     while changed:
@@ -800,7 +816,26 @@ def run_monitored_process(
                         peak["peak_rss_bytes"] = max(peak["peak_rss_bytes"], row["rss_bytes"])
                         peak["peak_cpu_percent"] = max(peak["peak_cpu_percent"], row["cpu_percent"])
                         peak["samples"] += 1
-            except (OSError, subprocess.CalledProcessError) as error:
+            except ProcessRootAbsent as error:
+                # A completed root with no surviving process group is an
+                # ordinary end-of-run race after prior valid samples. A
+                # still-running root or surviving descendants make the
+                # ownership snapshot incomplete instead.
+                root_exit = process.poll()
+                group_survives = root_exit is None
+                if root_exit is not None:
+                    try:
+                        os.killpg(process.pid, 0)
+                    except ProcessLookupError:
+                        group_survives = False
+                    except OSError as probe_error:
+                        group_survives = True
+                        error = RunError(f"{error}; process-group probe failed: {probe_error}")
+                    else:
+                        group_survives = True
+                if group_survives and sample_error is None:
+                    sample_error = str(error)
+            except (OSError, subprocess.CalledProcessError, RunError) as error:
                 if sample_error is None:
                     sample_error = str(error)
             exit_code = process.poll()
