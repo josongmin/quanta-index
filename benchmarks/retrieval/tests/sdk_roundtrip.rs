@@ -52,6 +52,37 @@ fn symbols_for(
     extract_corpus_symbols(&by_path).expect("symbols").symbols
 }
 
+fn assemble_fixture_batch(
+    identity: &BatchIdentity,
+    chunks: &BTreeMap<String, Vec<quanta_index_retrieval_bench::chunking::Chunk>>,
+    files: &[quanta_index_retrieval_bench::corpus::SourceFile],
+) -> quanta_index_retrieval_bench::BenchResult<(
+    quanta_index_sdk::SearchCorpusBatch,
+    quanta_index_retrieval_bench::batch::BatchAssemblyReport,
+)> {
+    use quanta_index_retrieval_bench::symbols::{
+        SymbolCoveragePolicy, SymbolPreflightOptions, preflight_corpus_symbols,
+    };
+    let by_path = files
+        .iter()
+        .map(|file| (file.path.clone(), file.clone()))
+        .collect();
+    let preflight = preflight_corpus_symbols(&by_path, &SymbolPreflightOptions::default())?;
+    assemble_batch(
+        identity,
+        chunks,
+        &by_path,
+        &preflight,
+        SymbolCoveragePolicy::RequireComplete,
+        quanta_index_contract::SourcePublicationEvent {
+            stream_id: "sdk-roundtrip-fixture".to_string(),
+            event_id: "source-fixture-initial".to_string(),
+            expected_base_event_id: None,
+            payload_sha256: [0; 32],
+        },
+    )
+}
+
 fn write_tiny_repo(root: &Path) {
     let files: &[(&str, &str)] = &[
         (
@@ -189,8 +220,7 @@ fn real_daemon_query_observation_off_preserves_results_and_marks_unmeasured() {
         "manifest:observation".to_string(),
     )
     .expect("identity");
-    let (batch, _assembly) =
-        assemble_batch(&identity, &chunks, &symbols_for(&files)).expect("batch");
+    let (batch, _assembly) = assemble_fixture_batch(&identity, &chunks, &files).expect("batch");
     let state = tempfile::tempdir().expect("state");
     let mut observations = Vec::new();
     for (name, policy) in [
@@ -260,7 +290,7 @@ fn real_daemon_experimental_fetch_floor_matches_initial_probe_without_changing_d
     let (chunks, _) = chunk_corpus(&WholeFileChunker, &files).expect("chunks");
     let identity = BatchIdentity::new("bench-repo", "bench-rev", 7, "manifest:floor".to_string())
         .expect("identity");
-    let (batch, _) = assemble_batch(&identity, &chunks, &symbols_for(&files)).expect("batch");
+    let (batch, _) = assemble_fixture_batch(&identity, &chunks, &files).expect("batch");
     let state = tempfile::tempdir().expect("state");
     assert_eq!(
         HybridFetchFloorPolicy::default(),
@@ -489,7 +519,7 @@ fn unavailable_provider_is_typed_and_never_returns_hits() {
         "manifest:provider-unavailable".to_string(),
     )
     .expect("identity");
-    let (batch, _) = assemble_batch(&identity, &chunks, &symbols_for(&files)).expect("batch");
+    let (batch, _) = assemble_fixture_batch(&identity, &chunks, &files).expect("batch");
     let state = tempfile::tempdir().expect("state root");
     let state_root = state.path().join("daemon");
     let config = DaemonConfig {
@@ -592,8 +622,7 @@ fn real_daemon_roundtrip_publishes_and_queries() {
         "manifest:test-roundtrip".to_string(),
     )
     .expect("identity");
-    let (batch, assembly) =
-        assemble_batch(&identity, &chunks, &symbols_for(&files)).expect("batch");
+    let (batch, assembly) = assemble_fixture_batch(&identity, &chunks, &files).expect("batch");
     assert_eq!(assembly.scopes, 3);
     assert_eq!(assembly.semantic_scopes, 3);
 
@@ -1070,6 +1099,186 @@ fn git(root: &Path, args: &[&str]) -> String {
 }
 
 #[test]
+fn actual_preflight_binary_reports_all_files_before_strict_refusal() {
+    let fixture = tempfile::tempdir().expect("fixture");
+    let repo = fixture.path().join("repo");
+    std::fs::create_dir(&repo).expect("repo");
+    write_repo(
+        &repo,
+        &[
+            (
+                "a.ts",
+                include_str!("fixtures/l5_parser/generic_import_trailing_comma.ts"),
+            ),
+            (
+                "b.tsx",
+                include_str!("fixtures/l5_parser/type_namespace_export.ts"),
+            ),
+            ("empty.ts", ""),
+            ("z.ts", "invalid code"),
+        ],
+    );
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(repo.join("manifest.json")).expect("manifest"))
+            .expect("JSON");
+    std::fs::remove_file(repo.join("manifest.json")).expect("externalize manifest");
+    drop(git(&repo, &["init", "--quiet"]));
+    drop(git(
+        &repo,
+        &["config", "user.email", "retrieval-bench@example.invalid"],
+    ));
+    drop(git(&repo, &["config", "user.name", "Retrieval Bench"]));
+    drop(git(&repo, &["add", "."]));
+    drop(git(&repo, &["commit", "--quiet", "-m", "fixture"]));
+    manifest["repository_commit"] = git(&repo, &["rev-parse", "HEAD"]).into();
+    let manifest_path = fixture.path().join("manifest.json");
+    std::fs::write(&manifest_path, serde_json::to_vec(&manifest).expect("JSON")).expect("manifest");
+    let runner = env!("CARGO_BIN_EXE_quanta-index-retrieval-bench");
+    for (policy, success) in [("require-complete", false), ("allow-incomplete", true)] {
+        let report_path = fixture.path().join(format!("{policy}.json"));
+        let output = Command::new(runner)
+            .args([
+                "preflight",
+                "--repo",
+                repo.to_str().expect("path"),
+                "--manifest",
+                manifest_path.to_str().expect("path"),
+                "--symbol-coverage",
+                policy,
+                "--out",
+                report_path.to_str().expect("path"),
+            ])
+            .output()
+            .expect("preflight process");
+        assert_eq!(
+            output.status.success(),
+            success,
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let report: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&report_path).expect("complete report"))
+                .expect("JSON");
+        let rows = report["preflight"]["files"]
+            .as_array()
+            .expect("file census");
+        assert_eq!(rows.len(), 4);
+        assert_eq!(report["preflight"]["incomplete_files"], 1);
+        for (row, (path, state, count)) in rows.iter().zip([
+            ("a.ts", "complete", Some(1)),
+            ("b.tsx", "complete", Some(1)),
+            ("empty.ts", "complete", Some(0)),
+            ("z.ts", "parse_failed", None),
+        ]) {
+            assert_eq!(row["path"], path);
+            assert_eq!(row["coverage"]["state"], state);
+            assert_eq!(row["coverage"]["symbol_count"].as_u64(), count);
+        }
+        // A repeated invocation must preserve the first diagnostic artifact.
+        let before = std::fs::read(&report_path).expect("report");
+        let retry = Command::new(runner)
+            .args([
+                "preflight",
+                "--repo",
+                repo.to_str().expect("path"),
+                "--manifest",
+                manifest_path.to_str().expect("path"),
+                "--symbol-coverage",
+                policy,
+                "--out",
+                report_path.to_str().expect("path"),
+            ])
+            .output()
+            .expect("repeat process");
+        assert!(!retry.status.success());
+        assert_eq!(
+            std::fs::read(&report_path).expect("retained report"),
+            before
+        );
+    }
+}
+
+#[test]
+fn incomplete_symbol_profile_publishes_malformed_text_and_refuses_symbol_authority() {
+    use quanta_index_retrieval_bench::symbols::{
+        SymbolCoveragePolicy, SymbolPreflightOptions, preflight_corpus_symbols,
+    };
+    let repo = tempfile::tempdir().expect("repo");
+    write_repo(
+        repo.path(),
+        &[
+            ("a.ts", "function sentinel() {}"),
+            ("empty.ts", ""),
+            ("z.ts", "invalid code"),
+        ],
+    );
+    let manifest = load_manifest(&repo.path().join("manifest.json")).expect("manifest");
+    let files = load_corpus(repo.path(), &manifest, &CorpusLimits::default()).expect("corpus");
+    let (chunks, _) = chunk_corpus(&WholeFileChunker, &files).expect("chunks");
+    let by_path = files
+        .into_iter()
+        .map(|file| (file.path.clone(), file))
+        .collect();
+    let preflight =
+        preflight_corpus_symbols(&by_path, &SymbolPreflightOptions::default()).expect("preflight");
+    assert!(
+        preflight
+            .admit(SymbolCoveragePolicy::RequireComplete)
+            .is_err()
+    );
+    let identity = BatchIdentity::new(
+        "incomplete-repo",
+        "source-revision",
+        1,
+        "manifest:incomplete".into(),
+    )
+    .expect("identity");
+    let (batch, assembly) = assemble_batch(
+        &identity,
+        &chunks,
+        &by_path,
+        &preflight,
+        SymbolCoveragePolicy::AllowIncomplete,
+        quanta_index_contract::SourcePublicationEvent {
+            stream_id: "incomplete-fixture".into(),
+            event_id: "initial-source".into(),
+            expected_base_event_id: None,
+            payload_sha256: [0; 32],
+        },
+    )
+    .expect("explicit incomplete admission");
+    assert_eq!(assembly.scopes, 3);
+    assert_eq!(assembly.empty_scopes, ["empty.ts"]);
+    let state = tempfile::tempdir().expect("state");
+    let session = boot_session(&state.path().join("daemon"), &identity);
+    publish_and_activate(&session, &batch, &identity, None).expect("publish source facts");
+    let query = |route, text| {
+        query_route(&RouteQuery {
+            client: session.client(),
+            route,
+            lexical_request: text,
+            semantic_text: text,
+            repo_id: &identity.repo_id,
+            revision_id: &identity.revision_id,
+            generation: identity.generation,
+            top_k: 10,
+        })
+    };
+    let lexical = query("lexical", "invalid");
+    let symbols = query("symbol", "sentinel");
+    session.stop().expect("stop");
+    let QueryOutcome::ReturnedWindow { hits, .. } = lexical else {
+        panic!("malformed source text must remain searchable: {lexical:?}");
+    };
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].path, "z.ts");
+    assert!(
+        matches!(symbols, QueryOutcome::SdkFailure { ref code, .. } if code == "SYMBOL_COVERAGE_INCOMPLETE"),
+        "{symbols:?}"
+    );
+}
+
+#[test]
 fn actual_runner_binary_emits_receipt_bound_v5_record() {
     let fixture = tempfile::tempdir().expect("fixture root");
     let repo = fixture.path().join("repo");
@@ -1391,7 +1600,7 @@ fn second_boot_over_used_root_is_refused_without_cleanup() {
     let (chunks, _) = chunk_corpus(&WholeFileChunker, &files).expect("chunk");
     let identity = BatchIdentity::new("bench-repo", "bench-rev", 7, "manifest:reuse".to_string())
         .expect("identity");
-    let (batch, _) = assemble_batch(&identity, &chunks, &symbols_for(&files)).expect("batch");
+    let (batch, _) = assemble_fixture_batch(&identity, &chunks, &files).expect("batch");
 
     let state = tempfile::tempdir().expect("state root");
     let state_root = state.path().join("daemon");
@@ -1427,8 +1636,8 @@ fn determinism_probe_repeats_identical_publish() {
     let (chunks, _) = chunk_corpus(&WholeFileChunker, &files).expect("chunk");
     let identity = BatchIdentity::new("bench-repo", "bench-rev", 9, "manifest:replay".to_string())
         .expect("identity");
-    let (left, _) = assemble_batch(&identity, &chunks, &symbols_for(&files)).expect("batch");
-    let (right, _) = assemble_batch(&identity, &chunks, &symbols_for(&files)).expect("batch");
+    let (left, _) = assemble_fixture_batch(&identity, &chunks, &files).expect("batch");
+    let (right, _) = assemble_fixture_batch(&identity, &chunks, &files).expect("batch");
     assert_eq!(
         left.batch_digest().expect("digest"),
         right.batch_digest().expect("digest")
@@ -1448,7 +1657,7 @@ fn symbol_route_answers_from_published_units_and_proves_spans() {
     let symbols = symbols_for(&files);
     let identity = BatchIdentity::new("bench-repo", "bench-rev", 11, "manifest:symbol".to_string())
         .expect("identity");
-    let (batch, assembly) = assemble_batch(&identity, &chunks, &symbols).expect("batch");
+    let (batch, assembly) = assemble_fixture_batch(&identity, &chunks, &files).expect("batch");
     assert!(
         assembly.symbols >= 3,
         "tiny repo publishes its functions as symbols"
@@ -1572,7 +1781,7 @@ fn symbol_route_no_answer_is_typed_never_fake_success() {
     let symbols = symbols_for(&files);
     let identity = BatchIdentity::new("bench-repo", "bench-rev", 12, "manifest:none".to_string())
         .expect("identity");
-    let (batch, _) = assemble_batch(&identity, &chunks, &symbols).expect("batch");
+    let (batch, _) = assemble_fixture_batch(&identity, &chunks, &files).expect("batch");
     let files_by_path: BTreeMap<_, _> = files
         .iter()
         .map(|file| (file.path.clone(), file.clone()))
@@ -1688,7 +1897,7 @@ fn sentence_and_identifier_queries_anchor_the_same_definition_over_distractors()
         "manifest:distract".to_string(),
     )
     .expect("identity");
-    let (batch, _) = assemble_batch(&identity, &chunks, &symbols).expect("batch");
+    let (batch, _) = assemble_fixture_batch(&identity, &chunks, &files).expect("batch");
     let files_by_path: BTreeMap<_, _> = files
         .iter()
         .map(|file| (file.path.clone(), file.clone()))
@@ -1787,7 +1996,7 @@ fn homonymous_symbols_stay_distinct_units_on_the_symbol_route() {
     let symbols = symbols_for(&files);
     let identity = BatchIdentity::new("bench-repo", "bench-rev", 22, "manifest:homon".to_string())
         .expect("identity");
-    let (batch, _) = assemble_batch(&identity, &chunks, &symbols).expect("batch");
+    let (batch, _) = assemble_fixture_batch(&identity, &chunks, &files).expect("batch");
     let files_by_path: BTreeMap<_, _> = files
         .iter()
         .map(|file| (file.path.clone(), file.clone()))

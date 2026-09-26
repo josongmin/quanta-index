@@ -686,6 +686,9 @@ fn runtime_edge_matches(
 /// never a score order.
 fn lexical_candidate_from_chunk(pin: &GenerationPin, chunk: &ChunkRecord) -> LexicalCandidate {
     LexicalCandidate {
+        source_repo_id: chunk.searchable_repo_id(&pin.repo_id).clone(),
+        source: None,
+        preview: None,
         candidate_id: chunk.chunk_id.as_str().to_string(),
         repo_id: pin.repo_id.clone(),
         revision_id: pin.revision_id.clone(),

@@ -14,7 +14,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "tools/benchmark"))
 import corpus_binding as binding
-from evidence import EvidenceError
+from evidence import EvidenceError, write_raw_file
 
 from tools.benchmark.retrieval.retrieval_contract import canonical
 from tools.ci.tests.test_corpus_release import (  # noqa: F401
@@ -43,12 +43,20 @@ def inputs_from_release(root):
         "file_universe_digest": selected["file_universe_digest"][7:],
         "tasks": [{"task_id": "one", "gold": [{"path": "src/main.rs"}]}],
     }
-    pack = {**{key: suite[key] for key in ("repository_commit", "file_universe",
-                                         "file_universe_digest")},
-            "suite_commitment_sha256": hashlib.sha256(canonical(suite)).hexdigest(),
-            "tasks": [{"task_id": "one", "query": "main"}]}
-    selection = {"release_path": str(root), "release_digest": document["digest"],
-                 "repository": "fixture", "view": "code_only"}
+    pack = {
+        **{
+            key: suite[key]
+            for key in ("repository_commit", "file_universe", "file_universe_digest")
+        },
+        "suite_commitment_sha256": hashlib.sha256(canonical(suite)).hexdigest(),
+        "tasks": [{"task_id": "one", "query": "main"}],
+    }
+    selection = {
+        "release_path": str(root),
+        "release_digest": document["digest"],
+        "repository": "fixture",
+        "view": "code_only",
+    }
     return root, selection, suite, pack
 
 
@@ -60,12 +68,16 @@ def test_mutated_consumer_copy_cannot_poison_next_case(inputs, release_seed, tmp
     view.chmod(0o644)
     view.write_bytes(b"corrupted independent test input")
     with pytest.raises(EvidenceError):
-        binding.capture(root, selection, canonical(suite), canonical(pack))
+        binding.capture(
+            root, selection, canonical(suite), canonical(pack), root.with_suffix(".zip")
+        )
     assert (release_seed / relative).read_bytes() == pristine
     fresh = tmp_path / "next-consumer"
     shutil.copytree(release_seed, fresh, symlinks=True)
     selection = {**selection, "release_path": str(fresh)}
-    result, capsule = binding.capture(fresh, selection, canonical(suite), canonical(pack))
+    result, capsule = binding.capture(
+        fresh, selection, canonical(suite), canonical(pack), fresh.with_suffix(".zip")
+    )
     assert binding.replay(capsule, selection, canonical(suite), canonical(pack)) == result
 
 
@@ -83,20 +95,35 @@ def test_capsule_replays_after_original_sources_are_unavailable(source, tmp_path
             payload["file_universe"] = manifest["files"]
             payload["file_universe_digest"] = metadata["file_universe_digest"][7:]
         pack["suite_commitment_sha256"] = hashlib.sha256(canonical(suite)).hexdigest()
-    result, capsule = binding.capture(root, selection, canonical(suite), canonical(pack))
+    result, capsule = binding.capture(
+        root, selection, canonical(suite), canonical(pack), root.with_suffix(".zip")
+    )
     assert result["index_universe_attested"] is False
     assert result["file_universe_digest"] == "sha256:" + suite["file_universe_digest"]
     shutil.rmtree(source[0])
     root.rename(root.with_name("original-unavailable"))
     assert not source[0].exists() and not root.exists()
     assert binding.replay(capsule, selection, canonical(suite), canonical(pack)) == result
-    with zipfile.ZipFile(io.BytesIO(capsule)) as archive:
+    with zipfile.ZipFile(capsule.path) as archive:
         assert archive.namelist() == ["bundles/fixture.bundle", "recipe.json", "release.json"]
 
 
-@pytest.mark.parametrize("mutation", ["suite_commit", "pack_commit", "suite_files",
-                                     "pack_files", "suite_hash", "pack_hash", "pack_binding",
-                                     "gold", "view", "release", "repository"])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "suite_commit",
+        "pack_commit",
+        "suite_files",
+        "pack_files",
+        "suite_hash",
+        "pack_hash",
+        "pack_binding",
+        "gold",
+        "view",
+        "release",
+        "repository",
+    ],
+)
 def test_binding_refuses_cross_corpus_query_inputs(inputs, mutation):
     root, selection, suite, pack = inputs
     if mutation.endswith("commit"):
@@ -117,15 +144,31 @@ def test_binding_refuses_cross_corpus_query_inputs(inputs, mutation):
     else:
         selection["repository"] = "absent"
     with pytest.raises(EvidenceError):
-        binding.capture(root, selection, canonical(suite), canonical(pack))
+        binding.capture(
+            root, selection, canonical(suite), canonical(pack), root.with_suffix(".zip")
+        )
 
 
-@pytest.mark.parametrize("mutation", ["extra", "missing", "duplicate", "reordered",
-                                     "traversal", "symlink", "compression", "metadata", "bundle"])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "extra",
+        "missing",
+        "duplicate",
+        "reordered",
+        "traversal",
+        "symlink",
+        "compression",
+        "metadata",
+        "bundle",
+    ],
+)
 def test_capsule_refuses_corrupt_or_forged_custody(inputs, mutation):
     root, selection, suite, pack = inputs
-    _, capsule = binding.capture(root, selection, canonical(suite), canonical(pack))
-    with zipfile.ZipFile(io.BytesIO(capsule)) as archive:
+    _, capsule = binding.capture(
+        root, selection, canonical(suite), canonical(pack), root.with_suffix(".zip")
+    )
+    with zipfile.ZipFile(capsule.path) as archive:
         entries = [(name, archive.read(name)) for name in archive.namelist()]
     if mutation == "extra":
         entries.append(("unexpected", b"foreign"))
@@ -148,24 +191,36 @@ def test_capsule_refuses_corrupt_or_forged_custody(inputs, mutation):
         for name, raw in entries:
             info = zipfile.ZipInfo(name)
             info.external_attr = (0o120777 if mutation == "symlink" else 0o100644) << 16
-            info.compress_type = zipfile.ZIP_DEFLATED if mutation == "compression" else zipfile.ZIP_STORED
+            info.compress_type = (
+                zipfile.ZIP_DEFLATED if mutation == "compression" else zipfile.ZIP_STORED
+            )
             archive.writestr(info, raw)
     with pytest.raises(EvidenceError):
-        binding.replay(out.getvalue(), selection, canonical(suite), canonical(pack))
+        binding.replay(
+            write_raw_file(root.with_suffix(".bad.zip"), [out.getvalue()]),
+            selection,
+            canonical(suite),
+            canonical(pack),
+        )
 
 
 def test_capsule_resource_limit_is_explicit(inputs, monkeypatch):
     root, selection, suite, pack = inputs
     monkeypatch.setattr(binding, "MAX_CAPSULE_BYTES", 1)
     with pytest.raises(EvidenceError, match="limit"):
-        binding.capture(root, selection, canonical(suite), canonical(pack))
+        binding.capture(
+            root, selection, canonical(suite), canonical(pack), root.with_suffix(".zip")
+        )
 
 
 @pytest.mark.parametrize("mutation", ["legacy", "partial", "extra", "relative", "bad_digest"])
 def test_common_spec_requires_explicit_release_and_closed_roles(inputs, mutation):
     root, selection, _, _ = inputs
-    value = {"schema_version": 2, "corpus": selection,
-             "inputs": {"suite": str(root / "suite"), "query_pack": str(root / "pack")}}
+    value = {
+        "schema_version": 2,
+        "corpus": selection,
+        "inputs": {"suite": str(root / "suite"), "query_pack": str(root / "pack")},
+    }
     if mutation == "legacy":
         value["schema_version"] = 1
     elif mutation == "partial":
@@ -180,8 +235,9 @@ def test_common_spec_requires_explicit_release_and_closed_roles(inputs, mutation
         binding.read_spec(canonical(value), ("suite", "query_pack"))
 
 
-@pytest.mark.parametrize("raw", [b"\xff", b"{}", b"{", b"null",
-                                 b'{"schema_version":2,"schema_version":2}'])
+@pytest.mark.parametrize(
+    "raw", [b"\xff", b"{}", b"{", b"null", b'{"schema_version":2,"schema_version":2}']
+)
 def test_common_spec_rejects_invalid_json_bytes(raw):
     with pytest.raises(EvidenceError):
         binding.read_spec(raw, ("suite", "query_pack"))

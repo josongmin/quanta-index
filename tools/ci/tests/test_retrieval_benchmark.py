@@ -5253,7 +5253,7 @@ def test_verdict_refuses_bound_execution_context_tampering(tmp_path, rail, state
         kwargs = {"rail": rail, "raw": raw_paths}
         if rail == "sdk":
             assert [row["name"] for row in context["commands"]] == [
-                "source-closure", "build-searchd", "build-runner", "rust-collection", "rust-build", "metadata", "rust-test",
+                "source-closure", "build-searchd", "build-runner", "rust-build", "metadata", "rust-collection", "rust-test",
             ]
             kwargs.update(runner_sha=context["binaries"]["runner"]["sha256"],
                           searchd_sha=context["binaries"]["searchd"]["sha256"])

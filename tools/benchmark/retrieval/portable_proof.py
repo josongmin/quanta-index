@@ -111,15 +111,22 @@ def selected_test_binaries(raw_collection_bytes: bytes) -> dict[str, Path]:
     result: dict[str, Path] = {}
     paths: set[Path] = set()
     for binary_id, suite in payload["rust-suites"].items():
-        if not any(case["filter-match"] == {"status": "matches"}
-                   for case in suite["testcases"].values()):
+        if not any(
+            case["filter-match"] == {"status": "matches"} for case in suite["testcases"].values()
+        ):
             continue
         if suite.get("binary-id") != binary_id:
             raise ValueError("selected nextest binary-id differs from its inventory key")
         raw_path = suite.get("binary-path")
-        if (not isinstance(raw_path, str) or not raw_path or "\\" in raw_path
-                or "\x00" in raw_path or not Path(raw_path).is_absolute()
-                or ".." in Path(raw_path).parts or Path(raw_path).as_posix() != raw_path):
+        if (
+            not isinstance(raw_path, str)
+            or not raw_path
+            or "\\" in raw_path
+            or "\x00" in raw_path
+            or not Path(raw_path).is_absolute()
+            or ".." in Path(raw_path).parts
+            or Path(raw_path).as_posix() != raw_path
+        ):
             raise ValueError("selected nextest executable has no canonical absolute binary-path")
         path = Path(raw_path)
         role = "nextest-" + hashlib.sha256(binary_id.encode("utf-8")).hexdigest()
@@ -146,53 +153,77 @@ def _bind_test_binaries(raw: bytes) -> dict[str, dict[str, str]]:
     return result
 
 
-def verify_reused_build(binary_raw: bytes, metadata_raw: bytes, collection_raw: bytes,
-                        *, workspace_root: Path) -> dict[str, Path]:
+def verify_reused_build(
+    binary_raw: bytes, metadata_raw: bytes, collection_raw: bytes, *, workspace_root: Path
+) -> dict[str, Path]:
     """Cross-check actual native build metadata against the selected collection."""
     selected = selected_test_binaries(collection_raw)
     binary_list = _json_bytes(binary_raw)
     metadata = _json_bytes(metadata_raw)
     collection = _json_bytes(collection_raw)
-    if (not isinstance(binary_list, dict)
-            or set(binary_list) != {"rust-build-meta", "rust-binaries"}
-            or not isinstance(binary_list["rust-binaries"], dict)
-            or not isinstance(binary_list["rust-build-meta"], dict)
-            or not isinstance(metadata, dict)
-            or metadata.get("workspace_root") != str(workspace_root)
-            or metadata.get("target_directory") != binary_list["rust-build-meta"].get("target-directory")
-            or not isinstance(metadata.get("packages"), list)):
+    if (
+        not isinstance(binary_list, dict)
+        or set(binary_list) != {"rust-build-meta", "rust-binaries"}
+        or not isinstance(binary_list["rust-binaries"], dict)
+        or not isinstance(binary_list["rust-build-meta"], dict)
+        or not isinstance(metadata, dict)
+        or metadata.get("workspace_root") != str(workspace_root)
+        or metadata.get("target_directory")
+        != binary_list["rust-build-meta"].get("target-directory")
+        or not isinstance(metadata.get("packages"), list)
+    ):
         raise ValueError("native build metadata workspace/target identity differs")
     target = metadata["target_directory"]
     if not isinstance(target, str) or not Path(target).is_absolute() or ".." in Path(target).parts:
         raise ValueError("native build metadata has no canonical target directory")
     packages = {}
     for package in metadata["packages"]:
-        if (not isinstance(package, dict) or not isinstance(package.get("id"), str)
-                or not package["id"] or package["id"] in packages):
+        if (
+            not isinstance(package, dict)
+            or not isinstance(package.get("id"), str)
+            or not package["id"]
+            or package["id"] in packages
+        ):
             raise ValueError("native Cargo package inventory is malformed or duplicate")
         packages[package["id"]] = package
-    expected_ids = {binary_id for binary_id, suite in collection["rust-suites"].items()
-                    if any(case["filter-match"] == {"status": "matches"}
-                           for case in suite["testcases"].values())}
+    expected_ids = {
+        binary_id
+        for binary_id, suite in collection["rust-suites"].items()
+        if any(
+            case["filter-match"] == {"status": "matches"} for case in suite["testcases"].values()
+        )
+    }
     if set(binary_list["rust-binaries"]) != expected_ids:
         raise ValueError("native binary build inventory differs from selected test collection")
     fields = {"binary-id", "binary-name", "package-id", "kind", "binary-path", "build-platform"}
     for binary_id, row in binary_list["rust-binaries"].items():
         suite = collection["rust-suites"][binary_id]
-        if (not isinstance(row, dict) or set(row) != fields
-                or any(row.get(key) != suite.get(key) for key in fields)
-                or row["package-id"] not in packages
-                or packages[row["package-id"]].get("name") != PACKAGE
-                or packages[row["package-id"]].get("manifest_path")
-                != str(workspace_root / "benchmarks/retrieval/Cargo.toml")):
-            raise ValueError("native compiled binary differs from collection/Cargo package identity")
+        if (
+            not isinstance(row, dict)
+            or set(row) != fields
+            or any(row.get(key) != suite.get(key) for key in fields)
+            or row["package-id"] not in packages
+            or packages[row["package-id"]].get("name") != PACKAGE
+            or packages[row["package-id"]].get("manifest_path")
+            != str(workspace_root / "benchmarks/retrieval/Cargo.toml")
+        ):
+            raise ValueError(
+                "native compiled binary differs from collection/Cargo package identity"
+            )
     return selected
 
 
 def _reuse_nextest(wrapper: str, operation: str, out: Path, *args: str) -> list[str]:
-    return _cargo(wrapper, "nextest", operation,
-                  "--binaries-metadata", str(out / "rust-build.stdout"),
-                  "--cargo-metadata", str(out / "metadata.stdout"), *args)
+    return _cargo(
+        wrapper,
+        "nextest",
+        operation,
+        "--binaries-metadata",
+        str(out / "rust-build.stdout"),
+        "--cargo-metadata",
+        str(out / "metadata.stdout"),
+        *args,
+    )
 
 
 def _reuse_input_epoch(path: Path, expected: bytes) -> tuple:
@@ -206,8 +237,10 @@ def _reuse_input_epoch(path: Path, expected: bytes) -> tuple:
 def _capture_reuse_input_epoch(path: Path, expected: bytes) -> tuple:
     fields = ("st_dev", "st_ino", "st_mode", "st_size", "st_mtime_ns", "st_ctime_ns")
     before = tuple(getattr(path.lstat(), field) for field in fields)
-    chain = tuple((str(parent), parent.lstat().st_dev, parent.lstat().st_ino,
-                   parent.lstat().st_mode) for parent in path.parents)
+    chain = tuple(
+        (str(parent), parent.lstat().st_dev, parent.lstat().st_ino, parent.lstat().st_mode)
+        for parent in path.parents
+    )
     actual = _read_repo_regular_bytes(path.parent, path.name, label="nextest reuse input")
     after = tuple(getattr(path.lstat(), field) for field in fields)
     if before != after or actual != expected:
@@ -215,21 +248,32 @@ def _capture_reuse_input_epoch(path: Path, expected: bytes) -> tuple:
     return before, chain, hashlib.sha256(actual).hexdigest()
 
 
-def _run_reused_nextest(wrapper: str, out: Path, commands: list[dict[str, object]],
-                       binary_raw: bytes, metadata_raw: bytes, *,
-                       env_overrides: dict[str, str], operation: str = "run") -> bytes:
+def _run_reused_nextest(
+    wrapper: str,
+    out: Path,
+    commands: list[dict[str, object]],
+    binary_raw: bytes,
+    metadata_raw: bytes,
+    *,
+    env_overrides: dict[str, str],
+    operation: str = "run",
+) -> bytes:
     # Collection and execution consume the same one-time build. Neither may
     # reinterpret mutable metadata or independently prepare another binary set.
     if operation not in {"list", "run"}:
         raise ValueError("unsupported reused nextest operation")
     name = "rust-test" if operation == "run" else "rust-collection"
     args = FORMAT if operation == "run" else ["--message-format", "json"]
-    inputs = ((out / "rust-build.stdout", binary_raw),
-              (out / "metadata.stdout", metadata_raw))
+    inputs = ((out / "rust-build.stdout", binary_raw), (out / "metadata.stdout", metadata_raw))
     epochs = [_reuse_input_epoch(path, raw) for path, raw in inputs]
     try:
-        return _run(name, _reuse_nextest(wrapper, operation, out, *args),
-                    out, commands, env_overrides=env_overrides)
+        return _run(
+            name,
+            _reuse_nextest(wrapper, operation, out, *args),
+            out,
+            commands,
+            env_overrides=env_overrides,
+        )
     finally:
         for (path, raw), epoch in zip(inputs, epochs, strict=True):
             if _reuse_input_epoch(path, raw) != epoch:
@@ -255,12 +299,16 @@ def _git(*args: str) -> str:
         active[0].check()
     try:
         stdout, _, _ = execute(
-            [executable, *args], cwd=ROOT, env=environment, timeout=TOOL_TIMEOUT_SECONDS
+            [executable, *args],
+            cwd=ROOT,
+            env=environment,
+            timeout=TOOL_TIMEOUT_SECONDS,
+            log_dir=Path(tempfile.mkdtemp(prefix="quanta-proof-git-")).resolve(),
         )
     finally:
         if active is not None:
             active[0].check()
-    return stdout.decode("utf-8").strip()
+    return stdout.read_control().decode("utf-8").strip()
 
 
 def _source_revision() -> str:
@@ -297,8 +345,9 @@ def _tools() -> dict[str, dict[str, str]]:
                 cwd=ROOT,
                 env=dict(os.environ),
                 timeout=TOOL_TIMEOUT_SECONDS,
+                log_dir=Path(tempfile.mkdtemp(prefix="quanta-proof-tool-")).resolve(),
             )
-            version = stdout.decode("utf-8").strip()
+            version = stdout.read_control().decode("utf-8").strip()
             if not version:
                 raise ValueError(f"required executable has no version identity: {name}")
         if capture_executable(invocation) != before:
@@ -349,6 +398,9 @@ RELEVANT_ENV = frozenset(
         "PYTHONPATH",
         "PYTEST_ADDOPTS",
         "QUANTA_INDEX_CACHE_ROOT",
+        "QUANTA_INDEX_RESOURCE_ADMISSION",
+        "QUANTA_INDEX_RESOURCE_WAIT_SECONDS",
+        "QUANTA_INDEX_RESOURCE_TIMEOUT_SECONDS",
         "QUANTA_INDEX_PRESERVE_CARGO_TARGET_DIR",
         "QUANTA_INDEX_SCCACHE",
         "CI",
@@ -439,6 +491,7 @@ def _run(
             cwd=ROOT,
             env=environment,
             timeout=PROOF_COMMAND_TIMEOUT_SECONDS,
+            log_dir=out.parent / f".{out.name}-execution" / name,
         )
     finally:
         executed = time.monotonic_ns()
@@ -447,8 +500,8 @@ def _run(
     verified = time.monotonic_ns()
     stdout = f"{name}.stdout"
     stderr = f"{name}.stderr"
-    _write(out / stdout, output)
-    _write(out / stderr, errors)
+    output.copy_to(out / stdout)
+    errors.copy_to(out / stderr)
     commands.append(
         {
             "name": name,
@@ -459,26 +512,29 @@ def _run(
             "environment_sha256": _environment_digest(_relevant_environment(environment)),
             "exit_code": 0,
             "stdout": stdout,
-            "stdout_sha256": hashlib.sha256(output).hexdigest(),
+            "stdout_sha256": output.sha256.removeprefix("sha256:"),
             "stderr": stderr,
-            "stderr_sha256": hashlib.sha256(errors).hexdigest(),
+            "stderr_sha256": errors.sha256.removeprefix("sha256:"),
         }
     )
     recorded = time.monotonic_ns()
     # Diagnostic timing only: kept outside the execution-context schema and
     # never accepted as proof of correctness or qualified product performance.
-    _write_json(out / f"{name}.timing.json", {
-        "schema_version": 1,
-        "kind": "proof_command_timing_diagnostic",
-        "command": name,
-        "prepare_ns": prepared - started,
-        "execute_ns": executed - prepared,
-        "verify_ns": verified - executed,
-        "record_ns": recorded - verified,
-        "total_ns": recorded - started,
-        "excludes": "timing-file write and work outside this command",
-    })
-    return output
+    _write_json(
+        out / f"{name}.timing.json",
+        {
+            "schema_version": 1,
+            "kind": "proof_command_timing_diagnostic",
+            "command": name,
+            "prepare_ns": prepared - started,
+            "execute_ns": executed - prepared,
+            "verify_ns": verified - executed,
+            "record_ns": recorded - verified,
+            "total_ns": recorded - started,
+            "excludes": "timing-file write and work outside this command",
+        },
+    )
+    return output.read_control()
 
 
 def _run_fresh_recipe(argv: list[str], out: Path, commands: list[dict[str, object]]) -> None:
@@ -487,12 +543,16 @@ def _run_fresh_recipe(argv: list[str], out: Path, commands: list[dict[str, objec
     overrides = {"CARGO_NET_OFFLINE": "true"}
     environment = {**os.environ, **overrides}
     output, errors, _ = execute(
-        argv, cwd=ROOT, env=environment, timeout=PROOF_COMMAND_TIMEOUT_SECONDS
+        argv,
+        cwd=ROOT,
+        env=environment,
+        timeout=PROOF_COMMAND_TIMEOUT_SECONDS,
+        log_dir=out.parent / f".{out.name}-execution" / "sdk-recipe",
     )
     if not out.is_dir():
         raise ValueError("SDK recipe returned success without a proof root")
-    _write(out / "sdk-recipe.stdout", output)
-    _write(out / "sdk-recipe.stderr", errors)
+    output.copy_to(out / "sdk-recipe.stdout")
+    errors.copy_to(out / "sdk-recipe.stderr")
     commands.append(
         {
             "name": "sdk-recipe",
@@ -503,9 +563,9 @@ def _run_fresh_recipe(argv: list[str], out: Path, commands: list[dict[str, objec
             "environment_sha256": _environment_digest(_relevant_environment(environment)),
             "exit_code": 0,
             "stdout": "sdk-recipe.stdout",
-            "stdout_sha256": hashlib.sha256(output).hexdigest(),
+            "stdout_sha256": output.sha256.removeprefix("sha256:"),
             "stderr": "sdk-recipe.stderr",
-            "stderr_sha256": hashlib.sha256(errors).hexdigest(),
+            "stderr_sha256": errors.sha256.removeprefix("sha256:"),
         }
     )
 
@@ -649,11 +709,26 @@ def _expected_commands(
                 ],
                 base,
             ),
-            ("rust-build", _cargo(wrapper, "nextest", "list", *selector,
-                                  "--list-type", "binaries-only", "--message-format", "json"), base),
+            (
+                "rust-build",
+                _cargo(
+                    wrapper,
+                    "nextest",
+                    "list",
+                    *selector,
+                    "--list-type",
+                    "binaries-only",
+                    "--message-format",
+                    "json",
+                ),
+                base,
+            ),
             ("metadata", _cargo(wrapper, "metadata", "--format-version", "1", "--locked"), base),
-            ("rust-collection", _reuse_nextest(wrapper, "list", out,
-                                              "--message-format", "json"), base),
+            (
+                "rust-collection",
+                _reuse_nextest(wrapper, "list", out, "--message-format", "json"),
+                base,
+            ),
             (
                 "python-test",
                 [
@@ -689,15 +764,26 @@ def _expected_commands(
             _cargo(wrapper, "build", "-p", PACKAGE, "--bin", PACKAGE, "--locked"),
             base,
         ),
-        ("rust-build", _cargo(wrapper, "nextest", "list", *selector,
-                              "--list-type", "binaries-only", "--message-format", "json"), base),
+        (
+            "rust-build",
+            _cargo(
+                wrapper,
+                "nextest",
+                "list",
+                *selector,
+                "--list-type",
+                "binaries-only",
+                "--message-format",
+                "json",
+            ),
+            base,
+        ),
         (
             "metadata",
             _cargo(wrapper, "metadata", "--format-version", "1", "--locked"),
             base,
         ),
-        ("rust-collection", _reuse_nextest(wrapper, "list", out,
-                                          "--message-format", "json"), base),
+        ("rust-collection", _reuse_nextest(wrapper, "list", out, "--message-format", "json"), base),
         (
             "rust-test",
             _reuse_nextest(wrapper, "run", out, *FORMAT),
@@ -779,19 +865,34 @@ def _produce(rail: str, out: Path, revision: str, tools: dict[str, dict[str, str
         python_inventory = _artifact(out, "python-inventory.json", raw_evidence)
         proof_inventory.verify_inventory_authority(python_inventory, "python")
         selector = ["-p", PACKAGE, "--lib", "--test", "chunking_contract", *FLAGS]
-        build_raw = _run("rust-build", _cargo(wrapper, "nextest", "list", *selector,
-                         "--list-type", "binaries-only", "--message-format", "json"), out, commands)
+        build_raw = _run(
+            "rust-build",
+            _cargo(
+                wrapper,
+                "nextest",
+                "list",
+                *selector,
+                "--list-type",
+                "binaries-only",
+                "--message-format",
+                "json",
+            ),
+            out,
+            commands,
+        )
         _target_dir(wrapper, out, commands)
         metadata_raw = (out / "metadata.stdout").read_bytes()
-        _run_reused_nextest(wrapper, out, commands, build_raw, metadata_raw,
-                           env_overrides={}, operation="list")
+        _run_reused_nextest(
+            wrapper, out, commands, build_raw, metadata_raw, env_overrides={}, operation="list"
+        )
         rust_inventory = out / "rust-inventory.json"
         _write(rust_inventory, (out / "rust-collection.stdout").read_bytes())
         _artifact(out, "rust-inventory.json", raw_evidence)
         proof_inventory.verify_inventory_authority(rust_inventory, "rust")
 
-        verify_reused_build(build_raw, metadata_raw,
-                            rust_inventory.read_bytes(), workspace_root=ROOT)
+        verify_reused_build(
+            build_raw, metadata_raw, rust_inventory.read_bytes(), workspace_root=ROOT
+        )
         binaries = _bind_test_binaries(rust_inventory.read_bytes())
         pytest_argv = [
             python,
@@ -803,8 +904,9 @@ def _produce(rail: str, out: Path, revision: str, tools: dict[str, dict[str, str
         ]
         _run("python-test", pytest_argv, out, commands)
         junit = _artifact(out, "python-junit.xml", raw_evidence)
-        _run_reused_nextest(wrapper, out, commands, build_raw,
-                           metadata_raw, env_overrides=environment)
+        _run_reused_nextest(
+            wrapper, out, commands, build_raw, metadata_raw, env_overrides=environment
+        )
         rust_events = out / "rust-test.stdout"
         _write(out / "rust-nextest.jsonl", rust_events.read_bytes())
         _artifact(out, "rust-nextest.jsonl", raw_evidence)
@@ -850,16 +952,29 @@ def _produce(rail: str, out: Path, revision: str, tools: dict[str, dict[str, str
             commands,
         )
         selector = ["-p", PACKAGE, "--test", "sdk_roundtrip", *FLAGS]
-        build_raw = _run("rust-build", _cargo(wrapper, "nextest", "list", *selector,
-                         "--list-type", "binaries-only", "--message-format", "json"), out, commands)
+        build_raw = _run(
+            "rust-build",
+            _cargo(
+                wrapper,
+                "nextest",
+                "list",
+                *selector,
+                "--list-type",
+                "binaries-only",
+                "--message-format",
+                "json",
+            ),
+            out,
+            commands,
+        )
         target = _target_dir(wrapper, out, commands)
         metadata_raw = (out / "metadata.stdout").read_bytes()
-        collected = _run_reused_nextest(wrapper, out, commands, build_raw, metadata_raw,
-                                       env_overrides={}, operation="list")
+        collected = _run_reused_nextest(
+            wrapper, out, commands, build_raw, metadata_raw, env_overrides={}, operation="list"
+        )
         _write(out / "nextest-inventory.json", collected)
 
-        verify_reused_build(build_raw, metadata_raw, collected,
-                            workspace_root=ROOT)
+        verify_reused_build(build_raw, metadata_raw, collected, workspace_root=ROOT)
         suffix = ".exe" if os.name == "nt" else ""
         searchd = target / "debug" / f"quanta-index-searchd{suffix}"
         runner = target / "debug" / f"{PACKAGE}{suffix}"
@@ -877,7 +992,11 @@ def _produce(rail: str, out: Path, revision: str, tools: dict[str, dict[str, str
         proof_inventory.verify_inventory_authority(inventory, "sdk")
         binaries.update(_bind_test_binaries(collected))
         events = _run_reused_nextest(
-            wrapper, out, commands, build_raw, metadata_raw,
+            wrapper,
+            out,
+            commands,
+            build_raw,
+            metadata_raw,
             env_overrides={
                 **environment,
                 "QUANTA_BENCH_SDK_EVIDENCE_DIR": str(out),
@@ -1071,15 +1190,21 @@ def validate(
             raise ValueError("invalid proof tool identity")
     binaries = context["binaries"]
     selected_binaries = selected_test_binaries(capture("rust-collection.stdout"))
-    verify_reused_build(capture("rust-build.stdout"), capture("metadata.stdout"),
-                        capture("rust-collection.stdout"), workspace_root=ROOT)
+    verify_reused_build(
+        capture("rust-build.stdout"),
+        capture("metadata.stdout"),
+        capture("rust-collection.stdout"),
+        workspace_root=ROOT,
+    )
     expected_binary_roles = set(selected_binaries) | (
-        {"runner", "searchd"} if context["rail"] == "sdk" else set())
+        {"runner", "searchd"} if context["rail"] == "sdk" else set()
+    )
     if not isinstance(binaries, dict) or set(binaries) != expected_binary_roles:
         raise ValueError("invalid proof binary identities")
-    if any(not isinstance(binaries[name], dict)
-           or binaries[name].get("path") != str(path)
-           for name, path in selected_binaries.items()):
+    if any(
+        not isinstance(binaries[name], dict) or binaries[name].get("path") != str(path)
+        for name, path in selected_binaries.items()
+    ):
         raise ValueError("compiled test binary path differs from raw collection")
     if binary_files is not None and set(binary_files) != set(binaries):
         raise ValueError("frozen proof binary inventory mismatch")

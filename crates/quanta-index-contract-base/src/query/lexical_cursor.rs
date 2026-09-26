@@ -1,7 +1,7 @@
 //! The ranked lexical routes' row order and keyset cursor (QI-BB-005 보완 #4).
 //!
 //! Text and symbol rows are ranked. A page is ordered by score descending,
-//! then repo-relative path, start line, end line and candidate id
+//! then source repository, repo-relative path, start line, end line and candidate id
 //! ascending (strings byte-wise) — [`LexicalRowOrderKey::order`]. Within
 //! one sealed generation that is a total order over the rows: the scores
 //! are a pure function of the sealed index and the candidate id is unique.
@@ -22,7 +22,7 @@ use serde::{
     ser::SerializeStruct,
 };
 
-use crate::ids::{ManifestGeneration, RepoRelativePath};
+use crate::ids::{ManifestGeneration, RepoId, RepoRelativePath};
 use crate::results::{LexicalCandidate, QueryResultWindowV1};
 
 /// Typed refusal for a continuation whose cursor was cut from another
@@ -38,6 +38,7 @@ pub const QUERY_CURSOR_UNSUPPORTED_CODE: &str = "QUERY_CURSOR_UNSUPPORTED";
 /// One ranked lexical row's position in the page order.
 #[derive(Clone, Copy, Debug)]
 pub struct LexicalRowOrderKey<'a> {
+    pub source_repo_id: &'a str,
     pub score: f32,
     pub repo_relative_path: &'a str,
     pub start_line: u32,
@@ -53,6 +54,7 @@ impl LexicalRowOrderKey<'_> {
         other
             .score
             .total_cmp(&self.score)
+            .then_with(|| self.source_repo_id.cmp(other.source_repo_id))
             .then_with(|| self.repo_relative_path.cmp(other.repo_relative_path))
             .then(self.start_line.cmp(&other.start_line))
             .then(self.end_line.cmp(&other.end_line))
@@ -66,6 +68,7 @@ impl LexicalCandidate {
     pub fn order_key(&self) -> LexicalRowOrderKey<'_> {
         LexicalRowOrderKey {
             score: self.score,
+            source_repo_id: self.source_repo_id.as_str(),
             repo_relative_path: self.repo_relative_path.as_str(),
             start_line: self.start_line,
             end_line: self.end_line,
@@ -81,6 +84,7 @@ impl LexicalCandidate {
 /// value and the cursor is `Eq`.
 #[derive(Clone, Debug)]
 pub struct LexicalCursor {
+    pub source_repo_id: String,
     /// The generation the page was cut from; only its scores compare.
     pub manifest_generation: ManifestGeneration,
     /// The row's score, finite.
@@ -95,6 +99,7 @@ impl PartialEq for LexicalCursor {
     fn eq(&self, other: &Self) -> bool {
         self.manifest_generation == other.manifest_generation
             && self.score.to_bits() == other.score.to_bits()
+            && self.source_repo_id == other.source_repo_id
             && self.repo_relative_path == other.repo_relative_path
             && self.start_line == other.start_line
             && self.end_line == other.end_line
@@ -111,6 +116,7 @@ impl LexicalCursor {
         Self {
             manifest_generation,
             score: key.score,
+            source_repo_id: key.source_repo_id.to_string(),
             repo_relative_path: RepoRelativePath::new(key.repo_relative_path),
             start_line: key.start_line,
             end_line: key.end_line,
@@ -123,6 +129,7 @@ impl LexicalCursor {
     pub fn order_key(&self) -> LexicalRowOrderKey<'_> {
         LexicalRowOrderKey {
             score: self.score,
+            source_repo_id: &self.source_repo_id,
             repo_relative_path: self.repo_relative_path.as_str(),
             start_line: self.start_line,
             end_line: self.end_line,
@@ -178,6 +185,7 @@ pub fn validate_lexical_page_v1<'a>(
 }
 
 const LEXICAL_CURSOR_V1_FIELDS: &[&str] = &[
+    "source_repo_id",
     "manifest_generation",
     "score",
     "repo_relative_path",
@@ -196,7 +204,9 @@ impl Serialize for LexicalCursor {
                 "a lexical cursor score must be finite",
             ));
         }
-        let mut state = serializer.serialize_struct("LexicalCursor", 6)?;
+        let _validated = RepoId::new(&self.source_repo_id).map_err(serde::ser::Error::custom)?;
+        let mut state = serializer.serialize_struct("LexicalCursor", 7)?;
+        state.serialize_field("source_repo_id", &self.source_repo_id)?;
         state.serialize_field("manifest_generation", &self.manifest_generation)?;
         state.serialize_field("score", &self.score)?;
         state.serialize_field("repo_relative_path", &self.repo_relative_path)?;
@@ -220,6 +230,7 @@ impl<'de> Visitor<'de> for LexicalCursorV1Visitor {
     where
         A: MapAccess<'de>,
     {
+        let mut source_repo_id: Option<String> = None;
         let mut manifest_generation: Option<ManifestGeneration> = None;
         let mut score: Option<f32> = None;
         let mut repo_relative_path: Option<RepoRelativePath> = None;
@@ -228,6 +239,12 @@ impl<'de> Visitor<'de> for LexicalCursorV1Visitor {
         let mut candidate_id: Option<String> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
+                "source_repo_id" => {
+                    if source_repo_id.is_some() {
+                        return Err(de::Error::duplicate_field("source_repo_id"));
+                    }
+                    source_repo_id = Some(map.next_value()?);
+                }
                 "manifest_generation" => {
                     if manifest_generation.is_some() {
                         return Err(de::Error::duplicate_field("manifest_generation"));
@@ -273,7 +290,11 @@ impl<'de> Visitor<'de> for LexicalCursorV1Visitor {
         if !score.is_finite() {
             return Err(de::Error::custom("a lexical cursor score must be finite"));
         }
+        let source_repo_id =
+            source_repo_id.ok_or_else(|| de::Error::missing_field("source_repo_id"))?;
+        let _validated = RepoId::new(&source_repo_id).map_err(de::Error::custom)?;
         Ok(LexicalCursor {
+            source_repo_id,
             manifest_generation: manifest_generation
                 .ok_or_else(|| de::Error::missing_field("manifest_generation"))?,
             score,
@@ -296,5 +317,44 @@ impl<'de> Deserialize<'de> for LexicalCursor {
             LEXICAL_CURSOR_V1_FIELDS,
             LexicalCursorV1Visitor,
         )
+    }
+}
+
+#[cfg(test)]
+mod l3_tests {
+    use super::*;
+    #[test]
+    fn l3_cursor_source_repo_breaks_identical_path_id_ties() {
+        let key = LexicalRowOrderKey {
+            score: 2.0,
+            source_repo_id: "a",
+            repo_relative_path: "same.rs",
+            start_line: 1,
+            end_line: 2,
+            candidate_id: "same",
+        };
+        let next = LexicalRowOrderKey {
+            source_repo_id: "b",
+            ..key
+        };
+        let cursor = LexicalCursor::at(ManifestGeneration::new(7), key);
+        assert!(cursor.admits(&next));
+        assert!(!cursor.admits(&key));
+        let raw = serde_json::to_string(&cursor).expect("encode");
+        assert_eq!(
+            serde_json::from_str::<LexicalCursor>(&raw).expect("decode"),
+            cursor
+        );
+        let mut missing = serde_json::to_value(&cursor).expect("encode");
+        let _removed = missing
+            .as_object_mut()
+            .expect("object")
+            .remove("source_repo_id");
+        assert!(serde_json::from_value::<LexicalCursor>(missing).is_err());
+        let duplicated = format!("{{\"source_repo_id\":\"b\",{}", &raw[1..]);
+        assert!(serde_json::from_str::<LexicalCursor>(&duplicated).is_err());
+        let mut invalid = cursor;
+        invalid.source_repo_id.clear();
+        assert!(serde_json::to_string(&invalid).is_err());
     }
 }

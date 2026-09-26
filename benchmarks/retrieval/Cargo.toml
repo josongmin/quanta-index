@@ -37,3 +37,6 @@ tree-sitter-typescript = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+
+[build-dependencies]
+sha2 = { workspace = true }

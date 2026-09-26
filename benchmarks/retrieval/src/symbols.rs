@@ -21,16 +21,24 @@ use tree_sitter::{Language, Node, Parser, Query, QueryCursor, StreamingIterator}
 
 use crate::sha256_hex;
 
+mod preflight;
+use preflight::ExtractionControl;
+pub use preflight::{
+    SymbolCoveragePolicy, SymbolFileDiagnostic, SymbolFileReport, SymbolPreflight,
+    SymbolPreflightOptions, SymbolPreflightReport, preflight_corpus_symbols,
+};
+
 /// Pinned grammar identity bound into every scope digest (batch.rs). The
 /// versions mirror the workspace lockfile; changing a grammar changes the
 /// digest and invalidates frozen evidence.
 pub const SYMBOL_PRODUCER_GRAMMARS: &str = concat!(
-    "tree-sitter@0.25;",
-    "rust@0.24;",
-    "go@0.25;",
-    "javascript@0.25;",
-    "python@0.25;",
-    "typescript@0.23",
+    "tree-sitter@0.25.10;",
+    "rust@0.24.2;",
+    "go@0.25.0;",
+    "javascript@0.25.0;",
+    "python@0.25.0;",
+    "typescript@0.23.2+quanta-typescript-compatibility-1;vendored-source-sha256=",
+    env!("QI_TYPESCRIPT_GRAMMAR_SHA256"),
 );
 
 /// Producer identity for batch digests.
@@ -54,16 +62,34 @@ pub enum SymbolLanguage {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SymbolExtractError {
     /// The file extension maps to no supported grammar.
-    Unsupported { path: String },
+    Unsupported {
+        path: String,
+    },
     /// tree-sitter reported parse errors in the file.
-    ParseFailure { path: String },
+    ParseFailure {
+        path: String,
+    },
     /// Two definitions collapsed onto one deterministic id.
-    IdCollision { path: String, symbol_id: String },
+    IdCollision {
+        path: String,
+        symbol_id: String,
+    },
     /// The producer itself is inconsistent with the pinned grammar (query
     /// construction failed or a kind code is unregistered). A producer
     /// defect aborts the whole corpus run; it is never a per-file parse
     /// failure.
-    ProducerDefect { detail: String },
+    ProducerDefect {
+        detail: String,
+    },
+    Cancelled {
+        path: String,
+    },
+    TimedOut {
+        path: String,
+    },
+    ResourceLimit {
+        path: String,
+    },
 }
 
 impl std::fmt::Display for SymbolExtractError {
@@ -76,6 +102,11 @@ impl std::fmt::Display for SymbolExtractError {
             }
             Self::ProducerDefect { detail } => {
                 write!(formatter, "symbol producer defect: {detail}")
+            }
+            Self::Cancelled { path } => write!(formatter, "symbol extraction cancelled: {path}"),
+            Self::TimedOut { path } => write!(formatter, "symbol extraction timed out: {path}"),
+            Self::ResourceLimit { path } => {
+                write!(formatter, "symbol extraction resource limit: {path}")
             }
         }
     }
@@ -391,18 +422,7 @@ fn parse(
     path: &str,
     source: &str,
 ) -> Result<tree_sitter::Tree, SymbolExtractError> {
-    let mut parser = Parser::new();
-    let grammar = language.grammar();
-    parser
-        .set_language(&grammar)
-        .map_err(|error| SymbolExtractError::ProducerDefect {
-            detail: format!("failed to install pinned grammar for {path}: {error}"),
-        })?;
-    let tree = parser
-        .parse(source, None)
-        .ok_or_else(|| SymbolExtractError::ParseFailure {
-            path: path.to_string(),
-        })?;
+    let tree = parse_tree(language, path, source, None)?;
     if tree.root_node().has_error() {
         return Err(SymbolExtractError::ParseFailure {
             path: path.to_string(),
@@ -411,10 +431,43 @@ fn parse(
     Ok(tree)
 }
 
+fn parse_tree(
+    language: SymbolLanguage,
+    path: &str,
+    source: &str,
+    control: Option<&ExtractionControl<'_>>,
+) -> Result<tree_sitter::Tree, SymbolExtractError> {
+    if let Some(control) = control {
+        control.check()?;
+    }
+    let mut parser = Parser::new();
+    let grammar = language.grammar();
+    parser
+        .set_language(&grammar)
+        .map_err(|error| SymbolExtractError::ProducerDefect {
+            detail: format!("failed to install pinned grammar for {path}: {error}"),
+        })?;
+    let mut progress =
+        |_: &tree_sitter::ParseState| control.is_some_and(|control| control.check().is_err());
+    let mut input = |offset, _| source.as_bytes().get(offset..).unwrap_or_default();
+    let tree = parser.parse_with_options(
+        &mut input,
+        None,
+        Some(tree_sitter::ParseOptions::new().progress_callback(&mut progress)),
+    );
+    if let Some(control) = control {
+        control.check()?;
+    }
+    tree.ok_or_else(|| SymbolExtractError::ProducerDefect {
+        detail: format!("parser returned no tree without a cancellation or deadline: {path}"),
+    })
+}
+
 fn query_definitions(
     language: SymbolLanguage,
     tree: &tree_sitter::Tree,
     source: &str,
+    control: Option<&ExtractionControl<'_>>,
 ) -> Result<Vec<RawDefinition>, SymbolExtractError> {
     let grammar = language.grammar();
     let query = Query::new(&grammar, language.query()).map_err(|error| {
@@ -426,8 +479,18 @@ fn query_definitions(
     })?;
     let mut cursor = QueryCursor::new();
     let mut definitions: Vec<RawDefinition> = Vec::new();
-    let mut stream = cursor.matches(&query, tree.root_node(), source.as_bytes());
+    let mut progress =
+        |_: &tree_sitter::QueryCursorState| control.is_some_and(|control| control.check().is_err());
+    let mut stream = cursor.matches_with_options(
+        &query,
+        tree.root_node(),
+        source.as_bytes(),
+        tree_sitter::QueryCursorOptions::new().progress_callback(&mut progress),
+    );
     while let Some(matched) = stream.next() {
+        if let Some(control) = control {
+            control.check_symbols(definitions.len())?;
+        }
         let mut def_node: Option<Node<'_>> = None;
         let mut name_node: Option<Node<'_>> = None;
         for capture in matched.captures {
@@ -469,6 +532,9 @@ fn query_definitions(
         let mut seen_container = false;
         let mut parent = def_node.parent();
         while let Some(node) = parent {
+            if let Some(control) = control {
+                control.check()?;
+            }
             if language.is_container(node.kind()) {
                 let name = language.container_name(node, source)?;
                 if !seen_container {
@@ -526,6 +592,15 @@ fn query_definitions(
             byte_end: def_node.end_byte(),
         });
     }
+    if let Some(control) = control {
+        control.check()?;
+    }
+    drop(stream);
+    if cursor.did_exceed_match_limit() {
+        return Err(SymbolExtractError::ProducerDefect {
+            detail: "symbol query exceeded its native match limit".to_string(),
+        });
+    }
     Ok(definitions)
 }
 
@@ -557,7 +632,17 @@ pub fn extract_symbols(path: &str, source: &str) -> Result<Vec<SymbolRecord>, Sy
         });
     };
     let tree = parse(language, path, source)?;
-    let definitions = query_definitions(language, &tree, source)?;
+    extract_parsed_symbols(language, path, source, &tree, None)
+}
+
+fn extract_parsed_symbols(
+    language: SymbolLanguage,
+    path: &str,
+    source: &str,
+    tree: &tree_sitter::Tree,
+    control: Option<&ExtractionControl<'_>>,
+) -> Result<Vec<SymbolRecord>, SymbolExtractError> {
+    let definitions = query_definitions(language, tree, source, control)?;
     let line_index = LineIndex::new(source);
     let language_code = LanguageCode::from_code_str(language.language_code()).ok_or_else(|| {
         SymbolExtractError::Unsupported {
@@ -575,6 +660,9 @@ pub fn extract_symbols(path: &str, source: &str) -> Result<Vec<SymbolRecord>, Sy
             .then(left.local_name.cmp(&right.local_name))
     });
     for definition in raw {
+        if let Some(control) = control {
+            control.check()?;
+        }
         let separator = language.separator();
         let qualified_name = if definition.containers.is_empty() {
             definition.local_name.clone()
@@ -669,45 +757,19 @@ pub struct CorpusSymbolExtraction {
 pub fn extract_corpus_symbols(
     files: &std::collections::BTreeMap<String, crate::corpus::SourceFile>,
 ) -> crate::BenchResult<CorpusSymbolExtraction> {
-    let mut symbols = std::collections::BTreeMap::new();
-    for (path, file) in files {
-        if &file.path != path
-            || file.sha256 != sha256_hex(&file.bytes)
-            || file.text.as_bytes() != file.bytes.as_slice()
-        {
-            return Err(crate::BenchError::Corpus {
-                path: path.clone(),
-                message: "symbol source path/hash/text differs from admitted bytes".to_string(),
-            });
-        }
-        if SymbolLanguage::from_path(path).is_none() {
-            return Err(crate::BenchError::Chunk {
-                path: path.clone(),
-                message: format!(
-                    "symbol extraction coverage failure: unsupported symbol language: {path}; \
-                     source_sha256={}; reason=unsupported_language",
-                    file.sha256
-                ),
-            });
-        }
-        let records = extract_symbols(path, &file.text).map_err(|error| match error {
-            SymbolExtractError::ProducerDefect { detail } => crate::BenchError::Protocol(format!(
-                "symbol producer defect for {path}: {detail}; source_sha256={}",
-                file.sha256
-            )),
-            SymbolExtractError::Unsupported { .. }
-            | SymbolExtractError::ParseFailure { .. }
-            | SymbolExtractError::IdCollision { .. } => crate::BenchError::Chunk {
-                path: path.clone(),
-                message: format!(
-                    "symbol extraction coverage failure: {error}; source_sha256={}",
-                    file.sha256
-                ),
+    let preflight = preflight_corpus_symbols(files, &SymbolPreflightOptions::default())?;
+    preflight
+        .admit(SymbolCoveragePolicy::RequireComplete)
+        .map_err(|error| match error {
+            crate::BenchError::Chunk { path, message } => crate::BenchError::Chunk {
+                path,
+                message: format!("symbol extraction coverage failure: {message}"),
             },
+            other => other,
         })?;
-        let _previous = symbols.insert(path.clone(), records);
-    }
-    Ok(CorpusSymbolExtraction { symbols })
+    Ok(CorpusSymbolExtraction {
+        symbols: preflight.into_symbols(),
+    })
 }
 
 #[cfg(test)]

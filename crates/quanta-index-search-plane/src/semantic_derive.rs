@@ -925,6 +925,12 @@ mod tests {
 
     fn fixture_search_batch() -> Result<SearchCorpusIngestBatch, Box<dyn std::error::Error>> {
         Ok(SearchCorpusIngestBatch {
+            source_event: quanta_index_contract::SourcePublicationEvent {
+                stream_id: "fixture-stream".into(),
+                event_id: "fixture-event".into(),
+                expected_base_event_id: None,
+                payload_sha256: [0; 32],
+            },
             repo_id: RepoId::new("repo-1").expect("static fixture ID satisfies canonical policy"),
             revision_id: RevisionId::new("rev-1")
                 .expect("static fixture ID satisfies canonical policy"),
@@ -936,11 +942,24 @@ mod tests {
             bundle_payload: None,
             clear_surfaces: Vec::new(),
             replace_scopes: vec![SearchCorpusReplaceScope {
-                scope: SearchScopeKey {
-                    doc_surface: SearchScopeSurface::Chunk,
-                    repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+                coverage: quanta_index_contract::SourceFileCoverage {
+                    source: quanta_index_contract::SourceFileRevision {
+                        file: quanta_index_contract::SourceFileKey {
+                            source_repo_id: RepoId::new("repo-1").expect("fixture repo"),
+                            repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+                        },
+                        revision_id: RevisionId::new("source-revision").expect("fixture revision"),
+                        source_sha256: [1; 32],
+                    },
+                    language: quanta_index_contract::lex::LanguageCode::new("rust")?,
+                    producer_policy_sha256: [2; 32],
+                    unit_set_sha256: quanta_index_contract::source_file_unit_set_sha256(
+                        &[fixture_chunk()?],
+                        &[],
+                    )?,
+                    text_admitted: true,
+                    symbols: quanta_index_contract::SymbolCoverage::NotRequested,
                 },
-                scope_digest: "scope:lex".to_string(),
                 chunks: vec![fixture_chunk()?],
                 symbols: Vec::new(),
             }],
@@ -1044,8 +1063,8 @@ mod tests {
         batch.base_generation = Some(ManifestGeneration::new(6));
         batch.semantic_replace_scopes.clear();
         batch.tombstone_scopes = vec![SearchCorpusTombstoneScope {
-            scope: SearchScopeKey {
-                doc_surface: SearchScopeSurface::Chunk,
+            file: quanta_index_contract::SourceFileKey {
+                source_repo_id: RepoId::new("repo-1").expect("fixture repo"),
                 repo_relative_path: RepoRelativePath::new("src/old.rs"),
             },
         }];

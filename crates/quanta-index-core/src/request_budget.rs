@@ -19,6 +19,21 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::error::CoreError;
+use crate::{LexicalCollectionBudget, LexicalMemoryReservation};
+
+// A served request may perform multiple refill/selection passes. Preallocate the
+// bounded group carrier before optional work, so a sticky optional refusal does
+// not prevent already-admitted output from retaining its reservations.
+const LEXICAL_OUTPUT_GROUP_LIMIT: usize = 256;
+
+#[derive(Debug)]
+struct LexicalPreviewRetention {
+    max_work: u64,
+    max_bytes: u64,
+    ledger: LexicalCollectionBudget,
+    groups: Vec<Option<Vec<LexicalMemoryReservation>>>,
+    _carrier: LexicalMemoryReservation,
+}
 
 /// Wire code for a request that ran past its deadline.
 pub const REQUEST_DEADLINE_EXCEEDED_CODE: quanta_index_contract::SearchPlaneErrorCodeV2 =
@@ -188,6 +203,7 @@ pub struct RequestBudgetV1 {
     shared: Arc<CancelSharedV1>,
     correlation: Option<RequestCorrelationV1>,
     diagnostics: Option<Arc<dyn RequestStageDiagnosticPortV1>>,
+    lexical_preview: Arc<std::sync::Mutex<Option<LexicalPreviewRetention>>>,
 }
 
 impl RequestBudgetV1 {
@@ -202,6 +218,7 @@ impl RequestBudgetV1 {
             }),
             correlation: None,
             diagnostics: None,
+            lexical_preview: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -212,6 +229,93 @@ impl RequestBudgetV1 {
     pub fn with_correlation(mut self, correlation: RequestCorrelationV1) -> Self {
         self.correlation = Some(correlation);
         self
+    }
+
+    /// One optional preview ledger across all selection/refill passes of this
+    /// request. The first explicit policy is frozen; callers cannot reset a
+    /// spent ledger or silently replace its limits.
+    pub fn lexical_preview_budget(
+        &self,
+        max_work: u64,
+        max_bytes: u64,
+    ) -> Result<LexicalCollectionBudget, CoreError> {
+        let mut state = self
+            .lexical_preview
+            .lock()
+            .map_err(|error| CoreError::Storage(format!("preview retention poisoned: {error}")))?;
+        if let Some(retained) = state.as_ref() {
+            if (max_work, max_bytes) != (retained.max_work, retained.max_bytes) {
+                return Err(CoreError::InvalidContract(
+                    "request preview policy cannot change".into(),
+                ));
+            }
+            return Ok(retained.ledger.clone());
+        }
+        let ledger = LexicalCollectionBudget::new(max_work, max_bytes)?;
+        let bytes = u64::try_from(
+            LEXICAL_OUTPUT_GROUP_LIMIT
+                * std::mem::size_of::<Option<Vec<LexicalMemoryReservation>>>(),
+        )
+        .map_err(|_| CoreError::InvalidContract("preview carrier size overflow".into()))?;
+        let carrier = ledger.reserve_bytes(bytes)?;
+        let mut groups = Vec::new();
+        groups
+            .try_reserve_exact(LEXICAL_OUTPUT_GROUP_LIMIT)
+            .map_err(|error| CoreError::Storage(format!("preview carrier allocation: {error}")))?;
+        *state = Some(LexicalPreviewRetention {
+            max_work,
+            max_bytes,
+            ledger: ledger.clone(),
+            groups,
+            _carrier: carrier,
+        });
+        Ok(ledger)
+    }
+
+    /// Transfer already-admitted output leases into the request's lifetime.
+    /// IPC retains this budget through response encoding and socket write.
+    /// In-process callers must retain their budget while retaining the returned
+    /// output. Arbitrary later wire DTO clones are outside this accounting.
+    pub fn reserve_lexical_output_group(&self) -> Result<Option<usize>, CoreError> {
+        let mut state = self
+            .lexical_preview
+            .lock()
+            .map_err(|error| CoreError::Storage(format!("preview retention poisoned: {error}")))?;
+        let retained = state.as_mut().ok_or_else(|| {
+            CoreError::InvalidContract("preview output lacks its request ledger".into())
+        })?;
+        if retained.groups.len() >= LEXICAL_OUTPUT_GROUP_LIMIT {
+            return Ok(None);
+        }
+        let slot = retained.groups.len();
+        retained.groups.push(None);
+        Ok(Some(slot))
+    }
+
+    /// Fill a slot reserved before rendering. This performs no allocation or
+    /// budget admission after the optional renderer has produced valid output.
+    pub fn retain_lexical_output(
+        &self,
+        slot: usize,
+        reservations: Vec<LexicalMemoryReservation>,
+    ) -> Result<(), CoreError> {
+        let mut state = self
+            .lexical_preview
+            .lock()
+            .map_err(|error| CoreError::Storage(format!("preview retention poisoned: {error}")))?;
+        let retained = state.as_mut().ok_or_else(|| {
+            CoreError::InvalidContract("preview output lacks its request ledger".into())
+        })?;
+        let group = retained.groups.get_mut(slot).ok_or_else(|| {
+            CoreError::InvalidContract("preview output group was not reserved".into())
+        })?;
+        if group.is_some() {
+            return Err(CoreError::InvalidContract(
+                "preview output group already filled".into(),
+            ));
+        }
+        *group = Some(reservations);
+        Ok(())
     }
 
     /// The admitted transport identity, if this budget runs under one.
@@ -382,6 +486,65 @@ mod tests {
         RequestBudgetV1,
     };
     use crate::CoreError;
+
+    #[test]
+    fn preview_ledger_is_shared_and_output_lives_until_last_request_owner() {
+        let request = RequestBudgetV1::unbounded();
+        let ledger = request
+            .lexical_preview_budget(10, 100_000)
+            .expect("valid policy");
+        let clone = request.clone();
+        let same = clone
+            .lexical_preview_budget(10, 100_000)
+            .expect("same policy");
+        ledger.charge_work(3).expect("work admitted");
+        assert_eq!(same.used_work(), 3);
+        assert!(request.lexical_preview_budget(11, 100_000).is_err());
+        let slot = request
+            .reserve_lexical_output_group()
+            .expect("carrier lock")
+            .expect("space");
+        let held = ledger.reserve_bytes(19).expect("output admitted");
+        let before = ledger.resident_bytes();
+        // A later optional refusal does not revoke already-admitted payloads.
+        assert!(ledger.charge_work(100).is_err());
+        request
+            .retain_lexical_output(slot, vec![held])
+            .expect("allocation-free transfer");
+        assert_eq!(ledger.resident_bytes(), before);
+        assert!(request.retain_lexical_output(slot, Vec::new()).is_err());
+        drop(request);
+        assert_eq!(ledger.resident_bytes(), before);
+        drop(clone);
+        assert_eq!(ledger.resident_bytes(), 0);
+    }
+
+    #[test]
+    fn preview_group_exhaustion_is_explicit_before_optional_rendering() {
+        let request = RequestBudgetV1::unbounded();
+        let ledger = request
+            .lexical_preview_budget(10, 100_000)
+            .expect("valid policy");
+        for expected in 0..super::LEXICAL_OUTPUT_GROUP_LIMIT {
+            assert_eq!(
+                request.reserve_lexical_output_group().expect("carrier"),
+                Some(expected)
+            );
+        }
+        assert_eq!(
+            request.reserve_lexical_output_group().expect("carrier"),
+            None
+        );
+        assert!(ledger.failure().is_none());
+        assert!(
+            request
+                .retain_lexical_output(super::LEXICAL_OUTPUT_GROUP_LIMIT, Vec::new())
+                .is_err()
+        );
+        request
+            .retain_lexical_output(0, Vec::new())
+            .expect("existing slot valid");
+    }
 
     #[test]
     fn a_fresh_budget_passes_its_checkpoints() {

@@ -982,58 +982,168 @@ class RawFile:
         return cls(path, digest, size)
 
     def copy_to(self, target: Path) -> RawFile:
-        def copy(handle: BinaryIO) -> RawFile:
-            return write_raw_file(target, iter(lambda: handle.read(IO_CHUNK_BYTES), b""))
+        with RawWriter(target) as sink:
+            self.copy_into(sink)
+            return sink.finish()
 
-        copied = _consume_regular_file(self.path, copy)
-        if (copied.sha256, copied.size) != (self.sha256, self.size):
-            raise EvidenceError("copied raw bytes differ from the prepared file commitment")
-        return copied
+    def copy_into(self, sink: RawWriter) -> None:
+        def copy(handle: BinaryIO) -> None:
+            digest, count = hashlib.sha256(), 0
+            while block := handle.read(IO_CHUNK_BYTES):
+                sink.write(block)
+                digest.update(block)
+                count += len(block)
+            if (DIGEST_PREFIX + digest.hexdigest(), count) != (self.sha256, self.size):
+                raise EvidenceError("copied raw bytes differ from the prepared file commitment")
+
+        _consume_regular_file(self.path, copy)
+
+    def consume_seekable(self, consume: Callable[[BinaryIO], _Consumed]) -> _Consumed:
+        """Seek on one pinned descriptor without surrendering complete-byte custody."""
+
+        def verify(handle: BinaryIO) -> None:
+            handle.seek(0)
+            digest, count = hashlib.sha256(), 0
+            while block := handle.read(IO_CHUNK_BYTES):
+                digest.update(block)
+                count += len(block)
+            if (DIGEST_PREFIX + digest.hexdigest(), count) != (self.sha256, self.size):
+                raise EvidenceError("seekable bytes differ from the prepared file commitment")
+
+        def pinned(handle: BinaryIO) -> _Consumed:
+            verify(handle)
+            handle.seek(0)
+            result = consume(handle)
+            # Leave the descriptor at genuinely consumed EOF, not a synthetic
+            # seek-to-end bypass of the existing complete-read primitive.
+            verify(handle)
+            return result
+
+        return _consume_regular_file(self.path, pinned)
+
+    def read_control(self) -> bytes:
+        """Read an explicitly size-limited control value, validating its commitment."""
+        raw = _read_control_file(self.path)
+        if (digest_bytes(raw), len(raw)) != (self.sha256, self.size):
+            raise EvidenceError("control bytes differ from the prepared file commitment")
+        return raw
+
+    def tail(self, limit: int) -> bytes:
+        if type(limit) is not int or not 0 <= limit <= IO_CHUNK_BYTES:
+            raise EvidenceError("raw diagnostic tail must be bounded by one I/O chunk")
+
+        def consume(handle: BinaryIO) -> bytes:
+            digest, count, tail = hashlib.sha256(), 0, b""
+            while block := handle.read(IO_CHUNK_BYTES):
+                digest.update(block)
+                count += len(block)
+                tail = (tail + block)[-limit:] if limit else b""
+            if (DIGEST_PREFIX + digest.hexdigest(), count) != (self.sha256, self.size):
+                raise EvidenceError("diagnostic bytes differ from the prepared file commitment")
+            return tail
+
+        return _consume_regular_file(self.path, consume)
+
+
+class RawWriter:
+    """One exclusive streaming sink for adapters and multiplexed producer pipes."""
+
+    def __init__(self, path: Path):
+        self.path, self._parent = _open_output_parent(path)
+        self._handle = None
+        self._digest, self._count = hashlib.sha256(), 0
+        try:
+            fd = os.open(
+                self.path.name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=self._parent,
+            )
+            try:
+                # Drained producer bytes must survive controller SIGKILL even
+                # before final fsync/commit; never retain them only in Python.
+                self._handle = os.fdopen(fd, "wb", buffering=0)
+            except BaseException:
+                os.close(fd)
+                raise
+        except BaseException as error:
+            os.close(self._parent)
+            self._parent = None
+            if isinstance(error, OSError):
+                raise EvidenceError(f"unsafe or incomplete raw output {path}: {error}") from error
+            raise
+
+    def __enter__(self) -> RawWriter:
+        return self
+
+    def __exit__(self, _kind, primary, _traceback) -> None:
+        try:
+            if self._handle is not None:
+                try:
+                    self._handle.close()
+                except OSError as error:
+                    raise EvidenceError(
+                        f"{primary or 'raw close'}; output close also failed: {error}"
+                    ) from primary
+        finally:
+            if self._parent is not None:
+                os.close(self._parent)
+                self._parent = None
+
+    def write(self, block: bytes | bytearray | memoryview) -> int:
+        if self._handle is None or self._handle.closed:
+            raise EvidenceError("raw sink is closed")
+        if not isinstance(block, (bytes, bytearray, memoryview)):
+            raise EvidenceError("raw stream yielded a non-byte block")
+        try:
+            view = memoryview(block).cast("B")
+        except (TypeError, ValueError) as error:
+            raise EvidenceError("raw stream needs contiguous byte blocks") from error
+        for start in range(0, len(view), IO_CHUNK_BYTES):
+            chunk = view[start : start + IO_CHUNK_BYTES]
+            if self._handle.write(chunk) != len(chunk):
+                raise EvidenceError("short raw output write")
+            self._digest.update(chunk)
+            self._count += len(chunk)
+        return len(view)
+
+    def tell(self) -> int:
+        return self._count
+
+    def flush(self) -> None:
+        if self._handle is None or self._handle.closed:
+            raise EvidenceError("raw sink is closed")
+        self._handle.flush()
+
+    def finish(self) -> RawFile:
+        if self._handle is None or self._handle.closed or self._parent is None:
+            raise EvidenceError("raw sink is closed")
+        self._handle.flush()
+        os.fsync(self._handle.fileno())
+        written = os.fstat(self._handle.fileno())
+        if (
+            not stat.S_ISREG(written.st_mode)
+            or written.st_nlink != 1
+            or written.st_size != self._count
+        ):
+            raise EvidenceError("raw output identity or size changed during write")
+        self._handle.close()
+        os.fsync(self._parent)
+        result = RawFile(self.path, DIGEST_PREFIX + self._digest.hexdigest(), self._count)
+        if file_digest(self.path) != (result.sha256, result.size):
+            raise EvidenceError(f"raw output changed before verification: {self.path}")
+        return result
 
 
 def write_raw_file(path: Path, blocks: Iterable[bytes | bytearray | memoryview]) -> RawFile:
     """Exclusively spool an owned raw stream, retaining partial output on failure."""
-    absolute, parent_fd = _open_output_parent(path)
-    digest, count = hashlib.sha256(), 0
     try:
-        fd = os.open(
-            absolute.name,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-            0o600,
-            dir_fd=parent_fd,
-        )
-        with os.fdopen(fd, "wb") as handle:
+        with RawWriter(path) as sink:
             for block in blocks:
-                if not isinstance(block, (bytes, bytearray, memoryview)):
-                    raise EvidenceError("raw stream yielded a non-byte block")
-                try:
-                    view = memoryview(block).cast("B")
-                except (TypeError, ValueError) as error:
-                    raise EvidenceError("raw stream needs contiguous byte blocks") from error
-                for start in range(0, len(view), IO_CHUNK_BYTES):
-                    chunk = view[start : start + IO_CHUNK_BYTES]
-                    if handle.write(chunk) != len(chunk):
-                        raise EvidenceError("short raw output write")
-                    digest.update(chunk)
-                    count += len(chunk)
-            handle.flush()
-            os.fsync(handle.fileno())
-            written = os.fstat(handle.fileno())
-            if (
-                not stat.S_ISREG(written.st_mode)
-                or written.st_nlink != 1
-                or written.st_size != count
-            ):
-                raise EvidenceError("raw output identity or size changed during write")
-        os.fsync(parent_fd)
+                sink.write(block)
+            return sink.finish()
     except OSError as error:
         raise EvidenceError(f"unsafe or incomplete raw output {path}: {error}") from error
-    finally:
-        os.close(parent_fd)
-    result = RawFile(absolute, DIGEST_PREFIX + digest.hexdigest(), count)
-    if file_digest(absolute) != (result.sha256, result.size):
-        raise EvidenceError(f"raw output changed before verification: {path}")
-    return result
 
 
 def _entry_present_no_follow(path: Path) -> bool:

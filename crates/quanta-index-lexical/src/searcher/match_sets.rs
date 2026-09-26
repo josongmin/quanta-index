@@ -26,6 +26,16 @@ use quanta_index_lq_trigram::{
 use roaring::RoaringBitmap;
 use std::sync::Arc;
 
+use crate::searcher::snippets::{
+    PreviewResult, PreviewStop, SelectedSnippetSource, SnippetContext, integrity,
+    token_allocation_bound,
+};
+use core::ops::Range;
+use quanta_index_contract::{LqExpr, LqLeaf, LqPatternType, PreviewUnavailableReason};
+use quanta_index_lq_regex::executor::RegexRangeError;
+use quanta_index_lq_text_normalizer::MappedText;
+use std::cell::Cell;
+
 impl TantivySearcher {
     /// The text documents containing `needle` as bytes, as authority doc
     /// ids.
@@ -249,5 +259,256 @@ impl TantivySearcher {
                 .map(|phrase_match| phrase_match.doc_id.0),
             "phrase",
         )
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct PositiveWitness {
+    pub(crate) original: Range<usize>,
+    pub(crate) normalized: Range<usize>,
+}
+
+/// Reconstruct selected-row witnesses through the existing matching owners.
+///
+/// False Boolean branches and NOT retain no positive evidence. This request-
+/// local operation never caches whole-query truth under a leaf cache key.
+pub(crate) fn selected_witnesses<'a>(
+    context: &SnippetContext<'_>,
+    source: &SelectedSnippetSource<'_>,
+    nfc: &MappedText<'_>,
+    folded: &MappedText<'_>,
+    document: &[normalize::Token],
+    regex_executor: &dyn Fn(&str) -> Result<&'a RegexExecutor, CoreError>,
+    predicate_truth: &dyn Fn(&LqLeaf) -> Result<bool, CoreError>,
+) -> PreviewResult<(bool, bool, Vec<PositiveWitness>)> {
+    let matcher = WitnessMatcher {
+        context,
+        source,
+        nfc,
+        folded,
+        document,
+        regex_executor,
+        predicate_truth,
+        overflow: Cell::new(false),
+        unsupported: Cell::new(false),
+    };
+    let mut witnesses = Vec::new();
+    let include_path = TantivySearcher::enables_path_term_surface(context.expr, context.options);
+    let (mut matched, path_match) =
+        matcher.evaluate(context.expr, include_path, 0, &mut witnesses)?;
+    if matched {
+        for filter in context.filters {
+            if let quanta_index_contract::LqFilter::Content { leaf } = filter {
+                if !matcher.leaf(leaf, false, &mut witnesses)?.0 {
+                    matched = false;
+                    witnesses.clear();
+                    break;
+                }
+            }
+        }
+    }
+    if matched && matcher.overflow.get() {
+        return Err(PreviewStop::Unavailable(
+            PreviewUnavailableReason::WorkBudget,
+        ));
+    }
+    if matched && matcher.unsupported.get() {
+        return Err(PreviewStop::Unavailable(
+            PreviewUnavailableReason::UnsupportedRange,
+        ));
+    }
+    Ok((matched, path_match, witnesses))
+}
+
+struct WitnessMatcher<'a, 'b, 'c> {
+    context: &'a SnippetContext<'b>,
+    source: &'a SelectedSnippetSource<'b>,
+    nfc: &'a MappedText<'b>,
+    folded: &'a MappedText<'b>,
+    document: &'a [normalize::Token],
+    regex_executor: &'a dyn Fn(&str) -> Result<&'c RegexExecutor, CoreError>,
+    predicate_truth: &'a dyn Fn(&LqLeaf) -> Result<bool, CoreError>,
+    overflow: Cell<bool>,
+    unsupported: Cell<bool>,
+}
+
+impl WitnessMatcher<'_, '_, '_> {
+    fn evaluate(
+        &self,
+        expr: &LqExpr,
+        include_path: bool,
+        depth: usize,
+        out: &mut Vec<PositiveWitness>,
+    ) -> PreviewResult<(bool, bool)> {
+        self.context.charge(1)?;
+        if depth > 64 {
+            return Err(PreviewStop::Unavailable(
+                PreviewUnavailableReason::WorkBudget,
+            ));
+        }
+        match expr {
+            LqExpr::Empty => Ok((true, false)),
+            LqExpr::Leaf(leaf) => self.leaf(leaf, include_path, out),
+            LqExpr::Not(inner) => {
+                let saved = out.len();
+                let flags = (self.overflow.get(), self.unsupported.get());
+                let result = self.evaluate(inner, false, depth.saturating_add(1), out);
+                out.truncate(saved);
+                self.overflow.set(flags.0);
+                self.unsupported.set(flags.1);
+                result.map(|(matched, _)| (!matched, false))
+            }
+            LqExpr::All(children) => {
+                let saved = out.len();
+                let flags = (self.overflow.get(), self.unsupported.get());
+                for child in children {
+                    if !self.evaluate(child, false, depth.saturating_add(1), out)?.0 {
+                        out.truncate(saved);
+                        self.overflow.set(flags.0);
+                        self.unsupported.set(flags.1);
+                        return Ok((false, false));
+                    }
+                }
+                Ok((true, false))
+            }
+            LqExpr::Any(children) => {
+                let mut matched = false;
+                for child in children {
+                    let saved = out.len();
+                    let flags = (self.overflow.get(), self.unsupported.get());
+                    if self.evaluate(child, false, depth.saturating_add(1), out)?.0 {
+                        matched = true;
+                    } else {
+                        out.truncate(saved);
+                        self.overflow.set(flags.0);
+                        self.unsupported.set(flags.1);
+                    }
+                }
+                Ok((matched, false))
+            }
+        }
+    }
+
+    fn push(
+        &self,
+        map: &MappedText<'_>,
+        range: Range<usize>,
+        out: &mut Vec<PositiveWitness>,
+    ) -> PreviewResult<()> {
+        if range.is_empty() || map.text().get(range.clone()).is_none() {
+            self.unsupported.set(true);
+            return Ok(());
+        }
+        if out.len() >= self.context.limits.witnesses {
+            self.overflow.set(true);
+            return Ok(());
+        }
+        let original = map
+            .source_range(range.clone())
+            .map_err(|error| self.context.mapping_error(error))?;
+        let normalized = map
+            .normalized_range(range)
+            .map_err(|error| self.context.mapping_error(error))?;
+        out.push(PositiveWitness {
+            original,
+            normalized,
+        });
+        Ok(())
+    }
+
+    fn leaf(
+        &self,
+        leaf: &LqLeaf,
+        include_path: bool,
+        out: &mut Vec<PositiveWitness>,
+    ) -> PreviewResult<(bool, bool)> {
+        let (text, regex) = match leaf {
+            LqLeaf::Keyword(text) | LqLeaf::RawString(text) => (
+                text,
+                self.context.options.pattern_type == LqPatternType::Regexp,
+            ),
+            LqLeaf::Regex(text) => (text, true),
+            LqLeaf::Phrase(text) => (text, false),
+            LqLeaf::Predicate { .. } | LqLeaf::StructuralBlock(_) => {
+                return (self.predicate_truth)(leaf)
+                    .map(|matched| (matched, false))
+                    .map_err(PreviewStop::Mandatory);
+            }
+        };
+        if text.len() > self.context.limits.source_bytes {
+            return Err(PreviewStop::Unavailable(
+                PreviewUnavailableReason::WorkBudget,
+            ));
+        }
+        self.context
+            .charge(self.nfc.text().len().saturating_add(text.len()))?;
+        let _query_memory = self.context.reserve(token_allocation_bound(text.len())?)?;
+        if regex {
+            let executor = (self.regex_executor)(text).map_err(PreviewStop::Mandatory)?;
+            let expected =
+                crate::TantivySearcher::regex_source_for_options(text, self.context.options);
+            if executor.pattern() != expected {
+                return Err(PreviewStop::Mandatory(integrity(
+                    "regex executor has wrong pattern/case binding",
+                )));
+            }
+            let found = executor
+                .find_ranges_bounded(
+                    self.nfc.text().as_bytes(),
+                    self.context.limits.transformed_bytes,
+                    1,
+                    &|| self.context.request.interruption().is_some(),
+                )
+                .map_err(|error| match error {
+                    RegexRangeError::SourceByteLimit => {
+                        PreviewStop::Unavailable(PreviewUnavailableReason::WorkBudget)
+                    }
+                    RegexRangeError::Interrupted => PreviewStop::Mandatory(
+                        self.context
+                            .request
+                            .interrupted_at("lexical:preview-regex")
+                            .unwrap_or_else(|| integrity("unobserved regex interruption")),
+                    ),
+                })?;
+            if let Some(range) = found.ranges.into_iter().next() {
+                self.push(self.nfc, range, out)?;
+                return Ok((true, false));
+            }
+            return Ok((false, false));
+        }
+        if matches!(leaf, LqLeaf::RawString(_)) {
+            if let Some(range) = self.folded.find_substring(text) {
+                self.push(self.folded, range, out)?;
+                return Ok((true, false));
+            }
+            return Ok((false, false));
+        }
+        let wanted =
+            normalize::query_tokens(text, self.context.options.case_mode()).map_err(|error| {
+                PreviewStop::Mandatory(integrity(&format!("prepared token query invalid: {error}")))
+            })?;
+        self.context
+            .charge(self.document.len().saturating_mul(wanted.len()))?;
+        if let Some(range) = normalize::phrase_ranges(self.document, &wanted).next() {
+            self.push(self.nfc, range, out)?;
+            return Ok((true, false));
+        }
+        if include_path && matches!(leaf, LqLeaf::Keyword(_)) {
+            if self.source.path.len() > self.context.limits.source_bytes {
+                return Err(PreviewStop::Unavailable(
+                    PreviewUnavailableReason::WorkBudget,
+                ));
+            }
+            self.context.charge(self.source.path.len())?;
+            let _path_memory = self
+                .context
+                .reserve(token_allocation_bound(self.source.path.len())?)?;
+            let path = normalize::tokenize(self.source.path, self.context.options.case_mode());
+            let present: Vec<_> = path.indexable().cloned().collect();
+            self.context
+                .charge(present.len().saturating_mul(wanted.len()))?;
+            return Ok((normalize::contains_phrase(&present, &wanted), true));
+        }
+        Ok((false, false))
     }
 }

@@ -1,5 +1,6 @@
 """Child terminal status uses notifications without relaxing process custody."""
 
+import hashlib
 import json
 import os
 import selectors
@@ -155,3 +156,175 @@ def test_notification_install_failure_restores_handler_and_closes_pipes(monkeypa
     for fd in descriptors:
         with pytest.raises(OSError):
             os.fstat(fd)
+
+
+@pytest.mark.parametrize("exit_code", [0, 7])
+def test_execution_retains_complete_file_logs_and_actual_terminal(tmp_path, exit_code):
+    root = tmp_path / "execution"
+    command = [
+        sys.executable,
+        "-c",
+        "import os; os.write(1,b'output-oracle'); os.write(2,b'error-oracle'); "
+        f"raise SystemExit({exit_code})",
+    ]
+    if exit_code:
+        with pytest.raises(execution.ProducerExecutionError, match="exit 7"):
+            execution.execute(command, cwd=tmp_path, env=dict(os.environ), timeout=10, log_dir=root)
+    else:
+        result = execution.execute(
+            command, cwd=tmp_path, env=dict(os.environ), timeout=10, log_dir=root
+        )
+        assert result.stdout.read_control() == b"output-oracle"
+        assert result.stderr.read_control() == b"error-oracle"
+        assert result.stdout.size == 13
+        assert result.stdout.sha256 == "sha256:" + hashlib.sha256(b"output-oracle").hexdigest()
+    record = json.loads((root / "execution.json").read_text())
+    assert record["status"] == ("failed" if exit_code else "completed")
+    assert record["command"]["exit_code"] == exit_code
+    assert record["request"]["argv"] == command
+    assert (root / "stdout").read_bytes() == b"output-oracle"
+    assert (root / "stderr").read_bytes() == b"error-oracle"
+    assert record["raw"][0]["sha256"] == "sha256:" + hashlib.sha256(b"output-oracle").hexdigest()
+
+
+def test_timeout_retains_prefix_without_inventing_terminal(tmp_path):
+    root = tmp_path / "execution"
+    with pytest.raises(execution.ProducerExecutionError, match="timed out"):
+        execution.execute(
+            [sys.executable, "-c", "import os,time; os.write(1,b'before-timeout'); time.sleep(60)"],
+            cwd=tmp_path,
+            env=dict(os.environ),
+            timeout=1,
+            log_dir=root,
+        )
+    record = json.loads((root / "execution.json").read_text())
+    assert record["status"] == "failed" and record["command"] is None
+    assert (root / "stdout").read_bytes() == b"before-timeout"
+    assert record["raw"][0]["bytes"] == 14
+
+
+def test_execution_does_not_use_whole_output_communicate(tmp_path, monkeypatch):
+    def forbidden(*args, **kwargs):
+        pytest.fail("execution must not allocate complete output in communicate")
+
+    monkeypatch.setattr(subprocess.Popen, "communicate", forbidden)
+    result = execution.execute(
+        [sys.executable, "-c", "import os; os.write(1,b'fixed')"],
+        cwd=tmp_path,
+        env=dict(os.environ),
+        timeout=10,
+        log_dir=tmp_path / "execution",
+    )
+    assert result.stdout.read_control() == b"fixed"
+
+
+def test_execution_peak_rss_is_payload_independent(tmp_path, record_property):
+    results = []
+    for size in (8 * 1024 * 1024, 128 * 1024 * 1024):
+        script = f"""
+import hashlib,json,os,resource,sys
+from pathlib import Path
+sys.path.insert(0,{str(Path(execution.__file__).parent)!r})
+from producer_execution import execute
+command = "import os; block=b'x'*65536\\nfor _ in range({size // 65536}): os.write(1,block)"
+result=execute([sys.executable,'-c',command],cwd=Path({str(tmp_path)!r}),env=dict(os.environ),timeout=30,log_dir=Path({str(tmp_path / str(size))!r}))
+expected=hashlib.sha256()
+for _ in range({size // 65536}): expected.update(b'x'*65536)
+assert result.stdout.sha256=='sha256:'+expected.hexdigest()
+assert result.stdout.size=={size}
+print(json.dumps({{'rss':resource.getrusage(resource.RUSAGE_SELF).ru_maxrss*(1 if sys.platform=='darwin' else 1024)}}))
+"""
+        result = subprocess.run([sys.executable, "-c", script], capture_output=True, timeout=40)
+        assert result.returncode == 0, result.stderr.decode()
+        peak = json.loads(result.stdout)["rss"]
+        record_property(f"execution_{size}_peak_bytes", peak)
+        results.append(peak)
+    assert results[1] - results[0] < 32 * 1024 * 1024
+
+
+def test_execution_recording_failure_preserves_primary_and_logs(tmp_path, monkeypatch):
+    import evidence
+
+    original = evidence.write_raw_file
+
+    def fail_record(path, blocks):
+        if path.name == "execution.json":
+            raise OSError("record disk full")
+        return original(path, blocks)
+
+    monkeypatch.setattr(evidence, "write_raw_file", fail_record)
+    root = tmp_path / "execution"
+    with pytest.raises(
+        execution.ProducerExecutionError, match="exit 7.*record disk full"
+    ) as caught:
+        execution.execute(
+            [sys.executable, "-c", "import os; os.write(2,b'primary'); raise SystemExit(7)"],
+            cwd=tmp_path,
+            env=dict(os.environ),
+            timeout=10,
+            log_dir=root,
+        )
+    assert isinstance(caught.value.__cause__, execution.ProducerExecutionError)
+    assert (root / "stderr").read_bytes() == b"primary"
+    assert not (root / "execution.json").exists()
+
+
+def test_controller_death_retains_already_drained_prefix(tmp_path):
+    """A pipe-drain acknowledgement must not leave bytes only in Python buffers."""
+    read_fd, write_fd = os.pipe()
+    root = tmp_path / "execution"
+    script = f"""
+import os,sys
+from pathlib import Path
+sys.path.insert(0,{str(Path(execution.__file__).parent)!r})
+import evidence
+from producer_execution import execute
+original=evidence.RawWriter.write
+def acknowledged(self, block):
+    original(self,block)
+    if self.path.name=='stdout' and block==b'retained': os.write({write_fd},b'!')
+evidence.RawWriter.write=acknowledged
+execute([sys.executable,'-c',"import os,time; os.write(1,b'retained'); time.sleep(60)"],cwd=Path({str(tmp_path)!r}),env=dict(os.environ),timeout=30,log_dir=Path({str(root)!r}))
+"""
+    process = subprocess.Popen(
+        [sys.executable, "-c", script],
+        pass_fds=(write_fd,),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    os.close(write_fd)
+    try:
+        with selectors.DefaultSelector() as watch:
+            watch.register(read_fd, selectors.EVENT_READ)
+            assert watch.select(10), "controller did not acknowledge a drained prefix"
+            assert os.read(read_fd, 1) == b"!"
+        process.kill()
+        process.communicate(timeout=10)
+        assert (root / "stdout").read_bytes() == b"retained"
+        assert not (root / "execution.json").exists(), "controller death has no complete terminal"
+    finally:
+        os.close(read_fd)
+        if process.poll() is None:
+            process.kill()
+            process.communicate(timeout=10)
+
+
+@pytest.mark.parametrize("unsafe", ["existing", "linked"])
+def test_log_custody_refuses_unsafe_output_before_launch(tmp_path, unsafe):
+    root, marker = tmp_path / "execution", tmp_path / "must-not-run"
+    root.mkdir()
+    if unsafe == "existing":
+        (root / "stdout").write_bytes(b"retained")
+    else:
+        (root / "stdout").symlink_to(marker)
+    with pytest.raises(ValueError, match="unsafe"):
+        execution.execute(
+            [sys.executable, "-c", f"from pathlib import Path; Path({str(marker)!r}).touch()"],
+            cwd=tmp_path,
+            env=dict(os.environ),
+            timeout=10,
+            log_dir=root,
+        )
+    assert not marker.exists()
+    if unsafe == "existing":
+        assert (root / "stdout").read_bytes() == b"retained"

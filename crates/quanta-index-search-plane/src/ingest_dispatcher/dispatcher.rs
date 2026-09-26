@@ -59,6 +59,8 @@ pub struct SearchPlaneIngestDispatcher {
     /// frozen-policy refusal is itself a terminal record the retry
     /// replays exactly.
     idempotency: Arc<dyn IdempotencyCatalogPort + Send + Sync>,
+    source_publication: Arc<dyn quanta_index_core::SourcePublicationCatalogPort>,
+    source_authority: Arc<dyn super::ports::SearchCorpusAuthorityInspectPort>,
 }
 
 impl SearchPlaneIngestDispatcher {
@@ -80,6 +82,8 @@ impl SearchPlaneIngestDispatcher {
         structural: Arc<dyn StructuralIngestPort + Send + Sync>,
         repomap: Arc<dyn RepoMapBundleIngestPort + Send + Sync>,
         idempotency: Arc<dyn IdempotencyCatalogPort + Send + Sync>,
+        source_publication: Arc<dyn quanta_index_core::SourcePublicationCatalogPort>,
+        source_authority: Arc<dyn super::ports::SearchCorpusAuthorityInspectPort>,
     ) -> Self {
         Self {
             lexical,
@@ -94,6 +98,8 @@ impl SearchPlaneIngestDispatcher {
             structural,
             repomap,
             idempotency,
+            source_publication,
+            source_authority,
         }
     }
 
@@ -224,6 +230,112 @@ impl SearchPlaneIngestDispatcher {
     /// (SEP-21 P02B). The only journal-bearing `RepoMap` path: the V1
     /// bundle arm below stays journal-free as the W7 removal target.
     ///
+    fn publish_source_idempotent(
+        &self,
+        batch: &mut quanta_index_contract::SearchCorpusIngestBatch,
+        apply: impl FnOnce(
+            &quanta_index_contract::SearchCorpusIngestBatch,
+        ) -> Result<BatchPublishReceipt, CoreError>,
+    ) -> Result<BatchPublishReceipt, CoreError> {
+        let _body_digest = verified_batch_digest_v1(batch)?;
+        batch
+            .validate_v1()
+            .map_err(|error| CoreError::InvalidContract(error.to_string()))?;
+        batch
+            .validate_surface_mutations_v1()
+            .map_err(|error| CoreError::InvalidContract(error.to_string()))?;
+        if let Some(record) = self
+            .source_publication
+            .inspect_source_event(&batch.repo_id, &batch.source_event)?
+        {
+            if record.phase != quanta_index_core::SourceEventPhaseV1::Pending {
+                let target = &record.binding.target;
+                if self.source_authority.inspect_sealed_search_corpus(
+                    &target.repo_id,
+                    &target.revision_id,
+                    target.manifest_generation,
+                    &target.manifest_digest,
+                )? != crate::SealedSearchCorpusAuthorityStateV1::Exact
+                {
+                    return Err(CoreError::Typed {
+                        code: quanta_index_contract::SearchPlaneErrorCodeV2::UnknownGeneration,
+                        message: "source event original generation is no longer retained".into(),
+                    });
+                }
+            }
+            match self.idempotency.inspect(&record.binding.journal_key)? {
+                OperationInspectV1::Committed {
+                    receipt,
+                    durable_sequence,
+                } => {
+                    let target = &record.binding.target;
+                    if self.source_authority.inspect_sealed_search_corpus(
+                        &target.repo_id,
+                        &target.revision_id,
+                        target.manifest_generation,
+                        &target.manifest_digest,
+                    )? != crate::SealedSearchCorpusAuthorityStateV1::Exact
+                    {
+                        return Err(CoreError::Typed {
+                            code: quanta_index_contract::SearchPlaneErrorCodeV2::UnknownGeneration,
+                            message: "source event original generation is no longer retained"
+                                .into(),
+                        });
+                    }
+                    let _reconciled = self.source_publication.reconcile_source_event(
+                        &batch.repo_id,
+                        &batch.source_event,
+                        self.idempotency.as_ref(),
+                    )?;
+                    return Ok(receipt.recorded_at(durable_sequence).replayed());
+                }
+                OperationInspectV1::CommittedRepoMap { .. } => {
+                    return Err(journal_payload_mismatch(&record.binding.journal_key));
+                }
+                OperationInspectV1::Refused { code, message, .. } => {
+                    return Err(CoreError::Typed { code, message });
+                }
+                OperationInspectV1::Absent
+                | OperationInspectV1::InFlight { .. }
+                | OperationInspectV1::Uncertain { .. } => {
+                    if record.phase != quanta_index_core::SourceEventPhaseV1::Pending {
+                        return Err(CoreError::Typed {
+                            code: quanta_index_contract::SearchPlaneErrorCodeV2::UnknownGeneration,
+                            message:
+                                "source event original journal or generation is no longer available"
+                                    .into(),
+                        });
+                    }
+                    if record.binding.journal_key.revision_id != batch.revision_id
+                        || record.binding.journal_key.generation != batch.generation
+                        || record.binding.journal_key.batch_digest != batch.batch_digest
+                    {
+                        return Err(CoreError::Typed { code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogBusy, message: "source event is pending; reconcile the original publication without retargeting it".into() });
+                    }
+                }
+            }
+        }
+        let receipt = self.publish_idempotent(batch, |batch| {
+            self.lexical.preflight_batch(batch)?;
+            let binding = quanta_index_core::SourceEventBindingV1 {
+                event: batch.source_event.clone(),
+                target: super::generation_plan::generation_pair_from_batch_v1(batch).0,
+                journal_key: IdempotencyKeyV1 { kind: IngestOperationKindV1::SearchCorpus, repo_id: batch.repo_id.clone(), revision_id: batch.revision_id.clone(), generation: batch.generation, batch_digest: batch.batch_digest.clone() },
+            };
+            match self.source_publication.reserve_source_event(&binding)? {
+                quanta_index_core::SourceEventReservationV1::Reserved(_) => Ok(()),
+                quanta_index_core::SourceEventReservationV1::Existing(record) if record.binding == binding && record.phase == quanta_index_core::SourceEventPhaseV1::Pending => Ok(()),
+                quanta_index_core::SourceEventReservationV1::Existing(_) => Err(CoreError::Typed { code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogBusy, message: "source event raced with an original publication; retry through its original journal".into() }),
+            }
+        }, apply)?;
+        let _reconciled = self.source_publication.reconcile_source_event(
+            &batch.repo_id,
+            &batch.source_event,
+            self.idempotency.as_ref(),
+        )?;
+        Ok(receipt)
+    }
+
     /// Same seven stages as [`Self::publish_idempotent`], keyed by
     /// `RepoMapBundle` under the source-bundle digest. The terminal
     /// payload is the repo-map terminal receipt (committed through
@@ -336,15 +448,11 @@ impl SearchPlaneIngestDispatcher {
         match request {
             SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(mut batch) => {
                 let mut observation = None;
-                match self.publish_idempotent(
-                    &mut batch,
-                    |batch| self.lexical.preflight_batch(batch),
-                    |batch| {
-                        let outcome = self.lexical.publish_batch(batch, budget)?;
-                        observation = outcome.observation;
-                        Ok(outcome.receipt)
-                    },
-                ) {
+                match self.publish_source_idempotent(&mut batch, |batch| {
+                    let outcome = self.lexical.publish_batch(batch, budget)?;
+                    observation = outcome.observation;
+                    Ok(outcome.receipt)
+                }) {
                     Ok(receipt) => {
                         if !receipt.applied {
                             observation =

@@ -186,7 +186,7 @@ def replay_run(store: RunStore, evidence: dict) -> None:
         _read_regular_file(raw / "original-spec.json"), owner.INPUT_ROLES
     )
     paths = frozen_inputs(raw)
-    capsule = _read_regular_file(raw / "corpus-release.zip")
+    capsule = RawFile.capture(raw / "corpus-release.zip")
     binding_raw = _read_regular_file(raw / "corpus-binding.json")
     binding = corpus_binding.replay(
         capsule,
@@ -214,7 +214,7 @@ def replay_run(store: RunStore, evidence: dict) -> None:
         {
             "id": "corpus-release",
             "availability": "present",
-            "digest": digest_bytes(capsule),
+            "digest": capsule.sha256,
             "reason": None,
         },
         {
@@ -256,18 +256,17 @@ def capture(repo: Path, root: Path, registry: dict, spec_path: Path, timeout: in
     contents = {role: _read_regular_file(path) for role, path in paths.items()}
     if _read_regular_file(spec_path) != original:
         raise EvidenceError("lexical spec changed during freeze")
-    binding, capsule = corpus_binding.capture(
-        release, selection, contents["suite"], contents["query_pack"]
-    )
-    binding_raw = canonical_json(binding).encode()
     _directories(root)
     capture_id = f"lexical-{uuid.uuid4().hex}"
     native = root / "work" / capture_id
     native.mkdir(parents=True, exist_ok=False)
+    binding, capsule = corpus_binding.capture(
+        release, selection, contents["suite"], contents["query_pack"], native / "corpus-release.zip"
+    )
+    binding_raw = canonical_json(binding).encode()
     for role, content in contents.items():
         (native / f"input-{role}").write_bytes(content)
     (native / "original-spec.json").write_bytes(original)
-    (native / "corpus-release.zip").write_bytes(capsule)
     (native / "corpus-binding.json").write_bytes(binding_raw)
     (native / "frozen-spec.json").write_text(
         canonical_json(
@@ -292,6 +291,7 @@ def capture(repo: Path, root: Path, registry: dict, spec_path: Path, timeout: in
         cwd=repo,
         env=dict(os.environ),
         timeout=timeout,
+        log_dir=native.parent / f"{capture_id}-execution",
     )
     if python_digest != RawFile.capture(Path(sys.executable).resolve()).sha256:
         raise EvidenceError("lexical Python executable changed during scoring")
@@ -304,8 +304,8 @@ def capture(repo: Path, root: Path, registry: dict, spec_path: Path, timeout: in
     toolchain = f"Python {platform.python_version()}"
     raw.update(
         {
-            "producer.stdout": write_raw_file(spool / "producer.stdout", [stdout]),
-            "producer.stderr": write_raw_file(spool / "producer.stderr", [stderr]),
+            "producer.stdout": stdout,
+            "producer.stderr": stderr,
             "capture-origin.json": write_raw_file(
                 spool / "capture-origin.json",
                 [
@@ -368,7 +368,7 @@ def capture(repo: Path, root: Path, registry: dict, spec_path: Path, timeout: in
                 {
                     "id": "corpus-release",
                     "availability": "present",
-                    "digest": digest_bytes(capsule),
+                    "digest": capsule.sha256,
                     "reason": None,
                 },
                 {

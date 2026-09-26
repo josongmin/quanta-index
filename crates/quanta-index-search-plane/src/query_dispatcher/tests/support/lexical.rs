@@ -97,6 +97,7 @@ impl LexicalSearcher for StubLexicalSearcher {
             .iter()
             .map(|candidate| quanta_index_contract::FileOwnerProjectionRow {
                 candidate_id: candidate.candidate_id.clone(),
+                source_repo_id: candidate.source_repo_id.clone(),
                 repo_id: candidate.repo_id.clone(),
                 revision_id: candidate.revision_id.clone(),
                 manifest_generation: candidate.manifest_generation,
@@ -112,11 +113,25 @@ impl LexicalSearcher for StubLexicalSearcher {
         _top_k: u32,
         _budget: &RequestBudgetV1,
     ) -> Result<Vec<SymbolCandidate>, CoreError> {
-        Ok(self
-            .results
-            .iter()
-            .map(|candidate| symbol_candidate(candidate.candidate_id.as_str(), candidate.score))
-            .collect())
+        Ok(self.results.iter().map(symbol_fixture_candidate).collect())
+    }
+
+    fn search_symbols_constrained(
+        &self,
+        query: &LqQuery,
+        _constraints: &QueryConstraintSetV1,
+        page: &LexicalPageSpec,
+        _budget: &RequestBudgetV1,
+    ) -> Result<quanta_index_core::SymbolSearchPageV1, CoreError> {
+        symbol_fixture_page(&self.results, query, page)
+    }
+
+    fn search_symbols_all(
+        &self,
+        query: &LqQuery,
+        _budget: &RequestBudgetV1,
+    ) -> Result<Vec<SymbolCandidate>, CoreError> {
+        symbol_fixture_all(&self.results, query)
     }
 
     fn search_all(
@@ -302,6 +317,7 @@ impl LexicalSearcher for RecordingLexicalSearcher {
             .map(|candidate| quanta_index_contract::FileOwnerProjectionRow {
                 candidate_id: candidate.candidate_id.clone(),
                 repo_id: candidate.repo_id.clone(),
+                source_repo_id: candidate.source_repo_id.clone(),
                 revision_id: candidate.revision_id.clone(),
                 manifest_generation: candidate.manifest_generation,
                 repo_relative_path: candidate.repo_relative_path.clone(),
@@ -321,20 +337,16 @@ impl LexicalSearcher for RecordingLexicalSearcher {
             .map_err(|err| CoreError::Storage(format!("lexical state poisoned: {err}")))?
             .symbol_top_ks
             .push(top_k);
-        Ok(self
-            .results
-            .iter()
-            .map(|candidate| symbol_candidate(candidate.candidate_id.as_str(), candidate.score))
-            .collect())
+        Ok(self.results.iter().map(symbol_fixture_candidate).collect())
     }
 
     fn search_symbols_constrained(
         &self,
-        _query: &quanta_index_contract::LqQuery,
+        query: &LqQuery,
         constraints: &QueryConstraintSetV1,
         page: &LexicalPageSpec,
         _budget: &RequestBudgetV1,
-    ) -> Result<Vec<SymbolCandidate>, CoreError> {
+    ) -> Result<quanta_index_core::SymbolSearchPageV1, CoreError> {
         let mut guard = self
             .state
             .lock()
@@ -342,19 +354,22 @@ impl LexicalSearcher for RecordingLexicalSearcher {
         guard.symbol_top_ks.push(page.fetch);
         guard.symbol_constraints.push(constraints.clone());
         drop(guard);
-        let mut rows: Vec<SymbolCandidate> = self
-            .results
-            .iter()
-            .map(|candidate| symbol_candidate(candidate.candidate_id.as_str(), candidate.score))
-            .filter(|row| {
-                page.after
-                    .as_ref()
-                    .is_none_or(|cursor| cursor.admits(&row.order_key()))
-            })
-            .collect();
-        rows.sort_by(|left, right| left.order_key().order(&right.order_key()));
-        rows.truncate(usize::try_from(page.fetch).map_or(usize::MAX, |fetch| fetch));
-        Ok(rows)
+        symbol_fixture_page(&self.results, query, page)
+    }
+
+    fn search_symbols_all(
+        &self,
+        query: &LqQuery,
+        _budget: &RequestBudgetV1,
+    ) -> Result<Vec<SymbolCandidate>, CoreError> {
+        // Keep the fixture's existing all-port invocation marker. The complete
+        // fixture set below is never obtained from a capped page request.
+        self.state
+            .lock()
+            .map_err(|error| CoreError::Storage(format!("lexical state poisoned: {error}")))?
+            .symbol_top_ks
+            .push(u32::MAX);
+        symbol_fixture_all(&self.results, query)
     }
 
     fn search_all(
@@ -474,6 +489,7 @@ impl LexicalIndexOpenPort for RecordingLexicalOpener {
 pub(crate) fn recording_lexical_candidate(candidate_id: &str) -> LexicalCandidate {
     LexicalCandidate {
         candidate_id: candidate_id.to_string(),
+        source_repo_id: RepoId::new("repo-map-ipc").expect("static fixture source ID is canonical"),
         repo_id: RepoId::new("repo-map-ipc").expect("static fixture ID satisfies canonical policy"),
         revision_id: RevisionId::new("rev-map-ipc")
             .expect("static fixture ID satisfies canonical policy"),
@@ -485,6 +501,8 @@ pub(crate) fn recording_lexical_candidate(candidate_id: &str) -> LexicalCandidat
         snippet: candidate_id.to_string(),
         snippet_hit_offset: None,
         highlights: Vec::new(),
+        source: None,
+        preview: None,
     }
 }
 
@@ -506,4 +524,71 @@ pub(crate) fn ranked_page(
     rows.sort_by(|left, right| left.order_key().order(&right.order_key()));
     rows.truncate(usize::try_from(page.fetch).map_or(usize::MAX, |fetch| fetch));
     rows
+}
+
+/// A complete, independently supplied fixture universe; count before clipping.
+fn symbol_fixture_page(
+    results: &[LexicalCandidate],
+    query: &LqQuery,
+    page: &LexicalPageSpec,
+) -> Result<quanta_index_core::SymbolSearchPageV1, CoreError> {
+    let mut rows: Vec<_> = results
+        .iter()
+        .map(symbol_fixture_candidate)
+        .filter(|row| {
+            page.after
+                .as_ref()
+                .is_none_or(|cursor| cursor.admits(&row.order_key()))
+        })
+        .collect();
+    rows.sort_by(|left, right| left.order_key().order(&right.order_key()));
+    let exact_total = if query.options.count.is_some() {
+        Some(u64::try_from(rows.len()).map_err(|err| CoreError::InvalidContract(err.to_string()))?)
+    } else {
+        None
+    };
+    let limit = match query.options.count {
+        Some(quanta_index_contract::LqCountBound::Bounded(n)) => page.fetch.min(n),
+        Some(quanta_index_contract::LqCountBound::All) | None => page.fetch,
+    };
+    rows.truncate(
+        usize::try_from(limit).map_err(|err| CoreError::InvalidContract(err.to_string()))?,
+    );
+    Ok(quanta_index_core::SymbolSearchPageV1 {
+        candidates: rows,
+        exact_total,
+    })
+}
+
+fn symbol_fixture_candidate(candidate: &LexicalCandidate) -> SymbolCandidate {
+    let mut row = symbol_candidate(candidate.candidate_id.as_str(), candidate.score);
+    row.repo_id = candidate.repo_id.clone();
+    row.source_repo_id = candidate.source_repo_id.clone();
+    row.revision_id = candidate.revision_id.clone();
+    row.manifest_generation = candidate.manifest_generation;
+    row.repo_relative_path = candidate.repo_relative_path.clone();
+    row.start_line = candidate.start_line;
+    row.end_line = candidate.end_line;
+    row.snippet = candidate.snippet.clone();
+    row.source = candidate.source.clone();
+    row.preview = candidate.preview.clone();
+    row
+}
+
+fn symbol_fixture_all(
+    results: &[LexicalCandidate],
+    query: &LqQuery,
+) -> Result<Vec<SymbolCandidate>, CoreError> {
+    if matches!(
+        query.options.count,
+        Some(quanta_index_contract::LqCountBound::Bounded(_))
+    ) {
+        return Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::LexFilterInvalidCount,
+            message: "exact-all fixture cannot honor a bounded count".into(),
+        });
+    }
+    let mut rows: Vec<_> = results.iter().map(symbol_fixture_candidate).collect();
+    rows.sort_by(|left, right| left.order_key().order(&right.order_key()));
+    Ok(rows)
 }

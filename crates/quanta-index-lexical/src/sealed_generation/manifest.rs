@@ -4,7 +4,7 @@
 //! Written after every file it lists is durable and before the sealed
 //! identity, so the identity's presence implies the manifest's. It carries
 //! the identity's `manifest_digest` so the two files bind each other, the
-//! text normalizer the generation was built under, and four sections:
+//! text normalizer the generation was built under, and five sections:
 //!
 //! - **index meta** — the Tantivy commit (`meta.json`), hashed at every
 //!   door: it is the index's identity and names every segment file;
@@ -20,9 +20,14 @@
 //!   file once, hashing it as it decodes it;
 //! - **overlays** — every repo-metadata overlay family the generation
 //!   carries, hashed as a door decodes it. A family not listed is one the
-//!   generation does not carry; a file that appears anyway is refused.
+//!   generation does not carry; a file that appears anyway is refused;
+//! - **source coverage** — an optional commitment to the admitted file
+//!   universe and producer event, both decoded from the same proved bytes.
+//!   Absence means unavailable capability, not complete coverage.
 //!
-//! Format 6 is this shape over an index whose text documents carry their
+//! Format 7 also commits optional source-file coverage. Format 6 and earlier
+//! cannot represent that commitment and require an explicit rebuild.
+//! The index's text documents carry their
 //! text-authority doc id indexed and as a fast column, so a derived match
 //! set restricts a query as one bitmap (QI-BB-024), and whose documents
 //! carry the ranked page order's columns — candidate id, path, start and
@@ -42,13 +47,14 @@ use quanta_index_core::domains::generation::SealedArtifactCommitmentV1;
 
 use crate::normalize::{TEXT_NORMALIZER_VERSION, TextNormalizerVersion};
 use crate::overlay_codec::OverlayFamily;
+use crate::sealed_generation::coverage::SOURCE_FILE_COVERAGE_FILE_NAME;
 use crate::text_authority::{TEXT_AUTHORITY_DIR_NAME, leading_format_version};
 
 /// File name of the sealed manifest.
 pub(crate) const LEXICAL_SEALED_MANIFEST_FILE_NAME: &str = "search-corpus-generation-manifest.cbor";
 /// The manifest format this build writes and serves; see the module
 /// documentation for what each earlier format lacked.
-pub(crate) const LEXICAL_SEALED_MANIFEST_FORMAT_VERSION: u32 = 6;
+pub(crate) const LEXICAL_SEALED_MANIFEST_FORMAT_VERSION: u32 = 7;
 /// The format-2 layout: whole-corpus text-authority sidecars beside the
 /// index, no doc ids in the index. Refused by that name so the operator
 /// learns why a rebuild is needed.
@@ -96,6 +102,8 @@ pub(crate) struct LexicalSealedManifest {
     pub(crate) text_authority: Option<Vec<SealedArtifactCommitmentV1>>,
     /// Every overlay family present, in [`OverlayFamily::ALL`] order.
     pub(crate) overlays: Vec<SealedArtifactCommitmentV1>,
+    /// None is unavailable coverage, never a complete empty universe.
+    pub(crate) source_coverage: Option<SealedArtifactCommitmentV1>,
 }
 
 /// One commitment on the wire.
@@ -113,6 +121,7 @@ type SealedManifestRow = (
     Vec<CommitmentRow>,
     Option<Vec<CommitmentRow>>,
     Vec<CommitmentRow>,
+    Option<CommitmentRow>,
 );
 
 fn to_commitment_row(artifact: &SealedArtifactCommitmentV1) -> CommitmentRow {
@@ -189,6 +198,7 @@ impl LexicalSealedManifest {
                 .as_ref()
                 .map(|files| files.iter().map(to_commitment_row).collect()),
             self.overlays.iter().map(to_commitment_row).collect(),
+            self.source_coverage.as_ref().map(to_commitment_row),
         );
         crate::channel_payloads::encode_cbor(&row, "sealed generation manifest")
     }
@@ -231,6 +241,7 @@ impl LexicalSealedManifest {
             index_segments,
             text_authority,
             overlays,
+            source_coverage,
         ): SealedManifestRow = value.deserialized().map_err(|error| {
             CoreError::Storage(format!(
                 "lexical: decode sealed generation manifest {}: {error}",
@@ -264,6 +275,7 @@ impl LexicalSealedManifest {
             text_authority: text_authority
                 .map(|files| files.into_iter().map(from_commitment_row).collect()),
             overlays: overlays.into_iter().map(from_commitment_row).collect(),
+            source_coverage: source_coverage.map(from_commitment_row),
         };
         manifest.validate_shape(path)?;
         Ok(manifest)
@@ -284,6 +296,7 @@ impl LexicalSealedManifest {
         ensure_names(path, "index segments", &self.index_segments, |name| {
             top_level(name)
                 && name != crate::TANTIVY_INDEX_META_FILE_NAME
+                && name != SOURCE_FILE_COVERAGE_FILE_NAME
                 && OverlayFamily::from_file_name(name).is_none()
         })?;
         if let Some(files) = &self.text_authority {
@@ -301,6 +314,14 @@ impl LexicalSealedManifest {
                     "text authority is committed without its manifest",
                 ));
             }
+        }
+        if let Some(coverage) = &self.source_coverage
+            && coverage.name != SOURCE_FILE_COVERAGE_FILE_NAME
+        {
+            return Err(manifest_corrupt(
+                path,
+                "source coverage names another artifact",
+            ));
         }
         let mut last_family: Option<OverlayFamily> = None;
         for overlay in &self.overlays {
@@ -351,6 +372,7 @@ impl LexicalSealedManifest {
             .chain(self.index_segments.iter())
             .chain(self.text_authority.iter().flatten())
             .chain(self.overlays.iter())
+            .chain(self.source_coverage.iter())
     }
 }
 
@@ -444,6 +466,7 @@ mod tests {
                 artifact("text-authority/shard-00000000-0000000000000000.cbor"),
             ]),
             overlays: vec![artifact("repo-metadata.cbor"), artifact("repo-meta.cbor")],
+            source_coverage: None,
         }
     }
 
@@ -540,7 +563,7 @@ mod tests {
     /// one alike are never read under this build's layout.
     #[test]
     fn another_format_or_policy_is_refused_by_name() {
-        for format in [1, 3, 4, 5, LEXICAL_SEALED_MANIFEST_FORMAT_VERSION + 1] {
+        for format in [1, 3, 4, 5, 6, LEXICAL_SEALED_MANIFEST_FORMAT_VERSION + 1] {
             let other_format: SealedManifestRow = (
                 format,
                 "digest".to_string(),
@@ -550,6 +573,7 @@ mod tests {
                 Vec::new(),
                 None,
                 Vec::new(),
+                None,
             );
             let bytes =
                 crate::channel_payloads::encode_cbor(&other_format, "test").expect("encode");
@@ -568,6 +592,7 @@ mod tests {
             Vec::new(),
             None,
             Vec::new(),
+            None,
         );
         let bytes = crate::channel_payloads::encode_cbor(&other_policy, "test").expect("encode");
         assert_eq!(

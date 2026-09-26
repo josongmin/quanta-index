@@ -10,6 +10,9 @@
 //! outside both tables is unregistered and reads nothing, because it
 //! cannot execute — the adapter refuses it typed.
 
+use crate::CoreError;
+use quanta_index_contract::LqPredicateArg;
+
 use super::domain::{ReadDomainV1, RepoMetadataAuthorityV1};
 
 /// Every predicate name the plane executes.
@@ -45,6 +48,8 @@ pub enum LexicalPredicateV1 {
     /// `symbol.has.name(<name>)`: a symbol-index leaf, planned by the
     /// symbol planner rather than the content/repo registry.
     SymbolHasName,
+    SymbolLocalNameExact,
+    SymbolQualifiedNameExact,
 }
 
 /// Which lowering surface a predicate belongs to.
@@ -58,7 +63,7 @@ pub enum LexicalPredicateFamilyV1 {
 
 impl LexicalPredicateV1 {
     /// Every predicate, in declaration order.
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 13] = [
         Self::FileContains,
         Self::FileHasContent,
         Self::RepoHasFile,
@@ -70,6 +75,8 @@ impl LexicalPredicateV1 {
         Self::FileHasOwner,
         Self::FileHasContributor,
         Self::SymbolHasName,
+        Self::SymbolLocalNameExact,
+        Self::SymbolQualifiedNameExact,
     ];
 
     /// The canonical dot-joined name a lowered leaf carries.
@@ -87,6 +94,8 @@ impl LexicalPredicateV1 {
             Self::FileHasOwner => "file.has.owner",
             Self::FileHasContributor => "file.has.contributor",
             Self::SymbolHasName => "symbol.has.name",
+            Self::SymbolLocalNameExact => "symbol.local_name.exact",
+            Self::SymbolQualifiedNameExact => "symbol.qualified_name.exact",
         }
     }
 
@@ -98,7 +107,9 @@ impl LexicalPredicateV1 {
             | Self::FileHasContent
             | Self::RepoHasFile
             | Self::RepoHasContent
-            | Self::SymbolHasName => ReadDomainV1::LexicalTrack,
+            | Self::SymbolHasName
+            | Self::SymbolLocalNameExact
+            | Self::SymbolQualifiedNameExact => ReadDomainV1::LexicalTrack,
             Self::RepoHasCommitAfter => {
                 ReadDomainV1::RepoMetadata(RepoMetadataAuthorityV1::CommitRecency)
             }
@@ -130,7 +141,32 @@ impl LexicalPredicateV1 {
             | Self::RepoHasDescription
             | Self::FileHasOwner
             | Self::FileHasContributor => LexicalPredicateFamilyV1::ContentOrRepo,
-            Self::SymbolHasName => LexicalPredicateFamilyV1::Symbol,
+            Self::SymbolHasName | Self::SymbolLocalNameExact | Self::SymbolQualifiedNameExact => {
+                LexicalPredicateFamilyV1::Symbol
+            }
+        }
+    }
+
+    /// Exact-name predicates accept one nonempty keyword, without tokenization.
+    /// Non-exact predicates return `None` and retain their own argument policy.
+    pub fn exact_symbol_name_argument(
+        self,
+        args: &[LqPredicateArg],
+    ) -> Result<Option<&str>, CoreError> {
+        if !matches!(
+            self,
+            Self::SymbolLocalNameExact | Self::SymbolQualifiedNameExact
+        ) {
+            return Ok(None);
+        }
+        match args {
+            [LqPredicateArg::Keyword(value)] if !value.trim().is_empty() && value.len() <= 4096 => {
+                Ok(Some(value))
+            }
+            _ => Err(CoreError::InvalidContract(format!(
+                "{} requires one nonempty keyword of at most 4096 bytes",
+                self.name()
+            ))),
         }
     }
 
@@ -244,5 +280,45 @@ mod tests {
         }
         assert_eq!(lexical_predicate_v1("repo.has.tag"), None);
         assert_eq!(lexical_predicate_v1(""), None);
+    }
+}
+
+#[cfg(test)]
+mod l3_exact_tests {
+    use super::*;
+
+    #[test]
+    fn l3_exact_name_argument_policy_is_canonical_and_does_not_rewrite_broad_names() {
+        for predicate in [
+            LexicalPredicateV1::SymbolLocalNameExact,
+            LexicalPredicateV1::SymbolQualifiedNameExact,
+        ] {
+            let args = [LqPredicateArg::Keyword("M::Café".into())];
+            assert_eq!(
+                predicate.exact_symbol_name_argument(&args).expect("valid"),
+                Some("M::Café")
+            );
+            for invalid in [
+                vec![],
+                vec![LqPredicateArg::Keyword(String::new())],
+                vec![LqPredicateArg::Keyword(" ".into())],
+                vec![LqPredicateArg::Number(1)],
+                vec![LqPredicateArg::Phrase("name".into())],
+                vec![LqPredicateArg::RawString("name".into())],
+                vec![LqPredicateArg::Keyword("x".repeat(4097))],
+                vec![
+                    LqPredicateArg::Keyword("a".into()),
+                    LqPredicateArg::Keyword("b".into()),
+                ],
+            ] {
+                assert!(predicate.exact_symbol_name_argument(&invalid).is_err());
+            }
+        }
+        assert_eq!(
+            LexicalPredicateV1::SymbolHasName
+                .exact_symbol_name_argument(&[])
+                .expect("not exact"),
+            None
+        );
     }
 }

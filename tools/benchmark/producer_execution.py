@@ -11,14 +11,24 @@ import subprocess
 import sys
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
+from typing import TYPE_CHECKING, NamedTuple
+
+if TYPE_CHECKING:
+    from tools.benchmark.evidence import RawFile
 
 CLEANUP_TIMEOUT_SECONDS = 10
 
 
 class ProducerExecutionError(ValueError):
     """A producer did not complete under its execution/cleanup contract."""
+
+
+class ExecutionResult(NamedTuple):
+    stdout: RawFile
+    stderr: RawFile
+    command: dict
 
 
 @contextmanager
@@ -124,9 +134,17 @@ def _owned_child(lifeline: int, terminal: int, argv: list[str]) -> int:
             os.killpg(os.getpid(), signal.SIGKILL)
 
 
+def _output_streams(process: subprocess.Popen, sinks: tuple) -> tuple:
+    # Keep the Rust front door usable with the system Python 3.9 as well as
+    # the project interpreter. There are exactly two streams, never truncation.
+    if len(sinks) != 2:
+        raise ProducerExecutionError("owned execution requires exactly two output sinks")
+    return ((process.stdout, sinks[0]), (process.stderr, sinks[1]))
+
+
 def _wait_for_terminal(
-    process: subprocess.Popen, terminal: int, timeout: float
-) -> tuple[bytes, bytes, bytes]:
+    process: subprocess.Popen, terminal: int, sinks: tuple, timeout: float
+) -> bytes:
     """Drain pipes without reaping the group leader before custody cleanup.
 
     Even an externally killed leader retains its child PID until the
@@ -134,8 +152,10 @@ def _wait_for_terminal(
     otherwise a replacement group could reuse its identity.
     """
     deadline = time.monotonic() + timeout
-    stdout, stderr = bytearray(), bytearray()
-    output = {process.stdout.fileno(): stdout, process.stderr.fileno(): stderr}
+    output = {
+        stream.fileno(): (stream, sink)
+        for stream, sink in _output_streams(process, sinks)
+    }
     with selectors.DefaultSelector() as watch:
         for fd in (terminal, *output):
             watch.register(fd, selectors.EVENT_READ)
@@ -147,12 +167,33 @@ def _wait_for_terminal(
                 fd = key.fd
                 block = os.read(fd, 5 if fd == terminal else 65536)
                 if fd == terminal:
-                    return bytes(stdout), bytes(stderr), block
+                    return block
                 if block:
-                    output[fd].extend(block)
+                    output[fd][1].write(block)
                 else:
                     watch.unregister(fd)
+                    output[fd][0].close()
                     del output[fd]
+
+
+def _drain_output(process: subprocess.Popen, sinks: tuple, timeout: float) -> None:
+    """Drain the remaining pipe bytes after group kill without whole-output buffers."""
+    deadline = time.monotonic() + timeout
+    with selectors.DefaultSelector() as watch:
+        for stream, sink in _output_streams(process, sinks):
+            if not stream.closed:
+                watch.register(stream, selectors.EVENT_READ, sink)
+        while watch.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired("owned producer pipe drain", timeout)
+            for key, _ in watch.select(remaining):
+                block = os.read(key.fd, 65536)
+                if block:
+                    key.data.write(block)
+                else:
+                    watch.unregister(key.fileobj)
+                    key.fileobj.close()
 
 
 def _child_result(raw: bytes) -> int:
@@ -171,7 +212,7 @@ def _terminal_result(returncode: int, raw: bytes) -> int:
     return _child_result(raw)
 
 
-def _cleanup(process: subprocess.Popen) -> str | None:
+def _cleanup(process: subprocess.Popen, sinks: tuple) -> str | None:
     """Bound pipe drain and direct-child reaping after killing the owned group.
 
     A process that escapes this group is not contained. A retained pipe must
@@ -191,11 +232,11 @@ def _cleanup(process: subprocess.Popen) -> str | None:
                 errors.append(f"process-group kill failed: {error}")
         drained = False
         try:
-            process.communicate(timeout=max(0.0, deadline - time.monotonic()))
+            _drain_output(process, sinks, max(0.0, deadline - time.monotonic()))
             drained = True
         except subprocess.TimeoutExpired:
             errors.append("pipe drain deadline exceeded")
-        except OSError as error:
+        except (OSError, ValueError) as error:
             errors.append(f"pipe drain failed: {error}")
         if not drained:
             for stream in (process.stdout, process.stderr):
@@ -204,21 +245,22 @@ def _cleanup(process: subprocess.Popen) -> str | None:
                         stream.close()
                     except OSError as error:
                         errors.append(f"pipe close failed: {error}")
-            try:
-                process.wait(timeout=max(0.0, deadline - time.monotonic()))
-            except subprocess.TimeoutExpired:
-                errors.append("direct-child reap deadline exceeded")
-            except OSError as error:
-                errors.append(f"direct-child reap failed: {error}")
+        try:
+            process.wait(timeout=max(0.0, deadline - time.monotonic()))
+        except subprocess.TimeoutExpired:
+            errors.append("direct-child reap deadline exceeded")
+        except OSError as error:
+            errors.append(f"direct-child reap failed: {error}")
         return "; ".join(errors) if errors else None
     finally:
         for sig, handler in previous.items():
             signal.signal(sig, handler)
 
 
-def execute(
-    argv: list[str], *, cwd: Path, env: dict[str, str], timeout: int
-) -> tuple[bytes, bytes, dict]:
+def _execute_owned(
+    argv: list[str], *, cwd: Path, env: dict[str, str], timeout: int, sinks: tuple,
+    custody_fds: tuple[int, ...] = (),
+) -> dict:
     if os.name != "posix" or not hasattr(os, "killpg"):
         raise ProducerExecutionError("benchmark execution requires POSIX process-group custody")
     if threading.current_thread() is not threading.main_thread():
@@ -227,6 +269,14 @@ def execute(
         raise ProducerExecutionError("benchmark execution requires default SIGCHLD reaping custody")
     if type(timeout) is not int or timeout < 1:
         raise ProducerExecutionError("producer timeout must be a positive integer")
+    if len(sinks) != 2:
+        raise ProducerExecutionError("owned execution requires exactly two output sinks")
+    if (type(custody_fds) is not tuple
+            or any(type(fd) is not int or fd < 3 for fd in custody_fds)
+            or len(set(custody_fds)) != len(custody_fds)):
+        raise ProducerExecutionError("custody descriptors must be distinct open nonstandard FDs")
+    for fd in custody_fds:
+        os.fstat(fd)
     started = time.monotonic_ns()
     deadline = time.monotonic() + timeout
     process, interrupted, cleaning, communicated = None, False, False, False
@@ -264,7 +314,9 @@ def execute(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             start_new_session=True,
-            pass_fds=(lifeline_read, terminal_write),
+            # The group guard retains leases if this controller dies. Its
+            # close_fds=True child launch never leaks leases into the command.
+            pass_fds=(lifeline_read, terminal_write, *custody_fds),
         )
         os.close(lifeline_read)
         lifeline_read = None
@@ -275,17 +327,19 @@ def execute(
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise subprocess.TimeoutExpired(argv, timeout)
-        prefix_out, prefix_err, terminal_raw = _wait_for_terminal(process, terminal_read, remaining)
+        terminal_raw = _wait_for_terminal(process, terminal_read, sinks, remaining)
         _child_result(terminal_raw)
         # Never reap/poll the leader before this kill. Its unreaped PID pins
         # group identity even if it was killed between reporting and cleanup.
         os.killpg(process.pid, signal.SIGKILL)
-        stdout, stderr = process.communicate(timeout=max(0.0, deadline - time.monotonic()))
-        stdout, stderr = prefix_out + stdout, prefix_err + stderr
+        _drain_output(process, sinks, max(0.0, deadline - time.monotonic()))
+        process.wait(timeout=max(0.0, deadline - time.monotonic()))
         communicated = True
     except BaseException as exc:
         cleaning = True
-        cleanup_error = _cleanup(process) if process is not None and not communicated else None
+        cleanup_error = (
+            _cleanup(process, sinks) if process is not None and not communicated else None
+        )
         primary = (
             f"benchmark producer timed out: {argv!r}"
             if isinstance(exc, subprocess.TimeoutExpired)
@@ -307,22 +361,85 @@ def execute(
     result = _terminal_result(process.returncode, terminal_raw)
     if interrupted:
         raise ProducerExecutionError("benchmark producer interrupted by SIGTERM")
-    if result != 0:
-        raise ProducerExecutionError(
-            f"benchmark producer failed with exit {result}: {stderr.decode(errors='replace')[-4000:]}"
+    return {
+        "argv": argv,
+        "cwd": str(cwd),
+        "status": "completed",
+        "exit_code": result,
+        "timeout_seconds": timeout,
+        "wall_ms": (time.monotonic_ns() - started) // 1_000_000,
+    }
+
+
+def execute(
+    argv: list[str], *, cwd: Path, env: dict[str, str], timeout: int, log_dir: Path
+) -> ExecutionResult:
+    """Retain bounded file-backed output for every launched execution epoch.
+
+    The caller owns a fresh external log directory. Failed executions never
+    return a success value; their raw files and execution record remain there.
+    """
+    # Keep the isolated owned-child entrypoint independent of import search paths.
+    if __package__:
+        from .evidence import RawWriter, canonical_json, write_raw_file
+    else:
+        from evidence import RawWriter, canonical_json, write_raw_file
+
+    with ExitStack() as stack:
+        sinks = tuple(
+            stack.enter_context(RawWriter(log_dir / name)) for name in ("stdout", "stderr")
         )
-    return (
-        stdout,
-        stderr,
-        {
-            "argv": argv,
-            "cwd": str(cwd),
-            "status": "completed",
-            "exit_code": 0,
-            "timeout_seconds": timeout,
-            "wall_ms": (time.monotonic_ns() - started) // 1_000_000,
-        },
-    )
+        command, primary = None, None
+        try:
+            command = _execute_owned(argv, cwd=cwd, env=env, timeout=timeout, sinks=sinks)
+        except BaseException as error:
+            primary = error
+        refs, failures = [], []
+        for sink in sinks:
+            try:
+                refs.append(sink.finish())
+            except (OSError, ValueError) as error:
+                refs.append(None)
+                failures.append(f"{sink.path.name}: {error}")
+        if primary is None and command is not None and command["exit_code"] != 0:
+            detail = ""
+            if refs[1] is not None:
+                try:
+                    detail = refs[1].tail(4000).decode(errors="replace")
+                except (OSError, ValueError) as error:
+                    failures.append(f"stderr tail: {error}")
+            primary = ProducerExecutionError(
+                f"benchmark producer failed with exit {command['exit_code']}: {detail}"
+            )
+        failed = primary is not None or bool(failures)
+        record = {
+            "status": "failed" if failed else "completed",
+            "command": command,
+            "request": {"argv": argv, "cwd": str(cwd), "timeout_seconds": timeout},
+            "error_type": type(primary).__name__ if primary is not None else None,
+            "output_errors": failures,
+            "raw": [
+                {
+                    "path": str(sink.path),
+                    "sha256": ref.sha256 if ref else None,
+                    "bytes": ref.size if ref else None,
+                }
+                for sink, ref in zip(sinks, refs, strict=True)
+            ],
+        }
+        try:
+            write_raw_file(log_dir / "execution.json", [canonical_json(record).encode()])
+        except (OSError, ValueError) as error:
+            failures.append(f"execution record: {error}")
+        if failures:
+            raise ProducerExecutionError(
+                f"{primary or 'producer output could not be sealed'}; retained logs at {log_dir}; "
+                + "; ".join(failures)
+            ) from primary
+        if primary is not None:
+            primary.add_note(f"retained execution logs: {log_dir}")
+            raise primary
+        return ExecutionResult(refs[0], refs[1], command)
 
 
 if __name__ == "__main__":

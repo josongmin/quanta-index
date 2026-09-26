@@ -9,9 +9,10 @@ use crate::analyzer::tokenizer_name;
 use crate::metadata_normalize::normalize_language;
 use crate::normalize::CaseMode;
 use crate::{SchemaFields, normalize};
-use quanta_index_contract::LqExpr;
 use quanta_index_contract::lex::SymbolRecord;
+use quanta_index_contract::{ChunkRecord, LqExpr, SourceFileRevision};
 use quanta_index_core::CoreError;
+use sha2::{Digest as _, Sha256};
 use std::path::Path;
 use tantivy::schema::{
     Field, IndexRecordOption, OwnedValue, TantivyDocument, TextFieldIndexing, TextOptions, Value,
@@ -123,10 +124,64 @@ pub(crate) fn add_symbol_fields(
     doc: &mut TantivyDocument,
     symbol: &SymbolRecord,
 ) {
+    let local = normalize::nfc(symbol.local_name.as_ref());
+    doc.add_text(
+        fields.symbol_local_name_original,
+        symbol.local_name.as_ref(),
+    );
+    doc.add_text(
+        fields.symbol_qualified_name_original,
+        symbol.qualified_name.as_ref(),
+    );
+    if let Some(signature) = &symbol.signature {
+        doc.add_text(fields.symbol_signature, signature.as_ref());
+    }
+    doc.add_u64(
+        fields.symbol_definition_start_byte,
+        u64::from(symbol.definition_span.byte_start),
+    );
+    doc.add_u64(
+        fields.symbol_definition_end_byte,
+        u64::from(symbol.definition_span.byte_end),
+    );
+    let qualified = normalize::nfc(symbol.qualified_name.as_ref());
+    doc.add_text(fields.symbol_local_name, local.as_ref());
+    doc.add_text(
+        fields.symbol_local_name_folded,
+        normalize::fold(local.as_ref()),
+    );
+    doc.add_text(fields.symbol_qualified_name, qualified.as_ref());
+    doc.add_text(
+        fields.symbol_qualified_name_folded,
+        normalize::fold(qualified.as_ref()),
+    );
     doc.add_text(fields.symbol_kind, symbol.symbol_kind.as_str());
     if let Some(symbol_kind_family) = symbol.symbol_kind_family {
         doc.add_text(fields.symbol_kind_family, symbol_kind_family.as_code_str());
     }
+}
+
+/// Provenance is supplied by the canonical file replacement, never inferred
+/// from the containing index generation or from returned search hits.
+pub(crate) fn add_source_fields(
+    fields: &SchemaFields,
+    doc: &mut TantivyDocument,
+    source: &SourceFileRevision,
+) {
+    doc.add_text(fields.source_revision_id, source.revision_id.as_str());
+    doc.add_bytes(fields.source_sha256, source.source_sha256);
+}
+
+/// Commit the actual raw chunk bytes independently of the normalized postings.
+pub(crate) fn add_chunk_provenance_fields(
+    fields: &SchemaFields,
+    doc: &mut TantivyDocument,
+    chunk: &ChunkRecord,
+) {
+    doc.add_u64(fields.chunk_start_byte, u64::from(chunk.start_byte));
+    doc.add_u64(fields.chunk_end_byte, u64::from(chunk.end_byte));
+    let digest: [u8; 32] = Sha256::digest(chunk.text.as_bytes()).into();
+    doc.add_bytes(fields.chunk_raw_sha256, digest);
 }
 
 pub(crate) fn stored_text(doc: &TantivyDocument, field: Field) -> Option<String> {

@@ -10,6 +10,21 @@ use crate::searcher::snippets::is_unavailable_suppressed_by_metadata;
 use quanta_index_contract::{LqExpr, LqQuery};
 use quanta_index_core::CoreError;
 
+/// Exact-all callers consume a complete match set for structural Boolean
+/// evaluation. A presentation cap cannot be applied inside that set.
+pub(crate) fn validate_exact_all_count(query: &LqQuery) -> Result<(), CoreError> {
+    if matches!(
+        query.options.count,
+        Some(quanta_index_contract::LqCountBound::Bounded(_))
+    ) {
+        return Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::LexFilterInvalidCount,
+            message: "exact-all search cannot honor a bounded count".into(),
+        });
+    }
+    Ok(())
+}
+
 /// Run the planner pre-flight and surface its outcome as a typed result.
 ///
 /// Returns `Ok(())` if the plan is executable on the live Tantivy rail.

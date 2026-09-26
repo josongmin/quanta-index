@@ -12,46 +12,74 @@ pub const LEXICAL_EXAMINED_BUDGET_EXCEEDED_CODE: quanta_index_contract::SearchPl
 
 /// How much one lexical execution may materialize (QI-BB-005).
 ///
-/// A page query never needs more than `top_k + 1` (the continuation probe),
-/// but exact counts over projections, bounded counts with a deterministic
-/// total order and explicit unindexed scans all need the whole match set.
-/// Before this budget they collected `num_docs`, so a small request could
-/// materialize the whole corpus. Now such an execution collects at most
-/// `max_examined_candidates` documents plus one; if the extra one arrives,
-/// the adapter refuses with [`LEXICAL_EXAMINED_BUDGET_EXCEEDED_CODE`] rather
-/// than answer from a truncated set. Exact counts that need no
-/// materialization (a count collector over an indexed query) are not subject
-/// to it.
+/// An ordinary indexed page retains at most its fetch limit. Projection,
+/// exact-all and manual execution can materialize a larger match set, whose
+/// admission is bounded by `max_examined_candidates`. Exceeding that ceiling
+/// refuses with [`LEXICAL_EXAMINED_BUDGET_EXCEEDED_CODE`] instead of answering
+/// from a truncated set. Streaming ranked/count collectors do not charge this
+/// materialization ceiling, but every native collection shares checked work
+/// and retained-byte limits through `collection_budget`.
 ///
 /// The field is private so every budget in existence is a valid one: zero
 /// would refuse every exact-set query and is a configuration defect.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LexicalExecutionBudgetV1 {
     max_examined_candidates: usize,
+    max_collection_bytes: u64,
 }
 
 impl LexicalExecutionBudgetV1 {
-    /// Deployment default. 250,000 keeps the worst case at a few hundred
-    /// megabytes of document fetches, the ceiling one query may cost the
-    /// process until W5's per-request byte ledger replaces the constant.
+    /// Deployment defaults for materialized rows and native collection bytes.
+    /// The byte ceiling accounts for admitted allocations, not process RSS.
     pub const DEFAULT: Self = Self {
         max_examined_candidates: 250_000,
+        max_collection_bytes: 64 * 1024 * 1024,
     };
 
     pub fn new(max_examined_candidates: usize) -> Result<Self, CoreError> {
-        if max_examined_candidates == 0 {
+        Self::new_with_collection_bytes(max_examined_candidates, Self::DEFAULT.max_collection_bytes)
+    }
+
+    pub fn new_with_collection_bytes(
+        max_examined_candidates: usize,
+        max_collection_bytes: u64,
+    ) -> Result<Self, CoreError> {
+        if max_examined_candidates == 0 || max_collection_bytes == 0 {
             return Err(CoreError::InvalidContract(
-                "lexical execution budget must allow at least one examined candidate".to_string(),
+                "lexical execution candidate and collection-byte limits must be positive"
+                    .to_string(),
             ));
         }
         Ok(Self {
             max_examined_candidates,
+            max_collection_bytes,
         })
     }
 
     #[must_use]
     pub const fn max_examined_candidates(self) -> usize {
         self.max_examined_candidates
+    }
+
+    #[must_use]
+    pub const fn max_collection_bytes(self) -> u64 {
+        self.max_collection_bytes
+    }
+
+    /// One checked work/byte ledger shared by native segment and merge work.
+    pub fn collection_budget(
+        self,
+        max_segments: usize,
+    ) -> Result<super::collection_budget::LexicalCollectionBudget, CoreError> {
+        let overflow =
+            || CoreError::InvalidContract("lexical collection work limit overflow".to_string());
+        let candidates = u64::try_from(self.max_examined_candidates).map_err(|_| overflow())?;
+        let segments = u64::try_from(max_segments).map_err(|_| overflow())?;
+        let work = candidates
+            .checked_mul(4)
+            .and_then(|work| work.checked_add(segments))
+            .ok_or_else(overflow)?;
+        super::collection_budget::LexicalCollectionBudget::new(work, self.max_collection_bytes)
     }
 
     /// The typed refusal for an execution that would overrun this budget.
@@ -86,7 +114,16 @@ impl LexicalPolicy {
         Self::validate_query_inner(query, constraints.repo_relative_path_exact.is_some())
     }
 
-    fn validate_query_inner(query: &LqQuery, allow_exact_path_only: bool) -> Result<(), CoreError> {
+    pub(super) fn validate_query_inner(
+        query: &LqQuery,
+        allow_exact_path_only: bool,
+    ) -> Result<(), CoreError> {
+        if query.options.count == Some(quanta_index_contract::LqCountBound::Bounded(0)) {
+            return Err(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::LexFilterInvalidCount,
+                message: "count:0 is not a valid result cap".to_string(),
+            });
+        }
         let has_content_filter = query
             .filters
             .iter()
@@ -350,6 +387,23 @@ mod tests {
 
     fn empty_query() -> LqQuery {
         make_query(LqExpr::Empty, Vec::new(), LqOptions::defaults())
+    }
+
+    #[test]
+    fn collection_configuration_refuses_zero_resource_limits() {
+        assert!(LexicalExecutionBudgetV1::new_with_collection_bytes(0, 1).is_err());
+        assert!(LexicalExecutionBudgetV1::new_with_collection_bytes(1, 0).is_err());
+    }
+
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn collection_work_limit_overflow_is_a_configuration_error() {
+        let outcome = LexicalExecutionBudgetV1::new(usize::MAX)
+            .and_then(|config| config.collection_budget(1));
+        assert!(matches!(outcome, Err(CoreError::InvalidContract(_))));
+        let outcome = LexicalExecutionBudgetV1::new(1)
+            .and_then(|config| config.collection_budget(usize::MAX));
+        assert!(matches!(outcome, Err(CoreError::InvalidContract(_))));
     }
 
     #[test]

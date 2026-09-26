@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tools.benchmark.evidence import write_raw_file
 from tools.benchmark.retrieval import portable_proof
 from tools.benchmark.retrieval import run as pairrun
 
@@ -21,7 +22,11 @@ def test_direct_proof_command_has_a_finite_execution_timeout(tmp_path, monkeypat
 
     def run(argv, **kwargs):
         observed.append(kwargs.get("timeout"))
-        return b"complete", b"", {"exit_code": 0}
+        return (
+            write_raw_file(kwargs["log_dir"] / "stdout", [b"complete"]),
+            write_raw_file(kwargs["log_dir"] / "stderr", [b""]),
+            {"exit_code": 0},
+        )
 
     monkeypatch.setattr(portable_proof, "execute", run)
     commands = []
@@ -48,7 +53,11 @@ def test_tool_and_sdk_entrypoints_share_finite_execution_owner(tmp_path, monkeyp
         calls.append((argv, kwargs["timeout"]))
         if argv[0] == "fixture-just":
             out.mkdir()
-        return b"fixture-version", b"", {"exit_code": 0}
+        return (
+            write_raw_file(kwargs["log_dir"] / "stdout", [b"fixture-version"]),
+            write_raw_file(kwargs["log_dir"] / "stderr", [b""]),
+            {"exit_code": 0},
+        )
 
     monkeypatch.setattr(portable_proof, "execute", execute)
     assert portable_proof._git("rev-parse", "HEAD") == "fixture-version"
@@ -101,13 +110,14 @@ def _events(binary: str, test: str) -> bytes:
 def test_selected_test_binary_roles_are_deterministic_and_path_bound(tmp_path):
     binary = tmp_path / "compiled"
     raw = _rust_inventory("sdk_roundtrip", "test_one", binary)
-    role = "nextest-" + hashlib.sha256(
-        b"quanta-index-retrieval-bench::sdk_roundtrip").hexdigest()
+    role = "nextest-" + hashlib.sha256(b"quanta-index-retrieval-bench::sdk_roundtrip").hexdigest()
     assert portable_proof.selected_test_binaries(raw) == {role: binary}
 
 
-@pytest.mark.parametrize("mutation", ["missing", "relative", "traversal", "alias",
-                                     "nul", "id", "duplicate_path", "duplicate_json"])
+@pytest.mark.parametrize(
+    "mutation",
+    ["missing", "relative", "traversal", "alias", "nul", "id", "duplicate_path", "duplicate_json"],
+)
 def test_selected_test_binary_inventory_refuses_malformed_paths(tmp_path, mutation):
     payload = json.loads(_rust_inventory("sdk_roundtrip", "test_one", tmp_path / "compiled"))
     suite = next(iter(payload["rust-suites"].values()))
@@ -124,8 +134,11 @@ def test_selected_test_binary_inventory_refuses_malformed_paths(tmp_path, mutati
     elif mutation == "id":
         suite["binary-id"] = "different-id"
     elif mutation == "duplicate_path":
-        other = {**suite, "binary-name": "chunking_contract",
-                 "binary-id": "quanta-index-retrieval-bench::chunking_contract"}
+        other = {
+            **suite,
+            "binary-name": "chunking_contract",
+            "binary-id": "quanta-index-retrieval-bench::chunking_contract",
+        }
         payload["rust-suites"][other["binary-id"]] = other
         payload["test-count"] = 2
     raw = json.dumps(payload).encode()
@@ -146,7 +159,9 @@ def test_compiled_executable_custody_refuses_real_epoch_mutants(tmp_path, mutati
     token = portable_proof._ACTIVE_CUSTODY.set((custody, {}))
     try:
         records = portable_proof._bind_test_binaries(_rust_inventory("sdk_roundtrip", "one", path))
-        assert next(iter(records.values()))["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+        assert (
+            next(iter(records.values()))["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+        )
         before = path.stat()
         if mutation == "replace":
             replacement = tmp_path / "replacement"
@@ -164,16 +179,31 @@ def test_compiled_executable_custody_refuses_real_epoch_mutants(tmp_path, mutati
         portable_proof._ACTIVE_CUSTODY.reset(token)
 
 
-@pytest.mark.parametrize("mutation", ["workspace", "target", "package", "manifest",
-                                     "duplicate_package", "path", "missing", "extra_field"])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "workspace",
+        "target",
+        "package",
+        "manifest",
+        "duplicate_package",
+        "path",
+        "missing",
+        "extra_field",
+    ],
+)
 def test_reused_build_metadata_rejects_consistent_shape_forgeries(fake_execution, mutation):
     out, _, _ = fake_execution
     portable_proof.produce("sdk", out)
     build = json.loads((out / "rust-build.stdout").read_bytes())
     metadata = json.loads((out / "metadata.stdout").read_bytes())
     collection = (out / "rust-collection.stdout").read_bytes()
-    assert portable_proof.verify_reused_build(json.dumps(build).encode(), json.dumps(metadata).encode(),
-                                               collection, workspace_root=portable_proof.ROOT)
+    assert portable_proof.verify_reused_build(
+        json.dumps(build).encode(),
+        json.dumps(metadata).encode(),
+        collection,
+        workspace_root=portable_proof.ROOT,
+    )
     if mutation == "workspace":
         metadata["workspace_root"] = "/different/workspace"
     elif mutation == "target":
@@ -191,8 +221,12 @@ def test_reused_build_metadata_rejects_consistent_shape_forgeries(fake_execution
     else:
         build["extra"] = True
     with pytest.raises(ValueError):
-        portable_proof.verify_reused_build(json.dumps(build).encode(), json.dumps(metadata).encode(),
-                                           collection, workspace_root=portable_proof.ROOT)
+        portable_proof.verify_reused_build(
+            json.dumps(build).encode(),
+            json.dumps(metadata).encode(),
+            collection,
+            workspace_root=portable_proof.ROOT,
+        )
 
 
 @pytest.mark.parametrize("rail", ["contract", "sdk"])
@@ -390,7 +424,9 @@ def fake_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, proof_actor_
             raw = b""
         elif argv[3:5] == ["nextest", "list"]:
             if "--binaries-metadata" in argv:
-                prepared = json.loads(Path(argv[argv.index("--binaries-metadata") + 1]).read_bytes())
+                prepared = json.loads(
+                    Path(argv[argv.index("--binaries-metadata") + 1]).read_bytes()
+                )
                 binary = next(iter(prepared["rust-binaries"].values()))["binary-name"]
             else:
                 binary = "sdk_roundtrip" if "sdk_roundtrip" in argv else "chunking_contract"
@@ -398,15 +434,31 @@ def fake_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, proof_actor_
             raw = _rust_inventory(binary, test, compiled_test)
             if "--list-type" in argv:
                 full = json.loads(raw)
-                fields = {"binary-id", "binary-name", "package-id", "kind", "binary-path", "build-platform"}
-                raw = json.dumps({"rust-build-meta": {"target-directory": str(target)},
-                                  "rust-binaries": {key: {field: value[field] for field in fields}
-                                                    for key, value in full["rust-suites"].items()}}).encode()
+                fields = {
+                    "binary-id",
+                    "binary-name",
+                    "package-id",
+                    "kind",
+                    "binary-path",
+                    "build-platform",
+                }
+                raw = json.dumps(
+                    {
+                        "rust-build-meta": {"target-directory": str(target)},
+                        "rust-binaries": {
+                            key: {field: value[field] for field in fields}
+                            for key, value in full["rust-suites"].items()
+                        },
+                    }
+                ).encode()
         elif argv[3:5] == ["nextest", "run"]:
             assert "--binaries-metadata" in argv and "--cargo-metadata" in argv
             assert "--all-features" not in argv and "--locked" not in argv
-            binary = ("sdk_roundtrip" if (out / "nextest-inventory.json").exists()
-                      else "chunking_contract")
+            binary = (
+                "sdk_roundtrip"
+                if (out / "nextest-inventory.json").exists()
+                else "chunking_contract"
+            )
             test = portable_proof.sdk_proof.PROOF_TEST if binary == "sdk_roundtrip" else "one"
             raw = _events(binary, test)
             if binary == "sdk_roundtrip":
@@ -425,12 +477,28 @@ def fake_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, proof_actor_
             searchd.write_bytes(b"searchd")
             raw = b""
         elif argv[3] == "metadata":
-            raw = json.dumps({"target_directory": str(target), "workspace_root": str(portable_proof.ROOT),
-                              "packages": [{"id": "fixture-retrieval-package", "name": portable_proof.PACKAGE,
-                                            "manifest_path": str(portable_proof.ROOT / "benchmarks/retrieval/Cargo.toml")}]}).encode()
+            raw = json.dumps(
+                {
+                    "target_directory": str(target),
+                    "workspace_root": str(portable_proof.ROOT),
+                    "packages": [
+                        {
+                            "id": "fixture-retrieval-package",
+                            "name": portable_proof.PACKAGE,
+                            "manifest_path": str(
+                                portable_proof.ROOT / "benchmarks/retrieval/Cargo.toml"
+                            ),
+                        }
+                    ],
+                }
+            ).encode()
         else:
             raise AssertionError(argv)
-        return raw, b"", {"exit_code": 0}
+        return (
+            write_raw_file(kwargs["log_dir"] / "stdout", [raw]),
+            write_raw_file(kwargs["log_dir"] / "stderr", [b""]),
+            {"exit_code": 0},
+        )
 
     monkeypatch.setattr(portable_proof, "execute", run)
     return out, runner, calls

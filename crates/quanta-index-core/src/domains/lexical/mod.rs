@@ -1,9 +1,16 @@
 //! Lexical domain — owns lexical index build, open, and query.
 
+mod collection_budget;
+mod coverage;
 mod history_text;
 mod inbound;
 mod outbound;
+mod query_plan;
 mod service;
+
+pub use collection_budget::{LexicalCollectionBudget, LexicalMemoryReservation};
+pub use coverage::require_complete_symbol_coverage;
+pub use query_plan::{LexicalEndpoint, LexicalPlanKind, ValidatedLexicalPlan};
 
 pub use history_text::{
     HISTORY_TEXT_INDEX_CORRUPT_CODE, HISTORY_TEXT_INDEX_NORMALIZER_UNSUPPORTED_CODE,
@@ -18,7 +25,7 @@ pub use outbound::{
     LexicalIndexBuildPort, LexicalIndexOpenPort, LexicalPageSpec, LexicalReadiness,
     LexicalScoreEngineV1, LexicalScoreTraceV1, LexicalSearchPageV1, LexicalSearcher,
     RepoCommitRecencyIngestPort, RepoDescriptionIngestPort, RepoMetaIngestPort,
-    RepoTopicIngestPort, SearchCorpusBatchBuildPort, SearchCorpusIngestPort,
+    RepoTopicIngestPort, SearchCorpusBatchBuildPort, SearchCorpusIngestPort, SymbolSearchPageV1,
 };
 pub use service::{
     LEXICAL_EXAMINED_BUDGET_EXCEEDED_CODE, LEXICAL_WRITER_HEAP_BYTES_MAX,

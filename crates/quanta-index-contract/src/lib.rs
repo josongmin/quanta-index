@@ -22,6 +22,18 @@ mod macros;
 mod bounded_cluster_members;
 pub mod canonical_order;
 mod semantic_kinds;
+mod source_coverage;
+mod source_event_payload;
+pub use source_event_payload::source_event_payload_sha256;
+
+pub use quanta_index_contract_base::{
+    PreviewByteRange, PreviewKind, PreviewMetadata, PreviewUnavailableReason, SourceFileKey,
+    SourceFileRevision,
+};
+pub use source_coverage::{
+    FileCoverageSnapshot, SourceCoverageError, SourceFileCoverage, SourcePublicationEvent,
+    SymbolCoverage, source_file_unit_set_sha256,
+};
 
 /// Internal legacy channel surface used by `searchd` composition-root,
 /// replay, and restart recovery paths.

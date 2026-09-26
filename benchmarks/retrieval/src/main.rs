@@ -41,7 +41,9 @@ use quanta_index_retrieval_bench::sdk::{
     DEFAULT_IO_TIMEOUT, DEFAULT_READY_TIMEOUT, DaemonConfig, DaemonSession, QueryOutcome,
     RouteQuery, publish_and_activate, query_route, resolve_searchd_binary, verify_searchd_digest,
 };
-use quanta_index_retrieval_bench::symbols::extract_corpus_symbols;
+use quanta_index_retrieval_bench::symbols::{
+    SymbolCoveragePolicy, SymbolPreflightOptions, extract_corpus_symbols, preflight_corpus_symbols,
+};
 use quanta_index_retrieval_bench::{BenchError, BenchResult, sha256_hex};
 use quanta_index_search_plane::{HybridFetchFloorPolicy, QueryStageObservationPolicy};
 
@@ -55,10 +57,15 @@ fn usage_error(mut message: String) -> BenchError {
 fn print_help() -> BenchResult<()> {
     std::io::stdout()
         .write_all(
-            b"quanta-index-retrieval-bench run|chunk [flags]\n\
+            b"quanta-index-retrieval-bench run|chunk|preflight [flags]\n\
          \n\
          run: manifest -> chunks -> real searchd publish/activate -> SDK queries -> v3 record\n\
          chunk: manifest -> chunks + coverage JSON (no daemon)\n\
+         preflight: --repo PATH --manifest PATH --out PATH (all-file symbol census; no daemon)\n\
+         [--symbol-coverage require-complete|allow-incomplete] (default require-complete)\n\
+         [--symbol-timeout-ms N] [--max-symbols-per-file N]\n\
+         [--symbol-total-timeout-ms N] [--max-symbols-total N]\n\
+         [--max-symbol-diagnostics-per-file N] [--max-symbol-diagnostics N]\n\
          \n\
          shared: --repo PATH --manifest PATH --strategy whole_file|fixed_window_strict|fixed_window_line_aligned|brace_heuristic\n\
          fixed_window_*: --window-bytes N (default 4000) --overlap-bytes N (default 400)\n\
@@ -72,6 +79,8 @@ fn print_help() -> BenchResult<()> {
          --blinding attested|isolated --isolation-method TEXT --access-block-log TEXT\n\
          [--materialized-corpus-sha256 HEX]\n\
          --searchd-bin PATH --searchd-expected-sha256 HEX\n\
+         [--source-stream-id ID] [--source-event-id ID] [--source-base-event-id ID]\n\
+         [--symbol-preflight-out PATH]\n\
          --out PATH --refusal-out PATH [--metrics-out PATH] [--diagnostics-out PATH] [--embedder potion-code|hash-dev]\n\
          [--max-file-bytes N]\n\
          [--io-timeout-secs N] [--ready-timeout-secs N]\n",
@@ -440,6 +449,86 @@ fn validate_blinding_claim(
     }
 }
 
+fn symbol_preflight_options(
+    args: &Args,
+    max_file_bytes: u64,
+) -> BenchResult<SymbolPreflightOptions<'static>> {
+    Ok(SymbolPreflightOptions {
+        max_file_bytes: usize::try_from(max_file_bytes).map_err(|error| {
+            BenchError::Config(format!("max-file-bytes exceeds usize: {error}"))
+        })?,
+        max_symbols_per_file: optional_usize(args, "max-symbols-per-file", 100_000)?,
+        max_symbols_total: optional_usize(args, "max-symbols-total", 1_000_000)?,
+        timeout_per_file: Duration::from_millis(optional_u64(args, "symbol-timeout-ms", 10_000)?),
+        timeout_total: Duration::from_millis(optional_u64(
+            args,
+            "symbol-total-timeout-ms",
+            120_000,
+        )?),
+        max_diagnostics_per_file: optional_usize(args, "max-symbol-diagnostics-per-file", 32)?,
+        max_diagnostics_total: optional_usize(args, "max-symbol-diagnostics", 1024)?,
+        cancellation: None,
+    })
+}
+
+fn run_symbol_preflight(args: &Args) -> BenchResult<()> {
+    reject_unknown(
+        args,
+        &[
+            "repo",
+            "manifest",
+            "out",
+            "max-file-bytes",
+            "symbol-coverage",
+            "symbol-timeout-ms",
+            "max-symbols-per-file",
+            "max-symbols-total",
+            "symbol-total-timeout-ms",
+            "max-symbol-diagnostics-per-file",
+            "max-symbol-diagnostics",
+        ],
+    )?;
+    let policy_text = args
+        .flags
+        .get("symbol-coverage")
+        .map_or("require-complete", String::as_str);
+    let policy = SymbolCoveragePolicy::parse(policy_text)?;
+    let repo = PathBuf::from(required(args, "repo")?);
+    let out = PathBuf::from(required(args, "out")?);
+    require_external_path(&repo, &out, "--out")?;
+    if out.exists() {
+        return Err(BenchError::Config(format!(
+            "--out already exists: {}",
+            out.display()
+        )));
+    }
+    let manifest = load_manifest(&PathBuf::from(required(args, "manifest")?))?;
+    verify_checkout(&repo, &manifest)?;
+    let limits = CorpusLimits {
+        max_file_bytes: optional_u64(
+            args,
+            "max-file-bytes",
+            CorpusLimits::default().max_file_bytes,
+        )?,
+    };
+    let options = symbol_preflight_options(args, limits.max_file_bytes)?;
+    let files = load_corpus(&repo, &manifest, &limits)?;
+    let by_path = files
+        .into_iter()
+        .map(|file| (file.path.clone(), file))
+        .collect();
+    let preflight = preflight_corpus_symbols(&by_path, &options)?;
+    let value = serde_json::json!({
+        "symbol_coverage_policy": policy_text,
+        "repository_commit": manifest.repository_commit,
+        "file_universe_sha256": quanta_index_retrieval_bench::corpus::universe_digest(&manifest.files),
+        "preflight": preflight.report(),
+    });
+    // Preserve the complete census even when the selected policy refuses it.
+    write_json(&out, &value)?;
+    preflight.admit(policy)
+}
+
 fn run_chunk(args: &Args) -> BenchResult<()> {
     reject_unknown(
         args,
@@ -565,6 +654,17 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             "ready-timeout-secs",
             "materialized-corpus-sha256",
             "model-dir",
+            "symbol-coverage",
+            "symbol-preflight-out",
+            "symbol-timeout-ms",
+            "symbol-total-timeout-ms",
+            "max-symbols-per-file",
+            "max-symbols-total",
+            "max-symbol-diagnostics-per-file",
+            "max-symbol-diagnostics",
+            "source-stream-id",
+            "source-event-id",
+            "source-base-event-id",
         ],
     )?;
     let overall = Instant::now();
@@ -637,12 +737,52 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             refusal_out.display()
         )));
     }
+    let symbol_preflight_out = args
+        .flags
+        .get("symbol-preflight-out")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            let mut path = out.as_os_str().to_os_string();
+            path.push(".symbol-preflight.json");
+            PathBuf::from(path)
+        });
+    require_external_path(&repo, &symbol_preflight_out, "--symbol-preflight-out")?;
+    if symbol_preflight_out.exists() {
+        return Err(BenchError::Config(format!(
+            "symbol preflight evidence already exists: {}",
+            symbol_preflight_out.display()
+        )));
+    }
+    let symbol_policy_text = args
+        .flags
+        .get("symbol-coverage")
+        .map_or("require-complete", String::as_str);
+    let symbol_policy = SymbolCoveragePolicy::parse(symbol_policy_text)?;
+    // Caller-provided producer/run identity, independent of target generation.
+    let source_event = quanta_index_contract::SourcePublicationEvent {
+        stream_id: args
+            .flags
+            .get("source-stream-id")
+            .cloned()
+            .map_or_else(|| required(args, "runner-name"), Ok)?,
+        event_id: args
+            .flags
+            .get("source-event-id")
+            .cloned()
+            .map_or_else(|| required(args, "run-id"), Ok)?,
+        expected_base_event_id: args.flags.get("source-base-event-id").cloned(),
+        payload_sha256: [0; 32], // SDK finalization hashes the complete logical body.
+    };
+    source_event
+        .validate()
+        .map_err(|error| BenchError::Config(error.to_string()))?;
     let mut output_paths = BTreeSet::new();
     for (label, path) in [
         ("--out", Some(&out)),
         ("--metrics-out", metrics_out.as_ref()),
         ("--diagnostics-out", diagnostics_out.as_ref()),
         ("--refusal-out", Some(&refusal_out)),
+        ("--symbol-preflight-out", Some(&symbol_preflight_out)),
     ] {
         if let Some(path) = path
             && !output_paths.insert(path)
@@ -669,6 +809,19 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         .map(|file| (file.path.clone(), file.clone()))
         .collect();
     let discovery_elapsed = overall.elapsed();
+    let symbol_preflight = preflight_corpus_symbols(
+        &by_path,
+        &symbol_preflight_options(args, limits.max_file_bytes)?,
+    )?;
+    write_json(
+        &symbol_preflight_out,
+        &serde_json::json!({
+            "symbol_coverage_policy": symbol_policy_text,
+            "repository_commit": manifest.repository_commit,
+            "preflight": symbol_preflight.report(),
+        }),
+    )?;
+    symbol_preflight.admit(symbol_policy)?;
 
     let chunk_start = Instant::now();
     let selection = chunk_with_strategy(&required(args, "strategy")?, args, &files)?;
@@ -706,34 +859,34 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         generation,
         manifest_digest,
     )?;
-    // RBR-04: source-bound symbols for every admitted file, published in
-    // the same per-file replacement as the chunks.
-    let symbol_extraction = extract_corpus_symbols(&by_path)?;
-    let symbol_coverage = by_path
+    let symbol_coverage = symbol_preflight
+        .report()
+        .files
         .iter()
-        .map(|(path, file)| {
-            let language = quanta_index_retrieval_bench::symbols::SymbolLanguage::from_path(path)
-                .ok_or_else(|| {
-                BenchError::Protocol(format!("symbol coverage lost grammar: {path}"))
-            })?;
-            let count = symbol_extraction
-                .symbols
-                .get(path)
-                .ok_or_else(|| BenchError::Protocol(format!("symbol coverage lost file: {path}")))?
-                .len();
-            Ok(serde_json::json!({
-                "path": path,
-                "source_sha256": file.sha256,
-                "language": language.coverage_identity(),
-                "definition_count": count,
-            }))
+        .map(|file| {
+            let count = match file.coverage {
+                quanta_index_contract::SymbolCoverage::Complete { symbol_count } => {
+                    Some(symbol_count)
+                }
+                _ => None,
+            };
+            serde_json::json!({
+                "path": file.path, "source_sha256": file.source_sha256, "language": file.language,
+                "definition_count": count, "coverage": file.coverage, "failure": file.failure,
+            })
         })
-        .collect::<BenchResult<Vec<_>>>()?;
-    let (batch, assembly) =
-        assemble_batch(&identity, &selection.chunks, &symbol_extraction.symbols)?;
+        .collect::<Vec<_>>();
+    let (batch, assembly) = assemble_batch(
+        &identity,
+        &selection.chunks,
+        &by_path,
+        &symbol_preflight,
+        symbol_policy,
+        source_event,
+    )?;
     let published_units = PublishedUnitRegistry::from_chunks_and_symbols(
         &selection.chunks,
-        &symbol_extraction.symbols,
+        symbol_preflight.symbols(),
         &by_path,
     )?;
 
@@ -1146,8 +1299,13 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         "symbol_producer_identity": quanta_index_retrieval_bench::symbols::SYMBOL_PRODUCER_IDENTITY,
         "symbol_grammars": quanta_index_retrieval_bench::symbols::SYMBOL_PRODUCER_GRAMMARS,
         "symbol_coverage": symbol_coverage,
-        "symbol_unsupported_files": 0,
-        "symbol_unsupported_details": [],
+        "symbol_coverage_policy": symbol_policy_text,
+        "symbol_preflight_out": symbol_preflight_out,
+        "symbol_producer_policy_sha256": symbol_preflight.report().producer_policy_sha256,
+        "symbol_incomplete_files": symbol_preflight.report().incomplete_files,
+        "symbol_unsupported_files": symbol_preflight.report().files.iter().filter(|file| file.coverage == quanta_index_contract::SymbolCoverage::Unsupported).count(),
+        "symbol_unsupported_details": symbol_preflight.report().files.iter().filter(|file| file.coverage == quanta_index_contract::SymbolCoverage::Unsupported).collect::<Vec<_>>(),
+        "empty_scopes": assembly.empty_scopes.len(),
         "symbol_only_scopes": assembly.symbol_only_scopes.len(),
         "query_schedule": pack.tasks.iter().map(|task| task.task_id.as_str()).collect::<Vec<_>>(),
         "warmup_passes": query_protocol.as_ref().map_or(0, |value| value.warmup_schedules.len()),
@@ -1352,12 +1510,13 @@ fn run_cli(argv: &[String]) -> BenchResult<()> {
     if parsed.positional.len() != 1 {
         print_help()?;
         return Err(usage_error(
-            "expected exactly one subcommand: run|chunk".to_string(),
+            "expected exactly one subcommand: run|chunk|preflight".to_string(),
         ));
     }
     match parsed.positional.first().map(String::as_str) {
         Some("run") => run_capture(&parsed),
         Some("chunk") => run_chunk(&parsed),
+        Some("preflight") => run_symbol_preflight(&parsed),
         Some(other) => {
             print_help()?;
             Err(usage_error(format!("unknown subcommand: {other}")))

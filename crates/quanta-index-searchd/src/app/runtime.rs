@@ -1465,6 +1465,7 @@ impl SearchdRuntime {
         let search_corpus_materializer: Arc<DirectSearchCorpusMaterializer> = Arc::new(
             DirectSearchCorpusMaterializer::new_with_search_owned_semantics(
                 SearchCorpusMaterializerParts {
+                    source_publication: activation_catalog.clone(),
                     builder: Arc::clone(&search_corpus_build_port),
                     ledger: Arc::clone(&ledger),
                     semantic_ingest: Arc::clone(&direct_sem_ingest_port),
@@ -1640,9 +1641,10 @@ impl SearchdRuntime {
             SearchPlaneControlDispatcherParts {
                 repo_map_activate: repo_map_generation_activate_port,
                 lifecycle: SearchCorpusLifecycleParts {
-                    activation_catalog,
+                    activation_catalog: Arc::clone(&activation_catalog),
+                    idempotency: Arc::clone(&idempotency),
                     ledger: Arc::clone(&ledger),
-                    authority: authority_inspect_port,
+                    authority: Arc::clone(&authority_inspect_port),
                     promotion,
                 },
                 observability,
@@ -1664,6 +1666,8 @@ impl SearchdRuntime {
             direct_structural_ingest_port,
             repo_map_bundle_ingest_port,
             idempotency,
+            activation_catalog,
+            authority_inspect_port,
         ));
         let query_adapter: Arc<
             dyn IpcDispatcher<SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse>,

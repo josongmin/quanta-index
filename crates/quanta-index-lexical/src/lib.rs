@@ -192,6 +192,11 @@ struct SchemaFields {
     candidate_id: Field,
     repo_id: Field,
     revision_id: Field,
+    source_revision_id: Field,
+    source_sha256: Field,
+    chunk_start_byte: Field,
+    chunk_end_byte: Field,
+    chunk_raw_sha256: Field,
     doc_kind: Field,
     repo_relative_path: Field,
     repo_relative_path_query: Field,
@@ -205,6 +210,15 @@ struct SchemaFields {
     chunk_text_case: Field,
     symbol_kind: Field,
     symbol_kind_family: Field,
+    symbol_local_name: Field,
+    symbol_local_name_folded: Field,
+    symbol_qualified_name: Field,
+    symbol_qualified_name_folded: Field,
+    symbol_local_name_original: Field,
+    symbol_qualified_name_original: Field,
+    symbol_signature: Field,
+    symbol_definition_start_byte: Field,
+    symbol_definition_end_byte: Field,
     /// The text-authority doc id of a text document (absent on symbols):
     /// the shard-addressing key the sidecar and the index share, assigned
     /// once when the document is written and never reused within the
@@ -413,7 +427,7 @@ struct TextOpSummary {
     /// per-chunk ops, whose retirements are not scope-addressed.
     forces_rebuild: bool,
     /// Paths whose text documents the batch retires.
-    retired_paths: Vec<String>,
+    retired_files: Vec<quanta_index_contract::SourceFileKey>,
     /// Text documents the batch will write.
     added_count: u64,
 }
@@ -497,6 +511,10 @@ struct LoadedGeneration {
 }
 
 struct TantivySearcher {
+    /// Optional only for explicitly unbound generations; absence is not
+    /// evidence of a completely indexed empty universe.
+    source_coverage: Option<quanta_index_contract::FileCoverageSnapshot>,
+    source_publication_event: Option<quanta_index_contract::SourcePublicationEvent>,
     repo_id: RepoId,
     revision_id: RevisionId,
     generation: ManifestGeneration,

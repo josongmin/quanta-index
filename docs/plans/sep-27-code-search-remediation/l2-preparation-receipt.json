@@ -1,0 +1,54 @@
+{
+  "stage": "G0 contract request and regression preparation only",
+  "head": "106d7abec2dd3fa03f9db5a19a3de41df2f0afad",
+  "dirty": [
+    " M crates/quanta-index-contract/src/ipc/ingest.rs",
+    " M crates/quanta-index-lexical/src/budgeted_search.rs",
+    " M crates/quanta-index-lexical/src/ranked_page.rs",
+    " M crates/quanta-index-lexical/src/searcher/paging.rs",
+    " M crates/quanta-index-lexical/src/searcher/snippets.rs",
+    " M crates/quanta-index-lq-regex/src/executor.rs",
+    " M docs/plans/sep-27-misc/tickets/INDEX.md",
+    " M tools/ci/tests/test_retrieval_benchmark.py",
+    "?? crates/quanta-index-lexical/src/ranked_page_tests.rs",
+    "?? crates/quanta-index-lexical/tests/l2_file_mutation.rs",
+    "?? docs/plans/sep-27-code-search-remediation/handoffs/",
+    "?? docs/plans/sep-27-code-search-remediation/l2-g0-request.md"
+  ],
+  "files_sha256": {
+    "crates/quanta-index-contract/src/ipc/ingest.rs": "ca28919a2d7a982acecb7f75c7ffbb287adee8d1762394773ae4946e954a3869",
+    "crates/quanta-index-core/src/domains/lexical/outbound.rs": "c8df5f69f67ab930fd19c04e8dfcc1f648a39c5809d695177fd28f8423dca2a2",
+    "crates/quanta-index-lexical/src/adapter.rs": "995f45d7d1d27a4b90c0764a3c84e3ec500f294d3838f178e99ffe0e19ae6939",
+    "crates/quanta-index-lexical/src/adapter_ingest.rs": "e879d15361d84277d0fde8aa691c46df8a14a738640a3ca054600edcef1e9a68",
+    "crates/quanta-index-lexical/src/adapter_lifecycle.rs": "1366767e20a568e5728fa17888439916f08c8761e195f6b5a2317a3e9056b20e",
+    "crates/quanta-index-lexical/src/adapter_open.rs": "634ce1e50b4a07723a898bb40bed8763b29433686e1d7139670bead118f8a1bf",
+    "crates/quanta-index-lexical/src/channel_payloads.rs": "4812d5b3890953f80ba3d29107081f5a97628ace434e89ad537d4e4ec18317fb",
+    "crates/quanta-index-lexical/src/generation_dir.rs": "1d941d1df6e8397026e7d5a36cf1adde90dcbefef0e615e984426054d91c33ac",
+    "crates/quanta-index-lexical/src/lib.rs": "043e6b8d712a94d9d0c5c8bee2f221148b8814e8a24f5b8b108fe40037695aed",
+    "crates/quanta-index-lexical/src/sealed_generation/manifest.rs": "3b28d24bc915576ab0278f24a6d4a03a81c99629821be6468a9d2c1f947f23ff",
+    "crates/quanta-index-lexical/src/sealed_generation/scrub.rs": "3eebff9105b2986df8ae12d4156b4c26038015c5c3ec103bd1389f639ecd162e",
+    "crates/quanta-index-lexical/src/sealed_generation/seal.rs": "552b68111a7997efb70ef06553c0390f7de2bbe5a7584b267b405e0bd5f4adb4",
+    "crates/quanta-index-lexical/src/sealed_generation/verify.rs": "b5d6525b8039b67e280f8672ee579d5249ea6f4a80fa320c7bcc7e3e49b3cca7",
+    "crates/quanta-index-lexical/src/text_authority_plan.rs": "8f469ff6c77642815ea101007f67139379efc29b7c8015dae0e093df3607f9a8",
+    "crates/quanta-index-lexical/tests/l2_file_mutation.rs": "de26e65637b84078e64aaac743563568aea40cacba8224fa1b6862ec376c68b4",
+    "crates/quanta-index-search-plane/src/ingest_dispatcher/dispatcher.rs": "89169aba3bdd346acc66055e3c537f4542b3a1a35b61c0eb0d442f4ac41240a1",
+    "crates/quanta-index-search-plane/src/ingest_dispatcher/search_corpus.rs": "a0c4b6ee97a13c903ca47e709aee2ceb4030a8acbe80c55a6aab17a82bf55f2a",
+    "crates/quanta-index-search-plane/src/readiness/activation_catalog.rs": "8031ee9243a46b9d9c02839ff39d2dfd0a439cc53d82e1435bb2afd59cabd9fa",
+    "docs/plans/sep-27-code-search-remediation/l2-g0-request.md": "36510c083ee80bc7183b18bc2983d13c5871e79471355b62a0368da017bdfcfd"
+  },
+  "inspection_sha256": "9f9bb28b6b671607f62e56e2a21d414fc8e798303f374fd0aee2ff5a58d28246",
+  "checks": [
+    {
+      "command": "rustfmt --edition 2024 --check crates/quanta-index-lexical/tests/l2_file_mutation.rs",
+      "exit_code": 0,
+      "scope": "format/syntax only",
+      "behavior": "NOT_RUN"
+    }
+  ],
+  "behavior_tests_prepared": 9,
+  "behavior_tests_executed": null,
+  "behavior_verdict": "NOT_RUN",
+  "implementation_verdict": "BLOCKED",
+  "blocking_input": "L0 G0_READY and serialized heavy Rust slot",
+  "qualification": "NOT_RUN"
+}

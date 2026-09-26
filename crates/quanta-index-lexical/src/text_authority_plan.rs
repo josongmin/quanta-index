@@ -7,7 +7,7 @@
 
 use crate::channel_payloads::{decode_replace_scope_payload, decode_tombstone_scope_payload};
 use crate::text_authority::{AddedTextDoc, shard_index_of};
-use crate::text_docs::{collect_text_authority_docs, text_candidates_at_path};
+use crate::text_docs::{collect_text_authority_docs, text_candidates_at_file};
 use crate::{
     SchemaFields, TextAuthorityPlan, TextAuthorityWrite, TextDocAllocator, TextOpSummary,
     text_authority,
@@ -58,7 +58,7 @@ pub(crate) fn summarize_text_ops(ops: &[LexicalChannelOp]) -> Result<TextOpSumma
     let mut summary = TextOpSummary {
         touches_text: false,
         forces_rebuild: false,
-        retired_paths: Vec::new(),
+        retired_files: Vec::new(),
         added_count: 0,
     };
     for op in ops {
@@ -67,8 +67,8 @@ pub(crate) fn summarize_text_ops(ops: &[LexicalChannelOp]) -> Result<TextOpSumma
                 summary.touches_text = true;
                 let (_mode, _base, scope) = decode_replace_scope_payload(&payload.payload)?;
                 summary
-                    .retired_paths
-                    .push(scope.scope.repo_relative_path.as_str().to_string());
+                    .retired_files
+                    .push(scope.coverage.source.file.clone());
                 let chunks = u64::try_from(scope.chunks.len()).map_err(|err| {
                     CoreError::InvalidContract(format!("lexical: scope chunk count: {err}"))
                 })?;
@@ -77,9 +77,7 @@ pub(crate) fn summarize_text_ops(ops: &[LexicalChannelOp]) -> Result<TextOpSumma
             LexicalChannelOp::TombstoneLexicalScope(payload) => {
                 summary.touches_text = true;
                 let (_mode, _base, scope) = decode_tombstone_scope_payload(&payload.payload)?;
-                summary
-                    .retired_paths
-                    .push(scope.scope.repo_relative_path.as_str().to_string());
+                summary.retired_files.push(scope.file.clone());
             }
             LexicalChannelOp::ClearLexicalSurface(payload) => {
                 // Only the chunk surface holds text documents; clearing
@@ -163,8 +161,8 @@ pub(crate) fn plan_text_authority_delta(
         });
     }
     let mut retired: BTreeMap<u64, String> = BTreeMap::new();
-    for path in &summary.retired_paths {
-        for candidate in text_candidates_at_path(index, fields, path)? {
+    for file in &summary.retired_files {
+        for candidate in text_candidates_at_file(index, fields, file)? {
             if candidate.doc_id > watermark {
                 // The index holds a document the prior authority never
                 // listed: a publish crashed between its commit and its

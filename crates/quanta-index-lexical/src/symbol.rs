@@ -16,9 +16,7 @@
 
 use core::fmt;
 
-use quanta_index_contract::{
-    LqExpr, LqFilter, LqLeaf, LqOptions, LqPatternType, LqPredicateArg, LqQuery, LqSelect, LqType,
-};
+use quanta_index_contract::{LqExpr, LqFilter, LqPredicateArg, LqQuery, LqSelect, LqType};
 
 /// Symbol names have keyword postings, not the chunk content authority.
 pub(crate) fn symbol_name_keyword(args: &[LqPredicateArg]) -> Option<&str> {
@@ -26,6 +24,39 @@ pub(crate) fn symbol_name_keyword(args: &[LqPredicateArg]) -> Option<&str> {
         [LqPredicateArg::Keyword(value)] => Some(value),
         _ => None,
     }
+}
+
+/// Exact name equality uses dedicated STRING fields and the shared NFC/case policy.
+pub(crate) fn exact_symbol_name_query(
+    fields: &crate::SchemaFields,
+    name: &str,
+    args: &[LqPredicateArg],
+    options: &quanta_index_contract::LqOptions,
+) -> Result<Option<Box<dyn tantivy::query::Query>>, quanta_index_core::CoreError> {
+    use crate::normalize::{CaseMode, apply_case, nfc};
+    use quanta_index_core::LexicalPredicateV1;
+    let Some(predicate) = LexicalPredicateV1::from_canonical_name(name) else {
+        return Ok(None);
+    };
+    let Some(value) = predicate.exact_symbol_name_argument(args)? else {
+        return Ok(None);
+    };
+    let sensitive = options.case_mode() == CaseMode::Sensitive;
+    let field = match (predicate, sensitive) {
+        (LexicalPredicateV1::SymbolLocalNameExact, true) => fields.symbol_local_name,
+        (LexicalPredicateV1::SymbolLocalNameExact, false) => fields.symbol_local_name_folded,
+        (LexicalPredicateV1::SymbolQualifiedNameExact, true) => fields.symbol_qualified_name,
+        (LexicalPredicateV1::SymbolQualifiedNameExact, false) => {
+            fields.symbol_qualified_name_folded
+        }
+        _ => return Ok(None),
+    };
+    let normalized = nfc(value);
+    let term = apply_case(&normalized, options.case_mode());
+    Ok(Some(Box::new(tantivy::query::TermQuery::new(
+        tantivy::Term::from_field_text(field, &term),
+        tantivy::schema::IndexRecordOption::Basic,
+    ))))
 }
 
 /// Refuse unsupported symbol text before predicate materialization can return empty.
@@ -36,69 +67,7 @@ pub(crate) fn unsupported_symbol_query_text(
     expr: &LqExpr,
     symbol_domain: bool,
 ) -> bool {
-    unsupported_symbol_text(expr, &query.options, symbol_domain)
-        || query.filters.iter().any(|filter| match filter {
-            LqFilter::Content { leaf } => {
-                unsupported_symbol_leaf(leaf, &query.options, symbol_domain)
-            }
-            LqFilter::Repo { .. }
-            | LqFilter::File { .. }
-            | LqFilter::Lang { .. }
-            | LqFilter::Rev { .. }
-            | LqFilter::Author { .. }
-            | LqFilter::Committer { .. }
-            | LqFilter::Message { .. }
-            | LqFilter::Before { .. }
-            | LqFilter::After { .. }
-            | LqFilter::Since { .. }
-            | LqFilter::Until { .. }
-            | LqFilter::DiffAdded { .. }
-            | LqFilter::DiffRemoved { .. }
-            | LqFilter::DiffTouched { .. }
-            | LqFilter::Type { .. }
-            | LqFilter::Select { .. }
-            | LqFilter::Dirty { .. }
-            | LqFilter::Changed { .. }
-            | LqFilter::Stale { .. }
-            | LqFilter::Snapshot { .. }
-            | LqFilter::MetaOwner { .. }
-            | LqFilter::MetaService { .. }
-            | LqFilter::MetaLayer { .. }
-            | LqFilter::MetaSurface { .. }
-            | LqFilter::Affected { .. }
-            | LqFilter::InvalidatedBy { .. }
-            | LqFilter::Fork { .. }
-            | LqFilter::Archived { .. }
-            | LqFilter::Visibility { .. }
-            | LqFilter::Context { .. } => false,
-        })
-}
-
-fn unsupported_symbol_text(expr: &LqExpr, options: &LqOptions, symbol_domain: bool) -> bool {
-    match expr {
-        LqExpr::Empty => false,
-        LqExpr::Not(inner) => unsupported_symbol_text(inner, options, symbol_domain),
-        LqExpr::All(children) | LqExpr::Any(children) => children
-            .iter()
-            .any(|child| unsupported_symbol_text(child, options, symbol_domain)),
-        LqExpr::Leaf(leaf) => unsupported_symbol_leaf(leaf, options, symbol_domain),
-    }
-}
-
-fn unsupported_symbol_leaf(leaf: &LqLeaf, options: &LqOptions, symbol_domain: bool) -> bool {
-    match leaf {
-        LqLeaf::Predicate { name, args }
-            if name == quanta_index_core::LexicalPredicateV1::SymbolHasName.name() =>
-        {
-            matches!(
-                args.as_slice(),
-                [LqPredicateArg::Phrase(_) | LqPredicateArg::RawString(_)]
-            ) || options.pattern_type == LqPatternType::Regexp
-        }
-        LqLeaf::Phrase(_) | LqLeaf::RawString(_) | LqLeaf::Regex(_) => symbol_domain,
-        LqLeaf::Keyword(_) => symbol_domain && options.pattern_type == LqPatternType::Regexp,
-        LqLeaf::StructuralBlock(_) | LqLeaf::Predicate { .. } => false,
-    }
+    quanta_index_core::LexicalPolicy::unsupported_symbol_query_text(query, expr, symbol_domain)
 }
 
 /// Closed set of v1 symbol kinds accepted as a `kind_filter`.
@@ -614,5 +583,163 @@ mod tests {
                 "planner code `{code}` must remain valid in the contract v1 wire set"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod l3_exact_tests {
+    #![expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions are test failure reporting"
+    )]
+    use super::*;
+    use quanta_index_contract::{LqCase, LqOptions};
+    use tantivy::collector::Count;
+    use tantivy::{Index, IndexWriter, TantivyDocument, doc};
+
+    #[test]
+    fn l3_exact_names_are_separate_whole_string_fields_with_nfc_and_case()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fields = crate::SchemaFields::build();
+        let index = Index::create_in_ram(fields.schema.clone());
+        crate::analyzer::register_analyzers(&index);
+        let mut writer: IndexWriter<TantivyDocument> =
+            index.writer_with_num_threads(1, 15_000_000)?;
+        // Fixed postings are the oracle; no production name extractor builds these.
+        for (local, folded, qualified, qualified_folded) in [
+            ("Café", "café", "One::Café", "one::café"),
+            ("Café", "café", "Two::Café", "two::café"),
+            ("CaféExtra", "caféextra", "One::CaféExtra", "one::caféextra"),
+            ("Café", "café", "One::Café", "one::café"), // Overload remains a distinct row.
+            ("Inner", "inner", "Café::Inner", "café::inner"),
+        ] {
+            let _op = writer.add_document(doc!(fields.symbol_local_name => local,
+                fields.symbol_local_name_folded => folded, fields.symbol_qualified_name => qualified,
+                fields.symbol_qualified_name_folded => qualified_folded))?;
+        }
+        let _commit = writer.commit()?;
+        writer.wait_merging_threads()?;
+        let searcher = index.reader()?.searcher();
+        for (name, value, case, expected) in [
+            ("symbol.local_name.exact", "CAFE\u{301}", None, 3),
+            (
+                "symbol.local_name.exact",
+                "Café",
+                Some(LqCase::Sensitive),
+                3,
+            ),
+            (
+                "symbol.local_name.exact",
+                "café",
+                Some(LqCase::Sensitive),
+                0,
+            ),
+            ("symbol.local_name.exact", "Caf", None, 0),
+            ("symbol.local_name.exact", "One::Café", None, 0),
+            ("symbol.qualified_name.exact", "ONE::CAFE\u{301}", None, 2),
+            ("symbol.qualified_name.exact", "Café", None, 0),
+            ("symbol.qualified_name.exact", "Café::Inner", None, 1),
+            ("symbol.local_name.exact", "NoSymbol", None, 0),
+        ] {
+            let options = LqOptions {
+                case,
+                ..LqOptions::defaults()
+            };
+            let query = exact_symbol_name_query(
+                &fields,
+                name,
+                &[LqPredicateArg::Keyword(value.into())],
+                &options,
+            )?
+            .expect("exact");
+            assert_eq!(
+                searcher.search(query.as_ref(), &Count)?,
+                expected,
+                "{name} {value}"
+            );
+        }
+        assert!(
+            exact_symbol_name_query(
+                &fields,
+                "symbol.has.name",
+                &[LqPredicateArg::Keyword("Caf".into())],
+                &LqOptions::defaults()
+            )?
+            .is_none()
+        );
+        assert!(
+            exact_symbol_name_query(
+                &fields,
+                "symbol.local_name.exact",
+                &[LqPredicateArg::Phrase("Café".into())],
+                &LqOptions::defaults()
+            )
+            .is_err()
+        );
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod l3_definition_facts_tests {
+    #![expect(
+        clippy::panic_in_result_fn,
+        reason = "assertions are test failure reporting"
+    )]
+    use quanta_index_contract::lex::{
+        LanguageCode, SymbolKindCode, SymbolRecord, SymbolRelationship, SymbolSpan,
+    };
+    use quanta_index_contract::{RepoRelativePath, SymbolId};
+    use tantivy::schema::{TantivyDocument, Value};
+
+    #[test]
+    fn l3_document_preserves_original_spelling_signature_and_definition_bytes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fields = crate::SchemaFields::build();
+        let symbol = SymbolRecord {
+            symbol_id: SymbolId::new("definition"),
+            repo_relative_path: RepoRelativePath::new("a.rs"),
+            language: LanguageCode::new("rust").map_err(str::to_string)?,
+            symbol_kind: SymbolKindCode::new("function").map_err(str::to_string)?,
+            symbol_kind_family: None,
+            local_name: "Cafe\u{301}".into(),
+            qualified_name: "Outer::Cafe\u{301}".into(),
+            signature: Some("fn Cafe\u{301}(x: u32)".into()),
+            visibility: None,
+            definition_span: SymbolSpan {
+                path: "a.rs".into(),
+                byte_start: 17,
+                byte_end: 43,
+                line_start: 2,
+                line_end: 3,
+            },
+            container_qualified_name: Some("Outer".into()),
+            relationship: SymbolRelationship::Def,
+        };
+        let mut doc = TantivyDocument::default();
+        crate::documents::add_symbol_fields(&fields, &mut doc, &symbol);
+        for (field, expected) in [
+            (fields.symbol_local_name_original, "Cafe\u{301}"),
+            (fields.symbol_qualified_name_original, "Outer::Cafe\u{301}"),
+            (fields.symbol_signature, "fn Cafe\u{301}(x: u32)"),
+            (fields.symbol_local_name, "Café"),
+            (fields.symbol_local_name_folded, "café"),
+        ] {
+            assert_eq!(
+                doc.get_first(field).and_then(|value| value.as_str()),
+                Some(expected)
+            );
+        }
+        assert_eq!(
+            doc.get_first(fields.symbol_definition_start_byte)
+                .and_then(|value| value.as_u64()),
+            Some(17)
+        );
+        assert_eq!(
+            doc.get_first(fields.symbol_definition_end_byte)
+                .and_then(|value| value.as_u64()),
+            Some(43)
+        );
+        Ok(())
     }
 }

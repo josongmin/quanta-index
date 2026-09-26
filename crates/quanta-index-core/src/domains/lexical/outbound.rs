@@ -43,6 +43,10 @@ pub trait LexicalIndexBuildPort: Send + Sync {
 /// Implementations may internally lower into legacy op handlers, but callers
 /// do not construct or route channel ops on the hot path.
 pub trait SearchCorpusBatchBuildPort: Send + Sync {
+    /// Refuse invalid or colliding file mutations against the pinned base
+    /// before embedding, target creation, or any index/sidecar mutation.
+    fn preflight_batch(&self, batch: &SearchCorpusIngestBatch) -> Result<(), CoreError>;
+
     fn build_batch(&self, batch: &SearchCorpusIngestBatch) -> Result<(), CoreError>;
 }
 
@@ -186,10 +190,15 @@ pub trait FileContributorIngestPort: Send + Sync {
 /// `count` option the adapter fetches only the page plus its continuation
 /// probe and reports `None`, and the caller derives an at-least window.
 #[derive(Clone, Debug, PartialEq)]
-pub struct LexicalSearchPageV1 {
-    pub candidates: Vec<LexicalCandidate>,
+pub struct LexicalSearchPageV1<Candidate = LexicalCandidate> {
+    pub candidates: Vec<Candidate>,
     pub exact_total: Option<u64>,
 }
+
+/// Symbol pages carry the same count authority as text pages. This is one
+/// generic page contract, not a second result-window IR. Adapter and route
+/// signatures must cut over together; a truncated vector cannot supply it.
+pub type SymbolSearchPageV1 = LexicalSearchPageV1<SymbolCandidate>;
 
 /// What one ranked lexical page asks the engine for (QI-BB-005 보완 #4).
 ///
@@ -288,6 +297,17 @@ pub trait LexicalSearcher: Send + Sync {
     /// wherever the first predicate happens to read it.
     fn artifact_identity(&self) -> LexicalArtifactIdentityV1;
 
+    /// File coverage sealed with this exact opened generation. `None` means
+    /// unavailable authority; callers must not treat it as complete empty scope.
+    fn source_file_coverage(&self) -> Option<&quanta_index_contract::FileCoverageSnapshot> {
+        None
+    }
+
+    /// Publication lineage sealed with this same read handle.
+    fn source_publication_event(&self) -> Option<&quanta_index_contract::SourcePublicationEvent> {
+        None
+    }
+
     /// Unconstrained page of results; the constrained form is the one
     /// execution path.
     fn search(
@@ -345,29 +365,19 @@ pub trait LexicalSearcher: Send + Sync {
         constraints: &QueryConstraintSetV1,
         page: &LexicalPageSpec,
         budget: &RequestBudgetV1,
-    ) -> Result<Vec<SymbolCandidate>, CoreError> {
-        if !constraints.is_unconstrained() {
-            return Err(CoreError::NotImplemented(
-                "symbol searcher does not provide native query-constraint pushdown".to_string(),
-            ));
-        }
-        if page.after.is_some() {
-            return Err(CoreError::NotImplemented(
-                "symbol searcher does not continue a page after a cursor".to_string(),
-            ));
-        }
-        self.search_symbols(query, page.fetch, budget)
-    }
+    ) -> Result<SymbolSearchPageV1, CoreError>;
 
     /// Return every symbol-domain match for the query within the opened
     /// generation. Callers use this when chunk-domain structural routing needs
     /// exact symbol-hit projection without top-k truncation.
     fn search_symbols_all(
         &self,
-        query: &LqQuery,
-        budget: &RequestBudgetV1,
+        _query: &LqQuery,
+        _budget: &RequestBudgetV1,
     ) -> Result<Vec<SymbolCandidate>, CoreError> {
-        self.search_symbols(query, u32::MAX, budget)
+        Err(CoreError::NotImplemented(
+            "exact-all Symbol search requires an explicit complete-set implementation".into(),
+        ))
     }
 
     /// Return every lexical match for the query within the opened generation.

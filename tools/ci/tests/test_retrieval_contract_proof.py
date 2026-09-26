@@ -69,9 +69,9 @@ def test_proof_recipes_capture_source_once_before_execution(tmp_path: Path) -> N
     assert [row[0] for row in contract] == [
         "source-closure",
         "python-collection",
-        "rust-collection",
         "rust-build",
         "metadata",
+        "rust-collection",
         "python-test",
         "rust-test",
     ]
@@ -82,9 +82,9 @@ def test_proof_recipes_capture_source_once_before_execution(tmp_path: Path) -> N
         "source-closure",
         "build-searchd",
         "build-runner",
-        "rust-collection",
         "rust-build",
         "metadata",
+        "rust-collection",
         "rust-test",
     ]
     completed = subprocess.run(

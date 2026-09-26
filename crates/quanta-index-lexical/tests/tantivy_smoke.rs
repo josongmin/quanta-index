@@ -647,6 +647,7 @@ fn exact_path_constraint_is_applied_before_limit_and_on_index_no_scan_v1() -> Te
     )?;
     assert_eq!(
         symbols
+            .candidates
             .iter()
             .map(|candidate| candidate.candidate_id.as_str())
             .collect::<Vec<_>>(),
@@ -731,6 +732,7 @@ fn exact_path_constraint_only_query_treats_dsl_metacharacters_as_literal_v1() ->
     )?;
     assert_eq!(
         symbols
+            .candidates
             .iter()
             .map(|candidate| candidate.candidate_id.as_str())
             .collect::<Vec<_>>(),

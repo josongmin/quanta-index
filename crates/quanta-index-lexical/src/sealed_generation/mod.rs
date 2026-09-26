@@ -5,6 +5,7 @@
 //! writes it, [`verify`] for the walk both doors share, and [`scrub`] for
 //! the deep re-measurement between seals.
 
+pub(crate) mod coverage;
 mod index_files;
 mod manifest;
 mod overlay;

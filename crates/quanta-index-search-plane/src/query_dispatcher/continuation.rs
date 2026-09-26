@@ -174,6 +174,22 @@ pub(super) fn require_token_pin(
     })
 }
 
+/// Logical empty plans never mint a continuation. An authenticated token from
+/// a nonempty plan cannot be replayed into a newly contradictory constraint set,
+/// even when language lowering has removed that distinction from the AST.
+pub(super) fn require_cursor_on_nonempty_plan(
+    has_cursor: bool,
+    force_empty: bool,
+) -> Result<(), CoreError> {
+    if has_cursor && force_empty {
+        return Err(CoreError::Typed {
+            code: SearchPlaneErrorCodeV2::CursorContextMismatch,
+            message: "a continuation cannot belong to a logically empty request".into(),
+        });
+    }
+    Ok(())
+}
+
 fn digest_serialized<T: Serialize>(domain: &[u8], value: &T) -> Result<[u8; 32], CoreError> {
     let bytes = serde_json::to_vec(value).map_err(|error| {
         CoreError::InvalidContract(format!("cursor canonical value does not encode: {error}"))

@@ -366,6 +366,8 @@ targets = [
   "benchmark-producer-notifications-python-owner",
   "benchmark-bootstrap-cache-python-owner",
   "benchmark-proof-command-timings-python-owner",
+  "benchmark-resource-admission-python-owner",
+  "benchmark-cargow-resource-admission-python-owner",
 ]
 
 [[python_targets]]
@@ -689,6 +691,24 @@ rail = "pr-workspace-nextest"
 [[integration_targets]]
 id = "lexical-planner-authority"
 path = "crates/quanta-index-lexical/tests/planner_authority.rs"
+owner = "quanta-index-lexical"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "lexical-l1-query-domain-window"
+path = "crates/quanta-index-lexical/tests/l1_query_domain_window.rs"
+owner = "quanta-index-lexical"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "lexical-l2-file-mutation"
+path = "crates/quanta-index-lexical/tests/l2_file_mutation.rs"
+owner = "quanta-index-lexical"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "lexical-l4-match-anchored-preview"
+path = "crates/quanta-index-lexical/tests/l4_match_anchored_preview.rs"
 owner = "quanta-index-lexical"
 rail = "pr-workspace-nextest"
 
@@ -1486,6 +1506,12 @@ owner = "quanta-index-retrieval-bench"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
+id = "retrieval-bench-l5-parser-regressions"
+path = "benchmarks/retrieval/tests/l5_parser_regressions.rs"
+owner = "quanta-index-retrieval-bench"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
 id = "retrieval-bench-sdk-roundtrip"
 path = "benchmarks/retrieval/tests/sdk_roundtrip.rs"
 owner = "quanta-index-retrieval-bench"
@@ -1699,3 +1725,15 @@ consumer_target = "searchd-harness-dsl-scenario-truth"
 pr_rail = "pr-workspace-nextest"
 merge_rail = "merge-workspace-nextest"
 nightly_rail = "nightly-workspace-nextest"
+
+[[python_targets]]
+id = "benchmark-resource-admission-python-owner"
+path = "tools/ci/tests/test_resource_admission.py"
+owner = "tools/ci/resource_admission.py"
+rail = "pr-benchmark-control-python"
+
+[[python_targets]]
+id = "benchmark-cargow-resource-admission-python-owner"
+path = "tools/ci/tests/test_cargow_resource_admission.py"
+owner = "scripts/cargow"
+rail = "pr-benchmark-control-python"

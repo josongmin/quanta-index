@@ -2,17 +2,19 @@
 
 use quanta_index_contract::{
     CursorRouteV2, EngineTouched, GenerationPin, LexicalCursor, LexicalRowOrderKey,
-    QueryResultWindowV1, QueryStageKindV1, QueryStageTimingV1, SearchExplanation,
-    SearchPlaneTrackKind, SymbolQueryRequest, SymbolQueryResponse, TextQueryRequest,
-    TextQueryResponse, validate_lexical_page_v1,
+    QueryResultWindowV1, QueryResultWindowV2, QueryStageKindV1, QueryStageTimingV1,
+    SearchExplanation, SearchPlaneTrackKind, SymbolQueryRequest, SymbolQueryResponse,
+    TextQueryRequest, TextQueryResponse, validate_lexical_page_v1,
 };
 use quanta_index_core::{
-    CoreError, LexicalPageSpec, LexicalPolicy, LexicalQueryPort, QueryRouteV1, RequestBudgetV1,
-    validate_query_top_k,
+    CoreError, LexicalEndpoint, LexicalPageSpec, LexicalPolicy, LexicalQueryPort, QueryRouteV1,
+    RequestBudgetV1, validate_query_top_k,
 };
 
 use crate::lower_lexical_text_query;
-use crate::query_dispatcher::continuation::{CursorRequestContextV2, require_token_pin};
+use crate::query_dispatcher::continuation::{
+    CursorRequestContextV2, require_cursor_on_nonempty_plan, require_token_pin,
+};
 use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
 use crate::query_dispatcher::execution_trace::{LaneExecutionRecorderV1, LaneExecutionSummaryV1};
 use crate::query_dispatcher::planning::{
@@ -23,11 +25,10 @@ use crate::query_dispatcher::response_budget::fit_ranked_page;
 use crate::query_dispatcher::selection::resolve_optional_selection;
 use crate::query_dispatcher::stage_timing::StageTimings;
 use crate::query_dispatcher::window::{
-    finalize_probe_window_v1, lexical_fetch_limit_v1, lexical_page_window_v1, pageable_window_v2,
-    probe_top_k_v1,
+    lexical_fetch_limit_v1, lexical_page_window_v1, pageable_window_v2,
 };
 
-const LEXICAL_CURSOR_ORDER_V2: &str = "score_desc_path_line_candidate_v1";
+const LEXICAL_CURSOR_ORDER_V2: &str = "score_desc_source_repo_path_line_candidate_v2";
 
 fn lexical_explanation(
     budget: &RequestBudgetV1,
@@ -104,9 +105,10 @@ impl SearchPlaneDispatcher {
         let mut stage_timings = StageTimings::new(self.query_stage_observation, 4);
         stage_timings.record_elapsed(QueryStageKindV1::LexicalPrepare, prepare_started, 1, None);
         let wants_file_owner_projection = query_selects_file_owner_projection(&planned.query);
+        require_cursor_on_nonempty_plan(opened.is_some(), planned.force_empty)?;
         if planned.force_empty {
             let project_started = self.query_stage_observation.start();
-            let window = pageable_window_v2(QueryResultWindowV1::exact(0), "lexical")?;
+            let window = QueryResultWindowV2::logical_empty("lexical");
             stage_timings.record_elapsed(
                 QueryStageKindV1::LexicalProject,
                 project_started,
@@ -221,6 +223,9 @@ impl SearchPlaneDispatcher {
         let execution = LaneExecutionRecorderV1::new();
         budget.checkpoint("symbol:entry")?;
         let _accepted_top_k = validate_query_top_k(request.top_k)?;
+        let lowered = lower_lexical_text_query(&TextQueryRequest::from(request.clone()))?;
+        let _validated =
+            LexicalPolicy::plan_query(&lowered, &request.constraints, LexicalEndpoint::Symbol)?;
         let opened = request
             .cursor
             .as_ref()
@@ -252,12 +257,7 @@ impl SearchPlaneDispatcher {
             cursor: None,
             ..TextQueryRequest::from(request)
         };
-        let lowered = lower_lexical_text_query(&lexical_request)?;
         let prepared_language = prepare_language_query_v1(lowered, &lexical_request.constraints)?;
-        LexicalPolicy::validate_query_with_constraints(
-            &prepared_language.query,
-            &prepared_language.constraints,
-        )?;
         let cursor_context = CursorRequestContextV2 {
             route: CursorRouteV2::Symbol,
             pin: &pin,
@@ -270,12 +270,13 @@ impl SearchPlaneDispatcher {
             self.cursors()?
                 .require_context(opened, &cursor_context, Vec::new())?;
         }
+        require_cursor_on_nonempty_plan(opened.is_some(), prepared_language.force_empty)?;
         if prepared_language.force_empty {
             return Ok((
                 SymbolQueryResponse {
                     generation: pin.clone(),
                     results: Vec::new(),
-                    window: pageable_window_v2(QueryResultWindowV1::exact(0), "symbol")?,
+                    window: QueryResultWindowV2::logical_empty("symbol"),
                     next_cursor: None,
                 },
                 execution.summary(),
@@ -291,20 +292,21 @@ impl SearchPlaneDispatcher {
             budget,
         )?;
         let searcher = view.lexical()?;
-        // The symbol port has no count collector yet, so a `count` option
-        // still yields a probe-derived (at-least) window here.
+        // The producer carries count facts separately from capped rows.
+        let fetch_top_k = lexical_fetch_limit_v1(&prepared_language.query, lexical_request.top_k)?;
         budget.checkpoint("symbol:search")?;
         execution.record_lexical_invocation();
-        let mut results = searcher.search_symbols_constrained(
+        let mut page = searcher.search_symbols_constrained(
             &prepared_language.query,
             &prepared_language.constraints,
             &LexicalPageSpec {
-                fetch: probe_top_k_v1(lexical_request.top_k)?,
+                fetch: fetch_top_k,
                 after,
             },
             budget,
         )?;
-        let window = finalize_probe_window_v1(&mut results, lexical_request.top_k)?;
+        let window = lexical_page_window_v1(&mut page, lexical_request.top_k, fetch_top_k)?;
+        let results = page.candidates;
         let next_boundary = next_cursor(
             &window,
             &pin,

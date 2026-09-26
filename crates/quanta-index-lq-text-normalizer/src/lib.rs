@@ -82,12 +82,14 @@
 //!   pinned by the toolchain and crate versions, not by this contract.
 
 mod case;
+mod provenance;
+pub use provenance::{MappedText, MappingError};
 mod tokens;
 mod version;
 
 pub use case::{CaseMode, apply_case, fold, nfc};
 pub use tokens::{
     MAX_TOKEN_BYTES, TextQueryError, Token, Tokenized, contains_phrase, contains_substring,
-    is_token_char, query_tokens, tokenize,
+    is_token_char, phrase_ranges, query_tokens, tokenize,
 };
 pub use version::{TEXT_NORMALIZER_VERSION, TextNormalizerVersion};

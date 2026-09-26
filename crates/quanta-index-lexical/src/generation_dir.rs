@@ -105,6 +105,7 @@ pub(crate) fn is_seal_marker_entry(file_name: &str) -> bool {
             | LEXICAL_SEALED_MANIFEST_FILE_NAME
             | LEXICAL_SCRUB_RECEIPT_FILE_NAME
             | LEXICAL_QUARANTINE_RECEIPT_FILE_NAME
+            | crate::sealed_generation::coverage::SOURCE_FILE_COVERAGE_FILE_NAME
     )
 }
 

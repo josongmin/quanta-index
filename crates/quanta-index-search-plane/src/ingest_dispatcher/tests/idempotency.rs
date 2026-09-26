@@ -193,7 +193,12 @@ fn dispatcher(
         runtime,
         unreachable.clone(),
         unreachable,
-        catalog,
+        catalog.clone(),
+        catalog.source_publication.clone(),
+        Arc::new(super::support::RecordingSearchCorpusAuthority {
+            exact: true,
+            ..Default::default()
+        }),
     )
 }
 
@@ -225,7 +230,12 @@ fn search_corpus_dispatcher_with_port(
         unreachable.clone(),
         unreachable.clone(),
         unreachable,
-        catalog,
+        catalog.clone(),
+        catalog.source_publication.clone(),
+        Arc::new(super::support::RecordingSearchCorpusAuthority {
+            exact: true,
+            ..Default::default()
+        }),
     )
 }
 
@@ -321,6 +331,7 @@ fn search_corpus_materializer(
             lexical_reclaim: no_storage_sealed_reclaim(),
             semantic_reclaim: no_storage_sealed_reclaim(),
             snapshots: SnapshotRegistries::new(SnapshotRegistryPolicy::DEFAULT),
+            source_publication: catalog.source_publication.clone(),
             idempotency: catalog,
             resource_policy: IngestResourcePolicy::DEFAULT,
             semantic_stream_policy: SemanticStreamWindowPolicy::DEFAULT,
@@ -511,15 +522,11 @@ fn a_well_formed_but_wrong_digest_is_a_mismatch() -> TestRes {
     Ok(())
 }
 
-/// SEP-21 P02B: a search-corpus batch the mutable preflight refuses
-/// freezes its refusal as the terminal journal record.
-///
-/// The frozen refusal is recorded from the prepared mutation — no claim
-/// is ever held — and the retry replays the same typed refusal without
-/// re-running preflight or touching a builder, the authority or the
-/// embedder. The corrected batch under its own digest still applies.
+/// Canonical source publication validates its complete intrinsic contract
+/// before any journal, source reservation, mutable preflight or builder work.
+/// Correcting the invalid body permits a fresh original publication.
 #[test]
-fn a_refused_search_corpus_batch_freezes_its_refusal() -> TestRes {
+fn malformed_source_batch_refuses_before_journal_or_preflight() -> TestRes {
     let catalog = memory_catalog();
     let (materializer, fakes) = search_corpus_materializer(Arc::clone(&catalog), false, false);
     let counting = Arc::new(CountingSearchCorpus::new(materializer));
@@ -536,18 +543,17 @@ fn a_refused_search_corpus_batch_freezes_its_refusal() -> TestRes {
         &budget,
     );
     if typed_code_of(&refused)
-        != Some(quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusBatchShapeInvalid)
+        != Some(quanta_index_contract::SearchPlaneErrorCodeV2::InvalidRequest)
     {
         return Err(format!("expected a shape refusal, got {refused:?}").into());
     }
-    if counting.preflights() != 1 {
-        return Err("the first publish must run preflight exactly once".into());
+    if counting.preflights() != 0 {
+        return Err("intrinsic refusal must precede mutable preflight".into());
     }
-    // Exactly one terminal record: the frozen refusal. No claim was
-    // held, no apply ran.
-    if catalog.records() != 1 {
+    // No durable intent exists for an intrinsically invalid source event.
+    if catalog.records() != 0 {
         return Err(format!(
-            "a frozen refusal is exactly one terminal record, found {}",
+            "intrinsic refusal must create no journal record, found {}",
             catalog.records()
         )
         .into());
@@ -584,18 +590,17 @@ fn a_refused_search_corpus_batch_freezes_its_refusal() -> TestRes {
         return Err("a refused batch must not embed".into());
     }
 
-    // The retry replays the same typed refusal: no second preflight, no
-    // second record, no work.
+    // Revalidation is pure on every retry.
     let replayed = dispatcher.dispatch(
         SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(malformed),
         &budget,
     );
     if typed_code_of(&replayed)
-        != Some(quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusBatchShapeInvalid)
+        != Some(quanta_index_contract::SearchPlaneErrorCodeV2::InvalidRequest)
     {
         return Err(format!("the retry must replay the refusal, got {replayed:?}").into());
     }
-    if counting.preflights() != 1 || counting.applies() != 0 || catalog.records() != 1 {
+    if counting.preflights() != 0 || counting.applies() != 0 || catalog.records() != 0 {
         return Err(format!(
             "a refused replay runs nothing: preflights={} applies={} records={}",
             counting.preflights(),
@@ -611,7 +616,7 @@ fn a_refused_search_corpus_batch_freezes_its_refusal() -> TestRes {
         SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(corrected),
         &budget,
     ))?;
-    if !receipt.applied || !receipt.sealed || catalog.records() != 2 {
+    if !receipt.applied || !receipt.sealed || catalog.records() != 1 {
         return Err(format!("the corrected batch must apply and be recorded: {receipt:?}").into());
     }
     Ok(())
@@ -935,7 +940,12 @@ fn repomap_dispatcher(
         unreachable.clone(),
         unreachable,
         repomap,
-        catalog,
+        catalog.clone(),
+        catalog.source_publication.clone(),
+        Arc::new(super::support::RecordingSearchCorpusAuthority {
+            exact: true,
+            ..Default::default()
+        }),
     )
 }
 
@@ -1063,6 +1073,71 @@ fn a_repomap_v2_publish_journals_once_and_replays_without_the_store() -> TestRes
             catalog.records()
         )
         .into());
+    }
+    Ok(())
+}
+
+#[test]
+fn source_event_replay_with_new_target_returns_original_receipt_and_sequence() -> TestRes {
+    let catalog = memory_catalog();
+    let (materializer, _fakes) = search_corpus_materializer(Arc::clone(&catalog), true, false);
+    let counting = Arc::new(CountingSearchCorpus::new(materializer));
+    let dispatcher = search_corpus_dispatcher_with_port(counting.clone(), Arc::clone(&catalog));
+    let budget = RequestBudgetV1::unbounded();
+    let original = fixture_search_corpus_batch()?;
+    let first = receipt_of(dispatcher.dispatch(
+        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(original.clone()),
+        &budget,
+    ))?;
+    let mut replay = original;
+    replay.revision_id =
+        RevisionId::new("new-containing-revision").map_err(|error| error.to_string())?;
+    replay.generation = ManifestGeneration::new(99);
+    replay.manifest_digest = "new-target-manifest".into();
+    stamp_batch_digest_v1(&mut replay)?;
+    let returned = receipt_of(dispatcher.dispatch(
+        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(replay),
+        &budget,
+    ))?;
+    if returned != first.clone().replayed()
+        || counting.applies() != 1
+        || counting.preflights() != 1
+        || catalog.records() != 1
+    {
+        return Err(format!("source replay fabricated a receipt or repeated work: first={first:?}, replay={returned:?}").into());
+    }
+    Ok(())
+}
+
+#[test]
+fn source_event_payload_reuse_conflicts_before_any_second_apply() -> TestRes {
+    let catalog = memory_catalog();
+    let (materializer, _fakes) = search_corpus_materializer(Arc::clone(&catalog), true, false);
+    let counting = Arc::new(CountingSearchCorpus::new(materializer));
+    let dispatcher = search_corpus_dispatcher_with_port(counting.clone(), Arc::clone(&catalog));
+    let budget = RequestBudgetV1::unbounded();
+    let original = fixture_search_corpus_batch()?;
+    let _first = receipt_of(dispatcher.dispatch(
+        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(original.clone()),
+        &budget,
+    ))?;
+    let mut conflict = original;
+    conflict.bundle_payload = Some(vec![1, 2, 3]);
+    conflict.source_event.payload_sha256 =
+        quanta_index_contract::source_event_payload_sha256(&conflict)?;
+    stamp_batch_digest_v1(&mut conflict)?;
+    let refused = dispatcher.dispatch(
+        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(conflict),
+        &budget,
+    );
+    if typed_code_of(&refused)
+        != Some(quanta_index_contract::SearchPlaneErrorCodeV2::BatchDigestConflict)
+        || counting.applies() != 1
+        || catalog.records() != 1
+    {
+        return Err(
+            format!("different payload reused a source event or caused work: {refused:?}").into(),
+        );
     }
     Ok(())
 }

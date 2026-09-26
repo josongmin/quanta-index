@@ -520,6 +520,9 @@ fn extract_hits(
         let distance = distance_col.value(row);
         let score = cosine_distance_to_score_v1(distance, &id)?;
         let candidate = LexicalCandidate {
+            source_repo_id: repo_id.clone(),
+            source: None,
+            preview: None,
             candidate_id: id.clone(),
             repo_id: repo_id.clone(),
             revision_id: revision_id.clone(),

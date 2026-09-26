@@ -248,7 +248,13 @@ impl LexicalAdapter {
             .overlay_commitments()
             .map(|(family, _artifact)| family)
             .collect();
-        let resident_bytes_estimate = resident_bytes_estimate(path, text_authority.as_ref())?;
+        let coverage_bytes = crate::sealed_generation::coverage::coverage_heap_bytes_estimate(
+            verified.coverage.as_ref(),
+            verified.source_publication.as_ref(),
+        )?;
+        let resident_bytes_estimate = resident_bytes_estimate(path, text_authority.as_ref())?
+            .checked_add(coverage_bytes)
+            .ok_or_else(|| CoreError::Storage("lexical resident byte estimate overflow".into()))?;
         let artifact_identity = LexicalArtifactIdentityV1 {
             manifest_digest: verified.manifest.manifest_digest.clone(),
             normalizer: TextNormalizerVersionV1 {
@@ -258,6 +264,8 @@ impl LexicalAdapter {
             repo_metadata: materialized_authorities(&overlays),
         };
         Ok(Box::new(TantivySearcher {
+            source_coverage: verified.coverage,
+            source_publication_event: verified.source_publication,
             repo_id: identity.repo_id.clone(),
             revision_id: identity.revision_id.clone(),
             generation: identity.manifest_generation,

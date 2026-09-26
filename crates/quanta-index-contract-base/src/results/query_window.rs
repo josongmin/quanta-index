@@ -419,6 +419,8 @@ impl ExecutionOutcomeV2 {
 /// `has_more = false` is constructible only when one of these is carried.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExhaustionProofV1 {
+    /// Pure request constraints prove an empty universe without backend execution.
+    LogicalEmpty,
     /// A `top_k + 1` probe observed every row the universe had: `fetched`
     /// rows came back for a fetch of `top_k + 1`, and `fetched <= top_k`.
     ProbeExhausted { fetched: u32 },
@@ -445,6 +447,8 @@ pub enum ExaminedUniverseV1 {
 /// window variant.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EmptyProvenanceV2 {
+    /// A valid request has contradictory constraints; no backend search ran.
+    LogicalEmpty,
     /// The universe executed and holds zero matching rows.
     AvailableEmpty,
     /// Rows existed but every one was excluded by filters.
@@ -458,6 +462,7 @@ impl EmptyProvenanceV2 {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::LogicalEmpty => "logical_empty",
             Self::AvailableEmpty => "available_empty",
             Self::FilteredEmpty => "filtered_empty",
             Self::ZeroHitExecuted => "zero_hit_executed",
@@ -467,6 +472,7 @@ impl EmptyProvenanceV2 {
     #[must_use]
     pub const fn all() -> &'static [Self] {
         &[
+            Self::LogicalEmpty,
             Self::AvailableEmpty,
             Self::FilteredEmpty,
             Self::ZeroHitExecuted,
@@ -476,6 +482,7 @@ impl EmptyProvenanceV2 {
     #[must_use]
     pub fn from_wire_str(value: &str) -> Option<Self> {
         match value {
+            "logical_empty" => Some(Self::LogicalEmpty),
             "available_empty" => Some(Self::AvailableEmpty),
             "filtered_empty" => Some(Self::FilteredEmpty),
             "zero_hit_executed" => Some(Self::ZeroHitExecuted),
@@ -658,6 +665,26 @@ impl QueryResultWindowV2 {
         } else if returned == 0 {
             return Err("a zero-row window must state its empty provenance");
         }
+        let logical_proof = coverage.exhaustion_proof == Some(ExhaustionProofV1::LogicalEmpty);
+        let logical_provenance = empty_provenance == Some(EmptyProvenanceV2::LogicalEmpty);
+        if logical_proof || logical_provenance {
+            if !logical_proof || !logical_provenance {
+                return Err("logical empty requires matching proof and provenance");
+            }
+            if returned != 0
+                || candidate_count != CandidateCountV1::Exact(0)
+                || outcome != ExecutionOutcomeV2::ExactExhausted
+                || coverage.examined != ExaminedUniverseV1::Exact(0)
+                || coverage.lanes.iter().any(|lane| {
+                    lane.executed()
+                        || lane.contributed()
+                        || lane.filtered_out() != 0
+                        || lane.candidates() != CandidateCountV1::Exact(0)
+                })
+            {
+                return Err("logical empty contradicts rows, counts or backend execution");
+            }
+        }
         match outcome {
             ExecutionOutcomeV2::ExactExhausted => {
                 let proof = coverage.exhaustion_proof.ok_or(
@@ -673,6 +700,7 @@ impl QueryResultWindowV2 {
                     return Err("exact exhausted count must equal returned rows");
                 }
                 match proof {
+                    ExhaustionProofV1::LogicalEmpty => {}
                     ExhaustionProofV1::ProbeExhausted { fetched } => {
                         if fetched != returned {
                             return Err("probe exhaustion proof must match returned rows");
@@ -735,38 +763,60 @@ impl QueryResultWindowV2 {
         })
     }
 
-    /// The exact window: rows, proof, and no continuation.
-    ///
-    /// Infallible by construction: every invariant of [`Self::new`] holds
-    /// for the values this helper assembles.
-    #[must_use]
+    /// The exact window, refusing an inconsistent proof or lane observation.
     pub fn exact_exhausted(
         returned: u32,
         proof: ExhaustionProofV1,
         lanes: Vec<LaneTraceV1>,
-    ) -> Self {
+    ) -> Result<Self, &'static str> {
+        Self::new(
+            returned,
+            CandidateCountV1::Exact(u64::from(returned)),
+            ExecutionOutcomeV2::ExactExhausted,
+            CoverageV1::new(
+                ExaminedUniverseV1::Exact(u64::from(returned)),
+                Some(proof),
+                lanes,
+            ),
+            (returned == 0).then_some(if proof == ExhaustionProofV1::LogicalEmpty {
+                EmptyProvenanceV2::LogicalEmpty
+            } else {
+                EmptyProvenanceV2::AvailableEmpty
+            }),
+        )
+    }
+
+    /// Exact probe fixture. All fields are derived from the same row count.
+    #[must_use]
+    pub fn exact_probe(returned: u32) -> Self {
         Self {
             returned,
             candidate_count: CandidateCountV1::Exact(u64::from(returned)),
             outcome: ExecutionOutcomeV2::ExactExhausted,
             coverage: CoverageV1::new(
                 ExaminedUniverseV1::Exact(u64::from(returned)),
-                Some(proof),
-                lanes,
+                Some(ExhaustionProofV1::ProbeExhausted { fetched: returned }),
+                Vec::new(),
             ),
             empty_provenance: (returned == 0).then_some(EmptyProvenanceV2::AvailableEmpty),
         }
     }
 
-    /// Exact probe result with no lane trace. Primarily useful to construct
-    /// contract fixtures; runtime owners should carry their executed lanes.
+    /// A valid request whose constraints alone prove no result can exist.
+    /// No backend execution, count collector or probe is claimed.
     #[must_use]
-    pub fn exact_probe(returned: u32) -> Self {
-        Self::exact_exhausted(
-            returned,
-            ExhaustionProofV1::ProbeExhausted { fetched: returned },
-            Vec::new(),
-        )
+    pub fn logical_empty(lane: &'static str) -> Self {
+        Self {
+            returned: 0,
+            candidate_count: CandidateCountV1::Exact(0),
+            outcome: ExecutionOutcomeV2::ExactExhausted,
+            coverage: CoverageV1::new(
+                ExaminedUniverseV1::Exact(0),
+                Some(ExhaustionProofV1::LogicalEmpty),
+                vec![LaneTraceV1::new(lane, false, false)],
+            ),
+            empty_provenance: Some(EmptyProvenanceV2::LogicalEmpty),
+        }
     }
 
     /// Build the V2 authority from a pageable adapter observation. A
@@ -995,7 +1045,12 @@ impl Visitor<'_> for EmptyProvenanceV2Visitor {
         EmptyProvenanceV2::from_wire_str(value).ok_or_else(|| {
             de::Error::unknown_variant(
                 value,
-                &["available_empty", "filtered_empty", "zero_hit_executed"],
+                &[
+                    "logical_empty",
+                    "available_empty",
+                    "filtered_empty",
+                    "zero_hit_executed",
+                ],
             )
         })
     }
@@ -1222,6 +1277,11 @@ impl Serialize for ExhaustionProofV1 {
         S: Serializer,
     {
         match *self {
+            Self::LogicalEmpty => {
+                let mut state = serializer.serialize_struct("ExhaustionProofV1", 1)?;
+                state.serialize_field("kind", "logical_empty")?;
+                state.end()
+            }
             Self::ProbeExhausted { fetched } => {
                 let mut state = serializer.serialize_struct("ExhaustionProofV1", 2)?;
                 state.serialize_field("kind", "probe_exhausted")?;
@@ -1294,18 +1354,35 @@ impl<'de> Visitor<'de> for ExhaustionProofV1Visitor {
         }
         let kind = kind.ok_or_else(|| de::Error::missing_field("kind"))?;
         match kind.as_str() {
-            "probe_exhausted" => Ok(ExhaustionProofV1::ProbeExhausted {
-                fetched: fetched.ok_or_else(|| de::Error::missing_field("fetched"))?,
-            }),
-            "exact_count" => Ok(ExhaustionProofV1::ExactCount {
-                total: total.ok_or_else(|| de::Error::missing_field("total"))?,
-            }),
-            "universe_scanned" => Ok(ExhaustionProofV1::UniverseScanned {
-                scanned: scanned.ok_or_else(|| de::Error::missing_field("scanned"))?,
-            }),
+            "logical_empty" if fetched.is_none() && total.is_none() && scanned.is_none() => {
+                Ok(ExhaustionProofV1::LogicalEmpty)
+            }
+            "probe_exhausted" if total.is_none() && scanned.is_none() => {
+                Ok(ExhaustionProofV1::ProbeExhausted {
+                    fetched: fetched.ok_or_else(|| de::Error::missing_field("fetched"))?,
+                })
+            }
+            "exact_count" if fetched.is_none() && scanned.is_none() => {
+                Ok(ExhaustionProofV1::ExactCount {
+                    total: total.ok_or_else(|| de::Error::missing_field("total"))?,
+                })
+            }
+            "universe_scanned" if fetched.is_none() && total.is_none() => {
+                Ok(ExhaustionProofV1::UniverseScanned {
+                    scanned: scanned.ok_or_else(|| de::Error::missing_field("scanned"))?,
+                })
+            }
+            "logical_empty" | "probe_exhausted" | "exact_count" | "universe_scanned" => Err(
+                de::Error::custom("exhaustion proof contains fields for another proof kind"),
+            ),
             other => Err(de::Error::unknown_variant(
                 other,
-                &["probe_exhausted", "exact_count", "universe_scanned"],
+                &[
+                    "logical_empty",
+                    "probe_exhausted",
+                    "exact_count",
+                    "universe_scanned",
+                ],
             )),
         }
     }
@@ -1990,6 +2067,142 @@ mod tests {
                     r#"{"returned":7,"candidate_count":{"kind":"exact","value":7},"outcome":{"kind":"exact_exhausted"},"coverage":{"examined":{"kind":"exact","value":7},"lanes":[]}}"#
                 )
                 .is_err()
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod l1_logical_empty_tests {
+    use super::*;
+
+    #[test]
+    fn logical_empty_has_explicit_proof_and_never_claims_backend_execution()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let window = QueryResultWindowV2::logical_empty("symbol");
+        if window.candidate_count() != CandidateCountV1::Exact(0)
+            || window.has_more() != Some(false)
+            || window.coverage().examined() != ExaminedUniverseV1::Exact(0)
+            || window
+                .coverage()
+                .lanes()
+                .iter()
+                .any(|lane| lane.executed() || lane.contributed())
+        {
+            return Err("logical empty contradicts execution facts".into());
+        }
+        let encoded = serde_json::to_value(&window)?;
+        if encoded.get("empty_provenance") != Some(&serde_json::json!("logical_empty"))
+            || encoded
+                .get("coverage")
+                .and_then(|coverage| coverage.get("exhaustion_proof"))
+                != Some(&serde_json::json!({"kind":"logical_empty"}))
+            || serde_json::from_value::<QueryResultWindowV2>(encoded)? != window
+        {
+            return Err("logical empty wire proof differs from fixed oracle".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn logical_empty_refuses_mixed_execution_and_proof_claims() {
+        for (returned, count, outcome, examined, proof, provenance, lanes) in [
+            (
+                0,
+                CandidateCountV1::Exact(0),
+                ExecutionOutcomeV2::ExactExhausted,
+                ExaminedUniverseV1::Exact(0),
+                Some(ExhaustionProofV1::LogicalEmpty),
+                Some(EmptyProvenanceV2::LogicalEmpty),
+                vec![LaneTraceV1::new("symbol", true, false)],
+            ),
+            (
+                1,
+                CandidateCountV1::Exact(1),
+                ExecutionOutcomeV2::ExactExhausted,
+                ExaminedUniverseV1::Exact(1),
+                Some(ExhaustionProofV1::LogicalEmpty),
+                Some(EmptyProvenanceV2::LogicalEmpty),
+                vec![],
+            ),
+            (
+                0,
+                CandidateCountV1::Exact(0),
+                ExecutionOutcomeV2::ExactExhausted,
+                ExaminedUniverseV1::Unknown,
+                Some(ExhaustionProofV1::LogicalEmpty),
+                Some(EmptyProvenanceV2::LogicalEmpty),
+                vec![],
+            ),
+            (
+                0,
+                CandidateCountV1::Exact(0),
+                ExecutionOutcomeV2::ExactExhausted,
+                ExaminedUniverseV1::Exact(0),
+                Some(ExhaustionProofV1::ExactCount { total: 0 }),
+                Some(EmptyProvenanceV2::LogicalEmpty),
+                vec![],
+            ),
+            (
+                0,
+                CandidateCountV1::Exact(0),
+                ExecutionOutcomeV2::ExactExhausted,
+                ExaminedUniverseV1::Exact(0),
+                Some(ExhaustionProofV1::LogicalEmpty),
+                Some(EmptyProvenanceV2::AvailableEmpty),
+                vec![],
+            ),
+            (
+                0,
+                CandidateCountV1::AtLeast(0),
+                ExecutionOutcomeV2::LowerBound {
+                    continuation: false,
+                },
+                ExaminedUniverseV1::Exact(0),
+                Some(ExhaustionProofV1::LogicalEmpty),
+                Some(EmptyProvenanceV2::LogicalEmpty),
+                vec![],
+            ),
+        ] {
+            assert!(
+                QueryResultWindowV2::new(
+                    returned,
+                    count,
+                    outcome,
+                    CoverageV1::new(examined, proof, lanes),
+                    provenance
+                )
+                .is_err()
+            );
+        }
+        assert!(
+            QueryResultWindowV2::exact_exhausted(1, ExhaustionProofV1::LogicalEmpty, vec![])
+                .is_err()
+        );
+        assert!(
+            QueryResultWindowV2::exact_exhausted(
+                0,
+                ExhaustionProofV1::LogicalEmpty,
+                vec![LaneTraceV1::new("symbol", true, false)]
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn exhaustion_proof_decode_rejects_extra_missing_duplicate_or_unknown_fields() {
+        for malformed in [
+            r#"{"kind":"logical_empty","total":0}"#,
+            r#"{"kind":"logical_empty","scanned":0}"#,
+            r#"{"kind":"logical_empty","kind":"logical_empty"}"#,
+            r#"{"kind":"logical_empty","extra":0}"#,
+            r#"{"kind":"exact_count","total":0,"fetched":0}"#,
+            r#"{"kind":"exact_count"}"#,
+            r#"{"kind":"unknown"}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<ExhaustionProofV1>(malformed).is_err(),
+                "{malformed}"
             );
         }
     }

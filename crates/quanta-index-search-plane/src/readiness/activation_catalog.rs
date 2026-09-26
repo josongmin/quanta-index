@@ -13,9 +13,16 @@ use quanta_index_contract::{
     ACTIVATION_ROOT_INCARNATION_BYTES_V1, GenerationPin, GenerationSnapshot, ManifestGeneration,
     RepoId, RevisionId, SearchCorpusActivationTokenV1, SearchCorpusActiveHeadV1,
     SearchPlaneRollbackSearchCorpusGenerationCasRequest, SearchPlaneSearchCorpusRollbackCasAck,
-    SearchPlaneTrackKind,
+    SearchPlaneTrackKind, SourcePublicationEvent,
 };
 use quanta_index_core::CoreError;
+
+mod repository_envelope;
+mod source_events;
+#[cfg(test)]
+mod tests;
+
+use repository_envelope::EventHistory;
 
 use crate::readiness::durable_fs::{
     AtomicFileWriteOutcomeV1, FsParentDirectorySyncPort, ParentDirectorySyncPort,
@@ -23,10 +30,8 @@ use crate::readiness::durable_fs::{
     read_regular_file_nofollow_v1, reconcile_legacy_atomic_temporaries_v1,
     reconcile_owned_staging_directory_v1,
 };
-use crate::readiness::pair_digest::search_corpus_pair_digest;
 use crate::readiness::search_corpus_generation::{
-    PersistedSearchCorpusGenerationRootV1, PreparedSearchCorpusGenerationV1,
-    SearchCorpusGenerationActivationV1, SearchCorpusGenerationV1,
+    PreparedSearchCorpusGenerationV1, SearchCorpusGenerationActivationV1, SearchCorpusGenerationV1,
     validate_prepared_search_corpus_expectation,
 };
 use crate::search_corpus_lifecycle::{
@@ -64,6 +69,33 @@ pub struct ActiveGenerationRecord {
 /// lexical + semantic identity with the semantic content roots
 /// (QI-BB-028); per-track views are derived on read.
 type ActiveRoots = BTreeMap<ActivationKey, ActiveSearchCorpusHeadV1>;
+
+#[derive(Debug, Default)]
+struct CatalogState {
+    roots: ActiveRoots,
+    histories: BTreeMap<RepoId, EventHistory>,
+}
+
+impl CatalogState {
+    // Clone only the bounded repository about to be changed. The catalog lock
+    // remains held across its durable replace and in-memory publication.
+    fn repository(&self, repo: &RepoId) -> Self {
+        Self {
+            roots: self
+                .roots
+                .iter()
+                .filter(|(key, _)| &key.repo_id == repo)
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+            histories: self
+                .histories
+                .get(repo)
+                .map(|history| BTreeMap::from([(repo.clone(), history.clone())]))
+                .unwrap_or_default(),
+        }
+    }
+}
+
 const ROOT_INCARNATION_FILE_V1: &str = ".activation-root-incarnation-v1";
 const ROOT_INCARNATION_BYTES_V1: usize = ACTIVATION_ROOT_INCARNATION_BYTES_V1;
 
@@ -116,7 +148,7 @@ pub struct ActivationCatalog {
     activations_dir: PathBuf,
     staging_dir: PathBuf,
     root_incarnation: [u8; ROOT_INCARNATION_BYTES_V1],
-    entries: RwLock<ActiveRoots>,
+    entries: RwLock<CatalogState>,
     lifecycle_coordinator: Arc<SearchCorpusPairMutationCoordinator>,
     // A rename may succeed while the parent-directory fsync fails.  At that
     // point the durable head is ambiguous until a fresh process reopens the
@@ -204,6 +236,7 @@ impl ActivationCatalog {
         })?;
         self.ensure_durability_certain_v1()?;
         let repositories = entries
+            .roots
             .keys()
             .map(|key| &key.repo_id)
             .collect::<std::collections::BTreeSet<_>>()
@@ -212,6 +245,7 @@ impl ActivationCatalog {
             CoreError::Storage(format!("active repository count overflow: {error}"))
         })?;
         let inventory = entries
+            .roots
             .values()
             .map(|head| {
                 Ok((
@@ -272,8 +306,8 @@ impl ActivationCatalog {
             "search-plane activation catalog",
             parent_sync.as_ref(),
         )?;
-        let mut entries = BTreeMap::new();
-        let mut composite_roots = Vec::new();
+        let mut entries = CatalogState::default();
+        let mut loaded_repositories = std::collections::BTreeSet::new();
         let dir_entries = fs::read_dir(root).map_err(|err| {
             CoreError::Storage(format!(
                 "search-plane activation catalog: list root {}: {err}",
@@ -315,35 +349,21 @@ impl ActivationCatalog {
                     path.display()
                 )));
             }
-            let bytes = read_regular_file_nofollow_v1(&path).map_err(|err| {
-                CoreError::Storage(format!(
-                    "search-plane activation catalog: read activation {}: {err}",
-                    path.display()
-                ))
-            })?;
-            let persisted = serde_json::from_slice::<PersistedSearchCorpusGenerationRootV1>(&bytes)
-                .map_err(|err| {
-                    CoreError::Storage(format!(
-                        "search-plane activation catalog: decode activation {}: {err}",
-                        path.display()
-                    ))
-                })?;
-            let (generation, activation_sequence) = persisted.into_generation()?;
-            validate_loaded_search_corpus_root_v1(&path, &generation)?;
-            composite_roots.push(ActiveSearchCorpusHeadV1 {
-                generation,
-                activation_sequence,
-            });
+            let bytes = repository_envelope::read_bounded(&path)?;
+            let (repo, loaded) = repository_envelope::decode(&path, &bytes)?;
+            if !loaded_repositories.insert(repo) {
+                return Err(repository_envelope::corrupt(
+                    "duplicate repository envelope",
+                ));
+            }
+            entries.roots.extend(loaded.roots);
+            entries.histories.extend(loaded.histories);
         }
         let root_incarnation = load_or_create_root_incarnation_v1(
             root,
-            composite_roots.is_empty(),
+            loaded_repositories.is_empty(),
             parent_sync.as_ref(),
         )?;
-        // Every persisted root is one canonical lexical+semantic authority.
-        for head in composite_roots {
-            insert_search_corpus_generation_records(&mut entries, head);
-        }
         Ok(Self {
             activations_dir: root.to_path_buf(),
             staging_dir,
@@ -375,20 +395,26 @@ impl ActivationCatalog {
         &self,
         guard: &SearchCorpusPairMutationGuard<'_>,
         prepared: &PreparedSearchCorpusGenerationV1,
+        sealed_event: Option<&SourcePublicationEvent>,
     ) -> Result<SearchCorpusGenerationActivationV1, CoreError> {
         let candidate = prepared.candidate();
+        repository_envelope::bound_manifest_token(&candidate.lexical().manifest_digest)?;
+        repository_envelope::bound_manifest_token(&candidate.semantic().manifest_digest)?;
         guard.require_pair_v1(
             self.lifecycle_coordinator.as_ref(),
             candidate.repo_id(),
             candidate.revision_id(),
         )?;
+        let mut entries = self
+            .entries
+            .write()
+            .map_err(|error| repository_envelope::corrupt(error.to_string()))?;
         self.ensure_durability_certain_v1()?;
-        let current_head = {
-            let entries = self.entries.read().map_err(|err| {
-                CoreError::Storage(format!("search-plane activation catalog poisoned: {err}"))
-            })?;
-            active_search_corpus_head_v1(&entries, candidate.repo_id(), candidate.revision_id())
-        };
+        let current_head = active_search_corpus_head_v1(
+            &entries.roots,
+            candidate.repo_id(),
+            candidate.revision_id(),
+        );
         let current = current_head
             .as_ref()
             .map(|head| head.to_contract_v1(self.root_incarnation))
@@ -416,61 +442,27 @@ impl ActivationCatalog {
             },
             ActiveSearchCorpusHeadV1::next_sequence,
         )?;
-        let persisted =
-            PersistedSearchCorpusGenerationRootV1::from_generation(candidate, activation_sequence);
-        let path = self.activations_dir.join(search_corpus_root_file_name(
-            candidate.repo_id(),
-            candidate.revision_id(),
-        ));
-        let bytes = serde_json::to_vec_pretty(&persisted).map_err(|err| {
-            CoreError::Storage(format!(
-                "search-plane activation catalog: encode composite activation {}: {err}",
-                path.display()
-            ))
-        })?;
-        match atomic_replace_file_from_staging_v1(
-            &path,
-            &bytes,
-            &self.staging_dir,
-            "search-plane activation catalog",
-            self.parent_sync.as_ref(),
-        )? {
-            AtomicFileWriteOutcomeV1::Durable => {}
-            AtomicFileWriteOutcomeV1::RenamedButParentSyncFailed(error) => {
-                self.mark_durability_uncertain_v1();
-                return Err(error);
-            }
+        if current_head.is_none()
+            && entries
+                .roots
+                .keys()
+                .filter(|key| &key.repo_id == candidate.repo_id())
+                .count()
+                >= repository_envelope::MAX_ROOTS
+        {
+            return Err(repository_envelope::capacity("revision root limit"));
         }
-        let memory_commit = (|| {
-            self.ensure_durability_certain_v1()?;
-            let mut entries = self.entries.write().map_err(|err| {
-                CoreError::Storage(format!("search-plane activation catalog poisoned: {err}"))
-            })?;
-            let observed = active_search_corpus_head_v1(
-                &entries,
-                candidate.repo_id(),
-                candidate.revision_id(),
-            );
-            if observed != current_head {
-                return Err(CoreError::Storage(
-                    "search-corpus activation: mutation lock failed to preserve the checked head"
-                        .to_string(),
-                ));
-            }
-            insert_search_corpus_generation_records(
-                &mut entries,
-                ActiveSearchCorpusHeadV1 {
-                    generation: candidate.clone(),
-                    activation_sequence,
-                },
-            );
-            drop(entries);
-            Ok(())
-        })();
-        if let Err(error) = memory_commit {
-            self.mark_durability_uncertain_v1();
-            return Err(error);
-        }
+        let mut next = entries.repository(candidate.repo_id());
+        source_events::activate_event(&mut next, candidate.lexical(), sealed_event)?;
+        insert_search_corpus_generation_records(
+            &mut next.roots,
+            ActiveSearchCorpusHeadV1 {
+                generation: candidate.clone(),
+                activation_sequence,
+            },
+        );
+        self.persist_repository(candidate.repo_id(), &mut entries, next)?;
+        drop(entries);
 
         Ok(SearchCorpusGenerationActivationV1 {
             active: ActiveSearchCorpusHeadV1 {
@@ -491,7 +483,7 @@ impl ActivationCatalog {
         let guard = self
             .lifecycle_coordinator
             .lock_pair(candidate.repo_id(), candidate.revision_id())?;
-        self.activate_prepared_under_guard_v1(&guard, prepared)
+        self.activate_prepared_under_guard_v1(&guard, prepared, None)
     }
 
     /// Roll back the complete query-visible lexical plus semantic corpus.
@@ -512,30 +504,27 @@ impl ActivationCatalog {
         let expected_active =
             SearchCorpusGenerationV1::from_contract_v1(&request.expected_active.generation)?;
         let target = SearchCorpusGenerationV1::from_contract_v1(&request.target)?;
+        repository_envelope::bound_manifest_token(&target.lexical().manifest_digest)?;
+        repository_envelope::bound_manifest_token(&target.semantic().manifest_digest)?;
 
         guard.require_pair_v1(
             self.lifecycle_coordinator.as_ref(),
             expected_active.repo_id(),
             expected_active.revision_id(),
         )?;
+        let mut entries = self
+            .entries
+            .write()
+            .map_err(|error| repository_envelope::corrupt(error.to_string()))?;
         self.ensure_durability_certain_v1()?;
-        let current_head = {
-            let entries = self.entries.read().map_err(|err| {
-                CoreError::Storage(format!("search-plane activation catalog poisoned: {err}"))
-            })?;
-            active_search_corpus_head_v1(
-                &entries,
-                expected_active.repo_id(),
-                expected_active.revision_id(),
-            )
-            .ok_or_else(|| {
-                CoreError::NotReady(format!(
-                    "search-corpus rollback: no active composite generation for repo={} revision={}",
-                    expected_active.repo_id().as_str(),
-                    expected_active.revision_id().as_str()
-                ))
-            })?
-        };
+        let current_head = active_search_corpus_head_v1(
+            &entries.roots,
+            expected_active.repo_id(),
+            expected_active.revision_id(),
+        )
+        .ok_or_else(|| {
+            CoreError::NotReady("search-corpus rollback: no active composite generation".into())
+        })?;
         let current = current_head.to_contract_v1(self.root_incarnation)?;
         if current != request.expected_active {
             return Err(CoreError::Typed {
@@ -553,61 +542,17 @@ impl ActivationCatalog {
         }
 
         let activation_sequence = current_head.next_sequence()?;
-        let persisted =
-            PersistedSearchCorpusGenerationRootV1::from_generation(&target, activation_sequence);
-        let path = self.activations_dir.join(search_corpus_root_file_name(
-            target.repo_id(),
-            target.revision_id(),
-        ));
-        let bytes = serde_json::to_vec_pretty(&persisted).map_err(|err| {
-            CoreError::Storage(format!(
-                "search-plane activation catalog: encode composite rollback {}: {err}",
-                path.display()
-            ))
-        })?;
-        match atomic_replace_file_from_staging_v1(
-            &path,
-            &bytes,
-            &self.staging_dir,
-            "search-plane activation catalog",
-            self.parent_sync.as_ref(),
-        )? {
-            AtomicFileWriteOutcomeV1::Durable => {}
-            AtomicFileWriteOutcomeV1::RenamedButParentSyncFailed(error) => {
-                self.mark_durability_uncertain_v1();
-                return Err(error);
-            }
-        }
-        let memory_commit = (|| {
-            self.ensure_durability_certain_v1()?;
-            let mut entries = self.entries.write().map_err(|err| {
-                CoreError::Storage(format!("search-plane activation catalog poisoned: {err}"))
-            })?;
-            let observed = active_search_corpus_head_v1(
-                &entries,
-                expected_active.repo_id(),
-                expected_active.revision_id(),
-            );
-            if observed.as_ref() != Some(&current_head) {
-                return Err(CoreError::Storage(
-                    "search-corpus rollback: mutation lock failed to preserve the checked head"
-                        .to_string(),
-                ));
-            }
-            insert_search_corpus_generation_records(
-                &mut entries,
-                ActiveSearchCorpusHeadV1 {
-                    generation: target.clone(),
-                    activation_sequence,
-                },
-            );
-            drop(entries);
-            Ok(())
-        })();
-        if let Err(error) = memory_commit {
-            self.mark_durability_uncertain_v1();
-            return Err(error);
-        }
+        let mut next = entries.repository(target.repo_id());
+        insert_search_corpus_generation_records(
+            &mut next.roots,
+            ActiveSearchCorpusHeadV1 {
+                generation: target.clone(),
+                activation_sequence,
+            },
+        );
+        // Administrative rollback does not erase accepted source lineage.
+        self.persist_repository(target.repo_id(), &mut entries, next)?;
+        drop(entries);
 
         Ok(SearchPlaneSearchCorpusRollbackCasAck {
             active: ActiveSearchCorpusHeadV1 {
@@ -669,6 +614,7 @@ impl ActivationCatalog {
         };
         let record = {
             let generation = entries
+                .roots
                 .get(&ActivationKey::for_pair(repo_id, revision_id))
                 .ok_or_else(not_ready)?;
             match track {
@@ -698,6 +644,7 @@ impl ActivationCatalog {
         self.ensure_durability_certain_v1()?;
         // Lexical before semantic: track declaration order.
         Ok(entries
+            .roots
             .get(&ActivationKey::for_pair(repo_id, revision_id))
             .map(|generation| {
                 vec![
@@ -721,7 +668,7 @@ impl ActivationCatalog {
         })?;
         self.ensure_durability_certain_v1()?;
         Ok(active_search_corpus_generation_v1(
-            &entries,
+            &entries.roots,
             repo_id,
             revision_id,
         ))
@@ -739,12 +686,43 @@ impl ActivationCatalog {
             CoreError::Storage(format!("search-plane activation catalog poisoned: {err}"))
         })?;
         self.ensure_durability_certain_v1()?;
-        active_search_corpus_head_v1(&entries, repo_id, revision_id)
+        active_search_corpus_head_v1(&entries.roots, repo_id, revision_id)
             .map(|head| {
                 let token = head.activation_token_v1(self.root_incarnation)?;
                 Ok((head.generation, token))
             })
             .transpose()
+    }
+
+    fn persist_repository(
+        &self,
+        repo: &RepoId,
+        current: &mut CatalogState,
+        next: CatalogState,
+    ) -> Result<(), CoreError> {
+        self.ensure_durability_certain_v1()?;
+        let bytes = repository_envelope::encode(repo, &next)?;
+        let path = self
+            .activations_dir
+            .join(repository_envelope::file_name(repo));
+        match atomic_replace_file_from_staging_v1(
+            &path,
+            &bytes,
+            &self.staging_dir,
+            "search-plane activation catalog",
+            self.parent_sync.as_ref(),
+        )? {
+            AtomicFileWriteOutcomeV1::Durable => {}
+            AtomicFileWriteOutcomeV1::RenamedButParentSyncFailed(error) => {
+                self.mark_durability_uncertain_v1();
+                return Err(error);
+            }
+        }
+        current.roots.retain(|key, _| &key.repo_id != repo);
+        current.roots.extend(next.roots);
+        current.histories.remove(repo);
+        current.histories.extend(next.histories);
+        Ok(())
     }
 
     fn ensure_durability_certain_v1(&self) -> Result<(), CoreError> {
@@ -774,7 +752,7 @@ impl ActiveSearchCorpusPinReadPort for ActivationCatalog {
             CoreError::Storage(format!("search-plane activation catalog poisoned: {error}"))
         })?;
         Ok(active_search_corpus_generation_v1(
-            &entries,
+            &entries.roots,
             repo_id,
             revision_id,
         ))
@@ -788,6 +766,7 @@ impl ActiveSearchCorpusPinReadPort for ActivationCatalog {
             CoreError::Storage(format!("search-plane activation catalog poisoned: {error}"))
         })?;
         let active = entries
+            .roots
             .values()
             .map(|head| head.generation.clone())
             .collect();
@@ -835,32 +814,15 @@ fn insert_search_corpus_generation_records(
     );
 }
 
-pub(super) fn search_corpus_root_file_name(repo_id: &RepoId, revision_id: &RevisionId) -> String {
-    format!(
-        "{}--corpus.json",
-        search_corpus_pair_digest(repo_id, revision_id)
-    )
+#[cfg(test)]
+pub(super) fn search_corpus_root_file_name(repo_id: &RepoId, _revision_id: &RevisionId) -> String {
+    repository_envelope::file_name(repo_id)
 }
 
 fn is_search_corpus_root_path(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
         .is_some_and(|name| name.ends_with("--corpus.json"))
-}
-
-fn validate_loaded_search_corpus_root_v1(
-    path: &Path,
-    generation: &SearchCorpusGenerationV1,
-) -> Result<(), CoreError> {
-    let expected_name =
-        search_corpus_root_file_name(generation.repo_id(), generation.revision_id());
-    if path.file_name().and_then(|name| name.to_str()) != Some(expected_name.as_str()) {
-        return Err(CoreError::Storage(format!(
-            "search-plane activation catalog: filename/payload identity mismatch: expected {expected_name}, observed {}",
-            path.display()
-        )));
-    }
-    Ok(())
 }
 
 fn load_or_create_root_incarnation_v1(

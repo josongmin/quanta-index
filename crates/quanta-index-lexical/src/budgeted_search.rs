@@ -12,16 +12,19 @@
 //! interruption naming this checkpoint. Between segments the budget is
 //! asked outright.
 //!
-//! Block-WAND stays in force: the wrapper delegates `for_each_pruning` to
-//! the inner weight and intercepts only its callback, so a top-k search
-//! keeps skipping blocks exactly as before.
+//! TermQuery retains native BlockWAND. Other weights use a budgeted scorer
+//! because their public pruning callback does not guarantee early termination.
+//! This sacrifices Boolean TermUnion block skipping; performance is unqualified.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
-use quanta_index_core::{CoreError, RequestBudgetV1};
+use quanta_index_core::{
+    CoreError, LexicalCollectionBudget, LexicalExecutionBudgetV1, LexicalMemoryReservation,
+    RequestBudgetV1,
+};
 use tantivy::collector::Collector;
-use tantivy::query::{EnableScoring, Explanation, Query, Scorer, Weight};
+use tantivy::query::{EmptyScorer, EnableScoring, Explanation, Query, Scorer, TermQuery, Weight};
 use tantivy::{DocId, DocSet, Score, Searcher, SegmentReader, TERMINATED};
 
 /// Documents a scorer advances between two looks at the budget.
@@ -31,6 +34,117 @@ use tantivy::{DocId, DocSet, Score, Searcher, SegmentReader, TERMINATED};
 /// is observed within a few microseconds of the interval's worth of docs.
 pub(crate) const TICK_INTERVAL: u32 = 1_024;
 
+/// One exact-set collection's admission counter, shared across segments.
+///
+/// Charge before reading keys or growing a group map. The first excess match
+/// is only a refusal probe: it is never materialized. The sticky stop is also
+/// observed by the native scorer, independently of the cancellation interval.
+#[derive(Clone, Debug)]
+pub(crate) struct CollectionBudget {
+    policy: LexicalExecutionBudgetV1,
+    pub(crate) resources: LexicalCollectionBudget,
+    admitted: Arc<AtomicUsize>,
+    exceeded: Arc<AtomicBool>,
+    aborted: Arc<AtomicBool>,
+}
+
+impl CollectionBudget {
+    pub(crate) fn new(
+        policy: LexicalExecutionBudgetV1,
+        resources: LexicalCollectionBudget,
+    ) -> Self {
+        Self {
+            policy,
+            resources,
+            admitted: Arc::new(AtomicUsize::new(0)),
+            exceeded: Arc::new(AtomicBool::new(false)),
+            aborted: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    pub(crate) fn admit(&self) -> bool {
+        if self.stopped() {
+            return false;
+        }
+        if self
+            .admitted
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+                (count < self.policy.max_examined_candidates()).then(|| count.saturating_add(1))
+            })
+            .is_ok()
+        {
+            true
+        } else {
+            self.exceeded.store(true, Ordering::Release);
+            false
+        }
+    }
+
+    pub(crate) fn stopped(&self) -> bool {
+        self.exceeded.load(Ordering::Acquire)
+            || self.aborted.load(Ordering::Acquire)
+            || self.resources.failure().is_some()
+    }
+
+    /// Stop walking after a collector integrity error; preserve that error in
+    /// its fruit instead of reclassifying it as a resource refusal.
+    pub(crate) fn abort(&self) {
+        self.aborted.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn error(&self, surface: &str) -> Option<CoreError> {
+        self.exceeded
+            .load(Ordering::Acquire)
+            .then(|| self.policy.exceeded(surface))
+            .or_else(|| self.resources.failure())
+    }
+
+    pub(crate) fn charge_work(&self, units: u64) -> tantivy::Result<()> {
+        self.resources
+            .charge_work(units)
+            .map_err(|error| tantivy::TantivyError::InvalidArgument(error.to_string()))
+    }
+
+    pub(crate) fn reserve_bytes(&self, bytes: usize) -> tantivy::Result<LexicalMemoryReservation> {
+        let bytes = u64::try_from(bytes).map_err(|error| {
+            tantivy::TantivyError::InvalidArgument(format!(
+                "collection byte size overflow: {error}"
+            ))
+        })?;
+        self.resources
+            .reserve_bytes(bytes)
+            .map_err(|error| tantivy::TantivyError::InvalidArgument(error.to_string()))
+    }
+
+    /// Conservative node-layout admission for the pinned Rust 1.92 BTreeMap:
+    /// at most 11 key/value slots, 12 edges, parent/index/length and padding.
+    /// Insert-only maps allocate no more nodes than admitted entries. Keep
+    /// leases outside the map until its nodes, including a drain, are dropped.
+    pub(crate) fn reserve_map_entry<K, V>(&self) -> tantivy::Result<LexicalMemoryReservation> {
+        let pointer = std::mem::size_of::<usize>();
+        let alignment = std::mem::align_of::<K>()
+            .max(std::mem::align_of::<V>())
+            .max(std::mem::align_of::<usize>());
+        let bytes = std::mem::size_of::<K>()
+            .checked_add(std::mem::size_of::<V>())
+            .and_then(|size| size.checked_mul(12))
+            .and_then(|size| {
+                pointer
+                    .checked_mul(16)
+                    .and_then(|overhead| size.checked_add(overhead))
+            })
+            .and_then(|size| {
+                alignment
+                    .checked_mul(8)
+                    .and_then(|padding| size.checked_add(padding))
+            })
+            .ok_or_else(|| {
+                tantivy::TantivyError::InvalidArgument("collection map layout overflow".to_string())
+            })?;
+        self.reserve_bytes(bytes)
+    }
+}
+
 /// One search's view of the request budget, shared by every scorer and
 /// callback the search creates.
 #[derive(Clone, Debug)]
@@ -38,6 +152,7 @@ pub(crate) struct BudgetProbe {
     budget: RequestBudgetV1,
     ticks: Arc<AtomicU32>,
     interrupted: Arc<AtomicBool>,
+    collection: Option<CollectionBudget>,
 }
 
 impl BudgetProbe {
@@ -46,6 +161,7 @@ impl BudgetProbe {
             budget: budget.clone(),
             ticks: Arc::new(AtomicU32::new(0)),
             interrupted: Arc::new(AtomicBool::new(false)),
+            collection: None,
         }
     }
 
@@ -53,6 +169,13 @@ impl BudgetProbe {
     /// then every [`TICK_INTERVAL`] units. `true` once the request is
     /// interrupted; sticky.
     pub(crate) fn tick(&self) -> bool {
+        if self
+            .collection
+            .as_ref()
+            .is_some_and(CollectionBudget::stopped)
+        {
+            return true;
+        }
         if self.interrupted.load(Ordering::Relaxed) {
             return true;
         }
@@ -65,6 +188,13 @@ impl BudgetProbe {
 
     /// Ask the budget now. `true` once the request is interrupted; sticky.
     pub(crate) fn observe(&self) -> bool {
+        if self
+            .collection
+            .as_ref()
+            .is_some_and(CollectionBudget::stopped)
+        {
+            return true;
+        }
         if self.interrupted.load(Ordering::Relaxed) {
             return true;
         }
@@ -78,6 +208,22 @@ impl BudgetProbe {
     /// Whether any tick or look observed an interruption.
     pub(crate) fn interrupted(&self) -> bool {
         self.interrupted.load(Ordering::Acquire)
+    }
+
+    /// Charge an attempted native visit before asking the inner scorer to
+    /// initialize or advance. Terminal probes are conservatively charged too.
+    fn admit_visit(&self) -> bool {
+        self.collection.as_ref().is_none_or(|collection| {
+            !collection.stopped() && collection.resources.charge_work(1).is_ok()
+        })
+    }
+
+    fn error(&self, stage: &'static str) -> Option<CoreError> {
+        self.interruption_error(stage).or_else(|| {
+            self.collection
+                .as_ref()
+                .and_then(|collection| collection.error(stage))
+        })
     }
 
     /// The typed interruption for `stage`, once one was observed.
@@ -112,7 +258,51 @@ pub(crate) fn budgeted_search<C: Collector>(
     budget: &RequestBudgetV1,
     stage: &'static str,
 ) -> Result<C::Fruit, CoreError> {
-    let probe = BudgetProbe::new(budget);
+    search_with_probe(searcher, query, collector, BudgetProbe::new(budget), stage)
+}
+
+/// Exact-set variant: a collector's resource refusal terminates the scorer and
+/// discards every segment fruit before merge; it is never successful exhaustion.
+pub(crate) fn budgeted_collection<C: Collector>(
+    searcher: &Searcher,
+    query: &dyn Query,
+    collector: &C,
+    budget: &RequestBudgetV1,
+    collection: CollectionBudget,
+    stage: &'static str,
+) -> Result<C::Fruit, CoreError> {
+    let mut probe = BudgetProbe::new(budget);
+    probe.collection = Some(collection);
+    search_with_probe(searcher, query, collector, probe, stage)
+}
+
+fn search_with_probe<C: Collector>(
+    searcher: &Searcher,
+    query: &dyn Query,
+    collector: &C,
+    probe: BudgetProbe,
+    stage: &'static str,
+) -> Result<C::Fruit, CoreError> {
+    // Reserve the concurrently retained segment-fruit vector before allocating
+    // it. Payloads retained by each fruit require their own collector guards.
+    let _fruit_memory = match &probe.collection {
+        Some(collection) => {
+            let bytes = searcher
+                .segment_readers()
+                .len()
+                .checked_mul(std::mem::size_of::<
+                    <C::Child as tantivy::collector::SegmentCollector>::Fruit,
+                >())
+                .and_then(|bytes| u64::try_from(bytes).ok())
+                .ok_or_else(|| {
+                    CoreError::InvalidContract(
+                        "lexical: segment-fruit buffer size overflow".to_string(),
+                    )
+                })?;
+            Some(collection.resources.reserve_bytes(bytes)?)
+        }
+        None => None,
+    };
     let enable_scoring = if collector.requires_scoring() {
         EnableScoring::enabled_from_searcher(searcher)
     } else {
@@ -123,8 +313,19 @@ pub(crate) fn budgeted_search<C: Collector>(
             .weight(enable_scoring)
             .map_err(|err| CoreError::Storage(format!("lexical: {stage}: weight: {err}")))?,
         probe: probe.clone(),
+        native_term: query
+            .as_any()
+            .downcast_ref::<TermQuery>()
+            .map(|query| query.term().clone()),
     };
-    let mut fruits = Vec::with_capacity(searcher.segment_readers().len());
+    let mut fruits = Vec::new();
+    fruits
+        .try_reserve_exact(searcher.segment_readers().len())
+        .map_err(|error| {
+            CoreError::Storage(format!(
+                "lexical: {stage}: segment-fruit allocation failed: {error}"
+            ))
+        })?;
     for (segment_ord, reader) in searcher.segment_readers().iter().enumerate() {
         if probe.observe() {
             break;
@@ -132,28 +333,37 @@ pub(crate) fn budgeted_search<C: Collector>(
         let segment_ord = u32::try_from(segment_ord).map_err(|err| {
             CoreError::Storage(format!("lexical: {stage}: segment ordinal overflow: {err}"))
         })?;
+        let fruit = collector.collect_segment(&weight, segment_ord, reader);
+        if let Some(error) = probe.error(stage) {
+            return Err(error);
+        }
         fruits.push(
-            collector
-                .collect_segment(&weight, segment_ord, reader)
-                .map_err(|err| CoreError::Storage(format!("lexical: {stage}: collect: {err}")))?,
+            fruit.map_err(|err| CoreError::Storage(format!("lexical: {stage}: collect: {err}")))?,
         );
     }
-    if let Some(interruption) = probe.interruption_error(stage) {
-        return Err(interruption);
+    if let Some(error) = probe.error(stage) {
+        return Err(error);
     }
-    collector
-        .merge_fruits(fruits)
-        .map_err(|err| CoreError::Storage(format!("lexical: {stage}: merge: {err}")))
+    let result = collector.merge_fruits(fruits);
+    let _stopped = probe.observe();
+    if let Some(error) = probe.error(stage) {
+        return Err(error);
+    }
+    result.map_err(|err| CoreError::Storage(format!("lexical: {stage}: merge: {err}")))
 }
 
 /// The inner weight with the probe on every path that walks postings.
 struct BudgetedWeight {
+    native_term: Option<tantivy::Term>,
     inner: Box<dyn Weight>,
     probe: BudgetProbe,
 }
 
 impl Weight for BudgetedWeight {
     fn scorer(&self, reader: &SegmentReader, boost: Score) -> tantivy::Result<Box<dyn Scorer>> {
+        if !self.probe.admit_visit() {
+            return Ok(Box::new(EmptyScorer));
+        }
         Ok(Box::new(BudgetedScorer {
             inner: self.inner.scorer(reader, boost)?,
             probe: self.probe.clone(),
@@ -168,26 +378,52 @@ impl Weight for BudgetedWeight {
     // `count`, `for_each` and `for_each_no_score` keep their default
     // bodies, which drive `self.scorer()` and so the probe.
 
-    /// The pruning walk stays the inner weight's (block-WAND for term
-    /// unions); only its callback is intercepted. Once the probe observes
-    /// an interruption the callback answers with the highest threshold,
-    /// under which no further block or document can score, so the inner
-    /// walk skips the rest of the segment.
+    /// TermQuery retains block-WAND after admission of its full postings upper
+    /// bound. Other weights may ignore MAX while walking their scorer, so drive
+    /// their scorer directly and charge every attempted native visit.
     fn for_each_pruning(
         &self,
         threshold: Score,
         reader: &SegmentReader,
         callback: &mut dyn FnMut(DocId, Score) -> Score,
     ) -> tantivy::Result<()> {
-        let probe = &self.probe;
-        self.inner
-            .for_each_pruning(threshold, reader, &mut |doc, score| {
-                if probe.tick() {
-                    Score::MAX
-                } else {
-                    callback(doc, score)
-                }
-            })
+        if let Some(term) = &self.native_term {
+            let probe = &self.probe;
+            if probe.observe() {
+                return Ok(());
+            }
+            if let Some(collection) = &probe.collection {
+                // Native block-WAND may score below-threshold rows without a
+                // callback, and finishes its current block after MAX. Admit a
+                // conservative complete postings walk before entering it.
+                // doc_freq includes deleted postings; one extra terminal probe
+                // is charged. Skipped blocks do not refund admitted work.
+                let doc_freq = reader
+                    .inverted_index(term.field())?
+                    .get_term_info(term)?
+                    .map_or(0, |info| info.doc_freq);
+                collection.charge_work(u64::from(doc_freq) + 1)?;
+            }
+            return self
+                .inner
+                .for_each_pruning(threshold, reader, &mut |doc, score| {
+                    if probe.tick() {
+                        return Score::MAX;
+                    }
+                    let next = callback(doc, score);
+                    if probe.observe() { Score::MAX } else { next }
+                });
+        }
+        let mut scorer = self.scorer(reader, 1.0)?;
+        let mut threshold = threshold;
+        while scorer.doc() != TERMINATED {
+            let score = scorer.score();
+            if score > threshold {
+                threshold = callback(scorer.doc(), score);
+            }
+            let _next = scorer.advance();
+        }
+        Ok(())
     }
 }
 
@@ -206,7 +442,7 @@ impl DocSet for BudgetedScorer {
         if self.terminated {
             return TERMINATED;
         }
-        if self.probe.tick() {
+        if self.probe.tick() || !self.probe.admit_visit() {
             self.terminated = true;
             return TERMINATED;
         }
@@ -217,7 +453,7 @@ impl DocSet for BudgetedScorer {
         if self.terminated {
             return TERMINATED;
         }
-        if self.probe.tick() {
+        if self.probe.tick() || !self.probe.admit_visit() {
             self.terminated = true;
             return TERMINATED;
         }

@@ -74,6 +74,18 @@ def test_normative_benchmark_files_are_bound() -> None:
     assert "quanta-index-bench-protocol" in profile["cargo_packages"]
 
 
+def test_portable_execution_transitively_binds_file_custody_owner() -> None:
+    module = _closure_module()
+    imports = module._python_import_roots(
+        REPO_ROOT, ["tools/benchmark/retrieval/portable_proof.py"]
+    )
+    assert {
+        "tools/benchmark/producer_execution.py",
+        "tools/benchmark/evidence.py",
+        "tools/ci/lint/handoff_validation.py",
+    } <= imports
+
+
 def test_only_consolidated_ticket_contract_is_bound_as_planning_root() -> None:
     module = _closure_module()
     roots = module.resolve_roots(REPO_ROOT, PROFILE)
@@ -109,6 +121,8 @@ def test_changed_file_invalidates_the_closure(tmp_path: Path) -> None:
         "test_producer_notifications.py",
         "test_bootstrap_cache.py",
         "test_proof_command_timings.py",
+        "test_resource_admission.py",
+        "test_cargow_resource_admission.py",
     ],
 )
 def test_execution_owner_test_mutation_invalidates_its_bound_closure(tmp_path, filename):

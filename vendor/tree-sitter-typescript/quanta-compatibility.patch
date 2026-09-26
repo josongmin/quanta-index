@@ -1,0 +1,27 @@
+--- a/common/define-grammar.js
++++ b/common/define-grammar.js
+@@ -63,7 +63,6 @@
+       [$.decorator_call_expression, $.decorator],
+       [$.literal_type, $.pattern],
+       [$.predefined_type, $.pattern],
+-      [$.call_expression, $._type_query_call_expression],
+       [$.call_expression, $._type_query_call_expression_in_type_annotation],
+       [$.new_expression, $.primary_expression],
+       [$.meta_property, $.primary_expression],
+@@ -71,6 +70,7 @@
+     ]),
+ 
+     conflicts: ($, previous) => previous.concat([
++      [$.call_expression, $._type_query_call_expression],
+       [$.call_expression, $.instantiation_expression, $.binary_expression],
+       [$.call_expression, $.instantiation_expression, $.binary_expression, $.unary_expression],
+       [$.call_expression, $.instantiation_expression, $.binary_expression, $.update_expression],
+@@ -319,6 +319,8 @@
+ 
+       export_statement: ($, previous) => choice(
+         previous,
++        seq('export', 'type', '*', $._from_clause, $._semicolon),
++        seq('export', 'type', $.namespace_export, $._from_clause, $._semicolon),
+         seq(
+           'export',
+           'type',

@@ -1,0 +1,122 @@
+{
+  "state": "partial",
+  "revision": "106d7abec2dd3fa03f9db5a19a3de41df2f0afad",
+  "dirty_state": [
+    " M crates/quanta-index-contract/src/ipc/error.rs",
+    " M crates/quanta-index-contract/src/ipc/ingest.rs",
+    " M crates/quanta-index-core/src/domains/lexical/mod.rs",
+    " M crates/quanta-index-core/src/domains/lexical/outbound.rs",
+    " M crates/quanta-index-core/src/lib.rs",
+    " M crates/quanta-index-lexical/src/budgeted_search.rs",
+    " M crates/quanta-index-lexical/src/ranked_page.rs",
+    " M crates/quanta-index-lexical/src/searcher/paging.rs",
+    " M crates/quanta-index-lexical/src/searcher/snippets.rs",
+    " M crates/quanta-index-lq-regex/src/executor.rs",
+    " M crates/quanta-index-search-plane/src/ingest_dispatcher/tests/mod.rs",
+    " M crates/quanta-index-search-plane/src/query_dispatcher/tests/mod.rs",
+    " M docs/plans/sep-27-misc/tickets/INDEX.md",
+    " M tools/benchmark/corpus_release.py",
+    " M tools/benchmark/criterion_capture.py",
+    " M tools/benchmark/evidence.py",
+    " M tools/benchmark/lexical_capture.py",
+    " M tools/benchmark/pair_capture.py",
+    " M tools/benchmark/producer_execution.py",
+    " M tools/benchmark/retrieval/portable_proof.py",
+    " M tools/benchmark/retrieval_capture.py",
+    " M tools/ci/tests/test_retrieval_benchmark.py",
+    " M tools/ci/tests/test_retrieval_contract_proof.py",
+    "?? benchmarks/retrieval/tests/fixtures/",
+    "?? benchmarks/retrieval/tests/l5_parser_regressions.rs",
+    "?? crates/quanta-index-contract-base/src/source_file.rs",
+    "?? crates/quanta-index-core/src/domains/lexical/collection_budget.rs",
+    "?? crates/quanta-index-lexical/src/ranked_page_tests.rs",
+    "?? crates/quanta-index-lexical/src/sealed_generation/coverage.rs",
+    "?? crates/quanta-index-lexical/tests/l1_query_domain_window.rs",
+    "?? crates/quanta-index-lexical/tests/l2_file_mutation.rs",
+    "?? crates/quanta-index-lq-text-normalizer/src/provenance.rs",
+    "?? crates/quanta-index-search-plane/src/ingest_dispatcher/tests/l2_file_mutation.rs",
+    "?? crates/quanta-index-search-plane/src/query_dispatcher/tests/l1_query_domain_window.rs",
+    "?? docs/plans/sep-27-code-search-remediation/handoffs/",
+    "?? docs/plans/sep-27-code-search-remediation/l2-g0-request.md",
+    "?? docs/plans/sep-27-code-search-remediation/l2-preparation-receipt.json"
+  ],
+  "owned_paths": [
+    "benchmarks/retrieval/tests/l5_parser_regressions.rs",
+    "benchmarks/retrieval/tests/fixtures/l5_parser/generic_import_trailing_comma.ts",
+    "benchmarks/retrieval/tests/fixtures/l5_parser/malformed.ts",
+    "benchmarks/retrieval/tests/fixtures/l5_parser/type_namespace_export.ts"
+  ],
+  "bound_sources": {
+    "benchmarks/retrieval/tests/l5_parser_regressions.rs": "6792613fafc8432304e3f07391470f29e3bcb7f65fb7b50760e39f29052f9171",
+    "benchmarks/retrieval/tests/fixtures/l5_parser/generic_import_trailing_comma.ts": "ecbf7df44fa0557ef35e57e43bb646102de8ac0c29217e2c4d32962976fcb9b3",
+    "benchmarks/retrieval/tests/fixtures/l5_parser/malformed.ts": "a3fb1bf706e21f00ff73d9143b409bc650fc8c59d1f35d5e1a9e349f7c2d721c",
+    "benchmarks/retrieval/tests/fixtures/l5_parser/type_namespace_export.ts": "48d446dcd2b036f68e0272eed86496ebc5e6504ef7917535624b7e04785ca32d",
+    "benchmarks/retrieval/src/symbols.rs": "3c120e572d28fc6bbc10749a1ba3fce9aca8512d5e79158887ec291985b8992c",
+    "benchmarks/retrieval/src/batch.rs": "7f6f8d10afdfcc2337a9e311cb178a7484c0dc3d31d8d6da0ba473b107fdba4a",
+    "benchmarks/retrieval/src/main.rs": "edacbc3a412cc3cbbeca4db1d1dc0d49f319638f36c9ff72723560bf48f4dcb2",
+    "benchmarks/retrieval/Cargo.toml": "bd1d5557d1b1c8ce0f98250df7c3f4d4ca29417600ee4f6c77840977c6df28a8",
+    "Cargo.toml": "5ae90ed4d711fdc8959df5911b9be05f26b7918e9b111267728bf6acef329b4f",
+    "Cargo.lock": "3898378bc888e76e0fa52016a19a1fe9cd0d3e75d4651f68af8c681902b1cd45",
+    "rust-toolchain.toml": "c3b14ae51e250f5dfbccefccabcead245ffb3ee3b023050aa79e3cc544023d69"
+  },
+  "checks": [
+    {
+      "command": [
+        "rustfmt",
+        "--edition",
+        "2024",
+        "--check",
+        "benchmarks/retrieval/tests/l5_parser_regressions.rs"
+      ],
+      "exit_code": 0,
+      "scope": "format only",
+      "verdict": "VERIFIED"
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--check",
+        "--",
+        "benchmarks/retrieval"
+      ],
+      "exit_code": 0,
+      "scope": "tracked diff whitespace only",
+      "verdict": "VERIFIED"
+    }
+  ],
+  "syntax_oracle": {
+    "command": [
+      "python3",
+      "/private/tmp/quanta-index-l5-20260926T201839Z/typescript_oracle.py"
+    ],
+    "exit_code": 0,
+    "receipt": "/private/tmp/quanta-index-l5-20260926T201839Z/typescript-oracle.json",
+    "receipt_sha256": "6566d8ce73272bba1623d431ce2f90024c00807623de16260e20d9028b34532b",
+    "scope": "4 valid TS/TSX fixture accepts; 2 expected malformed refusals; all 256 frozen Vite files with exactly 1 intentional syntax-error file",
+    "verdict": "VERIFIED"
+  },
+  "rust_regressions": {
+    "command": [
+      "./scripts/cargow",
+      "test",
+      "-p",
+      "quanta-index-retrieval-bench",
+      "--test",
+      "l5_parser_regressions",
+      "--",
+      "--test-threads=1"
+    ],
+    "test_functions": 6,
+    "tests_executed": null,
+    "verdict": "NOT_RUN",
+    "reason": "L0 owns the Rust slot; producer shared contract awaits G0_READY"
+  },
+  "residual": [
+    "pinned grammar remedy and Rust RED/GREEN",
+    "all-file producer preflight and truthful diagnostic states",
+    "coverage SDK/publisher integration after G0_READY",
+    "test authority and source-closure admission by L0",
+    "full SDK/publication/lifecycle and external producer qualification"
+  ]
+}

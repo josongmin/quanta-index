@@ -6,7 +6,6 @@ snapshot. It never upgrades native verdicts to quality/performance admission.
 
 from __future__ import annotations
 
-import io
 import math
 import os
 import platform
@@ -15,9 +14,8 @@ import stat
 import sys
 import tempfile
 import uuid
-import zipfile
 from datetime import datetime, timezone
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 from custody import custody
 from evidence import (
@@ -35,6 +33,9 @@ from evidence import (
 from evidence_bridge import host_identity, source_identity
 from producer_execution import execute
 from profile_capture import _directories, load_capture, publish_capture
+from raw_archive import ArchiveLimits
+from raw_archive import pack as pack_archive
+from raw_archive import unpack as unpack_archive
 from registry import registry_digest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -69,47 +70,21 @@ INPUT_ARTIFACTS = {
 }
 
 
-def pack_native(root: Path) -> bytes:
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_STORED) as archive:
-        for name, data in tree_bytes(root).items():
-            archive.writestr(name, data)
-    return buffer.getvalue()
+NATIVE_ARCHIVE_LIMITS = ArchiveLimits(max_bytes=64 * 1024**3)
 
 
-def unpack_native(data: bytes, destination: Path) -> None:
-    """Restore only sorted unique regular entries; never extractall or links."""
-    try:
-        _unpack_native(data, destination)
-    except (zipfile.BadZipFile, zipfile.LargeZipFile, RuntimeError, NotImplementedError) as exc:
-        raise EvidenceError("native tree archive is malformed or unreadable") from exc
+def pack_native(root: Path, target: Path) -> RawFile:
+    if target.absolute().is_relative_to(root.absolute()):
+        raise EvidenceError("pair archive destination overlaps its source tree")
+    files = tree_files(root)
+    result = pack_archive(files, target, limits=NATIVE_ARCHIVE_LIMITS)
+    if tree_files(root) != files:
+        raise EvidenceError("pair tree changed during archive capture")
+    return result
 
 
-def _unpack_native(data: bytes, destination: Path) -> None:
-    with zipfile.ZipFile(io.BytesIO(data)) as archive:
-        names = archive.namelist()
-        if not names or names != sorted(set(names)):
-            raise EvidenceError("native tree inventory is empty, duplicate or reordered")
-        for entry in archive.infolist():
-            name = entry.filename
-            path = PurePosixPath(name)
-            mode = (entry.external_attr >> 16) & 0o170000
-            if (
-                path.is_absolute()
-                or path.as_posix() != name
-                or "\\" in name
-                or any(part in {"", ".", ".."} for part in name.split("/"))
-                or mode not in {0, 0o100000}
-                or entry.is_dir()
-                or entry.compress_type != zipfile.ZIP_STORED
-                or entry.flag_bits & 1
-                or entry.file_size > len(data)
-            ):
-                raise EvidenceError("native tree has unsafe/non-regular/compressed entry")
-            target = destination / name
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with target.open("xb") as handle:
-                handle.write(archive.read(entry))
+def unpack_native(raw: RawFile, destination: Path) -> None:
+    unpack_archive(raw, destination, limits=NATIVE_ARCHIVE_LIMITS)
 
 
 def require_disjoint_paths(root: Path, output: Path, corpus: Path) -> None:
@@ -175,19 +150,24 @@ def require_registration(registry: dict) -> None:
         raise EvidenceError("pair registration differs from the native execution contract")
 
 
-def tree_bytes(root: Path) -> dict[str, bytes]:
+def tree_files(root: Path) -> dict[str, RawFile]:
     """No followed links, special files, path aliases or partial inventories."""
     if root.is_symlink() or not root.is_dir():
         raise EvidenceError("pair tree must be a regular directory")
-    result = {}
-    for directory, directories, files in os.walk(root, followlinks=False):
-        base = Path(directory)
-        if any((base / name).is_symlink() for name in directories):
-            raise EvidenceError("pair tree contains a symlinked directory")
-        for name in files:
-            path = base / name
-            relative = path.relative_to(root).as_posix()
-            result[relative] = _read_regular_file(path)
+    result, pending, count = {}, [root], 0
+    while pending:
+        with os.scandir(pending.pop()) as entries:
+            for entry in entries:
+                count += 1
+                if count > NATIVE_ARCHIVE_LIMITS.max_entries:
+                    raise EvidenceError("pair tree entry count exceeds archive limit")
+                path = Path(entry.path)
+                if entry.is_symlink():
+                    raise EvidenceError("pair tree contains a symlink")
+                if entry.is_dir(follow_symlinks=False):
+                    pending.append(path)
+                else:
+                    result[path.relative_to(root).as_posix()] = RawFile.capture(path)
     if not result:
         raise EvidenceError("pair tree is empty")
     return dict(sorted(result.items()))
@@ -209,6 +189,7 @@ def clone_corpus(source: Path, destination: Path, commit: str, timeout: int) -> 
         cwd=ROOT,
         env={**os.environ, **GIT_ENV},
         timeout=timeout,
+        log_dir=destination.parent / f".{destination.name}-clone-execution",
     )
     evaluator.verify_repo(destination, commit)
     if (destination / ".git" / "objects" / "info" / "alternates").exists():
@@ -218,22 +199,30 @@ def clone_corpus(source: Path, destination: Path, commit: str, timeout: int) -> 
 def restore_corpus(bundle: Path, destination: Path, timeout: int = 300) -> None:
     """Restore Git object/tree identity and executable modes outside raw custody."""
     environment = {**os.environ, **GIT_ENV}
-    for argv in (
-        ["git", "init", "--", str(destination)],
-        [
-            "git",
-            "-C",
-            str(destination),
-            "-c",
-            "protocol.file.allow=always",
-            "fetch",
-            "--no-tags",
-            str(bundle),
-            "HEAD",
-        ],
-        ["git", "-C", str(destination), "checkout", "--detach", "FETCH_HEAD"],
+    for index, argv in enumerate(
+        (
+            ["git", "init", "--", str(destination)],
+            [
+                "git",
+                "-C",
+                str(destination),
+                "-c",
+                "protocol.file.allow=always",
+                "fetch",
+                "--no-tags",
+                str(bundle),
+                "HEAD",
+            ],
+            ["git", "-C", str(destination), "checkout", "--detach", "FETCH_HEAD"],
+        )
     ):
-        execute(argv, cwd=ROOT, env=environment, timeout=timeout)
+        execute(
+            argv,
+            cwd=ROOT,
+            env=environment,
+            timeout=timeout,
+            log_dir=destination.parent / f".{destination.name}-restore-execution" / str(index),
+        )
 
 
 def owner_digests() -> dict[str, str]:
@@ -267,6 +256,7 @@ def derive(native: Path, corpus: Path, timeout: int = 300) -> tuple[dict, dict]:
             cwd=ROOT,
             env={**os.environ, **GIT_ENV},
             timeout=timeout,
+            log_dir=Path(tempfile.mkdtemp(prefix="quanta-pair-verdict-execution-")).resolve(),
         )
         verdict = parse_json(_read_regular_file(out).decode())
     recorded = parse_json(_read_regular_file(native / "verdict.json").decode())
@@ -396,7 +386,7 @@ def _replay_tree_identity(root: Path) -> dict[str, tuple[int, str | None]]:
     for path in (root, *sorted(root.rglob("*"))):
         mode = path.lstat().st_mode
         if stat.S_ISREG(mode):
-            content = digest_bytes(_read_regular_file(path))
+            content = RawFile.capture(path).sha256
         elif stat.S_ISLNK(mode):
             content = os.readlink(path)
         elif stat.S_ISDIR(mode):
@@ -421,20 +411,21 @@ class _ReplayWorkspace:
         self.temporary.cleanup()
 
     def restore(self, raw: Path) -> tuple[Path, Path]:
-        # Compare actual bytes on every run; digest/mtime metadata is not authority.
+        # Rehash actual bytes on every run; mtime and cached metadata are not authority.
         archives = (
-            _read_regular_file(raw / "corpus.bundle"),
-            _read_regular_file(raw / "native-tree.zip"),
+            RawFile.capture(raw / "corpus.bundle"),
+            RawFile.capture(raw / "native-tree.zip"),
         )
+        commitments = tuple((ref.sha256, ref.size) for ref in archives)
         corpus, native = self.root / "corpus", self.root / "native"
         if self.archives is None:
             bundle = self.root / "corpus.bundle"
-            bundle.write_bytes(archives[0])
+            archives[0].copy_to(bundle)
             restore_corpus(bundle, corpus)
             unpack_native(archives[1], native)
-            self.archives = archives
+            self.archives = commitments
             self.identity = _replay_tree_identity(self.root)
-        elif archives != self.archives:
+        elif commitments != self.archives:
             raise EvidenceError("pair profile raw corpus/native archives differ across cases")
         self.verify_unchanged()
         return corpus, native
@@ -603,10 +594,9 @@ def capture(repo: Path, root: Path, registry: dict, spec_path: Path, timeout: in
         cwd=repo,
         env={**os.environ, **GIT_ENV},
         timeout=timeout,
+        log_dir=work / "pair-execution",
     )
-    if any(
-        digest_bytes(_read_regular_file(path)) != binaries[name] for name, path in paths.items()
-    ):
+    if any(RawFile.capture(path).sha256 != binaries[name] for name, path in paths.items()):
         raise EvidenceError("pair executed binary changed during capture")
     manifest, _verdict = derive(output, work / "corpus")
     if manifest["provenance"]["quanta"]["source_sha"] != head:
@@ -626,17 +616,18 @@ def capture(repo: Path, root: Path, registry: dict, spec_path: Path, timeout: in
         cwd=repo,
         env={**os.environ, **GIT_ENV},
         timeout=timeout,
+        log_dir=work / "bundle-execution",
     )
     spool = work / "prepared"
-    raw = {"native-tree.zip": write_raw_file(spool / "native-tree.zip", [pack_native(output)])}
+    raw = {"native-tree.zip": pack_native(output, spool / "native-tree.zip")}
     raw.update({path.name: RawFile.capture(path) for path in work.iterdir() if path.is_file()})
     binary_inventory = [{"name": name, "sha256": sha} for name, sha in sorted(binaries.items())]
     bind_runtime(output, manifest, binary_inventory, head)
     toolchain = f"Python {platform.python_version()}"
     raw.update(
         {
-            "producer.stdout": write_raw_file(spool / "producer.stdout", [_stdout]),
-            "producer.stderr": write_raw_file(spool / "producer.stderr", [_stderr]),
+            "producer.stdout": _stdout,
+            "producer.stderr": _stderr,
             "capture-origin.json": write_raw_file(
                 spool / "capture-origin.json",
                 [

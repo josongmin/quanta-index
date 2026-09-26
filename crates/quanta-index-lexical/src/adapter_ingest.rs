@@ -1,6 +1,7 @@
 //! The ingest ports: search-corpus batches, repo-metadata overlays, the writer sweep and the metrics scrape.
 
-use crate::adapter::legacy_ops_for_batch;
+use crate::adapter::{declared_delta_base_generation, legacy_ops_for_batch};
+use crate::channel_payloads::{decode_replace_scope_payload, decode_tombstone_scope_payload};
 use crate::generation_dir::{ensure_unsealed, is_writer_lock_entry, read_lexical_delta_base};
 use crate::index_store::{lexical_sealed_identity_path, persist_lexical_sealed_identity};
 use crate::overlay_codec::OverlayFamily;
@@ -8,13 +9,18 @@ use crate::overlay_codec::{
     encode_file_contributor_batch, encode_file_ownership_batch, encode_repo_commit_recency_batch,
     encode_repo_description_batch, encode_repo_meta_batch, encode_repo_topic_batch,
 };
-use crate::sealed_generation::seal_generation;
+use crate::sealed_generation::coverage::{
+    SOURCE_FILE_COVERAGE_FILE_NAME, apply_file_coverage, read_staged_coverage,
+    write_staged_coverage,
+};
+use crate::sealed_generation::{DiscardingVisitor, seal_generation, walk_sealed_generation};
 use crate::{GenKey, LexicalAdapter, op_mutates_index, op_writes_generation};
 use quanta_index_contract::channel::LexicalChannelOp;
 use quanta_index_contract::{
-    FileContributorIngestBatch, FileOwnershipIngestBatch, GenerationSnapshot, ManifestGeneration,
-    RepoCommitRecencyIngestBatch, RepoDescriptionIngestBatch, RepoId, RepoMetaIngestBatch,
-    RepoTopicIngestBatch, RevisionId, SearchCorpusIngestBatch, SearchPlaneTrackKind,
+    BatchIngestMode, FileContributorIngestBatch, FileOwnershipIngestBatch, GenerationSnapshot,
+    ManifestGeneration, RepoCommitRecencyIngestBatch, RepoDescriptionIngestBatch, RepoId,
+    RepoMetaIngestBatch, RepoTopicIngestBatch, RevisionId, SearchCorpusIngestBatch,
+    SearchPlaneTrackKind, validate_lexical_file_mutations_v1,
 };
 use quanta_index_core::domains::generation::unique_inode_tree_bytes;
 use quanta_index_core::{
@@ -136,7 +142,48 @@ impl MetricSourcePort for LexicalAdapter {
 }
 
 impl SearchCorpusBatchBuildPort for LexicalAdapter {
+    fn preflight_batch(&self, batch: &SearchCorpusIngestBatch) -> Result<(), CoreError> {
+        batch
+            .validate_v1()
+            .map_err(|error| CoreError::InvalidContract(error.to_string()))?;
+        batch
+            .validate_surface_mutations_v1()
+            .map_err(|error| CoreError::InvalidContract(error.to_string()))?;
+        let identity = GenerationSnapshot {
+            repo_id: batch.repo_id.clone(),
+            revision_id: batch.revision_id.clone(),
+            track: SearchPlaneTrackKind::Lexical,
+            manifest_generation: batch.generation,
+            manifest_digest: batch.manifest_digest.clone(),
+        };
+        let directory = self.index_path(&GenKey {
+            repo_id: batch.repo_id.clone(),
+            revision_id: batch.revision_id.clone(),
+            generation: batch.generation,
+        });
+        if lexical_sealed_identity_path(&directory).exists() {
+            self.validate_generation_identity(&identity)?;
+            let proved = walk_sealed_generation(&directory, &identity, &mut DiscardingVisitor)?;
+            if proved.source_publication.as_ref() != Some(&batch.source_event) {
+                return Err(CoreError::InvalidContract(
+                    "lexical: sealed target belongs to another source event".into(),
+                ));
+            }
+            return Ok(());
+        }
+        let _planned = self.plan_batch_coverage(batch, &identity, &directory)?;
+        Ok(())
+    }
+
     fn build_batch(&self, batch: &SearchCorpusIngestBatch) -> Result<(), CoreError> {
+        // Storage-free admission precedes even the sealed replay shortcut.
+        // The same owner validates the public materializer and raw channel.
+        batch.validate_surface_mutations_v1().map_err(|error| {
+            CoreError::InvalidContract(format!("lexical: file mutation admission: {error}"))
+        })?;
+        batch.validate_v1().map_err(|error| {
+            CoreError::InvalidContract(format!("lexical: batch admission: {error}"))
+        })?;
         let candidate = GenerationSnapshot {
             repo_id: batch.repo_id.clone(),
             revision_id: batch.revision_id.clone(),
@@ -160,10 +207,33 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
                 });
             }
             self.validate_generation_identity(&candidate)?;
+            let verified =
+                walk_sealed_generation(&generation_dir, &candidate, &mut DiscardingVisitor)?;
+            if verified.source_publication.as_ref() != Some(&batch.source_event) {
+                return Err(CoreError::InvalidContract(
+                    "lexical: sealed generation belongs to a different source event".into(),
+                ));
+            }
             return Ok(());
         }
         let ops = legacy_ops_for_batch(batch, batch.seal)?;
-        self.build(&batch.repo_id, &batch.revision_id, batch.generation, &ops)?;
+        let coverage = self.plan_batch_coverage(batch, &candidate, &generation_dir)?;
+        // The prepared coverage marks this target as bound before any index
+        // mutation. It is query-invisible until the index and artifact seal.
+        write_staged_coverage(&generation_dir, &candidate, &batch.source_event, &coverage)?;
+        let key = GenKey {
+            repo_id: batch.repo_id.clone(),
+            revision_id: batch.revision_id.clone(),
+            generation: batch.generation,
+        };
+        self.prepare_generation_from_base(&key, batch.base_generation)?;
+        self.build_ops(
+            &batch.repo_id,
+            &batch.revision_id,
+            batch.generation,
+            &ops,
+            true,
+        )?;
         if batch.seal {
             // Finalize and retire the writer before measuring: a cached
             // writer would commit again on eviction and rewrite `meta.json`
@@ -333,7 +403,151 @@ impl LexicalIndexBuildPort for LexicalAdapter {
         generation: ManifestGeneration,
         ops: &[LexicalChannelOp],
     ) -> Result<(), CoreError> {
-        if ops.is_empty() {
+        self.build_ops(repo, revision, generation, ops, false)
+    }
+}
+
+impl LexicalAdapter {
+    fn plan_batch_coverage(
+        &self,
+        batch: &SearchCorpusIngestBatch,
+        candidate: &GenerationSnapshot,
+        generation_dir: &std::path::Path,
+    ) -> Result<quanta_index_contract::FileCoverageSnapshot, CoreError> {
+        // Derive the complete next admitted universe from a proved base before
+        // any target writes. A missing base capability cannot become empty.
+        batch
+            .source_event
+            .validate()
+            .map_err(|error| CoreError::InvalidContract(error.to_string()))?;
+        let base_coverage = match batch.mode {
+            BatchIngestMode::ReplaceGeneration => std::collections::BTreeMap::new(),
+            BatchIngestMode::Delta => {
+                let base = batch.base_generation.ok_or_else(|| {
+                    CoreError::InvalidContract("lexical: coverage delta requires a base".into())
+                })?;
+                let base_dir = self.index_path(&GenKey {
+                    repo_id: batch.repo_id.clone(),
+                    revision_id: batch.revision_id.clone(),
+                    generation: base,
+                });
+                let identity = crate::index_store::read_lexical_sealed_identity(&base_dir)?;
+                if identity.repo_id != batch.repo_id
+                    || identity.revision_id != batch.revision_id
+                    || identity.manifest_generation != base
+                {
+                    return Err(CoreError::Storage(
+                        "lexical: coverage base identity mismatch".into(),
+                    ));
+                }
+                let verified =
+                    walk_sealed_generation(&base_dir, &identity, &mut DiscardingVisitor)?;
+                self.validate_inherited_candidate_ownership(&verified.index, batch)?;
+                verified.coverage.ok_or_else(|| CoreError::Typed { code: quanta_index_contract::SearchPlaneErrorCodeV2::SymbolCoverageUnavailable, message: "lexical: coverage delta requires a base with admitted file coverage; rebuild the generation".into() })?
+            }
+        };
+        let replacements: Vec<_> = batch
+            .replace_scopes
+            .iter()
+            .map(|scope| scope.coverage.clone())
+            .collect();
+        let tombstones: Vec<_> = batch
+            .tombstone_scopes
+            .iter()
+            .map(|scope| scope.file.clone())
+            .collect();
+        let coverage = apply_file_coverage(
+            &base_coverage,
+            &replacements,
+            &tombstones,
+            &batch.clear_surfaces,
+        )?;
+        match read_staged_coverage(generation_dir, candidate)? {
+            Some(staged)
+                if staged.publication != batch.source_event || staged.coverage != coverage =>
+            {
+                return Err(CoreError::InvalidContract(
+                    "lexical: target already belongs to a different source publication".into(),
+                ));
+            }
+            None if crate::generation_dir::lexical_index_content_exists(generation_dir) => {
+                return Err(CoreError::InvalidContract(
+                    "lexical: cannot bind coverage over pre-existing unbound index content".into(),
+                ));
+            }
+            Some(_) | None => {}
+        }
+        Ok(coverage)
+    }
+
+    fn validate_inherited_candidate_ownership(
+        &self,
+        index: &tantivy::Index,
+        batch: &SearchCorpusIngestBatch,
+    ) -> Result<(), CoreError> {
+        use tantivy::query::{BooleanQuery, Occur, Query, TermSetQuery};
+        let terms: Vec<_> = batch
+            .replace_scopes
+            .iter()
+            .flat_map(|scope| {
+                scope
+                    .chunks
+                    .iter()
+                    .map(|chunk| chunk.chunk_id.as_str())
+                    .chain(scope.symbols.iter().map(|symbol| symbol.symbol_id.as_str()))
+            })
+            .map(|id| tantivy::Term::from_field_text(self.fields.candidate_id, id))
+            .collect();
+        if terms.is_empty() {
+            return Ok(());
+        }
+        let retired: Vec<Box<dyn Query>> = batch
+            .replace_scopes
+            .iter()
+            .map(|scope| &scope.coverage.source.file)
+            .chain(batch.tombstone_scopes.iter().map(|scope| &scope.file))
+            .map(|file| {
+                Box::new(crate::text_docs::source_file_query(&self.fields, file)) as Box<dyn Query>
+            })
+            .collect();
+        let conflict = BooleanQuery::new(vec![
+            (Occur::Must, Box::new(TermSetQuery::new(terms))),
+            (Occur::MustNot, Box::new(BooleanQuery::union(retired))),
+        ]);
+        let reader: tantivy::IndexReader = index
+            .reader_builder()
+            .reload_policy(tantivy::ReloadPolicy::Manual)
+            .try_into()
+            .map_err(|error| {
+                CoreError::Storage(format!(
+                    "lexical: inherited candidate ownership reader: {error}"
+                ))
+            })?;
+        let count = reader
+            .searcher()
+            .search(&conflict, &tantivy::collector::Count)
+            .map_err(|error| {
+                CoreError::Storage(format!(
+                    "lexical: inherited candidate ownership scan: {error}"
+                ))
+            })?;
+        if count != 0 {
+            return Err(CoreError::InvalidContract("lexical: replacement candidate IDs collide with inherited units outside the deleted source-file set".into()));
+        }
+        Ok(())
+    }
+}
+
+impl LexicalAdapter {
+    fn build_ops(
+        &self,
+        repo: &RepoId,
+        revision: &RevisionId,
+        generation: ManifestGeneration,
+        ops: &[LexicalChannelOp],
+        source_batch: bool,
+    ) -> Result<(), CoreError> {
+        if ops.is_empty() && !source_batch {
             return Ok(());
         }
         // All ops in a single `build` invocation must share the (repo, rev, gen)
@@ -347,12 +561,31 @@ impl LexicalIndexBuildPort for LexicalAdapter {
                 ));
             }
         }
+        validate_raw_file_mutations(ops)?;
         let key = GenKey {
             repo_id: repo.clone(),
             revision_id: revision.clone(),
             generation,
         };
-        let mutates_index = ops.iter().any(op_mutates_index);
+        let mutates_index = source_batch || ops.iter().any(op_mutates_index);
+        if !source_batch && mutates_index {
+            let base = declared_delta_base_generation(ops)?;
+            let mut checked = vec![self.index_path(&key)];
+            if let Some(base) = base {
+                checked.push(self.index_path(&GenKey {
+                    repo_id: repo.clone(),
+                    revision_id: revision.clone(),
+                    generation: base,
+                }));
+            }
+            for path in checked {
+                match std::fs::symlink_metadata(path.join(SOURCE_FILE_COVERAGE_FILE_NAME)) {
+                    Ok(_) => return Err(CoreError::InvalidContract("lexical: independent raw mutations cannot alter or inherit a coverage-bound generation".into())),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+                    Err(error) => return Err(CoreError::Storage(format!("lexical: inspect coverage binding: {error}"))),
+                }
+            }
+        }
         if ops.iter().any(op_writes_generation) {
             ensure_unsealed(&self.index_path(&key), generation, "an index or overlay op")?;
         }
@@ -369,4 +602,77 @@ impl LexicalIndexBuildPort for LexicalAdapter {
         let handle = self.writer_handle(&key)?;
         self.commit_ops_under_lock(&handle, &key, ops)
     }
+}
+
+/// Decode the entire mutation list before any directory/writer is prepared.
+/// Individual apply operations must never discover a later file-owner conflict
+/// after an earlier operation has modified the index.
+fn validate_raw_file_mutations(ops: &[LexicalChannelOp]) -> Result<(), CoreError> {
+    let mut clear = Vec::new();
+    let mut replace = Vec::new();
+    let mut tombstone = Vec::new();
+    let mut declared: Option<(BatchIngestMode, Option<ManifestGeneration>)> = None;
+    for op in ops {
+        match op {
+            LexicalChannelOp::ReplaceLexicalScope(payload) => {
+                let (mode, base, scope) = decode_replace_scope_payload(&payload.payload)?;
+                validate_raw_base(&mut declared, mode, base, op.generation())?;
+                replace.push(scope);
+            }
+            LexicalChannelOp::TombstoneLexicalScope(payload) => {
+                let (mode, base, scope) = decode_tombstone_scope_payload(&payload.payload)?;
+                validate_raw_base(&mut declared, mode, base, op.generation())?;
+                tombstone.push(scope);
+            }
+            LexicalChannelOp::ClearLexicalSurface(payload) => {
+                let mode = if payload.base_generation.is_some() {
+                    BatchIngestMode::Delta
+                } else {
+                    BatchIngestMode::ReplaceGeneration
+                };
+                validate_raw_base(
+                    &mut declared,
+                    mode,
+                    payload.base_generation,
+                    op.generation(),
+                )?;
+                clear.push(payload.surface);
+            }
+            LexicalChannelOp::FullBundle(_)
+            | LexicalChannelOp::UpsertChunk(_)
+            | LexicalChannelOp::UpsertSymbol(_)
+            | LexicalChannelOp::UpsertCommit(_)
+            | LexicalChannelOp::UpsertRef(_)
+            | LexicalChannelOp::UpsertParseTree(_)
+            | LexicalChannelOp::ReplaceStructuralScope(_)
+            | LexicalChannelOp::Seal(_) => {}
+        }
+    }
+    validate_lexical_file_mutations_v1(&clear, &replace, &tombstone).map_err(|error| {
+        CoreError::InvalidContract(format!("lexical: file mutation admission: {error}"))
+    })
+}
+
+fn validate_raw_base(
+    declared: &mut Option<(BatchIngestMode, Option<ManifestGeneration>)>,
+    mode: BatchIngestMode,
+    base: Option<ManifestGeneration>,
+    target: ManifestGeneration,
+) -> Result<(), CoreError> {
+    let valid = match (mode, base) {
+        (BatchIngestMode::ReplaceGeneration, None) => true,
+        (BatchIngestMode::Delta, Some(base)) => base < target,
+        (BatchIngestMode::ReplaceGeneration, Some(_)) | (BatchIngestMode::Delta, None) => false,
+    };
+    if !valid
+        || declared
+            .as_ref()
+            .is_some_and(|prior| *prior != (mode, base))
+    {
+        return Err(CoreError::InvalidContract(
+            "lexical: raw file mutations disagree on a valid mode/base generation".into(),
+        ));
+    }
+    *declared = Some((mode, base));
+    Ok(())
 }

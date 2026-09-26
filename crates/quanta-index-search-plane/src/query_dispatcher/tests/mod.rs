@@ -9,6 +9,7 @@ mod history_relevance;
 mod hybrid;
 mod hybrid_filters;
 mod hybrid_seed;
+mod l1_query_domain_window;
 mod lexical;
 mod lexical_pages;
 mod metrics;

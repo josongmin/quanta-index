@@ -508,6 +508,9 @@ mod tests {
 
     fn cand(id: &str) -> LexicalCandidate {
         LexicalCandidate {
+            source: None,
+            preview: None,
+            source_repo_id: RepoId::new("repo-hybrid").expect("fixture repo"),
             candidate_id: id.to_string(),
             repo_id: RepoId::new("repo-hybrid")
                 .expect("static fixture ID satisfies canonical policy"),

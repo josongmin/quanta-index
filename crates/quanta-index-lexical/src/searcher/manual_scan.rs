@@ -16,14 +16,14 @@ use crate::predicate_registry::{
     FileOwnerArg, PREDICATE_OWNER, PredicateKind, kind_of, unimplemented_predicate,
 };
 use crate::query_errors::text_query_tokens;
-use crate::ranked_page::{group_in_memory, rank_in_memory};
-use crate::searcher::snippets::snippet_center_terms;
+use crate::ranked_page::{RankedRowView, group_in_memory, rank_in_memory};
+use crate::searcher::candidates::SelectedPreviewContext;
 use crate::{
     ManualPage, PreparedExecutableQuery, PreparedPredicatePlan, TantivySearcher, normalize,
 };
 use quanta_index_contract::{
-    LexicalCandidate, LqExpr, LqFileScope, LqFilter, LqLeaf, LqOptions, LqPatternType,
-    LqPredicateArg, LqQuery, QueryConstraintSetV1, SymbolCandidate,
+    LexicalCandidate, LexicalRowOrderKey, LqExpr, LqFileScope, LqFilter, LqLeaf, LqOptions,
+    LqPatternType, LqPredicateArg, LqQuery, QueryConstraintSetV1, SymbolCandidate,
 };
 use quanta_index_core::{
     CoreError, LexicalSearchPageV1, RequestBudgetV1, timeref::is_rev_at_time_spec,
@@ -35,6 +35,19 @@ use tantivy::collector::TopDocs;
 use tantivy::query::{AllQuery, BooleanQuery, EnableScoring, Occur, Query, TermQuery};
 use tantivy::schema::{IndexRecordOption, TantivyDocument};
 use tantivy::{DocAddress, Term};
+
+/// Identity rows keep the exact sealed document address through grouping and
+/// ranking. Rendering never re-resolves an ID that another source may reuse.
+pub(crate) struct ManualRankedCandidate<T> {
+    candidate: T,
+    address: DocAddress,
+}
+
+impl<T: RankedRowView> RankedRowView for ManualRankedCandidate<T> {
+    fn ranked_key(&self) -> LexicalRowOrderKey<'_> {
+        self.candidate.ranked_key()
+    }
+}
 
 impl TantivySearcher {
     /// Whether `haystack` holds the token sequence of `text`, on the
@@ -207,8 +220,21 @@ impl TantivySearcher {
         repo_relative_path: &str,
     ) -> Result<bool, CoreError> {
         let executor = self.manual_filter_regex(pattern, "file")?;
+        Ok(Self::file_filter_scope_matches(
+            &executor,
+            scope,
+            repo_relative_path,
+        ))
+    }
+
+    /// Shared path/name scope semantics for document and coverage admission.
+    pub(crate) fn file_filter_scope_matches(
+        executor: &RegexExecutor,
+        scope: LqFileScope,
+        repo_relative_path: &str,
+    ) -> bool {
         let path_match = executor.verify(repo_relative_path.as_bytes());
-        Ok(match scope {
+        match scope {
             LqFileScope::PathOnly => path_match,
             LqFileScope::NameOnly => file_name_for_path(repo_relative_path)
                 .is_some_and(|name| executor.verify(name.as_bytes())),
@@ -217,7 +243,7 @@ impl TantivySearcher {
                     || file_name_for_path(repo_relative_path)
                         .is_some_and(|name| executor.verify(name.as_bytes()))
             }
-        })
+        }
     }
 
     pub(crate) fn manual_content_predicate_matches(
@@ -602,8 +628,7 @@ impl TantivySearcher {
             "lexical:scan",
         )?;
         let boosted_score = Self::apply_query_boost_score(1.0, &query.options);
-        let center_terms = snippet_center_terms(query);
-        let mut out: Vec<LexicalCandidate> = Vec::new();
+        let mut out: Vec<ManualRankedCandidate<LexicalCandidate>> = Vec::new();
         // The scan matches every document against the plan itself; the
         // budget is observed between documents (W5 phase 2).
         let probe = BudgetProbe::new(budget);
@@ -619,7 +644,10 @@ impl TantivySearcher {
             if !self.manual_doc_matches(&doc, query, prepared, constraints, budget)? {
                 continue;
             }
-            out.push(self.document_to_candidate(&doc, boosted_score, &center_terms)?);
+            out.push(ManualRankedCandidate {
+                candidate: self.document_to_candidate_identity(&doc, boosted_score)?,
+                address: doc_address,
+            });
         }
         let out = match page.group {
             Some(group) => group_in_memory(out, group),
@@ -630,10 +658,52 @@ impl TantivySearcher {
         // is exact for free.
         let exact_total = Some(count_from_len(out.len())?);
         out.truncate(page.limit);
+        let mut preview = self.selected_preview_context(query, &prepared.predicate_plan, budget)?;
         Ok(LexicalSearchPageV1 {
-            candidates: out,
+            candidates: self.render_manual_candidates(
+                out,
+                &mut preview,
+                Self::document_to_candidate,
+            )?,
             exact_total,
         })
+    }
+
+    /// Only the retained page's rows cross the preview boundary. One caller
+    /// context accounts for all rows, including retained output reservations.
+    pub(crate) fn render_manual_candidates<T: RankedRowView>(
+        &self,
+        rows: Vec<ManualRankedCandidate<T>>,
+        preview: &mut SelectedPreviewContext<'_>,
+        convert: fn(
+            &Self,
+            &TantivyDocument,
+            f32,
+            &mut SelectedPreviewContext<'_>,
+        ) -> Result<T, CoreError>,
+    ) -> Result<Vec<T>, CoreError> {
+        let searcher = self.reader.searcher();
+        let candidates = rows
+            .into_iter()
+            .map(|row| {
+                let doc: TantivyDocument = searcher.doc(row.address).map_err(|error| {
+                    CoreError::Storage(format!(
+                        "lexical: fetch selected manual doc {:?}: {error}",
+                        row.address
+                    ))
+                })?;
+                let candidate = convert(self, &doc, row.ranked_key().score, preview)?;
+                if candidate.ranked_key().order(&row.ranked_key()) != std::cmp::Ordering::Equal {
+                    return Err(CoreError::Storage(format!(
+                        "lexical: selected manual doc {:?} changed its ranked identity",
+                        row.address
+                    )));
+                }
+                Ok(candidate)
+            })
+            .collect::<Result<Vec<_>, CoreError>>()?;
+        preview.retain_output_for_request()?;
+        Ok(candidates)
     }
 
     /// Whether one stored document matches the unindexed-scan plan.
@@ -776,7 +846,7 @@ impl TantivySearcher {
         prepared: &PreparedExecutableQuery,
         constraints: &QueryConstraintSetV1,
         budget: &RequestBudgetV1,
-    ) -> Result<Vec<SymbolCandidate>, CoreError> {
+    ) -> Result<Vec<ManualRankedCandidate<SymbolCandidate>>, CoreError> {
         let searcher = self.reader.searcher();
         let doc_limit = Self::corpus_docs(&searcher, "unindexed symbol scan")?;
         if doc_limit > self.execution_budget.max_examined_candidates() {
@@ -794,11 +864,8 @@ impl TantivySearcher {
             budget,
             "lexical:scan",
         )?;
-        let include_path_terms =
-            Self::enables_path_term_surface(&prepared.predicate_plan.expr, &query.options);
         let boosted_score = Self::apply_query_boost_score(1.0, &query.options);
-        let center_terms = snippet_center_terms(query);
-        let mut out: Vec<SymbolCandidate> = Vec::new();
+        let mut out: Vec<ManualRankedCandidate<SymbolCandidate>> = Vec::new();
         let probe = BudgetProbe::new(budget);
         for (_score, doc_address) in hits {
             if probe.tick()
@@ -809,61 +876,13 @@ impl TantivySearcher {
             let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
                 CoreError::Storage(format!("lexical: fetch doc {doc_address:?}: {err}"))
             })?;
-            if stored_text(&doc, self.fields.doc_kind).as_deref()
-                != Some(prepared.doc_kind.as_str())
-            {
+            if !self.manual_doc_matches(&doc, query, prepared, constraints, budget)? {
                 continue;
             }
-            let Some(candidate_id) = stored_text(&doc, self.fields.candidate_id) else {
-                continue;
-            };
-            let Some(source_repo_id) = stored_text(&doc, self.fields.repo_id) else {
-                continue;
-            };
-            let Some(repo_relative_path) = stored_text(&doc, self.fields.repo_relative_path) else {
-                continue;
-            };
-            if !Self::manual_exact_path_allows(&repo_relative_path, constraints) {
-                continue;
-            }
-            if !self.manual_doc_restrictions_allow(
-                &prepared.predicate_plan,
-                &candidate_id,
-                &source_repo_id,
-                &repo_relative_path,
-            ) {
-                continue;
-            }
-            let content = self.doc_content_text(&doc);
-            if !self.manual_expr_matches(
-                &prepared.predicate_plan.expr,
-                &query.options,
-                &source_repo_id,
-                &repo_relative_path,
-                &content,
-                include_path_terms,
-                budget,
-            )? {
-                continue;
-            }
-            let mut allowed = true;
-            for filter in &prepared.query.filters {
-                if !self.manual_filter_matches(
-                    filter,
-                    &query.options,
-                    &source_repo_id,
-                    &repo_relative_path,
-                    &content,
-                    budget,
-                )? {
-                    allowed = false;
-                    break;
-                }
-            }
-            if !allowed {
-                continue;
-            }
-            out.push(self.document_to_symbol_candidate(&doc, boosted_score, &center_terms)?);
+            out.push(ManualRankedCandidate {
+                candidate: self.document_to_symbol_candidate_identity(&doc, boosted_score)?,
+                address: doc_address,
+            });
         }
         Ok(out)
     }

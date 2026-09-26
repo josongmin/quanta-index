@@ -243,8 +243,10 @@ fn active_root_reopen_rejects_missing_incarnation_and_zero_sequence_v1() -> Test
     );
     let mut root: serde_json::Value = serde_json::from_slice(&std::fs::read(&root_path)?)?;
     drop(
-        root.as_object_mut()
-            .ok_or("activation root must be a JSON object")?
+        root.get_mut(2)
+            .and_then(|roots| roots.get_mut(0))
+            .and_then(serde_json::Value::as_object_mut)
+            .ok_or("repository envelope must contain an active root")?
             .insert("activation_sequence".to_string(), serde_json::json!(0)),
     );
     std::fs::write(&root_path, serde_json::to_vec(&root)?)?;
@@ -894,14 +896,23 @@ fn activation_catalog_rejects_legacy_per_track_root_before_decode() -> TestResul
 fn activation_catalog_rejects_filename_payload_identity_mismatch() -> TestResult {
     let dir = tempdir()?;
     let generation = corpus_generation(17, "digest-17")?;
-    let persisted = crate::readiness::search_corpus_generation::PersistedSearchCorpusGenerationRootV1::from_generation(&generation, NonZeroU64::new(1).expect("positive sequence"));
+    let catalog = ActivationCatalog::open(dir.path())?;
+    let _activated = catalog.activate_prepared_search_corpus_generation_v1(
+        &PreparedSearchCorpusGenerationV1::new(generation.clone(), None)?,
+    )?;
+    let canonical = dir.path().join(
+        crate::readiness::activation_catalog::search_corpus_root_file_name(
+            generation.repo_id(),
+            generation.revision_id(),
+        ),
+    );
     let alias = dir.path().join("alias--alias--corpus.json");
-    std::fs::write(&alias, serde_json::to_vec_pretty(&persisted)?)?;
+    std::fs::write(&alias, std::fs::read(canonical)?)?;
     let result = ActivationCatalog::open(dir.path());
     let Err(CoreError::Storage(message)) = result else {
         return Err("filename/payload mismatch unexpectedly opened".into());
     };
-    assert!(message.contains("filename/payload identity mismatch"));
+    assert!(message.contains("filename/repository identity mismatch"));
     Ok(())
 }
 

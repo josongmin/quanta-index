@@ -196,6 +196,58 @@ fi
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/quanta-index-env.sh"
 
+resource_mode="${QUANTA_INDEX_RESOURCE_ADMISSION-auto}"
+case "$resource_mode" in
+  auto|0|1) ;;
+  *) printf 'invalid QUANTA_INDEX_RESOURCE_ADMISSION; expected auto, 0, or 1\n' >&2; exit 2 ;;
+esac
+
+needs_resource_admission() {
+  case "${1:-}" in
+    metadata|fmt|version|--version|-V|--help|-h|help|--list|locate-project|pkgid|read-manifest|tree|search|info) return 1 ;;
+    build|check|clippy|test|bench|doc|rustc|rustdoc|llvm-cov|clean) return 0 ;;
+    nextest)
+      case "${2:-}" in
+        run|archive) return 0 ;;
+        list)
+          # Listing an already prepared binary set cannot invoke Cargo's build
+          # graph. Normal lists still compile and must participate in admission.
+          # Tokens after -- are test patterns, even when they resemble metadata
+          # options. Admit ambiguous tails instead of treating them as reuse.
+          if has_arg -- "$@"; then
+            return 0
+          fi
+          local binaries="" metadata=""
+          binaries="$(arg_value --binaries-metadata --binaries-metadata "$@")" || true
+          metadata="$(arg_value --cargo-metadata --cargo-metadata "$@")" || true
+          [[ -z "$binaries" || -z "$metadata" ]]
+          return
+          ;;
+      esac
+      ;;
+  esac
+  # Unknown aliases, subcommands, and leading Cargo global options may build.
+  # Conservatively admit them instead of silently bypassing the shared slot.
+  return 0
+}
+
+run_cargo() {
+  if ! needs_resource_admission "$@"; then
+    cargo "$@"
+  elif [[ "$resource_mode" == "0" || ( "$resource_mode" == "auto" && "${CI:-}" == "true" ) ]]; then
+    printf 'cargow: cooperative resource admission disabled (mode=%s, CI=%s)\n' "$resource_mode" "${CI:-unset}" >&2
+    cargo "$@"
+  else
+    # Never wrap a whole Just/benchctl/pytest orchestration in this lease: its
+    # nested Cargo calls must acquire independently, without recursive locking.
+    python3 "${SCRIPT_DIR}/../tools/ci/resource_admission.py" \
+      --lock "${QUANTA_INDEX_CACHE_ROOT}/resource-admission/build-test.lock" \
+      --wait-seconds "${QUANTA_INDEX_RESOURCE_WAIT_SECONDS-300}" \
+      --timeout-seconds "${QUANTA_INDEX_RESOURCE_TIMEOUT_SECONDS-7200}" \
+      -- cargo "$@"
+  fi
+}
+
 requires_searchd_pin() {
   if [[ -n "${QUANTA_INDEX_SEARCHD_BIN:-}" ]] || ! has_arg "--workspace" "$@"; then
     return 1
@@ -218,7 +270,7 @@ requires_searchd_pin() {
 }
 
 prepare_searchd_pin() {
-  cargo build -p quanta-index-searchd-runtime --bin quanta-index-searchd --locked
+  run_cargo build -p quanta-index-searchd-runtime --bin quanta-index-searchd --locked
   local binary="${CARGO_TARGET_DIR}/debug/quanta-index-searchd"
   if [[ ! -x "$binary" ]]; then
     printf 'built searchd binary is missing or not executable: %s\n' "$binary" >&2
@@ -233,7 +285,7 @@ fi
 
 start_ms="$(python3 -c 'import time; print(int(time.time() * 1000))')"
 
-if cargo "$@"; then
+if run_cargo "$@"; then
   status=0
 else
   status="$?"

@@ -11,6 +11,7 @@ mod continuation_token;
 mod cursor_envelope;
 mod diff_candidate;
 mod history_score;
+mod preview;
 mod query_window;
 mod structural;
 
@@ -19,5 +20,6 @@ pub use continuation_token::*;
 pub use cursor_envelope::*;
 pub use diff_candidate::*;
 pub use history_score::*;
+pub use preview::{PreviewByteRange, PreviewKind, PreviewMetadata, PreviewUnavailableReason};
 pub use query_window::*;
 pub use structural::*;

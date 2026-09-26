@@ -225,6 +225,7 @@ def capture(repo: Path, root: Path, registry: dict, timeout: int) -> dict:
             cwd=repo,
             env=dict(os.environ),
             timeout=timeout,
+            log_dir=native.parent / f"{family}-execution",
         )
         context = portable_proof.validate(native / "execution-context.json")
         if context["rail"] != RAILS[family]:
@@ -244,8 +245,8 @@ def capture(repo: Path, root: Path, registry: dict, timeout: int) -> dict:
         spool = root / "work" / capture_id / "prepared" / family
         raw.update(
             {
-                "producer.stdout": write_raw_file(spool / "producer.stdout", [stdout]),
-                "producer.stderr": write_raw_file(spool / "producer.stderr", [stderr]),
+                "producer.stdout": stdout,
+                "producer.stderr": stderr,
                 "capture-origin.json": write_raw_file(
                     spool / "capture-origin.json",
                     [

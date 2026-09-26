@@ -1,25 +1,20 @@
 //! The `LexicalSearcher` port over a sealed generation.
 
-use crate::documents::stored_text;
 use crate::ranked_page::{ProjectionGroup, rank_in_memory};
-use crate::searcher::planner_errors::planner_preflight_expr;
+use crate::searcher::planner_errors::{planner_preflight_expr, validate_exact_all_count};
 use crate::searcher::query_rewrite::rewrite_symbol_name_predicate_query;
-use crate::searcher::snippets::snippet_center_terms;
-use crate::{ManualPage, QueryDocKind, TEXT_DOC_KIND, TantivySearcher};
+use crate::{ManualPage, SYMBOL_DOC_KIND, TEXT_DOC_KIND, TantivySearcher};
 use quanta_index_contract::{
     CandidatePresenceV1, FileOwnerProjectionRow, LexicalCandidate, LqQuery, QueryConstraintSetV1,
     SymbolCandidate,
 };
 use quanta_index_core::{
-    CoreError, LexicalArtifactIdentityV1, LexicalCandidateExplanationV1, LexicalPageSpec,
-    LexicalScoreEngineV1, LexicalScoreTraceV1, LexicalSearchPageV1, LexicalSearcher,
-    RequestBudgetV1, domains::lexical::LexicalPolicy,
+    CoreError, LexicalArtifactIdentityV1, LexicalCandidateExplanationV1, LexicalEndpoint,
+    LexicalPageSpec, LexicalScoreEngineV1, LexicalScoreTraceV1, LexicalSearchPageV1,
+    LexicalSearcher, RequestBudgetV1, SymbolSearchPageV1, domains::lexical::LexicalPolicy,
+    validate_internal_fetch_size,
 };
 use std::collections::BTreeSet;
-use tantivy::Term;
-use tantivy::collector::TopDocs;
-use tantivy::query::TermQuery;
-use tantivy::schema::{IndexRecordOption, TantivyDocument};
 
 impl LexicalSearcher for TantivySearcher {
     fn resident_bytes_estimate(&self) -> u64 {
@@ -28,6 +23,14 @@ impl LexicalSearcher for TantivySearcher {
 
     fn artifact_identity(&self) -> LexicalArtifactIdentityV1 {
         self.artifact_identity.clone()
+    }
+
+    fn source_file_coverage(&self) -> Option<&quanta_index_contract::FileCoverageSnapshot> {
+        self.source_coverage.as_ref()
+    }
+
+    fn source_publication_event(&self) -> Option<&quanta_index_contract::SourcePublicationEvent> {
+        self.source_publication_event.as_ref()
     }
 
     fn search_constrained(
@@ -42,15 +45,14 @@ impl LexicalSearcher for TantivySearcher {
         // a second planner/search implementation.
         let effective_query =
             rewrite_symbol_name_predicate_query(query)?.unwrap_or_else(|| query.clone());
-        LexicalPolicy::validate_query_with_constraints(&effective_query, constraints)?;
+        let plan = LexicalPolicy::plan_query(&effective_query, constraints, LexicalEndpoint::Text)?;
+        let _accepted_fetch = validate_internal_fetch_size(page.fetch)?;
         let after = self.page_boundary(page)?;
         let empty_page = || LexicalSearchPageV1 {
             candidates: Vec::new(),
             exact_total: Self::wants_exact_total(&effective_query).then_some(0),
         };
-        let Some(prepared_query) =
-            self.prepare_executable_query(&effective_query, QueryDocKind::Text, budget)?
-        else {
+        let Some(prepared_query) = self.prepare_executable_query(&plan, budget)? else {
             return Ok(empty_page());
         };
         planner_preflight_expr(
@@ -64,9 +66,6 @@ impl LexicalSearcher for TantivySearcher {
         let requested = usize::try_from(page.fetch)
             .map_err(|err| CoreError::InvalidContract(format!("lexical: page fetch: {err}")))?;
         let limit = Self::page_limit(&effective_query, requested);
-        if limit == 0 {
-            return Ok(empty_page());
-        }
         let group = Self::projection_group(&effective_query);
         if Self::uses_unindexed_scan(&effective_query.options) {
             Self::ensure_manual_scan_supports_constraints(constraints, "lexical")?;
@@ -124,12 +123,16 @@ impl LexicalSearcher for TantivySearcher {
             )?;
             (fruit.rows, counts.then_some(fruit.matched))
         };
-        let center_terms = snippet_center_terms(&effective_query);
+        let mut preview = self.selected_preview_context(
+            &effective_query,
+            &prepared_query.predicate_plan,
+            budget,
+        )?;
         Ok(LexicalSearchPageV1 {
             candidates: self.rows_to_candidates(
                 &searcher,
                 rows,
-                &center_terms,
+                &mut preview,
                 Self::document_to_candidate,
             )?,
             exact_total,
@@ -141,54 +144,17 @@ impl LexicalSearcher for TantivySearcher {
         candidates: &[LexicalCandidate],
     ) -> Result<Vec<FileOwnerProjectionRow>, CoreError> {
         let authority = self.file_ownership_authority()?;
-        let searcher = self.reader.searcher();
         let mut rows: Vec<FileOwnerProjectionRow> = Vec::with_capacity(candidates.len());
         for candidate in candidates {
-            let source_repo_hit = searcher
-                .search(
-                    &TermQuery::new(
-                        Term::from_field_text(
-                            self.fields.candidate_id,
-                            candidate.candidate_id.as_str(),
-                        ),
-                        IndexRecordOption::Basic,
-                    ),
-                    &TopDocs::with_limit(1),
-                )
-                .map_err(|err| {
-                    CoreError::Storage(format!(
-                        "lexical: file owner projection candidate lookup `{}`: {err}",
-                        candidate.candidate_id
-                    ))
-                })?
-                .into_iter()
-                .next();
-            // A storage error fetching the matched doc propagates (fail-closed);
-            // a missing repo_id field falls back to the candidate's own repo_id,
-            // which is the authoritative value the candidate already carries.
-            let source_repo_id = match source_repo_hit {
-                Some((_score, doc_address)) => {
-                    let doc = searcher
-                        .doc::<TantivyDocument>(doc_address)
-                        .map_err(|err| {
-                            CoreError::Storage(format!(
-                                "lexical: file owner projection doc fetch `{}`: {err}",
-                                candidate.candidate_id
-                            ))
-                        })?;
-                    stored_text(&doc, self.fields.repo_id)
-                        .unwrap_or_else(|| candidate.repo_id.as_str().to_string())
-                }
-                None => candidate.repo_id.as_str().to_string(),
-            };
             let owners = authority
                 .owners_by_repo_id
-                .get(&source_repo_id)
+                .get(candidate.source_repo_id.as_str())
                 .and_then(|by_path| by_path.get(candidate.repo_relative_path.as_str()))
                 .map(|set| set.iter().cloned().collect::<Vec<_>>())
                 .unwrap_or_default();
             rows.push(FileOwnerProjectionRow {
                 candidate_id: candidate.candidate_id.clone(),
+                source_repo_id: candidate.source_repo_id.clone(),
                 // The source repo selects the ownership authority. The
                 // projection identity must still pair with the ranked row.
                 repo_id: candidate.repo_id.clone(),
@@ -213,6 +179,7 @@ impl LexicalSearcher for TantivySearcher {
             &LexicalPageSpec::first(top_k),
             budget,
         )
+        .map(|page| page.candidates)
     }
 
     fn search_symbols_constrained(
@@ -221,17 +188,20 @@ impl LexicalSearcher for TantivySearcher {
         constraints: &QueryConstraintSetV1,
         page: &LexicalPageSpec,
         budget: &RequestBudgetV1,
-    ) -> Result<Vec<SymbolCandidate>, CoreError> {
+    ) -> Result<SymbolSearchPageV1, CoreError> {
         // Single symbol-query execution path; the unconstrained entrypoint
         // delegates here to prevent planner and scoring drift.
         let effective_query =
             rewrite_symbol_name_predicate_query(query)?.unwrap_or_else(|| query.clone());
-        LexicalPolicy::validate_query_with_constraints(&effective_query, constraints)?;
+        let plan =
+            LexicalPolicy::plan_query(&effective_query, constraints, LexicalEndpoint::Symbol)?;
+        let _accepted_fetch = validate_internal_fetch_size(page.fetch)?;
         let after = self.page_boundary(page)?;
-        let Some(prepared_query) =
-            self.prepare_executable_query(&effective_query, QueryDocKind::Symbol, budget)?
-        else {
-            return Ok(Vec::new());
+        let Some(prepared_query) = self.prepare_executable_query(&plan, budget)? else {
+            return Ok(SymbolSearchPageV1 {
+                candidates: Vec::new(),
+                exact_total: Some(0),
+            });
         };
         planner_preflight_expr(
             &prepared_query.query,
@@ -239,22 +209,35 @@ impl LexicalSearcher for TantivySearcher {
             self.repo_metadata.is_some(),
         )?;
         if !self.repo_filters_allow(&effective_query)? {
-            return Ok(Vec::new());
+            return Ok(SymbolSearchPageV1 {
+                candidates: Vec::new(),
+                exact_total: Some(0),
+            });
         }
         let requested = usize::try_from(page.fetch)
             .map_err(|err| CoreError::InvalidContract(format!("symbol: page fetch: {err}")))?;
         let limit = Self::page_limit(&effective_query, requested);
-        if limit == 0 {
-            return Ok(Vec::new());
-        }
         if Self::uses_unindexed_scan(&effective_query.options) {
             Self::ensure_manual_scan_supports_constraints(constraints, "symbol")?;
             let mut rows = rank_in_memory(
                 self.manual_symbol_matches(&effective_query, &prepared_query, constraints, budget)?,
                 after.as_deref(),
             );
+            let exact_total = Some(crate::channel_payloads::count_from_len(rows.len())?);
             rows.truncate(limit);
-            return Ok(rows);
+            let mut preview = self.selected_preview_context(
+                &effective_query,
+                &prepared_query.predicate_plan,
+                budget,
+            )?;
+            return Ok(SymbolSearchPageV1 {
+                candidates: self.render_manual_candidates(
+                    rows,
+                    &mut preview,
+                    Self::document_to_symbol_candidate,
+                )?,
+                exact_total,
+            });
         }
         let Some(base) = self.compile_query_with_constraints(
             &prepared_query.query,
@@ -263,7 +246,10 @@ impl LexicalSearcher for TantivySearcher {
             budget,
         )?
         else {
-            return Ok(Vec::new());
+            return Ok(SymbolSearchPageV1 {
+                candidates: Vec::new(),
+                exact_total: Some(0),
+            });
         };
         let compiled =
             self.with_doc_kind_and_constraints(base, prepared_query.doc_kind.as_str(), constraints);
@@ -274,17 +260,24 @@ impl LexicalSearcher for TantivySearcher {
             limit,
             after,
             Self::boost_factor(&effective_query.options),
-            false,
+            Self::wants_exact_total(&effective_query),
             "symbol search",
             budget,
         )?;
-        let center_terms = snippet_center_terms(&effective_query);
-        self.rows_to_candidates(
-            &searcher,
-            fruit.rows,
-            &center_terms,
-            Self::document_to_symbol_candidate,
-        )
+        let mut preview = self.selected_preview_context(
+            &effective_query,
+            &prepared_query.predicate_plan,
+            budget,
+        )?;
+        Ok(SymbolSearchPageV1 {
+            candidates: self.rows_to_candidates(
+                &searcher,
+                fruit.rows,
+                &mut preview,
+                Self::document_to_symbol_candidate,
+            )?,
+            exact_total: Self::wants_exact_total(&effective_query).then_some(fruit.matched),
+        })
     }
 
     fn search_symbols_all(
@@ -294,10 +287,13 @@ impl LexicalSearcher for TantivySearcher {
     ) -> Result<Vec<SymbolCandidate>, CoreError> {
         let effective_query =
             rewrite_symbol_name_predicate_query(query)?.unwrap_or_else(|| query.clone());
-        LexicalPolicy::validate_query(&effective_query)?;
-        let Some(prepared_query) =
-            self.prepare_executable_query(&effective_query, QueryDocKind::Symbol, budget)?
-        else {
+        let plan = LexicalPolicy::plan_query(
+            &effective_query,
+            &QueryConstraintSetV1::unconstrained(),
+            LexicalEndpoint::Symbol,
+        )?;
+        validate_exact_all_count(&effective_query)?;
+        let Some(prepared_query) = self.prepare_executable_query(&plan, budget)? else {
             return Ok(Vec::new());
         };
         planner_preflight_expr(
@@ -325,7 +321,16 @@ impl LexicalSearcher for TantivySearcher {
                 None,
             );
             rows.truncate(limit);
-            return Ok(rows);
+            let mut preview = self.selected_preview_context(
+                &effective_query,
+                &prepared_query.predicate_plan,
+                budget,
+            )?;
+            return self.render_manual_candidates(
+                rows,
+                &mut preview,
+                Self::document_to_symbol_candidate,
+            );
         }
         let Some(base) = self.compile_query_from_prepared(
             &prepared_query.query,
@@ -344,11 +349,15 @@ impl LexicalSearcher for TantivySearcher {
             budget,
         )?;
         rows.truncate(limit);
-        let center_terms = snippet_center_terms(&effective_query);
+        let mut preview = self.selected_preview_context(
+            &effective_query,
+            &prepared_query.predicate_plan,
+            budget,
+        )?;
         self.rows_to_candidates(
             &searcher,
             rows,
-            &center_terms,
+            &mut preview,
             Self::document_to_symbol_candidate,
         )
     }
@@ -359,10 +368,9 @@ impl LexicalSearcher for TantivySearcher {
         budget: &RequestBudgetV1,
     ) -> Result<Vec<LexicalCandidate>, CoreError> {
         let constraints = &QueryConstraintSetV1::unconstrained();
-        LexicalPolicy::validate_query_with_constraints(query, constraints)?;
-        let Some(prepared_query) =
-            self.prepare_executable_query(query, QueryDocKind::Text, budget)?
-        else {
+        let plan = LexicalPolicy::plan_query(query, constraints, LexicalEndpoint::Text)?;
+        validate_exact_all_count(query)?;
+        let Some(prepared_query) = self.prepare_executable_query(&plan, budget)? else {
             return Ok(Vec::new());
         };
         planner_preflight_expr(
@@ -416,8 +424,9 @@ impl LexicalSearcher for TantivySearcher {
             budget,
         )?;
         rows.truncate(if repo_only { limit.min(1) } else { limit });
-        let center_terms = snippet_center_terms(query);
-        self.rows_to_candidates(&searcher, rows, &center_terms, Self::document_to_candidate)
+        let mut preview =
+            self.selected_preview_context(query, &prepared_query.predicate_plan, budget)?;
+        self.rows_to_candidates(&searcher, rows, &mut preview, Self::document_to_candidate)
     }
 
     fn candidate_presence(&self, candidate_id: &str) -> Result<CandidatePresenceV1, CoreError> {
@@ -441,17 +450,20 @@ impl LexicalSearcher for TantivySearcher {
         // the plan that scores this one document is the plan that ranked it.
         let effective_query =
             rewrite_symbol_name_predicate_query(query)?.unwrap_or_else(|| query.clone());
-        LexicalPolicy::validate_query_with_constraints(&effective_query, constraints)?;
+        let plan = LexicalPolicy::plan_query(&effective_query, constraints, LexicalEndpoint::Text)?;
         let searcher = self.reader.searcher();
         let not_matched = |reason: &str| {
             Ok(LexicalCandidateExplanationV1::NotMatched {
                 reason: reason.to_string(),
             })
         };
-        let Some(prepared_query) =
-            self.prepare_executable_query(&effective_query, QueryDocKind::Text, budget)?
-        else {
-            return match self.locate_candidate(&searcher, candidate_id, TEXT_DOC_KIND)? {
+        let Some(prepared_query) = self.prepare_executable_query(&plan, budget)? else {
+            let doc_kind = if plan.executes_symbol_domain() {
+                SYMBOL_DOC_KIND
+            } else {
+                TEXT_DOC_KIND
+            };
+            return match self.locate_candidate(&searcher, candidate_id, doc_kind)? {
                 Some(_) => not_matched("the plan matches no document"),
                 None => Ok(LexicalCandidateExplanationV1::NotIndexed),
             };

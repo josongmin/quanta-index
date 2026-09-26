@@ -327,7 +327,7 @@ fn unindexed_scans_over_the_budget_are_refused_before_scanning() -> TestResult {
         Err(other) => Err(format!("symbol scan refused under the wrong error: {other}").into()),
         Ok(rows) => Err(format!(
             "symbol index:no over {DOCS} docs served {} rows under a budget of {BUDGET}",
-            rows.len()
+            rows.candidates.len()
         )
         .into()),
     }

@@ -31,8 +31,8 @@ use crate::{
 use quanta_index_contract::channel::LexicalChannelOp;
 use quanta_index_contract::{
     BatchIngestMode, ClearLexicalSurface, GenerationSnapshot, LexicalFullBundle, LexicalSeal,
-    ManifestGeneration, ReplaceLexicalScope, RepoRelativePath, SearchCorpusIngestBatch,
-    SearchPlaneTrackKind, SearchScopeSurface, TombstoneLexicalScope,
+    ManifestGeneration, ReplaceLexicalScope, SearchCorpusIngestBatch, SearchPlaneTrackKind,
+    SearchScopeSurface, SourceFileKey, TombstoneLexicalScope,
 };
 use quanta_index_core::domains::generation::GenerationStorageKeyV1;
 use quanta_index_core::{
@@ -251,7 +251,15 @@ impl LexicalAdapter {
         key: &GenKey,
         ops: &[LexicalChannelOp],
     ) -> Result<(), CoreError> {
-        let Some(requested_base) = declared_delta_base_generation(ops)? else {
+        self.prepare_generation_from_base(key, declared_delta_base_generation(ops)?)
+    }
+
+    pub(crate) fn prepare_generation_from_base(
+        &self,
+        key: &GenKey,
+        base: Option<ManifestGeneration>,
+    ) -> Result<(), CoreError> {
+        let Some(requested_base) = base else {
             return Ok(());
         };
         let target_path = self.index_path(key);
@@ -293,11 +301,13 @@ impl LexicalAdapter {
     pub(crate) fn delete_scope_docs(
         &self,
         writer: &IndexWriter,
-        repo_relative_path: &RepoRelativePath,
-    ) {
-        let term =
-            Term::from_field_text(self.fields.repo_relative_path, repo_relative_path.as_str());
-        let _opstamp = writer.delete_term(term);
+        file: &SourceFileKey,
+    ) -> Result<(), CoreError> {
+        let query = crate::text_docs::source_file_query(&self.fields, file);
+        let _opstamp = writer
+            .delete_query(Box::new(query))
+            .map_err(|error| CoreError::Storage(format!("lexical: source file delete: {error}")))?;
+        Ok(())
     }
 
     pub(crate) fn clear_surface_docs(
@@ -485,7 +495,7 @@ impl LexicalAdapter {
             LexicalChannelOp::ReplaceLexicalScope(payload) => {
                 let (_mode, _base_generation, scope) =
                     decode_replace_scope_payload(&payload.payload)?;
-                self.delete_scope_docs(writer, &scope.scope.repo_relative_path);
+                self.delete_scope_docs(writer, &scope.coverage.source.file)?;
                 for chunk in &scope.chunks {
                     let doc_id =
                         allocator.allocate(chunk.chunk_id.as_str(), chunk.text.as_ref())?;
@@ -494,9 +504,14 @@ impl LexicalAdapter {
                     doc.add_text(self.fields.candidate_id, chunk.chunk_id.as_str());
                     doc.add_text(
                         self.fields.repo_id,
-                        chunk.searchable_repo_id(&key.repo_id).as_str(),
+                        scope.coverage.source.file.source_repo_id.as_str(),
                     );
                     doc.add_text(self.fields.revision_id, key.revision_id.as_str());
+                    crate::documents::add_source_fields(
+                        &self.fields,
+                        &mut doc,
+                        &scope.coverage.source,
+                    );
                     doc.add_text(self.fields.doc_kind, TEXT_DOC_KIND);
                     add_metadata_fields(
                         &self.fields,
@@ -504,6 +519,7 @@ impl LexicalAdapter {
                         chunk.repo_relative_path.as_str(),
                         Some(chunk.language.as_str()),
                     );
+                    crate::documents::add_chunk_provenance_fields(&self.fields, &mut doc, chunk);
                     doc.add_u64(self.fields.start_line, u64::from(chunk.start_line));
                     doc.add_u64(self.fields.end_line, u64::from(chunk.end_line));
                     add_snippet_field(&self.fields, &mut doc, chunk.derived_snippet());
@@ -515,8 +531,16 @@ impl LexicalAdapter {
                 for symbol in &scope.symbols {
                     let mut doc = TantivyDocument::new();
                     doc.add_text(self.fields.candidate_id, symbol.symbol_id.as_str());
-                    doc.add_text(self.fields.repo_id, key.repo_id.as_str());
+                    doc.add_text(
+                        self.fields.repo_id,
+                        scope.coverage.source.file.source_repo_id.as_str(),
+                    );
                     doc.add_text(self.fields.revision_id, key.revision_id.as_str());
+                    crate::documents::add_source_fields(
+                        &self.fields,
+                        &mut doc,
+                        &scope.coverage.source,
+                    );
                     doc.add_text(self.fields.doc_kind, SYMBOL_DOC_KIND);
                     add_metadata_fields(
                         &self.fields,
@@ -550,7 +574,7 @@ impl LexicalAdapter {
             LexicalChannelOp::TombstoneLexicalScope(payload) => {
                 let (_mode, _base_generation, scope) =
                     decode_tombstone_scope_payload(&payload.payload)?;
-                self.delete_scope_docs(writer, &scope.scope.repo_relative_path);
+                self.delete_scope_docs(writer, &scope.file)?;
                 Ok(true)
             }
             LexicalChannelOp::ClearLexicalSurface(payload) => {

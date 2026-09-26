@@ -19,6 +19,9 @@ mod activation_token;
 pub mod ids;
 pub mod query;
 pub mod results;
+mod source_file;
+
+pub use source_file::{SourceFileKey, SourceFileRevision};
 
 pub use activation_token::{
     ACTIVATION_ROOT_INCARNATION_BYTES_V1, ActivationTokenValidationErrorV1,
@@ -43,6 +46,7 @@ pub use results::{
     CursorAuxEpochKindV2, CursorAuxEpochV2, CursorBindingV2, CursorEnvelopeError, CursorEnvelopeV2,
     CursorKeyV2, CursorRouteV2, CursorTtlPolicyV2, DiffCandidate, DiffHunkSide, EmptyProvenanceV2,
     ExaminedUniverseV1, ExecutionOutcomeV2, ExhaustionProofV1, HighlightSpan, HistoryScoreError,
-    HistoryScoreV1, InterruptedReasonV2, LaneTraceV1, LexicalCandidate, QueryResultWindowV1,
+    HistoryScoreV1, InterruptedReasonV2, LaneTraceV1, LexicalCandidate, PreviewByteRange,
+    PreviewKind, PreviewMetadata, PreviewUnavailableReason, QueryResultWindowV1,
     QueryResultWindowV2, StructuralBinding, StructuralCandidate,
 };

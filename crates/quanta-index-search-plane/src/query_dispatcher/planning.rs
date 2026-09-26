@@ -8,8 +8,8 @@ use quanta_index_contract::{
     SearchPlaneTrackKind, TextQueryRequest,
 };
 use quanta_index_core::{
-    CoreError, LexicalPolicy, QueryRouteV1, ReadDomainV1, RequestBudgetV1, RequiredDomainsV1,
-    declare_required_domains_v1,
+    CoreError, LexicalEndpoint, LexicalPolicy, QueryRouteV1, ReadDomainV1, RequestBudgetV1,
+    RequiredDomainsV1, declare_required_domains_v1,
 };
 
 use crate::lower_lexical_text_query;
@@ -44,6 +44,16 @@ impl SearchPlaneDispatcher {
         budget: &RequestBudgetV1,
     ) -> Result<PlannedLexicalTextQuery, CoreError> {
         let lowered = lower_lexical_text_query(request)?;
+        // rev:at.time is resolved below through a pinned history view. Validate
+        // every other pure request rule before acquiring that authority view.
+        let mut pure_query = lowered.clone();
+        if rev_at_time_selection(&lowered)?.is_some() {
+            pure_query
+                .filters
+                .retain(|filter| !matches!(filter, LqFilter::Rev { .. }));
+        }
+        let _validated =
+            LexicalPolicy::plan_query(&pure_query, &request.constraints, LexicalEndpoint::Text)?;
         let prepared_language = prepare_language_query_v1(lowered, &request.constraints)?;
         let base_pin = resolve_lexical_request_pin(
             self.activation_catalog.as_ref(),
@@ -128,9 +138,7 @@ pub(super) fn prepare_language_query_v1(
     let dsl = QueryConstraintSetV1::from_languages(dsl_languages);
     let (constraints, force_empty) = match typed.intersect(&dsl) {
         QueryConstraintIntersectionV1::Compatible(constraints) => (constraints, false),
-        QueryConstraintIntersectionV1::Contradiction => {
-            (QueryConstraintSetV1::unconstrained(), true)
-        }
+        QueryConstraintIntersectionV1::Contradiction => (typed.clone(), true),
     };
     Ok(PreparedLanguageQueryV1 {
         query,

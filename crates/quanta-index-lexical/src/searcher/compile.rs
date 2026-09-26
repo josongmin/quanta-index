@@ -98,6 +98,12 @@ impl TantivySearcher {
         include_path_terms: bool,
         budget: &RequestBudgetV1,
     ) -> Result<Box<dyn Query>, CoreError> {
+        if let LqLeaf::Predicate { name, args } = leaf
+            && let Some(exact) =
+                crate::symbol::exact_symbol_name_query(&self.fields, name, args, options)?
+        {
+            return Ok(exact);
+        }
         match leaf {
             LqLeaf::Keyword(text) | LqLeaf::RawString(text) => {
                 // Both AST shapes route through the planner-gated regex
@@ -437,13 +443,16 @@ impl TantivySearcher {
 
     pub(crate) fn prepare_executable_query(
         &self,
-        query: &LqQuery,
-        default_doc_kind: QueryDocKind,
+        plan: &quanta_index_core::ValidatedLexicalPlan,
         budget: &RequestBudgetV1,
     ) -> Result<Option<PreparedExecutableQuery>, CoreError> {
-        let (prepared_query, doc_kind) =
-            self.prepare_query_for_doc_kind(query, default_doc_kind)?;
-        if crate::symbol::unsupported_symbol_query_text(
+        let (prepared_query, doc_kind) = self.prepare_query_for_plan(plan)?;
+        crate::searcher::planner_errors::planner_preflight_expr(
+            &prepared_query,
+            &prepared_query.expr,
+            self.repo_metadata.is_some(),
+        )?;
+        if quanta_index_core::LexicalPolicy::unsupported_symbol_query_text(
             &prepared_query,
             &prepared_query.expr,
             matches!(doc_kind, QueryDocKind::Symbol),
@@ -453,6 +462,7 @@ impl TantivySearcher {
                 message: "lexical: symbol text supports keyword postings only; phrase, raw substring and regex require an unsupported symbol authority".to_string(),
             });
         }
+        self.validate_symbol_coverage_for_plan(plan, budget)?;
         let predicate_plan = self.prepare_predicate_plan(&prepared_query, budget)?;
         if predicate_plan.force_empty {
             return Ok(None);

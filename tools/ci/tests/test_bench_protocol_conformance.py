@@ -698,11 +698,48 @@ def test_streamed_staging_rejects_short_writes(tmp_path, monkeypatch):
     monkeypatch.setattr(
         module.os,
         "fdopen",
-        lambda fd, mode: ShortWriter(original(fd, mode)) if mode == "wb" else original(fd, mode),
+        lambda fd, mode, **kwargs: (
+            ShortWriter(original(fd, mode, **kwargs))
+            if mode == "wb"
+            else original(fd, mode, **kwargs)
+        ),
     )
     with pytest.raises(module.EvidenceError, match="short raw output write"):
         staged.write_raw("raw/input.bin", source)
     assert (staged.path / "raw/input.bin").read_bytes() == b"orig"
+
+
+@pytest.mark.parametrize("operation", ["control", "tail", "concatenate"])
+def test_raw_file_consumers_reject_replaced_commitment(tmp_path, operation):
+    module = _load_evidence_module()
+    reference = module.write_raw_file(tmp_path / "source", [b"original"])
+    reference.path.write_bytes(b"tampered")
+    with pytest.raises(module.EvidenceError, match="commitment"):
+        if operation == "control":
+            reference.read_control()
+        elif operation == "tail":
+            reference.tail(3)
+        else:
+            with module.RawWriter(tmp_path / "joined") as sink:
+                reference.copy_into(sink)
+
+
+def test_raw_tail_is_bounded_and_validates_all_bytes(tmp_path):
+    module = _load_evidence_module()
+    reference = module.write_raw_file(tmp_path / "source", [b"prefix", b"known-tail"])
+    assert reference.tail(4) == b"tail"
+    assert reference.tail(0) == b""
+    for limit in (-1, True, 1.0, module.IO_CHUNK_BYTES + 1):
+        with pytest.raises(module.EvidenceError, match="bounded"):
+            reference.tail(limit)
+
+
+def test_raw_control_read_refuses_oversize_without_silent_truncation(tmp_path, monkeypatch):
+    module = _load_evidence_module()
+    reference = module.write_raw_file(tmp_path / "source", [b"123456789"])
+    monkeypatch.setattr(module, "CONTROL_DOCUMENT_BYTES", 8)
+    with pytest.raises(module.EvidenceError, match="exceeds"):
+        reference.read_control()
 
 
 @pytest.mark.parametrize(

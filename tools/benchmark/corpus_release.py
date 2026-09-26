@@ -73,10 +73,11 @@ def git(root: Path, *argv: str) -> bytes:
             cwd=root,
             env=environment(),
             timeout=300,
+            log_dir=Path(tempfile.mkdtemp(prefix="quanta-corpus-git-")).resolve(),
         )
     except (OSError, ValueError) as exc:
         raise EvidenceError(f"corpus Git action failed: {exc}") from exc
-    return stdout
+    return stdout.read_control()
 
 
 def canonical_path(value: str) -> None:

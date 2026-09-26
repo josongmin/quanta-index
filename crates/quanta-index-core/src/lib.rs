@@ -14,6 +14,10 @@ pub mod ingest_resource;
 pub mod request_budget;
 pub mod timeref;
 
+pub use domains::lexical::{
+    LexicalCollectionBudget, LexicalEndpoint, LexicalMemoryReservation, LexicalPlanKind,
+    ValidatedLexicalPlan, require_complete_symbol_coverage,
+};
 pub use error::{CoreError, validate_internal_fetch_size, validate_query_top_k};
 pub use ingest_resource::{
     INGEST_RESOURCE_BUDGET_EXCEEDED_CODE, IngestBatchFootprint, IngestResourcePolicy,
@@ -77,7 +81,7 @@ pub use domains::lexical::{
     LexicalSearcher, LexicalWriterCacheStats, LexicalWriterPolicy, RegexMatchCachePolicy,
     RegexMatchCacheStats, RepoCommitRecencyIngestPort, RepoDescriptionIngestPort,
     RepoMetaIngestPort, RepoTopicIngestPort, SearchCorpusBatchBuildPort, SearchCorpusIngestPort,
-    TextAuthorityUpdateStats,
+    SymbolSearchPageV1, TextAuthorityUpdateStats,
 };
 pub use domains::observability::{
     EMBEDDING_CACHE_LEDGER_BYTES_PER_ENTRY, MetricPointV1, MetricSourcePort, MetricValueV1,
@@ -126,6 +130,10 @@ pub use domains::semantic::{
     SemanticWindowIssuerV1, SemanticWindowLeaseV1, SemanticWindowPlacementV1,
     SemanticWindowResidencyV1, TextEmbeddingProvider, build_resident_semantic_batch_v1,
     owner_key_v1,
+};
+pub use domains::source_publication::{
+    SourceEventBindingV1, SourceEventPhaseV1, SourceEventRecordV1, SourceEventReservationV1,
+    SourcePublicationCatalogPort,
 };
 pub use domains::structural::{
     StructuralError, StructuralMatchBinding, StructuralMatchCandidate, StructuralPolicy,

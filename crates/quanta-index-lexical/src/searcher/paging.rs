@@ -6,12 +6,12 @@
 )]
 
 use crate::TantivySearcher;
-use crate::budgeted_search::budgeted_search;
+use crate::budgeted_search::{CollectionBudget, budgeted_collection};
 use crate::channel_payloads::count_from_len;
 use crate::normalize::CaseMode;
 use crate::ranked_page::{
-    GroupedPageCollector, ProjectionGroup, RankedPageCollector, RankedPageFruit, RankedRow,
-    RankedRowView,
+    GroupedPageCollector, ProjectionGroup, RankedPageCollector, RankedPageFruit, RankedRowView,
+    RankedRows,
 };
 use quanta_index_contract::{LexicalCursor, LqOptions, LqQuery, LqYesNoOnly};
 use quanta_index_core::{CoreError, LexicalPageSpec, RequestBudgetV1};
@@ -119,11 +119,19 @@ impl TantivySearcher {
         if limit > self.execution_budget.max_examined_candidates() {
             return Err(self.execution_budget.exceeded(surface));
         }
-        budgeted_search(
+        let collection = CollectionBudget::new(
+            self.execution_budget,
+            self.execution_budget
+                .collection_budget(searcher.segment_readers().len())?,
+        );
+        let collector = RankedPageCollector::new(limit, after, boost, count)
+            .with_resource_budget(collection.clone());
+        budgeted_collection(
             searcher,
             compiled,
-            &RankedPageCollector::new(limit, after, boost, count),
+            &collector,
             budget,
+            collection,
             "lexical:collect",
         )
     }
@@ -137,13 +145,21 @@ impl TantivySearcher {
         boost: f32,
         surface: &str,
         budget: &RequestBudgetV1,
-    ) -> Result<Vec<RankedRow>, CoreError> {
+    ) -> Result<RankedRows, CoreError> {
         let examined = self.execution_budget.max_examined_candidates();
-        let fruit = budgeted_search(
+        let collection = CollectionBudget::new(
+            self.execution_budget,
+            self.execution_budget
+                .collection_budget(searcher.segment_readers().len())?,
+        );
+        let collector = RankedPageCollector::new(examined, None, boost, true)
+            .with_collection_budget(collection.clone());
+        let fruit = budgeted_collection(
             searcher,
             compiled,
-            &RankedPageCollector::new(examined.saturating_add(1), None, boost, true),
+            &collector,
             budget,
+            collection,
             "lexical:collect",
         )?;
         if fruit.matched > count_from_len(examined)? {
@@ -171,23 +187,26 @@ impl TantivySearcher {
         limit: usize,
         surface: &str,
         budget: &RequestBudgetV1,
-    ) -> Result<(Vec<RankedRow>, u64), CoreError> {
-        let fruit = budgeted_search(
+    ) -> Result<(RankedRows, u64), CoreError> {
+        let collection = CollectionBudget::new(
+            self.execution_budget,
+            self.execution_budget
+                .collection_budget(searcher.segment_readers().len())?,
+        );
+        let fruit = budgeted_collection(
             searcher,
             compiled,
-            &GroupedPageCollector::new(group, boost),
+            &GroupedPageCollector::new(group, boost, collection.clone()),
             budget,
+            collection,
             "lexical:collect",
         )?;
         let examined = count_from_len(self.execution_budget.max_examined_candidates())?;
         if fruit.matched > examined {
             return Err(self.execution_budget.exceeded(surface));
         }
-        let mut rows: Vec<RankedRow> = fruit
-            .representatives
-            .into_iter()
-            .filter(|row| after.is_none_or(|cursor| cursor.admits(&row.key.order_key())))
-            .collect();
+        let mut rows = fruit.representatives;
+        rows.retain(|row| after.is_none_or(|cursor| cursor.admits(&row.key.order_key())));
         let total = count_from_len(rows.len())?;
         rows.truncate(limit);
         Ok((rows, total))
@@ -198,16 +217,22 @@ impl TantivySearcher {
     pub(crate) fn rows_to_candidates<T: RankedRowView>(
         &self,
         searcher: &tantivy::Searcher,
-        rows: Vec<RankedRow>,
-        center_terms: &[String],
-        convert: fn(&Self, &TantivyDocument, f32, &[String]) -> Result<T, CoreError>,
+        rows: RankedRows,
+        context: &mut crate::searcher::candidates::SelectedPreviewContext<'_>,
+        convert: fn(
+            &Self,
+            &TantivyDocument,
+            f32,
+            &mut crate::searcher::candidates::SelectedPreviewContext<'_>,
+        ) -> Result<T, CoreError>,
     ) -> Result<Vec<T>, CoreError> {
-        rows.into_iter()
+        let candidates = rows
+            .into_iter()
             .map(|row| {
                 let doc: TantivyDocument = searcher.doc(row.address).map_err(|err| {
                     CoreError::Storage(format!("lexical: fetch doc {:?}: {err}", row.address))
                 })?;
-                let candidate = convert(self, &doc, row.key.score, center_terms)?;
+                let candidate = convert(self, &doc, row.key.score, context)?;
                 if candidate.ranked_key().order(&row.key.order_key()) != std::cmp::Ordering::Equal {
                     return Err(CoreError::Storage(format!(
                         "lexical: document {:?} stores {:?} but its order columns say {:?}",
@@ -218,7 +243,9 @@ impl TantivySearcher {
                 }
                 Ok(candidate)
             })
-            .collect()
+            .collect::<Result<Vec<T>, CoreError>>()?;
+        context.retain_output_for_request()?;
+        Ok(candidates)
     }
 
     pub(crate) fn uses_unindexed_scan(options: &LqOptions) -> bool {

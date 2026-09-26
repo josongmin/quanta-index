@@ -26,32 +26,49 @@ use std::collections::{BTreeMap, BinaryHeap};
 use std::sync::Arc;
 
 use quanta_index_contract::{LexicalCandidate, LexicalCursor, LexicalRowOrderKey, SymbolCandidate};
+use quanta_index_core::LexicalMemoryReservation;
 use tantivy::collector::{Collector, SegmentCollector};
 use tantivy::columnar::StrColumn;
 use tantivy::fastfield::Column;
 use tantivy::query::Weight;
 use tantivy::{DocAddress, DocId, Score, SegmentOrdinal, SegmentReader, TantivyError};
 
+use crate::budgeted_search::CollectionBudget;
+
+#[path = "ranked_rows.rs"]
+mod rows;
+use rows::CollectionMemory;
+pub(crate) use rows::RankedRows;
+
+#[cfg(test)]
+#[path = "ranked_page_tests.rs"]
+mod tests;
+
 /// The fast columns every ranked row is keyed by.
+pub(crate) const RANKED_SOURCE_REPO_COLUMN: &str = "repo_id";
 pub(crate) const RANKED_PATH_COLUMN: &str = "repo_relative_path";
 pub(crate) const RANKED_CANDIDATE_ID_COLUMN: &str = "candidate_id";
 pub(crate) const RANKED_START_LINE_COLUMN: &str = "start_line";
 pub(crate) const RANKED_END_LINE_COLUMN: &str = "end_line";
 
 /// One row's owned order key.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct RankedRowKey {
+    pub(crate) source_repo_id: String,
     pub(crate) score: f32,
     pub(crate) repo_relative_path: String,
     pub(crate) start_line: u32,
     pub(crate) end_line: u32,
     pub(crate) candidate_id: String,
+    // Declared after strings: their allocations drop before the lease.
+    _string_memory: Option<LexicalMemoryReservation>,
 }
 
 impl RankedRowKey {
     pub(crate) fn order_key(&self) -> LexicalRowOrderKey<'_> {
         LexicalRowOrderKey {
             score: self.score,
+            source_repo_id: &self.source_repo_id,
             repo_relative_path: &self.repo_relative_path,
             start_line: self.start_line,
             end_line: self.end_line,
@@ -65,7 +82,7 @@ impl RankedRowKey {
 }
 
 /// A row as a page keeps it: its key and where its document is.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct RankedRow {
     pub(crate) key: RankedRowKey,
     pub(crate) address: DocAddress,
@@ -102,6 +119,7 @@ fn missing_column(name: &str) -> TantivyError {
 
 /// One segment's ranked-row columns.
 struct RankedRowColumns {
+    source_repo: StrColumn,
     path: StrColumn,
     candidate_id: StrColumn,
     start_line: Column<u64>,
@@ -112,6 +130,9 @@ impl RankedRowColumns {
     fn open(reader: &SegmentReader) -> tantivy::Result<Self> {
         let fast = reader.fast_fields();
         Ok(Self {
+            source_repo: fast
+                .str(RANKED_SOURCE_REPO_COLUMN)?
+                .ok_or_else(|| missing_column(RANKED_SOURCE_REPO_COLUMN))?,
             path: fast
                 .str(RANKED_PATH_COLUMN)?
                 .ok_or_else(|| missing_column(RANKED_PATH_COLUMN))?,
@@ -124,9 +145,16 @@ impl RankedRowColumns {
     }
 
     fn ord(column: &StrColumn, doc: DocId, name: &str) -> tantivy::Result<u64> {
-        column.term_ords(doc).next().ok_or_else(|| {
+        let mut ordinals = column.term_ords(doc);
+        let ordinal = ordinals.next().ok_or_else(|| {
             TantivyError::InternalError(format!("document {doc} has no `{name}` value"))
-        })
+        })?;
+        if ordinals.next().is_some() {
+            return Err(TantivyError::InternalError(format!(
+                "document {doc} has duplicate `{name}` values"
+            )));
+        }
+        Ok(ordinal)
     }
 
     fn line(column: &Column<u64>, doc: DocId, name: &str) -> tantivy::Result<u32> {
@@ -149,20 +177,48 @@ impl RankedRowColumns {
         }
     }
 
-    fn key(&self, doc: DocId, score: f32) -> tantivy::Result<RankedRowKey> {
+    fn key(
+        &self,
+        doc: DocId,
+        score: f32,
+        collection: Option<&CollectionBudget>,
+    ) -> tantivy::Result<RankedRowKey> {
+        let source_repo = Self::ord(&self.source_repo, doc, RANKED_SOURCE_REPO_COLUMN)?;
         let path = Self::ord(&self.path, doc, RANKED_PATH_COLUMN)?;
         let candidate_id = Self::ord(&self.candidate_id, doc, RANKED_CANDIDATE_ID_COLUMN)?;
+        // Dictionary decode workspace remains outside retained-key admission
+        // until sealed admission provides an authoritative pre-decode bound.
+        let repo = Self::string(&self.source_repo, source_repo, RANKED_SOURCE_REPO_COLUMN)?;
+        let path = Self::string(&self.path, path, RANKED_PATH_COLUMN)?;
+        let id = Self::string(&self.candidate_id, candidate_id, RANKED_CANDIDATE_ID_COLUMN)?;
+        let bytes = repo
+            .len()
+            .checked_add(path.len())
+            .and_then(|n| n.checked_add(id.len()))
+            .ok_or_else(|| TantivyError::InvalidArgument("ranked key bytes overflow".into()))?;
+        let memory = collection
+            .map(|budget| budget.reserve_bytes(bytes))
+            .transpose()?;
+        // Copy into admitted exact-capacity output while the decode workspace
+        // remains alive; the lease follows this key across every ownership move.
         Ok(RankedRowKey {
+            source_repo_id: Self::copy_key_string(&repo)?,
             score,
-            repo_relative_path: Self::string(&self.path, path, RANKED_PATH_COLUMN)?,
+            repo_relative_path: Self::copy_key_string(&path)?,
             start_line: Self::line(&self.start_line, doc, RANKED_START_LINE_COLUMN)?,
             end_line: Self::line(&self.end_line, doc, RANKED_END_LINE_COLUMN)?,
-            candidate_id: Self::string(
-                &self.candidate_id,
-                candidate_id,
-                RANKED_CANDIDATE_ID_COLUMN,
-            )?,
+            candidate_id: Self::copy_key_string(&id)?,
+            _string_memory: memory,
         })
+    }
+
+    fn copy_key_string(value: &str) -> tantivy::Result<String> {
+        let mut output = String::new();
+        output.try_reserve_exact(value.len()).map_err(|error| {
+            TantivyError::InvalidArgument(format!("ranked key allocation failed: {error}"))
+        })?;
+        output.push_str(value);
+        Ok(output)
     }
 }
 
@@ -190,7 +246,7 @@ fn score_position(after: Option<&LexicalCursor>, score: f32) -> ScorePosition {
 #[derive(Debug)]
 pub(crate) struct RankedPageFruit {
     /// The first rows after the cursor, in page order, at most the limit.
-    pub(crate) rows: Vec<RankedRow>,
+    pub(crate) rows: RankedRows,
     /// Every matching row after the cursor, when the collect counted.
     pub(crate) matched: u64,
 }
@@ -201,6 +257,8 @@ pub(crate) struct RankedPageCollector {
     after: Option<Arc<LexicalCursor>>,
     boost: f32,
     count: bool,
+    collection: Option<CollectionBudget>,
+    materializes_all: bool,
 }
 
 impl RankedPageCollector {
@@ -215,7 +273,20 @@ impl RankedPageCollector {
             after,
             boost,
             count,
+            collection: None,
+            materializes_all: false,
         }
+    }
+
+    pub(crate) fn with_collection_budget(mut self, collection: CollectionBudget) -> Self {
+        self.collection = Some(collection);
+        self.materializes_all = true;
+        self
+    }
+
+    pub(crate) fn with_resource_budget(mut self, collection: CollectionBudget) -> Self {
+        self.collection = Some(collection);
+        self
     }
 
     /// Block skipping is exact only when a row's page score is its engine
@@ -233,8 +304,11 @@ pub(crate) struct RankedPageSegment {
     after: Option<Arc<LexicalCursor>>,
     boost: f32,
     heap: BinaryHeap<Latest>,
+    heap_memory: Option<LexicalMemoryReservation>,
     matched: u64,
     error: Option<TantivyError>,
+    collection: Option<CollectionBudget>,
+    materializes_all: bool,
 }
 
 impl RankedPageSegment {
@@ -247,6 +321,14 @@ impl RankedPageSegment {
     }
 
     fn offer(&mut self, doc: DocId, engine_score: Score) -> tantivy::Result<()> {
+        if self.materializes_all
+            && self
+                .collection
+                .as_ref()
+                .is_some_and(|ledger| !ledger.admit())
+        {
+            return Ok(());
+        }
         let score = engine_score * self.boost;
         let position = score_position(self.after.as_deref(), score);
         if position == ScorePosition::Before {
@@ -259,7 +341,7 @@ impl RankedPageSegment {
             self.matched = self.matched.saturating_add(1);
             return Ok(());
         }
-        let key = self.columns.key(doc, score)?;
+        let key = self.columns.key(doc, score, self.collection.as_ref())?;
         if position == ScorePosition::Tied
             && !self
                 .after
@@ -277,6 +359,7 @@ impl RankedPageSegment {
             address: DocAddress::new(self.segment_ord, doc),
         };
         if self.heap.len() < self.limit {
+            self.reserve_heap_slot()?;
             self.heap.push(Latest(row));
         } else if let Some(mut latest) = self.heap.peek_mut()
             && row.key.order(&latest.0.key) == Ordering::Less
@@ -286,11 +369,45 @@ impl RankedPageSegment {
         Ok(())
     }
 
+    fn reserve_heap_slot(&mut self) -> tantivy::Result<()> {
+        let Some(collection) = &self.collection else {
+            return Ok(());
+        };
+        if self.heap.len() < self.heap.capacity() {
+            return Ok(());
+        }
+        let capacity = self
+            .heap
+            .capacity()
+            .checked_mul(2)
+            .map(|size| size.max(4).min(self.limit))
+            .ok_or_else(|| {
+                TantivyError::InvalidArgument("ranked heap capacity overflow".to_string())
+            })?;
+        let bytes = capacity
+            .checked_mul(std::mem::size_of::<Latest>())
+            .ok_or_else(|| {
+                TantivyError::InvalidArgument("ranked heap byte size overflow".to_string())
+            })?;
+        let replacement = collection.reserve_bytes(bytes)?;
+        let additional = capacity.checked_sub(self.heap.len()).ok_or_else(|| {
+            TantivyError::InternalError("ranked heap capacity shrank".to_string())
+        })?;
+        self.heap.try_reserve_exact(additional).map_err(|error| {
+            TantivyError::InvalidArgument(format!("ranked heap allocation failed: {error}"))
+        })?;
+        self.heap_memory = Some(replacement);
+        Ok(())
+    }
+
     fn record(&mut self, doc: DocId, score: Score) {
         if self.error.is_some() {
             return;
         }
         if let Err(error) = self.offer(doc, score) {
+            if let Some(collection) = &self.collection {
+                collection.abort();
+            }
             self.error = Some(error);
         }
     }
@@ -299,8 +416,25 @@ impl RankedPageSegment {
         if let Some(error) = self.error {
             return Err(error);
         }
-        let mut rows: Vec<RankedRow> = self.heap.into_iter().map(|latest| latest.0).collect();
-        rows.sort_by(|left, right| left.key.order(&right.key));
+        if self
+            .collection
+            .as_ref()
+            .is_some_and(CollectionBudget::stopped)
+        {
+            return Err(TantivyError::InvalidArgument(
+                "ranked collection exceeded its examined-candidate budget".to_string(),
+            ));
+        }
+        let mut rows = RankedRows::with_capacity(
+            self.heap.len(),
+            self.collection
+                .as_ref()
+                .map(|collection| collection.resources.clone()),
+        )?;
+        for latest in self.heap {
+            rows.push(latest.0)?;
+        }
+        rows.sort_by(|left, right| left.key.order(&right.key))?;
         Ok(RankedPageFruit {
             rows,
             matched: self.matched,
@@ -336,8 +470,11 @@ impl Collector for RankedPageCollector {
             after: self.after.clone(),
             boost: self.boost,
             heap: BinaryHeap::new(),
+            heap_memory: None,
             matched: 0,
             error: None,
+            collection: self.collection.clone(),
+            materializes_all: self.materializes_all,
         })
     }
 
@@ -349,14 +486,36 @@ impl Collector for RankedPageCollector {
         &self,
         segment_fruits: Vec<tantivy::Result<RankedPageFruit>>,
     ) -> tantivy::Result<RankedPageFruit> {
-        let mut rows: Vec<RankedRow> = Vec::new();
+        let capacity = segment_fruits.iter().try_fold(0_usize, |total, fruit| {
+            let count = fruit
+                .as_ref()
+                .map_err(|error| TantivyError::InvalidArgument(error.to_string()))?
+                .rows
+                .len();
+            total.checked_add(count).ok_or_else(|| {
+                TantivyError::InvalidArgument("ranked merge size overflow".to_string())
+            })
+        })?;
+        let mut rows = RankedRows::with_capacity(
+            capacity,
+            self.collection
+                .as_ref()
+                .map(|collection| collection.resources.clone()),
+        )?;
         let mut matched = 0_u64;
         for fruit in segment_fruits {
             let fruit = fruit?;
             matched = matched.saturating_add(fruit.matched);
-            rows.extend(fruit.rows);
+            if let Some(collection) = &self.collection {
+                for _row in fruit.rows.iter() {
+                    collection.charge_work(1)?;
+                }
+            }
+            for row in fruit.rows {
+                rows.push(row)?;
+            }
         }
-        rows.sort_by(|left, right| left.key.order(&right.key));
+        rows.sort_by(|left, right| left.key.order(&right.key))?;
         rows.truncate(self.limit);
         Ok(RankedPageFruit { rows, matched })
     }
@@ -393,7 +552,7 @@ impl Collector for RankedPageCollector {
 /// How a projection groups rows.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ProjectionGroup {
-    /// One group: the generation's single repository.
+    /// One group per source repository in the containing generation.
     Repo,
     /// One group per repo-relative path (`select:path`, `select:file`,
     /// `select:file.owners`).
@@ -403,6 +562,7 @@ pub(crate) enum ProjectionGroup {
 /// A segment's best row of one group, by segment-local ordinals.
 #[derive(Clone, Copy, Debug)]
 struct SegmentBest {
+    source_repo: u64,
     score: f32,
     path: u64,
     start_line: u32,
@@ -417,6 +577,7 @@ impl SegmentBest {
         other
             .score
             .total_cmp(&self.score)
+            .then(self.source_repo.cmp(&other.source_repo))
             .then(self.path.cmp(&other.path))
             .then(self.start_line.cmp(&other.start_line))
             .then(self.end_line.cmp(&other.end_line))
@@ -428,7 +589,7 @@ impl SegmentBest {
 #[derive(Debug)]
 pub(crate) struct GroupedPageFruit {
     /// Every group's representative, in page order.
-    pub(crate) representatives: Vec<RankedRow>,
+    pub(crate) representatives: RankedRows,
     /// Every matching row, grouped or not.
     pub(crate) matched: u64,
 }
@@ -437,11 +598,20 @@ pub(crate) struct GroupedPageFruit {
 pub(crate) struct GroupedPageCollector {
     group: ProjectionGroup,
     boost: f32,
+    collection: CollectionBudget,
 }
 
 impl GroupedPageCollector {
-    pub(crate) const fn new(group: ProjectionGroup, boost: f32) -> Self {
-        Self { group, boost }
+    pub(crate) const fn new(
+        group: ProjectionGroup,
+        boost: f32,
+        collection: CollectionBudget,
+    ) -> Self {
+        Self {
+            group,
+            boost,
+            collection,
+        }
     }
 }
 
@@ -451,15 +621,25 @@ pub(crate) struct GroupedPageSegment {
     segment_ord: SegmentOrdinal,
     group: ProjectionGroup,
     boost: f32,
-    bests: BTreeMap<u64, SegmentBest>,
+    bests: BTreeMap<(u64, u64), SegmentBest>,
+    map_memory: CollectionMemory,
     matched: u64,
     error: Option<TantivyError>,
+    collection: CollectionBudget,
 }
 
 impl GroupedPageSegment {
     fn offer(&mut self, doc: DocId, engine_score: Score) -> tantivy::Result<()> {
+        if !self.collection.admit() {
+            return Ok(());
+        }
         self.matched = self.matched.saturating_add(1);
         let candidate = SegmentBest {
+            source_repo: RankedRowColumns::ord(
+                &self.columns.source_repo,
+                doc,
+                RANKED_SOURCE_REPO_COLUMN,
+            )?,
             score: engine_score * self.boost,
             path: RankedRowColumns::ord(&self.columns.path, doc, RANKED_PATH_COLUMN)?,
             start_line: RankedRowColumns::line(
@@ -476,16 +656,20 @@ impl GroupedPageSegment {
             doc,
         };
         let group = match self.group {
-            ProjectionGroup::Repo => 0,
-            ProjectionGroup::Path => candidate.path,
+            ProjectionGroup::Repo => (candidate.source_repo, 0),
+            ProjectionGroup::Path => (candidate.source_repo, candidate.path),
         };
         match self.bests.entry(group) {
             std::collections::btree_map::Entry::Vacant(slot) => {
-                let _inserted: &mut SegmentBest = slot.insert(candidate);
+                let memory = self
+                    .collection
+                    .reserve_map_entry::<(u64, u64), SegmentBest>()?;
+                self.map_memory.hold(memory)?;
+                let _inserted = slot.insert(candidate);
             }
             std::collections::btree_map::Entry::Occupied(mut slot) => {
                 if candidate.order(slot.get()) == Ordering::Less {
-                    let _replaced: SegmentBest = slot.insert(candidate);
+                    let _replaced = slot.insert(candidate);
                 }
             }
         }
@@ -496,26 +680,23 @@ impl GroupedPageSegment {
         if let Some(error) = self.error {
             return Err(error);
         }
-        let mut representatives = Vec::with_capacity(self.bests.len());
+        // Refuse before decoding any group strings or allocating the output
+        // buffer. The search wrapper preserves the canonical typed error.
+        if self.collection.stopped() {
+            return Err(TantivyError::InvalidArgument(
+                "grouped collection exceeded its examined-candidate budget".to_string(),
+            ));
+        }
+        let mut representatives =
+            RankedRows::with_capacity(self.bests.len(), Some(self.collection.resources.clone()))?;
         for best in self.bests.into_values() {
+            self.collection.charge_work(1)?;
             representatives.push(RankedRow {
-                key: RankedRowKey {
-                    score: best.score,
-                    repo_relative_path: RankedRowColumns::string(
-                        &self.columns.path,
-                        best.path,
-                        RANKED_PATH_COLUMN,
-                    )?,
-                    start_line: best.start_line,
-                    end_line: best.end_line,
-                    candidate_id: RankedRowColumns::string(
-                        &self.columns.candidate_id,
-                        best.candidate_id,
-                        RANKED_CANDIDATE_ID_COLUMN,
-                    )?,
-                },
+                key: self
+                    .columns
+                    .key(best.doc, best.score, Some(&self.collection))?,
                 address: DocAddress::new(self.segment_ord, best.doc),
-            });
+            })?;
         }
         Ok(GroupedPageFruit {
             representatives,
@@ -532,6 +713,7 @@ impl SegmentCollector for GroupedPageSegment {
             return;
         }
         if let Err(error) = self.offer(doc, score) {
+            self.collection.abort();
             self.error = Some(error);
         }
     }
@@ -556,8 +738,10 @@ impl Collector for GroupedPageCollector {
             group: self.group,
             boost: self.boost,
             bests: BTreeMap::new(),
+            map_memory: CollectionMemory::new(self.collection.resources.clone()),
             matched: 0,
             error: None,
+            collection: self.collection.clone(),
         })
     }
 
@@ -569,18 +753,39 @@ impl Collector for GroupedPageCollector {
         &self,
         segment_fruits: Vec<tantivy::Result<GroupedPageFruit>>,
     ) -> tantivy::Result<GroupedPageFruit> {
-        let mut groups: BTreeMap<String, RankedRow> = BTreeMap::new();
+        let mut map_memory = CollectionMemory::new(self.collection.resources.clone());
+        let mut groups: BTreeMap<(String, String), RankedRow> = BTreeMap::new();
         let mut matched = 0_u64;
         for fruit in segment_fruits {
             let fruit = fruit?;
             matched = matched.saturating_add(fruit.matched);
             for row in fruit.representatives {
+                self.collection.charge_work(1)?;
+                let key_memory = self.collection.reserve_bytes(match self.group {
+                    ProjectionGroup::Repo => row.key.source_repo_id.len(),
+                    ProjectionGroup::Path => row
+                        .key
+                        .source_repo_id
+                        .len()
+                        .checked_add(row.key.repo_relative_path.len())
+                        .ok_or_else(|| {
+                            TantivyError::InvalidArgument("group key byte size overflow".into())
+                        })?,
+                })?;
+                map_memory.hold(key_memory)?;
                 let group = match self.group {
-                    ProjectionGroup::Repo => String::new(),
-                    ProjectionGroup::Path => row.key.repo_relative_path.clone(),
+                    ProjectionGroup::Repo => (row.key.source_repo_id.clone(), String::new()),
+                    ProjectionGroup::Path => (
+                        row.key.source_repo_id.clone(),
+                        row.key.repo_relative_path.clone(),
+                    ),
                 };
                 match groups.entry(group) {
                     std::collections::btree_map::Entry::Vacant(slot) => {
+                        map_memory.hold(
+                            self.collection
+                                .reserve_map_entry::<(String, String), RankedRow>()?,
+                        )?;
                         let _inserted: &mut RankedRow = slot.insert(row);
                     }
                     std::collections::btree_map::Entry::Occupied(mut slot) => {
@@ -591,8 +796,12 @@ impl Collector for GroupedPageCollector {
                 }
             }
         }
-        let mut representatives: Vec<RankedRow> = groups.into_values().collect();
-        representatives.sort_by(|left, right| left.key.order(&right.key));
+        let mut representatives =
+            RankedRows::with_capacity(groups.len(), Some(self.collection.resources.clone()))?;
+        for row in groups.into_values() {
+            representatives.push(row)?;
+        }
+        representatives.sort_by(|left, right| left.key.order(&right.key))?;
         Ok(GroupedPageFruit {
             representatives,
             matched,
@@ -633,23 +842,23 @@ pub(crate) fn rank_in_memory<T: RankedRowView>(
 
 /// One row per group, each group's first in page order: the grouped
 /// collector's answer for rows matched in memory.
-pub(crate) fn group_in_memory(
-    rows: Vec<LexicalCandidate>,
-    group: ProjectionGroup,
-) -> Vec<LexicalCandidate> {
-    let mut groups: BTreeMap<String, LexicalCandidate> = BTreeMap::new();
+pub(crate) fn group_in_memory<T: RankedRowView>(rows: Vec<T>, group: ProjectionGroup) -> Vec<T> {
+    let mut groups: BTreeMap<(String, String), T> = BTreeMap::new();
     for row in rows {
         let key = match group {
-            ProjectionGroup::Repo => String::new(),
-            ProjectionGroup::Path => row.repo_relative_path.as_str().to_string(),
+            ProjectionGroup::Repo => (row.ranked_key().source_repo_id.to_string(), String::new()),
+            ProjectionGroup::Path => (
+                row.ranked_key().source_repo_id.to_string(),
+                row.ranked_key().repo_relative_path.to_string(),
+            ),
         };
         match groups.entry(key) {
             std::collections::btree_map::Entry::Vacant(slot) => {
-                let _inserted: &mut LexicalCandidate = slot.insert(row);
+                let _inserted: &mut T = slot.insert(row);
             }
             std::collections::btree_map::Entry::Occupied(mut slot) => {
-                if row.order_key().order(&slot.get().order_key()) == Ordering::Less {
-                    let _replaced: LexicalCandidate = slot.insert(row);
+                if row.ranked_key().order(&slot.get().ranked_key()) == Ordering::Less {
+                    let _replaced: T = slot.insert(row);
                 }
             }
         }

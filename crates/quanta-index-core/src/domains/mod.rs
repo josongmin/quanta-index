@@ -17,4 +17,5 @@ pub mod read_view;
 pub mod reclaim_area;
 pub mod repomap;
 pub mod semantic;
+pub mod source_publication;
 pub mod structural;

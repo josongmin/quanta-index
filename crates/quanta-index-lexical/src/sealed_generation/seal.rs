@@ -36,10 +36,12 @@ use tantivy::{Index, IndexReader, ReloadPolicy, Term};
 
 use crate::normalize::TEXT_NORMALIZER_VERSION;
 use crate::overlay_codec::OverlayFamily;
+use crate::sealed_generation::coverage::SOURCE_FILE_COVERAGE_FILE_NAME;
 use crate::sealed_generation::index_files::referenced_index_files;
 use crate::sealed_generation::manifest::{
     IndexSegmentVerificationV1, LexicalSealedManifest, manifest_path, read_manifest, write_manifest,
 };
+use crate::sealed_generation::verify::verify_source_coverage;
 use crate::text_authority::{
     TEXT_AUTHORITY_DIR_NAME, TEXT_AUTHORITY_MANIFEST_FILE_NAME, TextAuthorityManifest,
     finalize_for_seal,
@@ -265,6 +267,26 @@ pub(crate) fn seal_generation(
             overlays.push(measurer.commit(family.file_name())?);
         }
     }
+    let source_coverage =
+        match std::fs::symlink_metadata(generation_dir.join(SOURCE_FILE_COVERAGE_FILE_NAME)) {
+            Ok(metadata) if metadata.is_file() => {
+                Some(measurer.hash(SOURCE_FILE_COVERAGE_FILE_NAME)?)
+            }
+            Ok(_) => {
+                return Err(crate::index_store::sidecar_corrupt(
+                    generation_dir,
+                    SOURCE_FILE_COVERAGE_FILE_NAME,
+                    "coverage is not a regular file",
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => {
+                return Err(CoreError::Storage(format!(
+                    "lexical: inspect coverage before sealing: {error}",
+                )));
+            }
+        };
+    let _coverage = verify_source_coverage(generation_dir, identity, source_coverage.as_ref())?;
     let manifest = LexicalSealedManifest {
         manifest_digest: identity.manifest_digest.clone(),
         normalizer: TEXT_NORMALIZER_VERSION,
@@ -273,6 +295,7 @@ pub(crate) fn seal_generation(
         index_segments,
         text_authority,
         overlays,
+        source_coverage,
     };
     write_manifest(generation_dir, &manifest)?;
     Ok(measurer.stats)

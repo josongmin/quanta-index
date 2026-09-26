@@ -368,7 +368,13 @@ mod tests {
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
     fn batch() -> Result<crate::SearchCorpusIngestBatch, Box<dyn std::error::Error>> {
-        Ok(crate::SearchCorpusIngestBatch {
+        let mut batch = crate::SearchCorpusIngestBatch {
+            source_event: crate::SourcePublicationEvent {
+                stream_id: "fixture".into(),
+                event_id: "empty".into(),
+                expected_base_event_id: None,
+                payload_sha256: [0; 32],
+            },
             repo_id: RepoId::new("observation-repo")?,
             revision_id: RevisionId::new("observation-revision")?,
             generation: ManifestGeneration::new(4),
@@ -382,8 +388,10 @@ mod tests {
             tombstone_scopes: Vec::new(),
             semantic_replace_scopes: Vec::new(),
             semantic_tombstone_scopes: Vec::new(),
-            seal: false,
-        })
+            seal: true,
+        };
+        batch.source_event.payload_sha256 = crate::source_event_payload_sha256(&batch)?;
+        Ok(batch)
     }
 
     fn outcome() -> Result<SearchCorpusPublishOutcome, Box<dyn std::error::Error>> {
@@ -401,7 +409,13 @@ mod tests {
                 generation: batch.generation,
                 batch_digest: batch.batch_digest,
                 status: IngestObservationStatus::Executed,
-                semantic: Some(Box::new(IngestStageReport::default())),
+                semantic: Some(Box::new(IngestStageReport {
+                    durations: IngestStageDurations {
+                        seal: Some(1),
+                        ..IngestStageDurations::default()
+                    },
+                    ..IngestStageReport::default()
+                })),
                 lexical_build_ns: Some(3),
                 finalize_ns: Some(7),
                 activation_ns: None,

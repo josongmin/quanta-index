@@ -289,6 +289,7 @@ fn reclaim_materializer(
         lexical_reclaim: lexical_reclaim.clone(),
         semantic_reclaim: semantic_reclaim.clone(),
         snapshots: SnapshotRegistries::new(crate::SnapshotRegistryPolicy::DEFAULT),
+        source_publication: super::support::test_source_catalog(),
         idempotency: idempotency.clone(),
         resource_policy: IngestResourcePolicy::DEFAULT,
         semantic_stream_policy: SemanticStreamWindowPolicy::DEFAULT,
@@ -533,6 +534,7 @@ fn reclaim_sweeps_orphans_and_defers_pinned_generations() -> TestRes {
             lexical_reclaim: lexical_reclaim.clone(),
             semantic_reclaim: semantic_reclaim.clone(),
             snapshots: snapshots.clone(),
+            source_publication: super::support::test_source_catalog(),
             idempotency: catalog.clone(),
             resource_policy: IngestResourcePolicy::DEFAULT,
             semantic_stream_policy: SemanticStreamWindowPolicy::DEFAULT,
@@ -681,6 +683,7 @@ fn a_retained_half_pair_loses_its_records() -> TestRes {
             lexical_reclaim: lexical_reclaim.clone(),
             semantic_reclaim: semantic_reclaim.clone(),
             snapshots: SnapshotRegistries::new(crate::SnapshotRegistryPolicy::DEFAULT),
+            source_publication: super::support::test_source_catalog(),
             idempotency: catalog.clone(),
             resource_policy: IngestResourcePolicy::DEFAULT,
             semantic_stream_policy: SemanticStreamWindowPolicy::DEFAULT,
@@ -787,6 +790,7 @@ fn a_sealed_but_corrupt_track_is_rebuilt_by_a_replace_seal_and_refused_for_a_del
             lexical_reclaim: lexical_reclaim.clone(),
             semantic_reclaim: no_storage_sealed_reclaim(),
             snapshots: SnapshotRegistries::new(crate::SnapshotRegistryPolicy::DEFAULT),
+            source_publication: super::support::test_source_catalog(),
             idempotency: memory_catalog(),
             resource_policy: IngestResourcePolicy::DEFAULT,
             semantic_stream_policy: SemanticStreamWindowPolicy::DEFAULT,
@@ -1153,7 +1157,7 @@ fn non_seal_batch_cannot_mutate_an_already_sealed_generation() -> TestRes {
     };
     assert_eq!(
         code,
-        quanta_index_contract::SearchPlaneErrorCodeV2::GenerationImmutable
+        quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusBatchShapeInvalid
     );
     assert!(
         lexical_builder

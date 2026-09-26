@@ -148,13 +148,17 @@ def test_collection_refuses_changed_input_before_launch(tmp_path, monkeypatch, n
 
 
 @pytest.mark.parametrize("value", ["4", "", "-1"])
-def test_explicit_cargo_jobs_is_part_of_recorded_environment(fake_execution, monkeypatch, value):
+@pytest.mark.parametrize("key", [
+    "CARGO_BUILD_JOBS", "QUANTA_INDEX_RESOURCE_ADMISSION",
+    "QUANTA_INDEX_RESOURCE_WAIT_SECONDS", "QUANTA_INDEX_RESOURCE_TIMEOUT_SECONDS",
+])
+def test_explicit_resource_control_is_part_of_recorded_environment(fake_execution, monkeypatch, key, value):
     out, _, _ = fake_execution
-    monkeypatch.setenv("CARGO_BUILD_JOBS", value)
+    monkeypatch.setenv(key, value)
     context = json.loads(portable_proof.produce("sdk", out).read_bytes())
     assert all(
-        row["inherited_environment"]["CARGO_BUILD_JOBS"] == value for row in context["commands"]
+        row["inherited_environment"][key] == value for row in context["commands"]
     )
     assert portable_proof._environment_digest(
-        {"CARGO_BUILD_JOBS": value}
+        {key: value}
     ) != portable_proof._environment_digest({})

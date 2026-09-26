@@ -13,9 +13,9 @@ use quanta_index_contract::{
     SearchCorpusTombstoneScope, SearchPlaneActivateSearchCorpusGenerationCasRequest,
     SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse, SearchPlaneIngestIpcRequest,
     SearchPlaneIngestIpcResponse, SearchPlaneSearchCorpusActivationCasAck, SearchPlaneTrackKind,
-    SearchScopeKey, SearchScopeSurface, SemanticCorpusKindV1, SemanticSourceRecordV1,
-    SemanticSourceReplaceScopeV1, SemanticSourceScopeKeyV1, TextQueryRequest, TextQueryResponse,
-    TextQuerySyntax,
+    SearchScopeSurface, SemanticCorpusKindV1, SemanticSourceRecordV1, SemanticSourceReplaceScopeV1,
+    SemanticSourceScopeKeyV1, SourceFileCoverage, SourceFileKey, SourcePublicationEvent,
+    TextQueryRequest, TextQueryResponse, TextQuerySyntax,
 };
 
 use crate::text_query_builder::TextQueryBuilderState;
@@ -31,6 +31,7 @@ use crate::{BatchMode, BatchReceipt, QuantaIndex, SdkError, stamp_batch_digest_v
 /// callers that correlate receipts.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SearchCorpusBatch<const SEALED: bool = true> {
+    source_event: Option<SourcePublicationEvent>,
     repo_id: RepoId,
     revision_id: RevisionId,
     generation: ManifestGeneration,
@@ -57,6 +58,7 @@ impl SearchCorpusBatch {
             revision_id,
             generation,
             base_generation: None,
+            source_event: None,
             manifest_digest: manifest_digest.into(),
             mode: BatchMode::ReplaceGeneration,
             clear_surfaces: Vec::new(),
@@ -80,6 +82,7 @@ impl SearchCorpusBatch {
             revision_id,
             generation,
             base_generation: Some(base_generation),
+            source_event: None,
             manifest_digest: manifest_digest.into(),
             mode: BatchMode::Delta,
             clear_surfaces: Vec::new(),
@@ -92,6 +95,13 @@ impl SearchCorpusBatch {
 }
 
 impl<const SEALED: bool> SearchCorpusBatch<SEALED> {
+    /// Set producer event identity. The final payload hash is recomputed by the
+    /// SDK, but stream/id/base are never invented from target generations.
+    #[must_use]
+    pub fn source_event(mut self, event: SourcePublicationEvent) -> Self {
+        self.source_event = Some(event);
+        self
+    }
     /// Clear every indexed row on one canonical document surface. Repeated
     /// calls are idempotent and the wire vector remains canonically ordered.
     #[must_use]
@@ -105,14 +115,12 @@ impl<const SEALED: bool> SearchCorpusBatch<SEALED> {
     #[must_use]
     pub fn replace_scope(
         mut self,
-        scope: SearchScopeKey,
-        scope_digest: impl Into<String>,
+        coverage: SourceFileCoverage,
         chunks: Vec<ChunkRecord>,
         symbols: Vec<SymbolRecord>,
     ) -> Self {
         self.replace_scopes.push(SearchCorpusReplaceScope {
-            scope,
-            scope_digest: scope_digest.into(),
+            coverage,
             chunks,
             symbols,
         });
@@ -120,9 +128,9 @@ impl<const SEALED: bool> SearchCorpusBatch<SEALED> {
     }
 
     #[must_use]
-    pub fn tombstone_scope(mut self, scope: SearchScopeKey) -> Self {
+    pub fn tombstone_scope(mut self, file: SourceFileKey) -> Self {
         self.tombstone_scopes
-            .push(SearchCorpusTombstoneScope { scope });
+            .push(SearchCorpusTombstoneScope { file });
         self
     }
 
@@ -177,6 +185,7 @@ impl<const SEALED: bool> SearchCorpusBatch<SEALED> {
     #[must_use]
     pub fn without_seal(self) -> SearchCorpusBatch<false> {
         SearchCorpusBatch {
+            source_event: self.source_event,
             repo_id: self.repo_id,
             revision_id: self.revision_id,
             generation: self.generation,
@@ -260,7 +269,17 @@ impl<const SEALED: bool> SearchCorpusBatch<SEALED> {
 
     /// The wire batch, stamped with its canonical digest.
     fn to_wire_batch(&self) -> Result<SearchCorpusIngestBatch, SdkError> {
+        if !SEALED {
+            return Err(SdkError::Serialization(
+                "source-event publication requires a sealed batch".into(),
+            ));
+        }
         let mut wire = SearchCorpusIngestBatch {
+            source_event: self.source_event.clone().ok_or_else(|| {
+                SdkError::Serialization(
+                    "source-event identity is required; target generation cannot supply it".into(),
+                )
+            })?,
             repo_id: self.repo_id.clone(),
             revision_id: self.revision_id.clone(),
             generation: self.generation,
@@ -276,6 +295,10 @@ impl<const SEALED: bool> SearchCorpusBatch<SEALED> {
             semantic_tombstone_scopes: self.semantic_tombstone_scopes.clone(),
             seal: SEALED,
         };
+        wire.source_event.payload_sha256 =
+            quanta_index_contract::source_event_payload_sha256(&wire).map_err(|error| {
+                SdkError::Serialization(format!("source event payload: {error}"))
+            })?;
         stamp_batch_digest_v1(&mut wire)
             .map_err(|err| SdkError::Serialization(format!("search corpus batch digest: {err}")))?;
         Ok(wire)

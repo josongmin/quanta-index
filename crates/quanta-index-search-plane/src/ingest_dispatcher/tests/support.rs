@@ -1,6 +1,7 @@
 //! Fixtures shared by the ingest dispatcher test modules: in-memory
 //! catalogs, port doubles, and batch builders.
 
+use quanta_index_core::SourcePublicationCatalogPort as _;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -69,6 +70,7 @@ type RepomapRow = (RepoMapTerminalReceiptV2, u64, [u8; 32]);
 /// refusal columns and kind-bound payload decoder.
 #[derive(Default)]
 pub(crate) struct MemoryIdempotencyCatalog {
+    pub(crate) source_publication: Arc<TestSourceCatalog>,
     records: Mutex<BTreeMap<IdempotencyKeyV1, MemoryRecord>>,
     refusals: Mutex<BTreeMap<IdempotencyKeyV1, RefusalRow>>,
     repomap: Mutex<BTreeMap<IdempotencyKeyV1, RepomapRow>>,
@@ -771,7 +773,7 @@ impl IdempotencyCatalogPort for MemoryIdempotencyCatalog {
     }
 }
 
-pub(super) fn memory_catalog() -> Arc<MemoryIdempotencyCatalog> {
+pub(crate) fn memory_catalog() -> Arc<MemoryIdempotencyCatalog> {
     Arc::new(MemoryIdempotencyCatalog::default())
 }
 
@@ -821,6 +823,7 @@ macro_rules! search_corpus_materializer {
                 lexical_reclaim: no_storage_sealed_reclaim(),
                 semantic_reclaim: no_storage_sealed_reclaim(),
                 snapshots: SnapshotRegistries::new(crate::SnapshotRegistryPolicy::DEFAULT),
+                source_publication: super::support::test_source_catalog(),
                 idempotency: memory_catalog(),
                 resource_policy: IngestResourcePolicy::DEFAULT,
                 semantic_stream_policy: quanta_index_core::SemanticStreamWindowPolicy::DEFAULT,
@@ -1296,6 +1299,24 @@ impl quanta_index_core::LexicalSearcher for PinnedLexicalHandle {
         Err(CoreError::NotImplemented("pin-only handle".to_string()))
     }
 
+    fn search_symbols_constrained(
+        &self,
+        _query: &quanta_index_contract::LqQuery,
+        _constraints: &quanta_index_contract::QueryConstraintSetV1,
+        _page: &quanta_index_core::LexicalPageSpec,
+        _budget: &RequestBudgetV1,
+    ) -> Result<quanta_index_core::SymbolSearchPageV1, CoreError> {
+        Err(CoreError::NotImplemented("pin-only handle".to_string()))
+    }
+
+    fn search_symbols_all(
+        &self,
+        _query: &quanta_index_contract::LqQuery,
+        _budget: &RequestBudgetV1,
+    ) -> Result<Vec<quanta_index_contract::SymbolCandidate>, CoreError> {
+        Err(CoreError::NotImplemented("pin-only handle".to_string()))
+    }
+
     fn search_all(
         &self,
         _query: &quanta_index_contract::LqQuery,
@@ -1375,6 +1396,7 @@ impl ZeroMutationProbe {
                 lexical_reclaim: no_storage_sealed_reclaim(),
                 semantic_reclaim: no_storage_sealed_reclaim(),
                 snapshots: SnapshotRegistries::new(crate::SnapshotRegistryPolicy::DEFAULT),
+                source_publication: super::support::test_source_catalog(),
                 idempotency: memory_catalog(),
                 resource_policy,
                 semantic_stream_policy: SemanticStreamWindowPolicy::DEFAULT,
@@ -1583,6 +1605,14 @@ pub(super) struct FakeSearchCorpusBuilder {
 }
 
 impl quanta_index_core::SearchCorpusBatchBuildPort for FakeSearchCorpusBuilder {
+    fn preflight_batch(&self, batch: &SearchCorpusIngestBatch) -> Result<(), CoreError> {
+        batch
+            .validate_v1()
+            .map_err(|error| CoreError::InvalidContract(error.to_string()))?;
+        batch
+            .validate_surface_mutations_v1()
+            .map_err(|error| CoreError::InvalidContract(error.to_string()))
+    }
     fn build_batch(&self, batch: &SearchCorpusIngestBatch) -> Result<(), CoreError> {
         self.batches
             .lock()
@@ -1730,6 +1760,7 @@ fn typed_symbol_source_scope(id: &str, path: &str, text: &str) -> SemanticSource
 pub(super) fn fixture_search_corpus_batch()
 -> Result<SearchCorpusIngestBatch, Box<dyn std::error::Error>> {
     let mut batch = SearchCorpusIngestBatch {
+        source_event: fixture_source_event(),
         repo_id: RepoId::new("r").expect("static fixture ID satisfies canonical policy"),
         revision_id: RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
         generation: ManifestGeneration::new(7),
@@ -1739,12 +1770,11 @@ pub(super) fn fixture_search_corpus_batch()
         mode: BatchIngestMode::ReplaceGeneration,
         bundle_payload: None,
         clear_surfaces: Vec::new(),
-        replace_scopes: vec![SearchCorpusReplaceScope {
-            scope: fixture_scope(),
-            scope_digest: "scope:lex".to_string(),
-            chunks: vec![fixture_chunk_record()?],
-            symbols: Vec::new(),
-        }],
+        replace_scopes: vec![scope_with_chunks(
+            "src/main.rs",
+            "scope:lex",
+            vec![fixture_chunk_record()?],
+        )],
         tombstone_scopes: Vec::new(),
         semantic_replace_scopes: vec![typed_symbol_source_scope(
             "symbol-1",
@@ -1754,6 +1784,7 @@ pub(super) fn fixture_search_corpus_batch()
         semantic_tombstone_scopes: Vec::new(),
         seal: true,
     };
+    batch.source_event.payload_sha256 = quanta_index_contract::source_event_payload_sha256(&batch)?;
     stamp_batch_digest_v1(&mut batch)?;
     Ok(batch)
 }
@@ -1888,17 +1919,47 @@ pub(super) fn chunk_record_v(
 
 pub(super) fn scope_with_chunks(
     path: &str,
-    digest: &str,
+    _digest: &str,
     chunks: Vec<ChunkRecord>,
 ) -> SearchCorpusReplaceScope {
+    let language = chunks
+        .first()
+        .map(|chunk| chunk.language.clone())
+        .unwrap_or_else(|| {
+            quanta_index_contract::lex::LanguageCode::new("rust").expect("fixture language")
+        });
+    let unit_set_sha256 = quanta_index_contract::source_file_unit_set_sha256(&chunks, &[])
+        .expect("fixture unique unit IDs");
     SearchCorpusReplaceScope {
-        scope: SearchScopeKey {
-            doc_surface: SearchScopeSurface::Chunk,
-            repo_relative_path: RepoRelativePath::new(path),
+        coverage: quanta_index_contract::SourceFileCoverage {
+            source: quanta_index_contract::SourceFileRevision {
+                file: quanta_index_contract::SourceFileKey {
+                    source_repo_id: chunks
+                        .first()
+                        .and_then(|chunk| chunk.source_repo_id.clone())
+                        .unwrap_or_else(|| RepoId::new("r").expect("fixture repo")),
+                    repo_relative_path: RepoRelativePath::new(path),
+                },
+                revision_id: RevisionId::new("fixture-source-revision").expect("fixture revision"),
+                source_sha256: [1; 32],
+            },
+            language,
+            producer_policy_sha256: [2; 32],
+            unit_set_sha256,
+            text_admitted: true,
+            symbols: quanta_index_contract::SymbolCoverage::NotRequested,
         },
-        scope_digest: digest.to_string(),
         chunks,
         symbols: Vec::new(),
+    }
+}
+
+pub(super) fn fixture_source_event() -> quanta_index_contract::SourcePublicationEvent {
+    quanta_index_contract::SourcePublicationEvent {
+        stream_id: "fixture-stream".into(),
+        event_id: "fixture-event".into(),
+        expected_base_event_id: None,
+        payload_sha256: [0; 32],
     }
 }
 
@@ -1906,6 +1967,7 @@ pub(super) fn scope_with_chunks(
 pub(super) fn multi_scope_corpus_batch()
 -> Result<SearchCorpusIngestBatch, Box<dyn std::error::Error>> {
     let mut batch = SearchCorpusIngestBatch {
+        source_event: fixture_source_event(),
         repo_id: RepoId::new("r").expect("static fixture ID satisfies canonical policy"),
         revision_id: RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
         generation: ManifestGeneration::new(7),
@@ -1949,6 +2011,7 @@ pub(super) fn multi_scope_corpus_batch()
         semantic_tombstone_scopes: Vec::new(),
         seal: true,
     };
+    batch.source_event.payload_sha256 = quanta_index_contract::source_event_payload_sha256(&batch)?;
     stamp_batch_digest_v1(&mut batch)?;
     Ok(batch)
 }
@@ -1990,3 +2053,47 @@ impl TextEmbeddingProvider for CountingEmbedder {
 }
 
 pub(super) use search_corpus_materializer;
+
+/// Tests exercise the real durable source-event owner, while retaining the
+/// temporary directory for the lifetime of every materializer/dispatcher Arc.
+pub(crate) struct TestSourceCatalog {
+    catalog: crate::ActivationCatalog,
+    _directory: tempfile::TempDir,
+}
+impl Default for TestSourceCatalog {
+    fn default() -> Self {
+        let directory = tempfile::tempdir().expect("source catalog fixture directory");
+        let catalog =
+            crate::ActivationCatalog::open(directory.path()).expect("source catalog fixture open");
+        Self {
+            catalog,
+            _directory: directory,
+        }
+    }
+}
+impl quanta_index_core::SourcePublicationCatalogPort for TestSourceCatalog {
+    fn inspect_source_event(
+        &self,
+        repo: &RepoId,
+        event: &quanta_index_contract::SourcePublicationEvent,
+    ) -> Result<Option<quanta_index_core::SourceEventRecordV1>, CoreError> {
+        self.catalog.inspect_source_event(repo, event)
+    }
+    fn reserve_source_event(
+        &self,
+        binding: &quanta_index_core::SourceEventBindingV1,
+    ) -> Result<quanta_index_core::SourceEventReservationV1, CoreError> {
+        self.catalog.reserve_source_event(binding)
+    }
+    fn reconcile_source_event(
+        &self,
+        repo: &RepoId,
+        event: &quanta_index_contract::SourcePublicationEvent,
+        journal: &dyn IdempotencyCatalogPort,
+    ) -> Result<quanta_index_core::SourceEventRecordV1, CoreError> {
+        self.catalog.reconcile_source_event(repo, event, journal)
+    }
+}
+pub(super) fn test_source_catalog() -> Arc<TestSourceCatalog> {
+    Arc::new(TestSourceCatalog::default())
+}

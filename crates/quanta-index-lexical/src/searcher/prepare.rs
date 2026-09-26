@@ -5,11 +5,106 @@
     reason = "the module is private to the crate; `pub(crate)` is the visibility its items need across the crate's modules, and the workspace's `unreachable_pub = deny` forbids the bare `pub`"
 )]
 
+use crate::metadata_normalize::normalize_language;
 use crate::{QueryDocKind, TantivySearcher};
-use quanta_index_contract::{LqFilter, LqQuery, LqSelect, LqType, LqVisibility, LqYesNoOnly};
-use quanta_index_core::{CoreError, timeref::is_rev_at_time_spec};
+use quanta_index_contract::{
+    LqFileScope, LqFilter, LqQuery, LqSelect, LqType, LqVisibility, LqYesNoOnly,
+};
+use quanta_index_core::{
+    CoreError, RequestBudgetV1, ValidatedLexicalPlan, timeref::is_rev_at_time_spec,
+};
+use quanta_index_lq_regex::RegexExecutor;
+
+enum CoverageScopeFilter {
+    Repo(RegexExecutor),
+    File(RegexExecutor, LqFileScope),
+    Language(String),
+}
 
 impl TantivySearcher {
+    /// Admit the full source-file universe before any content/name/result
+    /// predicate can remove rows. This consumes the same immutable read handle
+    /// as execution and the same repo/path/language matching owners.
+    pub(crate) fn validate_symbol_coverage_for_plan(
+        &self,
+        plan: &ValidatedLexicalPlan,
+        budget: &RequestBudgetV1,
+    ) -> Result<(), CoreError> {
+        if !plan.uses_symbol_authority() {
+            return Ok(());
+        }
+        let mut scope_filters = Vec::new();
+        for filter in &plan.query().filters {
+            budget.checkpoint("symbol coverage scope preparation")?;
+            #[expect(
+                clippy::wildcard_enum_match_arm,
+                reason = "only explicit repo/path/language scope narrows capability; every other filter conservatively retains the full admitted universe"
+            )]
+            match filter {
+                LqFilter::Repo { pattern, revs } => {
+                    if !revs.is_empty() {
+                        return Err(CoreError::Typed {
+                            code: crate::filters::codes::REV_UNAVAILABLE,
+                            message: "lexical: repo filter revisions require a history producer"
+                                .into(),
+                        });
+                    }
+                    scope_filters.push(CoverageScopeFilter::Repo(
+                        self.manual_filter_regex(pattern, "repo")?,
+                    ));
+                }
+                LqFilter::File { pattern, scope } => {
+                    scope_filters.push(CoverageScopeFilter::File(
+                        self.manual_filter_regex(pattern, "file")?,
+                        *scope,
+                    ));
+                }
+                LqFilter::Lang { id } => {
+                    let language = normalize_language(id).ok_or_else(|| {
+                        CoreError::InvalidContract(
+                            "lexical: lang filter value cannot be empty".into(),
+                        )
+                    })?;
+                    scope_filters.push(CoverageScopeFilter::Language(language));
+                }
+                // Only explicit request scope may narrow coverage. Result
+                // predicates and projections do not establish source capability.
+                _ => {}
+            }
+        }
+        let constraints = plan.constraints();
+        quanta_index_core::domains::lexical::require_complete_symbol_coverage(
+            self.source_coverage.as_ref(),
+            |entry| {
+                let path = entry.source.file.repo_relative_path.as_str();
+                if !Self::manual_exact_path_allows(path, constraints)
+                    || (!constraints.language_any_of.is_empty()
+                        && !constraints.language_any_of.contains(&entry.language))
+                {
+                    return Ok(false);
+                }
+                for filter in &scope_filters {
+                    let matches = match filter {
+                        CoverageScopeFilter::Repo(executor) => {
+                            executor.verify(entry.source.file.source_repo_id.as_str().as_bytes())
+                        }
+                        CoverageScopeFilter::File(executor, scope) => {
+                            Self::file_filter_scope_matches(executor, *scope, path)
+                        }
+                        CoverageScopeFilter::Language(language) => {
+                            entry.language.as_str() == language
+                        }
+                    };
+                    if !matches {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            },
+            budget,
+        )
+    }
+
     pub(crate) fn repo_filter_matches(&self, filter: &LqFilter) -> Result<Option<bool>, CoreError> {
         match filter {
             LqFilter::Fork { mode } => {
@@ -102,41 +197,6 @@ impl TantivySearcher {
         Ok(true)
     }
 
-    pub(crate) fn doc_kind_for_type(kind: LqType) -> Result<QueryDocKind, CoreError> {
-        match kind {
-            LqType::File | LqType::Path | LqType::Repo => Ok(QueryDocKind::Text),
-            LqType::Symbol => Ok(QueryDocKind::Symbol),
-            // The planner pre-flight surfaces this as typed
-            // `HISTORY_PRODUCER_UNAVAILABLE` before `search()` reaches the
-            // doc-kind routing path. The defensive arm here preserves the
-            // same typed code for callers that bypass the planner (today
-            // there are none on the live rail).
-            LqType::Commit | LqType::Diff => Err(CoreError::Typed {
-                code: crate::filters::codes::HISTORY_PRODUCER_UNAVAILABLE,
-                message: format!(
-                    "lexical: type filter `{}` targets a surface with no producer on the lexical rail",
-                    kind.as_str()
-                ),
-            }),
-        }
-    }
-
-    pub(crate) fn doc_kind_for_select(dim: LqSelect) -> QueryDocKind {
-        match dim {
-            // `select:repo` collapses text hits to one representative row per
-            // repo. The current lexical rail opens exactly one repo/revision
-            // generation at a time, so execution still runs against text docs
-            // and the projection collapse happens after recall.
-            LqSelect::File
-            | LqSelect::FileOwners
-            | LqSelect::Path
-            | LqSelect::Content
-            | LqSelect::ContentMatch
-            | LqSelect::Repo => QueryDocKind::Text,
-            LqSelect::Symbol => QueryDocKind::Symbol,
-        }
-    }
-
     pub(crate) fn projects_repo_surface(query: &LqQuery) -> bool {
         query.filters.iter().any(|filter| {
             matches!(
@@ -181,37 +241,20 @@ impl TantivySearcher {
         })
     }
 
-    pub(crate) fn merge_doc_kind(
-        current: Option<QueryDocKind>,
-        next: QueryDocKind,
-        source: &str,
-    ) -> Result<Option<QueryDocKind>, CoreError> {
-        match current {
-            Some(existing) if existing != next => Err(CoreError::InvalidContract(format!(
-                "lexical: incompatible doc domain constraint from `{source}`"
-            ))),
-            Some(existing) => Ok(Some(existing)),
-            None => Ok(Some(next)),
-        }
-    }
-
-    pub(crate) fn prepare_query_for_doc_kind(
+    pub(crate) fn prepare_query_for_plan(
         &self,
-        query: &LqQuery,
-        default_doc_kind: QueryDocKind,
+        plan: &ValidatedLexicalPlan,
     ) -> Result<(LqQuery, QueryDocKind), CoreError> {
-        let mut doc_kind: Option<QueryDocKind> = None;
+        let query = plan.query();
+        let doc_kind = if plan.executes_symbol_domain() {
+            QueryDocKind::Symbol
+        } else {
+            QueryDocKind::Text
+        };
         let mut filters: Vec<LqFilter> = Vec::with_capacity(query.filters.len());
         for filter in &query.filters {
             match filter {
-                LqFilter::Type { kind } => {
-                    let next = Self::doc_kind_for_type(*kind)?;
-                    doc_kind = Self::merge_doc_kind(doc_kind, next, "type")?;
-                }
-                LqFilter::Select { dim } => {
-                    let next = Self::doc_kind_for_select(*dim);
-                    doc_kind = Self::merge_doc_kind(doc_kind, next, "select")?;
-                }
+                LqFilter::Type { .. } | LqFilter::Select { .. } => {}
                 LqFilter::Rev { spec } => {
                     // Planner pre-flight surfaces this as
                     // `LEX_FILTER_REV_UNAVAILABLE` before reaching here on
@@ -300,6 +343,6 @@ impl TantivySearcher {
         }
         let mut prepared = query.clone();
         prepared.filters = filters;
-        Ok((prepared, doc_kind.unwrap_or(default_doc_kind)))
+        Ok((prepared, doc_kind))
     }
 }

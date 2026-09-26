@@ -63,6 +63,7 @@ pub struct DirectSearchCorpusMaterializer {
     semantic_reclaim: Arc<dyn SealedGenerationReclaimPort + Send + Sync>,
     snapshots: SnapshotRegistries,
     idempotency: Arc<dyn IdempotencyCatalogPort + Send + Sync>,
+    source_publication: Arc<dyn quanta_index_core::SourcePublicationCatalogPort>,
     /// The envelope every batch is measured against before anything is
     /// held (QI-BB-021), and what the measured batches added up to.
     resource_policy: IngestResourcePolicy,
@@ -230,6 +231,7 @@ pub struct SearchCorpusMaterializerParts {
     /// Idempotency records are forgotten with the generation they describe
     /// (QI-BB-032 retention).
     pub idempotency: Arc<dyn IdempotencyCatalogPort + Send + Sync>,
+    pub source_publication: Arc<dyn quanta_index_core::SourcePublicationCatalogPort>,
     /// The resource envelope one batch may ask the plane to hold (QI-BB-021).
     pub resource_policy: IngestResourcePolicy,
     /// The window the semantic source embeds and issues in (QI-BB-021); the
@@ -263,6 +265,7 @@ impl DirectSearchCorpusMaterializer {
             semantic_reclaim,
             snapshots,
             idempotency,
+            source_publication,
             resource_policy,
             semantic_stream_policy,
             source_egress_policy,
@@ -284,6 +287,7 @@ impl DirectSearchCorpusMaterializer {
             semantic_reclaim,
             snapshots,
             idempotency,
+            source_publication,
             resource_policy,
             resource_stats: Mutex::new(IngestResourceStats::default()),
             gc_stats: Mutex::new(SearchCorpusGcStats::default()),
@@ -455,6 +459,7 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
     fn preflight_batch(&self, batch: &SearchCorpusIngestBatch) -> Result<(), CoreError> {
         Self::validate_batch_shape_v1(batch)?;
         self.admit_resource_envelope(batch)?;
+        self.builder.preflight_batch(batch)?;
         if let Some(base_generation) = batch.base_generation {
             self.preflight_delta_base_v1(batch, base_generation)?;
         }
@@ -499,6 +504,31 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
             self.preflight_delta_base_v1(batch, base_generation)?;
         }
 
+        // Repeat immutable base/candidate ownership admission under this
+        // operation's lock before reservation, provider calls or either builder.
+        self.builder.preflight_batch(batch)?;
+        let (target, _) = generation_pair_from_batch_v1(batch);
+        let binding = quanta_index_core::SourceEventBindingV1 {
+            event: batch.source_event.clone(),
+            target,
+            journal_key: quanta_index_core::IdempotencyKeyV1 {
+                kind: quanta_index_contract::IngestOperationKindV1::SearchCorpus,
+                repo_id: batch.repo_id.clone(),
+                revision_id: batch.revision_id.clone(),
+                generation: batch.generation,
+                batch_digest: batch.batch_digest.clone(),
+            },
+        };
+        match self.source_publication.reserve_source_event(&binding)? {
+            quanta_index_core::SourceEventReservationV1::Reserved(_) => {}
+            quanta_index_core::SourceEventReservationV1::Existing(record) => {
+                if record.binding != binding
+                    || record.phase != quanta_index_core::SourceEventPhaseV1::Pending
+                {
+                    return Err(CoreError::Typed { code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogBusy, message: "source event already has an original publication; replay or reconcile its journal before materializing".into() });
+                }
+            }
+        }
         if !batch.seal {
             let (lexical, semantic) = generation_pair_from_batch_v1(batch);
             ensure_generation_is_mutable_v1(

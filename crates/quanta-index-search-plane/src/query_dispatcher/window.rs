@@ -73,8 +73,8 @@ pub(super) fn exact_total_window_v1(
 /// plus its probe row); more rows than that is a contract defect. With an
 /// exact total the probe row, if any, is simply cut — the total already
 /// says whether more exist.
-pub(super) fn lexical_page_window_v1(
-    page: &mut LexicalSearchPageV1,
+pub(super) fn lexical_page_window_v1<Candidate>(
+    page: &mut LexicalSearchPageV1<Candidate>,
     requested_top_k: u32,
     fetched_top_k: u32,
 ) -> Result<QueryResultWindowV1, CoreError> {
@@ -87,10 +87,24 @@ pub(super) fn lexical_page_window_v1(
     }
     match page.exact_total {
         Some(total) => {
+            let observed = u64::try_from(page.candidates.len()).map_err(|error| {
+                CoreError::InvalidContract(format!("lexical observed rows exceed u64: {error}"))
+            })?;
+            if total < observed {
+                return Err(CoreError::InvalidContract(
+                    "lexical exact count is below the complete fetched prefix".into(),
+                ));
+            }
             page.candidates.truncate(top_k_limit(requested_top_k));
             exact_total_window_v1(page.candidates.len(), total)
         }
-        None => finalize_probe_window_v1(&mut page.candidates, requested_top_k),
+        None if fetched_top_k == probe_top_k_v1(requested_top_k)? => {
+            finalize_probe_window_v1(&mut page.candidates, requested_top_k)
+        }
+        None => Err(CoreError::InvalidContract(
+            "lexical page without a full continuation probe requires producer count evidence"
+                .into(),
+        )),
     }
 }
 
@@ -366,4 +380,34 @@ pub(super) fn semantic_window_v2(
         empty_provenance,
     )
     .map_err(|err| CoreError::InvalidContract(format!("semantic result window v2: {err}")))
+}
+
+#[cfg(test)]
+mod l1_page_facts_tests {
+    use super::*;
+
+    #[test]
+    fn missing_count_fact_cannot_turn_a_capped_page_into_exact_exhaustion() {
+        let mut page = LexicalSearchPageV1 {
+            candidates: vec![1_u8],
+            exact_total: None,
+        };
+        assert!(lexical_page_window_v1(&mut page, 3, 3).is_err());
+        let mut counted = LexicalSearchPageV1 {
+            candidates: vec![1_u8],
+            exact_total: Some(5),
+        };
+        let window = lexical_page_window_v1(&mut counted, 3, 3).expect("producer count");
+        assert_eq!(window.candidate_count(), CandidateCountV1::Exact(5));
+        assert!(window.has_more());
+    }
+
+    #[test]
+    fn clipping_cannot_hide_an_exact_count_below_observed_rows() {
+        let mut page = LexicalSearchPageV1 {
+            candidates: vec![1_u8, 2],
+            exact_total: Some(1),
+        };
+        assert!(lexical_page_window_v1(&mut page, 1, 2).is_err());
+    }
 }

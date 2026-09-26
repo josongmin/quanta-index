@@ -85,6 +85,7 @@ fn sealed_lexical_batch_with_empty_typed_scope_publishes_without_embedding() -> 
     );
     let mut batch = fixture_search_corpus_batch()?;
     batch.semantic_replace_scopes.clear();
+    batch.source_event.payload_sha256 = quanta_index_contract::source_event_payload_sha256(&batch)?;
     quanta_index_ipc::stamp_batch_digest_v1(&mut batch)?;
     let receipt = materializer.publish_batch(&batch, &RequestBudgetV1::unbounded())?;
     if !receipt.sealed || receipt.accepted_semantic_replace_scopes != 0 {
@@ -241,6 +242,7 @@ fn corpus_derivation_embeds_one_window_per_provider_call_under_a_narrow_window()
                 lexical_reclaim: no_storage_sealed_reclaim(),
                 semantic_reclaim: no_storage_sealed_reclaim(),
                 snapshots: SnapshotRegistries::new(crate::SnapshotRegistryPolicy::DEFAULT),
+                source_publication: super::support::test_source_catalog(),
                 idempotency: memory_catalog(),
                 resource_policy: IngestResourcePolicy::DEFAULT,
                 semantic_stream_policy: policy,

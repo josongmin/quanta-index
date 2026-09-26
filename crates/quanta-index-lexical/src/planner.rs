@@ -260,6 +260,18 @@ impl LexicalPlanner {
         name: &str,
         args: &[LqPredicateArg],
     ) -> Result<PlanLeaf, LexicalPlannerError> {
+        if let Some(predicate) = LexicalPredicateV1::from_canonical_name(name)
+            && predicate
+                .exact_symbol_name_argument(args)
+                .map_err(|_| LexicalPlannerError::UnsupportedFilterCombo)?
+                .is_some()
+        {
+            // Retain the exact predicate for the STRING-field compiler. It is
+            // not the historical keyword/body-search SymbolHasName predicate.
+            return Ok(PlanLeaf::Predicate {
+                name: name.to_owned(),
+            });
+        }
         // `symbol.has.name` lowers through the symbol planner, not the lexical
         // content/repo seam, so it is handled here before consulting the
         // lexical predicate registry (which intentionally does not own it).

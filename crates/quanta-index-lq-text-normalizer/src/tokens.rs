@@ -172,22 +172,37 @@ pub fn query_tokens(text: &str, case: CaseMode) -> Result<Vec<Token>, TextQueryE
 /// the keyword / phrase contract: a one-token phrase is a keyword.
 #[must_use]
 pub fn contains_phrase(document: &[Token], phrase: &[Token]) -> bool {
-    let Some(first) = phrase.first() else {
-        return false;
-    };
+    phrase_ranges(document, phrase).next().is_some()
+}
+
+/// NFC byte ranges for the same consecutive-token predicate as
+/// [`contains_phrase`].
+///
+/// Consume only the required bounded number of witnesses.
+/// Like that predicate, `document` must contain index terms in position order;
+/// dropped long runs are represented by position gaps, never bridged.
+pub fn phrase_ranges<'a>(
+    document: &'a [Token],
+    phrase: &'a [Token],
+) -> impl Iterator<Item = core::ops::Range<usize>> + 'a {
     document
         .iter()
         .enumerate()
-        .filter(|(_, token)| token.text == first.text)
-        .any(|(anchor, token)| {
-            phrase.iter().enumerate().all(|(offset, expected)| {
+        .filter(|(_, token)| phrase.first().is_some_and(|first| token.text == first.text))
+        .filter_map(|(anchor, token)| {
+            let matches = phrase.iter().enumerate().all(|(offset, expected)| {
                 document
                     .get(anchor.saturating_add(offset))
                     .is_some_and(|candidate| {
                         candidate.text == expected.text
                             && candidate.position == token.position.saturating_add(offset)
                     })
-            })
+            });
+            if !matches {
+                return None;
+            }
+            let last = document.get(anchor.saturating_add(phrase.len().checked_sub(1)?))?;
+            Some(token.start..last.end)
         })
 }
 
@@ -197,13 +212,24 @@ pub fn contains_phrase(document: &[Token], phrase: &[Token]) -> bool {
 /// sides are folded under [`CaseMode::Folded`], and nothing is tokenized.
 #[must_use]
 pub fn contains_substring(haystack: &str, needle: &str, case: CaseMode) -> bool {
+    substring_range_in_case_text(apply_case(haystack, case).as_ref(), needle, case).is_some()
+}
+
+/// Locate in text already transformed by `apply_case`; coordinates stay in
+/// that transformed text. Shared by substring truth and provenance witnesses.
+pub(crate) fn substring_range_in_case_text(
+    haystack: &str,
+    needle: &str,
+    case: CaseMode,
+) -> Option<core::ops::Range<usize>> {
     let needle = nfc(needle);
     if needle.is_empty() {
-        return false;
+        return None;
     }
-    apply_case(haystack, case)
-        .as_ref()
-        .contains(apply_case(needle.as_ref(), case).as_ref())
+    let needle = apply_case(needle.as_ref(), case);
+    haystack
+        .find(needle.as_ref())
+        .map(|start| start..start.saturating_add(needle.len()))
 }
 
 #[cfg(test)]
@@ -219,6 +245,37 @@ mod tests {
             .into_iter()
             .map(|token| token.text)
             .collect()
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "byte-exact phrase fixture assertions; query setup errors propagate"
+    )]
+    fn l4_phrase_ranges_share_token_truth_and_nfc_offsets() -> Result<(), TextQueryError> {
+        let phrase = query_tokens("blue whale", CaseMode::Folded)?;
+        let document = tokenize("BLUE\r\nwhale", CaseMode::Folded);
+        let ranges: Vec<_> = super::phrase_ranges(&document.tokens, &phrase).collect();
+        assert_eq!(ranges, vec![0..11]);
+        assert!(contains_phrase(&document.tokens, &phrase));
+        let needle = query_tokens("needle", CaseMode::Folded)?;
+        let document = tokenize("needlework NEEDLE", CaseMode::Folded);
+        assert_eq!(
+            super::phrase_ranges(&document.tokens, &needle).collect::<Vec<_>>(),
+            vec![11..17]
+        );
+        let document = tokenize(
+            &format!(
+                "blue {} whale",
+                "x".repeat(MAX_TOKEN_BYTES.saturating_add(1))
+            ),
+            CaseMode::Folded,
+        );
+        let present: Vec<_> = document.indexable().cloned().collect();
+        assert!(super::phrase_ranges(&present, &phrase).next().is_none());
+        assert!(!contains_phrase(&present, &phrase));
+        assert!(super::phrase_ranges(&present, &[]).next().is_none());
+        Ok(())
     }
 
     #[test]

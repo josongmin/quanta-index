@@ -12,12 +12,13 @@ use std::sync::{Arc, RwLock};
 
 use quanta_index_contract::{
     GenerationSnapshot, SearchPlaneRollbackSearchCorpusGenerationCasRequest,
-    SearchPlaneSearchCorpusRollbackCasAck, SearchPlaneTrackKind,
+    SearchPlaneSearchCorpusRollbackCasAck, SearchPlaneTrackKind, SourcePublicationEvent,
 };
 use quanta_index_core::{
     CoreError, DoorFindingOutcome, DoorFindingQuarantinePort, GENERATION_SIDECAR_CORRUPT_CODE,
-    LexicalIndexOpenPort, LexicalSearcher, SemanticContentRootsPort, SemanticIndexOpenPort,
-    SemanticSearcher,
+    IdempotencyCatalogPort, LexicalIndexOpenPort, LexicalSearcher, OperationInspectV1,
+    SemanticContentRootsPort, SemanticIndexOpenPort, SemanticSearcher,
+    SourcePublicationCatalogPort,
 };
 
 use crate::ingest_dispatcher::SearchCorpusAuthorityInspectPort;
@@ -127,7 +128,7 @@ impl SearchCorpusLifecycleOwner {
             .activation_catalog
             .all_active_search_corpora_for_bootstrap_v1()?;
         for active in &active_pairs {
-            promotion.prove_and_promote_pair(
+            let source_event = promotion.prove_and_promote_pair(
                 active,
                 ProofGate {
                     error_code: ERR_ACTIVATION_TARGET_UNOPENABLE,
@@ -135,6 +136,8 @@ impl SearchCorpusLifecycleOwner {
                     findings: DoorFindingPolicy::FailClosed,
                 },
             )?;
+            self.activation_catalog
+                .validate_proved_source_history(active.lexical(), source_event.as_ref())?;
         }
         Ok(active_pairs.len())
     }
@@ -203,7 +206,7 @@ impl ActivationPromotionParts {
         &self,
         candidate: &SearchCorpusGenerationV1,
         gate: ProofGate<'_>,
-    ) -> Result<(), CoreError> {
+    ) -> Result<Option<SourcePublicationEvent>, CoreError> {
         let ProofGate {
             error_code,
             operation,
@@ -245,6 +248,7 @@ impl ActivationPromotionParts {
                 ),
             });
         }
+        let source_event = lexical.source_publication_event().cloned();
         let lexical_bytes = lexical.resident_bytes_estimate();
         let _retained = self.snapshots.lexical.promote(
             &key,
@@ -261,7 +265,7 @@ impl ActivationPromotionParts {
                 resident_bytes: semantic_bytes,
             },
         )?;
-        Ok(())
+        Ok(source_event)
     }
 
     /// The typed refusal for a track whose door did not admit `target`.
@@ -320,6 +324,7 @@ impl ActivationPromotionParts {
 /// The ports one `SearchCorpusLifecycleService` is composed from.
 pub struct SearchCorpusLifecycleParts {
     pub activation_catalog: Arc<ActivationCatalog>,
+    pub idempotency: Arc<dyn IdempotencyCatalogPort>,
     pub ledger: Arc<RwLock<Ledger>>,
     /// The durable sealed history, consulted under the pair guard right
     /// before the CAS commits.
@@ -330,6 +335,7 @@ pub struct SearchCorpusLifecycleParts {
 pub(crate) struct SearchCorpusLifecycleService {
     coordinator: Arc<SearchCorpusPairMutationCoordinator>,
     activation_catalog: Arc<ActivationCatalog>,
+    idempotency: Arc<dyn IdempotencyCatalogPort>,
     ledger: Arc<RwLock<Ledger>>,
     authority: Arc<dyn SearchCorpusAuthorityInspectPort + Send + Sync>,
     promotion: ActivationPromotionParts,
@@ -339,6 +345,7 @@ impl SearchCorpusLifecycleService {
     pub(crate) fn new(parts: SearchCorpusLifecycleParts) -> Self {
         let SearchCorpusLifecycleParts {
             activation_catalog,
+            idempotency,
             ledger,
             authority,
             promotion,
@@ -346,6 +353,7 @@ impl SearchCorpusLifecycleService {
         Self {
             coordinator: activation_catalog.lifecycle_coordinator(),
             activation_catalog,
+            idempotency,
             ledger,
             authority,
             promotion,
@@ -373,7 +381,7 @@ impl SearchCorpusLifecycleService {
             .coordinator
             .lock_pair(candidate.repo_id(), candidate.revision_id())?;
         self.check_activation_preconditions_v1(candidate)?;
-        self.prove_and_promote_v1(
+        let source_event = self.prove_and_promote_v1(
             candidate,
             ProofGate {
                 error_code: ERR_ACTIVATION_TARGET_UNOPENABLE,
@@ -383,8 +391,31 @@ impl SearchCorpusLifecycleService {
         )?;
         self.check_activation_preconditions_v1(candidate)?;
         self.require_durably_sealed_v1(candidate, "activation")?;
-        self.activation_catalog
-            .activate_prepared_under_guard_v1(&pair_guard, prepared)
+        if let Some(event) = source_event.as_ref() {
+            let record = self.activation_catalog.reconcile_source_event(
+                candidate.repo_id(),
+                event,
+                self.idempotency.as_ref(),
+            )?;
+            let OperationInspectV1::Committed { receipt, .. } =
+                self.idempotency.inspect(&record.binding.journal_key)?
+            else {
+                return Err(CoreError::NotReady(
+                    "source activation lost its original committed journal".into(),
+                ));
+            };
+            if receipt.semantic_content.as_ref() != Some(candidate.semantic_content()) {
+                return Err(CoreError::Storage(
+                    "source activation semantic roots differ from the original publication receipt"
+                        .into(),
+                ));
+            }
+        }
+        self.activation_catalog.activate_prepared_under_guard_v1(
+            &pair_guard,
+            prepared,
+            source_event.as_ref(),
+        )
     }
 
     /// Roll back to a historically sealed composite: the same shape as
@@ -398,7 +429,7 @@ impl SearchCorpusLifecycleService {
             .coordinator
             .lock_pair(target.repo_id(), target.revision_id())?;
         self.check_rollback_preconditions_v1(target)?;
-        self.prove_and_promote_v1(
+        let source_event = self.prove_and_promote_v1(
             target,
             ProofGate {
                 error_code: ERR_ROLLBACK_TARGET_UNOPENABLE,
@@ -407,6 +438,8 @@ impl SearchCorpusLifecycleService {
             },
         )?;
         self.check_rollback_preconditions_v1(target)?;
+        self.activation_catalog
+            .validate_proved_source_history(target.lexical(), source_event.as_ref())?;
         self.require_durably_sealed_v1(target, "rollback")?;
         self.activation_catalog
             .rollback_under_guard_v1(&pair_guard, request)
@@ -487,7 +520,7 @@ impl SearchCorpusLifecycleService {
         &self,
         candidate: &SearchCorpusGenerationV1,
         gate: ProofGate<'_>,
-    ) -> Result<(), CoreError> {
+    ) -> Result<Option<SourcePublicationEvent>, CoreError> {
         self.promotion.prove_and_promote_pair(candidate, gate)
     }
 }
@@ -589,8 +622,9 @@ mod tests {
         SnapshotRegistries, SnapshotRegistryPolicy,
     };
     use quanta_index_core::{
-        CoreError, LexicalIndexOpenPort, LexicalSearcher, RequestBudgetV1, SemanticIndexOpenPort,
-        SemanticSearcher,
+        CoreError, IdempotencyCatalogPort, LexicalIndexOpenPort, LexicalSearcher,
+        OperationInspectV1, RequestBudgetV1, SemanticIndexOpenPort, SemanticSearcher,
+        SourcePublicationCatalogPort,
     };
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -821,6 +855,7 @@ mod tests {
             .activate_prepared_under_guard_v1(
                 &guard,
                 &PreparedSearchCorpusGenerationV1::new(active, None)?,
+                None,
             )?;
         Ok(())
     }

@@ -24,12 +24,15 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use quanta_index_contract::GenerationSnapshot;
+use quanta_index_contract::{GenerationSnapshot, SourcePublicationEvent};
 use quanta_index_core::CoreError;
 use quanta_index_core::domains::generation::SealedArtifactCommitmentV1;
 use tantivy::Index;
 
 use crate::overlay_codec::OverlayFamily;
+use crate::sealed_generation::coverage::{
+    CoverageArtifact, CoverageSnapshot, SOURCE_FILE_COVERAGE_FILE_NAME, decode_coverage,
+};
 use crate::sealed_generation::index_files::referenced_index_files;
 use crate::sealed_generation::manifest::{LexicalSealedManifest, read_bound_manifest};
 use crate::text_authority::{
@@ -67,6 +70,9 @@ pub(crate) struct VerifiedGeneration {
     /// The index, opened from the sealed commit with the tokenizers
     /// registered.
     pub(crate) index: Index,
+    /// Decoded from this generation's committed artifact; None is unavailable.
+    pub(crate) coverage: Option<CoverageSnapshot>,
+    pub(crate) source_publication: Option<SourcePublicationEvent>,
 }
 
 /// Prove `generation_dir` against the manifest sealed for `identity`.
@@ -83,7 +89,66 @@ pub(crate) fn walk_sealed_generation<V: SealedGenerationVisitor>(
     verify_index_segments(generation_dir, &index, &manifest.index_segments)?;
     verify_overlays(generation_dir, &manifest, visitor)?;
     verify_text_authority(generation_dir, manifest.text_authority.as_deref(), visitor)?;
-    Ok(VerifiedGeneration { manifest, index })
+    let coverage =
+        verify_source_coverage(generation_dir, identity, manifest.source_coverage.as_ref())?;
+    let (coverage, source_publication) = coverage.map_or((None, None), |artifact| {
+        (Some(artifact.coverage), Some(artifact.publication))
+    });
+    Ok(VerifiedGeneration {
+        manifest,
+        index,
+        coverage,
+        source_publication,
+    })
+}
+
+/// Verify and decode the same bytes. A missing committed artifact or an
+/// uncommitted extra artifact is corruption, not an empty file universe.
+pub(crate) fn verify_source_coverage(
+    generation_dir: &Path,
+    identity: &GenerationSnapshot,
+    committed: Option<&SealedArtifactCommitmentV1>,
+) -> Result<Option<CoverageArtifact>, CoreError> {
+    if let Some(artifact) = committed {
+        let path = generation_dir.join(SOURCE_FILE_COVERAGE_FILE_NAME);
+        match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.is_file() => {}
+            Ok(_) => {
+                return Err(crate::index_store::sidecar_corrupt(
+                    generation_dir,
+                    SOURCE_FILE_COVERAGE_FILE_NAME,
+                    "coverage is not a regular file",
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(crate::index_store::sidecar_corrupt(
+                    generation_dir,
+                    SOURCE_FILE_COVERAGE_FILE_NAME,
+                    "missing",
+                ));
+            }
+            Err(error) => {
+                return Err(CoreError::Storage(format!(
+                    "lexical: inspect committed coverage {}: {error}",
+                    path.display(),
+                )));
+            }
+        }
+        let bytes = read_committed(generation_dir, artifact)?;
+        return decode_coverage(&bytes, generation_dir, identity).map(Some);
+    }
+    match std::fs::symlink_metadata(generation_dir.join(SOURCE_FILE_COVERAGE_FILE_NAME)) {
+        Ok(_) => Err(crate::index_store::sidecar_corrupt(
+            generation_dir,
+            SOURCE_FILE_COVERAGE_FILE_NAME,
+            "coverage exists without a manifest commitment",
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(CoreError::Storage(format!(
+            "lexical: inspect source coverage under {}: {error}",
+            generation_dir.display()
+        ))),
+    }
 }
 
 /// Read one committed file whole and prove its length and digest.

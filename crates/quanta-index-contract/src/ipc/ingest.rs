@@ -41,6 +41,7 @@ use crate::lex::{
 use crate::{
     ChunkId, ChunkRecord, EmbeddingRecord, ManifestGeneration, OwnerDocKind, RepoId,
     RepoMapPublishBundleRequestV2, RepoMapTerminalReceiptV2, RepoRelativePath, RevisionId,
+    SourceFileCoverage, SourceFileKey, SourcePublicationEvent,
 };
 
 use super::{
@@ -227,11 +228,33 @@ pub enum SearchCorpusSurfaceMutationConflictV1 {
     ReplaceAndTombstone(SearchScopeSurface),
     ClearAndReplace(SearchScopeSurface),
     ClearAndTombstone(SearchScopeSurface),
+    RecordPathMismatch(SearchScopeSurface),
+    DuplicateCandidateId,
+    InvalidCoverage,
+    CoverageUnitMismatch,
+    RecordSourceMismatch,
+    RecordLanguageMismatch,
+    InvalidRecordRange,
 }
 
 impl fmt::Display for SearchCorpusSurfaceMutationConflictV1 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidCoverage => {
+                formatter.write_str("invalid source-file coverage or tombstone identity")
+            }
+            Self::CoverageUnitMismatch => {
+                formatter.write_str("coverage state or unit digest disagrees with supplied units")
+            }
+            Self::RecordSourceMismatch => {
+                formatter.write_str("record source repo differs from replacement file owner")
+            }
+            Self::RecordLanguageMismatch => {
+                formatter.write_str("record language differs from replacement file language")
+            }
+            Self::InvalidRecordRange => {
+                formatter.write_str("record byte or line span is inconsistent with supplied text")
+            }
             Self::DuplicateClear(surface) => {
                 write!(formatter, "duplicate clear for search surface {surface:?}")
             }
@@ -262,6 +285,13 @@ impl fmt::Display for SearchCorpusSurfaceMutationConflictV1 {
                 formatter,
                 "search surface {surface:?} cannot be cleared and tombstoned in one batch"
             ),
+            Self::RecordPathMismatch(surface) => write!(
+                formatter,
+                "search {surface:?} record path must equal its replacement file path"
+            ),
+            Self::DuplicateCandidateId => {
+                formatter.write_str("search candidate IDs must be unique across chunks and symbols")
+            }
         }
     }
 }
@@ -343,22 +373,20 @@ impl<'de> Deserialize<'de> for SearchScopeKey {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SearchCorpusReplaceScope {
-    pub scope: SearchScopeKey,
-    pub scope_digest: String,
+    pub coverage: SourceFileCoverage,
     pub chunks: Vec<ChunkRecord>,
     pub symbols: Vec<SymbolRecord>,
 }
 
-const SEARCH_CORPUS_REPLACE_SCOPE_FIELDS: &[&str] = &["scope", "scope_digest", "chunks", "symbols"];
+const SEARCH_CORPUS_REPLACE_SCOPE_FIELDS: &[&str] = &["coverage", "chunks", "symbols"];
 
 impl Serialize for SearchCorpusReplaceScope {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("SearchCorpusReplaceScope", 4)?;
-        state.serialize_field("scope", &self.scope)?;
-        state.serialize_field("scope_digest", &self.scope_digest)?;
+        let mut state = serializer.serialize_struct("SearchCorpusReplaceScope", 3)?;
+        state.serialize_field("coverage", &self.coverage)?;
         state.serialize_field("chunks", &self.chunks)?;
         state.serialize_field("symbols", &self.symbols)?;
         state.end()
@@ -378,23 +406,16 @@ impl<'de> Visitor<'de> for SearchCorpusReplaceScopeVisitor {
     where
         A: MapAccess<'de>,
     {
-        let mut scope: Option<SearchScopeKey> = None;
-        let mut scope_digest: Option<String> = None;
+        let mut coverage: Option<SourceFileCoverage> = None;
         let mut chunks: Option<Vec<ChunkRecord>> = None;
         let mut symbols: Option<Vec<SymbolRecord>> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
-                "scope" => {
-                    if scope.is_some() {
-                        return Err(de::Error::duplicate_field("scope"));
+                "coverage" => {
+                    if coverage.is_some() {
+                        return Err(de::Error::duplicate_field("coverage"));
                     }
-                    scope = Some(map.next_value()?);
-                }
-                "scope_digest" => {
-                    if scope_digest.is_some() {
-                        return Err(de::Error::duplicate_field("scope_digest"));
-                    }
-                    scope_digest = Some(map.next_value()?);
+                    coverage = Some(map.next_value()?);
                 }
                 "chunks" => {
                     if chunks.is_some() {
@@ -417,8 +438,7 @@ impl<'de> Visitor<'de> for SearchCorpusReplaceScopeVisitor {
             }
         }
         Ok(SearchCorpusReplaceScope {
-            scope: scope.ok_or_else(|| de::Error::missing_field("scope"))?,
-            scope_digest: scope_digest.ok_or_else(|| de::Error::missing_field("scope_digest"))?,
+            coverage: coverage.ok_or_else(|| de::Error::missing_field("coverage"))?,
             chunks: chunks.ok_or_else(|| de::Error::missing_field("chunks"))?,
             symbols: symbols.ok_or_else(|| de::Error::missing_field("symbols"))?,
         })
@@ -440,10 +460,10 @@ impl<'de> Deserialize<'de> for SearchCorpusReplaceScope {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SearchCorpusTombstoneScope {
-    pub scope: SearchScopeKey,
+    pub file: SourceFileKey,
 }
 
-const SEARCH_CORPUS_TOMBSTONE_SCOPE_FIELDS: &[&str] = &["scope"];
+const SEARCH_CORPUS_TOMBSTONE_SCOPE_FIELDS: &[&str] = &["file"];
 
 impl Serialize for SearchCorpusTombstoneScope {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -451,7 +471,7 @@ impl Serialize for SearchCorpusTombstoneScope {
         S: Serializer,
     {
         let mut state = serializer.serialize_struct("SearchCorpusTombstoneScope", 1)?;
-        state.serialize_field("scope", &self.scope)?;
+        state.serialize_field("file", &self.file)?;
         state.end()
     }
 }
@@ -469,14 +489,14 @@ impl<'de> Visitor<'de> for SearchCorpusTombstoneScopeVisitor {
     where
         A: MapAccess<'de>,
     {
-        let mut scope: Option<SearchScopeKey> = None;
+        let mut file: Option<SourceFileKey> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
-                "scope" => {
-                    if scope.is_some() {
-                        return Err(de::Error::duplicate_field("scope"));
+                "file" => {
+                    if file.is_some() {
+                        return Err(de::Error::duplicate_field("file"));
                     }
-                    scope = Some(map.next_value()?);
+                    file = Some(map.next_value()?);
                 }
                 other => {
                     return Err(de::Error::unknown_field(
@@ -487,7 +507,7 @@ impl<'de> Visitor<'de> for SearchCorpusTombstoneScopeVisitor {
             }
         }
         Ok(SearchCorpusTombstoneScope {
-            scope: scope.ok_or_else(|| de::Error::missing_field("scope"))?,
+            file: file.ok_or_else(|| de::Error::missing_field("file"))?,
         })
     }
 }
@@ -507,6 +527,8 @@ impl<'de> Deserialize<'de> for SearchCorpusTombstoneScope {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SearchCorpusIngestBatch {
+    /// Producer source identity, independent of this materialization target.
+    pub source_event: SourcePublicationEvent,
     pub repo_id: RepoId,
     pub revision_id: RevisionId,
     pub generation: ManifestGeneration,
@@ -527,6 +549,7 @@ pub struct SearchCorpusIngestBatch {
 }
 
 const SEARCH_CORPUS_INGEST_BATCH_FIELDS: &[&str] = &[
+    "source_event",
     "repo_id",
     "revision_id",
     "generation",
@@ -548,7 +571,8 @@ impl Serialize for SearchCorpusIngestBatch {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("SearchCorpusIngestBatch", 14)?;
+        let mut state = serializer.serialize_struct("SearchCorpusIngestBatch", 15)?;
+        state.serialize_field("source_event", &self.source_event)?;
         state.serialize_field("repo_id", &self.repo_id)?;
         state.serialize_field("revision_id", &self.revision_id)?;
         state.serialize_field("generation", &self.generation)?;
@@ -580,6 +604,7 @@ impl<'de> Visitor<'de> for SearchCorpusIngestBatchVisitor {
     where
         A: MapAccess<'de>,
     {
+        let mut source_event: Option<SourcePublicationEvent> = None;
         let mut repo_id: Option<RepoId> = None;
         let mut revision_id: Option<RevisionId> = None;
         let mut generation: Option<ManifestGeneration> = None;
@@ -596,6 +621,12 @@ impl<'de> Visitor<'de> for SearchCorpusIngestBatchVisitor {
         let mut seal: Option<bool> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
+                "source_event" => {
+                    if source_event.is_some() {
+                        return Err(de::Error::duplicate_field("source_event"));
+                    }
+                    source_event = Some(map.next_value()?);
+                }
                 "repo_id" => {
                     if repo_id.is_some() {
                         return Err(de::Error::duplicate_field("repo_id"));
@@ -689,6 +720,7 @@ impl<'de> Visitor<'de> for SearchCorpusIngestBatchVisitor {
             }
         }
         Ok(SearchCorpusIngestBatch {
+            source_event: source_event.ok_or_else(|| de::Error::missing_field("source_event"))?,
             repo_id: repo_id.ok_or_else(|| de::Error::missing_field("repo_id"))?,
             revision_id: revision_id.ok_or_else(|| de::Error::missing_field("revision_id"))?,
             generation: generation.ok_or_else(|| de::Error::missing_field("generation"))?,
@@ -750,17 +782,28 @@ pub enum SearchCorpusBatchShapeErrorV1 {
     /// `manifest_digest` is empty or not a bare printable ASCII token; the
     /// activation identity and the retention record both key on it and
     /// neither can carry such a value.
-    DigestNotCanonical { field: &'static str },
+    DigestNotCanonical {
+        field: &'static str,
+    },
     /// `batch_digest` does not have the shape of a canonical batch digest
     /// (64 lowercase hex characters, see
     /// [`is_canonical_batch_digest_token_v1`]); the idempotency record keys
     /// on it and the search plane recomputes it from the body.
     BatchDigestNotCanonical,
+    SourceEventInvalid,
+    SourceEventPayloadMismatch,
+    UnsealedSourceEvent,
 }
 
 impl fmt::Display for SearchCorpusBatchShapeErrorV1 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::SourceEventInvalid => formatter.write_str("invalid source publication event"),
+            Self::SourceEventPayloadMismatch => formatter
+                .write_str("source event payload hash does not bind the supplied mutations"),
+            Self::UnsealedSourceEvent => {
+                formatter.write_str("source-event publication requires a sealed batch")
+            }
             Self::ModeBaseMismatch {
                 mode,
                 base_generation,
@@ -829,6 +872,18 @@ impl SearchCorpusIngestBatch {
         if !is_canonical_batch_digest_token_v1(&self.batch_digest) {
             return Err(SearchCorpusBatchShapeErrorV1::BatchDigestNotCanonical);
         }
+        if !self.seal {
+            return Err(SearchCorpusBatchShapeErrorV1::UnsealedSourceEvent);
+        }
+        self.source_event
+            .validate()
+            .map_err(|_| SearchCorpusBatchShapeErrorV1::SourceEventInvalid)?;
+        if crate::source_event_payload_sha256(self)
+            .map_err(|_| SearchCorpusBatchShapeErrorV1::SourceEventInvalid)?
+            != self.source_event.payload_sha256
+        {
+            return Err(SearchCorpusBatchShapeErrorV1::SourceEventPayloadMismatch);
+        }
         Ok(())
     }
 
@@ -838,26 +893,29 @@ impl SearchCorpusIngestBatch {
     pub fn validate_surface_mutations_v1(
         &self,
     ) -> Result<(), SearchCorpusSurfaceMutationConflictV1> {
-        let clear_surfaces = validated_search_corpus_clear_surfaces_v1(self)?;
-        validate_search_corpus_lexical_scope_mutations_v1(self)?;
+        let clear_surfaces = validated_search_corpus_clear_surfaces_v1(&self.clear_surfaces)?;
+        validate_lexical_file_mutations_v1(
+            &self.clear_surfaces,
+            &self.replace_scopes,
+            &self.tombstone_scopes,
+        )?;
         validate_search_corpus_semantic_scope_mutations_v1(self)?;
         validate_search_corpus_clear_disjoint_v1(self, &clear_surfaces)
     }
 }
 
 fn validated_search_corpus_clear_surfaces_v1(
-    batch: &SearchCorpusIngestBatch,
+    surfaces: &[SearchScopeSurface],
 ) -> Result<BTreeSet<SearchScopeSurface>, SearchCorpusSurfaceMutationConflictV1> {
     let mut clear_surfaces = BTreeSet::new();
-    for surface in &batch.clear_surfaces {
+    for surface in surfaces {
         if !clear_surfaces.insert(*surface) {
             return Err(SearchCorpusSurfaceMutationConflictV1::DuplicateClear(
                 *surface,
             ));
         }
     }
-    if !batch
-        .clear_surfaces
+    if !surfaces
         .windows(2)
         .all(|pair| matches!(pair, [left, right] if left < right))
     {
@@ -866,39 +924,123 @@ fn validated_search_corpus_clear_surfaces_v1(
     Ok(clear_surfaces)
 }
 
-fn validate_search_corpus_lexical_scope_mutations_v1(
-    batch: &SearchCorpusIngestBatch,
+/// Pure admission for typed batches and fully decoded raw channel operations.
+/// Validate the entire list before preparing a generation or acquiring a writer.
+pub fn validate_lexical_file_mutations_v1(
+    clear: &[SearchScopeSurface],
+    replace: &[SearchCorpusReplaceScope],
+    tombstone: &[SearchCorpusTombstoneScope],
 ) -> Result<(), SearchCorpusSurfaceMutationConflictV1> {
+    let clear_surfaces = validated_search_corpus_clear_surfaces_v1(clear)?;
     let mut replace_scope_keys = BTreeSet::new();
-    for scope in &batch.replace_scopes {
-        let key = (
-            scope.scope.doc_surface,
-            scope.scope.repo_relative_path.as_str(),
-        );
+    let mut candidate_ids = BTreeSet::new();
+    for scope in replace {
+        scope
+            .coverage
+            .validate()
+            .map_err(|_| SearchCorpusSurfaceMutationConflictV1::InvalidCoverage)?;
+        let key = &scope.coverage.source.file;
         if !replace_scope_keys.insert(key) {
             return Err(
                 SearchCorpusSurfaceMutationConflictV1::DuplicateReplaceScope(
-                    scope.scope.doc_surface,
+                    SearchScopeSurface::Chunk,
                 ),
             );
         }
+        for chunk in &scope.chunks {
+            if chunk.repo_relative_path != key.repo_relative_path {
+                return Err(SearchCorpusSurfaceMutationConflictV1::RecordPathMismatch(
+                    SearchScopeSurface::Chunk,
+                ));
+            }
+            if chunk
+                .source_repo_id
+                .as_ref()
+                .is_some_and(|repo| repo != &key.source_repo_id)
+            {
+                return Err(SearchCorpusSurfaceMutationConflictV1::RecordSourceMismatch);
+            }
+            if chunk.language != scope.coverage.language {
+                return Err(SearchCorpusSurfaceMutationConflictV1::RecordLanguageMismatch);
+            }
+            if chunk.end_byte.checked_sub(chunk.start_byte).map(u64::from)
+                != u64::try_from(chunk.text.len()).ok()
+                || chunk.end_line < chunk.start_line
+            {
+                return Err(SearchCorpusSurfaceMutationConflictV1::InvalidRecordRange);
+            }
+            if !candidate_ids.insert(chunk.chunk_id.as_str()) {
+                return Err(SearchCorpusSurfaceMutationConflictV1::DuplicateCandidateId);
+            }
+        }
+        for symbol in &scope.symbols {
+            if symbol.repo_relative_path != key.repo_relative_path
+                || symbol.definition_span.path.as_ref() != key.repo_relative_path.as_str()
+            {
+                return Err(SearchCorpusSurfaceMutationConflictV1::RecordPathMismatch(
+                    SearchScopeSurface::Symbol,
+                ));
+            }
+            if symbol.language != scope.coverage.language {
+                return Err(SearchCorpusSurfaceMutationConflictV1::RecordLanguageMismatch);
+            }
+            if symbol.definition_span.byte_end < symbol.definition_span.byte_start
+                || symbol.definition_span.line_end < symbol.definition_span.line_start
+            {
+                return Err(SearchCorpusSurfaceMutationConflictV1::InvalidRecordRange);
+            }
+            if !candidate_ids.insert(symbol.symbol_id.as_str()) {
+                return Err(SearchCorpusSurfaceMutationConflictV1::DuplicateCandidateId);
+            }
+        }
+        let count = u64::try_from(scope.symbols.len())
+            .map_err(|_| SearchCorpusSurfaceMutationConflictV1::CoverageUnitMismatch)?;
+        let symbols_match = match scope.coverage.symbols {
+            crate::SymbolCoverage::Complete { symbol_count } => symbol_count == count,
+            _ => count == 0,
+        };
+        if !symbols_match
+            || (!scope.coverage.text_admitted && !scope.chunks.is_empty())
+            || crate::source_file_unit_set_sha256(&scope.chunks, &scope.symbols)
+                .map_err(|_| SearchCorpusSurfaceMutationConflictV1::CoverageUnitMismatch)?
+                != scope.coverage.unit_set_sha256
+        {
+            return Err(SearchCorpusSurfaceMutationConflictV1::CoverageUnitMismatch);
+        }
     }
     let mut tombstone_scope_keys = BTreeSet::new();
-    for scope in &batch.tombstone_scopes {
-        let key = (
-            scope.scope.doc_surface,
-            scope.scope.repo_relative_path.as_str(),
-        );
+    for scope in tombstone {
+        scope
+            .file
+            .validate()
+            .map_err(|_| SearchCorpusSurfaceMutationConflictV1::InvalidCoverage)?;
+        let key = &scope.file;
         if !tombstone_scope_keys.insert(key) {
             return Err(
                 SearchCorpusSurfaceMutationConflictV1::DuplicateTombstoneScope(
-                    scope.scope.doc_surface,
+                    SearchScopeSurface::Chunk,
                 ),
             );
         }
         if replace_scope_keys.contains(&key) {
             return Err(SearchCorpusSurfaceMutationConflictV1::ReplaceAndTombstone(
-                scope.scope.doc_surface,
+                SearchScopeSurface::Chunk,
+            ));
+        }
+    }
+    for surface in &clear_surfaces {
+        let deletes_lexical_kind = matches!(
+            surface,
+            SearchScopeSurface::Chunk | SearchScopeSurface::Symbol
+        );
+        if deletes_lexical_kind && !replace.is_empty() {
+            return Err(SearchCorpusSurfaceMutationConflictV1::ClearAndReplace(
+                *surface,
+            ));
+        }
+        if deletes_lexical_kind && !tombstone.is_empty() {
+            return Err(SearchCorpusSurfaceMutationConflictV1::ClearAndTombstone(
+                *surface,
             ));
         }
     }
@@ -948,17 +1090,9 @@ fn validate_search_corpus_clear_disjoint_v1(
     batch: &SearchCorpusIngestBatch,
     clear_surfaces: &BTreeSet<SearchScopeSurface>,
 ) -> Result<(), SearchCorpusSurfaceMutationConflictV1> {
-    for surface in batch
-        .replace_scopes
-        .iter()
-        .map(|scope| scope.scope.doc_surface)
-        .chain(batch.semantic_replace_scopes.iter().map(|scope| {
-            SearchScopeSurface::for_semantic_owner_v1(
-                scope.scope.owner_kind,
-                scope.scope.corpus_kind,
-            )
-        }))
-    {
+    for surface in batch.semantic_replace_scopes.iter().map(|scope| {
+        SearchScopeSurface::for_semantic_owner_v1(scope.scope.owner_kind, scope.scope.corpus_kind)
+    }) {
         if clear_surfaces.contains(&surface) {
             return Err(SearchCorpusSurfaceMutationConflictV1::ClearAndReplace(
                 surface,
@@ -966,12 +1100,9 @@ fn validate_search_corpus_clear_disjoint_v1(
         }
     }
     for surface in batch
-        .tombstone_scopes
+        .semantic_tombstone_scopes
         .iter()
-        .map(|scope| scope.scope.doc_surface)
-        .chain(batch.semantic_tombstone_scopes.iter().map(|scope| {
-            SearchScopeSurface::for_semantic_owner_v1(scope.owner_kind, scope.corpus_kind)
-        }))
+        .map(|scope| SearchScopeSurface::for_semantic_owner_v1(scope.owner_kind, scope.corpus_kind))
     {
         if clear_surfaces.contains(&surface) {
             return Err(SearchCorpusSurfaceMutationConflictV1::ClearAndTombstone(
@@ -4759,6 +4890,7 @@ mod tests {
         CapabilityStatusV1, ChunkRecord, EmbeddingId, EmbeddingRecord, RepoRelativePath,
         SourceRoleV1,
     };
+    use sha2::Digest as _;
 
     type TestRes = Result<(), Box<dyn std::error::Error>>;
 
@@ -4955,7 +5087,30 @@ mod tests {
         "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
     fn fixture_search_corpus_batch() -> SearchCorpusIngestBatch {
-        SearchCorpusIngestBatch {
+        let chunks = vec![fixture_chunk_record()];
+        let coverage = SourceFileCoverage {
+            source: crate::SourceFileRevision {
+                file: SourceFileKey {
+                    source_repo_id: fixture_repo_id(),
+                    repo_relative_path: RepoRelativePath::new("src/main.rs"),
+                },
+                revision_id: fixture_revision_id(),
+                source_sha256: sha2::Sha256::digest(b"fn main() {}").into(),
+            },
+            language: chunks[0].language.clone(),
+            producer_policy_sha256: [2; 32],
+            unit_set_sha256: crate::source_file_unit_set_sha256(&chunks, &[])
+                .expect("fixture units encode"),
+            text_admitted: true,
+            symbols: crate::SymbolCoverage::NotRequested,
+        };
+        let mut batch = SearchCorpusIngestBatch {
+            source_event: SourcePublicationEvent {
+                stream_id: "fixture".into(),
+                event_id: "initial".into(),
+                expected_base_event_id: None,
+                payload_sha256: [0; 32],
+            },
             repo_id: fixture_repo_id(),
             revision_id: fixture_revision_id(),
             generation: fixture_generation(),
@@ -4966,21 +5121,23 @@ mod tests {
             bundle_payload: None,
             clear_surfaces: Vec::new(),
             replace_scopes: vec![SearchCorpusReplaceScope {
-                scope: fixture_scope_key(),
-                scope_digest: "scope:feed".to_string(),
-                chunks: vec![fixture_chunk_record()],
+                coverage,
+                chunks,
                 symbols: vec![],
             }],
             tombstone_scopes: vec![SearchCorpusTombstoneScope {
-                scope: SearchScopeKey {
-                    doc_surface: SearchScopeSurface::Symbol,
-                    repo_relative_path: RepoRelativePath::new("src/main.rs"),
+                file: SourceFileKey {
+                    source_repo_id: fixture_repo_id(),
+                    repo_relative_path: RepoRelativePath::new("src/old.rs"),
                 },
             }],
             semantic_replace_scopes: Vec::new(),
             semantic_tombstone_scopes: Vec::new(),
             seal: true,
-        }
+        };
+        batch.source_event.payload_sha256 =
+            crate::source_event_payload_sha256(&batch).expect("fixture event encodes");
+        batch
     }
 
     fn fixture_semantic_batch() -> SemanticIngestBatch {
@@ -5397,11 +5554,11 @@ mod tests {
     #[test]
     fn search_corpus_clear_surface_authority_rejects_conflicts_v1() {
         let mut batch = fixture_search_corpus_batch();
-        batch.clear_surfaces = vec![SearchScopeSurface::File];
+        batch.clear_surfaces = vec![SearchScopeSurface::Chunk];
         assert_eq!(
             batch.validate_surface_mutations_v1(),
             Err(SearchCorpusSurfaceMutationConflictV1::ClearAndReplace(
-                SearchScopeSurface::File
+                SearchScopeSurface::Chunk
             ))
         );
 
@@ -5430,7 +5587,7 @@ mod tests {
             batch.validate_surface_mutations_v1(),
             Err(
                 SearchCorpusSurfaceMutationConflictV1::DuplicateReplaceScope(
-                    SearchScopeSurface::File
+                    SearchScopeSurface::Chunk
                 )
             )
         );
@@ -5440,13 +5597,151 @@ mod tests {
             .tombstone_scopes
             .first_mut()
             .expect("fixture must contain one tombstone scope")
-            .scope = fixture_scope_key();
+            .file = SourceFileKey {
+            source_repo_id: fixture_repo_id(),
+            repo_relative_path: RepoRelativePath::new("src/main.rs"),
+        };
         assert_eq!(
             batch.validate_surface_mutations_v1(),
             Err(SearchCorpusSurfaceMutationConflictV1::ReplaceAndTombstone(
-                SearchScopeSurface::File
+                SearchScopeSurface::Chunk
             ))
         );
+    }
+
+    #[test]
+    fn g0_duplicate_replacements_cannot_overwrite_one_file() {
+        for reverse in [false, true] {
+            let mut batch = fixture_search_corpus_batch();
+            batch.tombstone_scopes.clear();
+            let other = batch.replace_scopes[0].clone();
+            batch.replace_scopes.push(other);
+            if reverse {
+                batch.replace_scopes.reverse();
+            }
+            assert!(batch.validate_surface_mutations_v1().is_err());
+        }
+    }
+
+    #[test]
+    fn g0_duplicate_tombstones_cannot_address_one_file_twice() {
+        let mut batch = fixture_search_corpus_batch();
+        batch.replace_scopes.clear();
+        let other = batch.tombstone_scopes[0].clone();
+        batch.tombstone_scopes.push(other);
+        assert!(batch.validate_surface_mutations_v1().is_err());
+    }
+
+    #[test]
+    fn g0_replace_and_tombstone_conflict_across_surface_aliases() {
+        let mut batch = fixture_search_corpus_batch();
+        batch.tombstone_scopes[0].file.repo_relative_path = RepoRelativePath::new("src/main.rs");
+        assert!(batch.validate_surface_mutations_v1().is_err());
+    }
+
+    #[test]
+    fn g0_replacement_cannot_carry_a_different_chunk_path() {
+        let mut batch = fixture_search_corpus_batch();
+        batch.tombstone_scopes.clear();
+        batch.replace_scopes[0].chunks[0].repo_relative_path =
+            RepoRelativePath::new("src/other.rs");
+        assert!(batch.validate_surface_mutations_v1().is_err());
+    }
+
+    #[test]
+    fn g0_clear_cannot_overlap_file_wide_mutation() {
+        for surface in [SearchScopeSurface::Chunk, SearchScopeSurface::Symbol] {
+            let mut batch = fixture_search_corpus_batch();
+            batch.tombstone_scopes.clear();
+            batch.clear_surfaces = vec![surface];
+            assert!(batch.validate_surface_mutations_v1().is_err());
+            batch.replace_scopes.clear();
+            batch.tombstone_scopes = vec![SearchCorpusTombstoneScope {
+                file: SourceFileKey {
+                    source_repo_id: fixture_repo_id(),
+                    repo_relative_path: RepoRelativePath::new("src/main.rs"),
+                },
+            }];
+            assert!(batch.validate_surface_mutations_v1().is_err());
+        }
+    }
+
+    #[test]
+    fn g0_valid_combined_file_and_disjoint_tombstone_remain_accepted() {
+        let mut batch = fixture_search_corpus_batch();
+        batch.tombstone_scopes[0].file.repo_relative_path = RepoRelativePath::new("src/old.rs");
+        assert!(batch.validate_surface_mutations_v1().is_ok());
+    }
+
+    #[test]
+    fn g0_coverage_counts_units_and_source_ownership_are_independent_checks() {
+        let good = fixture_search_corpus_batch();
+        let mut wrong_digest = good.clone();
+        wrong_digest.replace_scopes[0].coverage.unit_set_sha256 = [0; 32];
+        assert_eq!(
+            wrong_digest.validate_surface_mutations_v1(),
+            Err(SearchCorpusSurfaceMutationConflictV1::CoverageUnitMismatch)
+        );
+        let mut false_count = good.clone();
+        false_count.replace_scopes[0].coverage.symbols =
+            crate::SymbolCoverage::Complete { symbol_count: 1 };
+        assert_eq!(
+            false_count.validate_surface_mutations_v1(),
+            Err(SearchCorpusSurfaceMutationConflictV1::CoverageUnitMismatch)
+        );
+        let mut wrong_owner = good.clone();
+        wrong_owner.replace_scopes[0].chunks[0].source_repo_id =
+            Some(RepoId::new("other").expect("static repo"));
+        assert_eq!(
+            wrong_owner.validate_surface_mutations_v1(),
+            Err(SearchCorpusSurfaceMutationConflictV1::RecordSourceMismatch)
+        );
+        let mut wrong_span = good.clone();
+        wrong_span.replace_scopes[0].chunks[0].end_byte = 1;
+        assert_eq!(
+            wrong_span.validate_surface_mutations_v1(),
+            Err(SearchCorpusSurfaceMutationConflictV1::InvalidRecordRange)
+        );
+        let mut zero_symbols = good;
+        zero_symbols.replace_scopes[0].coverage.symbols =
+            crate::SymbolCoverage::Complete { symbol_count: 0 };
+        assert!(zero_symbols.validate_surface_mutations_v1().is_ok());
+    }
+
+    #[test]
+    fn g0_source_event_binds_payload_not_materialization_target() -> TestRes {
+        let batch = fixture_search_corpus_batch();
+        let original = crate::source_event_payload_sha256(&batch)?;
+        let mut retargeted = batch.clone();
+        retargeted.generation = ManifestGeneration::new(9);
+        retargeted.manifest_digest = "other-target".into();
+        retargeted.revision_id = RevisionId::new("other-containing-revision")?;
+        assert_eq!(crate::source_event_payload_sha256(&retargeted)?, original);
+        retargeted.validate_v1()?;
+        let mut changed = batch.clone();
+        changed.replace_scopes[0].coverage.source.source_sha256 = [3; 32];
+        assert_eq!(
+            changed.validate_v1(),
+            Err(SearchCorpusBatchShapeErrorV1::SourceEventPayloadMismatch)
+        );
+        let mut unsealed = batch.clone();
+        unsealed.seal = false;
+        assert_eq!(
+            unsealed.validate_v1(),
+            Err(SearchCorpusBatchShapeErrorV1::UnsealedSourceEvent)
+        );
+        let mut wire = serde_json::to_value(&batch)?;
+        let _removed = wire
+            .as_object_mut()
+            .ok_or("expected map")?
+            .remove("source_event");
+        assert!(serde_json::from_value::<SearchCorpusIngestBatch>(wire).is_err());
+        let mut old_scope = serde_json::to_value(&batch.replace_scopes[0])?;
+        let map = old_scope.as_object_mut().ok_or("expected map")?;
+        let _removed = map.remove("coverage");
+        let _old = map.insert("scope".into(), serde_json::to_value(fixture_scope_key())?);
+        assert!(serde_json::from_value::<SearchCorpusReplaceScope>(old_scope).is_err());
+        Ok(())
     }
 
     #[test]
@@ -5978,6 +6273,7 @@ mod tests {
         batch.base_generation = Some(ManifestGeneration::new(
             batch.generation.get().saturating_sub(1),
         ));
+        batch.source_event.payload_sha256 = crate::source_event_payload_sha256(&batch)?;
         batch.validate_v1()?;
 
         for value in ["", "has space"] {

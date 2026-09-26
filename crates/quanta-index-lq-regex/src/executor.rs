@@ -49,6 +49,35 @@ pub struct RegexExecutor {
     compiled: regex::bytes::Regex,
 }
 
+/// A bounded prefix of this executor's non-overlapping byte matches.
+///
+/// Empty ranges retain the engine's zero-width semantics. Consumers must not
+/// turn one into a one-byte highlight or assume byte offsets are UTF-8 offsets.
+#[derive(Debug, Eq, PartialEq)]
+pub struct RegexRanges {
+    pub ranges: Vec<core::ops::Range<usize>>,
+    /// False when the range cap was reached; exhaustion was not established.
+    pub exhausted: bool,
+}
+
+/// Optional range reconstruction stopped before producing a complete answer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RegexRangeError {
+    SourceByteLimit,
+    Interrupted,
+}
+
+impl core::fmt::Display for RegexRangeError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            Self::SourceByteLimit => "regex preview source-byte limit exceeded",
+            Self::Interrupted => "regex preview interrupted",
+        })
+    }
+}
+
+impl std::error::Error for RegexRangeError {}
+
 impl RegexExecutor {
     /// Run the full LEX-04 compile pipeline.
     ///
@@ -110,6 +139,51 @@ impl RegexExecutor {
     #[must_use]
     pub fn verify(&self, doc_text: &[u8]) -> bool {
         self.compiled.is_match(doc_text)
+    }
+
+    /// Reconstruct ranges with the exact compiled matcher used by [`Self::verify`].
+    ///
+    /// The byte cap is checked before entering the regex engine. Interruption is
+    /// checked before and after each search, including the no-match search. One
+    /// engine search is not preemptible; its input is bounded by `max_source_bytes`.
+    /// No truncated document is searched: that would change anchors and lookaround.
+    /// Reaching the range cap is conservatively non-exhaustive without an extra
+    /// unbudgeted search. No partial result escapes on interruption.
+    pub fn find_ranges_bounded(
+        &self,
+        doc_text: &[u8],
+        max_source_bytes: usize,
+        max_ranges: usize,
+        interrupted: &dyn Fn() -> bool,
+    ) -> Result<RegexRanges, RegexRangeError> {
+        if interrupted() {
+            return Err(RegexRangeError::Interrupted);
+        }
+        if doc_text.len() > max_source_bytes {
+            return Err(RegexRangeError::SourceByteLimit);
+        }
+        let mut ranges = Vec::new();
+        let mut matches = self.compiled.find_iter(doc_text);
+        while ranges.len() < max_ranges {
+            if interrupted() {
+                return Err(RegexRangeError::Interrupted);
+            }
+            let next = matches.next();
+            if interrupted() {
+                return Err(RegexRangeError::Interrupted);
+            }
+            let Some(found) = next else {
+                return Ok(RegexRanges {
+                    ranges,
+                    exhausted: true,
+                });
+            };
+            ranges.push(found.range());
+        }
+        Ok(RegexRanges {
+            ranges,
+            exhausted: false,
+        })
     }
 
     /// Iterate `candidates`, verify each via [`RegexExecutor::verify`],
@@ -259,11 +333,97 @@ fn span_slice<'a>(pattern: &'a str, span: &regex_syntax::ast::Span) -> &'a str {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "Result-returning range regressions propagate setup errors and assert byte-exact fixture oracles"
+)]
 mod tests {
     use super::RegexExecutor;
     use crate::errors::{ForbiddenKind, RegexErrorCode};
     use quanta_index_lq_trigram::{DocId, DocResolver};
     use std::collections::BTreeMap;
+
+    #[test]
+    fn l4_ranges_share_case_and_pattern_semantics() -> Result<(), Box<dyn std::error::Error>> {
+        let executor = RegexExecutor::compile("(?i)needle[0-9]+")?;
+        let source = "é NEEDLE42 needle7";
+        let found = executor.find_ranges_bounded(source.as_bytes(), 64, 3, &|| false)?;
+        assert!(executor.verify(source.as_bytes()));
+        assert_eq!(found.ranges, vec![3..11, 12..19]);
+        assert!(found.exhausted);
+        assert!(!executor.verify(b"needle"));
+        assert!(
+            executor
+                .find_ranges_bounded(b"needle", 64, 3, &|| false)?
+                .ranges
+                .is_empty()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn l4_range_cap_never_claims_exhaustion() -> Result<(), Box<dyn std::error::Error>> {
+        let executor = RegexExecutor::compile("a")?;
+        for source in [b"a".as_slice(), b"aaa".as_slice()] {
+            let found = executor.find_ranges_bounded(source, 3, 1, &|| false)?;
+            assert_eq!(found.ranges, vec![0..1]);
+            assert!(!found.exhausted);
+        }
+        let zero = executor.find_ranges_bounded(b"a", 1, 0, &|| false)?;
+        assert!(zero.ranges.is_empty());
+        assert!(!zero.exhausted);
+        assert_eq!(
+            executor.find_ranges_bounded(b"aa", 1, 1, &|| false),
+            Err(super::RegexRangeError::SourceByteLimit)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn l4_ranges_preserve_zero_width_and_utf8_byte_coordinates()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let executor = RegexExecutor::compile("^")?;
+        let found = executor.find_ranges_bounded("é".as_bytes(), 2, 2, &|| false)?;
+        assert_eq!(found.ranges, vec![0..0]);
+        assert!(found.exhausted);
+        let executor = RegexExecutor::compile("é")?;
+        assert_eq!(
+            executor
+                .find_ranges_bounded("xé".as_bytes(), 3, 2, &|| false)?
+                .ranges,
+            vec![1..3]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn l4_ranges_discard_partial_work_on_cancellation() -> Result<(), Box<dyn std::error::Error>> {
+        let executor = RegexExecutor::compile("a")?;
+        assert_eq!(
+            executor.find_ranges_bounded(b"aaa", 3, 3, &|| true),
+            Err(super::RegexRangeError::Interrupted)
+        );
+        let checks = std::cell::Cell::new(0_usize);
+        let cancelled = || {
+            checks.set(checks.get().saturating_add(1));
+            checks.get() >= 5
+        };
+        assert_eq!(
+            executor.find_ranges_bounded(b"aaa", 3, 3, &cancelled),
+            Err(super::RegexRangeError::Interrupted)
+        );
+        // A deadline passing during the final no-match search is also observed.
+        checks.set(0);
+        let expired = || {
+            checks.set(checks.get().saturating_add(1));
+            checks.get() >= 3
+        };
+        assert_eq!(
+            executor.find_ranges_bounded(b"bbb", 3, 3, &expired),
+            Err(super::RegexRangeError::Interrupted)
+        );
+        Ok(())
+    }
 
     struct Map(BTreeMap<DocId, Vec<u8>>);
 

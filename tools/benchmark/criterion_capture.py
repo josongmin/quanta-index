@@ -18,7 +18,10 @@ from pathlib import Path
 
 from evidence import (
     EvidenceError,
+    RawFile,
+    RawWriter,
     RunStore,
+    _read_control_file,
     _read_regular_file,
     _run_id,
     canonical_json,
@@ -230,8 +233,18 @@ def replay_run(store: RunStore, evidence: dict, producer: dict | None = None) ->
     if evidence["payload"]["kind"] != "micro" or evidence["verdict"]["scope"] != "diagnostic":
         raise EvidenceError("Criterion wall capture is diagnostic only")
     raw = {
-        Path(ref["path"]).name: _read_regular_file(store.run_dir(evidence["run_id"]) / ref["path"])
+        Path(ref["path"]).name: _read_control_file(store.run_dir(evidence["run_id"]) / ref["path"])
         for ref in evidence["raw"]
+        if Path(ref["path"]).name
+        in {
+            "benchmark.json",
+            "sample.json",
+            "estimates.json",
+            "listing.txt",
+            "execution.json",
+            "rustc.txt",
+            "build.jsonl",
+        }
     }
     derived = payload(raw, evidence["case_id"])
     if derived != evidence["payload"]:
@@ -382,14 +395,23 @@ def capture(
             "--no-run",
             "--message-format=json",
         ]
-        output, stderr, build_command = execute(build_argv, cwd=repo, env=env, timeout=timeout)
-        binary, features = _binary(output, producer["target"])
-        binary_digest = digest_bytes(_read_regular_file(binary))
-        rustc, rustc_stderr, _ = execute(["rustc", "-vV"], cwd=repo, env=env, timeout=timeout)
+        output, stderr, build_command = execute(
+            build_argv, cwd=repo, env=env, timeout=timeout, log_dir=work / "execution" / "build"
+        )
+        binary, features = _binary(output.read_control(), producer["target"])
+        binary_digest = RawFile.capture(binary).sha256
+        rustc, rustc_stderr, _ = execute(
+            ["rustc", "-vV"],
+            cwd=repo,
+            env=env,
+            timeout=timeout,
+            log_dir=work / "execution" / "rustc",
+        )
+        rustc_text = rustc.read_control().decode()
         target = next(
             (
                 line.removeprefix("host: ")
-                for line in rustc.decode().splitlines()
+                for line in rustc_text.splitlines()
                 if line.startswith("host: ")
             ),
             None,
@@ -397,9 +419,13 @@ def capture(
         if target is None:
             raise EvidenceError("rustc did not report a target triple")
         listing, list_stderr, _ = execute(
-            [str(binary), "--list", "--format", "terse"], cwd=repo, env=env, timeout=timeout
+            [str(binary), "--list", "--format", "terse"],
+            cwd=repo,
+            env=env,
+            timeout=timeout,
+            log_dir=work / "execution" / "listing",
         )
-        cases = listed_cases(listing)
+        cases = listed_cases(listing.read_control())
         require_case_inventory(family, cases)
         print(
             f"Criterion capture: smoke/measure {family}: {len(cases)} cases",
@@ -407,7 +433,11 @@ def capture(
             flush=True,
         )
         smoke, smoke_stderr, _ = execute(
-            [str(binary), "--test"], cwd=repo, env=env, timeout=timeout
+            [str(binary), "--test"],
+            cwd=repo,
+            env=env,
+            timeout=timeout,
+            log_dir=work / "execution" / "smoke",
         )
         measure_argv = [
             str(binary),
@@ -423,16 +453,20 @@ def capture(
             str(resamples),
         ]
         measured, measure_stderr, command = execute(
-            measure_argv, cwd=repo, env=env, timeout=timeout
+            measure_argv,
+            cwd=repo,
+            env=env,
+            timeout=timeout,
+            log_dir=work / "execution" / "measure",
         )
-        if digest_bytes(_read_regular_file(binary)) != binary_digest:
+        if RawFile.capture(binary).sha256 != binary_digest:
             raise EvidenceError("executed Criterion binary changed during capture")
         require_frozen_source(repo, head)
         native_cases = {}
         for path in (work / "criterion").rglob("new/benchmark.json"):
             if path.is_symlink() or any(parent.is_symlink() for parent in path.parents):
                 raise EvidenceError("Criterion output contains a symlink")
-            meta = parse_json(_read_regular_file(path).decode())
+            meta = parse_json(_read_control_file(path).decode())
             case = meta.get("full_id")
             if not isinstance(case, str) or case in native_cases:
                 raise EvidenceError("Criterion output contains a duplicate/invalid case")
@@ -440,22 +474,31 @@ def capture(
         if set(native_cases) != set(cases):
             raise EvidenceError("Criterion output is missing cases or has undeclared cases")
         expected[family] = cases
+        with RawWriter(work / "stderr.txt") as sink:
+            for reference in (stderr, rustc_stderr, list_stderr, smoke_stderr, measure_stderr):
+                reference.copy_into(sink)
+            combined_stderr = sink.finish()
         common = {
             "listing.txt": listing,
             "build.jsonl": output,
             "rustc.txt": rustc,
-            "execution.json": canonical_json(
-                {
-                    "capture_id": capture_id,
-                    "build": build_command,
-                    "measure": command,
-                    "features": features,
-                    "binary_digest": binary_digest,
-                }
-            ).encode(),
+            "execution.json": write_raw_file(
+                work / "execution.json",
+                [
+                    canonical_json(
+                        {
+                            "capture_id": capture_id,
+                            "build": build_command,
+                            "measure": command,
+                            "features": features,
+                            "binary_digest": binary_digest,
+                        }
+                    ).encode()
+                ],
+            ),
             "stdout.txt": measured,
             "smoke.txt": smoke,
-            "stderr.txt": stderr + rustc_stderr + list_stderr + smoke_stderr + measure_stderr,
+            "stderr.txt": combined_stderr,
         }
         # Preserve non-secret build controls and diagnostic fixture knobs.
         build_environment = {
@@ -476,11 +519,13 @@ def capture(
             }
             or key.startswith("CARGO_PROFILE_BENCH_")
         }
-        common["environment.json"] = canonical_json(build_environment).encode()
+        common["environment.json"] = write_raw_file(
+            work / "environment.json", [canonical_json(build_environment).encode()]
+        )
         if (work / "dsl-native.json").exists():
-            common["dsl-native.json"] = _read_regular_file(work / "dsl-native.json")
+            common["dsl-native.json"] = RawFile.capture(work / "dsl-native.json")
         build = {
-            "toolchain": rustc.decode().strip(),
+            "toolchain": rustc_text.strip(),
             "target_triple": target,
             "lockfile_digest": digest_bytes((repo / "Cargo.lock").read_bytes()),
             "profile": "bench",
@@ -491,11 +536,15 @@ def capture(
             raw = {
                 **common,
                 **{
-                    name: _read_regular_file(native_cases[case] / name)
+                    name: RawFile.capture(native_cases[case] / name)
                     for name in ("benchmark.json", "sample.json", "estimates.json")
                 },
             }
-            prepared.append((family, case, raw, payload(raw, case), build, command))
+            controls = {
+                name: raw[name].read_control()
+                for name in ("listing.txt", "benchmark.json", "sample.json", "estimates.json")
+            }
+            prepared.append((family, case, raw, payload(controls, case), build, command))
     require_frozen_source(repo, head)
     return _publish(
         repo, root, profile, registry, head, source, host, capture_id, prepared, expected
@@ -513,12 +562,7 @@ def _publish(repo, root, profile, registry, head, source, host, capture_id, prep
             profile=profile,
             case_id=case,
             created_utc=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-            raw_files={
-                name: write_raw_file(
-                    root / "work" / capture_id / "prepared" / str(index) / name, [data]
-                )
-                for name, data in raw.items()
-            },
+            raw_files=raw,
             payload=derived,
             source=source,
             build=build,

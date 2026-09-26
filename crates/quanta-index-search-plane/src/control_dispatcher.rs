@@ -729,6 +729,7 @@ mod tests {
         let parts = SearchPlaneControlDispatcherParts {
             repo_map_activate: Arc::new(StubRepoMapActivatePort),
             lifecycle: SearchCorpusLifecycleParts {
+                idempotency: crate::ingest_dispatcher::tests::support::memory_catalog(),
                 activation_catalog,
                 ledger,
                 authority: exact_authority(),

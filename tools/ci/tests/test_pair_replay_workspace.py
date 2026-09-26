@@ -21,7 +21,7 @@ def raw_archives(tmp_path):
         check=True,
         capture_output=True,
     )
-    (raw / "native-tree.zip").write_bytes(bridge.pack_native(stage["stage"]))
+    bridge.pack_native(stage["stage"], raw / "native-tree.zip")
     return raw
 
 
@@ -81,4 +81,3 @@ def test_changed_corpus_bundle_is_not_hidden_by_identical_native_archive(raw_arc
         (raw_archives / "corpus.bundle").write_bytes(b"different corpus")
         with pytest.raises(bridge.EvidenceError, match="archives differ"):
             workspace.restore(raw_archives)
-

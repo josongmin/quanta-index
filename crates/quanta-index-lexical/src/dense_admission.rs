@@ -17,15 +17,15 @@
 use std::collections::BTreeSet;
 
 use quanta_index_contract::{LqQuery, QueryConstraintSetV1};
-use quanta_index_core::{CoreError, RequestBudgetV1};
+use quanta_index_core::{CoreError, LexicalPolicy, RequestBudgetV1};
 use tantivy::TantivyDocument;
 use tantivy::collector::TopDocs;
 
+use crate::TantivySearcher;
 use crate::budgeted_search::budgeted_search;
 use crate::documents::stored_text;
 use crate::searcher::planner_errors::planner_preflight_expr;
 use crate::searcher::query_rewrite::rewrite_symbol_name_predicate_query;
-use crate::{QueryDocKind, TantivySearcher};
 
 /// The budget checkpoint and collect stage this evaluation reports under.
 const ADMISSION_STAGE: &str = "lexical:admission";
@@ -49,9 +49,12 @@ impl TantivySearcher {
         // have ranked it on the lexical lane.
         let effective_query =
             rewrite_symbol_name_predicate_query(query)?.unwrap_or_else(|| query.clone());
-        let Some(mut prepared) =
-            self.prepare_executable_query(&effective_query, QueryDocKind::Text, budget)?
-        else {
+        let plan = LexicalPolicy::plan_candidate_filter_query(
+            &effective_query,
+            constraints,
+            candidate_ids,
+        )?;
+        let Some(mut prepared) = self.prepare_executable_query(&plan, budget)? else {
             // The predicate plan proved the filters admit nothing in this
             // generation (a repo or path scope with no members).
             return Ok(BTreeSet::new());

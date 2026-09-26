@@ -48,4 +48,4 @@ pub use search_corpus::{
 pub use semantic::{DirectSemanticMaterializer, SemanticIngestStreamStats};
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

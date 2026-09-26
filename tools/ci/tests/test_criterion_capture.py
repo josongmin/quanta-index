@@ -207,7 +207,7 @@ def test_sigterm_kills_owned_producer(tmp_path):
         "import os,sys; from pathlib import Path; "
         f"sys.path.insert(0,{str(Path(capture.__file__).parent)!r}); "
         "from criterion_capture import execute; "
-        f"execute([sys.executable,'-c',{child_script!r}],cwd=Path({str(tmp_path)!r}),env=dict(os.environ),timeout=60)"
+        f"execute([sys.executable,'-c',{child_script!r}],cwd=Path({str(tmp_path)!r}),env=dict(os.environ),timeout=60,log_dir=Path({str(tmp_path / 'execution')!r}))"
     )
     process = subprocess.Popen(
         [sys.executable, "-c", runner], stdout=subprocess.PIPE, stderr=subprocess.PIPE
@@ -241,6 +241,7 @@ def test_timeout_kills_owned_process_group(tmp_path):
             cwd=tmp_path,
             env=dict(os.environ),
             timeout=1,
+            log_dir=tmp_path / "execution",
         )
     assert signal.getsignal(signal.SIGTERM) == previous
 
@@ -257,21 +258,24 @@ def test_failure_cleanup_has_a_finite_pipe_drain_deadline(tmp_path, monkeypatch)
         def __init__(self):
             self.calls = []
 
-        def communicate(self, *, timeout=None):
+        def wait(self, *, timeout=None):
             self.calls.append(timeout)
             assert type(timeout) in (int, float) and 0 < timeout <= 10
-            return b"", b""
+            return -9
 
     process = Process()
     monkeypatch.setattr(execution.subprocess, "Popen", lambda *args, **kwargs: process)
     monkeypatch.setattr(execution.os, "killpg", lambda *args: None)
+    monkeypatch.setattr(execution, "_drain_output", lambda p, sinks, timeout: None)
 
     def terminal_timeout(*args):
         raise subprocess.TimeoutExpired("fixture", args[-1])
 
     monkeypatch.setattr(execution, "_wait_for_terminal", terminal_timeout)
     with pytest.raises(ValueError, match="timed out"):
-        execution.execute(["fixture"], cwd=tmp_path, env={}, timeout=1)
+        execution.execute(
+            ["fixture"], cwd=tmp_path, env={}, timeout=1, log_dir=tmp_path / "execution"
+        )
     assert len(process.calls) == 1
 
 
@@ -287,10 +291,6 @@ def test_failed_pipe_drain_and_reap_preserve_primary_failure(tmp_path, monkeypat
         stdout = io.BytesIO()
         stderr = io.BytesIO()
 
-        def communicate(self, *, timeout):
-            assert 0 <= timeout <= 10
-            raise subprocess.TimeoutExpired("fixture", timeout)
-
         def wait(self, *, timeout):
             assert 0 <= timeout <= 10
             raise subprocess.TimeoutExpired("fixture", timeout)
@@ -304,10 +304,13 @@ def test_failed_pipe_drain_and_reap_preserve_primary_failure(tmp_path, monkeypat
         raise subprocess.TimeoutExpired("fixture", args[-1])
 
     monkeypatch.setattr(execution, "_wait_for_terminal", terminal_timeout)
+    monkeypatch.setattr(execution, "_drain_output", terminal_timeout)
     with pytest.raises(
         execution.ProducerExecutionError, match="timed out.*incomplete cleanup.*pipe drain.*reap"
     ):
-        execution.execute(["fixture"], cwd=tmp_path, env={}, timeout=1)
+        execution.execute(
+            ["fixture"], cwd=tmp_path, env={}, timeout=1, log_dir=tmp_path / "execution"
+        )
     assert process.stdout.closed and process.stderr.closed
     assert {sig: signal.getsignal(sig) for sig in handlers} == handlers
 
@@ -330,7 +333,7 @@ def test_escaped_session_held_pipe_returns_bounded_failure(tmp_path, direct_chil
         "import os,sys; from pathlib import Path; "
         f"sys.path.insert(0,{str(Path(capture.__file__).parent)!r}); "
         "import producer_execution as execution; execution.CLEANUP_TIMEOUT_SECONDS=1; "
-        f"execution.execute([sys.executable,'-c',{child!r}],cwd=Path({str(tmp_path)!r}),env=dict(os.environ),timeout=5)"
+        f"execution.execute([sys.executable,'-c',{child!r}],cwd=Path({str(tmp_path)!r}),env=dict(os.environ),timeout=5,log_dir=Path({str(tmp_path / 'execution')!r}))"
     )
     process = subprocess.Popen(
         [sys.executable, "-c", runner], stdout=subprocess.PIPE, stderr=subprocess.PIPE
@@ -364,11 +367,11 @@ def test_nested_owned_session_dies_when_outer_owner_is_killed(tmp_path):
     bootstrap = f"import os,sys; from pathlib import Path; sys.path.insert(0,{str(Path(capture.__file__).parent)!r}); from producer_execution import execute; "
     nested = (
         bootstrap
-        + f"execute([sys.executable,'-c',{command!r}],cwd=Path({str(tmp_path)!r}),env=dict(os.environ),timeout=60)"
+        + f"execute([sys.executable,'-c',{command!r}],cwd=Path({str(tmp_path)!r}),env=dict(os.environ),timeout=60,log_dir=Path({str(tmp_path / 'nested-execution')!r}))"
     )
     outer = (
         bootstrap
-        + f"execute([sys.executable,'-c',{nested!r}],cwd=Path({str(tmp_path)!r}),env=dict(os.environ),timeout=60)"
+        + f"execute([sys.executable,'-c',{nested!r}],cwd=Path({str(tmp_path)!r}),env=dict(os.environ),timeout=60,log_dir=Path({str(tmp_path / 'outer-execution')!r}))"
     )
     process = subprocess.Popen(
         [sys.executable, "-c", outer], stdout=subprocess.PIPE, stderr=subprocess.PIPE
@@ -418,8 +421,8 @@ def test_direct_child_exit_terminates_same_group_background_descendant(
     if kill_guard_after_report:
         wait_for_terminal = execution._wait_for_terminal
 
-        def kill_reported_guard(process, terminal, timeout):
-            record = wait_for_terminal(process, terminal, timeout)
+        def kill_reported_guard(process, terminal, sinks, timeout):
+            record = wait_for_terminal(process, terminal, sinks, timeout)
             os.kill(process.pid, signal.SIGKILL)
             return record
 
@@ -443,13 +446,21 @@ def test_direct_child_exit_terminates_same_group_background_descendant(
     try:
         if exit_code == 0:
             _, _, result = capture.execute(
-                [sys.executable, "-c", command], cwd=tmp_path, env=dict(os.environ), timeout=20
+                [sys.executable, "-c", command],
+                cwd=tmp_path,
+                env=dict(os.environ),
+                timeout=20,
+                log_dir=tmp_path / "execution",
             )
             assert result["status"] == "completed" and result["exit_code"] == 0
         else:
             with pytest.raises(ValueError, match=f"exit {exit_code}"):
                 capture.execute(
-                    [sys.executable, "-c", command], cwd=tmp_path, env=dict(os.environ), timeout=20
+                    [sys.executable, "-c", command],
+                    cwd=tmp_path,
+                    env=dict(os.environ),
+                    timeout=20,
+                    log_dir=tmp_path / "execution",
                 )
         assert pid_file.is_file(), "background descendant was not exercised"
         pid = int(pid_file.read_text())
@@ -501,6 +512,7 @@ def test_guard_killed_without_terminal_record_is_not_success(tmp_path):
             cwd=tmp_path,
             env=dict(os.environ),
             timeout=10,
+            log_dir=tmp_path / "execution",
         )
 
 
@@ -522,7 +534,13 @@ def test_spawn_failure_closes_all_control_pipe_descriptors(tmp_path, monkeypatch
     previous = signal.getsignal(signal.SIGTERM)
     monkeypatch.setattr(execution.os, "pipe", tracked_pipe)
     with pytest.raises(ValueError, match="without a valid terminal record"):
-        execution.execute([str(tmp_path / "missing")], cwd=tmp_path, env={}, timeout=10)
+        execution.execute(
+            [str(tmp_path / "missing")],
+            cwd=tmp_path,
+            env={},
+            timeout=10,
+            log_dir=tmp_path / "execution",
+        )
     assert signal.getsignal(signal.SIGTERM) == previous
     assert len(descriptors) == 4
     for fd in descriptors:
@@ -544,8 +562,9 @@ def test_terminal_wait_drains_both_outputs_before_child_can_report(tmp_path):
         cwd=tmp_path,
         env=dict(os.environ),
         timeout=20,
+        log_dir=tmp_path / "execution",
     )
-    assert actual_out == stdout and actual_err == stderr
+    assert actual_out.read_control() == stdout and actual_err.read_control() == stderr
     assert result["status"] == "completed"
 
 
@@ -556,15 +575,16 @@ def test_cleanup_never_signals_an_already_reaped_group_identity(monkeypatch):
         pid = 123
         returncode = -9
 
-        def communicate(self, *, timeout):
+        def wait(self, *, timeout):
             assert 0 < timeout <= 10
-            return b"", b""
+            return -9
 
     def forbidden_kill(*args):
         pytest.fail("an already reaped group identity cannot be signalled")
 
     monkeypatch.setattr(execution.os, "killpg", forbidden_kill)
-    assert execution._cleanup(Process()) is None
+    monkeypatch.setattr(execution, "_drain_output", lambda p, sinks, timeout: None)
+    assert execution._cleanup(Process(), ()) is None
 
 
 @pytest.mark.parametrize("ignored", [False, True])
@@ -581,6 +601,7 @@ def test_execution_refuses_external_sigchld_reaping_before_spawning(tmp_path, ig
                 cwd=tmp_path,
                 env=dict(os.environ),
                 timeout=10,
+                log_dir=tmp_path / "execution",
             )
         assert not marker.exists(), "an unowned reaping environment cannot launch work"
     finally:
@@ -618,8 +639,9 @@ def test_execution_monitors_high_numbered_pipe_descriptors(tmp_path, monkeypatch
         cwd=tmp_path,
         env=dict(os.environ),
         timeout=20,
+        log_dir=tmp_path / "execution",
     )
-    assert stdout == b"high-fd\n" and result["status"] == "completed"
+    assert stdout.read_control() == b"high-fd\n" and result["status"] == "completed"
 
 
 @pytest.mark.parametrize("missing", [False, True])
@@ -662,7 +684,7 @@ def test_complete_profile_transaction_with_synthetic_native_owner(tmp_path, monk
         },
     }
 
-    def producer(argv, *, cwd, env, timeout):
+    def producer(argv, *, cwd, env, timeout, log_dir):
         command = {
             "argv": argv,
             "cwd": str(cwd),
@@ -700,7 +722,11 @@ def test_complete_profile_transaction_with_synthetic_native_owner(tmp_path, monk
                 for name in ("benchmark.json", "sample.json", "estimates.json"):
                     (directory / name).write_bytes(data[name])
             output = b"measured\n"
-        return output, b"", command
+        return (
+            capture.write_raw_file(log_dir / "stdout", [output]),
+            capture.write_raw_file(log_dir / "stderr", [b""]),
+            command,
+        )
 
     monkeypatch.setattr(capture, "execute", producer)
     root = tmp_path / "evidence"

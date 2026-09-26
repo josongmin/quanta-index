@@ -14,6 +14,7 @@ use crate::{
 };
 
 use super::{CandidatePresenceV1, SearchExplanation};
+use crate::{PreviewMetadata, SourceFileRevision};
 
 /// One ranked page of text rows.
 ///
@@ -35,6 +36,7 @@ pub struct TextQueryResponse {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct FileOwnerProjectionRow {
+    pub source_repo_id: RepoId,
     pub candidate_id: String,
     pub repo_id: RepoId,
     pub revision_id: RevisionId,
@@ -45,6 +47,9 @@ pub struct FileOwnerProjectionRow {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct SymbolCandidate {
+    pub source_repo_id: RepoId,
+    pub source: Option<SourceFileRevision>,
+    pub preview: Option<PreviewMetadata>,
     pub candidate_id: String,
     pub repo_id: RepoId,
     pub revision_id: RevisionId,
@@ -59,6 +64,9 @@ pub struct SymbolCandidate {
 }
 
 const SYMBOL_CANDIDATE_FIELDS: &[&str] = &[
+    "source_repo_id",
+    "source",
+    "preview",
     "candidate_id",
     "repo_id",
     "revision_id",
@@ -79,7 +87,12 @@ macro_rules! impl_symbol_candidate_serde {
             where
                 S: Serializer,
             {
-                let mut state = serializer.serialize_struct("SymbolCandidate", 11)?;
+                self.validate_source_metadata()
+                    .map_err(serde::ser::Error::custom)?;
+                let mut state = serializer.serialize_struct("SymbolCandidate", 14)?;
+                state.serialize_field("source_repo_id", &self.source_repo_id)?;
+                state.serialize_field("source", &self.source)?;
+                state.serialize_field("preview", &self.preview)?;
                 state.serialize_field("candidate_id", &self.candidate_id)?;
                 state.serialize_field("repo_id", &self.repo_id)?;
                 state.serialize_field("revision_id", &self.revision_id)?;
@@ -108,6 +121,9 @@ macro_rules! impl_symbol_candidate_serde {
             where
                 A: MapAccess<'de>,
             {
+                let mut source_repo_id: Option<RepoId> = None;
+                let mut source: Option<Option<SourceFileRevision>> = None;
+                let mut preview: Option<Option<PreviewMetadata>> = None;
                 let mut candidate_id: Option<String> = None;
                 let mut repo_id: Option<RepoId> = None;
                 let mut revision_id: Option<RevisionId> = None;
@@ -121,6 +137,24 @@ macro_rules! impl_symbol_candidate_serde {
                 let mut symbol_kind_family: Option<Option<SymbolKindFamily>> = None;
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
+                        "source_repo_id" => {
+                            if source_repo_id.is_some() {
+                                return Err(de::Error::duplicate_field("source_repo_id"));
+                            }
+                            source_repo_id = Some(map.next_value()?);
+                        }
+                        "source" => {
+                            if source.is_some() {
+                                return Err(de::Error::duplicate_field("source"));
+                            }
+                            source = Some(map.next_value()?);
+                        }
+                        "preview" => {
+                            if preview.is_some() {
+                                return Err(de::Error::duplicate_field("preview"));
+                            }
+                            preview = Some(map.next_value()?);
+                        }
                         "candidate_id" => {
                             if candidate_id.is_some() {
                                 return Err(de::Error::duplicate_field("candidate_id"));
@@ -190,7 +224,11 @@ macro_rules! impl_symbol_candidate_serde {
                         other => return Err(de::Error::unknown_field(other, $fields)),
                     }
                 }
-                Ok(SymbolCandidate {
+                let value = SymbolCandidate {
+                    source_repo_id: source_repo_id
+                        .ok_or_else(|| de::Error::missing_field("source_repo_id"))?,
+                    source: source.ok_or_else(|| de::Error::missing_field("source"))?,
+                    preview: preview.ok_or_else(|| de::Error::missing_field("preview"))?,
                     candidate_id: candidate_id
                         .ok_or_else(|| de::Error::missing_field("candidate_id"))?,
                     repo_id: repo_id.ok_or_else(|| de::Error::missing_field("repo_id"))?,
@@ -208,7 +246,11 @@ macro_rules! impl_symbol_candidate_serde {
                         .ok_or_else(|| de::Error::missing_field("symbol_kind"))?,
                     symbol_kind_family: symbol_kind_family
                         .ok_or_else(|| de::Error::missing_field("symbol_kind_family"))?,
-                })
+                };
+                value
+                    .validate_source_metadata()
+                    .map_err(de::Error::custom)?;
+                Ok(value)
             }
         }
 
@@ -226,11 +268,34 @@ macro_rules! impl_symbol_candidate_serde {
 impl_symbol_candidate_serde!(SYMBOL_CANDIDATE_FIELDS, SymbolCandidateVisitor);
 
 impl SymbolCandidate {
+    /// Check identity agreement; source bytes and rendering are verified by the reader.
+    pub fn validate_source_metadata(&self) -> Result<(), &'static str> {
+        if let Some(source) = &self.source {
+            if source.file.source_repo_id != self.source_repo_id {
+                return Err("candidate source repo disagrees with source revision identity");
+            }
+            source.validate()?;
+            if source.file.repo_relative_path != self.repo_relative_path {
+                return Err("candidate path disagrees with source file identity");
+            }
+        }
+        if let Some(preview) = &self.preview {
+            preview.validate()?;
+            if preview.source != self.source
+                && (preview.unavailable_reason.is_none() || preview.source.is_some())
+            {
+                return Err("preview source disagrees with candidate source identity");
+            }
+        }
+        Ok(())
+    }
+
     /// This row's position in the ranked lexical page order.
     #[must_use]
     pub fn order_key(&self) -> LexicalRowOrderKey<'_> {
         LexicalRowOrderKey {
             score: self.score,
+            source_repo_id: self.source_repo_id.as_str(),
             repo_relative_path: self.repo_relative_path.as_str(),
             start_line: self.start_line,
             end_line: self.end_line,
@@ -260,6 +325,7 @@ const TEXT_QUERY_RESPONSE_FIELDS: &[&str] = &[
     "next_cursor",
 ];
 const FILE_OWNER_PROJECTION_ROW_FIELDS: &[&str] = &[
+    "source_repo_id",
     "candidate_id",
     "repo_id",
     "revision_id",
@@ -584,6 +650,7 @@ pub fn validate_file_owner_projection_v1(
     }
     for (position, (candidate, row)) in results.iter().zip(rows.iter()).enumerate() {
         if row.candidate_id != candidate.candidate_id
+            || row.source_repo_id != candidate.source_repo_id
             || row.repo_id != candidate.repo_id
             || row.revision_id != candidate.revision_id
             || row.manifest_generation != candidate.manifest_generation
@@ -1413,7 +1480,8 @@ impl Serialize for FileOwnerProjectionRow {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("FileOwnerProjectionRow", 6)?;
+        let mut state = serializer.serialize_struct("FileOwnerProjectionRow", 7)?;
+        state.serialize_field("source_repo_id", &self.source_repo_id)?;
         state.serialize_field("candidate_id", &self.candidate_id)?;
         state.serialize_field("repo_id", &self.repo_id)?;
         state.serialize_field("revision_id", &self.revision_id)?;
@@ -1437,6 +1505,7 @@ impl<'de> Visitor<'de> for FileOwnerProjectionRowVisitor {
     where
         A: MapAccess<'de>,
     {
+        let mut source_repo_id: Option<RepoId> = None;
         let mut candidate_id: Option<String> = None;
         let mut repo_id: Option<RepoId> = None;
         let mut revision_id: Option<RevisionId> = None;
@@ -1445,6 +1514,12 @@ impl<'de> Visitor<'de> for FileOwnerProjectionRowVisitor {
         let mut owners: Option<Vec<String>> = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
+                "source_repo_id" => {
+                    if source_repo_id.is_some() {
+                        return Err(de::Error::duplicate_field("source_repo_id"));
+                    }
+                    source_repo_id = Some(map.next_value()?);
+                }
                 "candidate_id" => {
                     if candidate_id.is_some() {
                         return Err(de::Error::duplicate_field("candidate_id"));
@@ -1490,6 +1565,8 @@ impl<'de> Visitor<'de> for FileOwnerProjectionRowVisitor {
             }
         }
         Ok(FileOwnerProjectionRow {
+            source_repo_id: source_repo_id
+                .ok_or_else(|| de::Error::missing_field("source_repo_id"))?,
             candidate_id: candidate_id.ok_or_else(|| de::Error::missing_field("candidate_id"))?,
             repo_id: repo_id.ok_or_else(|| de::Error::missing_field("repo_id"))?,
             revision_id: revision_id.ok_or_else(|| de::Error::missing_field("revision_id"))?,
@@ -2570,7 +2647,7 @@ mod tests {
                 1,
                 ExhaustionProofV1::ProbeExhausted { fetched: 1 },
                 Vec::new(),
-            ))
+            ).expect("valid exact fixture"))
             .expect("window must serialize"),
             "explanation": serde_json::to_value(SearchExplanation::default())
                 .expect("default explanation must serialize")
@@ -2588,7 +2665,8 @@ mod tests {
                 1,
                 ExhaustionProofV1::ProbeExhausted { fetched: 1 },
                 Vec::new(),
-            ),
+            )
+            .expect("valid exact fixture"),
             explanation: SearchExplanation::default(),
         };
 
@@ -2683,6 +2761,9 @@ mod tests {
 
     fn projection_fixture_row(candidate_id: &str, score: f32) -> LexicalCandidate {
         LexicalCandidate {
+            source_repo_id: RepoId::new("repo-seed").expect("repo"),
+            source: None,
+            preview: None,
             candidate_id: candidate_id.to_string(),
             repo_id: RepoId::new("repo-seed")
                 .expect("static fixture ID satisfies canonical policy"),
@@ -2701,6 +2782,7 @@ mod tests {
 
     fn projection_fixture_owner(candidate: &LexicalCandidate) -> FileOwnerProjectionRow {
         FileOwnerProjectionRow {
+            source_repo_id: candidate.source_repo_id.clone(),
             candidate_id: candidate.candidate_id.clone(),
             repo_id: candidate.repo_id.clone(),
             revision_id: candidate.revision_id.clone(),
@@ -2708,6 +2790,39 @@ mod tests {
             repo_relative_path: candidate.repo_relative_path.clone(),
             owners: vec!["ada".to_string()],
         }
+    }
+
+    #[test]
+    fn l3_file_owner_projection_rejects_same_path_id_from_another_source() {
+        let first = projection_fixture_row("same-id", 1.0);
+        let mut second = first.clone();
+        second.source_repo_id = RepoId::new("another-source").expect("repo");
+        let correct = vec![
+            projection_fixture_owner(&first),
+            projection_fixture_owner(&second),
+        ];
+        let results = vec![first, second];
+        assert!(validate_file_owner_projection_v1(&results, Some(&correct)).is_ok());
+        let mut wrong = correct.clone();
+        wrong.reverse();
+        assert_eq!(
+            validate_file_owner_projection_v1(&results, Some(&wrong)),
+            Err(FileOwnerProjectionErrorV1::CandidateMismatch { position: 0 })
+        );
+        let row = correct.first().expect("two rows");
+        let raw = serde_json::to_string(row).expect("encode");
+        assert_eq!(
+            serde_json::from_str::<FileOwnerProjectionRow>(&raw).expect("decode"),
+            *row
+        );
+        let mut missing = serde_json::to_value(row).expect("encode");
+        let _removed = missing
+            .as_object_mut()
+            .expect("object")
+            .remove("source_repo_id");
+        assert!(serde_json::from_value::<FileOwnerProjectionRow>(missing).is_err());
+        let duplicated = format!("{{\"source_repo_id\":\"other\",{}", &raw[1..]);
+        assert!(serde_json::from_str::<FileOwnerProjectionRow>(&duplicated).is_err());
     }
 
     #[test]

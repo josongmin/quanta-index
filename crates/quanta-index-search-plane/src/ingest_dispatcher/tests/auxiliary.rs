@@ -260,6 +260,7 @@ fn sealing_materializer(
         lexical_reclaim: no_storage_sealed_reclaim(),
         semantic_reclaim: no_storage_sealed_reclaim(),
         snapshots: SnapshotRegistries::new(crate::SnapshotRegistryPolicy::DEFAULT),
+        source_publication: super::support::test_source_catalog(),
         idempotency: memory_catalog(),
         resource_policy: IngestResourcePolicy::DEFAULT,
         semantic_stream_policy: SemanticStreamWindowPolicy::DEFAULT,

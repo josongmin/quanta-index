@@ -8,10 +8,11 @@
 use crate::documents::stored_text;
 use crate::text_authority::AddedTextDoc;
 use crate::{IndexedTextDoc, SchemaFields, TEXT_DOC_KIND};
+use quanta_index_contract::SourceFileKey;
 use quanta_index_core::CoreError;
 use roaring::RoaringBitmap;
 use tantivy::collector::TopDocs;
-use tantivy::query::{AllQuery, TermQuery};
+use tantivy::query::{AllQuery, BooleanQuery, Occur, TermQuery};
 use tantivy::schema::{IndexRecordOption, TantivyDocument, Value};
 use tantivy::{Index, IndexReader, ReloadPolicy, Term};
 
@@ -61,15 +62,36 @@ pub(crate) fn authority_member_set(
     Ok(members)
 }
 
+/// Exact source ownership is the conjunction of two separately indexed terms;
+/// no delimiter-based identity encoding can alias another repository or path.
+pub(crate) fn source_file_query(fields: &SchemaFields, file: &SourceFileKey) -> BooleanQuery {
+    BooleanQuery::new(vec![
+        (
+            Occur::Must,
+            Box::new(TermQuery::new(
+                Term::from_field_text(fields.repo_id, file.source_repo_id.as_str()),
+                IndexRecordOption::Basic,
+            )),
+        ),
+        (
+            Occur::Must,
+            Box::new(TermQuery::new(
+                Term::from_field_text(fields.repo_relative_path, file.repo_relative_path.as_str()),
+                IndexRecordOption::Basic,
+            )),
+        ),
+    ])
+}
+
 /// The text documents currently indexed under one path, with their doc ids.
 ///
 /// Read from the committed index before a scope mutation is applied, so an
 /// incremental text-authority update knows exactly which documents — and
 /// therefore which shards — the mutation retires.
-pub(crate) fn text_candidates_at_path(
+pub(crate) fn text_candidates_at_file(
     index: &Index,
     fields: &SchemaFields,
-    repo_relative_path: &str,
+    file: &SourceFileKey,
 ) -> Result<Vec<IndexedTextDoc>, CoreError> {
     let reader: IndexReader = index
         .reader_builder()
@@ -80,10 +102,7 @@ pub(crate) fn text_candidates_at_path(
         CoreError::Storage(format!("lexical: scope candidate reader reload: {err}"))
     })?;
     let searcher = reader.searcher();
-    let query = TermQuery::new(
-        Term::from_field_text(fields.repo_relative_path, repo_relative_path),
-        IndexRecordOption::Basic,
-    );
+    let query = source_file_query(fields, file);
     let limit = usize::try_from(searcher.num_docs()).map_err(|err| {
         CoreError::InvalidContract(format!(
             "lexical: num_docs overflow while collecting scope candidates: {err}"

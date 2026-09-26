@@ -51,5 +51,19 @@ fn typed_and_dsl_language_constraints_intersect_before_every_retrieval_lane_v1()
         prepared.force_empty,
         "disjoint constraints must not widen to all languages"
     );
-    assert!(prepared.constraints.is_unconstrained());
+    assert_eq!(prepared.constraints, typed_rust);
+
+    let exact_path = quanta_index_contract::ExactRepoRelativePathV1::new("src/literal.rs")
+        .expect("valid exact path");
+    let typed_path = typed_rust.with_exact_repo_relative_path(exact_path.clone());
+    let mut disjoint = build_probe_query("needle");
+    disjoint.filters.push(LqFilter::Lang {
+        id: "python".into(),
+    });
+    let prepared = prepare_language_query_v1(disjoint, &typed_path).expect("valid constraints");
+    assert!(prepared.force_empty);
+    assert_eq!(
+        prepared.constraints.repo_relative_path_exact,
+        Some(exact_path)
+    );
 }
