@@ -1,0 +1,66 @@
+{
+  "schema": "l5-goal-audit-v1",
+  "captured_utc": "2026-09-26T21:22:56.396056+00:00",
+  "head": "98601a66d8cab9c86232b3e62ce490c8b43b71b6",
+  "source_sha256": {
+    "benchmarks/retrieval/src/main.rs": "6bce939ca15b79c7c45c7e0706eb68e593357fc089f15022c52dd7e8e03e68db",
+    "benchmarks/retrieval/tests/sdk_roundtrip.rs": "b6480aa3d440101ba85ea5fd1a24fc52cb45b67cbdfdfe8685f1864266534fb8",
+    "benchmarks/retrieval/proof-required-tests.json": "26e62c3547789ebd47a7f26357b70f7fc8239332c206d1fe3fd010d59331b0d2",
+    "Cargo.toml": "c9acf8da5c08f26e6f13169288447c23354a55212f952ec1a14669510176d66c",
+    "Cargo.lock": "b64ee9193e9b211fc99fb755ecb827a373859ed6a613db47c6a0aed9b8f021f0"
+  },
+  "filesystem_alias_oracle": {
+    "status": "VERIFIED",
+    "cases": [
+      {
+        "original": "/private/tmp/quanta-index-l5-goal-audit-kawy44xy/output-alias-9z6p5ou3/real/result.json",
+        "alternate": "/private/tmp/quanta-index-l5-goal-audit-kawy44xy/output-alias-9z6p5ou3/real/sibling/../result.json",
+        "spellings_differ": true,
+        "same_filesystem_object": true,
+        "canonical_parents_equal": true
+      },
+      {
+        "original": "/private/tmp/quanta-index-l5-goal-audit-kawy44xy/output-alias-9z6p5ou3/real/result.json",
+        "alternate": "/private/tmp/quanta-index-l5-goal-audit-kawy44xy/output-alias-9z6p5ou3/alias/result.json",
+        "spellings_differ": true,
+        "same_filesystem_object": true,
+        "canonical_parents_equal": true
+      }
+    ],
+    "scope": "OS path alias identity only; neither Rust helper nor runner was executed"
+  },
+  "required_test_registration": {
+    "status": "VERIFIED",
+    "counts": {
+      "python": 324,
+      "rust": 128,
+      "sdk": 20
+    },
+    "scope": "Declared names only; not compiled discovery"
+  },
+  "new_source_fix": {
+    "priority": "P2",
+    "finding": "Lexically different CLI output paths can resolve to the same destination and defer failure until after publication",
+    "changed": [
+      "Canonicalize existing parents before collision comparison",
+      "Include state-root in the same collision set"
+    ],
+    "behavior": "NOT_RUN"
+  },
+  "expanded_regressions": [
+    "Actual runner refuses dot-dot, symlink-parent and state-root aliases before creating artifacts",
+    "Malformed and unsupported files remain text-searchable",
+    "Complete narrow symbol scope and Complete(0) remain queryable",
+    "Broad symbol, failed narrow scope, select:symbol and type:symbol refuse incomplete authority"
+  ],
+  "rust_execution": "NOT_RUN: L0 execution slot has not been transferred or released",
+  "completion": "BLOCKED: shared metrics/selectors/artifact integration and current-source Rust/SDK/Vite execution remain outstanding",
+  "source_qualification": "Dirty shared checkout; this is not a repository qualification receipt",
+  "historical": true,
+  "superseded_by": {
+    "path": "L5_COMPLETION.json",
+    "sha256": "74faa2d0fb2b42e881d0ed4ac809ec26a2e0e699aca4fbb82ac10b6942e8c517",
+    "current_status": "VERIFIED for bounded L5 scope",
+    "captured_utc": "2026-09-26T22:09:03.731318+00:00"
+  }
+}

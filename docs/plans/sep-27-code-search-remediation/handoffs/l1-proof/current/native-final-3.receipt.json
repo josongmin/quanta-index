@@ -1,0 +1,86 @@
+{
+  "after": "/tmp/quanta-l1-green.diz44g/native-final-3.after.json",
+  "artifacts": [
+    {
+      "features": [],
+      "fresh": false,
+      "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical#0.1.0",
+      "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-integration-lane/debug/dump_predicate_capabilities",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 1,
+        "opt_level": "0",
+        "overflow_checks": true,
+        "test": false
+      },
+      "sha256": "18534c1a74374e62e3a0c22b59565b2e640c259a0b1a2787fc5e6730a3269528",
+      "target": {
+        "crate_types": [
+          "bin"
+        ],
+        "doc": true,
+        "doctest": false,
+        "edition": "2024",
+        "kind": [
+          "bin"
+        ],
+        "name": "dump_predicate_capabilities",
+        "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical/src/bin/dump_predicate_capabilities.rs",
+        "test": true
+      }
+    },
+    {
+      "features": [],
+      "fresh": false,
+      "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical#0.1.0",
+      "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-integration-lane/debug/deps/l1_query_domain_window-54cc33388ba8da59",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 1,
+        "opt_level": "0",
+        "overflow_checks": true,
+        "test": true
+      },
+      "sha256": "0e1bae84053924f3e1a64609cc3f9acb39ccaba2abc3d2061d22faf9d6ef79e3",
+      "target": {
+        "crate_types": [
+          "bin"
+        ],
+        "doc": false,
+        "doctest": false,
+        "edition": "2024",
+        "kind": [
+          "test"
+        ],
+        "name": "l1_query_domain_window",
+        "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical/tests/l1_query_domain_window.rs",
+        "test": true
+      }
+    }
+  ],
+  "before": "/tmp/quanta-l1-green.diz44g/native-final-3.before.json",
+  "classification": "UNCLASSIFIED: inspect execution count, outcome, inputs and source drift before promoting evidence",
+  "command": [
+    "./scripts/cargow",
+    "test",
+    "--locked",
+    "-j",
+    "2",
+    "-p",
+    "quanta-index-lexical",
+    "--test",
+    "l1_query_domain_window",
+    "--message-format=json"
+  ],
+  "ended_unix": 1790458096.100596,
+  "executed_result_lines": [
+    "running 11 tests",
+    "test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.38s"
+  ],
+  "exit_code": 0,
+  "head_changed": false,
+  "log": "/tmp/quanta-l1-green.diz44g/native-final-3.log",
+  "log_sha256": "ec18cf0832e73da145b78a0b2033c20c5e1903822f3bf6590a5325770a315246",
+  "source_changed": [],
+  "started_unix": 1790458085.407548
+}

@@ -18,8 +18,9 @@ from pathlib import Path
 
 from evidence import (
     EvidenceError,
+    RawFile,
     RunStore,
-    _read_regular_file,
+    _read_control_file,
     canonical_json,
     digest_bytes,
     parse_json,
@@ -36,13 +37,11 @@ from profile_capture import _directories, load_capture, publish_capture
 from registry import registry_digest
 
 
-def agent_payload(path: Path, raw: bytes) -> tuple[dict, dict]:
+def agent_payload(raw: RawFile) -> tuple[dict, dict]:
     owner = _load_module(
         "recorded_agent_owner", Path(__file__).parent / "agent_outcome/__main__.py"
     )
-    pairs, digest = owner.load(path)
-    if digest != digest_bytes(raw):
-        raise EvidenceError("agent recording changed while the evaluator read it")
+    pairs, digest = owner.load_file(raw), raw.sha256
     summary = owner.summarize(pairs, digest)
     metrics = []
     for arm, aggregate in summary["aggregate"].items():
@@ -107,8 +106,8 @@ def agent_payload(path: Path, raw: bytes) -> tuple[dict, dict]:
     return payload, summary
 
 
-def scan_payload(raw: bytes) -> dict:
-    document = parse_json(raw.decode("utf-8"))
+def scan_payload(raw: RawFile) -> dict:
+    document = parse_json(raw.read_control().decode("utf-8"))
     if not isinstance(document, dict) or set(document) != {"artifacts"}:
         raise EvidenceError("scan input must contain exactly an artifacts array")
     artifacts = document["artifacts"]
@@ -167,7 +166,7 @@ def scan_payload(raw: bytes) -> dict:
         "experiment_id": "scan-vs-index",
         "diagnostic_only": True,
         "points": points,
-        "source_digest": digest_bytes(raw),
+        "source_digest": raw.sha256,
     }
     validate_payload(payload)
     return payload
@@ -184,16 +183,16 @@ def replay_run(store: RunStore, evidence: dict) -> None:
             "recorded replay requires exactly one native input and diagnostic scope"
         )
     path = store.run_dir(evidence["run_id"]) / refs[0]["path"]
-    raw = _read_regular_file(path)
+    raw = RawFile.capture(path)
     if family == "agent-outcome":
-        derived, summary = agent_payload(path, raw)
+        derived, summary = agent_payload(raw)
         summary_refs = [
             ref for ref in evidence["raw"] if Path(ref["path"]).name == "agent-summary.json"
         ]
         if (
             len(summary_refs) != 1
             or parse_json(
-                _read_regular_file(
+                _read_control_file(
                     store.run_dir(evidence["run_id"]) / summary_refs[0]["path"]
                 ).decode()
             )
@@ -208,7 +207,7 @@ def replay_run(store: RunStore, evidence: dict) -> None:
     if (
         len(inputs) != 1
         or inputs[0]["availability"] != "present"
-        or inputs[0]["digest"] != digest_bytes(raw)
+        or inputs[0]["digest"] != raw.sha256
     ):
         raise EvidenceError("recorded input identity differs from native bytes")
 
@@ -231,9 +230,9 @@ def capture(
     require_clean_worktree(repo)
     head = resolve_checkout_head(repo)
     source = source_identity(repo, "benchmark-control-plane")
-    agent_raw, scan_raw = _read_regular_file(agent), _read_regular_file(scan)
+    agent_raw, scan_raw = RawFile.capture(agent), RawFile.capture(scan)
     # Validate every family before promoting any run or replacing the pointer.
-    agent_result, agent_summary = agent_payload(agent, agent_raw)
+    agent_result, agent_summary = agent_payload(agent_raw)
     scan_result = scan_payload(scan_raw)
     cpu = os.cpu_count()
     if type(cpu) is not int or cpu < 1:
@@ -270,7 +269,7 @@ def capture(
             case_id=None,
             created_utc=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             raw_files={
-                name: write_raw_file(root / "work" / capture_id / family / name, [raw]),
+                name: raw,
                 **(
                     {
                         "agent-summary.json": write_raw_file(
@@ -296,7 +295,7 @@ def capture(
                 {
                     "id": family,
                     "availability": "present",
-                    "digest": digest_bytes(raw),
+                    "digest": raw.sha256,
                     "reason": None,
                 }
             ],

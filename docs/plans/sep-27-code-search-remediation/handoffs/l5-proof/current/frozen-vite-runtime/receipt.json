@@ -1,0 +1,150 @@
+{
+  "status": "VERIFIED",
+  "scope": "frozen Vite all-file producer and actual daemon text/symbol capability",
+  "excluded": [
+    "ranking quality",
+    "performance",
+    "embedding-free publication",
+    "whole repository qualification"
+  ],
+  "command": [
+    "/private/tmp/quanta-index-l5-completion/frozen-vite-runtime/quanta-index-retrieval-bench",
+    "run",
+    "--repo",
+    "/private/tmp/qi-full-lexical-20260927/full-repos/vite",
+    "--manifest",
+    "/Users/songmin/Documents/code-new/qi-rb-coverage-set-2026-09-25/frozen-external-check/manifests/vite.json",
+    "--strategy",
+    "whole_file",
+    "--query-pack",
+    "/private/tmp/quanta-index-l5-completion/frozen-vite-runtime/query-pack.json",
+    "--routes",
+    "lexical,symbol",
+    "--query-input-policy",
+    "native",
+    "--top-k",
+    "10",
+    "--state-root",
+    "/private/tmp/quanta-index-l5-completion/frozen-vite-runtime/state",
+    "--searchd-bin",
+    "/private/tmp/quanta-index-l5-completion/frozen-vite-runtime/quanta-index-searchd",
+    "--searchd-expected-sha256",
+    "12336e17459b776d26cd33885db8a89d223ca49ff70cfda007c14767accdf3cb",
+    "--embedder",
+    "hash-dev",
+    "--repo-id",
+    "l5-vite",
+    "--revision-id",
+    "bc598a6a8a6b7d6e157e9f19c16911cff8d2360c",
+    "--generation",
+    "1",
+    "--runner-name",
+    "l5-vite-probe",
+    "--runner-revision",
+    "sha256:82ea07de4a2d05b8eb38dcda4afc9a74ebfdafa847bcea7ff87a5aec8b677eb8",
+    "--run-id",
+    "l5-vite-capability",
+    "--blinding",
+    "attested",
+    "--isolation-method",
+    "local-source-capability-probe",
+    "--access-block-log",
+    "not-isolated-no-quality-claim",
+    "--symbol-coverage",
+    "allow-incomplete",
+    "--out",
+    "/private/tmp/quanta-index-l5-completion/frozen-vite-runtime/record.json",
+    "--metrics-out",
+    "/private/tmp/quanta-index-l5-completion/frozen-vite-runtime/phase-metrics.json",
+    "--diagnostics-out",
+    "/private/tmp/quanta-index-l5-completion/frozen-vite-runtime/diagnostic.json",
+    "--symbol-preflight-out",
+    "/private/tmp/quanta-index-l5-completion/frozen-vite-runtime/symbol-preflight.json",
+    "--refusal-out",
+    "/private/tmp/quanta-index-l5-completion/frozen-vite-runtime/refusal.json",
+    "--io-timeout-secs",
+    "120",
+    "--ready-timeout-secs",
+    "60"
+  ],
+  "manifest_sha256": "87ad16fe0c5626ee8ff625ddccf1645558c0b019d9229c5adcf24ffd0cbf7705",
+  "corpus_commit": "bc598a6a8a6b7d6e157e9f19c16911cff8d2360c",
+  "file_count": 256,
+  "symbol_count": 2006,
+  "incomplete_files": 1,
+  "queries": [
+    {
+      "route": "lexical",
+      "task_id": "malformed_text",
+      "status": "success",
+      "error": null,
+      "candidate_paths": [
+        "packages/vite/src/node/ssr/__tests__/fixtures/errors/syntax-error.ts"
+      ]
+    },
+    {
+      "route": "symbol",
+      "task_id": "malformed_text",
+      "status": "error",
+      "error": {
+        "code": "SYMBOL_COVERAGE_INCOMPLETE",
+        "message": "symbol coverage is ParseFailed for source repo=l5-vite path=packages/vite/src/node/ssr/__tests__/fixtures/errors/syntax-error.ts"
+      },
+      "candidate_paths": []
+    },
+    {
+      "route": "lexical",
+      "task_id": "broad_symbol",
+      "status": "success",
+      "error": null,
+      "candidate_paths": [
+        "packages/vite/src/node/__tests_dts__/config.ts",
+        "packages/vite/src/node/__tests__/fixtures/runner-import/vite.config.ts",
+        "packages/vite/src/node/__tests__/config.spec.ts",
+        "packages/vite/src/node/index.ts",
+        "packages/vite/src/node/config.ts"
+      ]
+    },
+    {
+      "route": "symbol",
+      "task_id": "broad_symbol",
+      "status": "error",
+      "error": {
+        "code": "SYMBOL_COVERAGE_INCOMPLETE",
+        "message": "symbol coverage is ParseFailed for source repo=l5-vite path=packages/vite/src/node/ssr/__tests__/fixtures/errors/syntax-error.ts"
+      },
+      "candidate_paths": []
+    },
+    {
+      "route": "lexical",
+      "task_id": "complete_symbol",
+      "status": "success",
+      "error": null,
+      "candidate_paths": [
+        "packages/vite/src/node/config.ts"
+      ]
+    },
+    {
+      "route": "symbol",
+      "task_id": "complete_symbol",
+      "status": "success",
+      "error": null,
+      "candidate_paths": [
+        "packages/vite/src/node/config.ts"
+      ]
+    }
+  ],
+  "artifacts": {
+    "symbol-preflight.json": "c3e0c3b233a68bcd9851a2ba899b1a1ee0572b147f15bb54fa8f500b18405d24",
+    "quanta-index-retrieval-bench": "82ea07de4a2d05b8eb38dcda4afc9a74ebfdafa847bcea7ff87a5aec8b677eb8",
+    "phase-metrics.json": "4c2376170a74d87289bad7a5ecda16f9b889af8badb45fd2c50346c1755d63c1",
+    "state.searchd.stderr.log": "8532af95e87cf0fa1ceed5ae7537e79aa1526cf3bec34b8bc9ca9858aa52c859",
+    "record.json": "0a3271a4ca824c5cb44c5f7182f253d27dba0f540886b88c986316c9940aaa4e",
+    "runner.log": "15a52bc3e52ee27bb5e4434ef5e95a799477a26c932f9a103cf88d33f7585ae3",
+    "state.searchd.stdout.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "command.json": "c1c3b05f07a609f5ec3dc7a6329fd65d761c2beaaf5ef0d96bf0390846b52924",
+    "diagnostic.json": "e204dda8112bf097d65ec8bdf98c727afa2d3543dfac3d7998253dc6d795a607",
+    "query-pack.json": "5d15db381ce4d29f52be78e477ac47af45b7f02917343e2dc480cc5464672ae7",
+    "quanta-index-searchd": "12336e17459b776d26cd33885db8a89d223ca49ff70cfda007c14767accdf3cb"
+  }
+}

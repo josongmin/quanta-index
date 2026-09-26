@@ -305,6 +305,31 @@ def test_forged_archive_count_refuses_before_zip_metadata_allocation(tmp_path, m
         raw_archive.unpack(ref, tmp_path / "output", limits=raw_archive.ArchiveLimits(4096))
 
 
+@pytest.mark.parametrize("mutation", ["nul", "volume", "offset", "central_size"])
+def test_archive_rejects_aliased_or_forged_zip_metadata(tmp_path, mutation):
+    import struct
+
+    import raw_archive
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("a0b", b"raw")
+    data = bytearray(buffer.getvalue())
+    central, end = data.index(b"PK\x01\x02"), data.rfind(b"PK\x05\x06")
+    if mutation == "nul":
+        data = data.replace(b"a0b", b"a\x00b")
+    elif mutation == "volume":
+        struct.pack_into("<H", data, central + 34, 1)
+    elif mutation == "offset":
+        struct.pack_into("<I", data, end + 16, 1)
+    else:
+        struct.pack_into("<I", data, end + 12, 0xFFFFFFFF)
+    ref = write_raw_file(tmp_path / "bad.zip", [data])
+    with pytest.raises(bridge.EvidenceError, match="archive"):
+        raw_archive.unpack(ref, tmp_path / "output", limits=raw_archive.ArchiveLimits(4096))
+    assert not (tmp_path / "output").exists()
+
+
 @pytest.mark.parametrize("operation", ["pack", "unpack"])
 def test_archive_payload_peak_rss_is_bounded(tmp_path, operation, record_property):
     import hashlib
@@ -392,6 +417,16 @@ def test_archive_many_entry_inventory_and_limit(tmp_path):
             archive, tmp_path / "over", limits=raw_archive.ArchiveLimits(1024**2, max_entries=1999)
         )
     assert not (tmp_path / "over").exists()
+
+
+def test_both_archive_domains_bind_the_shared_io_owner():
+    from tools.ci.source_closure import _python_import_roots
+
+    for owner in ("pair_capture.py", "corpus_binding.py"):
+        closed = _python_import_roots(bridge.ROOT, [f"tools/benchmark/{owner}"])
+        assert "tools/benchmark/raw_archive.py" in closed
+        assert "tools/benchmark/evidence.py" in closed
+        assert "tools/ci/lint/handoff_validation.py" in closed
 
 
 @pytest.mark.parametrize(

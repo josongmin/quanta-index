@@ -1,14 +1,29 @@
 # SEP-27 benchmark / retrieval / test-optimization — execution SSOT
 
 Status: `ACTIVE`. Latest documentation/source re-audit: 2026-09-27 KST,
-`main@106d7abec2dd3fa03f9db5a19a3de41df2f0afad`, shared dirty checkout.
-This refresh owns only this file. It preserves existing implementation, tests
-and the separately active engine work; it does not qualify those dirty changes.
+Current source-inspection baseline and latest archive checkpoint source:
+`main@98601a66d8cab9c86232b3e62ce490c8b43b71b6`, shared dirty checkout.
+The earlier documentation-only audit used `106d7abe`.
+The latest documentation-only refresh owned only this file. The subsequent
+IO-2 implementation owns the shared raw/archive modules, pair/corpus/lexical
+callers and their regression tests described below. It preserves the separately
+active engine/resource work and does not qualify those dirty changes.
+The subsequent IO-3 change owns `evidence.py`, `agent_outcome/__main__.py`,
+`recorded_capture.py`, `criterion_capture.py` and their existing owner tests.
+It streams recorded/Cargo JSONL. The next coordinated IO-3 change owns native
+capture/validation/DSL control readers, lexical capture/scoring and their owner
+tests. The latest IO-3 change migrates portable production, canonical receipts,
+nextest/domain readers, detached validation and retrieval capture control reads.
+The subsequent paired-verdict change connects `retrieval/run.py` command-log
+freeze/verification and isolated runner bundles to the same file/archive owner.
+Preserve concurrent engine
+changes in that module and the shared command/closure/catalog files.
 The earlier documentation epoch began at `66cee47e` and crossed another
 writer's commit. Its source inventory and test results are historical, not
 the current ownership inventory.
-Earlier implementation checkpoints are included in `106d7abe`. The subsequent
-file-backed execution/caller/test changes and this contract remain uncommitted.
+Another writer committed the bulk execution/archive migration before the final
+archive owner run. Archive metadata refinements/tests and this contract remain
+dirty at the checkpoint; preserve their exact bytes, not just the new HEAD.
 A commit does not establish final-source qualification.
 This document is the single current work/acceptance contract for this scope.
 All required decisions, ticket bodies, negative tests, measurement rules and
@@ -25,12 +40,59 @@ before freezing; put post-freeze results in external digest-bound receipts.
 
 ## 1. Final audit and evidence boundary
 
+### Latest code-first checkpoint: paired-verdict file custody
+
+The paired-verdict tail now uses `RawFile` for receipt/binary/log copies and the
+shared `raw_archive` pack/unpack implementation. Portable owner tests: 100
+selected/executed/passed; expanded caller verification is pending at this edit.
+The earlier 628-case checkpoint has a different source/selection and remains
+historical. No full-source, actual Rust/SDK/searchd, whole-capture resource or
+integrated qualification is claimed.
+Next implementation order is IO-4, EXEC-1, then resource and serial qualification.
+C5 is still open; do not duplicate
+its already landed Just/closure entries. The earlier planning diagnosis below
+is historical; the current findings and implementation matrices reflect the
+subsequent repair.
+
+### Earlier final planning refresh: pre-implementation diagnosis
+
+This refresh owns only this document. It inspected current code on dirty
+`main@98601a66d8cab9c86232b3e62ce490c8b43b71b6`; it did not implement repairs,
+rerun the historical 520-case selection, or execute product/runtime benchmarks.
+Source inspection confirms the four remaining implementation boundaries below.
+They refine existing tickets rather than create duplicate work. No named
+workflow from an earlier turn is an additional acceptance authority.
+
+| Priority / single ticket owner | Current reachable boundary | Required structural result |
+| --- | --- | --- |
+| 1 — MISC-03 / IO-3 | Portable production copies metadata/inventory/nextest output into bytes; `validate` retains all captured evidence in `dict[str, bytes]`; contract/SDK/inventory and canonical-receipt readers materialize it again. | Complete the entire producer → parser → canonical receipt → relocated replay chain using one committed-file identity. Stream event logs and hashes; cap actual control documents before decoding. Exact file/function/test matrix is inline in section 3. |
+| 2 — MISC-03 / IO-4 | Adapter preparation and native preflight/execution precede `publish_capture`; publication therefore cannot record their failures. | One capture epoch begins before input acquisition, records observed phases and failure custody, and reaches success only at the existing pointer commit. No second publication implementation. |
+| 3 — MISC-02 / EXEC-1 | Native recipe dispatch still uses `subprocess.run`; promotion sets `lease_mode = "shared"` and `lease_samples = 1`. | Join the existing process/log owner, collect capture-bound diagnostic host observations, and derive summaries during validation/replay. Do not treat cooperative reservation as quiet-host qualification. |
+| 4 — MISC-04 / C5 | Both extra regression modules are selected by Just and present in relevant closure paths, but neither has a `python_targets` entry; the explicit mutation test does not name them. | Add exact authority/scope enrollment and live collection/omission/duplicate/source-mutation controls. Do not repeat the already landed command/closure repair. |
+
+After these repairs, IO-5 resource evidence and MISC-04/05 integrated runtime
+acceptance remain `NOT_RUN`. MISC-06/07 require separate measurement and input
+admission; a code repair does not establish quality or performance superiority.
+The earlier publication, shared execution, archive and native/lexical/recorded/
+Criterion streaming changes are retained, not reopened as missing code.
+
+Current audit artifacts are external evidence only:
+`/private/tmp/qi-misc-final-plan.oUBrSS/receipt.json` records before/after
+source and document identities, exact policy commands and raw results, the
+41-document removal census, and the recovery-archive hash. Its covered scope
+is documentation/policy and source inspection, not product execution. All task
+requirements remain here; no receipt or deleted document must be consulted to
+understand or implement the plan. Source drift invalidates only claims bound
+to the changed inputs and is reported rather than hidden.
+
 ### Latest source re-audit and current decision
 
 This refresh re-read the four archived handoff preimages, their current
 dispositions below, the implemented publication/execution/storage boundaries,
 all remaining archive/preparation call sites and canonical selector wiring.
-No implementation or product test was run by this documentation-only refresh.
+No implementation or product test was run by that documentation-only refresh.
+The subsequent archive implementation and owner proof have their own checkpoint
+below; the documentation-only receipt cannot cover those later changes.
 The 617-case execution checkpoint below is retained historical owner evidence,
 not a new test result. Policy-only rechecks, source inventories and the 41-body
 deletion census are recorded under
@@ -53,14 +115,14 @@ in the repository has been ruled out.
 
 | Scope | Current status | Evidence / next condition |
 | --- | --- | --- |
-| Python publication, execution/raw I/O, adapters and C4 owner tests | Retained checkpoint: 617 executed/passed, zero failure/error/skip; rerun in this documentation refresh `NOT_RUN`; full integrated-source qualification `NOT_RUN` | Execution checkpoint below binds its commands and source bytes. Owner Python files were unchanged during that run; engine and test-authority changes prevent a whole-source stability claim. The earlier 460-case result is also historical. |
+| Python owner tests | Portable checkpoint: 628 selected/executed/passed, zero failure/error/skip; final closure/integrated-source qualification `NOT_RUN` | This seventeen-module selection has unchanged owner/test bytes across execution. Concurrent engine changes and subsequent normative-document edits prevent whole-source qualification. Earlier 520, 606, 368, 617 and 460 selections are different historical scopes, not additive counts. |
 | MISC-01 Rust shared GC lock | Current implementation confirmed by source inspection; execution `NOT_RUN` in this refresh | Earlier 51-case result below is historical owner evidence, not a new Rust run. |
 | MISC-02 native lifecycle and host observations | Implementation `NOT_RUN` | Native recipe still calls `subprocess.run`; `shared` / one sample is assigned, not observed; `host_monitor.py` is absent. |
-| MISC-03 bounded I/O and retained failure epoch | Partially implemented; execution checkpoint below adds owner-local proof, final-source qualification `NOT_RUN` | File-backed staging/promotion and normal/cleanup execution logs are implemented. Whole-tree ZIP, remaining preparation/parsing and capture-wide failure records remain open. No measured OOM claim. |
+| MISC-03 bounded I/O and retained failure epoch | Partially implemented; final-source qualification `NOT_RUN` | File-backed staging, execution, pair/corpus archives, native preparation, recorded/Cargo/lexical JSONL, portable producer/receipt/replay and paired-verdict command-log ZIP paths are implemented. Capture-wide failure records and end-to-end resource proof remain open. No measured OOM claim. |
 | C5 canonical test selection/source custody | Partial concurrent repair observed; acceptance `NOT_RUN` | Both modules now occur in the canonical command and affected closures, but still lack `python_targets` entries. Complete owner/scope registration and omission/mutation regression proof before canonical closure. |
 | MISC-04 through MISC-07 final-source acceptance | `NOT_RUN`; input-dependent claims become `BLOCKED` only when their actual prerequisite is missing | Execute the inline ticket-specific oracles after the shared API cutover; do not rerun already sufficient owner checks under multiple ticket names. |
 | Superseded document removal | `VERIFIED` filesystem census | No Markdown bodies remain in the five replaced directory groups; exact external backup SHA-256 rechecked. No additional deletion was needed in this refresh. |
-| Documentation/policy epochs | Prior test-authority `FAILED`; later execution-checkpoint policy commands all exit zero | The engine owner updated the catalog; the prior `l2_file_mutation.rs` orphan failure no longer reproduces in that later run. MISC-04 still binds final integrated selectors; catalog presence alone is not executed engine proof. |
+| Documentation/policy epochs | Latest portable postcheck: test-authority `FAILED`; other five checks exit zero | Concurrent `quanta-index-contract-base/tests/l4_preview_emission.rs` and `quanta-index-contract/tests/l4_preview_wire.rs` have no catalog entry. Record their exact owner enrollment under the existing integration boundary; do not count the Python owner pass as governance closure. Earlier policy epochs remain historical. |
 
 Earlier documentation audit evidence root:
 `/private/tmp/qi-misc-final-doc-audit.oO2YSv`. `inventory.json` records the
@@ -96,7 +158,7 @@ required decision, implementation step and acceptance rule remains inline.
 | --- | --- | --- |
 | C1 | Pre-patch native publication lost runs to GC and validated newest families instead of a complete capture. All six Python adapters now use `profile_capture.publish_capture`; native validation loads one pointer-bound capture. Rust GC takes the same lock before checking the capture marker. | Repaired in current source; owner-local checks `VERIFIED` only within the historical checkpoint below. Final-source actual-producer/fresh-replay qualification `NOT_RUN`. |
 | C2 | Native recipes use direct `subprocess.run`; host envelope uses static `shared`/one sample. Criterion is honestly diagnostic (`none`/zero samples), not capture-time host proof. Shared execution and capture modules already exist. | Source-backed integration gap; MISC-02 `NOT_RUN`. No measured slowdown claim. |
-| C3 | Verification, hashing, staging and producer output use bounded file-backed I/O. Pair packing still materializes the tree and ZIP; unpacking reads complete entries. Remaining corpus/recorded and portable-proof parsing is not fully streamed. | MISC-03 partial: execution logs now join repaired owner boundaries; archives, remaining preparation and capture-wide failure custody outstanding. RSS proof covers digest/copy/execution components, not end-to-end capture. |
+| C3 | Verification, hashing, staging, producer output, pair/corpus archives, native preparation, recorded/Cargo/lexical/nextest JSONL, portable validation and paired-verdict command logs use file-backed I/O. The 64 MiB aggregate transcript payload limit is preserved, with separate ZIP metadata/envelope bounds. | MISC-03 partial: IO-3 code is implemented; IO-4 and full capture resource proof remain. A finite 64 MiB admission ceiling was not an unbounded-memory defect; component RSS cannot establish end-to-end bounds. |
 | C4 | The three execution/cache/timing regression modules were absent from canonical selection and source closure. They are now registered in Just, test authority and the affected closure profiles, with exact owner, duplicate/omission, nonempty live collection and source-mutation guards. | Coverage wiring repaired; owner-local checks `VERIFIED`. Full MISC-04 integration/hosted execution remains `NOT_RUN`. |
 | C5 | Initial inspection found `test_pair_replay_workspace.py` and `test_cargo_preparation.py` absent from the canonical command, authority and four computed closures. Concurrent changes added command membership and the required closures: both in benchmark-control/micro/retrieval, preparation also in retrieval. Authority entries remain absent; existing explicit C4 guards protect only their three modules. | Partially repaired coverage/receipt-binding gap under MISC-04. Registration and specific omission/mutation/collection proof remain open. This is not a failing product algorithm or absence from every possible broad test command. |
 
@@ -380,10 +442,412 @@ five subsequent policy commands exited zero; do not compose this mutable
 whole-tree epoch into MISC-04 qualification. `post.json` records the targeted
 policy/source-closure rerun after this status update, separately from runtime.
 
-Native `benchctl.py` dispatch/host monitoring is still MISC-02. Remaining
-MISC-03 work is pair/corpus archives, residual preparation/JSONL parsing,
-capture-wide failure records and archive/end-to-end memory proof. Heavy
-MISC-04/05 runs still wait for the complete owner-local repair set.
+At the execution checkpoint, pair/corpus archives were still open. The archive
+checkpoint below supersedes that specific gap. Native `benchctl.py` dispatch/
+host monitoring remains MISC-02; residual preparation/JSONL parsing,
+capture-wide failure records and end-to-end memory proof remain MISC-03.
+Heavy MISC-04/05 runs wait for the complete owner-local repair set.
+
+### File-backed archive checkpoint: both domains and replay reuse
+
+- `raw_archive.py` is one ZIP mechanics owner used by pair and corpus binding.
+  Both writers now return `RawFile`; both readers consume it. No bytes-returning
+  compatibility path, whole-tree byte dictionary or complete-entry read remains
+  in these archive boundaries. Domain owners retain exact inventory and native
+  scorer/Git reconstruction responsibilities.
+- Writers use the existing exclusive no-follow `RawWriter`, sorted canonical
+  names, fixed 1980 timestamp, stored regular entries and fixed mode metadata.
+  Input file commitments are verified during streaming. Pair tree inventory is
+  checked again after packing; source/output overlap refuses before writes.
+- `RawFile.consume_seekable` hashes all pinned bytes before seeking and again
+  after the callback. The same open descriptor, ancestor/leaf identity and
+  change-epoch checks remain active; the complete-read primitive still observes
+  consumed EOF. This adds I/O passes, not an unmeasured performance claim.
+- ZIP end/ZIP64 records and central row bounds/counts are checked before
+  constructing `ZipFile`. A forged small count cannot hide an oversized actual
+  central inventory. Sorted names, duplicate/prefix aliases, NUL truncation,
+  multi-disk, links, encryption, compression, CRC/truncation and unsafe output
+  ancestors are refused. Extraction streams at 64 KiB per payload read and uses
+  exclusive output creation; failure leaves diagnostic partial output only.
+- Resource policy is explicit: pair ZIP at most 64 GiB, corpus ZIP retains
+  its existing 256 MiB ceiling, each archive at most 100,000 entries and a
+  16 MiB central directory. Pair discovery also caps total directory/file
+  entries at 100,000. These are refusal limits, not a claim that a 64 GiB
+  product benchmark has executed. ZIP64 is supported; metadata memory can
+  scale with admitted entry count, never with the total entry payload.
+- `_ReplayWorkspace.restore` hashes both incoming archives on every case,
+  retaining only digest/count commitments across cases. Restored workspace
+  regular files (including Git objects) and pair executable postchecks use the
+  same streaming digest owner. Existing corpus/native/mode/link/extra-file and
+  archive-change refusal tests remain applicable.
+- Corpus/lexical capture, replay and input-digest construction migrated together.
+  Shared archive imports automatically join the existing static source closure;
+  a regression traces both domain roots through archive/evidence/descriptor
+  owners. No shared engine-owned selector or closure file was edited here.
+
+External owner evidence root: `/private/tmp/qi-misc-archive-stream.Bpxru4`.
+`red.xml` records the actual preimage's time-dependent ZIP identity failure.
+`adapters-first.xml` records 82 passes and five failures from the introduced
+lexical bytes-to-file digest migration omission; both capture/replay digest
+sites were then corrected. `archive-owner.xml` records an intermediate 23-pass
+archive selection, not the final complete adapter scope. `owner-final.json`
+binds the subsequent nine-module command, raw/JUnit, source/runtime/dependency
+identities, drift and RSS properties: 368 selected/executed/passed, zero
+failure/error/skip, two deliberate duplicate-ZIP fixture warnings. HEAD and all
+14 selected owner/test file hashes were unchanged across this run; engine and
+normative-document files changed, so this is not whole-source qualification.
+JUnit SHA-256:
+`7edcdfff6fcfc9f8d92b45fddbc4308127e0dd8702d102a64eb12ccdf278c6d4`.
+Pack peak RSS at 8/128 MiB: 26,427,392 / 27,820,032 bytes; unpack:
+27,557,888 / 27,574,272 bytes. These support component payload-memory bounds,
+not speed or full capture resource qualification. `post.json` binds the later
+documentation/policy-only checks after this normative update. The selected rail covers
+fixture-backed adapters and real Git reconstruction, not a live product pair,
+installed daemon, hosted CI or performance admission.
+
+The owner suite includes independent fixed ZIP payload/metadata checks,
+inclusive byte/count limits, forged central metadata rejected before allocation,
+forced-small-threshold ZIP64, original-source relocation, 2,000-entry roundtrip,
+descriptor/namespace mutation and separate-process pack/unpack RSS at 8/128 MiB.
+Large failure-path output, many-file metadata scaling and end-to-end capture
+measurements remain IO-5; do not infer them from payload-only RSS measurements.
+
+### Bounded JSONL checkpoint: recorded outcomes and Criterion Cargo output
+
+The actual recorded-import preimage read the full agent JSONL before calling
+the existing evaluator, which then read the file again. Criterion decoded and
+split the full Cargo build log; its execution caller's 16 MiB control reader
+also refused otherwise valid larger logs. The coordinated repair is:
+
+- `RawFile.consume_lines` owns bounded binary `readline`, incremental SHA/count,
+  complete-consumption enforcement and the same pinned descriptor/namespace/
+  epoch checks as the other raw consumers. Default and maximum line size is
+  16 MiB including any newline. It never silently drops a final partial line;
+  the domain must parse it. A valid final JSON value without LF is allowed.
+- `agent_outcome::load_file` validates each original trajectory through the
+  existing strict owner, discards only that validated trajectory, and retains
+  metadata needed for exact global task/trial/arm pairing. Retained metadata
+  has a separate cumulative 16 MiB serialized-ASCII budget. This is not a
+  16 MiB RSS bound: Python object overhead and domain row decoding still exist.
+  Invalid UTF-8, duplicate keys/records, blank rows, nonfinite values, malformed
+  trailing JSON, conflicting task identity/baselines/configuration and incomplete
+  A/B/C groups continue to refuse. No pair is dropped or defaulted to success.
+- `recorded_capture` passes file commitments directly to that owner and to
+  promotion. Replay uses the same API; input digests bind those committed bytes.
+  Scan summary JSON and derived agent-summary replay use the explicit 16 MiB
+  control-document reader. Imports remain unauthenticated diagnostics, not
+  proof that an underlying agent or scanner actually ran.
+- Criterion capture and replay pass the committed build log to `_binary`.
+  It retains one matching executable/features tuple and one successful terminal
+  event, rejecting duplicate artifacts, duplicate terminal events and Cargo
+  object messages after `build-finished`. Routing diagnostic lines remain
+  outside Cargo-message semantics. UTF-8 and JSON parsing stay strict for
+  recognized Cargo rows. Criterion listing reads are bounded control reads;
+  sample/estimate derivation and diagnostic-only admission remain unchanged.
+
+Owner evidence root: `/private/tmp/qi-misc-jsonl-stream.RvMCS9`.
+`red.xml` records the actual preimage failing the no-whole-agent-input oracle.
+`stream-focused.xml` records 79 passed / 171 deselected before the final two
+adapter-control regressions. Final driver command:
+
+```sh
+uv run --frozen --extra dev python /private/tmp/qi-misc-jsonl-stream.RvMCS9/verify.py owner-final
+```
+
+The driver executes the canonical frozen Python environment with pytest over
+these thirteen `tools/ci/tests/` modules, `-q -p no:cacheprovider`, legacy JUnit
+properties and a bound external `--junitxml` path: `test_agent_outcome_benchmark`,
+`test_recorded_capture`, `test_criterion_capture`, `test_bench_protocol_conformance`,
+`test_benchmark_evidence_bridge`, `test_benchmark_profile_capture`, `test_benchctl`,
+`test_retrieval_capture`, `test_lexical_capture`, `test_pair_capture`,
+`test_portable_proof`, `test_benchmark_source_closure`, `test_benchmark_policy`
+(all `.py`). `owner-final.json` binds the exact argv, Python/dependencies,
+before/after source and dirty-state inventories, raw/JUnit hashes, observed
+RSS properties and drift. Result: 606 selected/executed/passed, zero
+failure/error/skip, exit 0; driver duration 129.85 seconds. HEAD remained
+`98601a66d8cab9c86232b3e62ce490c8b43b71b6`; all 17 selected owner/test files
+were unchanged. Concurrent engine and normative-document changes exclude
+whole-source qualification. JUnit SHA-256:
+`6d93bab01adfa9151a04b3fc4ca8123bef864fca24e4461169fc8d4a429eddde`.
+
+Fresh-child-process component measurements (bytes, not latency):
+
+| Consumer | Small input / peak RSS | Large input / peak RSS | Oracle |
+| --- | --- | --- | --- |
+| Recorded agent | 7,831,130 / 29,114,368 | 133,131,430 / 40,665,088 | 40 and 680 exact paired trials; three records per trial, no excluded/unknown pairs; RSS delta below 32 MiB. Global pair metadata legitimately grows. |
+| Cargo build | 7,685,698 / 29,442,048 | 130,654,018 / 29,917,184 | One exact executable/features tuple and successful final event; RSS delta below 32 MiB. |
+
+Further decisive controls cover zero/invalid/oversized line limits, oversize
+before domain decode, forged commitment, short-circuit consumers, six mutation/
+namespace races, LF/CRLF/no-final-LF, independent pair-metadata overflow,
+symlink CLI input, oversized scan JSON and replay of a build log larger than
+16 MiB. Existing paired-summary, fresh CLI replay, canonical wire, archive,
+publication and source-closure regressions remain in the combined selection.
+`post.json` binds subsequent document/policy/format-lint checks and the old-doc
+deletion census. No Rust, actual producer, installed daemon, hosted CI,
+qualified pair, end-to-end memory or latency result is claimed by this run.
+At that checkpoint native/lexical/portable-proof reads remained open. The next
+checkpoint supersedes native/lexical preparation only; whole-capture failure
+custody, portable proof, native host execution and final source freeze remain.
+
+### Native and lexical preparation: current implementation boundary
+
+- Native artifact scanning, snapshot, preparation and detached replay share
+  the validator's fixed fan-out ceiling: one summary per family; concurrency
+  at most the three existing 1/8/32-client summaries. Overflow refuses before
+  JSON parsing or accumulating the native artifact list. Existing exact
+  concurrency identity/completeness checks still run; a ceiling is not proof
+  of complete measurement.
+- Native summaries are bounded 16 MiB control documents. The validator,
+  capture/replay, diagnostic summary, DSL comparator and baseline-admission
+  readers use the same pinned control reader. No large raw trace or corpus is
+  reclassified as control JSON. Native preparation retains `(path, RawFile)`
+  plus bounded decoded metadata, not another payload byte copy. Publication
+  consumes those original commitments directly and rejects changed source
+  bytes. The opaque run-ID suffix now hashes ordered name/digest/size metadata
+  instead of concatenated complete payloads; persisted evidence schema is unchanged.
+- Lexical capture freezes all nine role inputs by committed streaming copies.
+  Specs, suites, query packs, pair report/lock/verdict/native summaries, origin,
+  corpus binding and derived report are bounded control JSON. Product observation
+  files (`sourcegraph_rows`, `opengrok_rows`, `cs_rows`) are JSONL, not a whole-file
+  size-limited document. Their existing scorer consumes bounded lines through
+  `RawFile.consume_lines`; source/binary/lockfile identities use streamed hashes.
+- The scorer parses every row and scores only the declared `symbol_only` lane,
+  as before. It retains per-query metrics, exact task coverage, hit/recall and
+  latency denominators, not complete observations/responses. Cumulative
+  serialized per-product metric metadata is capped at 16 MiB; this is not an
+  RSS cap. Blank rows, invalid UTF-8, malformed trailing JSON and oversized lines
+  refuse instead of being skipped. Valid final JSON without LF remains accepted.
+  A post-scorer digest/count check rejects changed frozen inputs before publication.
+- `rr` review includes all changed readers, capture-to-promotion references,
+  detached replay, CLI/control-file refusal and the existing domain scorer.
+  During migration the shared reader wrapped missing-file errors; DSL's public
+  missing-artifact classification was restored from the actual OS exception cause,
+  without a check-then-open pathname fallback. Current tests and policy results
+  are recorded in the external checkpoint, not inferred from historical counts.
+
+External work/evidence root: `/private/tmp/qi-misc-native-lexical.JGmZBo`.
+`red.xml` contains two actual preimage failures through native publication and
+lexical scoring: both attempted whole-payload `Path.read_bytes`.
+`adapters-first.xml` has 142 passed / three failures: two incomplete validator
+fixtures exposed by earlier inventory admission, plus a manifest recipe error
+while shared Justfile was concurrently edited. The fixture wiring was repaired;
+the recipe-error cause is not promoted to a product claim from that one run.
+`adapters-second.xml` has 195 passed / two failures: the earlier symlink refusal
+now has an explicit regular-file diagnostic, and the DSL missing-artifact error
+classification needed repair. `repair.xml` has three targeted passes after
+those repairs and the explicit lexical result-metadata overflow regression.
+These intermediate counts are not final-source qualification.
+
+The first combined `owner-final.json` run executed 519 cases with no failures;
+an exception-chaining lint correction was then applied and the same module
+selection was rerun, rather than treating its earlier source as current proof.
+Final command:
+
+```sh
+uv run --frozen --extra dev python /private/tmp/qi-misc-native-lexical.JGmZBo/verify.py source-final
+```
+
+`source-final.json` records the exact nested frozen-environment pytest argv,
+raw log/JUnit hashes, Python/dependency identity, before/after file digests and
+dirty inventories. The twelve `tools/ci/tests/` modules are `test_benchctl`,
+`test_lexical_capture`, `test_lexical_file_comparison`, `test_check_bench_artifacts`,
+`test_compare_dsl_bench`, `test_benchmark_evidence_bridge`,
+`test_benchmark_profile_capture`, `test_corpus_binding`,
+`test_concurrency_sample_contract`, `test_bench_protocol_conformance`,
+`test_benchmark_source_closure`, `test_benchmark_policy` (all `.py`), with
+`-q -p no:cacheprovider -o junit_family=legacy` and external JUnit output.
+Result: 520 selected/executed/passed, zero failure/error/skip, exit 0,
+166.38 seconds driver wall time; one deliberate duplicate-ZIP fixture warning.
+The extra selected case comes from the concurrently maintained closure-test
+module between the two runs; it is not an additional new test authored by this
+IO-3 change. Both runs retain separate source inventories.
+
+HEAD stayed `98601a66d8cab9c86232b3e62ce490c8b43b71b6`; all 18 monitored
+owner/test files were unchanged during the final run. Engine files, this
+normative document and `tools/ci/source_closure.py` changed. Consequently this
+checkpoint supports the exercised owner behavior, not final source-closure
+acceptance, whole-source qualification, installed/real-producer execution,
+hosted CI, qualified performance or an actual search-quality comparison.
+Final JUnit SHA-256:
+`d103b521856f821f2d8aa050d1fd85fb7edb43fbf85f18d0c952a6edadda2fe3`.
+
+Fresh-process lexical scorer RSS was 28,590,080 bytes for 7,707,970 input bytes
+(120 tasks), and 32,620,544 bytes for 131,038,290 input bytes (2,040 tasks).
+Each test independently checks complete SHA-256, exact task/hit/row counts,
+recall/hit rate 1.0 and mean latency 2.0 from fixed synthetic observations;
+the RSS delta is below the explicit 32 MiB regression threshold. This measures
+the scorer component only. It does not measure real search latency, full
+five-product capture RSS, many-file scaling or failure-path resource cost.
+
+New regressions also cover native reference-only preparation, source mutation
+before publication, finite artifact fan-out before decode, oversized summaries,
+leaf/ancestor aliases, lexical freeze/replay without whole observation reads,
+frozen-input mutation, partial/invalid/blank trailing JSONL, row/control/retained
+metadata ceilings and comparator oversize/missing-file behavior. Existing
+native fresh-process replay, complete-profile pointer preservation, corpus Git
+reconstruction, concurrency semantics and lexical five-product parity remain
+in the executed selection. `post.json` records the later documentation/policy
+checks; it cannot repair the broader source drift or close MISC-04.
+
+### Paired-verdict command-log checkpoint
+
+Owned changes are limited to the paired proof functions in
+`tools/benchmark/retrieval/run.py`, import-mode support in
+`tools/benchmark/raw_archive.py`, regressions in `test_portable_proof.py`, and
+the independent sorted ZIP fixture/error assertions in
+`test_retrieval_benchmark.py`. Concurrent symbol/engine changes in the latter
+two shared production/test surfaces are preserved. Shared Just/closure/catalog
+files are not edited by this checkpoint.
+
+- `freeze_receipts` captures/copies receipts and executables through `RawFile`
+  and packs transcript references through the shared deterministic archive
+  owner. It rejects source aliases/mutation and never overwrites an existing
+  destination artifact. It does not read a full transcript into bytes.
+- `_verify_execution_context` bounds context, closure and collection controls,
+  extracts transcripts with the shared metadata-first streamed parser into a
+  private temporary directory, and retains only file commitments. Ordinary
+  stdout/stderr are compared by complete-byte digest; the three native build
+  controls retain existing Cargo/collection/binary-domain validation.
+- Aggregate transcript payload remains limited to 64 MiB, inclusive. The ZIP
+  envelope is capped at payload ceiling plus 64 KiB; central metadata is capped
+  at 32 KiB and entry count at the exact rail inventory. Aggregate payload is
+  checked after bounded extraction and before domain admission. Temporary
+  extraction is removed on success or refusal. This is a bounded-disk tradeoff,
+  not a claim of zero extra I/O or a measured whole-capture RSS bound.
+- Sorted unique canonical entry order is now required for this archive too.
+  Old unordered command-log archives must be regenerated from the producer
+  evidence; no legacy reader or bypass is retained. Existing context/receipt
+  schemas, exact command/environment checks and 64 MiB payload policy remain.
+- Before success, rehash raw evidence, binaries, context, closure and the
+  original command-log ZIP; recheck the exact binary directory inventory.
+  A mutation after extraction/domain inspection must not reuse earlier hashes.
+- Static import traversal was checked against current `retrieval/run.py` and
+  discovers both `raw_archive.py` and `evidence.py`. Absence of a duplicated
+  explicit root is not a source-closure defect; do not add redundant entries.
+- Same-file caller audit also reproduced `validate_runner_bundle` reading an
+  undeclared ZIP member before inventory refusal. `build_runner_bundle` and
+  `validate_runner_bundle` now share the file/archive owner too: a 16 MiB
+  archive ceiling, 16 KiB central-directory ceiling, exactly six members,
+  source-file digest/size equality and final original-archive rehash. The
+  generated `__main__.py` must match the prescribed bootstrap bytes even when
+  an attacker rehashes all embedded and declared manifests consistently.
+  The ordinary sorted stored zipapp remains executable by isolated Python;
+  changed canonical metadata means old bundle digests are not reusable proof.
+
+Owner regressions cover contract and SDK freeze/consumer paths with actual
+20 MiB transcripts while prohibiting whole-file/ZIP-entry reads; exact payload
+boundary; missing/extra/duplicate/reordered/aliased/compressed/linked/CRC-bad/
+truncated/oversized ZIPs; pre-parser metadata refusal; source and destination
+custody; 16 MiB control refusal; and mutations after successful domain checks.
+Producer/tool execution and source-authority fixtures are synthetic, while
+the actual file/ZIP/domain readers run. This does not establish SDK execution,
+platform portability, independent quality, host quietness or performance.
+
+Verification artifacts for this checkpoint live outside the repository at
+`/private/tmp/qi-misc-paired-io.SAWvM7`. The initial four boundary regressions
+failed against the old whole-file readers; the RED JUnit is
+`/private/tmp/qi-misc-paired-red.xml`. First portable run: 100 tests passed;
+subsequent final-input boundary run: 12 tests passed. These selections overlap
+and are not additive. `bundle-red.xml` records the undeclared-member read
+reproduction; `bundle-first.xml` records its repair plus the existing actual
+isolated zipapp command test. Bundle refusal tests initially passed 8 cases;
+final selection also includes post-domain archive mutation. Expanded
+final-source owner proof is pending below.
+
+The first expanded nine-module run selected/executed/passed 746 tests with
+zero failures/errors/skips (`owners.json`, pytest exit 0, 692.15 seconds).
+That run overlapped our final-input/bundle repairs and foreign engine/test
+changes: `owners_and_selected_tests_stable=false`. It is diagnostic evidence,
+not proof of the final code. Its receipt SHA-256 is
+`85e84ddb2f4faf3a69ad988b5f8682d7da9d7dc398bc283b111d8d12bb02c565`.
+The final rerun selects all cases in the other eight modules and only the
+directly affected execution-context, frozen-command, freeze-receipt,
+OS-attestation and runner-bundle cases in `test_retrieval_benchmark.py`.
+This avoids repeating its unrelated expensive isolation/search-policy cases;
+it is not a final-source whole-retrieval-suite claim.
+
+### Portable producer, receipt and replay: earlier file-backed checkpoint
+
+- `_run` and `_run_reused_nextest` now return retained `RawFile` outputs, not
+  decoded control bytes. Metadata and inventory are bounded control documents;
+  nextest events are streamed/copied. Reuse-build epochs, selected binary
+  identities, tool/environment custody, command timings and the concurrent
+  `l5_parser_regressions` selector additions are preserved.
+- `portable_proof.validate` caches file commitments instead of all payload bytes.
+  It compares complete-byte digest/size for raw/copy equality and revalidates
+  every committed file before returning. Canonical receipt verification uses
+  those same files and bounded summaries, retaining original paths on relocation.
+- Contract/SDK/inventory readers share `evidence.read_control` for Path, raw-file
+  and existing in-memory control inputs. Production event readers use the one
+  `nextest_events` semantic parser over bounded lines. Each line and serialized
+  identity metadata are limited to 16 MiB; inventories and JUnit XML are bounded
+  before decoding. This is not a 16 MiB Python RSS claim. Runner/searchd binaries
+  are streamed hashes, not control documents subject to that ceiling.
+- The invoked `write-verification-receipt.py` also streams event/role hashes and
+  preserves raw commitments through the final pre-publication check. Inputs
+  changed after summary derivation refuse without a receipt. Its existing wire
+  schema, selection/count and command/source rules are unchanged. Missing/bad
+  inventory does not turn a failing event stream into success.
+- `retrieval_capture.py` control readers are bounded; Cargo.lock identity uses
+  streaming hashing. Its proof payload and detached domain replay are unchanged.
+- Meaningful initial RED: a real subprocess produced 20 MiB successfully, but
+  `_run` failed at its unconditional 16 MiB `read_control`. The new regression
+  verifies the retained path, size and independent full-output hash.
+  Other tests cover both portable branches with >20 MiB logs and relocated
+  replay, real receipt CLI execution, 18 MiB runner bytes, per-line/control/
+  metadata limits, no-follow inputs, mutation during parsing and before receipt
+  publication. Large branch fixtures mock tool execution/source admission;
+  they are not actual Rust/SDK or qualification proof.
+- RR traced the paired consumer too: `retrieval/run.py::freeze_receipts` and
+  `_verify_execution_context` still have their own command-log ZIP copies and
+  payload dictionary. That same-boundary tail remains explicitly open below;
+  the current patch does not claim end-to-end portable/paired I/O closure.
+
+Evidence root: `/private/tmp/qi-misc-portable-io.47FSYA`.
+`first.xml` records 174 passes; `second.xml` 185; `third.xml` 119 focused cases.
+The first expanded run, `owner-final.xml`, records 623 passes and four failures:
+old bytes arguments/assertions and an obsolete bytes-returning execution mock
+in `test_portable_tool_execution.py`. Their file-reference migration retains
+the independent tool-environment and output-digest substitution assertions;
+`repair.xml` records 67 passes. Those intermediate scopes are not additive and
+do not override the final source epoch.
+
+Final command:
+
+```sh
+uv run --frozen --extra dev python /private/tmp/qi-misc-portable-io.47FSYA/verify.py source-final
+```
+
+`source-final.json` records the exact nested pytest argv across 17 modules,
+before/after source hashes, dependencies, environment, raw log and JUnit hashes.
+Result: **628 selected/executed/passed, zero failed/error/skipped**, pytest exit 0,
+187.29 seconds including driver overhead; one intentional duplicate-ZIP fixture
+warning. All eight changed production owners and all selected test modules
+were byte-stable. Engine source and foreign handoff artifacts changed during
+execution; no whole-source stability or integrated closure acceptance is claimed.
+Python 3.13.9, macOS 15.6 arm64; no Rust/product benchmark was run.
+
+- Receipt SHA-256: `6a875330a74f894b1c0fba3fc01561b5911cea3c1ba5d9f8568d13e4a53e72fa`.
+- JUnit SHA-256: `10a5dcd3224d9f3ef6fedde67f5820ff672c57a19d11ab76ae1815c9fcbcaf12`.
+- Reader RSS: 100 cases / 6,565,812 raw bytes / 37,732,352 peak bytes versus
+  1,600 cases / 105,055,514 raw bytes / 40,042,496 peak bytes. Independent fixed
+  case counts and full-file SHA matched through receipt and domain readers;
+  peak growth is below the 32 MiB test threshold. This covers those readers,
+  not all producer work, paired ZIP replay, failure paths or host qualification.
+
+`post.json` binds documentation/policy checks after this normative update.
+The latest `check-test-authority.py` run is `FAILED`: concurrent new files
+`crates/quanta-index-contract-base/tests/l4_preview_emission.rs` and
+`crates/quanta-index-contract/tests/l4_preview_wire.rs` are orphan integration
+targets with no catalog entries. Their appearance is recorded in the owner's
+before/after source inventory. Shared catalog edits belong to the active
+integration/engine owners and were preserved. The other five checks (doc paths,
+benchmark policy, prompt-manager lint, diff whitespace and touched Ruff) exit 0.
+`note.json` binds this subsequent failure-status update and its doc-path/diff
+recheck; it does not erase or retry the unchanged authority failure.
+Historical receipts and fixture proofs do not close C5, actual SDK/contract
+capture, both integrated consumers, IO-4/EXEC-1/IO-5 or MISC-04 through MISC-07.
 
 ### Historical completed frozen proof, not current-source qualification
 
@@ -485,7 +949,7 @@ benchctl + registry: select declared profile and route commands
 | --- | --- | --- | --- |
 | MISC-01 | Publication/integration | Implemented; owner-local proof below | Final integrated-source actual capture/fresh replay under MISC-04; retain all publication regressions |
 | MISC-02 | Execution/host | Shared execution/raw contract agreed | Owned producer lifecycle and capture-time diagnostic host evidence |
-| MISC-03 | Evidence/data path | Verification/control/staging, promotion and file-backed execution API implemented | Archives, remaining preparation/parsing, capture-wide failure records and end-to-end memory proof |
+| MISC-03 | Evidence/data path | Verification/control/staging, execution and archive APIs implemented | Remaining preparation/parsing, capture-wide failure records and end-to-end memory proof |
 | MISC-04 | Serial integration | Original C4 repaired; C5 authority/regression proof open; final integration after 01-03 | Exact owner selection/source custody, same-source gates, actual capture/replay and hosted/closure reconciliation |
 | MISC-05 | Functional qualification | Stable integrated source | TOPT invariants, Rust/daemon, installed ingest and platform checks |
 | MISC-06 | Measurement | 02/04/05 and admitted host/inputs | Distinct test-cost/query/ingest/micro/system measurements |
@@ -534,7 +998,7 @@ to implement host monitoring before its archive/parsing/failure dependencies.
 | --- | --- | --- |
 | 1 (retain) | MISC-03: implemented `evidence.py` pinned bounded consumption, `RawFile`, streamed exclusive staging and size-limited control reads. Existing descriptor guard remains the owner. | Preserve digest/size, read bounds, unsafe-link/change-epoch and disk-full/partial-failure tests; do not implement a second reader. |
 | 2 (retain) | Shared 02/03 contract implemented: `producer_execution.py::execute` returns one file-backed execution result with terminal state, stdout/stderr references, byte counts/digests and bounded diagnostic tails. | Preserve real success/failure/timeout/interrupt/parent-death tests, bounded normal/cleanup drains and explicit retained-prefix semantics. |
-| 3 | MISC-03: migrate pair/corpus archives and remaining preparation/parsing to the implemented raw-reference contract. Bridge/hash helpers and all six promotion callers already use it. `profile_capture.publish_capture` stays the only complete-profile commit owner. | No hidden whole-tree dictionary, whole ZIP, unbounded JSONL or full-output decode in an accepted large-payload path; cross-adapter replay and canonical wire fixtures unchanged. |
+| 3 | MISC-03: retain the migrated pair/corpus archives; finish remaining preparation/parsing on the same raw-reference contract. Bridge/hash helpers and all six promotion callers already use it. `profile_capture.publish_capture` stays the only complete-profile commit owner. | No hidden whole-tree dictionary, whole ZIP, unbounded JSONL or full-output decode in an accepted large-payload path; cross-adapter replay and canonical wire fixtures unchanged. |
 | 4 | MISC-02: native `benchctl.py` dispatch joins the shared execution owner; `host_monitor.py` owns reservation/samples; bridge/replay rederive host facts from capture-bound raw observations. | Missing/forged/reordered observations refuse; cooperative reservation is diagnostic only; no static sample count and no new shell/producer wrapper. |
 | 5 | MISC-04: one integrator updates selectors/source closures, runs affected owner tests, finishes this normative contract and freezes the combined source. | Each new test is actually selected and its source is bound; no omitted siblings or zero-case success. |
 | 6 | MISC-04/05 then 06/07: batch expensive compatible source-bound rails once; reuse exact valid captures, keeping claim-specific prerequisites and denominators separate. | Actual producer/fresh replay, installed/platform and measurement evidence remain separately classified. |
@@ -560,22 +1024,73 @@ check ownership again before new edits.
 | Step | RCA and exact code boundary | Required logic and decisive check |
 | --- | --- | --- |
 | IO-1 (implemented; retain proof) | `producer_execution.py::_wait_for_terminal/execute/_cleanup` and `evidence.RawWriter` now stream both pipes and cleanup into files. | Keep one execution result; exact counts/digests, bounded tails, SIGCHLD/lifeline and kill-before-reap custody. Retain large-output success/nonzero/timeout/interrupt/parent-death and incomplete-cleanup controls. Current-source final integration remains MISC-04. |
-| IO-2 | `pair_capture.py::pack_native/tree_bytes/_unpack_native/replay_run`: whole-tree dictionary, whole ZIP and whole-entry reads. `corpus_binding.py::capture/_replay` has the same representation issue despite its existing 256 MiB capsule ceiling. | Stream both archive families through one file-backed I/O contract, with domain-specific inventory rules retained. Fixed ZIP metadata and sorted canonical entries; pinned seeking plus a complete byte commitment; explicit entry/total-byte limits. Test exact-limit/over-limit, corrupt/truncated/link/alias/duplicate entries, relocation replay and independent payload equality. Preserve the capsule ceiling unless separately justified; bounded input size is not bounded working memory. |
-| IO-3 | `criterion_capture.py::capture`, `benchctl.py::_capture_native_family`, `recorded_capture.py::capture/replay_run`, lexical corpus binding and execution callers still prepare/parse complete byte values. | Stream unbounded JSONL and raw artifacts; bound each control document/line before decoding. Keep declared native row order, exact producer inventory and domain-derived payload parity. A spool after a full read is not a memory repair. Retain malformed UTF-8/partial-line/oversize/nonfinite/duplicate-record refusal. |
+| IO-2 (implemented; retain proof) | `raw_archive.py`, `pair_capture.py::pack_native/tree_files/unpack_native/_ReplayWorkspace` and `corpus_binding.py::capture/_replay` share one streaming file contract. | Preserve fixed ZIP metadata, bounded central allocation, pinned complete-byte seeking, count/byte limits and independent payload/relocation/refusal tests. Current-source qualification remains MISC-04; whole-capture memory proof remains IO-5. |
+| IO-3 (implemented; retain proof) | Native/lexical/recorded/Criterion, portable producer/receipt/domain replay and paired-verdict command-log paths use file references, bounded controls and streamed events. | Retain the 64 MiB aggregate log admission limit, exact command/entry inventory, binary/reuse-build binding and same-raw parity. Shared ZIP parsing admits bounded metadata before allocation and streams into owned temporary files. Full-source and whole-capture resource acceptance remain separate. |
 | IO-4 | `profile_capture.py::publish_capture` records no whole-capture failure across all preparation/replay phases; bridge failure custody covers only one staging epoch. | One capture-level failure record binds phase, source/input identity, retained logs, terminal and primary/cleanup errors outside success inventory. Cover failures before staging, second-family publication, domain replay and final source check; preserve the prior complete pointer. Marker-write failure must report both errors without claiming persisted evidence. |
 | EXEC-1 | `benchctl.py` native dispatch bypasses shared execution; `promote_profile_runs` assigns `shared` and one sample; no `host_monitor.py` exists. | After IO-1, route native producers through the same lifecycle. Observe capture-bound host facts and cooperative reservation; bridge/replay rederive them. Test sample omission/reorder/gaps/stale capture and forged summaries. Cooperative reservation must never issue qualified-performance proof by itself. |
-| IO-5 | Fresh-process RSS tests cover digest/staging and producer log capture at 8/128 MiB. | Remaining: archive generation/replay, large failure-path output and many-file metadata/end-to-end costs. Reuse one complete owner suite after shared API integration, then the serial runtime batch. Do not infer end-to-end bounds from component measurements. |
+| IO-5 | Fresh-process RSS tests cover digest/staging, producer logs, shared archive pack/unpack and recorded/Cargo line consumers; each checkpoint binds actual outcomes. | Remaining: large failure-path output and many-file metadata/end-to-end costs. Reuse one complete owner suite after shared API integration, then the serial runtime batch. Do not infer end-to-end bounds from component measurements. |
 
 The following caller details are mandatory parts of those rows, not additional
 tickets. They prevent a streamed writer from hiding another whole-payload copy.
 
 | Step | Additional live owner/caller | Structural completion condition |
 | --- | --- | --- |
-| IO-2 | `pair_capture.py::_ReplayWorkspace.restore` retains both full `corpus.bundle` and `native-tree.zip` byte values in `self.archives`. | Store immutable file commitments, not archive bytes. Revalidate the complete pinned bytes for every case before reusing a restored workspace; changing either archive must refuse, even if path/size/mtime are unchanged. Preserve the existing cross-case exact-identity rule. |
-| IO-2/IO-3 | `pair_capture.py::_replay_tree_identity` reads every restored file, including Git objects; `capture` re-reads full executable bytes after execution. | Use the same streaming digest owner for all regular files and binaries. Retain path/mode/link inventory and workspace mutation refusal. Do not reduce equality to a metadata-only cache or weaken binary postchecks. |
-| IO-2 | `corpus_binding.py::capture/replay` and both `lexical_capture.py` callers use a bytes capsule API. | Cut over producer and replay together to the same file commitment. Keep exact metadata/bundle inventory, real Git reconstruction and the existing 256 MiB capsule limit; ZIP payload and central-directory limits are explicit. No private bytes compatibility branch. |
-| IO-3 | `benchctl.py::_capture_native_family` reads complete files into `captures`; `recorded_capture.py::capture/replay_run` reads full imports; `criterion_capture.py::_binary` and `retrieval/portable_proof.py::_run` consume complete bounded control output. | Separate raw references from decoded control values. Stream line protocols with bounded individual records and incremental validation; retain exact native row order and domain payload derivation. A bounded 16 MiB control document is not itself an unbounded-memory defect; decide each caller's supported input contract before replacing it. |
+| IO-2 retained invariant | `pair_capture.py::_ReplayWorkspace.restore` now retains only complete-byte digest/count commitments for the bundle and ZIP. | Revalidate on every case, even if path/size/mtime are unchanged; preserve cross-case identity without whole archive retention. |
+| IO-2 retained invariant | `_replay_tree_identity` and executable postchecks now use streamed hashes. | Retain path/mode/link inventory and workspace mutation refusal; no metadata-only cache or weakened binary postcheck. |
+| IO-2 retained invariant | Corpus capture/replay and lexical callers now use one `RawFile` capsule API. | Preserve exact metadata/bundle inventory, real Git reconstruction, 256 MiB ceiling and input digests; no private bytes compatibility branch. |
+| IO-3 retained invariant | `recorded_capture.py` passes committed `RawFile` imports directly; `agent_outcome::load_file` removes validated trajectories and retains only bounded pair metadata. Criterion `_binary` consumes bounded lines directly in capture and replay. | Keep full-file consumption/SHA/count/epoch verification; 16 MiB per line and serialized pair-metadata budget, exact A/B/C pairing, duplicate and partial-JSON refusal. Scan JSON and Criterion listings remain bounded control documents. Do not regress to a bytes compatibility path. |
+| IO-3 retained invariant | Native `_capture_native_family` holds committed files and bounded metadata; validator/snapshot/replay share the finite inventory ceiling. Lexical capture copies references and the scorer streams observation rows; all named control inputs are bounded. | Retain exact digest/count and mutation refusal, native/lexical replay parity, alias/oversize/partial-row negatives and source-independent expected score/count tests. No whole-payload spool or second parser owner. |
+| IO-3 retained invariant | Portable `_run` returns `RawFile`; production copies files, `validate` retains commitments and final-rechecks them, and canonical/domain readers consume those exact files. | Preserve bounded control parsing, streaming events/hashes, reuse-input epochs, all real consumers and file-returning test doubles. No full-log bytes cache or hidden whole-output decode. |
+| IO-3 retained invariant | `retrieval/run.py::freeze_receipts` copies committed files and packs through `raw_archive`; `_verify_execution_context` hashes extracted references and passes only three bounded build/metadata/collection controls to the existing domain reader. | Keep exact expected names/digests, the inclusive 64 MiB payload ceiling, 64 KiB envelope allowance, 32 KiB central-directory limit, sorted entry inventory, executable/collection roles and final raw/binary/context/closure rehash. Old unordered archives require re-freeze; no legacy parsing branch. Preserve concurrent engine edits outside these functions. |
 | IO-4 | Adapter `capture` preparation occurs before `profile_capture.publish_capture` is entered. | Establish one capture epoch before the first fallible preparation action. Its owner covers preparation, execution, staged/promoted runs, domain replay and final source check. Publication alone cannot record pre-entry failures. Keep raw failure artifacts separate from admissible run inventory and preserve the prior complete pointer. |
+
+IO-3 portable core matrix: the following rows are implemented at the checkpoint
+above and describe retained requirements. The paired-verdict ZIP row immediately
+above is implemented as well; whole-capture RSS and integrated qualification
+are not implied by these owner-local implementation checkpoints.
+
+| File and function owner | Logic to change / preserve | Existing regression owner |
+| --- | --- | --- |
+| `tools/benchmark/retrieval/portable_proof.py::_run/_run_reused_nextest/_produce` | Return committed output references; callers explicitly choose bounded control decode or streamed copy. Nextest events are JSONL; the binaries-only list and Cargo metadata are control JSON. Preserve selected binaries, metadata/reuse epoch identity, tool custody, resource admission and command timings. Ignored return values must not force output decoding. | `tools/ci/tests/test_portable_proof.py`, `test_cargo_preparation.py`, `test_proof_command_timings.py`, `test_portable_tool_execution.py` |
+| `tools/benchmark/retrieval/portable_proof.py::validate/_canonical_receipt` | Replace `captured: dict[str, bytes]` with immutable file commitments. Derive digest/count from fully consumed guarded files; compare raw/copy identity without retaining both payloads. Preserve relocated execution-root provenance, exact evidence-role inventory, command identity and pending-context rejection. | `tools/ci/tests/test_portable_proof.py`, `test_retrieval_capture.py` |
+| `tools/benchmark/retrieval/contract_proof.py::_evidence_bytes/pytest_summary/nextest_summary`, `sdk_proof.py::_evidence_bytes/_nextest_counts/build_summary_from_evidence`, `proof_inventory.py::_evidence_bytes/verify_inventory_authority` | Domain readers consume the same pinned files verified by portable replay. Inventory, runner record and summary JSON use explicit control limits. Nextest logs stream through the existing event parser; exact selected/executed/pass identity remains authoritative, including the required SDK runner case. | `tools/ci/tests/test_retrieval_contract_proof.py`, `test_retrieval_sdk_proof.py`, `test_retrieval_benchmark.py` |
+| `tools/ci/nextest_events.py::parse_nextest_inventory/parse_nextest/_parse_nextest_stream` | Bound inventory before JSON decode and each JSONL line before allocation; retain one semantic parser for all callers. Bound retained identity metadata, consume through actual EOF, verify digest/count and reject missing/duplicate/reordered/partial/invalid events. Do not weaken expected-inventory checks to obtain bounded memory. | `tools/ci/tests/test_nextest_ignored_inventory.py`, contract/SDK/portable tests above |
+| `tools/ci/junit_events.py::parse_pytest_junit_bytes` and contract caller | Treat JUnit XML as an explicitly size-limited control input before constructing its tree; reject oversize without emitting a passing summary. Preserve grammar, identities and exact terminal counters. Streaming XML is not required for an input contract with a enforced finite limit. | `tools/ci/tests/test_retrieval_contract_proof.py`, `test_write_verification_receipt.py` |
+| `tools/ci/write-verification-receipt.py::_nextest_evidence_summary/_summary_json_evidence_summary/_input_evidence` | The invoked receipt CLI shares event/control/hash owners and retains commitments through publication checks. Bind summary and input digests to the same validated byte identity. Retain the public receipt schema and role/command/source checks; mutation must leave no published receipt. | `tools/ci/tests/test_write_verification_receipt.py`, `test_portable_proof.py` |
+
+Test filenames without a directory in that matrix also live in
+`tools/ci/tests/`. Final IO-3 acceptance must exercise both contract and SDK
+branches, canonical receipt production, detached replay and their real domain
+readers. Use large valid multi-line event evidence to prove that the whole-log
+control limit no longer blocks an otherwise admitted log; independently assert
+the expected identities/counts. Reject one oversized line, oversized control
+JSON/XML, truncated tail, duplicate event, swapped evidence, mutation during
+consumption and oversized retained inventory. Measure fresh-process resource
+use across the complete path; do not infer it from a mocked `_run`, a source
+grep, component RSS or a successful spool after a whole-file read. A size limit
+is a declared admission refusal, never permission to truncate or omit evidence.
+The remaining paired ZIP copies are source-backed, not a reproduced OOM,
+dishonest pass or measured production slowdown. Their repair and whole-path
+resource proof are `NOT_RUN`; the implemented core's owner evidence is above.
+
+IO-4 construction boundary: `profile_capture.py` remains the capture/publication
+owner. Establish an epoch after validating the requested external evidence
+namespace, before source/input acquisition and staging; an unsafe root must
+refuse without writing a marker through that root. Native construction must start
+in `benchctl.main`'s admitted `run` branch before preflight/source acquisition and
+producer execution, not only inside the later `promote_profile_runs`. Thread the
+same epoch/ID through that native path plus the five adapter `capture` entrypoints
+(Criterion, retrieval-contract, lexical, pair, recorded) and `publish_capture`.
+Record actual phase transitions and only identities/terminal facts already
+observed. Inputs not yet acquired and processes not started retain explicit
+unknown/not-started state, never synthetic digest/exit 0. Preserve the existing
+publication decorator/GC exclusion and pointer commit point. Failure-marker
+persistence errors must retain the original error and must not claim durable
+failure evidence. This construction plan is not implemented by the IO-3 patch.
+Audit native early `return 2` paths as well as exceptions: catching an error and
+returning a status inside the epoch must not erase its failure phase or primary
+reason. The CLI remains the outer status-rendering boundary; publication remains
+the only successful completion boundary.
 
 Exact existing regression owners: `tools/ci/tests/test_pair_capture.py` and
 `test_pair_replay_workspace.py` for archive/workspace equality;
@@ -589,9 +1104,9 @@ authority enrollment and source closure. New tests are not covered merely
 because their filename resembles an enrolled module.
 
 Order: retain the existing raw owner and IO-1 coordinated caller migration ->
-IO-2/IO-3 and IO-4 -> EXEC-1 -> IO-5 and MISC-04 source freeze. Archive work can
-be designed independently, but common callers and publication changes have one
-integration owner. No new storage system, alternate CLI, generic compatibility
+retained IO-2 -> IO-3 and IO-4 -> EXEC-1 -> IO-5 and MISC-04 source freeze.
+Common callers and publication changes have one integration owner.
+No new storage system, alternate CLI, generic compatibility
 mode or rank-policy tuning belongs in this work.
 
 Failed work has an explicit capture/epoch identity and remains outside Git.
@@ -759,10 +1274,11 @@ retrieval, query-parity, macOS resource or test-authority behavior.
 | `tools/benchmark/evidence.py::RawFile/write_raw_file/StagingRun.write_raw` | Implemented; retain exclusive creation, incremental digest/count, flush/fsync, safe parent descriptors and explicit failure. No second bytes API. |
 | `tools/benchmark/evidence_bridge.py::promote_native_run` | Implemented file-backed inventory and retained failed staging; remaining whole-capture custody is IO-4. |
 | `tools/benchmark/evidence_bridge.py::sha256_file/sha256_hex_file` | Implemented bounded hashing through the same pinned reader; preserve tests. |
-| `tools/benchmark/pair_capture.py::pack_native/unpack_native/tree_bytes/capture/replay_run` | Open IO-2: file-backed ZIP generation and entry streaming; remove whole-tree and whole-archive copies. |
-| `tools/benchmark/corpus_binding.py::capture/replay/_replay` | Open IO-2: same archive representation problem; retain capsule size ceiling and exact release/bundle validation. |
+| `tools/benchmark/raw_archive.py`, `pair_capture.py::pack_native/unpack_native/tree_files/capture/replay_run` | IO-2 implemented: shared streamed ZIP mechanics, fixed metadata, bounded directory parsing, commitment-only replay cache and streamed workspace/binary hashes. Retain archive checkpoint regressions. |
+| `tools/benchmark/corpus_binding.py::capture/replay/_replay` | IO-2 implemented: same file-backed archive owner; retain capsule size ceiling, lexical input digests and exact release/bundle reconstruction. |
 | `tools/benchmark/producer_execution.py::_wait_for_terminal/execute/_cleanup` | IO-1 implemented; retain file-backed normal/failure drains and bounded tails. Final combined owner evidence is in the execution checkpoint; native dispatch remains EXEC-1. |
-| Remaining adapter preparation/parsing and `profile_capture.py::publish_capture` | Open IO-3/IO-4: follow the exact caller and failure-boundary matrix in section 3; streaming staging alone does not close either. |
+| `tools/benchmark/evidence.py::RawFile.consume_lines`, recorded/Criterion/native/lexical/portable capture and domain readers | IO-3 implemented: bounded JSONL/retained metadata/control JSON, file-backed preparation, canonical receipt production/replay and paired-verdict command-log ZIP. Retain checkpoint regressions and final-input rechecks; whole-capture RSS remains IO-5. |
+| Adapter preparation/execution and `profile_capture.py::publish_capture` | Open IO-4: follow the exact capture-epoch and failure-boundary matrix in section 3; streaming staging alone does not close whole-capture failure custody. |
 
 Coordinated callers: `criterion_capture.py`, `retrieval_capture.py`,
 `lexical_capture.py`, `pair_capture.py`, `recorded_capture.py`, `corpus_release.py`, `corpus_binding.py`

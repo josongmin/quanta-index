@@ -458,7 +458,7 @@ def test_file_digest_exact_count_and_hash(tmp_path, size):
     assert module.file_digest(path) == ("sha256:" + hashlib.sha256(data).hexdigest(), size)
 
 
-@pytest.mark.parametrize("reader", ["raw", "control", "digest"])
+@pytest.mark.parametrize("reader", ["raw", "control", "digest", "seekable", "lines"])
 @pytest.mark.parametrize(
     "mutation", ["replace", "grow", "truncate", "restore", "parent", "hardlink"]
 )
@@ -471,6 +471,7 @@ def test_file_consumers_share_epoch_and_namespace_refusals(tmp_path, monkeypatch
     path = parent / "payload"
     data = b"original"
     path.write_bytes(data)
+    commitment = module.RawFile.capture(path)
     original = handoff_validation._consume_repo_regular_file
 
     def race(root, value, *, label, consume):
@@ -507,9 +508,59 @@ def test_file_consumers_share_epoch_and_namespace_refusals(tmp_path, monkeypatch
         "raw": module._read_regular_file,
         "control": module._read_control_file,
         "digest": module.file_digest,
+        "seekable": lambda _path: commitment.consume_seekable(lambda handle: handle.read(1)),
+        "lines": lambda _path: commitment.consume_lines(list),
     }[reader]
     with pytest.raises(module.EvidenceError, match="changed"):
         operation(path)
+
+
+@pytest.mark.parametrize("raw", [b"", b"one", b"one\n", b"one\r\ntwo\nlast"])
+def test_raw_line_reader_preserves_exact_bytes(tmp_path, raw):
+    module = _load_evidence_module()
+    source = module.write_raw_file(tmp_path / "lines", [raw])
+    assert b"".join(source.consume_lines(list, max_line_bytes=5)) == raw
+
+
+@pytest.mark.parametrize("limit", [0, -1, True, 1.5, 16 * 1024 * 1024 + 1])
+def test_raw_line_reader_refuses_invalid_limits(tmp_path, limit):
+    module = _load_evidence_module()
+    source = module.write_raw_file(tmp_path / "lines", [b"one\n"])
+    with pytest.raises(module.EvidenceError, match="line limit"):
+        source.consume_lines(list, max_line_bytes=limit)
+
+
+def test_raw_line_reader_refuses_oversize_before_domain_receives_row(tmp_path):
+    module = _load_evidence_module()
+    source = module.write_raw_file(tmp_path / "lines", [b"1234\n"])
+    observed = []
+    with pytest.raises(module.EvidenceError, match="line exceeds"):
+        source.consume_lines(lambda lines: observed.extend(lines), max_line_bytes=4)
+    assert observed == []
+
+
+@pytest.mark.parametrize("raw", [b"", b"one", b"one\ntwo\n"])
+def test_raw_line_reader_refuses_unconsumed_or_short_circuited_input(tmp_path, raw):
+    module = _load_evidence_module()
+    source = module.write_raw_file(tmp_path / "lines", [raw])
+    with pytest.raises(module.EvidenceError, match="complete file"):
+        source.consume_lines(lambda lines: None)
+    if raw:
+        with pytest.raises(module.EvidenceError, match="complete file"):
+            source.consume_lines(next)
+
+
+@pytest.mark.parametrize("field", ["size", "sha"])
+def test_raw_line_reader_refuses_forged_commitment(tmp_path, field):
+    module = _load_evidence_module()
+    source = module.write_raw_file(tmp_path / "lines", [b"one\ntwo\n"])
+    forged = (
+        module.RawFile(source.path, "sha256:" + "0" * 64, source.size)
+        if field == "sha"
+        else (module.RawFile(source.path, source.sha256, source.size + 1))
+    )
+    with pytest.raises(module.EvidenceError, match="commitment"):
+        forged.consume_lines(list)
 
 
 def test_consumer_binds_the_open_descriptor_to_the_prechecked_file(tmp_path, monkeypatch):

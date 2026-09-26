@@ -63,9 +63,10 @@ impl SourcePublicationCatalogPort for ActivationCatalog {
         binding.validate()?;
         super::repository_envelope::bound_manifest_token(&binding.target.manifest_digest)?;
         let repo = &binding.target.repo_id;
-        let mut entries = self
+        let mutation = self.lock_mutation()?;
+        let entries = self
             .entries
-            .write()
+            .read()
             .map_err(|error| corrupt(error.to_string()))?;
         self.ensure_durability_certain_v1()?;
         if let Some(record) = existing(&entries, repo, &binding.event)? {
@@ -123,7 +124,8 @@ impl SourcePublicationCatalogPort for ActivationCatalog {
             ),
             record.clone(),
         );
-        self.persist_repository(repo, &mut entries, next)?;
+        drop(entries);
+        self.persist_repository(&mutation, repo, next)?;
         Ok(SourceEventReservationV1::Reserved(record))
     }
 
@@ -137,7 +139,7 @@ impl SourcePublicationCatalogPort for ActivationCatalog {
             .inspect_source_event(repo, event)?
             .ok_or_else(|| CoreError::NotReady("source event has no durable reservation".into()))?;
         // No catalog lock is held while calling another authority. Recheck the
-        // original binding under the write lock before advancing its phase.
+        // original binding under the mutation lock before advancing its phase.
         let OperationInspectV1::Committed {
             receipt,
             durable_sequence,
@@ -145,21 +147,27 @@ impl SourcePublicationCatalogPort for ActivationCatalog {
         else {
             return Err(CoreError::NotReady("source event original journal has no committed stage receipt; reservation retained".into()));
         };
+        // The journal persists the pre-terminal receipt before allocating its
+        // sequence; `OperationInspectV1::durable_sequence` is the ledger's
+        // authority, as on the dispatcher's existing recorded_at replay path.
         if receipt.generation != record.binding.target.manifest_generation
             || receipt.manifest_digest.as_ref() != Some(&record.binding.target.manifest_digest)
             || receipt.batch_digest != record.binding.journal_key.batch_digest
             || !receipt.sealed
-            || receipt.semantic_content.is_none()
+            || receipt
+                .semantic_content
+                .as_ref()
+                .is_none_or(|roots| !roots.is_canonical_v1())
             || durable_sequence == 0
-            || receipt.durable_sequence != durable_sequence
         {
             return Err(corrupt(
                 "original committed journal receipt does not bind the sealed source target",
             ));
         }
-        let mut entries = self
+        let mutation = self.lock_mutation()?;
+        let entries = self
             .entries
-            .write()
+            .read()
             .map_err(|error| corrupt(error.to_string()))?;
         self.ensure_durability_certain_v1()?;
         let observed = existing(&entries, repo, event)?
@@ -184,7 +192,8 @@ impl SourcePublicationCatalogPort for ActivationCatalog {
             .ok_or_else(|| corrupt("reservation disappeared from repository snapshot"))?;
         updated.phase = SourceEventPhaseV1::Staged;
         let updated = updated.clone();
-        self.persist_repository(repo, &mut entries, next)?;
+        drop(entries);
+        self.persist_repository(&mutation, repo, next)?;
         Ok(updated)
     }
 }

@@ -1,0 +1,43 @@
+.................F                                                       [100%]
+=================================== FAILURES ===================================
+_________ test_verdict_refuses_frozen_command_log_tampering[duplicate] _________
+
+tmp_path = PosixPath('/private/tmp/pytest-of-songmin/pytest-1330/test_verdict_refuses_frozen_co2')
+mutation = 'duplicate'
+
+    @pytest.mark.parametrize("mutation", ["digest", "crc", "duplicate"])
+    def test_verdict_refuses_frozen_command_log_tampering(tmp_path, mutation):
+        st = _pair_stage(tmp_path, receipts="full")
+        assert _stage_verdict(st)["states"]["CONTRACT_GREEN"] == "pass"
+        archive_path = st["stage"] / "receipts" / "contract_execution_logs.json"
+        with zipfile.ZipFile(archive_path) as archive:
+            members = {name: archive.read(name) for name in archive.namelist()}
+        if mutation == "duplicate":
+            with pytest.warns(UserWarning, match="Duplicate name"):
+                with zipfile.ZipFile(archive_path, "a", compression=zipfile.ZIP_STORED) as archive:
+                    archive.writestr("python-test.stdout", b"")
+        else:
+            members["python-test.stdout"] = b"forged transcript"
+            with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_STORED) as archive:
+                for name, payload in members.items():
+                    archive.writestr(name, payload)
+            if mutation == "crc":
+                archive_path.write_bytes(
+                    archive_path.read_bytes().replace(b"forged transcript", b"forged transcripu")
+                )
+        verdict = _stage_verdict(st)
+        assert verdict["states"]["CONTRACT_GREEN"] == "fail"
+        reason = verdict["state_evidence"]["CONTRACT_GREEN"]["reason"]
+>       assert (
+            "frozen command output digest mismatch"
+            if mutation == "digest"
+            else "Bad CRC-32"
+            if mutation == "crc"
+            else "archive entry count exceeds limit"
+        ) in reason
+E       AssertionError: assert 'archive entry count exceeds limit' in 'contract_refused: contract execution context cannot inspect frozen command logs: archive is malformed, unsafe or inco...n_co2/work/stage/receipts/contract_execution_logs.json: archive central directory exceeds limits or has invalid bounds'
+
+tools/ci/tests/test_retrieval_benchmark.py:5760: AssertionError
+=========================== short test summary info ============================
+FAILED tools/ci/tests/test_retrieval_benchmark.py::test_verdict_refuses_frozen_command_log_tampering[duplicate]
+1 failed, 17 passed, 310 deselected in 50.78s

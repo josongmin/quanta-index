@@ -1,0 +1,61 @@
+{
+  "after": "/tmp/quanta-l1-green.diz44g/dispatcher-controls-final-1.after.json",
+  "artifacts": [
+    {
+      "features": [],
+      "fresh": true,
+      "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-search-plane#0.1.0",
+      "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-workspace-lane/debug/deps/quanta_index_search_plane-a62bf8ae66a60dab",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 1,
+        "opt_level": "0",
+        "overflow_checks": true,
+        "test": true
+      },
+      "sha256": "cfda61c2b94da3d970e2cdea117bfc45ff1aa3609118322f82e1be3093b5531c",
+      "target": {
+        "crate_types": [
+          "lib"
+        ],
+        "doc": true,
+        "doctest": true,
+        "edition": "2024",
+        "kind": [
+          "lib"
+        ],
+        "name": "quanta_index_search_plane",
+        "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-search-plane/src/lib.rs",
+        "test": true
+      }
+    }
+  ],
+  "before": "/tmp/quanta-l1-green.diz44g/dispatcher-controls-final-1.before.json",
+  "classification": "UNCLASSIFIED: inspect execution count, outcome, inputs and source drift before promoting evidence",
+  "command": [
+    "./scripts/cargow",
+    "test",
+    "--locked",
+    "-j",
+    "2",
+    "-p",
+    "quanta-index-search-plane",
+    "--lib",
+    "--message-format=json",
+    "--",
+    "query_dispatcher::tests::lexical::",
+    "query_dispatcher::tests::lexical_pages::",
+    "query_dispatcher::tests::structural::"
+  ],
+  "ended_unix": 1790457653.8734689,
+  "executed_result_lines": [
+    "running 40 tests",
+    "test result: FAILED. 39 passed; 1 failed; 0 ignored; 0 measured; 418 filtered out; finished in 0.26s"
+  ],
+  "exit_code": 101,
+  "head_changed": false,
+  "log": "/tmp/quanta-l1-green.diz44g/dispatcher-controls-final-1.log",
+  "log_sha256": "e338fd411d984de5e451a9f9fcb94742ba08425ca4e05fb94e8c6dacd417eb5a",
+  "source_changed": [],
+  "started_unix": 1790457652.5826051
+}

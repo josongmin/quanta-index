@@ -1,6 +1,7 @@
 """Behavioral checks for the recorded-trajectory A/B/C authority."""
 
 import copy
+import importlib.util
 import json
 import subprocess
 import sys
@@ -75,6 +76,66 @@ def run_cli(tmp_path, rows, command="summarize", raw=None):
 
 def valid_rows():
     return [record(arm) for arm in "ABC"]
+
+
+def agent_owner():
+    spec = importlib.util.spec_from_file_location("agent_stream_test_owner", CLI)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize("suffix", ["", "\n", "\r\n"])
+def test_streamed_agent_input_preserves_complete_final_row(tmp_path, suffix):
+    raw = "\r\n".join(json.dumps(row) for row in valid_rows()) + suffix
+    result = run_cli(tmp_path, [], raw=raw)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["pair_count"] == 1
+
+
+@pytest.mark.parametrize("suffix", [b'{"schema_version":', b"\xff", b"\n"])
+def test_streamed_agent_input_does_not_discard_partial_or_invalid_tail(tmp_path, suffix):
+    module = agent_owner()
+    path = tmp_path / "agent.jsonl"
+    path.write_bytes(b"".join(json.dumps(row).encode() + b"\n" for row in valid_rows()) + suffix)
+    with pytest.raises(module.InvalidEvidence):
+        module.load(path)
+
+
+def test_streamed_agent_metadata_has_independent_explicit_bound(tmp_path, monkeypatch):
+    module = agent_owner()
+    monkeypatch.setattr(module, "CONTROL_DOCUMENT_BYTES", 2000)
+    path = tmp_path / "agent.jsonl"
+    lines = [json.dumps(row).encode() + b"\n" for row in valid_rows()]
+    assert max(map(len, lines)) < 2000
+    path.write_bytes(b"".join(lines))
+    with pytest.raises(module.InvalidEvidence, match="paired metadata"):
+        module.load(path)
+
+
+def test_streamed_agent_row_limit_precedes_json_decode(tmp_path, monkeypatch):
+    module = agent_owner()
+    monkeypatch.setattr(module, "CONTROL_DOCUMENT_BYTES", 4)
+    path = tmp_path / "agent.jsonl"
+    path.write_bytes(b"\xff" * 5)
+    with pytest.raises(module.InvalidEvidence, match="line exceeds"):
+        module.load(path)
+
+
+def test_streamed_agent_cli_refuses_symlink_input(tmp_path):
+    path = tmp_path / "agent.jsonl"
+    path.write_text("\n".join(json.dumps(row) for row in valid_rows()))
+    alias = tmp_path / "alias.jsonl"
+    alias.symlink_to(path)
+    result = subprocess.run(
+        [sys.executable, str(CLI), "validate", str(alias)],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 2
+    assert "symlink" in result.stderr
+    assert result.stdout == ""
 
 
 def test_paired_summary_uses_recorded_tests_and_events(tmp_path):

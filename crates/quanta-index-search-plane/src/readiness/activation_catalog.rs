@@ -7,7 +7,7 @@ use std::io::{Read, Write};
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
 use quanta_index_contract::{
     ACTIVATION_ROOT_INCARNATION_BYTES_V1, GenerationPin, GenerationSnapshot, ManifestGeneration,
@@ -39,8 +39,8 @@ use crate::search_corpus_lifecycle::{
     SearchCorpusPairMutationGuard,
 };
 
-/// One `(repo, revision)` pair: the unit an activation root is persisted
-/// and served for.
+/// One query-visible `(repo, revision)` root inside its containing repository
+/// envelope. Multiple revision roots share a durable source-event transaction.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(super) struct ActivationKey {
     repo_id: RepoId,
@@ -149,6 +149,9 @@ pub struct ActivationCatalog {
     staging_dir: PathBuf,
     root_incarnation: [u8; ROOT_INCARNATION_BYTES_V1],
     entries: RwLock<CatalogState>,
+    // Serialize repository writers without holding the query snapshot during
+    // durable I/O. Readers retain the last acknowledged pair until promotion.
+    mutation: Mutex<()>,
     lifecycle_coordinator: Arc<SearchCorpusPairMutationCoordinator>,
     // A rename may succeed while the parent-directory fsync fails.  At that
     // point the durable head is ambiguous until a fresh process reopens the
@@ -369,6 +372,7 @@ impl ActivationCatalog {
             staging_dir,
             root_incarnation,
             entries: RwLock::new(entries),
+            mutation: Mutex::new(()),
             lifecycle_coordinator,
             durability_uncertain_v1: AtomicBool::new(false),
             parent_sync,
@@ -405,9 +409,10 @@ impl ActivationCatalog {
             candidate.repo_id(),
             candidate.revision_id(),
         )?;
-        let mut entries = self
+        let mutation = self.lock_mutation()?;
+        let entries = self
             .entries
-            .write()
+            .read()
             .map_err(|error| repository_envelope::corrupt(error.to_string()))?;
         self.ensure_durability_certain_v1()?;
         let current_head = active_search_corpus_head_v1(
@@ -461,8 +466,8 @@ impl ActivationCatalog {
                 activation_sequence,
             },
         );
-        self.persist_repository(candidate.repo_id(), &mut entries, next)?;
         drop(entries);
+        self.persist_repository(&mutation, candidate.repo_id(), next)?;
 
         Ok(SearchCorpusGenerationActivationV1 {
             active: ActiveSearchCorpusHeadV1 {
@@ -512,9 +517,10 @@ impl ActivationCatalog {
             expected_active.repo_id(),
             expected_active.revision_id(),
         )?;
-        let mut entries = self
+        let mutation = self.lock_mutation()?;
+        let entries = self
             .entries
-            .write()
+            .read()
             .map_err(|error| repository_envelope::corrupt(error.to_string()))?;
         self.ensure_durability_certain_v1()?;
         let current_head = active_search_corpus_head_v1(
@@ -551,8 +557,8 @@ impl ActivationCatalog {
             },
         );
         // Administrative rollback does not erase accepted source lineage.
-        self.persist_repository(target.repo_id(), &mut entries, next)?;
         drop(entries);
+        self.persist_repository(&mutation, target.repo_id(), next)?;
 
         Ok(SearchPlaneSearchCorpusRollbackCasAck {
             active: ActiveSearchCorpusHeadV1 {
@@ -694,10 +700,16 @@ impl ActivationCatalog {
             .transpose()
     }
 
+    fn lock_mutation(&self) -> Result<MutexGuard<'_, ()>, CoreError> {
+        self.mutation
+            .lock()
+            .map_err(|error| repository_envelope::corrupt(error.to_string()))
+    }
+
     fn persist_repository(
         &self,
+        _mutation: &MutexGuard<'_, ()>,
         repo: &RepoId,
-        current: &mut CatalogState,
         next: CatalogState,
     ) -> Result<(), CoreError> {
         self.ensure_durability_certain_v1()?;
@@ -718,15 +730,20 @@ impl ActivationCatalog {
                 return Err(error);
             }
         }
+        let mut current = self
+            .entries
+            .write()
+            .map_err(|error| repository_envelope::corrupt(error.to_string()))?;
+        self.ensure_durability_certain_v1()?;
         current.roots.retain(|key, _| &key.repo_id != repo);
         current.roots.extend(next.roots);
-        current.histories.remove(repo);
+        let _prior = current.histories.remove(repo);
         current.histories.extend(next.histories);
         Ok(())
     }
 
     fn ensure_durability_certain_v1(&self) -> Result<(), CoreError> {
-        if self.durability_uncertain_v1.load(Ordering::Acquire) {
+        if self.durability_uncertain_v1.load(Ordering::Acquire) || self.mutation.is_poisoned() {
             return Err(CoreError::NotReady(
                 "search-plane activation catalog: activation durability is uncertain; reopen the catalog before serving or mutating generations".to_string(),
             ));

@@ -32,7 +32,7 @@ import os
 import re
 import stat
 import sys
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO, TypeVar
@@ -953,6 +953,18 @@ def file_digest(path: Path) -> tuple[str, int]:
     return _consume_regular_file(path, consume)
 
 
+def read_control(value: Path | RawFile | bytes) -> bytes:
+    """Read one bounded control value; bytes callers obey the same admission limit."""
+    if isinstance(value, bytes):
+        _check_control_size(len(value), Path("<in-memory-control>"))
+        return value
+    if isinstance(value, Path):
+        return _read_control_file(value)
+    if isinstance(value, RawFile):
+        return value.read_control()
+    raise EvidenceError("control input must be a Path, RawFile or bytes")
+
+
 @dataclass(frozen=True)
 class RawFile:
     """A file-backed byte commitment, revalidated when consumed or copied."""
@@ -1017,6 +1029,44 @@ class RawFile:
             # Leave the descriptor at genuinely consumed EOF, not a synthetic
             # seek-to-end bypass of the existing complete-read primitive.
             verify(handle)
+            return result
+
+        return _consume_regular_file(self.path, pinned)
+
+    def consume_lines(
+        self,
+        consume: Callable[[Iterator[bytes]], _Consumed],
+        *,
+        max_line_bytes: int = CONTROL_DOCUMENT_BYTES,
+    ) -> _Consumed:
+        """Consume bounded binary lines on one pinned, fully verified descriptor.
+
+        The domain owns decoding, blank rows and terminal semantics. A complete
+        last value without LF is delivered unchanged; malformed partial values
+        must still be refused by that domain, never dropped by this reader.
+        """
+        if type(max_line_bytes) is not int or not 0 < max_line_bytes <= CONTROL_DOCUMENT_BYTES:
+            raise EvidenceError("raw line limit must be a positive bounded integer")
+
+        def pinned(handle: BinaryIO) -> _Consumed:
+            complete = False
+            digest, count = hashlib.sha256(), 0
+
+            def lines() -> Iterator[bytes]:
+                nonlocal complete, count
+                while block := handle.readline(max_line_bytes + 1):
+                    if len(block) > max_line_bytes:
+                        raise EvidenceError("raw line exceeds explicit byte limit")
+                    digest.update(block)
+                    count += len(block)
+                    yield block
+                if (DIGEST_PREFIX + digest.hexdigest(), count) != (self.sha256, self.size):
+                    raise EvidenceError("line bytes differ from the prepared file commitment")
+                complete = True
+
+            result = consume(lines())
+            if not complete:
+                raise EvidenceError("raw line consumer did not consume the complete file")
             return result
 
         return _consume_regular_file(self.path, pinned)

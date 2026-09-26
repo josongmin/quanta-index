@@ -83,6 +83,9 @@ fn scope(
         SearchScopeSurface::Chunk => symbols.clear(),
         SearchScopeSurface::Symbol => chunks.clear(),
         SearchScopeSurface::File => {}
+        SearchScopeSurface::Module => {
+            return Err("L1 fixture models canonical files, not module scopes".into());
+        }
     }
     Ok(SearchCorpusReplaceScope {
         coverage: SourceFileCoverage {
@@ -121,6 +124,17 @@ fn fixture_with_surface(
     matches: u32,
     surface: SearchScopeSurface,
 ) -> Result<(tempfile::TempDir, Box<dyn LexicalSearcher>), Box<dyn Error>> {
+    fixture_with_scopes(
+        (0..=matches)
+            .rev()
+            .map(|index| scope(index, matches, surface))
+            .collect::<Result<_, _>>()?,
+    )
+}
+
+fn fixture_with_scopes(
+    replace_scopes: Vec<SearchCorpusReplaceScope>,
+) -> Result<(tempfile::TempDir, Box<dyn LexicalSearcher>), Box<dyn Error>> {
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
     let repo = RepoId::new("l1-domain-window")?;
@@ -141,10 +155,7 @@ fn fixture_with_surface(
         mode: BatchIngestMode::ReplaceGeneration,
         bundle_payload: None,
         clear_surfaces: Vec::new(),
-        replace_scopes: (0..=matches)
-            .rev()
-            .map(|index| scope(index, matches, surface))
-            .collect::<Result<_, _>>()?,
+        replace_scopes,
         tombstone_scopes: Vec::new(),
         semantic_replace_scopes: Vec::new(),
         semantic_tombstone_scopes: Vec::new(),
@@ -326,6 +337,19 @@ fn empty_repo_predicate_cannot_hide_invalid_count() -> TestResult {
 
 #[test]
 fn invalid_fetch_cannot_mint_zero_exact_count_before_execution() -> TestResult {
+    fn require_internal_fetch_refusal<T: Debug>(outcome: Result<T, CoreError>) -> TestResult {
+        match outcome {
+            Err(CoreError::InvalidContract(message))
+                if message.starts_with(quanta_index_contract::INTERNAL_FETCH_OUT_OF_RANGE_CODE) =>
+            {
+                Ok(())
+            }
+            other => {
+                Err(format!("expected the internal-fetch contract refusal, got {other:?}").into())
+            }
+        }
+    }
+
     let (_dir, searcher) = fixture()?;
     let budget = RequestBudgetV1::unbounded();
     for manual in [false, true] {
@@ -334,25 +358,82 @@ fn invalid_fetch_cannot_mint_zero_exact_count_before_execution() -> TestResult {
             request.options.count = Some(LqCountBound::All);
             for fetch in [0, u32::MAX] {
                 let page = LexicalPageSpec::first(fetch);
+                require_internal_fetch_refusal(searcher.search_constrained(
+                    &request,
+                    &QueryConstraintSetV1::unconstrained(),
+                    &page,
+                    &budget,
+                ))?;
+                require_internal_fetch_refusal(searcher.search_symbols_constrained(
+                    &request,
+                    &QueryConstraintSetV1::unconstrained(),
+                    &page,
+                    &budget,
+                ))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn invalid_predicate_arguments_keep_registry_code_before_empty_results() -> TestResult {
+    let (_dir, searcher) = fixture()?;
+    for manual in [false, true] {
+        for gate_term in ["needle", "absent_term"] {
+            let mut request = query("needle", manual, false);
+            request.expr = LqExpr::All(vec![
+                LqExpr::Leaf(LqLeaf::Predicate {
+                    name: "repo.has.content".into(),
+                    args: vec![LqPredicateArg::Keyword(gate_term.into())],
+                }),
+                LqExpr::Leaf(LqLeaf::Predicate {
+                    name: "file.contains".into(),
+                    args: vec![
+                        LqPredicateArg::Phrase("needle".into()),
+                        LqPredicateArg::Phrase("extra scalar".into()),
+                    ],
+                }),
+            ]);
+            require_code(
+                searcher.search(&request, 8, &RequestBudgetV1::unbounded()),
+                SearchPlaneErrorCodeV2::LexPredicateUnimplemented,
+                "invalid predicate arity before repo gate",
+            )?;
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn invalid_regex_keeps_dialect_code_before_empty_results() -> TestResult {
+    let (_dir, searcher) = fixture()?;
+    for manual in [false, true] {
+        for gate_term in ["needle", "absent_term"] {
+            for (pattern, expected) in [
+                ("[", SearchPlaneErrorCodeV2::LexRegexDialectParseError),
+                (
+                    "(?<=x)y",
+                    SearchPlaneErrorCodeV2::LexRegexDialectUnsupported,
+                ),
+            ] {
+                let mut request = query("needle", manual, false);
+                request.expr = LqExpr::All(vec![
+                    LqExpr::Leaf(LqLeaf::Predicate {
+                        name: "repo.has.content".into(),
+                        args: vec![LqPredicateArg::Keyword(gate_term.into())],
+                    }),
+                    LqExpr::Leaf(LqLeaf::Regex(pattern.into())),
+                ]);
                 require_code(
-                    searcher.search_constrained(
-                        &request,
-                        &QueryConstraintSetV1::unconstrained(),
-                        &page,
-                        &budget,
-                    ),
-                    SearchPlaneErrorCodeV2::QueryInternalFetchOutOfRange,
-                    "invalid Text fetch",
+                    searcher.search(&request, 8, &RequestBudgetV1::unbounded()),
+                    expected,
+                    "regex dialect refusal before repo gate",
                 )?;
                 require_code(
-                    searcher.search_symbols_constrained(
-                        &request,
-                        &QueryConstraintSetV1::unconstrained(),
-                        &page,
-                        &budget,
-                    ),
-                    SearchPlaneErrorCodeV2::QueryInternalFetchOutOfRange,
-                    "invalid Symbol fetch",
+                    searcher.search_all(&request, &RequestBudgetV1::unbounded()),
+                    expected,
+                    "regex dialect refusal in exact-all path",
                 )?;
             }
         }
@@ -385,6 +466,219 @@ fn predicate_result_empty_cannot_hide_tokenless_phrase() -> TestResult {
                 "tokenless phrase in exact-all path",
             )?;
         }
+    }
+    Ok(())
+}
+
+#[test]
+fn predicate_result_empty_cannot_hide_keyword_or_content_tokens() -> TestResult {
+    let (_dir, searcher) = fixture()?;
+    let mut failures = Vec::new();
+    for manual in [false, true] {
+        for content_filter in [false, true] {
+            for gate_term in ["needle", "absent_term"] {
+                let mut request = query("needle", manual, false);
+                let gate = LqExpr::Leaf(LqLeaf::Predicate {
+                    name: "repo.has.content".into(),
+                    args: vec![LqPredicateArg::Keyword(gate_term.into())],
+                });
+                let invalid = LqLeaf::Keyword("!!!".into());
+                if content_filter {
+                    request.expr = gate;
+                    request.filters.push(LqFilter::Content { leaf: invalid });
+                } else {
+                    request.expr = LqExpr::All(vec![gate, LqExpr::Leaf(invalid)]);
+                }
+                if let Err(error) = require_code(
+                    searcher.search(&request, 8, &RequestBudgetV1::unbounded()),
+                    SearchPlaneErrorCodeV2::LexTextQueryNoTokens,
+                    &format!("manual={manual}, content_filter={content_filter}, gate={gate_term}"),
+                ) {
+                    failures.push(error.to_string());
+                }
+                if let Err(error) = require_code(
+                    searcher.search_all(&request, &RequestBudgetV1::unbounded()),
+                    SearchPlaneErrorCodeV2::LexTextQueryNoTokens,
+                    &format!(
+                        "exact-all manual={manual}, content_filter={content_filter}, gate={gate_term}"
+                    ),
+                ) {
+                    failures.push(error.to_string());
+                }
+            }
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("\n").into())
+    }
+}
+
+#[test]
+fn l1_primitive_admission_is_independent_of_boolean_order_and_leaf_location() -> TestResult {
+    let (_dir, searcher) = fixture()?;
+    for manual in [false, true] {
+        for location in 0..5 {
+            for leaf in [
+                LqLeaf::Keyword("!!!".into()),
+                LqLeaf::Phrase("!!!".into()),
+                LqLeaf::Predicate {
+                    name: "repo.has.content".into(),
+                    args: vec![LqPredicateArg::Keyword("!!!".into())],
+                },
+                LqLeaf::Predicate {
+                    name: "file.has.content".into(),
+                    args: vec![LqPredicateArg::Phrase("!!!".into())],
+                },
+                LqLeaf::Predicate {
+                    name: "repo.has.file".into(),
+                    args: vec![LqPredicateArg::Filter {
+                        name: "content".into(),
+                        value: "!!!".into(),
+                    }],
+                },
+            ] {
+                let mut request = query("needle", manual, false);
+                let gate = LqExpr::Leaf(LqLeaf::Predicate {
+                    name: "repo.has.content".into(),
+                    args: vec![LqPredicateArg::Keyword("absent_term".into())],
+                });
+                let invalid = LqExpr::Leaf(leaf.clone());
+                request.expr = match location {
+                    0 => LqExpr::All(vec![gate, invalid]),
+                    1 => LqExpr::All(vec![invalid, gate]),
+                    2 => LqExpr::Any(vec![gate, invalid]),
+                    3 => LqExpr::All(vec![gate, LqExpr::Not(Box::new(invalid))]),
+                    _ => {
+                        request.filters.push(LqFilter::Content { leaf });
+                        gate
+                    }
+                };
+                let budget = RequestBudgetV1::unbounded();
+                require_code(
+                    searcher.search(&request, 8, &budget),
+                    SearchPlaneErrorCodeV2::LexTextQueryNoTokens,
+                    "every primitive is admitted",
+                )?;
+                require_code(
+                    searcher.search_all(&request, &budget),
+                    SearchPlaneErrorCodeV2::LexTextQueryNoTokens,
+                    "exact-all primitive admission",
+                )?;
+                require_code(
+                    searcher.explain_candidate(
+                        &request,
+                        &QueryConstraintSetV1::unconstrained(),
+                        "chunk-00",
+                        &budget,
+                    ),
+                    SearchPlaneErrorCodeV2::LexTextQueryNoTokens,
+                    "explain primitive admission",
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn l1_opener_primitive_admission_never_opens_a_generation() -> TestResult {
+    use quanta_index_contract::LqPatternType;
+    use quanta_index_core::{LexicalEndpoint, LexicalPolicy};
+    let dir = tempfile::tempdir()?;
+    let absent_root = dir.path().join("must-remain-absent");
+    let adapter = LexicalAdapter::with_state_root(absent_root.clone());
+    let budget = RequestBudgetV1::unbounded();
+    for manual in [false, true] {
+        for leaf in [
+            LqLeaf::Keyword("[".into()),
+            LqLeaf::RawString("[".into()),
+            LqLeaf::Regex("[".into()),
+        ] {
+            for in_filter in [false, true] {
+                let mut request = query("needle", manual, false);
+                request.options.pattern_type = LqPatternType::Regexp;
+                if in_filter {
+                    request
+                        .filters
+                        .push(LqFilter::Content { leaf: leaf.clone() });
+                } else {
+                    request.expr = LqExpr::Leaf(leaf.clone());
+                }
+                let plan = LexicalPolicy::plan_query(
+                    &request,
+                    &QueryConstraintSetV1::unconstrained(),
+                    LexicalEndpoint::Text,
+                )?;
+                require_code(
+                    adapter.preflight_query_primitives(&plan, &budget),
+                    SearchPlaneErrorCodeV2::LexRegexDialectParseError,
+                    "effective regex interpretation before open",
+                )?;
+            }
+        }
+        for leaf in [
+            LqLeaf::Keyword("needle".into()),
+            LqLeaf::Phrase("needle value".into()),
+            LqLeaf::RawString("!!!".into()),
+        ] {
+            let mut request = query("needle", manual, false);
+            request.expr = LqExpr::Leaf(leaf);
+            // Producer availability is not a pure-input failure.
+            request.filters.push(LqFilter::Fork {
+                mode: LqYesNoOnly::No,
+            });
+            let plan = LexicalPolicy::plan_query(
+                &request,
+                &QueryConstraintSetV1::unconstrained(),
+                LexicalEndpoint::Text,
+            )?;
+            adapter.preflight_query_primitives(&plan, &budget)?;
+        }
+    }
+    if absent_root.exists() {
+        return Err("pure admission created adapter state".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn l1_primitive_admission_uses_adapter_regex_policy_and_literal_limits() -> TestResult {
+    use quanta_index_core::{LexicalEndpoint, LexicalPolicy};
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root_and_policies(
+        dir.path().join("not-opened"),
+        quanta_index_lexical::regex::RegexPolicy {
+            require_literal: true,
+            ..quanta_index_lexical::regex::RegexPolicy::defaults()
+        },
+        quanta_index_core::LexicalExecutionBudgetV1::DEFAULT,
+        quanta_index_core::RegexMatchCachePolicy::DEFAULT,
+        quanta_index_core::LexicalWriterPolicy::DEFAULT,
+    );
+    for (leaf, expected) in [
+        (
+            LqLeaf::Regex(".*".into()),
+            SearchPlaneErrorCodeV2::LexRegexDialectUnsupported,
+        ),
+        (
+            LqLeaf::Keyword("a".repeat(100_000)),
+            SearchPlaneErrorCodeV2::LexTextQueryTokenTooLong,
+        ),
+    ] {
+        let mut request = query("needle", false, false);
+        request.expr = LqExpr::Leaf(leaf);
+        let plan = LexicalPolicy::plan_query(
+            &request,
+            &QueryConstraintSetV1::unconstrained(),
+            LexicalEndpoint::Text,
+        )?;
+        require_code(
+            adapter.preflight_query_primitives(&plan, &RequestBudgetV1::unbounded()),
+            expected,
+            "adapter policy and canonical literal limits",
+        )?;
     }
     Ok(())
 }
@@ -561,4 +855,111 @@ fn exact_all_ports_refuse_bounded_count_and_preserve_full_set_controls() -> Test
         }
     }
     Ok(())
+}
+
+#[test]
+fn l1_audit_exact_all_symbol_name_uses_the_normal_query_rewrite() -> TestResult {
+    let (_dir, searcher) = fixture()?;
+    let expected: Vec<_> = (0..MATCHES)
+        .map(|index| format!("symbol-{index:02}"))
+        .collect();
+    let mut failures = Vec::new();
+    for manual in [false, true] {
+        for count in [None, Some(LqCountBound::All)] {
+            for explicit_symbol in [false, true] {
+                let mut request = query("needle", manual, false);
+                request.expr = LqExpr::Leaf(LqLeaf::Predicate {
+                    name: "symbol.has.name".into(),
+                    args: vec![LqPredicateArg::Keyword("needle".into())],
+                });
+                request.options.count = count;
+                if explicit_symbol {
+                    request.filters.push(LqFilter::Type {
+                        kind: LqType::Symbol,
+                    });
+                }
+                let ordinary =
+                    searcher.search(&request, MATCHES + 1, &RequestBudgetV1::unbounded())?;
+                let ordinary_ids: Vec<_> = ordinary.iter().map(|row| &row.candidate_id).collect();
+                if ordinary_ids != expected.iter().collect::<Vec<_>>() {
+                    return Err(format!(
+                        "ordinary Symbol control: {ordinary_ids:?} != {expected:?}"
+                    )
+                    .into());
+                }
+                match searcher.search_all(&request, &RequestBudgetV1::unbounded()) {
+                    Ok(rows) if rows.iter().map(|row| &row.candidate_id).collect::<Vec<_>>() == expected.iter().collect::<Vec<_>>() => {}
+                    actual => failures.push(format!("manual={manual} count={count:?} explicit_symbol={explicit_symbol}: {actual:?}")),
+                }
+            }
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("\n").into())
+    }
+}
+
+#[test]
+fn l1_audit_exact_all_repo_projection_retains_each_source() -> TestResult {
+    let mut scopes = Vec::new();
+    for (index, owner) in [(2, "source-b"), (1, "source-a"), (0, "source-a")] {
+        let mut replacement = scope(index, MATCHES, SearchScopeSurface::File)?;
+        let source = RepoId::new(owner)?;
+        replacement.coverage.source.file.source_repo_id = source.clone();
+        for chunk in &mut replacement.chunks {
+            chunk.source_repo_id = Some(source.clone());
+        }
+        replacement.coverage.unit_set_sha256 =
+            source_file_unit_set_sha256(&replacement.chunks, &replacement.symbols)?;
+        scopes.push(replacement);
+    }
+    let (_dir, searcher) = fixture_with_scopes(scopes)?;
+    let mut failures = Vec::new();
+    for manual in [false, true] {
+        for count in [None, Some(LqCountBound::All)] {
+            for repo_filter in [
+                LqFilter::Select {
+                    dim: LqSelect::Repo,
+                },
+                LqFilter::Type { kind: LqType::Repo },
+            ] {
+                for term in ["needle", "absent_term"] {
+                    let mut request = query(term, manual, false);
+                    request.options.count = count;
+                    request.filters.push(repo_filter.clone());
+                    let expected = if term == "needle" {
+                        vec![("source-a", "chunk-00"), ("source-b", "chunk-02")]
+                    } else {
+                        Vec::new()
+                    };
+                    let ordinary = searcher.search(&request, 4, &RequestBudgetV1::unbounded())?;
+                    let ordinary_ids: Vec<_> = ordinary
+                        .iter()
+                        .map(|row| (row.source_repo_id.as_str(), row.candidate_id.as_str()))
+                        .collect();
+                    if ordinary_ids != expected {
+                        return Err(format!(
+                            "ordinary repo control: {ordinary_ids:?} != {expected:?}"
+                        )
+                        .into());
+                    }
+                    let all = searcher.search_all(&request, &RequestBudgetV1::unbounded())?;
+                    let actual: Vec<_> = all
+                        .iter()
+                        .map(|row| (row.source_repo_id.as_str(), row.candidate_id.as_str()))
+                        .collect();
+                    if actual != expected {
+                        failures.push(format!("manual={manual} count={count:?} filter={repo_filter:?} term={term}: expected {expected:?}, got {actual:?}"));
+                    }
+                }
+            }
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("\n").into())
+    }
 }

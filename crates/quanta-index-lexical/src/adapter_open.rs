@@ -166,6 +166,14 @@ pub(crate) fn materialized_authorities(overlays: &[OverlayFamily]) -> RepoMetada
 }
 
 impl LexicalIndexOpenPort for LexicalAdapter {
+    fn preflight_query_primitives(
+        &self,
+        plan: &quanta_index_core::ValidatedLexicalPlan,
+        budget: &quanta_index_core::RequestBudgetV1,
+    ) -> Result<(), CoreError> {
+        crate::planner::LexicalPlanner::validate_query_primitives(plan, &self.regex_policy, budget)
+    }
+
     fn open(
         &self,
         repo: &RepoId,

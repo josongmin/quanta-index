@@ -27,7 +27,11 @@
 
 #![forbid(unsafe_code)]
 
+#[path = "support/source_fixture.rs"]
+mod source_fixture;
+
 use std::collections::BTreeSet;
+
 use std::error::Error;
 
 use quanta_index_contract::lex::LanguageCode;
@@ -35,7 +39,6 @@ use quanta_index_contract::{
     BatchIngestMode, ChunkId, ChunkRecord, LQ_VERSION_TAG, LqCase, LqExpr, LqLeaf, LqOptions,
     LqQuery, LqSpan, LqYesNoOnly, ManifestGeneration, QueryConstraintSetV1, RepoId,
     RepoRelativePath, RevisionId, SearchCorpusIngestBatch, SearchCorpusReplaceScope,
-    SearchScopeKey, SearchScopeSurface,
 };
 use quanta_index_core::{
     CoreError, LexicalIndexOpenPort, LexicalPageSpec, LexicalSearcher, RequestBudgetV1,
@@ -756,13 +759,12 @@ fn scope(
     let path = format!("src/doc_{index:02}.txt");
     let language = LanguageCode::new("text")
         .map_err(|err| -> Box<dyn Error> { format!("language code: {err}").into() })?;
-    Ok(SearchCorpusReplaceScope {
-        scope: SearchScopeKey {
-            doc_surface: SearchScopeSurface::File,
-            repo_relative_path: RepoRelativePath::new(&path),
-        },
-        scope_digest: format!("scope:{path}"),
-        chunks: vec![ChunkRecord {
+    Ok(source_fixture::complete_file(
+        source_fixture::file_key(&repo(), &path),
+        &revision(),
+        language.clone(),
+        body.as_bytes(),
+        vec![ChunkRecord {
             chunk_id: ChunkId::new(candidate_id),
             repo_relative_path: RepoRelativePath::new(&path),
             language,
@@ -775,31 +777,23 @@ fn scope(
             parent_chunk_id: None,
             source_repo_id: None,
         }],
-        symbols: Vec::new(),
-    })
+        Vec::new(),
+    )?)
 }
 
 fn sealed_batch(corpus: &[(&str, &str)]) -> Result<SearchCorpusIngestBatch, Box<dyn Error>> {
-    Ok(SearchCorpusIngestBatch {
-        repo_id: repo(),
-        revision_id: revision(),
-        generation: generation(),
-        base_generation: None,
-        manifest_digest: "unicode-golden-manifest:1".to_string(),
-        batch_digest: "unicode-golden-batch:1".to_string(),
-        mode: BatchIngestMode::ReplaceGeneration,
-        bundle_payload: None,
-        clear_surfaces: Vec::new(),
-        replace_scopes: corpus
+    let mut batch = source_fixture::sealed_batch(
+        &repo(),
+        &revision(),
+        generation(),
+        corpus
             .iter()
             .enumerate()
             .map(|(index, (candidate_id, body))| scope(index, candidate_id, body))
             .collect::<Result<Vec<_>, _>>()?,
-        tombstone_scopes: Vec::new(),
-        semantic_replace_scopes: Vec::new(),
-        semantic_tombstone_scopes: Vec::new(),
-        seal: true,
-    })
+    )?;
+    batch.manifest_digest = "unicode-golden-manifest:1".into();
+    Ok(batch)
 }
 
 /// One sealed generation over a corpus, held open for the test's lifetime.
@@ -1192,12 +1186,12 @@ fn as_format_one(current: &[ciborium::Value]) -> Vec<ciborium::Value> {
 
 /// The current manifest row's element count: format version, identity
 /// digest, normalizer stamp, index meta, segment verification policy,
-/// index segments, text authority, overlays.
-const MANIFEST_ROW_LEN: usize = 8;
+/// index segments, text authority, overlays, source-file coverage.
+const MANIFEST_ROW_LEN: usize = 9;
 /// Position of the normalizer stamp in the current manifest row.
 const MANIFEST_NORMALIZER_INDEX: usize = 2;
 /// The manifest format this build seals.
-const CURRENT_FORMAT: u32 = 6;
+const CURRENT_FORMAT: u32 = 7;
 
 /// Generations sealed under earlier manifest formats are refused typed by
 /// both doors.
@@ -1205,6 +1199,7 @@ const CURRENT_FORMAT: u32 = 6;
 /// Format 1 is the pre-normalizer layout (no normalizer stamp); formats 4
 /// and 5 are this row shape over indexes that lacked a fast column this
 /// build ranks or restricts by (the text-authority doc id; the page order).
+/// Format 6 predates the source-file coverage commitment.
 /// The validator and the query open both answer
 /// `GENERATION_MANIFEST_FORMAT_UNSUPPORTED` for each, and the intact
 /// current manifest is admitted again once restored.
@@ -1222,7 +1217,7 @@ fn a_generation_sealed_under_the_previous_format_is_refused_typed() -> TestResul
         return Err(format!("unexpected current manifest row shape: {current:?}").into());
     }
 
-    for earlier in [4_u32, 5] {
+    for earlier in [4_u32, 5, 6] {
         let mut downgraded = current.clone();
         if let Some(version) = downgraded.first_mut() {
             *version = ciborium::Value::from(earlier);
@@ -1304,7 +1299,9 @@ fn a_delta_over_a_previous_format_base_is_refused_typed() -> TestResult {
     delta.base_generation = Some(generation());
     delta.mode = BatchIngestMode::Delta;
     delta.manifest_digest = "unicode-golden-manifest:2".to_string();
-    delta.batch_digest = "unicode-golden-batch:2".to_string();
+    delta.source_event.event_id = "event-2".into();
+    delta.source_event.expected_base_event_id = Some("event-1".into());
+    delta.source_event.payload_sha256 = quanta_index_contract::source_event_payload_sha256(&delta)?;
     match adapter.build_batch(&delta) {
         Err(CoreError::Typed { code, .. }) if code.as_wire_str() == FORMAT_UNSUPPORTED => Ok(()),
         other => Err(format!("delta over a format-1 base answered {other:?}").into()),

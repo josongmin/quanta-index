@@ -1,0 +1,5 @@
+resource admission: waiting lock=/Users/songmin/Library/Caches/quanta-index/resource-admission/build-test.lock
+resource admission: admitted lock=/Users/songmin/Library/Caches/quanta-index/resource-admission/build-test.lock
+   Compiling quanta-index-retrieval-bench v0.1.0 (/Users/songmin/.codex/worktrees/l5-final-proof/quanta-index/benchmarks/retrieval)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.83s
+resource admission: released lock=/Users/songmin/Library/Caches/quanta-index/resource-admission/build-test.lock

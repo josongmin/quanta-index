@@ -2,7 +2,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{BatchPublishReceipt, ManifestGeneration, RepoId, RevisionId};
+use crate::{
+    BatchPublishReceipt, GenerationSnapshot, ManifestGeneration, RepoId, RevisionId,
+    SearchPlaneTrackKind, SourcePublicationEvent,
+};
 
 /// Wall-clock nanoseconds observed by the semantic storage owner.
 /// Nested delete/append timings overlap the stream/clear/tombstone passes.
@@ -69,10 +72,62 @@ pub struct SearchCorpusIngestObservation {
     pub activation_ns: Option<u64>,
 }
 
+/// The original publication selected by the durable source-event catalog.
+/// Replay may request another containing revision/generation, but never changes
+/// this target or the original transport commitment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourcePublicationBinding {
+    pub event: SourcePublicationEvent,
+    pub target: GenerationSnapshot,
+    pub batch_digest: String,
+}
+
+impl SourcePublicationBinding {
+    /// Bind the stored receipt to its original publication and the caller's
+    /// event. Only a replay may differ from the requested transport target.
+    pub fn validate_receipt(
+        &self,
+        requested: &Self,
+        sealed: bool,
+        receipt: &BatchPublishReceipt,
+    ) -> Result<(), String> {
+        for binding in [self, requested] {
+            binding
+                .event
+                .validate()
+                .map_err(|error| error.to_string())?;
+            if binding.target.track != SearchPlaneTrackKind::Lexical
+                || binding.target.manifest_digest.trim().is_empty()
+                || !crate::is_canonical_batch_digest_token_v1(&binding.batch_digest)
+            {
+                return Err("invalid source publication binding".into());
+            }
+        }
+        if self.event != requested.event || self.target.repo_id != requested.target.repo_id {
+            return Err("source publication does not match the requested repo and event".into());
+        }
+        if receipt.generation != self.target.manifest_generation
+            || receipt.manifest_digest.as_ref() != Some(&self.target.manifest_digest)
+            || receipt.batch_digest != self.batch_digest
+            || receipt.sealed != sealed
+        {
+            return Err("receipt does not match its original source publication".into());
+        }
+        if !receipt.applied && receipt.durable_sequence == 0 {
+            return Err("source replay requires an original durable journal sequence".into());
+        }
+        if receipt.applied && self != requested {
+            return Err("applied publication differs from the requested target or digest".into());
+        }
+        Ok(())
+    }
+}
+
 /// The current publish response: durable identity and separate transient
 /// observation. The optional field is explicitly required on the wire.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchCorpusPublishOutcome {
+    pub publication: SourcePublicationBinding,
     pub receipt: BatchPublishReceipt,
     pub observation: Option<SearchCorpusIngestObservation>,
 }
@@ -188,7 +243,14 @@ impl_observation_struct_serde!(SearchCorpusIngestObservation {
     activation_ns: Option<u64> => "activation_ns",
 });
 
+impl_observation_struct_serde!(SourcePublicationBinding {
+    event: SourcePublicationEvent => "event",
+    target: GenerationSnapshot => "target",
+    batch_digest: String => "batch_digest",
+});
+
 impl_observation_struct_serde!(SearchCorpusPublishOutcome {
+    publication: SourcePublicationBinding => "publication",
     receipt: BatchPublishReceipt => "receipt",
     observation: Option<SearchCorpusIngestObservation> => "observation",
 });
@@ -247,18 +309,17 @@ impl SearchCorpusIngestObservation {
     pub fn validate_identity(
         &self,
         request_id: u64,
-        pin: &crate::GenerationPin,
-        batch_digest: &str,
+        requested: &SourcePublicationBinding,
         sealed: bool,
+        publication: &SourcePublicationBinding,
         receipt: &BatchPublishReceipt,
     ) -> Result<(), String> {
+        publication.validate_receipt(requested, sealed, receipt)?;
         if self.request_id != request_id
-            || self.repo_id != pin.repo_id
-            || self.revision_id != pin.revision_id
-            || self.generation != pin.manifest_generation
-            || self.batch_digest != batch_digest
-            || self.generation != receipt.generation
-            || self.batch_digest != receipt.batch_digest
+            || self.repo_id != requested.target.repo_id
+            || self.revision_id != requested.target.revision_id
+            || self.generation != requested.target.manifest_generation
+            || self.batch_digest != requested.batch_digest
         {
             return Err(
                 "ingest observation identity does not match request and receipt".to_string(),
@@ -348,15 +409,6 @@ impl std::ops::Deref for SearchCorpusPublishOutcome {
     }
 }
 
-impl From<BatchPublishReceipt> for SearchCorpusPublishOutcome {
-    fn from(receipt: BatchPublishReceipt) -> Self {
-        Self {
-            receipt,
-            observation: None,
-        }
-    }
-}
-
 #[cfg(test)]
 #[expect(
     clippy::panic_in_result_fn,
@@ -397,11 +449,16 @@ mod tests {
     fn outcome() -> Result<SearchCorpusPublishOutcome, Box<dyn std::error::Error>> {
         let batch = batch()?;
         Ok(SearchCorpusPublishOutcome {
-            receipt: BatchPublishReceipt::empty_for(
-                batch.generation,
-                Some(batch.manifest_digest),
-                batch.batch_digest.clone(),
-            ),
+            publication: SourcePublicationBinding::for_batch(&batch),
+            receipt: BatchPublishReceipt {
+                sealed: batch.seal,
+                durable_sequence: 7,
+                ..BatchPublishReceipt::empty_for(
+                    batch.generation,
+                    Some(batch.manifest_digest),
+                    batch.batch_digest.clone(),
+                )
+            },
             observation: Some(SearchCorpusIngestObservation {
                 request_id: 11,
                 repo_id: batch.repo_id,
@@ -411,6 +468,7 @@ mod tests {
                 status: IngestObservationStatus::Executed,
                 semantic: Some(Box::new(IngestStageReport {
                     durations: IngestStageDurations {
+                        total: 1,
                         seal: Some(1),
                         ..IngestStageDurations::default()
                     },
@@ -432,6 +490,10 @@ mod tests {
             outcome
         );
         for pointer in [
+            "/publication",
+            "/publication/event",
+            "/publication/target",
+            "/publication/batch_digest",
             "/observation",
             "/observation/semantic",
             "/observation/lexical_build_ns",
@@ -464,7 +526,8 @@ mod tests {
             "old bare receipt must not silently mix with observed payload"
         );
         let duplicated = format!(
-            "{{\"receipt\":{},\"observation\":null,\"observation\":null}}",
+            "{{\"publication\":{},\"receipt\":{},\"observation\":null,\"observation\":null}}",
+            serde_json::to_string(&outcome.publication)?,
             serde_json::to_string(&outcome.receipt)?
         );
         assert!(
@@ -541,7 +604,12 @@ mod tests {
             .find(|(key, _)| key == &ciborium::Value::Text("receipt".to_string()))
             .ok_or("missing receipt")?
             .clone();
-        for fields in [
+        let publication = fields
+            .iter()
+            .find(|(key, _)| key == &ciborium::Value::Text("publication".to_string()))
+            .ok_or("missing publication")?
+            .clone();
+        for mut fields in [
             vec![receipt.clone()],
             vec![
                 receipt.clone(),
@@ -566,6 +634,7 @@ mod tests {
                 ),
             ],
         ] {
+            fields.push(publication.clone());
             let mut mutant = Vec::new();
             ciborium::into_writer(&ciborium::Value::Map(fields), &mut mutant)?;
             assert!(
@@ -576,26 +645,78 @@ mod tests {
     }
 
     #[test]
+    fn replay_binding_preserves_original_target_and_rejects_false_event_or_receipt() -> TestResult {
+        let mut original = outcome()?;
+        let mut request = batch()?;
+        request.revision_id = RevisionId::new("retargeted-revision")?;
+        request.generation = ManifestGeneration::new(99);
+        request.manifest_digest = "retargeted-manifest".into();
+        request.batch_digest = "b".repeat(64);
+        let requested = SourcePublicationBinding::for_batch(&request);
+        original.receipt = original.receipt.replayed();
+        original
+            .publication
+            .validate_receipt(&requested, true, &original.receipt)?;
+        let observation = SearchCorpusIngestObservation {
+            request_id: 12,
+            repo_id: request.repo_id.clone(),
+            revision_id: request.revision_id.clone(),
+            generation: request.generation,
+            batch_digest: request.batch_digest.clone(),
+            status: IngestObservationStatus::Replayed,
+            semantic: None,
+            lexical_build_ns: None,
+            finalize_ns: None,
+            activation_ns: None,
+        };
+        observation.validate_for(12, &request, &original.publication, &original.receipt)?;
+        let mutants: [fn(&mut SearchCorpusPublishOutcome); 12] = [
+            |value| value.publication.event.stream_id = "other".into(),
+            |value| value.publication.event.event_id = "other".into(),
+            |value| value.publication.event.expected_base_event_id = Some("other".into()),
+            |value| value.publication.event.payload_sha256 = [1; 32],
+            |value| value.publication.target.repo_id = RepoId::new("other").expect("fixture repo"),
+            |value| value.publication.target.track = SearchPlaneTrackKind::Semantic,
+            |value| value.publication.target.manifest_generation = ManifestGeneration::new(100),
+            |value| value.publication.target.manifest_digest = "other".into(),
+            |value| value.publication.batch_digest = "c".repeat(64),
+            |value| value.receipt.applied = true,
+            |value| value.receipt.sealed = false,
+            |value| value.receipt.durable_sequence = 0,
+        ];
+        for mutate in mutants {
+            let mut bad = original.clone();
+            mutate(&mut bad);
+            assert!(
+                bad.publication
+                    .validate_receipt(&requested, true, &bad.receipt)
+                    .is_err()
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
     fn ingest_observation_replay_has_no_cached_or_zero_filled_measurements() -> TestResult {
         let batch = batch()?;
         let mut outcome = outcome()?;
         let mut observation = outcome.observation.take().ok_or("missing observation")?;
-        observation.validate_for(11, &batch, &outcome.receipt)?;
+        observation.validate_for(11, &batch, &outcome.publication, &outcome.receipt)?;
         outcome.receipt = outcome.receipt.replayed();
         observation.status = IngestObservationStatus::Replayed;
         assert!(
             observation
-                .validate_for(11, &batch, &outcome.receipt)
+                .validate_for(11, &batch, &outcome.publication, &outcome.receipt)
                 .is_err()
         );
         observation.semantic = None;
         observation.lexical_build_ns = None;
         observation.finalize_ns = None;
-        observation.validate_for(11, &batch, &outcome.receipt)?;
+        observation.validate_for(11, &batch, &outcome.publication, &outcome.receipt)?;
         observation.lexical_build_ns = Some(0);
         assert!(
             observation
-                .validate_for(11, &batch, &outcome.receipt)
+                .validate_for(11, &batch, &outcome.publication, &outcome.receipt)
                 .is_err()
         );
         Ok(())
@@ -614,7 +735,7 @@ mod tests {
             .prepare = 1;
         assert!(
             observation
-                .validate_for(11, &batch, &outcome.receipt)
+                .validate_for(11, &batch, &outcome.publication, &outcome.receipt)
                 .is_err()
         );
         observation
@@ -626,19 +747,19 @@ mod tests {
         observation.status = IngestObservationStatus::PartialRecovery;
         assert!(
             observation
-                .validate_for(11, &batch, &outcome.receipt)
+                .validate_for(11, &batch, &outcome.publication, &outcome.receipt)
                 .is_err()
         );
         observation.semantic = None;
-        observation.validate_for(11, &batch, &outcome.receipt)?;
+        observation.validate_for(11, &batch, &outcome.publication, &outcome.receipt)?;
         observation.status = IngestObservationStatus::FinalizeOnly;
         assert!(
             observation
-                .validate_for(11, &batch, &outcome.receipt)
+                .validate_for(11, &batch, &outcome.publication, &outcome.receipt)
                 .is_err()
         );
         observation.lexical_build_ns = None;
-        observation.validate_for(11, &batch, &outcome.receipt)?;
+        observation.validate_for(11, &batch, &outcome.publication, &outcome.receipt)?;
         Ok(())
     }
 

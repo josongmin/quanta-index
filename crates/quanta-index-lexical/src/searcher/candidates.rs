@@ -23,7 +23,7 @@ use quanta_index_lq_regex::RegexExecutor;
 use std::collections::BTreeMap;
 use tantivy::schema::{Field, OwnedValue, TantivyDocument, Value};
 
-/// One optional-preview account and executor pool for the complete request.
+/// One selected page's executor pool sharing the request's preview account.
 /// Retained output leases remain here until the caller transfers the response.
 pub(crate) struct SelectedPreviewContext<'a> {
     query: &'a LqQuery,
@@ -34,6 +34,7 @@ pub(crate) struct SelectedPreviewContext<'a> {
     executor_reservations: Vec<LexicalMemoryReservation>,
     output_reservations: Vec<LexicalMemoryReservation>,
     output_slot: Option<usize>,
+    prepared_for_render: bool,
     unavailable: Option<PreviewUnavailableReason>,
 }
 
@@ -70,16 +71,33 @@ fn source_offset(doc: &TantivyDocument, field: Field) -> Result<Option<u64>, Cor
 }
 
 impl SelectedPreviewContext<'_> {
+    /// Empty selections and unrenderable rows need no executor or output slot.
+    fn prepare_for_render(&mut self) -> Result<(), CoreError> {
+        self.request.checkpoint("lexical:preview-prepare")?;
+        if self.prepared_for_render {
+            return Ok(());
+        }
+        self.prepared_for_render = true;
+        self.prepare_expr(&self.prepared.expr, 0)?;
+        for filter in &self.query.filters {
+            if let LqFilter::Content { leaf } = filter {
+                self.prepare_leaf(leaf)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Keep emitted allocations charged through the caller's request lifetime.
     pub(crate) fn retain_output_for_request(&mut self) -> Result<(), CoreError> {
+        self.request.checkpoint("lexical:preview-output")?;
+        // A finished context cannot emit additional unretained outputs.
+        self.unavailable = Some(PreviewUnavailableReason::WorkBudget);
         let Some(slot) = self.output_slot.take() else {
             if self.output_reservations.is_empty() {
                 return Ok(());
             }
             return Err(integrity("preview output has no reserved request slot"));
         };
-        // A finished context cannot emit additional unretained outputs.
-        self.unavailable = Some(PreviewUnavailableReason::WorkBudget);
         self.request
             .retain_lexical_output(slot, core::mem::take(&mut self.output_reservations))
     }
@@ -130,8 +148,9 @@ impl SelectedPreviewContext<'_> {
         if !self.admit(self.ledger.charge_work(work.saturating_add(100_000)))? {
             return Ok(());
         }
-        // Logical admission includes the regex engine's 10 MiB compilation
-        // limit plus its cache, HIR and bounded pattern. This is not RSS proof.
+        // This fixed logical charge bounds the number of retained executors.
+        // The engine's 10 MiB limit applies per NFA, not to total compiler/HIR
+        // allocations. Do not interpret this charge as a total heap ceiling.
         let reservation = match self.ledger.reserve_bytes(16 * 1024 * 1024) {
             Ok(reservation) => reservation,
             Err(error) => {
@@ -184,8 +203,7 @@ impl TantivySearcher {
         request: &'a RequestBudgetV1,
     ) -> Result<SelectedPreviewContext<'a>, CoreError> {
         let ledger = request.lexical_preview_budget(10_000_000, 64 * 1024 * 1024)?;
-        let output_slot = request.reserve_lexical_output_group()?;
-        let mut context = SelectedPreviewContext {
+        Ok(SelectedPreviewContext {
             query,
             prepared,
             request,
@@ -193,18 +211,10 @@ impl TantivySearcher {
             executors: BTreeMap::new(),
             executor_reservations: Vec::new(),
             output_reservations: Vec::new(),
-            output_slot,
-            unavailable: output_slot
-                .is_none()
-                .then_some(PreviewUnavailableReason::WorkBudget),
-        };
-        context.prepare_expr(&prepared.expr, 0)?;
-        for filter in &query.filters {
-            if let LqFilter::Content { leaf } = filter {
-                context.prepare_leaf(leaf)?;
-            }
-        }
-        Ok(context)
+            output_slot: None,
+            prepared_for_render: false,
+            unavailable: None,
+        })
     }
 
     fn selected_source_identity(
@@ -301,6 +311,17 @@ impl TantivySearcher {
         } else {
             (None, None)
         };
+        let limits = SnippetLimits::default();
+        if raw.len() > limits.source_bytes || indexed.len() > limits.transformed_bytes {
+            context.request.checkpoint("lexical:preview-unavailable")?;
+            candidate.preview = Some(PreviewMetadata::unavailable(
+                kind,
+                PreviewUnavailableReason::WorkBudget,
+                None,
+            ));
+            return Ok(candidate);
+        }
+        context.prepare_for_render()?;
         if let Some(reason) = context.unavailable {
             candidate.preview = Some(PreviewMetadata::unavailable(kind, reason, None));
             return Ok(candidate);
@@ -310,7 +331,7 @@ impl TantivySearcher {
                 expr: &context.prepared.expr,
                 filters: &context.query.filters,
                 options: &context.query.options,
-                limits: SnippetLimits::default(),
+                limits,
                 ledger: &context.ledger,
                 request: context.request,
             },
@@ -331,10 +352,17 @@ impl TantivySearcher {
             },
             &|_leaf| Err(integrity("residual authority leaf was not refused")),
         )?;
-        // The renderer's retained lease includes this vector slot. Allocation
-        // refusal is still optional and must preserve the selected identity.
+        // Only actual output needs a retention slot. A page consisting entirely
+        // of unavailable previews must not exhaust the request's output carrier.
+        // The renderer's lease charges the transient output through admission.
+        if rendered.reservation.is_some() && context.output_slot.is_none() {
+            context.output_slot = context.request.reserve_lexical_output_group()?;
+        }
+        // The retained lease includes this vector slot. Allocation/slot refusal
+        // is still optional and must preserve the selected identity.
         if rendered.reservation.is_some()
-            && context.output_reservations.try_reserve_exact(1).is_err()
+            && (context.output_slot.is_none()
+                || context.output_reservations.try_reserve_exact(1).is_err())
         {
             context
                 .request

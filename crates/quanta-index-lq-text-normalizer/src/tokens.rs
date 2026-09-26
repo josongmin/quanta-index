@@ -212,6 +212,9 @@ pub fn phrase_ranges<'a>(
 /// sides are folded under [`CaseMode::Folded`], and nothing is tokenized.
 #[must_use]
 pub fn contains_substring(haystack: &str, needle: &str, case: CaseMode) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
     substring_range_in_case_text(apply_case(haystack, case).as_ref(), needle, case).is_some()
 }
 

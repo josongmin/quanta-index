@@ -474,6 +474,7 @@ mod tests {
                     .with_candidates(CandidateCountV1::AtLeast(64)),
             ],
         )
+        .expect("valid exact diagnostics fixture")
     }
 
     fn outcomes() -> BTreeMap<(String, String), QueryOutcome> {

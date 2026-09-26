@@ -15,6 +15,15 @@ from tools.ci.tests.test_portable_proof import fake_execution  # noqa: F401
 from tools.ci.tests.test_portable_proof import proof_actor_environment as proof_actor_environment
 
 
+def test_proof_payload_bounds_control_summary_before_decode(tmp_path):
+    from evidence import CONTROL_DOCUMENT_BYTES
+
+    with (tmp_path / "sdk_results.json").open("wb") as stream:
+        stream.truncate(CONTROL_DOCUMENT_BYTES + 1)
+    with pytest.raises(capture.EvidenceError, match="control document exceeds"):
+        capture.proof_payload(tmp_path, {"rail": "sdk"}, {})
+
+
 def test_bridge_fixture_preserves_canonical_evidence_identity():
     from tools.ci.tests.test_benchmark_evidence_bridge import _bridge
 

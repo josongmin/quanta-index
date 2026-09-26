@@ -38,10 +38,14 @@ impl CollectionMemory {
                 })?;
             let bytes = capacity
                 .checked_mul(std::mem::size_of::<LexicalMemoryReservation>())
-                .and_then(|bytes| u64::try_from(bytes).ok())
                 .ok_or_else(|| {
                     TantivyError::InvalidArgument("collection guard buffer overflow".to_string())
                 })?;
+            let bytes = u64::try_from(bytes).map_err(|error| {
+                TantivyError::InvalidArgument(format!(
+                    "collection guard byte size overflow: {error}"
+                ))
+            })?;
             let replacement = self
                 .budget
                 .reserve_bytes(bytes)
@@ -174,10 +178,12 @@ fn reserve_rows(
     };
     let bytes = count
         .checked_mul(std::mem::size_of::<RankedRow>())
-        .and_then(|bytes| u64::try_from(bytes).ok())
         .ok_or_else(|| {
             TantivyError::InvalidArgument("ranked row buffer size overflow".to_string())
         })?;
+    let bytes = u64::try_from(bytes).map_err(|error| {
+        TantivyError::InvalidArgument(format!("ranked row byte size overflow: {error}"))
+    })?;
     budget
         .reserve_bytes(bytes)
         .map(Some)

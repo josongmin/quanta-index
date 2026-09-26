@@ -41,8 +41,9 @@ pub(crate) fn validate_exact_all_count(query: &LqQuery) -> Result<(), CoreError>
 /// multi-line laundry list.
 ///
 /// Planner [`Unimplemented`](crate::planner::LexicalPlannerError::Unimplemented)
-/// shapes surface as `CoreError::NotImplemented` carrying the owning
-/// follow-up ticket. The planner is now the single authority for these IR
+/// predicate shapes retain the registry's `LexPredicateUnimplemented` code;
+/// other shapes surface as `CoreError::NotImplemented` carrying the owning
+/// follow-up ticket. The planner is the single authority for these IR
 /// shapes — there is no silent delegation to a legacy executor.
 pub(crate) fn planner_preflight_expr(
     query: &LqQuery,
@@ -105,18 +106,16 @@ pub(crate) fn map_regex_plan_error(err: crate::regex::RegexPlannerError) -> Core
 ///   `UnsupportedFilterCombo`) lower to `LEX_PLANNER_UNSUPPORTED_*` typed
 ///   codes — these are stable wire codes for IR shapes the planner has
 ///   chosen not to lower.
-/// * `Unimplemented { owner_ticket, .. }` surfaces as
-///   `CoreError::NotImplemented` carrying the owning ticket id, so callers
-///   can attribute the gap to a concrete follow-up.
+/// * Registry-owned predicate rejections retain `LexPredicateUnimplemented`.
+///   Other `Unimplemented { owner_ticket, .. }` errors carry the owning ticket
+///   in `CoreError::NotImplemented`.
 /// * `PhrasePlan` lowers through [`map_phrase_plan_error`]: the pre-flight
 ///   tokenizes phrase text with the shared normalizer, so a token-less or
 ///   over-long phrase is refused here under the same `LEX_TEXT_QUERY_*`
 ///   codes the keyword path uses, before any executor lowering runs.
-/// * The other leaf-planner failures (`RegexPlan`, `TrigramPlan`,
-///   `SymbolPlan`) lower to `InvalidContract` because their dedicated
-///   typed-error mappers (`map_regex_plan_error`, etc.) own the leaf-side
-///   surfacing on the live execution path; the planner pre-flight should
-///   never reach those arms in practice.
+/// * `RegexPlan` uses the same dialect codes as the execution-side regex
+///   planner, even when preflight rejects before predicate evaluation.
+/// * `TrigramPlan` and `SymbolPlan` retain their contract-fault mapping.
 pub(crate) fn map_planner_error(err: &crate::planner::LexicalPlannerError) -> CoreError {
     use crate::planner::LexicalPlannerError;
     match err {
@@ -151,22 +150,21 @@ pub(crate) fn map_planner_error(err: &crate::planner::LexicalPlannerError) -> Co
             code: quanta_index_contract::SearchPlaneErrorCodeV2::LexPlannerUnsupportedFilterCombo,
             message: "lexical: planner does not yet lower this filter combination".to_string(),
         },
-        LexicalPlannerError::Unimplemented { node, owner_ticket } => CoreError::NotImplemented(
-            format!("lex planner: IR node '{node}' is unimplemented (owner: {owner_ticket})"),
-        ),
+        LexicalPlannerError::Unimplemented { node, owner_ticket } => {
+            let message =
+                format!("lex planner: IR node '{node}' is unimplemented (owner: {owner_ticket})");
+            if *owner_ticket == crate::predicate_registry::PREDICATE_OWNER {
+                crate::predicate_registry::unimplemented_predicate(message)
+            } else {
+                CoreError::NotImplemented(message)
+            }
+        }
         // The pre-flight plans phrase leaves for real (it tokenizes them), so
         // its literal refusals must carry the same typed codes the executor
         // would have produced for the keyword shape of the same text.
         LexicalPlannerError::PhrasePlan(phrase) => map_phrase_plan_error(phrase.clone()),
-        // The remaining leaf-planner errors reaching this site would mean
-        // the pre-flight disagreed with the live executor's leaf-side
-        // mapping. They are never produced on the current pipeline (those
-        // leaves compile during executor lowering, not during pre-flight
-        // planning); the arm is kept for completeness and lowers to
-        // `InvalidContract` so the mismatch is visible rather than swallowed.
-        LexicalPlannerError::RegexPlan(_)
-        | LexicalPlannerError::TrigramPlan(_)
-        | LexicalPlannerError::SymbolPlan(_) => {
+        LexicalPlannerError::RegexPlan(regex) => map_regex_plan_error(regex.clone()),
+        LexicalPlannerError::TrigramPlan(_) | LexicalPlannerError::SymbolPlan(_) => {
             CoreError::InvalidContract(format!("lexical: planner: {err}"))
         }
     }

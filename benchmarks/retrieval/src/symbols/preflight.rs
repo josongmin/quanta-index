@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use quanta_index_contract::{
-    ChunkRecord, SourceFileCoverage, SourceFileRevision, SymbolCoverage,
+    ChunkRecord, ExactRepoRelativePathV1, SourceFileCoverage, SourceFileRevision, SymbolCoverage,
     source_file_unit_set_sha256,
 };
 use serde::Serialize;
@@ -48,6 +48,32 @@ pub struct SymbolPreflightOptions<'a> {
     pub cancellation: Option<&'a AtomicBool>,
 }
 
+/// Exact extraction limits needed to interpret and reproduce the policy hash.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct SymbolPreflightPolicy {
+    pub max_file_bytes: usize,
+    pub max_symbols_per_file: usize,
+    pub max_symbols_total: usize,
+    pub max_diagnostics_per_file: usize,
+    pub max_diagnostics_total: usize,
+    pub timeout_per_file_ns: String,
+    pub timeout_total_ns: String,
+}
+
+impl From<&SymbolPreflightOptions<'_>> for SymbolPreflightPolicy {
+    fn from(options: &SymbolPreflightOptions<'_>) -> Self {
+        Self {
+            max_file_bytes: options.max_file_bytes,
+            max_symbols_per_file: options.max_symbols_per_file,
+            max_symbols_total: options.max_symbols_total,
+            max_diagnostics_per_file: options.max_diagnostics_per_file,
+            max_diagnostics_total: options.max_diagnostics_total,
+            timeout_per_file_ns: options.timeout_per_file.as_nanos().to_string(),
+            timeout_total_ns: options.timeout_total.as_nanos().to_string(),
+        }
+    }
+}
+
 impl Default for SymbolPreflightOptions<'_> {
     fn default() -> Self {
         Self {
@@ -71,7 +97,7 @@ pub(super) struct ExtractionControl<'a> {
 }
 
 impl ExtractionControl<'_> {
-    pub fn check(&self) -> Result<(), SymbolExtractError> {
+    pub(super) fn check(&self) -> Result<(), SymbolExtractError> {
         if self
             .cancellation
             .is_some_and(|flag| flag.load(Ordering::Relaxed))
@@ -88,7 +114,7 @@ impl ExtractionControl<'_> {
         Ok(())
     }
 
-    pub fn check_symbols(&self, count: usize) -> Result<(), SymbolExtractError> {
+    pub(super) fn check_symbols(&self, count: usize) -> Result<(), SymbolExtractError> {
         self.check()?;
         if count >= self.max_symbols {
             return Err(SymbolExtractError::ResourceLimit {
@@ -128,6 +154,7 @@ pub struct SymbolPreflightReport {
     pub grammar_identity: &'static str,
     pub lockfile_sha256: String,
     pub producer_policy_sha256: String,
+    pub policy: SymbolPreflightPolicy,
     pub files: Vec<SymbolFileReport>,
     pub admitted_files: usize,
     pub incomplete_files: usize,
@@ -154,11 +181,22 @@ impl SymbolPreflight {
     }
 
     pub fn admit(&self, policy: SymbolCoveragePolicy) -> BenchResult<()> {
-        let rejected = self.report.files.iter().find(|file| {
-            matches!(file.coverage, SymbolCoverage::ProducerFailed)
-                || (policy == SymbolCoveragePolicy::RequireComplete
-                    && !matches!(file.coverage, SymbolCoverage::Complete { .. }))
-        });
+        // Fatal producer failures take precedence over earlier syntax gaps.
+        // The optional profile admits only its explicit two recoverable states.
+        let rejected = self
+            .report
+            .files
+            .iter()
+            .find(|file| matches!(file.coverage, SymbolCoverage::ProducerFailed))
+            .or_else(|| {
+                self.report.files.iter().find(|file| match file.coverage {
+                    SymbolCoverage::Complete { .. } => false,
+                    SymbolCoverage::Unsupported | SymbolCoverage::ParseFailed => {
+                        policy == SymbolCoveragePolicy::RequireComplete
+                    }
+                    SymbolCoverage::NotRequested | SymbolCoverage::ProducerFailed => true,
+                })
+            });
         if let Some(file) = rejected {
             if file.coverage == SymbolCoverage::ProducerFailed {
                 return Err(BenchError::Protocol(format!(
@@ -272,7 +310,9 @@ impl SymbolPreflight {
             language,
             producer_policy_sha256: self.producer_policy,
             unit_set_sha256,
-            text_admitted: true,
+            // A source-only symbol scope does not publish a text surface.
+            // An empty source is the explicit zero-unit text case.
+            text_admitted: file.bytes.is_empty() || !chunks.is_empty(),
             symbols: report.coverage,
         })
     }
@@ -398,7 +438,12 @@ fn inspect_file(
         control.check()?;
         let node = cursor.node();
         if node.is_error() || node.is_missing() {
-            report.diagnostics_total += 1;
+            report.diagnostics_total =
+                report.diagnostics_total.checked_add(1).ok_or_else(|| {
+                    SymbolExtractError::ResourceLimit {
+                        path: path.to_string(),
+                    }
+                })?;
             let diagnostic = SymbolFileDiagnostic {
                 kind: if node.is_missing() {
                     "missing_syntax"
@@ -455,13 +500,22 @@ pub fn preflight_corpus_symbols(
         })?;
     // Validate every admitted identity before starting the parser census.
     for (path, file) in files {
+        let _validated_path =
+            ExactRepoRelativePathV1::new(path).map_err(|message| BenchError::Corpus {
+                path: path.clone(),
+                message: message.to_string(),
+            })?;
+        let (line_starts, exotic) = crate::corpus::split_line_starts(&file.text);
         if &file.path != path
             || file.sha256 != sha256_hex(&file.bytes)
             || file.text.as_bytes() != file.bytes.as_slice()
+            || file.line_starts != line_starts
+            || exotic
         {
             return Err(BenchError::Corpus {
                 path: path.clone(),
-                message: "symbol source path/hash/text differs from admitted bytes".to_string(),
+                message: "symbol source path/hash/text/line model differs from admitted bytes"
+                    .to_string(),
             });
         }
     }
@@ -472,6 +526,7 @@ pub fn preflight_corpus_symbols(
         grammar_identity: SYMBOL_PRODUCER_GRAMMARS,
         lockfile_sha256: sha256_hex(include_bytes!("../../../../Cargo.lock")),
         producer_policy_sha256: policy.iter().map(|byte| format!("{byte:02x}")).collect(),
+        policy: options.into(),
         files: Vec::with_capacity(files.len()),
         admitted_files: files.len(),
         incomplete_files: 0,
@@ -496,13 +551,19 @@ pub fn preflight_corpus_symbols(
                 .min(options.max_diagnostics_total.saturating_sub(retained)),
         );
         row.diagnostics_truncated |= row.diagnostics_total > row.diagnostics.len();
-        retained += row.diagnostics.len();
+        retained = retained
+            .checked_add(row.diagnostics.len())
+            .ok_or_else(|| BenchError::Protocol("symbol diagnostic count overflow".to_string()))?;
         if !matches!(row.coverage, SymbolCoverage::Complete { .. }) {
-            report.incomplete_files += 1;
+            report.incomplete_files = report.incomplete_files.checked_add(1).ok_or_else(|| {
+                BenchError::Protocol("symbol incomplete-file count overflow".to_string())
+            })?;
         }
         report.files.push(row);
-        retained_symbols += records.len();
-        symbols.insert(path.clone(), records);
+        retained_symbols = retained_symbols
+            .checked_add(records.len())
+            .ok_or_else(|| BenchError::Protocol("symbol record count overflow".to_string()))?;
+        let _previous = symbols.insert(path.clone(), records);
     }
     Ok(SymbolPreflight {
         report,

@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import sys
@@ -14,6 +13,7 @@ try:
     from tools.benchmark.retrieval.proof_inventory import verify_inventory_authority
     from tools.ci.nextest_events import (
         NextestEvidenceError,
+        parse_nextest,
         parse_nextest_bytes,
         parse_nextest_inventory_bytes,
     )
@@ -22,18 +22,16 @@ except ModuleNotFoundError:  # direct script invocation
     from tools.benchmark.retrieval.proof_inventory import verify_inventory_authority
     from tools.ci.nextest_events import (
         NextestEvidenceError,
+        parse_nextest,
         parse_nextest_bytes,
         parse_nextest_inventory_bytes,
     )
 
-from tools.ci.lint.handoff_validation import _read_repo_regular_bytes
+from tools.benchmark.evidence import RawFile, file_digest, read_control
 
 
-def _evidence_bytes(value: Path | bytes) -> bytes:
-    if isinstance(value, bytes):
-        return value
-    path = value.absolute()
-    return _read_repo_regular_bytes(path.parent, path.name, label="proof evidence")
+def _evidence_bytes(value: Path | RawFile | bytes) -> bytes:
+    return read_control(value)
 
 
 PROOF_TEST = "actual_runner_binary_emits_receipt_bound_v5_record"
@@ -62,10 +60,10 @@ def _hex64(value: object, label: str) -> str:
     return value
 
 
-def _nextest_counts(path: Path | bytes, inventory: Path | bytes | None = None) -> tuple[int, int, int, int]:
+def _nextest_counts(path: Path | RawFile | bytes, inventory: Path | RawFile | bytes | None = None) -> tuple[int, int, int, int]:
     try:
         expected = parse_nextest_inventory_bytes(_evidence_bytes(inventory)) if inventory is not None else None
-        evidence = parse_nextest_bytes(_evidence_bytes(path), expected)
+        evidence = parse_nextest_bytes(path, expected) if isinstance(path, bytes) else parse_nextest(path, expected)
     except NextestEvidenceError as error:
         raise SystemExit(f"{error}: {path}") from error
     if not any(
@@ -76,10 +74,10 @@ def _nextest_counts(path: Path | bytes, inventory: Path | bytes | None = None) -
 
 
 def build_summary_from_evidence(
-    record_path: Path | bytes,
-    nextest_path: Path | bytes,
+    record_path: Path | RawFile | bytes,
+    nextest_path: Path | RawFile | bytes,
     runner_digest: str,
-    inventory_path: Path | bytes | None = None,
+    inventory_path: Path | RawFile | bytes | None = None,
     *,
     searchd_digest: str | None = None,
 ) -> dict[str, object]:
@@ -163,13 +161,13 @@ def build_summary(
     *,
     searchd_path: Path | None = None,
 ) -> dict[str, object]:
-    binary_digest = hashlib.sha256(_evidence_bytes(runner_path)).hexdigest()
+    binary_digest = file_digest(runner_path)[0].removeprefix("sha256:")
     return build_summary_from_evidence(
         record_path,
         nextest_path,
         binary_digest,
         inventory_path,
-        searchd_digest=hashlib.sha256(_evidence_bytes(searchd_path)).hexdigest()
+        searchd_digest=file_digest(searchd_path)[0].removeprefix("sha256:")
         if searchd_path is not None
         else None,
     )

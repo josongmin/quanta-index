@@ -39,6 +39,10 @@ fn pin() -> GenerationPin {
 )]
 fn row(id: &str, score: f32, path: &str, line: u32) -> LexicalCandidate {
     LexicalCandidate {
+        source_repo_id: RepoId::new("repo-1")
+            .expect("static fixture ID satisfies canonical policy"),
+        source: None,
+        preview: None,
         candidate_id: id.to_string(),
         repo_id: RepoId::new("repo-1").expect("static fixture ID satisfies canonical policy"),
         revision_id: RevisionId::new("rev-1")
@@ -167,6 +171,8 @@ fn the_decoder_refuses_every_page_that_would_skip_or_repeat() -> TestResult {
 
     let mut owners = continued(rows())?;
     owners.file_owner_rows = Some(vec![FileOwnerProjectionRow {
+        source_repo_id: RepoId::new("repo-1")
+            .expect("static fixture ID satisfies canonical policy"),
         candidate_id: "b".to_string(),
         repo_id: RepoId::new("repo-1").expect("static fixture ID satisfies canonical policy"),
         revision_id: RevisionId::new("rev-1")
@@ -232,6 +238,9 @@ fn symbol_requests_and_pages_share_the_text_rules() -> TestResult {
 
     let symbol = |row: &LexicalCandidate| -> Result<SymbolCandidate, Box<dyn Error>> {
         Ok(SymbolCandidate {
+            source_repo_id: row.source_repo_id.clone(),
+            source: row.source.clone(),
+            preview: row.preview.clone(),
             candidate_id: row.candidate_id.clone(),
             repo_id: row.repo_id.clone(),
             revision_id: row.revision_id.clone(),

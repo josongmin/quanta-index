@@ -658,6 +658,7 @@ impl IpcDispatcher<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse>
             | SearchPlaneControlIpcRequest::RepoMapActivateV2(_)
             | SearchPlaneControlIpcRequest::RepoMapActiveHeadV2(_)
             | SearchPlaneControlIpcRequest::SearchCorpusActiveHead(_)
+            | SearchPlaneControlIpcRequest::ProcessRequestEventsV1(_)
             | SearchPlaneControlIpcRequest::ProcessReadiness(_)) => control_error_response(
                 SearchPlaneErrorCodeV2::Internal,
                 format!("doctor mock received unexpected control request: {other:?}"),
@@ -1586,6 +1587,9 @@ fn stub_generation() -> GenerationPin {
 
 fn stub_candidate(generation: GenerationPin) -> LexicalCandidate {
     LexicalCandidate {
+        source_repo_id: generation.repo_id.clone(),
+        source: None,
+        preview: None,
         candidate_id: "cand-1".to_string(),
         repo_id: generation.repo_id,
         revision_id: generation.revision_id,

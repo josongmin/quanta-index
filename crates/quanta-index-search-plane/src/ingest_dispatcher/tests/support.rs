@@ -1,7 +1,6 @@
 //! Fixtures shared by the ingest dispatcher test modules: in-memory
 //! catalogs, port doubles, and batch builders.
 
-use quanta_index_core::SourcePublicationCatalogPort as _;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -1704,19 +1703,7 @@ pub(super) fn fixture_semantic_batch() -> Result<SemanticIngestBatch, Box<dyn st
 }
 
 pub(super) fn fixture_chunk_record() -> Result<ChunkRecord, Box<dyn std::error::Error>> {
-    Ok(ChunkRecord {
-        chunk_id: ChunkId::new("chunk-1"),
-        repo_relative_path: RepoRelativePath::new("src/main.rs"),
-        language: quanta_index_contract::lex::LanguageCode::new("rust").map_err(str::to_string)?,
-        start_byte: 0,
-        end_byte: 24,
-        start_line: 1,
-        end_line: 1,
-        text: "typed semantic parser".to_string().into_boxed_str(),
-        structural: None,
-        parent_chunk_id: None,
-        source_repo_id: None,
-    })
+    chunk_record_v("chunk-1", "src/main.rs", "typed semantic parser")
 }
 
 fn typed_symbol_source_scope(id: &str, path: &str, text: &str) -> SemanticSourceReplaceScopeV1 {
@@ -1752,11 +1739,16 @@ fn typed_symbol_source_scope(id: &str, path: &str, text: &str) -> SemanticSource
     }
 }
 
-/// A sealed single-scope search-corpus batch carrying its canonical
-/// digest.
-///
-/// Tests that change the body after taking the fixture must re-stamp it
-/// (`stamp_batch_digest_v1`) unless the mismatch is the point.
+/// Tests that change the body after taking the fixture must re-stamp both
+/// commitments with `restamp_search_corpus_fixture`, unless the mismatch is
+/// the point. Restamping does not replace the producer event or its lineage.
+pub(super) fn restamp_search_corpus_fixture(batch: &mut SearchCorpusIngestBatch) -> TestRes {
+    batch.source_event.payload_sha256 = quanta_index_contract::source_event_payload_sha256(batch)?;
+    stamp_batch_digest_v1(batch)?;
+    Ok(())
+}
+
+/// A valid sealed single-scope batch carrying both canonical commitments.
 pub(super) fn fixture_search_corpus_batch()
 -> Result<SearchCorpusIngestBatch, Box<dyn std::error::Error>> {
     let mut batch = SearchCorpusIngestBatch {
@@ -1784,8 +1776,11 @@ pub(super) fn fixture_search_corpus_batch()
         semantic_tombstone_scopes: Vec::new(),
         seal: true,
     };
-    batch.source_event.payload_sha256 = quanta_index_contract::source_event_payload_sha256(&batch)?;
-    stamp_batch_digest_v1(&mut batch)?;
+    restamp_search_corpus_fixture(&mut batch)?;
+    batch.validate_v1()?;
+    batch
+        .validate_surface_mutations_v1()
+        .map_err(|error| error.to_string())?;
     Ok(batch)
 }
 
@@ -1907,7 +1902,7 @@ pub(super) fn chunk_record_v(
         repo_relative_path: RepoRelativePath::new(path),
         language: quanta_index_contract::lex::LanguageCode::new("rust").map_err(str::to_string)?,
         start_byte: 0,
-        end_byte: 24,
+        end_byte: u32::try_from(text.len())?,
         start_line: 1,
         end_line: 1,
         text: text.to_string().into_boxed_str(),
@@ -2011,8 +2006,11 @@ pub(super) fn multi_scope_corpus_batch()
         semantic_tombstone_scopes: Vec::new(),
         seal: true,
     };
-    batch.source_event.payload_sha256 = quanta_index_contract::source_event_payload_sha256(&batch)?;
-    stamp_batch_digest_v1(&mut batch)?;
+    restamp_search_corpus_fixture(&mut batch)?;
+    batch.validate_v1()?;
+    batch
+        .validate_surface_mutations_v1()
+        .map_err(|error| error.to_string())?;
     Ok(batch)
 }
 

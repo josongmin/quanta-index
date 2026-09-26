@@ -43,3 +43,29 @@ sequentially on the same frozen source and toolchain. Keep target-directory,
 cache state, environment, and background load in the measurement record.
 A shorter preparation path or fewer subprocesses does not by itself establish
 an end-to-end speedup.
+
+## Native preparation preserves each binary's feature graph
+
+The portable proof keeps searchd and retrieval runner builds separate. Combining
+the two selected packages can change dependency features in the runner even
+when both binary targets retain their default features.
+
+The 2026-09-27 diagnostic on Darwin (Cargo/Rust 1.92.0, lockfile SHA-256
+`05044065eae52f79a67378cfa995414c08f77e6910e30bd8bb36dae92ef362d5`)
+compared Cargo unit graphs for each binary separately and both together. The
+runner's reachable unit count changed from 298 to 339. For example,
+`hyper-rustls` gained `http2`, `native-tokio`, and `rustls-native-certs`, while
+`cc` gained `parallel`. This rejects feature-equivalent consolidation for that
+input tuple; it is not a compiled-binary or performance comparison.
+
+Reproduce the graph comparison with the same locked manifests, toolchain, and
+environment using `RUSTC_BOOTSTRAP=1 ./scripts/cargow build --locked --offline
+-Z unstable-options --unit-graph`, selecting each package/binary independently,
+then selecting both. The bootstrap override is for graph inspection only;
+normal proof builds do not set it. Compare each binary's reachable dependency
+subgraph, including features and profiles, rather than only the root features.
+
+The admitted optimization is to prepare nextest binaries once, then reuse the
+bound binaries metadata and Cargo metadata for collection and execution. Both
+reuse consumers revalidate input identity before and after execution; every
+selected test still runs and requires terminal evidence.

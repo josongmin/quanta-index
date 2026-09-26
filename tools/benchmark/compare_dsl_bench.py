@@ -55,6 +55,11 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+if str(Path(__file__).resolve().parents[2]) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from tools.benchmark.evidence import CONTROL_DOCUMENT_BYTES, _read_control_file  # noqa: E402
+
 CURRENT_SCHEMA_VERSION = 2
 FULL_HEAD_RE = re.compile(r"^[0-9a-f]{40}$")
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -193,10 +198,19 @@ def _required_samples(latency: dict, *, role: str, path: Path, index: int) -> in
 def load_artifact(path: Path, *, role: str, content: str | None = None) -> Artifact:
     """Decode one ``BenchArtifactV1``, refusing an old schema or a bad head."""
     try:
-        payload = json.loads(path.read_text(encoding="utf-8") if content is None else content)
+        if content is not None and (
+            len(content) > CONTROL_DOCUMENT_BYTES
+            or len(content.encode("utf-8")) > CONTROL_DOCUMENT_BYTES
+        ):
+            raise ValueError("native control document exceeds explicit byte limit")
+        payload = json.loads(_read_control_file(path) if content is None else content)
     except FileNotFoundError:
         raise
     except (OSError, ValueError) as exc:
+        # File custody wraps OS errors; preserve the public missing-artifact
+        # classification using the actual cause, not a second pathname check.
+        if isinstance(exc.__cause__, FileNotFoundError):
+            raise exc.__cause__ from None
         raise ArtifactRefused(f"{role} {path} cannot be decoded: {exc}") from exc
     require(isinstance(payload, dict), f"{role} {path} is not a JSON object")
     schema = payload.get("schema_version")
@@ -496,8 +510,8 @@ def require_clean_preflight(receipt_path: Path | None, artifact: Artifact) -> No
     if receipt_path is None:
         raise ArtifactRefused("baseline admission requires a preflight receipt")
     try:
-        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        receipt = json.loads(_read_control_file(receipt_path))
+    except (OSError, ValueError) as exc:
         raise ArtifactRefused(f"cannot load preflight receipt {receipt_path}: {exc}") from exc
     if not isinstance(receipt, dict):
         raise ArtifactRefused("preflight receipt is not an object")

@@ -23,9 +23,10 @@
   "files": {
     "Cargo.toml": "8a9161a23ef937a8d25cea41cbfedc40db2c37c52a8ee453dfcd57fc31eebf06",
     "LICENSE": "49bf33cf78ef5897e4e161ce1517df7de1ae5042a65b6bcfd44401e0fc606559",
+    "QUANTA.md": "fca42baa0fb2c92ab1ba0462c4b895099e4c777a29e16276a79149339024c597",
     "README.md": "56d77257cc26b3469abefd371b10d230246ea085431bd26a397d31a1ca7f79c5",
     "bindings/rust/build.rs": "8e3ee9baddea25add039fc5d12d76fecfe81f1fd175429eb08694ccfcdaf85f4",
-    "bindings/rust/lib.rs": "f5d90ff81f962148bc0e4ce420f11dc8cc7750a53b65be667b18ca4e23fbc36c",
+    "bindings/rust/lib.rs": "53ac343880f572fea284489fa72bf82815510f012a335f3c0409c2d80db8e0e6",
     "common/common.mak": "cf9c53b8b24c50796577aebbb5f5f6c08dd088952737260b37ec4827f0aa9a3f",
     "common/define-grammar.js": "facb472483f6c81d23f0dc844eeaf83eb3a94ec2e614190e7edaadbd1e355250",
     "common/scanner.h": "da66ef2bd14a3f7ea743e25ba068c6c9aae2c3509db200ff80c4a0e6116e564c",
@@ -54,5 +55,6 @@
   },
   "component_receipt_sha256": "06ec6220e2a2c0af7a1609e5d07ff676b21a50521ee559d62c993f92a2413930",
   "scope": "Native grammar component only; Rust producer and daemon activation require separate current-source proof.",
-  "excluded": "No Vite or external benchmark corpus is copied. Upstream regression corpus is retained only in external component evidence."
+  "excluded": "No Vite or external benchmark corpus is copied. Upstream regression corpus is retained only in external component evidence.",
+  "local_binding_delta": "bindings/rust/lib.rs adds QUANTA_COMPATIBILITY_PATCH_ID; producer compile-guards accidental registry grammar selection."
 }

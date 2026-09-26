@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -253,23 +256,178 @@ def test_malformed_or_duplicate_raw_rows_refuse(tmp_path, raw):
         product_result("sourcegraph", path, {"q": ("symbol", ["answer.go"])})
 
 
-def test_input_changed_during_read_cannot_bind_new_digest_to_old_score(tmp_path, monkeypatch):
-    from pathlib import Path
+def test_lexical_product_consumes_lines_without_materializing_input(tmp_path, monkeypatch):
+    path = tmp_path / "rows.jsonl"
+    data = json.dumps(
+        {
+            "lane": "symbol_only",
+            "task_id": "q",
+            "submitted_query": "symbol",
+            "gold_paths": ["answer.go"],
+            "http_status": 200,
+            "error": None,
+            "file_paths_top_10": ["answer.go"],
+            "file_hit_at_10": True,
+            "elapsed_ms": 2.0,
+        }
+    ).encode()
+    path.write_bytes(data)
+    original = Path.read_bytes
 
+    def bounded_only(value):
+        assert value != path, "lexical observation whole read"
+        return original(value)
+
+    monkeypatch.setattr(Path, "read_bytes", bounded_only)
+    result = product_result("sourcegraph", path, {"q": ("symbol", ["answer.go"])})
+    assert result["hits"] == result["tasks"] == 1
+    assert result["latency_ms"]["mean_ms"] == 2.0
+    assert result["raw_sha256"] == hashlib.sha256(data).hexdigest()
+
+
+@pytest.mark.parametrize("tail", [b"\n", b'{"lane":', b"\xff"])
+def test_lexical_stream_refuses_invalid_trailing_rows(tmp_path, tail):
+    path = tmp_path / "rows.jsonl"
+    row = {
+        "lane": "symbol_only",
+        "task_id": "q",
+        "submitted_query": "symbol",
+        "gold_paths": ["answer.go"],
+        "http_status": 200,
+        "error": None,
+        "file_paths_top_10": ["answer.go"],
+        "file_hit_at_10": True,
+        "elapsed_ms": 2,
+    }
+    path.write_bytes(json.dumps(row).encode() + b"\n" + tail)
+    with pytest.raises(ValueError):
+        product_result("sourcegraph", path, {"q": ("symbol", ["answer.go"])})
+
+
+def test_lexical_control_and_line_limits_refuse_before_decode(tmp_path):
+    from tools.benchmark.retrieval import lexical_file_comparison as owner
+
+    path = tmp_path / "oversize"
+    with path.open("wb") as stream:
+        stream.truncate(owner.CONTROL_DOCUMENT_BYTES + 1)
+    with pytest.raises(ValueError, match="control document exceeds"):
+        owner._read(path)
+    with pytest.raises(ValueError, match="line exceeds"):
+        product_result("sourcegraph", path, {"q": ("symbol", ["answer.go"])})
+
+
+def test_lexical_result_metadata_has_separate_bound(tmp_path, monkeypatch):
+    from tools.benchmark.retrieval import lexical_file_comparison as owner
+
+    path = tmp_path / "rows.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "lane": "symbol_only",
+                "task_id": "q",
+                "submitted_query": "symbol",
+                "gold_paths": ["answer.go"],
+                "http_status": 200,
+                "error": None,
+                "file_paths_top_10": ["answer.go"],
+                "file_hit_at_10": True,
+                "elapsed_ms": 2,
+            }
+        )
+    )
+    monkeypatch.setattr(owner, "CONTROL_DOCUMENT_BYTES", 1)
+    with pytest.raises(ValueError, match="result metadata exceeds"):
+        product_result("sourcegraph", path, {"q": ("symbol", ["answer.go"])})
+
+
+def test_lexical_stream_rss_does_not_retain_raw_responses(tmp_path, record_property):
+    script = """
+import json, resource, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from tools.benchmark.retrieval.lexical_file_comparison import product_result
+count = int(sys.argv[3])
+result = product_result('sourcegraph', Path(sys.argv[2]),
+    {f'q-{index}': ('symbol', ['answer.go']) for index in range(count)})
+assert result['hits'] == result['tasks'] == len(result['per_query']) == count
+assert result['file_recall_at_10'] == result['file_hit_rate_at_10'] == 1.0
+assert result['latency_ms']['mean_ms'] == 2.0
+peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+if sys.platform != 'darwin':
+    peak *= 1024
+print(json.dumps(dict(peak_bytes=peak, digest=result['raw_sha256'])))
+"""
+    peaks = []
+    sizes = []
+    for count in (120, 2040):
+        path = tmp_path / f"rows-{count}.jsonl"
+        expected_digest = hashlib.sha256()
+        with path.open("wb") as stream:
+            for index in range(count):
+                data = (
+                    json.dumps(
+                        {
+                            "lane": "symbol_only",
+                            "task_id": f"q-{index}",
+                            "submitted_query": "symbol",
+                            "gold_paths": ["answer.go"],
+                            "http_status": 200,
+                            "error": None,
+                            "file_paths_top_10": ["answer.go"],
+                            "file_hit_at_10": True,
+                            "elapsed_ms": 2,
+                            "raw_response": "x" * 64000,
+                        }
+                    ).encode()
+                    + b"\n"
+                )
+                stream.write(data)
+                expected_digest.update(data)
+        run = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-c",
+                script,
+                str(Path(__file__).resolve().parents[3]),
+                str(path),
+                str(count),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=60,
+        )
+        measured = json.loads(run.stdout)
+        assert measured["digest"] == expected_digest.hexdigest()
+        assert measured["peak_bytes"] > 0
+        peaks.append(measured["peak_bytes"])
+        sizes.append(path.stat().st_size)
+        record_property(f"lexical_{count}_bytes", sizes[-1])
+        record_property(f"lexical_{count}_peak_bytes", peaks[-1])
+    assert sizes[1] - sizes[0] > 100 * 1024 * 1024
+    assert peaks[1] - peaks[0] < 32 * 1024 * 1024
+
+
+def test_input_changed_during_read_cannot_bind_new_digest_to_old_score(tmp_path, monkeypatch):
     from tools.benchmark.retrieval import lexical_file_comparison as lexical
+    from tools.ci.lint import handoff_validation
 
     path = tmp_path / "input.json"
     path.write_bytes(b'{"old":true}')
-    original = Path.read_bytes
+    original = handoff_validation._consume_repo_regular_file
 
-    def mutate(value):
-        data = original(value)
-        if value == path:
-            path.write_bytes(b'{"new":false}')
-        return data
+    def mutate(root, value, *, label, consume):
+        def changed(handle):
+            data = consume(handle)
+            if root / value == path:
+                path.write_bytes(b'{"new":false}')
+            return data
 
-    monkeypatch.setattr(Path, "read_bytes", mutate)
-    with pytest.raises(ValueError, match="changed while reading"):
+        return original(root, value, label=label, consume=changed)
+
+    monkeypatch.setattr(handoff_validation, "_consume_repo_regular_file", mutate)
+    with pytest.raises(ValueError, match="changed"):
         lexical._read(path)
 
 

@@ -132,6 +132,27 @@ impl SealedGenerationBuildPlanV1 {
         tracks
     }
 
+    /// Pure repair admission, before a durable source-event reservation. A
+    /// rejected Delta must leave the stream available for a full publication.
+    pub(super) fn validate_repair_mode_v1(&self, mode: BatchIngestMode) -> Result<(), CoreError> {
+        for (track, code) in self.corrupt_tracks() {
+            if mode != BatchIngestMode::ReplaceGeneration {
+                return Err(CoreError::Typed {
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusGenerationRepairRequired,
+                    message: format!(
+                        "direct search-corpus materialize: {:?} track of repo={} revision={} generation={} is sealed but fails exact validation ({code}); a Delta batch cannot rebuild it — publish a ReplaceGeneration seal batch for generation {} to rebuild the damaged track",
+                        track.track,
+                        track.repo_id.as_str(),
+                        track.revision_id.as_str(),
+                        track.manifest_generation.get(),
+                        track.manifest_generation.get(),
+                    ),
+                });
+            }
+        }
+        Ok(())
+    }
+
     /// Typed repair of a sealed-but-corrupt track (QI-BB-029 보완 #4).
     ///
     /// A track that is sealed under the batch's identity but fails exact
@@ -155,20 +176,8 @@ impl SealedGenerationBuildPlanV1 {
         lexical_reclaim: &dyn SealedGenerationReclaimPort,
         semantic_reclaim: &dyn SealedGenerationReclaimPort,
     ) -> Result<(), CoreError> {
+        self.validate_repair_mode_v1(mode)?;
         for (track, code) in self.corrupt_tracks() {
-            if mode != BatchIngestMode::ReplaceGeneration {
-                return Err(CoreError::Typed {
-                    code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusGenerationRepairRequired,
-                    message: format!(
-                        "direct search-corpus materialize: {:?} track of repo={} revision={} generation={} is sealed but fails exact validation ({code}); a Delta batch cannot rebuild it — publish a ReplaceGeneration seal batch for generation {} to rebuild the damaged track",
-                        track.track,
-                        track.repo_id.as_str(),
-                        track.revision_id.as_str(),
-                        track.manifest_generation.get(),
-                        track.manifest_generation.get(),
-                    ),
-                });
-            }
             let key = SnapshotKey::new(
                 &track.repo_id,
                 &track.revision_id,

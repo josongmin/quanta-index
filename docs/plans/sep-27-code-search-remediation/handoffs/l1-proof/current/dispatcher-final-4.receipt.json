@@ -1,0 +1,58 @@
+{
+  "after": "/tmp/quanta-l1-green.diz44g/dispatcher-final-4.after.json",
+  "artifacts": [
+    {
+      "features": [],
+      "fresh": true,
+      "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-search-plane#0.1.0",
+      "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-workspace-lane/debug/deps/quanta_index_search_plane-a62bf8ae66a60dab",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 1,
+        "opt_level": "0",
+        "overflow_checks": true,
+        "test": true
+      },
+      "sha256": "1f8d6e38526e15513e89129dd5eb05aff97fdf27bdc62b8e0ed7dbae7f8b234c",
+      "target": {
+        "crate_types": [
+          "lib"
+        ],
+        "doc": true,
+        "doctest": true,
+        "edition": "2024",
+        "kind": [
+          "lib"
+        ],
+        "name": "quanta_index_search_plane",
+        "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-search-plane/src/lib.rs",
+        "test": true
+      }
+    }
+  ],
+  "before": "/tmp/quanta-l1-green.diz44g/dispatcher-final-4.before.json",
+  "classification": "UNCLASSIFIED: inspect execution count, outcome, inputs and source drift before promoting evidence",
+  "command": [
+    "./scripts/cargow",
+    "test",
+    "--locked",
+    "-j",
+    "2",
+    "-p",
+    "quanta-index-search-plane",
+    "--lib",
+    "--message-format=json",
+    "l1_"
+  ],
+  "ended_unix": 1790458052.604782,
+  "executed_result_lines": [
+    "running 13 tests",
+    "test result: FAILED. 12 passed; 1 failed; 0 ignored; 0 measured; 445 filtered out; finished in 0.22s"
+  ],
+  "exit_code": 101,
+  "head_changed": false,
+  "log": "/tmp/quanta-l1-green.diz44g/dispatcher-final-4.log",
+  "log_sha256": "668e329f1b49a7cccdd7b941c90f840880b1ffdd52f83b64712ab7d332f01833",
+  "source_changed": [],
+  "started_unix": 1790458050.8730738
+}

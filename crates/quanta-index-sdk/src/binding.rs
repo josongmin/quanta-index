@@ -1285,7 +1285,7 @@ pub(crate) struct IngestCallBinding {
     commitment: Option<(ManifestGeneration, String)>,
     repo_map_v2: Option<RepoMapPublishBundleRequestV2>,
     /// Identity only: retaining the batch would clone all corpus source text.
-    search_corpus: Option<(quanta_index_contract::GenerationPin, String, bool)>,
+    search_corpus: Option<(quanta_index_contract::SourcePublicationBinding, bool)>,
 }
 
 impl IngestCallBinding {
@@ -1293,10 +1293,9 @@ impl IngestCallBinding {
     /// over the closed request enum.
     pub(crate) fn from_request(request: &SearchPlaneIngestIpcRequest) -> Self {
         let (expected, commitment) = match request {
-            SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch) => (
-                ExpectedIngestResponseV1::SearchCorpusReceipt,
-                Some((batch.generation, batch.batch_digest.clone())),
-            ),
+            SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(_) => {
+                (ExpectedIngestResponseV1::SearchCorpusReceipt, None)
+            }
             SearchPlaneIngestIpcRequest::PublishHistoryBatch(batch) => (
                 ExpectedIngestResponseV1::HistoryReceipt,
                 Some((batch.generation, batch.batch_digest.clone())),
@@ -1361,12 +1360,7 @@ impl IngestCallBinding {
             repo_map_v2,
             search_corpus: match request {
                 SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch) => Some((
-                    quanta_index_contract::GenerationPin::new(
-                        batch.repo_id.clone(),
-                        batch.revision_id.clone(),
-                        batch.generation,
-                    ),
-                    batch.batch_digest.clone(),
+                    quanta_index_contract::SourcePublicationBinding::for_batch(batch),
                     batch.seal,
                 )),
                 SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(_)
@@ -1392,11 +1386,17 @@ impl IngestCallBinding {
         if let SearchPlaneIngestIpcResponse::SearchCorpusReceipt(outcome) = response
             && let Some(observation) = &outcome.observation
         {
-            let (pin, digest, sealed) = self.search_corpus.as_ref().ok_or_else(|| {
+            let (requested, sealed) = self.search_corpus.as_ref().ok_or_else(|| {
                 SdkError::Protocol("unexpected search corpus observation".to_string())
             })?;
             observation
-                .validate_identity(request_id, pin, digest, *sealed, &outcome.receipt)
+                .validate_identity(
+                    request_id,
+                    requested,
+                    *sealed,
+                    &outcome.publication,
+                    &outcome.receipt,
+                )
                 .map_err(SdkError::Protocol)?;
         }
         Ok(())
@@ -1460,6 +1460,23 @@ pub(crate) fn bind_ingest_response(
             binding.expected.kind(),
             actual_kind,
         ));
+    }
+    if let SearchPlaneIngestIpcResponse::SearchCorpusReceipt(outcome) = response {
+        let (requested, sealed) = binding
+            .search_corpus
+            .as_ref()
+            .ok_or_else(|| SdkError::Protocol("missing search corpus request binding".into()))?;
+        outcome
+            .publication
+            .validate_receipt(requested, *sealed, &outcome.receipt)
+            .map_err(|_| {
+                binding_error(
+                    route,
+                    ResponseBindingAxis::BatchCommitment,
+                    "the requested source event and its original publication",
+                    "an inconsistent source publication receipt",
+                )
+            })?;
     }
     if let (Some((generation, digest)), Some(receipt)) = (&binding.commitment, receipt)
         && (&receipt.generation != generation || &receipt.batch_digest != digest)

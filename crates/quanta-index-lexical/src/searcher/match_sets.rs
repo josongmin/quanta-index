@@ -281,7 +281,7 @@ pub(crate) fn selected_witnesses<'a>(
     regex_executor: &dyn Fn(&str) -> Result<&'a RegexExecutor, CoreError>,
     predicate_truth: &dyn Fn(&LqLeaf) -> Result<bool, CoreError>,
 ) -> PreviewResult<(bool, bool, Vec<PositiveWitness>)> {
-    let matcher = WitnessMatcher {
+    let evaluator = WitnessMatcher {
         context,
         source,
         nfc,
@@ -295,24 +295,24 @@ pub(crate) fn selected_witnesses<'a>(
     let mut witnesses = Vec::new();
     let include_path = TantivySearcher::enables_path_term_surface(context.expr, context.options);
     let (mut matched, path_match) =
-        matcher.evaluate(context.expr, include_path, 0, &mut witnesses)?;
+        evaluator.evaluate(context.expr, include_path, 0, &mut witnesses)?;
     if matched {
         for filter in context.filters {
-            if let quanta_index_contract::LqFilter::Content { leaf } = filter {
-                if !matcher.leaf(leaf, false, &mut witnesses)?.0 {
-                    matched = false;
-                    witnesses.clear();
-                    break;
-                }
+            if let quanta_index_contract::LqFilter::Content { leaf } = filter
+                && !evaluator.leaf(leaf, false, &mut witnesses)?.0
+            {
+                matched = false;
+                witnesses.clear();
+                break;
             }
         }
     }
-    if matched && matcher.overflow.get() {
+    if matched && evaluator.overflow.get() {
         return Err(PreviewStop::Unavailable(
             PreviewUnavailableReason::WorkBudget,
         ));
     }
-    if matched && matcher.unsupported.get() {
+    if matched && evaluator.unsupported.get() {
         return Err(PreviewStop::Unavailable(
             PreviewUnavailableReason::UnsupportedRange,
         ));

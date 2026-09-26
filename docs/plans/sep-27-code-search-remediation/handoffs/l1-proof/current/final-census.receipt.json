@@ -1,0 +1,47 @@
+[
+  {
+    "command": [
+      "rg",
+      "-n",
+      "\\.(search_all|search_symbols_all|search_all_constrained)\\(",
+      "crates",
+      "benchmarks",
+      "--glob",
+      "*.rs",
+      "--glob",
+      "!**/tests/**"
+    ],
+    "exit_code": 0,
+    "path": "/tmp/quanta-l1-green.diz44g/final-census-fixed-0.log",
+    "sha256": "55ad58f6816fdfc000fef6222c47e38d924e93c4922e00943ad2b9180ae6d963"
+  },
+  {
+    "command": [
+      "rg",
+      "-n",
+      "LexicalIndexOpenPort",
+      ".",
+      "--glob",
+      "*.rs"
+    ],
+    "exit_code": 0,
+    "path": "/tmp/quanta-l1-green.diz44g/final-census-fixed-1.log",
+    "sha256": "4209b0c24257a15b16cd45e96ef5591d483c33865fe581ea460487ee3be44d86"
+  },
+  {
+    "command": [
+      "rg",
+      "-n",
+      "\\b(search_all|search_symbols_all|search_all_constrained)\\b",
+      "crates",
+      "benchmarks",
+      "--glob",
+      "*.rs",
+      "--glob",
+      "!**/tests/**"
+    ],
+    "exit_code": 0,
+    "path": "/tmp/quanta-l1-green.diz44g/final-census-fixed-2.log",
+    "sha256": "0e55c23a3d426ad8b9f349b9ca212d578485fc02ba7fcd530651d3be426c31a0"
+  }
+]

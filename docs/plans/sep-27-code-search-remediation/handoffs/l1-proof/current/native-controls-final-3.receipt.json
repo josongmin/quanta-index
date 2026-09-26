@@ -1,0 +1,342 @@
+{
+  "after": "/tmp/quanta-l1-green.diz44g/native-controls-final-3.after.json",
+  "artifacts": [
+    {
+      "features": [],
+      "fresh": false,
+      "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical#0.1.0",
+      "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-integration-lane/debug/deps/regex_literal_alternation-97c4a13cbd78c5c0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 1,
+        "opt_level": "0",
+        "overflow_checks": true,
+        "test": true
+      },
+      "sha256": "759830bbf6fff0f0c40fff7c7f973ed6d77db7bc4f696e24152be4d0c6f39644",
+      "target": {
+        "crate_types": [
+          "bin"
+        ],
+        "doc": false,
+        "doctest": false,
+        "edition": "2024",
+        "kind": [
+          "test"
+        ],
+        "name": "regex_literal_alternation",
+        "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical/tests/regex_literal_alternation.rs",
+        "test": true
+      }
+    },
+    {
+      "features": [],
+      "fresh": false,
+      "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical#0.1.0",
+      "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-integration-lane/debug/deps/regex_cache_bounds-c05c4e1299df2c63",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 1,
+        "opt_level": "0",
+        "overflow_checks": true,
+        "test": true
+      },
+      "sha256": "62bb5dac8a1688e77c1fccaf89666c47133cc76d0fbc3e42eddf33d84ba87001",
+      "target": {
+        "crate_types": [
+          "bin"
+        ],
+        "doc": false,
+        "doctest": false,
+        "edition": "2024",
+        "kind": [
+          "test"
+        ],
+        "name": "regex_cache_bounds",
+        "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical/tests/regex_cache_bounds.rs",
+        "test": true
+      }
+    },
+    {
+      "features": [],
+      "fresh": true,
+      "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical#0.1.0",
+      "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-integration-lane/debug/dump_predicate_capabilities",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 1,
+        "opt_level": "0",
+        "overflow_checks": true,
+        "test": false
+      },
+      "sha256": "18534c1a74374e62e3a0c22b59565b2e640c259a0b1a2787fc5e6730a3269528",
+      "target": {
+        "crate_types": [
+          "bin"
+        ],
+        "doc": true,
+        "doctest": false,
+        "edition": "2024",
+        "kind": [
+          "bin"
+        ],
+        "name": "dump_predicate_capabilities",
+        "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical/src/bin/dump_predicate_capabilities.rs",
+        "test": true
+      }
+    },
+    {
+      "features": [],
+      "fresh": false,
+      "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical#0.1.0",
+      "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-integration-lane/debug/deps/execution_budget-252b634f19c79129",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 1,
+        "opt_level": "0",
+        "overflow_checks": true,
+        "test": true
+      },
+      "sha256": "0328c54d8436fdba59744e16a12bcb064e8630f230d809c11d440ca62cf3e850",
+      "target": {
+        "crate_types": [
+          "bin"
+        ],
+        "doc": false,
+        "doctest": false,
+        "edition": "2024",
+        "kind": [
+          "test"
+        ],
+        "name": "execution_budget",
+        "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical/tests/execution_budget.rs",
+        "test": true
+      }
+    },
+    {
+      "features": [],
+      "fresh": false,
+      "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical#0.1.0",
+      "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-integration-lane/debug/deps/tantivy_smoke-454192b624e6c8e9",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 1,
+        "opt_level": "0",
+        "overflow_checks": true,
+        "test": true
+      },
+      "sha256": "898065f2b796f35449d99bea6038d8a58acec8068320cb976ee27556f6e8b4d7",
+      "target": {
+        "crate_types": [
+          "bin"
+        ],
+        "doc": false,
+        "doctest": false,
+        "edition": "2024",
+        "kind": [
+          "test"
+        ],
+        "name": "tantivy_smoke",
+        "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical/tests/tantivy_smoke.rs",
+        "test": true
+      }
+    },
+    {
+      "features": [],
+      "fresh": false,
+      "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical#0.1.0",
+      "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-integration-lane/debug/deps/ranked_pages-254fc1e83b315f33",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 1,
+        "opt_level": "0",
+        "overflow_checks": true,
+        "test": true
+      },
+      "sha256": "1f0f162437ad9bc78f7cc7f811688158c37f37bac795934a11bbae3a30350799",
+      "target": {
+        "crate_types": [
+          "bin"
+        ],
+        "doc": false,
+        "doctest": false,
+        "edition": "2024",
+        "kind": [
+          "test"
+        ],
+        "name": "ranked_pages",
+        "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical/tests/ranked_pages.rs",
+        "test": true
+      }
+    },
+    {
+      "features": [],
+      "fresh": false,
+      "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical#0.1.0",
+      "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-integration-lane/debug/deps/unicode_normalization_goldens-76072585ad2c09ec",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 1,
+        "opt_level": "0",
+        "overflow_checks": true,
+        "test": true
+      },
+      "sha256": "7cda93164e1c79a498ca2f974c7b2b92daaa09ce8ad751ac640de276171402f8",
+      "target": {
+        "crate_types": [
+          "bin"
+        ],
+        "doc": false,
+        "doctest": false,
+        "edition": "2024",
+        "kind": [
+          "test"
+        ],
+        "name": "unicode_normalization_goldens",
+        "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical/tests/unicode_normalization_goldens.rs",
+        "test": true
+      }
+    },
+    {
+      "features": [],
+      "fresh": false,
+      "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical#0.1.0",
+      "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-integration-lane/debug/deps/cancellation_inside_search-5bba31e81036dbd4",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 1,
+        "opt_level": "0",
+        "overflow_checks": true,
+        "test": true
+      },
+      "sha256": "9e84080f5fd984bb5bd4e7401a5fca06be6b2d5bf17a33ed2ca676729221aa45",
+      "target": {
+        "crate_types": [
+          "bin"
+        ],
+        "doc": false,
+        "doctest": false,
+        "edition": "2024",
+        "kind": [
+          "test"
+        ],
+        "name": "cancellation_inside_search",
+        "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical/tests/cancellation_inside_search.rs",
+        "test": true
+      }
+    },
+    {
+      "features": [],
+      "fresh": false,
+      "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical#0.1.0",
+      "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-integration-lane/debug/deps/explain_candidate-986dcc25c9696130",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 1,
+        "opt_level": "0",
+        "overflow_checks": true,
+        "test": true
+      },
+      "sha256": "658f321ed948e705c77535289f5d0558e6f67ca2e0b9d84eefc04f8c81110a40",
+      "target": {
+        "crate_types": [
+          "bin"
+        ],
+        "doc": false,
+        "doctest": false,
+        "edition": "2024",
+        "kind": [
+          "test"
+        ],
+        "name": "explain_candidate",
+        "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical/tests/explain_candidate.rs",
+        "test": true
+      }
+    },
+    {
+      "features": [],
+      "fresh": false,
+      "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical#0.1.0",
+      "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-integration-lane/debug/deps/planner_authority-7c4cfacfc63f310a",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 1,
+        "opt_level": "0",
+        "overflow_checks": true,
+        "test": true
+      },
+      "sha256": "cf0c0fee5c0d83742fb60714c01852ff470521230d3b409f4fb1b32330e88f6e",
+      "target": {
+        "crate_types": [
+          "bin"
+        ],
+        "doc": false,
+        "doctest": false,
+        "edition": "2024",
+        "kind": [
+          "test"
+        ],
+        "name": "planner_authority",
+        "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical/tests/planner_authority.rs",
+        "test": true
+      }
+    }
+  ],
+  "before": "/tmp/quanta-l1-green.diz44g/native-controls-final-3.before.json",
+  "classification": "UNCLASSIFIED: inspect execution count, outcome, inputs and source drift before promoting evidence",
+  "command": [
+    "./scripts/cargow",
+    "test",
+    "--locked",
+    "-j",
+    "2",
+    "-p",
+    "quanta-index-lexical",
+    "--message-format=json",
+    "--test",
+    "tantivy_smoke",
+    "--test",
+    "execution_budget",
+    "--test",
+    "ranked_pages",
+    "--test",
+    "planner_authority",
+    "--test",
+    "explain_candidate",
+    "--test",
+    "regex_literal_alternation",
+    "--test",
+    "regex_cache_bounds",
+    "--test",
+    "unicode_normalization_goldens",
+    "--test",
+    "cancellation_inside_search"
+  ],
+  "ended_unix": 1790458128.6893592,
+  "executed_result_lines": [
+    "running 3 tests",
+    "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.74s",
+    "running 4 tests",
+    "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.14s",
+    "running 4 tests",
+    "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.85s",
+    "running 7 tests",
+    "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.07s",
+    "running 5 tests",
+    "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.89s",
+    "running 4 tests",
+    "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.04s",
+    "running 2 tests",
+    "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.39s",
+    "running 37 tests",
+    "test result: ok. 37 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.81s",
+    "running 8 tests",
+    "test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.54s"
+  ],
+  "exit_code": 0,
+  "head_changed": false,
+  "log": "/tmp/quanta-l1-green.diz44g/native-controls-final-3.log",
+  "log_sha256": "c79a019b3974d25a2a687521aa4e9bbec6736c0a9ce64a4eb0abb01767751b18",
+  "source_changed": [],
+  "started_unix": 1790458096.522476
+}

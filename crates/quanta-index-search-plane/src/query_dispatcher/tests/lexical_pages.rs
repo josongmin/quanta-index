@@ -282,6 +282,7 @@ fn a_large_later_owner_projection_cannot_refuse_a_fitting_paired_prefix() -> Tes
         .iter()
         .enumerate()
         .map(|(index, candidate)| FileOwnerProjectionRow {
+            source_repo_id: candidate.source_repo_id.clone(),
             candidate_id: candidate.candidate_id.clone(),
             repo_id: candidate.repo_id.clone(),
             revision_id: candidate.revision_id.clone(),
@@ -322,9 +323,28 @@ fn a_large_later_owner_projection_cannot_refuse_a_fitting_paired_prefix() -> Tes
 
 #[test]
 fn a_fitting_first_row_is_not_refused_by_cursor_reservation() -> TestResult {
-    // The lexical explanation now carries four bounded server stage records.
-    let budget = ResponsePayloadBudget::new(2_900)?;
-    let dispatcher = stub_dispatcher(rows(2, 1_000))?.with_response_budget(budget);
+    let dispatcher = stub_dispatcher(rows(2, 1_000))?;
+    // Size an independently requested one-row continued page with the current
+    // wire shape and signed cursor. Timing values are excluded from pagination
+    // authority and replaced by the contract's fixed observation reserve.
+    let mut one = text(dispatcher.dispatch(request(1, None), &RequestBudgetV1::unbounded()))?;
+    if one.results.len() != 1 || one.next_cursor.is_none() {
+        return Err("the reference page must contain one row and a real cursor".into());
+    }
+    one.explanation.stage_timings = None;
+    let limit = quanta_index_ipc::cbor_payload_len(&one)?
+        .checked_add(crate::query_dispatcher::response_budget::LEXICAL_STAGE_RESERVE_BYTES)
+        .ok_or("reference response size overflow")?;
+    let budget = ResponsePayloadBudget::new(limit)?;
+    let mut whole = text(dispatcher.dispatch(request(2, None), &RequestBudgetV1::unbounded()))?;
+    whole.explanation.stage_timings = None;
+    let whole_bytes = quanta_index_ipc::cbor_payload_len(&whole)?
+        .checked_add(crate::query_dispatcher::response_budget::LEXICAL_STAGE_RESERVE_BYTES)
+        .ok_or("whole response size overflow")?;
+    if whole.results.len() != 2 || whole_bytes <= limit {
+        return Err("the uncut two-row reference must exceed the one-row budget".into());
+    }
+    let dispatcher = dispatcher.with_response_budget(budget);
     let first = text(dispatcher.dispatch(request(2, None), &RequestBudgetV1::unbounded()))?;
     if first.results.len() != 1 || first.window.has_more() != Some(true) {
         return Err(format!("the first fitting row was not continued: {first:?}").into());

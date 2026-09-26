@@ -277,6 +277,9 @@ fn symbol_dispatch_admits_only_typed_exact_path_as_constraint_only_authority_v1(
 #[test]
 fn lexical_dispatch_stabilizes_tied_text_results() -> TestResult {
     let make_candidate = |id: &str, path: &str, start_line: u32, score: f32| LexicalCandidate {
+        source_repo_id: RepoId::new("repo-map-ipc").expect("fixture source repo"),
+        source: None,
+        preview: None,
         candidate_id: id.to_string(),
         repo_id: RepoId::new("repo-map-ipc").expect("static fixture ID satisfies canonical policy"),
         revision_id: RevisionId::new("rev-map-ipc")

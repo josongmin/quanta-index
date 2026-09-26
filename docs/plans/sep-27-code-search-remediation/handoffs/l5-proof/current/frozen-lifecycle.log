@@ -1,0 +1,84 @@
+resource admission: waiting lock=/Users/songmin/Library/Caches/quanta-index/resource-admission/build-test.lock
+resource admission: admitted lock=/Users/songmin/Library/Caches/quanta-index/resource-admission/build-test.lock
+   Compiling quanta-index-lq-norm v0.1.0 (/Users/songmin/.codex/worktrees/l5-final-proof/quanta-index/crates/quanta-index-lq-norm)
+   Compiling quanta-index-contract-base v0.1.0 (/Users/songmin/.codex/worktrees/l5-final-proof/quanta-index/crates/quanta-index-contract-base)
+   Compiling quanta-index-lq-trigram v0.1.0 (/Users/songmin/.codex/worktrees/l5-final-proof/quanta-index/crates/quanta-index-lq-trigram)
+   Compiling quanta-index-lq-obs v0.1.0 (/Users/songmin/.codex/worktrees/l5-final-proof/quanta-index/crates/quanta-index-lq-obs)
+   Compiling quanta-index-lq-regex v0.1.0 (/Users/songmin/.codex/worktrees/l5-final-proof/quanta-index/crates/quanta-index-lq-regex)
+   Compiling quanta-index-contract v0.1.0 (/Users/songmin/.codex/worktrees/l5-final-proof/quanta-index/crates/quanta-index-contract)
+   Compiling quanta-index-core v0.1.0 (/Users/songmin/.codex/worktrees/l5-final-proof/quanta-index/crates/quanta-index-core)
+   Compiling quanta-index-lq-bridge v0.1.0 (/Users/songmin/.codex/worktrees/l5-final-proof/quanta-index/crates/quanta-index-lq-bridge)
+   Compiling quanta-index-ipc v0.1.0 (/Users/songmin/.codex/worktrees/l5-final-proof/quanta-index/crates/quanta-index-ipc)
+   Compiling quanta-index-search-plane v0.1.0 (/Users/songmin/.codex/worktrees/l5-final-proof/quanta-index/crates/quanta-index-search-plane)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 35.10s
+     Running unittests src/lib.rs (/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-daemon-lane/debug/deps/quanta_index_search_plane-a62bf8ae66a60dab)
+
+running 64 tests
+test ingest_dispatcher::tests::search_corpus::reclaim_sweeps_orphans_and_defers_pinned_generations ... ok
+test ingest_dispatcher::tests::search_corpus::a_refusal_met_by_the_reclaim_pass_fails_it_closed ... ok
+test ingest_dispatcher::tests::search_corpus::every_pass_first_finishes_what_interrupted_reclaims_left ... ok
+test ingest_dispatcher::tests::search_corpus::a_reclaim_pass_step_failing_after_the_seal_is_durable_is_counted_and_redone ... ok
+test ingest_dispatcher::tests::search_corpus::search_corpus_receipt_exactly_acknowledges_semantic_replace_and_tombstone_mutations_v1 ... ok
+test ingest_dispatcher::tests::search_corpus::non_seal_batch_cannot_mutate_an_already_sealed_generation ... ok
+test readiness::tests::activation::prepared_search_corpus_generation_rejects_single_track_and_mixed_identity ... ok
+test ingest_dispatcher::tests::search_corpus::a_delta_over_a_corrupt_base_is_refused_with_the_repair ... ok
+test readiness::tests::search_corpus_history::durable_pair_names_are_bounded_and_length_delimited ... ok
+test ingest_dispatcher::tests::search_corpus::a_retained_half_pair_loses_its_records ... ok
+test ingest_dispatcher::tests::search_corpus::incomplete_lexical_exact_semantic_retry_discards_and_rebuilds_only_lexical ... ok
+test ingest_dispatcher::tests::derivation::search_corpus_derivation_fails_closed_on_embedder_count_mismatch ... ok
+test ingest_dispatcher::tests::derivation::search_corpus_derivation_fails_closed_on_embedder_dim_mismatch ... ok
+test ingest_dispatcher::tests::search_corpus::durable_retention_error_fences_same_process_rollback_authority ... ok
+test ingest_dispatcher::tests::search_corpus::jointly_incomplete_tracks_keep_staged_data_for_normal_seal ... ok
+test ingest_dispatcher::tests::search_corpus::exact_lexical_missing_semantic_retry_builds_only_missing_track ... ok
+test ingest_dispatcher::tests::search_corpus::a_sealed_but_corrupt_track_is_rebuilt_by_a_replace_seal_and_refused_for_a_delta ... ok
+test ingest_dispatcher::tests::search_corpus::malformed_or_baseless_batches_change_zero_bytes ... ok
+test ingest_dispatcher::tests::search_corpus::sealed_exact_retry_repairs_authority_without_rebuilding_tracks ... ok
+test readiness::tests::activation::prepared_search_corpus_activation_is_durable_before_reopen_and_rejects_stale_head ... ok
+test ingest_dispatcher::tests::search_corpus::a_batch_outside_the_resource_envelope_changes_zero_bytes ... ok
+test ingest_dispatcher::tests::search_corpus::search_corpus_materializer_rejects_mismatched_semantic_receipt_before_authority_admission ... ok
+test ingest_dispatcher::tests::search_corpus::search_corpus_materializer_derives_search_owned_semantic_batch ... ok
+test readiness::tests::search_corpus_history::restore_fails_closed_on_foreign_pair_entry ... ok
+test readiness::tests::search_corpus_history::retention_missing_active_history_preserves_activation_and_empty_history_v1 ... ok
+test readiness::tests::search_corpus_history::restore_refuses_cross_pair_gc_when_state_root_pair_cap_shrinks ... ok
+test readiness::tests::search_corpus_history::restart_repairs_one_over_limit_before_restoring_history ... ok
+test readiness::tests::search_corpus_history::retention_active_digest_mismatch_preserves_activation_and_history_v1 ... ok
+test readiness::tests::search_corpus_history::retention_required_set_exhaustion_preserves_activation_and_history_v1 ... ok
+test readiness::tests::search_corpus_history::unreconciled_retention_receipt_fails_before_ledger_pruning ... ok
+test search_corpus_lifecycle::tests::a_refusal_says_what_the_re_proof_did ... ok
+test search_corpus_lifecycle::tests::activation_and_rollback_hand_a_content_defect_to_the_owning_track ... ok
+test readiness::tests::search_corpus_history::sealed_search_corpus_history_rejects_write_before_predecessor_window_overflows ... ok
+test readiness::tests::search_corpus_history::sealed_search_corpus_history_enforces_byte_cap_without_losing_predecessor ... ok
+test readiness::tests::search_corpus_history::search_corpus_authority_refuses_symlink_records ... ok
+test search_corpus_lifecycle::tests::pair_guard_rejects_a_different_pair_even_on_the_same_stripe_v1 ... ok
+test search_corpus_lifecycle::tests::restart_and_refusals_that_are_no_content_verdict_record_nothing ... ok
+test readiness::tests::search_corpus_history::sealed_search_corpus_retry_revalidates_parent_durability ... ok
+test readiness::tests::search_corpus_history::startup_rejects_foreign_staging_entry_v1 ... ok
+test readiness::tests::search_corpus_history::sealed_search_corpus_retry_repairs_post_rename_parent_sync_failure ... ok
+test readiness::tests::search_corpus_history::startup_reconciles_owned_staging_and_empty_pair_v1 ... ok
+test readiness::tests::search_corpus_history::sealed_search_corpus_retry_repairs_staging_parent_sync_failure_v1 ... ok
+test search_corpus_retention::tests::retention_plan_applies_count_and_byte_caps ... ok
+test search_corpus_retention::tests::retention_plan_measures_the_retained_set_not_a_sum ... ok
+test search_corpus_retention::tests::retention_plan_never_silently_reaps_only_newest_generation ... ok
+test search_corpus_retention::tests::retention_plan_pins_rolled_back_active_generation_v1 ... ok
+test search_corpus_retention::tests::retention_plan_rejects_byte_cap_that_cannot_preserve_predecessor ... ok
+test search_corpus_retention::tests::retention_plan_rejects_candidate_outside_window ... ok
+test search_corpus_retention::tests::retention_policy_rejects_less_than_predecessor_window ... ok
+test readiness::tests::search_corpus_history::sealed_search_corpus_history_reaps_max_plus_one_and_preserves_predecessor ... ok
+test readiness::tests::search_corpus_history::post_delete_fsync_failure_fences_rollback_and_retry_reconciles_authoritative_set ... ok
+test readiness::tests::search_corpus_history::startup_rejects_non_hex_pair_directory_v1 ... ok
+test readiness::tests::search_corpus_history::state_root_revision_pair_cap_rejects_growth_without_cross_pair_deletion ... ok
+test readiness::tests::search_corpus_history::retention_preserves_rolled_back_active_generation_before_next_activation_v1 ... ok
+test readiness::tests::search_corpus_history::state_root_total_byte_cap_rejects_growth_before_write ... ok
+test search_corpus_lifecycle::tests::lifecycle_owner_derives_both_authority_roots_from_one_state_root_v1 ... ok
+test search_corpus_lifecycle::tests::lifecycle_owner_refuses_symlink_activation_authority_root_v1 ... ok
+test readiness::tests::search_corpus_history::concurrent_history_writes_serialize_gc_and_remain_bounded ... ok
+test search_corpus_lifecycle::tests::lifecycle_owner_rejects_a_different_state_root_identity_v1 ... ok
+test search_corpus_lifecycle::tests::restart_rehydrate_accepts_complete_active_composite_v1 ... ok
+test search_corpus_lifecycle::tests::restart_rehydrate_refuses_an_active_composite_whose_roots_differ_v1 ... ok
+test search_corpus_lifecycle::tests::restart_rehydrate_rejects_missing_active_lexical_generation_v1 ... ok
+test search_corpus_lifecycle::tests::restart_rehydrate_rejects_missing_active_semantic_generation_v1 ... ok
+test search_corpus_lifecycle::tests::separate_state_roots_rehydrate_same_repo_without_cross_root_aliasing_v1 ... ok
+
+test result: ok. 64 passed; 0 failed; 0 ignored; 0 measured; 397 filtered out; finished in 3.80s
+
+resource admission: released lock=/Users/songmin/Library/Caches/quanta-index/resource-admission/build-test.lock

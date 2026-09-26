@@ -209,6 +209,24 @@ not silently switch to native. Chunk-owned `repo.has.content` and
 symbol text authority is a distinct index-format and lifecycle change, not a
 ranker adjustment.
 
+Every run performs a source-bound symbol preflight before daemon publication.
+The default `symbol_coverage_policy: "require-complete"` refuses any unsupported
+or malformed file. Explicit `"allow-incomplete"` preserves those files for text
+search with their incomplete symbol coverage; broad symbol queries refuse with
+`SYMBOL_COVERAGE_INCOMPLETE`, while complete narrower scopes remain queryable.
+Admitted UTF-8 with no recognized language mapping, including `.txt` and
+extensionless files, uses the `text` language with Unsupported symbol coverage.
+Timeouts, cancellation, resource exhaustion and producer defects are fatal under
+both policies. Standalone `preflight` writes the full census even when admission
+is refused and does not start a daemon.
+
+Phase metrics name a sibling `symbol-preflight.json` and bind its byte digest,
+grammar source, producer policy and all admitted file hashes. The pair driver
+freezes the selected policy in the protocol lock and archives every preflight
+in `artifacts.symbol_preflights`. Replay requires the original artifact and
+current source commitments; a summary count or stale receipt is insufficient.
+Incomplete text admission does not claim complete symbol coverage.
+
 Each system consumes a projected pack (same tasks/universe/commit, narrowed
 routes, rebound suite commitment); the merge re-derives and re-validates
 every projection with this evaluator before scoring. Records, corpora,

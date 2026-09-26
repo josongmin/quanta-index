@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from tools.benchmark.evidence import RawFile, write_raw_file
 from tools.benchmark.retrieval import portable_proof
 from tools.ci.tests import test_portable_proof as producer_fixtures
 from tools.ci.tests.test_tool_custody import custody
@@ -81,6 +82,8 @@ def test_changed_reuse_input_is_refused_before_child_launch(tmp_path, monkeypatc
     build, metadata = b"original build", b"original metadata"
     (tmp_path / "rust-build.stdout").write_bytes(build)
     (tmp_path / "metadata.stdout").write_bytes(metadata)
+    build = RawFile.capture(tmp_path / "rust-build.stdout")
+    metadata = RawFile.capture(tmp_path / "metadata.stdout")
     (tmp_path / name).write_bytes(b"foreign build selection")
     monkeypatch.setattr(portable_proof, "_run", lambda *_a, **_k: pytest.fail("child launched"))
     with pytest.raises(ValueError, match="nextest reuse input"):
@@ -108,7 +111,7 @@ def test_live_tool_environment_reaches_real_child(tmp_path):
         )
     finally:
         portable_proof._ACTIVE_CUSTODY.reset(token)
-    actual = json.loads(raw)
+    actual = json.loads(raw.read_control())
     assert actual["PATH"].split(os.pathsep)[0] == str(guard.bin_dir)
     assert actual["RUSTC"] == guard.tools()["rustc"]["realpath"]
     assert actual["RUSTC_WRAPPER"] == actual["RUSTC_WORKSPACE_WRAPPER"] == ""
@@ -281,18 +284,27 @@ def test_command_digests_bind_execute_bytes_instead_of_reopened_paths(tmp_path, 
     import hashlib
 
     stdout, stderr = b"actual executed output", b"actual executed errors"
-    monkeypatch.setattr(
-        portable_proof, "execute", lambda *_a, **_k: (stdout, stderr, {"exit_code": 0})
-    )
-    write = portable_proof._write
+    def execute(*_args, **kwargs):
+        return (
+            write_raw_file(kwargs["log_dir"] / "stdout", [stdout]),
+            write_raw_file(kwargs["log_dir"] / "stderr", [stderr]),
+            {"exit_code": 0},
+        )
 
-    def substitute(path, raw):
-        write(path, raw)
+    monkeypatch.setattr(portable_proof, "execute", execute)
+    copy = RawFile.copy_to
+
+    def substitute(self, path):
+        result = copy(self, path)
         path.write_bytes(b"replaced after persistence")
+        return result
 
-    monkeypatch.setattr(portable_proof, "_write", substitute)
+    monkeypatch.setattr(RawFile, "copy_to", substitute)
     commands = []
-    assert portable_proof._run("observed", [sys.executable, "-V"], tmp_path, commands) == stdout
+    retained = portable_proof._run("observed", [sys.executable, "-V"], tmp_path, commands)
+    assert retained.sha256 == "sha256:" + hashlib.sha256(stdout).hexdigest()
+    with pytest.raises(ValueError, match="commitment"):
+        retained.read_control()
     assert commands[0]["stdout_sha256"] == hashlib.sha256(stdout).hexdigest()
     assert commands[0]["stderr_sha256"] == hashlib.sha256(stderr).hexdigest()
     assert (

@@ -1,0 +1,310 @@
+{
+  "schema": "l5-completion-v1",
+  "captured_utc": "2026-09-26T22:09:03.731318+00:00",
+  "head": "98601a66d8cab9c86232b3e62ce490c8b43b71b6",
+  "status": "VERIFIED",
+  "scope": "L5 producer/parser remediation plus shared consumer, proof selector, archival, source closure and actual daemon capability integration",
+  "open_confirmed_p0_p1_p2": [],
+  "snapshot": "/Users/songmin/.codex/worktrees/l5-final-proof/quanta-index",
+  "overlay_sha256": "2c16e9dbafa03a0cdd3485d059a6ab97b562c8c73e3716dae880b13bac6a0eb1",
+  "source_identity": {
+    "workspace": "/Users/songmin/.codex/worktrees/l5-final-proof/quanta-index",
+    "source_sha256": {
+      "Cargo.toml": "a00e8dbd972a051c9b70decbd2359bcca40b638d8eaaf04e9316762f85cac462",
+      "Cargo.lock": "05044065eae52f79a67378cfa995414c08f77e6910e30bd8bb36dae92ef362d5",
+      "Justfile": "1fbbdf9a2a0c3b9cbb7aee127f317792f3c9e1e5fa9b3e98c64655647edc160f",
+      "benchmarks/retrieval/build.rs": "cd50133d1589503ba622820173ad3f42c752c3174c9b16a01514fd2a3ae5e794",
+      "benchmarks/retrieval/proof-required-tests.json": "f5ae32042a238824cabee9b993b08ca3e6141498b0f864b259f3e5ca3f51d870",
+      "benchmarks/retrieval/src/batch.rs": "e353992a196380e40cfbf4b7a090b631227773446f61e3462c723b5f1b380ec6",
+      "benchmarks/retrieval/src/diagnostics.rs": "bbb7a480345eb7e85a5332069a6e6c7b03e58b406d4fb43710fe2e242b7314fd",
+      "benchmarks/retrieval/src/main.rs": "859512dcef22da87ee88f9d8c37be7d962b0e43ef8c18729fd1a61763e0161bb",
+      "benchmarks/retrieval/src/symbols.rs": "2a22948d64936a375c21d9465ac42aafd0214ab7758fad4e22e65a310daa083e",
+      "benchmarks/retrieval/src/symbols/preflight.rs": "ee5bb529381afe1f838d8d175c451708e59f6b1861ff87ba7d95b43a04366053",
+      "benchmarks/retrieval/tests/l5_parser_regressions.rs": "8fc19ba6758816bd9efecfd6e94a080e84c8f91bfa06b373d010ffe5a981587a",
+      "benchmarks/retrieval/tests/sdk_roundtrip.rs": "96558a0c48f55f23c99321d9ce2691d23c309dbd7154302632ff23f6b469a22c",
+      "tools/benchmark/retrieval/symbol_coverage.py": "f53e966660f62075860b894da503d9efb66a1378e503e3571e25576485885d2a",
+      "tools/benchmark/retrieval/run.py": "7a0242c7dd55b5daa6fab8b7fd69c361a9c5818203fb4c5f28b273c65bb207c5",
+      "tools/benchmark/retrieval/contract_proof.py": "5203fd47f37650fa591159fb00e606fa5dd21e9776c5e00fa6ff10e92430ea42",
+      "tools/benchmark/retrieval/portable_proof.py": "01693a18e3c67f8ceb03d44ca9cafa7f7705841f0eef1dd42b43dc761ebafc88",
+      "tools/benchmark/retrieval/query_timing_overhead.py": "24a140b0baba5333373064a5f0a930eaebd508e5fa810f54757a9fe64270baf2",
+      "tools/benchmark/retrieval/pair-spec.schema.json": "22d4e494ca049ec607b94b553356e45c3c8168f5be1d09c9ea5cbf48b4bded5d",
+      "tools/benchmark/retrieval/run-manifest.schema.json": "9e293cff233bd6d1030bb8e0ef6881d67df14a3838edcf2dcec8e4ce8bf2f535",
+      "tools/ci/source_closure.py": "e5c0b6baa6dc2d2596458563175552b3fc014e5b14ba7c833b6c4109f7dd7df6",
+      "tools/ci/tests/test_benchmark_source_closure.py": "4bbdaf6125562582112c37a2c3bdce492ca42956c6bef5ac13386b170487de3f",
+      "tools/ci/tests/test_retrieval_benchmark.py": "764db97cd719f8e85f14b71ad5858c9c57b67696fdaa29cf9cee3b98df1c7119"
+    },
+    "platform": "macOS-15.6-arm64-arm-64bit",
+    "machine": "arm64",
+    "rustc": "rustc 1.92.0 (ded5c06cf 2025-12-08)\nbinary: rustc\ncommit-hash: ded5c06cf21d2b93bffd5d884aa6e96934ee4234\ncommit-date: 2025-12-08\nhost: aarch64-apple-darwin\nrelease: 1.92.0\nLLVM version: 21.1.3\n",
+    "cargo": "cargo 1.92.0 (344c4567c 2025-10-21)\n",
+    "uv": "uv 0.11.8 (0e961dd9a 2026-04-27 aarch64-apple-darwin)\n"
+  },
+  "rails": {
+    "frozen-searchd-cached": {
+      "status": "VERIFIED",
+      "test_or_probe_count": null,
+      "command": [
+        "./scripts/cargow",
+        "--lane",
+        "test-daemon-lane",
+        "build",
+        "-p",
+        "quanta-index-searchd-runtime",
+        "--bin",
+        "quanta-index-searchd",
+        "--locked"
+      ],
+      "receipt": "frozen-searchd-cached.json",
+      "receipt_sha256": "c13c35da6af4e83bb64f7efa59ee28d505e0602c39f571efa7c07eda5e40535e",
+      "log": "frozen-searchd-cached.log",
+      "log_sha256": "8c5a60aa2c13ef29afa4ad4ab560fb5ccb7c15e481a229e32887da867314441e"
+    },
+    "frozen-rust": {
+      "status": "VERIFIED",
+      "test_or_probe_count": 132,
+      "command": [
+        "./scripts/cargow",
+        "--lane",
+        "test-daemon-lane",
+        "test",
+        "-p",
+        "quanta-index-retrieval-bench",
+        "--lib",
+        "--bins",
+        "--test",
+        "chunking_contract",
+        "--test",
+        "l5_parser_regressions",
+        "--all-features",
+        "--locked"
+      ],
+      "receipt": "frozen-rust.json",
+      "receipt_sha256": "b8fd145cd7002ecbf4456b12fd04c7c3c044043f6e9f03059f5a0f1ca5a8d6f4",
+      "log": "frozen-rust.log",
+      "log_sha256": "476201482f4bbb8d4f6ef9f5c004fc1cc71c1c85cb0bf22d0ce62410cc70a1d6"
+    },
+    "frozen-python": {
+      "status": "VERIFIED",
+      "test_or_probe_count": 469,
+      "command": [
+        "/Users/songmin/Documents/code-new/quanta-index/.venv/bin/python",
+        "-m",
+        "pytest",
+        "tools/ci/tests/test_retrieval_benchmark.py",
+        "tools/ci/tests/test_retrieval_contract_proof.py",
+        "tools/ci/tests/test_retrieval_sdk_proof.py",
+        "tools/ci/tests/test_portable_proof.py",
+        "tools/ci/tests/test_benchmark_source_closure.py",
+        "-q",
+        "--junitxml=/private/tmp/quanta-index-l5-completion/frozen-python.xml"
+      ],
+      "receipt": "frozen-python.json",
+      "receipt_sha256": "4887ccc65ae4825d0be4ef667baec192f249631a690aeede5578b0d64aa6fed4",
+      "log": "frozen-python.log",
+      "log_sha256": "2183838234ed8069b350bb64c80341e167444131c8ab1767ec8ac0cc45e7e33a"
+    },
+    "frozen-sdk": {
+      "status": "VERIFIED",
+      "test_or_probe_count": 20,
+      "command": [
+        "/Users/songmin/Documents/code-new/quanta-index/.venv/bin/python",
+        "/private/tmp/quanta-index-l5-completion/sdk_final.py"
+      ],
+      "receipt": "frozen-sdk.json",
+      "receipt_sha256": "5f4af55f2267e2e85641526265ea9f23c85aad27cff77e0bb608618cd510cdd7",
+      "log": "frozen-sdk.log",
+      "log_sha256": "897f7436957ce3fc56fcd81c9619dbdd03162136c99ba72471bcbbfa0d833b0a"
+    },
+    "frozen-lifecycle": {
+      "status": "VERIFIED",
+      "test_or_probe_count": 64,
+      "command": [
+        "./scripts/cargow",
+        "--lane",
+        "test-daemon-lane",
+        "test",
+        "-p",
+        "quanta-index-search-plane",
+        "--lib",
+        "--all-features",
+        "--locked",
+        "search_corpus"
+      ],
+      "receipt": "frozen-lifecycle.json",
+      "receipt_sha256": "1c8f26499e503488e1169d46e92b434352449c0263f4c0fe55de709261c0d085",
+      "log": "frozen-lifecycle.log",
+      "log_sha256": "fe1448f3150db65bedb6c60a8908e006829452554cd804eaf22a41b42d5660c4"
+    },
+    "frozen-vite": {
+      "status": "VERIFIED",
+      "test_or_probe_count": 6,
+      "command": [
+        "/Users/songmin/Documents/code-new/quanta-index/.venv/bin/python",
+        "/private/tmp/quanta-index-l5-completion/frozen_vite_runtime.py"
+      ],
+      "receipt": "frozen-vite.json",
+      "receipt_sha256": "4463c2b119d8f3bddd1d93335c30d730109753f8e075a3a9fcea4b1446046ce6",
+      "log": "frozen-vite.log",
+      "log_sha256": "c5e51dc0e58d11cc0abc6ff6a8378b5995ddb9dc723de2c3906570ebc74363f2"
+    },
+    "frozen-vite-strict": {
+      "status": "VERIFIED",
+      "test_or_probe_count": 1,
+      "command": [
+        "python3",
+        "/private/tmp/quanta-index-l5-completion/frozen_strict.py"
+      ],
+      "receipt": "frozen-vite-strict.json",
+      "receipt_sha256": "f709382a5eee43afa197f1b21858c13c76f8105a696b87fda11989c378af1739",
+      "log": "frozen-vite-strict.log",
+      "log_sha256": "9ec72b79ff8f066f9d4070afa8030f0d6cd941c727145f1fca2c93c81dd5e5fc"
+    }
+  },
+  "counts": {
+    "rust_owner": 132,
+    "sdk_process": 20,
+    "publication_lifecycle": 64,
+    "python": 469,
+    "vite_files": 256,
+    "vite_complete": 255,
+    "vite_parse_failed_intentionally": 1,
+    "vite_symbols": 2006,
+    "vite_route_probes": 6
+  },
+  "exclusions": {
+    "whole_repository_ci": "NOT_RUN",
+    "clean_commit_release_deployment": "NOT_RUN",
+    "external_producer_upgrade": "NOT_APPLICABLE",
+    "ranking_quality_or_performance": "NOT_APPLICABLE"
+  },
+  "fixed_findings": [
+    "preflight phase conservation",
+    "truthful symbol-only text admission",
+    "cross-file unit ID collision rejection",
+    "fatal failure precedence over recoverable gaps",
+    "canonical source path/hash/text/line validation",
+    "observable source-bound extraction policy limits",
+    "canonical output and state path alias rejection before publication",
+    "current metrics grammar/coverage schema and phase consumption",
+    "closed raw preflight artifact, corpus, profile and source-policy bindings",
+    "required selector and summary command agreement",
+    "local path patches under registry dependencies included in source closure",
+    "explicit incomplete profile retains plain and unclassified UTF-8 as text with Unsupported symbols"
+  ],
+  "evidence_files": {
+    ".gitignore": "aa28830acbe19a19e90baa7e85428e45db3dafa493fe7981d4467a371e3db757",
+    "consumer-overlay.json": "7a02202a4028ca2aa956fbd34079826abb91615458e394a5e9c9a2cd16ad6da7",
+    "current-consumer.json": "2ab05e68a9ec0be0a03085e4885788ba9a360b7d2a4beb88fc976932fa218636",
+    "current-consumer.log": "bc9b8d4a96c014a194f44a94d6cb2ab4e7b05db3654b6c47b56baa3d44400550",
+    "current-consumer.xml": "9383069dfd03c51d1872d9bf9279b89a7f15d9ac139f54900b06ab96a40dd613",
+    "current-replay-result.json": "9f9221e2cc40b6d53e92488243fdbbe8fc8b06602eea7945c2ad733eb9a9cfcb",
+    "current-replay.json": "805af32026baa3f6680ab158584c6fa53d005462f1fb0df100ee64b7bb5ac249",
+    "current-replay.log": "b40b67021aaa7e39f59d8df0fdf814f19b6aff17b54f34fa692a74a90ac26232",
+    "current_replay.py": "575ec437563655820fca858a277498a80e339f8d43b97dfe198bc50a1a6e231d",
+    "final-source-identity.json": "490460c013c02f689a990640af051d81235cb312ee4de30eedbfe6413ff93d73",
+    "frozen-lifecycle.json": "1c8f26499e503488e1169d46e92b434352449c0263f4c0fe55de709261c0d085",
+    "frozen-lifecycle.log": "fe1448f3150db65bedb6c60a8908e006829452554cd804eaf22a41b42d5660c4",
+    "frozen-overlay.json": "2c16e9dbafa03a0cdd3485d059a6ab97b562c8c73e3716dae880b13bac6a0eb1",
+    "frozen-python.json": "4887ccc65ae4825d0be4ef667baec192f249631a690aeede5578b0d64aa6fed4",
+    "frozen-python.log": "2183838234ed8069b350bb64c80341e167444131c8ab1767ec8ac0cc45e7e33a",
+    "frozen-python.xml": "f2bec596cf97afda73e7befe2dad48b39ec13632e17285d603fff226f3de684f",
+    "frozen-rust.json": "b8fd145cd7002ecbf4456b12fd04c7c3c044043f6e9f03059f5a0f1ca5a8d6f4",
+    "frozen-rust.log": "476201482f4bbb8d4f6ef9f5c004fc1cc71c1c85cb0bf22d0ce62410cc70a1d6",
+    "frozen-sdk.json": "5f4af55f2267e2e85641526265ea9f23c85aad27cff77e0bb608618cd510cdd7",
+    "frozen-sdk.log": "897f7436957ce3fc56fcd81c9619dbdd03162136c99ba72471bcbbfa0d833b0a",
+    "frozen-searchd-cached.json": "c13c35da6af4e83bb64f7efa59ee28d505e0602c39f571efa7c07eda5e40535e",
+    "frozen-searchd-cached.log": "8c5a60aa2c13ef29afa4ad4ab560fb5ccb7c15e481a229e32887da867314441e",
+    "frozen-vite-runtime/command.json": "c1c3b05f07a609f5ec3dc7a6329fd65d761c2beaaf5ef0d96bf0390846b52924",
+    "frozen-vite-runtime/diagnostic.json": "e204dda8112bf097d65ec8bdf98c727afa2d3543dfac3d7998253dc6d795a607",
+    "frozen-vite-runtime/phase-metrics.json": "4c2376170a74d87289bad7a5ecda16f9b889af8badb45fd2c50346c1755d63c1",
+    "frozen-vite-runtime/query-pack.json": "5d15db381ce4d29f52be78e477ac47af45b7f02917343e2dc480cc5464672ae7",
+    "frozen-vite-runtime/receipt.json": "c5e51dc0e58d11cc0abc6ff6a8378b5995ddb9dc723de2c3906570ebc74363f2",
+    "frozen-vite-runtime/record.json": "0a3271a4ca824c5cb44c5f7182f253d27dba0f540886b88c986316c9940aaa4e",
+    "frozen-vite-runtime/runner.log": "15a52bc3e52ee27bb5e4434ef5e95a799477a26c932f9a103cf88d33f7585ae3",
+    "frozen-vite-runtime/state.searchd.stderr.log": "8532af95e87cf0fa1ceed5ae7537e79aa1526cf3bec34b8bc9ca9858aa52c859",
+    "frozen-vite-runtime/state.searchd.stdout.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "frozen-vite-runtime/strict-preflight.json": "420bc1ec1b7f41d1a647c2776b89ac3e4b79cf33628cb18687def3d047342090",
+    "frozen-vite-runtime/strict-receipt.json": "41ea4842d4dfc7d7be7fbdfbd7edfdc94dd1112f8b527efe4fa9b9b4f18f8daf",
+    "frozen-vite-runtime/strict.stderr.log": "ab90fbe050e80d2d5649c361224c2e9d09930266c8785ad855942d4e1e8bf9f0",
+    "frozen-vite-runtime/strict.stdout.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "frozen-vite-runtime/symbol-preflight.json": "c3e0c3b233a68bcd9851a2ba899b1a1ee0572b147f15bb54fa8f500b18405d24",
+    "frozen-vite-strict.json": "f709382a5eee43afa197f1b21858c13c76f8105a696b87fda11989c378af1739",
+    "frozen-vite-strict.log": "9ec72b79ff8f066f9d4070afa8030f0d6cd941c727145f1fca2c93c81dd5e5fc",
+    "frozen-vite.json": "4463c2b119d8f3bddd1d93335c30d730109753f8e075a3a9fcea4b1446046ce6",
+    "frozen-vite.log": "c5e51dc0e58d11cc0abc6ff6a8378b5995ddb9dc723de2c3906570ebc74363f2",
+    "frozen_strict.py": "6f83231fe698f11b565d9b4997030c6ff087d4e8eb2dda3812c7e11107709491",
+    "frozen_verify.sh": "20e157d08d0b854e7239cf2d5703de1c9c1087073fb1e0c58b27e91123df946d",
+    "frozen_vite_runtime.py": "6496772133027f5e5766c3ee3679b076a98a597acfe943bd0a591c61f86fc49c",
+    "run_check.py": "797bced12b71b7b94ed56d8d9e2b5478387a18bd7fd83388718ed1ca261ce670",
+    "sdk-final/actual-runner-diagnostic.json": "3f660be31854b2a64b89d8c78c459ff7041b60c3443e18c94a25461e7945e5ee",
+    "sdk-final/actual-runner-pack.json": "6a9ce2992bbf302ae20470183a64b444f7684a2c0cc2b014bf0baf66240e0ca7",
+    "sdk-final/actual-runner-record.json": "a738f44170e2a2e1600755c0e4b9837486ad222603558616aeae4908649356e6",
+    "sdk-final/commands.json": "0363a4e7a90e57cf8a78a484e671368676ad64b19f2100bf7eaddf7232cd908f",
+    "sdk-final/inventory-verify.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "sdk-final/inventory-verify.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "sdk-final/inventory.json": "e3d20b964c6ac9c655ebbbcd580f176ca5cf75fc39cfd16d7f549002b30be6f0",
+    "sdk-final/inventory.stderr": "37a984cd5e3786aacc3347fc17d54e5ead5bc2737e5bec2ab30e11723e0583ba",
+    "sdk-final/nextest.jsonl": "d5c8982baf99f7bd505ec9049dcced04438bb6323cb919fdf66382a6100dd641",
+    "sdk-final/nextest.stderr": "01f78a3137a7da8b5aba2bb38df5a9cb8fa7fde0b38656e24ae2058cf29095ef",
+    "sdk-final/proof.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "sdk-final/proof.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "sdk-final/rust-inventory-verify.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "sdk-final/rust-inventory-verify.stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "sdk-final/rust-inventory.json": "965039c5dfac5797bc8f849872011499d642ca4903d33fc97378b01dd972907e",
+    "sdk-final/rust-inventory.stderr": "6622eef8b05e004e312a235c6a82da5f4b3dd31d2c65577c836a20937f6c1eda",
+    "sdk-final/sdk-results.json": "29c2ec59f03059181ddde033c1a79a91f7c3b1c5f469389e4a05bf9e79511dee",
+    "sdk_final.py": "ab8590181357b833930e12c68fafb4cc954e219c1dac995cb3fbe550151f9b70",
+    "source-closure-red.log": "ce4ce8f469dd55b9dd0bb8f3beecfe4a8746aaca48a0ea5cd1441e564ce207f8",
+    "source-roots.json": "d4501f3e015094a5c4c578ec4328d67d8a4502f3df2c0094d5adddd129968465",
+    "text-profile-red.log": "60463efd6f73db791b4fdde0752b445dd91b875a56b3dedfe74a9fe9ac75cbb2"
+  },
+  "current_shared_consumer_compatibility": {
+    "source_changes": {
+      "tools/benchmark/retrieval/contract_proof.py": {
+        "frozen_sha256": "5203fd47f37650fa591159fb00e606fa5dd21e9776c5e00fa6ff10e92430ea42",
+        "current_sha256": "e235fb925ab3de4c15582485204267712f11e1ea24665836c6426c53194282ed"
+      },
+      "tools/benchmark/retrieval/portable_proof.py": {
+        "frozen_sha256": "01693a18e3c67f8ceb03d44ca9cafa7f7705841f0eef1dd42b43dc761ebafc88",
+        "current_sha256": "437281a0aec88560351594b28e4d4e870a2647db43bea415d03fe193054bf462"
+      }
+    },
+    "snapshot": "/Users/songmin/.codex/worktrees/l5-consumer-proof/quanta-index",
+    "overlay_sha256": "7a02202a4028ca2aa956fbd34079826abb91615458e394a5e9c9a2cd16ad6da7",
+    "rails": {
+      "current-consumer": {
+        "status": "VERIFIED",
+        "test_or_replayed_count": 183,
+        "command": [
+          "/Users/songmin/Documents/code-new/quanta-index/.venv/bin/python",
+          "-m",
+          "pytest",
+          "tools/ci/tests/test_retrieval_contract_proof.py",
+          "tools/ci/tests/test_retrieval_sdk_proof.py",
+          "tools/ci/tests/test_portable_proof.py",
+          "tools/ci/tests/test_nextest_ignored_inventory.py",
+          "tools/ci/tests/test_benchmark_source_closure.py",
+          "-q",
+          "--junitxml=/private/tmp/quanta-index-l5-completion/current-consumer.xml"
+        ],
+        "receipt": "current-consumer.json",
+        "receipt_sha256": "2ab05e68a9ec0be0a03085e4885788ba9a360b7d2a4beb88fc976932fa218636",
+        "log": "current-consumer.log",
+        "log_sha256": "bc9b8d4a96c014a194f44a94d6cb2ab4e7b05db3654b6c47b56baa3d44400550"
+      },
+      "current-replay": {
+        "status": "VERIFIED",
+        "test_or_replayed_count": 20,
+        "command": [
+          "/Users/songmin/Documents/code-new/quanta-index/.venv/bin/python",
+          "/private/tmp/quanta-index-l5-completion/current_replay.py"
+        ],
+        "receipt": "current-replay.json",
+        "receipt_sha256": "805af32026baa3f6680ab158584c6fa53d005462f1fb0df100ee64b7bb5ac249",
+        "log": "current-replay.log",
+        "log_sha256": "b40b67021aaa7e39f59d8df0fdf814f19b6aff17b54f34fa692a74a90ac26232"
+      }
+    },
+    "scope": "183 consumer tests on a second frozen snapshot plus replay of frozen raw SDK evidence against exact frozen runner and daemon binaries; does not rebind frozen producer proof to another source snapshot"
+  }
+}

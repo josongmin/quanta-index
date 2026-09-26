@@ -1,0 +1,71 @@
+{
+  "checks": [
+    {
+      "command": [
+        "rg",
+        "-n",
+        "\\.(search_all|search_symbols_all|search_all_constrained)\\(",
+        "crates",
+        "benchmarks",
+        "--glob",
+        "*.rs",
+        "--glob",
+        "!**/tests/**"
+      ],
+      "exit_code": 0,
+      "path": "/tmp/quanta-l1-green.diz44g/resume-census-0.log",
+      "sha256": "55ad58f6816fdfc000fef6222c47e38d924e93c4922e00943ad2b9180ae6d963"
+    },
+    {
+      "command": [
+        "rg",
+        "-n",
+        "LexicalIndexOpenPort",
+        ".",
+        "--glob",
+        "*.rs"
+      ],
+      "exit_code": 0,
+      "path": "/tmp/quanta-l1-green.diz44g/resume-census-1.log",
+      "sha256": "7deecd541d83064d1c4897bf6ab3adc3acbd6fd87ca13157aa3f9829ed5cd1e7"
+    },
+    {
+      "command": [
+        "rg",
+        "-n",
+        "\\b(search_all|search_symbols_all|search_all_constrained)\\b",
+        "crates",
+        "benchmarks",
+        "--glob",
+        "*.rs",
+        "--glob",
+        "!**/tests/**"
+      ],
+      "exit_code": 0,
+      "path": "/tmp/quanta-l1-green.diz44g/resume-census-2.log",
+      "sha256": "e4efda177e60840d983b8e8ef8d6b6eaeb76fb5b1227bd7e6648995a82ffd404"
+    }
+  ],
+  "classification": "VERIFIED",
+  "files_after": {
+    "crates/quanta-index-core/src/domains/lexical/outbound.rs": "dad1dc90137fea4ca042aaa40383b24b729dabb971bd34d0743db5a7b0d49262",
+    "crates/quanta-index-lexical/src/searcher/planner_errors.rs": "1b0acc9e2b92052bd8f4718d28ec0eeea25a559a82ce9164b4656d5c8cab6175",
+    "crates/quanta-index-lexical/src/searcher/port.rs": "d0730882655e7d55ed1bc41e8ba3e27bed1475481fe0b62c2ec445180ffd1f60",
+    "crates/quanta-index-search-plane/src/query_dispatcher/routes/structural/lexical_leaves.rs": "5bc4405eeddec108b53f82cfe79fbba4a79be419a8f42fa91b6aeaec4ae00123",
+    "crates/quanta-index-search-plane/src/query_dispatcher/routes/structural/lowering.rs": "239610e5e7dbe585d66fe5ed5ed16d1b253ae20fb32b12f1cb20764965259d72",
+    "crates/quanta-index-search-plane/src/query_dispatcher/tests/l1_query_domain_window.rs": "d0b0bcf4289bacfffb35db84a037ec1076dc3f5833938cba3d27906fba9af60e",
+    "crates/quanta-index-search-plane/src/query_dispatcher/tests/support/lexical.rs": "1fe6a465bae77a4988e20122bbb36e69ed60261137d1d72d8fa5932ddf9278aa"
+  },
+  "files_before": {
+    "crates/quanta-index-core/src/domains/lexical/outbound.rs": "dad1dc90137fea4ca042aaa40383b24b729dabb971bd34d0743db5a7b0d49262",
+    "crates/quanta-index-lexical/src/searcher/planner_errors.rs": "1b0acc9e2b92052bd8f4718d28ec0eeea25a559a82ce9164b4656d5c8cab6175",
+    "crates/quanta-index-lexical/src/searcher/port.rs": "d0730882655e7d55ed1bc41e8ba3e27bed1475481fe0b62c2ec445180ffd1f60",
+    "crates/quanta-index-search-plane/src/query_dispatcher/routes/structural/lexical_leaves.rs": "5bc4405eeddec108b53f82cfe79fbba4a79be419a8f42fa91b6aeaec4ae00123",
+    "crates/quanta-index-search-plane/src/query_dispatcher/routes/structural/lowering.rs": "239610e5e7dbe585d66fe5ed5ed16d1b253ae20fb32b12f1cb20764965259d72",
+    "crates/quanta-index-search-plane/src/query_dispatcher/tests/l1_query_domain_window.rs": "d0b0bcf4289bacfffb35db84a037ec1076dc3f5833938cba3d27906fba9af60e",
+    "crates/quanta-index-search-plane/src/query_dispatcher/tests/support/lexical.rs": "1fe6a465bae77a4988e20122bbb36e69ed60261137d1d72d8fa5932ddf9278aa"
+  },
+  "head": "98601a66d8cab9c86232b3e62ce490c8b43b71b6",
+  "scope": "Textual exact-all call-site and opener implementation census; behavior is separately tested.",
+  "time_unix": 1790459823.3782349
+}

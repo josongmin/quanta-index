@@ -16,8 +16,9 @@ use quanta_index_contract::lex::{
 use quanta_index_contract::{
     BatchIngestMode, ChunkId, ChunkRecord, LQ_VERSION_TAG, LqExpr, LqLeaf, LqOptions, LqQuery,
     LqSpan, ManifestGeneration, RepoId, RepoRelativePath, RevisionId, SearchCorpusIngestBatch,
-    SearchCorpusReplaceScope, SearchCorpusTombstoneScope, SearchScopeSurface, SourceFileCoverage,
-    SourceFileKey, SourceFileRevision, SourcePublicationEvent, SymbolCoverage, SymbolId,
+    SearchCorpusReplaceScope, SearchCorpusSurfaceMutationConflictV1 as MutationConflict,
+    SearchCorpusTombstoneScope, SearchScopeSurface, SourceFileCoverage, SourceFileKey,
+    SourceFileRevision, SourcePublicationEvent, SymbolCoverage, SymbolId,
     source_event_payload_sha256, source_file_unit_set_sha256,
 };
 use quanta_index_core::{
@@ -129,6 +130,88 @@ fn query(marker: &str) -> LqQuery {
     }
 }
 
+#[test]
+fn delta_cannot_claim_newer_source_lineage_while_inheriting_an_older_snapshot() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+    let original = batch(1, None, vec![file_scope("a.rs", "oldmarker")?])?;
+    adapter.build_batch(&original)?;
+    let newer = batch(2, Some(1), vec![file_scope("a.rs", "newmarker")?])?;
+    adapter.build_batch(&newer)?;
+
+    // The producer knows event-2, but points materialization back at event-1.
+    // Applying only b.rs to that snapshot would silently resurrect old a.rs.
+    let mut request = batch(3, Some(1), vec![file_scope("b.rs", "othermarker")?])?;
+    request.source_event.expected_base_event_id = Some(newer.source_event.event_id.clone());
+    request.validate_v1()?;
+    request.validate_surface_mutations_v1()?;
+    for result in [
+        adapter.preflight_batch(&request),
+        adapter.build_batch(&request),
+    ] {
+        assert!(
+            matches!(
+                result,
+                Err(quanta_index_core::CoreError::Typed {
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::DeltaBaseConflict,
+                    ..
+                })
+            ),
+            "stale physical base must refuse before any target mutation: {result:?}"
+        );
+    }
+    let target = quanta_index_core::domains::generation::GenerationStorageKeyV1::for_repo_revision(
+        &request.repo_id,
+        &request.revision_id,
+    )
+    .generation_dir(dir.path(), request.generation);
+    assert!(!target.exists());
+
+    request.base_generation = Some(newer.generation);
+    for mutate in [
+        |batch: &mut SearchCorpusIngestBatch| {
+            batch.source_event.expected_base_event_id = None;
+        },
+        |batch: &mut SearchCorpusIngestBatch| {
+            batch.source_event.stream_id = "other-stream".into();
+        },
+    ] {
+        let mut invalid = request.clone();
+        mutate(&mut invalid);
+        invalid.validate_v1()?;
+        for result in [
+            adapter.preflight_batch(&invalid),
+            adapter.build_batch(&invalid),
+        ] {
+            assert!(matches!(
+                result,
+                Err(quanta_index_core::CoreError::Typed {
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::DeltaBaseConflict,
+                    ..
+                })
+            ));
+        }
+        assert!(!target.exists());
+    }
+    adapter.preflight_batch(&request)?;
+    adapter.build_batch(&request)?;
+    assert_units(&adapter, &request, "oldmarker", &[], &[])?;
+    assert_units(
+        &adapter,
+        &request,
+        "newmarker",
+        &["chunk-newmarker"],
+        &["symbol-newmarker"],
+    )?;
+    assert_units(
+        &adapter,
+        &request,
+        "othermarker",
+        &["chunk-othermarker"],
+        &["symbol-othermarker"],
+    )
+}
+
 fn assert_units(
     adapter: &LexicalAdapter,
     batch: &SearchCorpusIngestBatch,
@@ -157,10 +240,19 @@ fn assert_units(
 
 /// The request is invalid before storage access. Even an empty target
 /// generation or a partially applied first scope would violate this oracle.
-fn assert_refused_without_mutation(batch: &SearchCorpusIngestBatch) -> TestResult {
+fn assert_refused_without_mutation(
+    batch: &SearchCorpusIngestBatch,
+    expected: MutationConflict,
+) -> TestResult {
+    let mut batch = batch.clone();
+    // Mutation fixtures must retain a valid envelope so a stale event digest
+    // cannot stand in for the file-owner/conflict validation under test.
+    batch.source_event.payload_sha256 = source_event_payload_sha256(&batch)?;
+    batch.validate_v1()?;
+    assert_eq!(batch.validate_surface_mutations_v1(), Err(expected));
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
-    let result = adapter.build_batch(batch);
+    let result = adapter.build_batch(&batch);
     let entries = std::fs::read_dir(dir.path())?.collect::<Result<Vec<_>, _>>()?;
     assert!(
         result.is_err() && entries.is_empty(),
@@ -191,12 +283,18 @@ fn aliases(symbol_first: bool) -> Result<Vec<SearchCorpusReplaceScope>, Box<dyn 
 
 #[test]
 fn chunk_then_symbol_aliases_are_refused_before_mutation() -> TestResult {
-    assert_refused_without_mutation(&batch(1, None, aliases(false)?)?)
+    assert_refused_without_mutation(
+        &batch(1, None, aliases(false)?)?,
+        MutationConflict::DuplicateReplaceScope(SearchScopeSurface::Chunk),
+    )
 }
 
 #[test]
 fn symbol_then_chunk_aliases_are_refused_before_mutation() -> TestResult {
-    assert_refused_without_mutation(&batch(1, None, aliases(true)?)?)
+    assert_refused_without_mutation(
+        &batch(1, None, aliases(true)?)?,
+        MutationConflict::DuplicateReplaceScope(SearchScopeSurface::Chunk),
+    )
 }
 
 #[test]
@@ -207,11 +305,16 @@ fn chunk_path_mismatch_is_refused_before_any_scope_applies() -> TestResult {
         .first_mut()
         .ok_or("missing fixture chunk")?
         .repo_relative_path = RepoRelativePath::new("b.rs");
-    assert_refused_without_mutation(&batch(
-        1,
-        None,
-        vec![file_scope("valid.rs", "validmarker")?, invalid],
-    )?)
+    invalid.coverage.unit_set_sha256 =
+        source_file_unit_set_sha256(&invalid.chunks, &invalid.symbols)?;
+    assert_refused_without_mutation(
+        &batch(
+            1,
+            None,
+            vec![file_scope("valid.rs", "validmarker")?, invalid],
+        )?,
+        MutationConflict::RecordPathMismatch(SearchScopeSurface::Chunk),
+    )
 }
 
 #[test]
@@ -222,7 +325,12 @@ fn symbol_path_mismatch_is_refused_before_any_scope_applies() -> TestResult {
         .first_mut()
         .ok_or("missing fixture symbol")?
         .repo_relative_path = RepoRelativePath::new("b.rs");
-    assert_refused_without_mutation(&batch(1, None, vec![invalid])?)
+    invalid.coverage.unit_set_sha256 =
+        source_file_unit_set_sha256(&invalid.chunks, &invalid.symbols)?;
+    assert_refused_without_mutation(
+        &batch(1, None, vec![invalid])?,
+        MutationConflict::RecordPathMismatch(SearchScopeSurface::Symbol),
+    )
 }
 
 #[test]
@@ -234,7 +342,12 @@ fn definition_path_mismatch_is_refused_before_mutation() -> TestResult {
         .ok_or("missing fixture symbol")?
         .definition_span
         .path = "b.rs".into();
-    assert_refused_without_mutation(&batch(1, None, vec![invalid])?)
+    invalid.coverage.unit_set_sha256 =
+        source_file_unit_set_sha256(&invalid.chunks, &invalid.symbols)?;
+    assert_refused_without_mutation(
+        &batch(1, None, vec![invalid])?,
+        MutationConflict::RecordPathMismatch(SearchScopeSurface::Symbol),
+    )
 }
 
 #[test]
@@ -245,7 +358,12 @@ fn cross_kind_candidate_collision_is_refused_before_mutation() -> TestResult {
         .first_mut()
         .ok_or("missing fixture symbol")?
         .symbol_id = SymbolId::new("chunk-invalidmarker");
-    assert_refused_without_mutation(&batch(1, None, vec![invalid])?)
+    // The unit-set encoder independently refuses duplicate IDs. The exact
+    // conflict assertion prevents that digest refusal masking the ID validator.
+    assert_refused_without_mutation(
+        &batch(1, None, vec![invalid])?,
+        MutationConflict::DuplicateCandidateId,
+    )
 }
 
 #[test]
@@ -253,7 +371,7 @@ fn clear_and_file_replacement_overlap_is_refused_before_mutation() -> TestResult
     for surface in [SearchScopeSurface::Chunk, SearchScopeSurface::Symbol] {
         let mut request = batch(1, None, vec![file_scope("a.rs", "invalidmarker")?])?;
         request.clear_surfaces.push(surface);
-        assert_refused_without_mutation(&request)?;
+        assert_refused_without_mutation(&request, MutationConflict::ClearAndReplace(surface))?;
     }
     Ok(())
 }
@@ -267,7 +385,10 @@ fn replace_and_tombstone_surface_aliases_are_refused_before_mutation() -> TestRe
             repo_relative_path: RepoRelativePath::new("a.rs"),
         },
     });
-    assert_refused_without_mutation(&request)
+    assert_refused_without_mutation(
+        &request,
+        MutationConflict::ReplaceAndTombstone(SearchScopeSurface::Chunk),
+    )
 }
 
 #[test]
@@ -300,6 +421,72 @@ fn raw_channel_aliases_are_refused_before_generation_preparation() -> TestResult
         result.is_err() && entries.is_empty(),
         "result={result:?}, entries={entries:?}"
     );
+    Ok(())
+}
+
+#[test]
+fn malformed_bundle_is_refused_before_source_publication_or_generation_preparation() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+    let mut request = batch(1, None, vec![file_scope("a.rs", "validmarker")?])?;
+    request.bundle_payload = Some(vec![0xff]);
+    request.source_event.payload_sha256 = source_event_payload_sha256(&request)?;
+    request.validate_v1()?;
+    request.validate_surface_mutations_v1()?;
+    for result in [
+        adapter.preflight_batch(&request),
+        adapter.build_batch(&request),
+    ] {
+        assert!(
+            matches!(
+                result,
+                Err(quanta_index_core::CoreError::InvalidContract(_))
+            ),
+            "invalid metadata must be an admission error: {result:?}"
+        );
+    }
+    assert_eq!(std::fs::read_dir(dir.path())?.count(), 0);
+    Ok(())
+}
+
+#[test]
+fn malformed_bundle_after_a_raw_replacement_refuses_before_any_write() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+    let request = batch(1, None, vec![file_scope("a.rs", "validmarker")?])?;
+    let mut payload = Vec::new();
+    ciborium::into_writer(
+        &(
+            request.mode,
+            request.base_generation,
+            &request.replace_scopes[0],
+        ),
+        &mut payload,
+    )?;
+    let ops = [
+        LexicalChannelOp::ReplaceLexicalScope(ReplaceLexicalScope {
+            repo_id: request.repo_id.clone(),
+            revision_id: request.revision_id.clone(),
+            generation: request.generation,
+            payload,
+        }),
+        LexicalChannelOp::FullBundle(quanta_index_contract::LexicalFullBundle {
+            repo_id: request.repo_id.clone(),
+            revision_id: request.revision_id.clone(),
+            generation: request.generation,
+            payload: vec![0xff],
+        }),
+    ];
+    assert!(matches!(
+        adapter.build(
+            &request.repo_id,
+            &request.revision_id,
+            request.generation,
+            &ops
+        ),
+        Err(quanta_index_core::CoreError::InvalidContract(_))
+    ));
+    assert_eq!(std::fs::read_dir(dir.path())?.count(), 0);
     Ok(())
 }
 
@@ -432,7 +619,7 @@ fn admitted_empty_failed_file_gates_broad_symbol_query_and_survives_delta() -> T
     ));
     let mut narrow = query("freshmarker");
     narrow.filters.push(quanta_index_contract::LqFilter::File {
-        pattern: "^a\\.rs$".into(),
+        pattern: "a[.]rs".into(),
         scope: quanta_index_contract::LqFileScope::PathOnly,
     });
     assert_eq!(
@@ -506,6 +693,88 @@ fn inherited_candidate_collision_refuses_before_target_creation() -> TestResult 
 }
 
 #[test]
+fn full_rebuild_preflight_reaches_repair_without_admitting_corrupt_content() -> TestResult {
+    use quanta_index_core::{
+        GenerationIdentityValidatePort as _, SealedGenerationReclaimPort as _,
+    };
+
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+    let base = batch(1, None, vec![file_scope("base.rs", "basemarker")?])?;
+    adapter.build_batch(&base)?;
+    let request = batch(2, None, vec![file_scope("a.rs", "rebuiltmarker")?])?;
+    adapter.build_batch(&request)?;
+    let mut other_event = request.clone();
+    other_event.source_event.event_id = "different-event".into();
+    assert!(adapter.preflight_batch(&other_event).is_err());
+
+    let identity = quanta_index_contract::GenerationSnapshot {
+        repo_id: request.repo_id.clone(),
+        revision_id: request.revision_id.clone(),
+        track: quanta_index_contract::SearchPlaneTrackKind::Lexical,
+        manifest_generation: request.generation,
+        manifest_digest: request.manifest_digest.clone(),
+    };
+    let target = quanta_index_core::domains::generation::GenerationStorageKeyV1::for_repo_revision(
+        &request.repo_id,
+        &request.revision_id,
+    )
+    .generation_dir(dir.path(), request.generation);
+    let coverage_path = target.join("source-file-coverage.cbor");
+    let mut corrupt = std::fs::read(&coverage_path)?;
+    *corrupt.last_mut().ok_or("empty coverage fixture")? ^= 1;
+    std::fs::write(&coverage_path, &corrupt)?;
+    assert!(adapter.validate_generation_identity(&identity).is_err());
+    adapter.preflight_batch(&request)?;
+    assert_eq!(std::fs::read(&coverage_path)?, corrupt);
+    assert!(adapter.build_batch(&request).is_err());
+    assert!(
+        adapter
+            .open(&request.repo_id, &request.revision_id, request.generation)
+            .is_err()
+    );
+
+    let mut wrong_identity = request.clone();
+    wrong_identity.manifest_digest = "different-manifest".into();
+    assert!(matches!(
+        adapter.preflight_batch(&wrong_identity),
+        Err(quanta_index_core::CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityDigestMismatch,
+            ..
+        })
+    ));
+    let mut delta = request.clone();
+    delta.mode = BatchIngestMode::Delta;
+    delta.base_generation = Some(base.generation);
+    delta.source_event.payload_sha256 = source_event_payload_sha256(&delta)?;
+    delta.validate_v1()?;
+    assert!(matches!(
+        adapter.preflight_batch(&delta),
+        Err(quanta_index_core::CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
+            ..
+        })
+    ));
+
+    // The materializer owns journal binding and registry fencing. At the
+    // adapter boundary only explicit identity-checked reclamation permits
+    // the full payload to rebuild; preflight itself did not change storage.
+    assert!(matches!(
+        adapter.reclaim_sealed_generation(&identity)?,
+        quanta_index_core::SealedGenerationReclaimOutcomeV1::Reclaimed { .. }
+    ));
+    adapter.build_batch(&request)?;
+    adapter.validate_generation_identity(&identity)?;
+    assert_units(
+        &adapter,
+        &request,
+        "rebuiltmarker",
+        &["chunk-rebuiltmarker"],
+        &["symbol-rebuiltmarker"],
+    )
+}
+
+#[test]
 fn actual_generation_open_refuses_missing_or_tampered_coverage() -> TestResult {
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
@@ -540,5 +809,120 @@ fn actual_generation_open_refuses_missing_or_tampered_coverage() -> TestResult {
         "marker",
         &["chunk-marker"],
         &["symbol-marker"],
+    )
+}
+
+#[test]
+fn foreign_source_owner_refuses_before_target_creation() -> TestResult {
+    let mut replacement = file_scope("a.rs", "marker")?;
+    replacement
+        .chunks
+        .first_mut()
+        .ok_or("fixture chunk")?
+        .source_repo_id = Some(RepoId::new("foreign-source")?);
+    replacement.coverage.unit_set_sha256 =
+        source_file_unit_set_sha256(&replacement.chunks, &replacement.symbols)?;
+    assert_refused_without_mutation(
+        &batch(1, None, vec![replacement])?,
+        MutationConflict::RecordSourceMismatch,
+    )
+}
+
+#[test]
+fn raw_delta_cannot_inherit_coverage_without_a_source_publication() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+    let base = batch(1, None, vec![file_scope("a.rs", "oldmarker")?])?;
+    adapter.build_batch(&base)?;
+    let replacement = file_scope("a.rs", "freshmarker")?;
+    let mut payload = Vec::new();
+    ciborium::into_writer(
+        &(BatchIngestMode::Delta, Some(base.generation), replacement),
+        &mut payload,
+    )?;
+    let target = ManifestGeneration::new(2);
+    let operations = [LexicalChannelOp::ReplaceLexicalScope(ReplaceLexicalScope {
+        repo_id: base.repo_id.clone(),
+        revision_id: base.revision_id.clone(),
+        generation: target,
+        payload,
+    })];
+    let result = adapter.build(&base.repo_id, &base.revision_id, target, &operations);
+    assert!(
+        matches!(result, Err(quanta_index_core::CoreError::InvalidContract(ref message)) if message.contains("coverage-bound"))
+    );
+    let target_path =
+        quanta_index_core::domains::generation::GenerationStorageKeyV1::for_repo_revision(
+            &base.repo_id,
+            &base.revision_id,
+        )
+        .generation_dir(dir.path(), target);
+    assert!(!target_path.exists());
+    assert_units(
+        &adapter,
+        &base,
+        "oldmarker",
+        &["chunk-oldmarker"],
+        &["symbol-oldmarker"],
+    )
+}
+
+#[test]
+fn reclaiming_base_preserves_delta_coverage_and_refuses_old_open() -> TestResult {
+    use quanta_index_core::SealedGenerationReclaimPort as _;
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+    let base = batch(
+        1,
+        None,
+        vec![
+            file_scope("a.rs", "oldmarker")?,
+            file_scope("b.rs", "keptmarker")?,
+        ],
+    )?;
+    adapter.build_batch(&base)?;
+    let delta = batch(2, Some(1), vec![file_scope("a.rs", "freshmarker")?])?;
+    adapter.build_batch(&delta)?;
+    let retired = quanta_index_contract::GenerationSnapshot {
+        repo_id: base.repo_id.clone(),
+        revision_id: base.revision_id.clone(),
+        track: quanta_index_contract::SearchPlaneTrackKind::Lexical,
+        manifest_generation: base.generation,
+        manifest_digest: base.manifest_digest.clone(),
+    };
+    assert!(matches!(
+        adapter.reclaim_sealed_generation(&retired)?,
+        quanta_index_core::SealedGenerationReclaimOutcomeV1::Reclaimed { .. }
+    ));
+    assert!(
+        adapter
+            .open(&base.repo_id, &base.revision_id, base.generation)
+            .is_err()
+    );
+    let reopened = adapter.open(&delta.repo_id, &delta.revision_id, delta.generation)?;
+    assert_eq!(
+        reopened
+            .source_file_coverage()
+            .ok_or("delta coverage missing")?
+            .len(),
+        2
+    );
+    assert_eq!(
+        reopened.source_publication_event(),
+        Some(&delta.source_event)
+    );
+    assert_units(
+        &adapter,
+        &delta,
+        "keptmarker",
+        &["chunk-keptmarker"],
+        &["symbol-keptmarker"],
+    )?;
+    assert_units(
+        &adapter,
+        &delta,
+        "freshmarker",
+        &["chunk-freshmarker"],
+        &["symbol-freshmarker"],
     )
 }

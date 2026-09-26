@@ -1,13 +1,18 @@
 # CS-PROD-01 — Parser coverage and Vite admission
 
-Status: **PROPOSED**. Parser remedy and new production proof: **NOT_RUN**.
+Status: **VERIFIED for the L5 producer and shared integration scope** on the
+frozen dirty snapshot at `98601a66d8cab9c86232b3e62ce490c8b43b71b6`.
+Exact source identities, commands and raw evidence are in
+[L5_COMPLETION.json](../handoffs/L5_COMPLETION.json) and the
+[handoff](../handoffs/L5_HANDOFF.md). Whole-repository CI and clean-source release
+qualification are **NOT_RUN**. External production producers are outside this scope.
 Category: producer compatibility. Findings: F05/F06.
 Parser probes are independent; publication changes depend on ENG-02.
 
 ## Purpose and RCA
 
 The pinned producer uses tree-sitter 0.25.10 and tree-sitter-typescript 0.23.2.
-Vite census: 256 admitted files, 252 TS and four TSX; 253 clean parses and three
+Original Vite census: 256 admitted files, 252 TS and four TSX; 253 clean parses and three
 failures. All file hashes matched the frozen manifest. Two failures are accepted
 by an independent TypeScript 7.0.2 syntax probe; one is an intentional malformed
 test fixture. See [evidence](../evidence.md) for file paths and byte positions.
@@ -80,16 +85,24 @@ produce Complete with zero facts. No parse failure may emit that same state.
 
 ## DoD
 
-- [ ] Both independently valid forms parse and extract correctly under pinned
+- [x] Both independently valid forms parse and extract correctly under pinned
   dependencies; their acceptance and expected facts have independent oracles.
-- [ ] Intentional invalid source is retained and has truthful capability state.
-- [ ] Full frozen Vite inventory is accounted for exactly once, with no hidden
+- [x] Intentional invalid source is retained and has truthful capability state.
+- [x] Full frozen Vite inventory is accounted for exactly once, with no hidden
   exclusions or zero-filled failure rows.
-- [ ] Supported-language extraction regressions and payload rejection tests pass.
-- [ ] Lexical Vite queries execute through the actual capability-enabled profile;
+- [x] Supported-language extraction regressions and payload rejection tests pass.
+- [x] Lexical Vite queries execute through the actual capability-enabled profile;
   strict symbol coverage remains separately reported, not mislabeled complete.
-- [ ] Grammar/producer identity, registry and source-closure receipts are renewed.
-- [ ] Shared publication/lifecycle tests pass after integration with ENG-02.
+- [x] Grammar/producer identity, registry and source-closure receipts are renewed
+  for the exact dirty snapshot; this does not bypass the clean-source gate.
+- [x] Shared publication/lifecycle tests pass after integration with ENG-02.
+
+The final census is 255 Complete files and one intentional ParseFailed file,
+with all 256 admitted files retained. Verification covers 132 Rust owner tests,
+20 SDK process tests, 64 shared lifecycle tests, 469 Python tests and six real
+Vite process probes. Strict Vite preflight still refuses the malformed fixture
+after emitting the complete census. Later shared Python consumer changes are
+bound to separate compatibility receipts; frozen producer proof is not rebased.
 
 No manual relabeling or legal approval is an automatic coding prerequisite here.
 If no compatible grammar can be established, retain the typed failure and report

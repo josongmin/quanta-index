@@ -93,6 +93,7 @@ mod index_store;
 mod inventory;
 mod metadata_normalize;
 mod overlay_codec;
+mod query_admission;
 mod query_errors;
 mod schema;
 // The searcher facade declares its submodules `pub(crate)` (the crate's

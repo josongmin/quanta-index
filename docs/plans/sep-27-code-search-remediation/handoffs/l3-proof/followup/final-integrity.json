@@ -1,0 +1,8 @@
+{
+  "status": "VERIFIED",
+  "head": "98601a66d8cab9c86232b3e62ce490c8b43b71b6",
+  "selected_input_sha256": "45f9f778344090b611e2393f554c9fbbd8376e703d12873379865069de4a922e",
+  "checked_artifacts": 58,
+  "receipt_sha256": "becb54bb15f38dfb527c337d9634c64c7f11317fa008a1d315b5351d64170d35",
+  "source_unchanged_at_close": true
+}

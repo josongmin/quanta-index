@@ -1,0 +1,42 @@
+{
+  "comparison_contract": {
+    "output_unit_policy": "rank_prefix",
+    "span_unit": "byte_span_with_line_projection_v1",
+    "tokenizer": "qi-regex-v1",
+    "tokenizer_budget_version": "qb-v1",
+    "top_k": 10
+  },
+  "file_universe": [
+    {
+      "file_sha256": "d686b6d351705847599f3fb8ecabf0cf4e7905e4350ee6dd7faab663b6c8fcff",
+      "path": "src/alpha.rs"
+    },
+    {
+      "file_sha256": "b5b2c2a9ece47ccc4b997c6895866ebd9ba4edfd7a9d9b89e4ccd21462b272ea",
+      "path": "src/beta.rs"
+    },
+    {
+      "file_sha256": "34b0cd1d7c2ae86c4949ddd232b3fcaba88571afd9ce6acb6bfcdff907ff5e18",
+      "path": "src/lib.rs"
+    }
+  ],
+  "file_universe_digest": "290cc980702a9c5169d3477484fe21c2f4ccd90eeb4c009dd97d6b7b6f73852b",
+  "repository_commit": "cfa2dcc266530ebdee3116f8a245caed908d97d1",
+  "routes": [
+    "lexical",
+    "semantic",
+    "hybrid"
+  ],
+  "schema_version": 3,
+  "suite_commitment_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "suite_id": "runner-binary-roundtrip",
+  "tasks": [
+    {
+      "query": "sphinx quartz vaults",
+      "query_sha256": "42094a46d2fec836210e933d9175673fa075540c52bc7db808ffdb026c1de812",
+      "task_id": "T1"
+    }
+  ],
+  "tokenizer": "qi-regex-v1",
+  "tokenizer_budget_version": "qb-v1"
+}

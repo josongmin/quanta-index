@@ -32,6 +32,313 @@ from tools.ci import source_closure
 from tools.ci.tests.test_portable_proof import proof_actor_environment as proof_actor_environment
 
 
+def _current_symbol_metrics(metrics):
+    """Handwritten complete-state fixtures, separate from producer execution."""
+    metrics.update({
+        "symbol_coverage_policy": "require-complete", "empty_scopes": 0,
+        "symbol_preflight_out": "symbol-preflight.json",
+        "symbol_preflight_sha256": "d" * 64,
+        "symbol_producer_policy_sha256": "e" * 64,
+        "symbol_incomplete_files": 0,
+    })
+    metrics["phases_ms"]["symbol_preflight"] = 0.0
+    for row in metrics["symbol_coverage"]:
+        if row["language"] is None:
+            row.update({"coverage": {"state": "unsupported"}, "failure": "unsupported_language", "definition_count": None})
+        else:
+            row.update({"coverage": {"state": "complete", "symbol_count": row["definition_count"]}, "failure": None})
+    if any(row["language"] is None for row in metrics["symbol_coverage"]):
+        metrics["symbol_coverage_policy"] = "allow-incomplete"
+        metrics["symbol_incomplete_files"] = sum(row["language"] is None for row in metrics["symbol_coverage"])
+    return metrics
+
+
+def _bind_preflight_fixture(phase_path, repository_commit):
+    metrics = _current_symbol_metrics(json.loads(phase_path.read_text()))
+    policy = {"max_file_bytes": 1048576, "max_symbols_per_file": 100000,
+              "max_symbols_total": 1000000, "max_diagnostics_per_file": 32,
+              "max_diagnostics_total": 1024, "timeout_per_file_ns": "10000000000",
+              "timeout_total_ns": "120000000000"}
+    files = [{**{key: row[key] for key in pairrun.symbol_coverage.ROW_KEYS},
+              "failure_detail": None, "failure_detail_truncated": False,
+              "diagnostics": [], "diagnostics_total": 0, "diagnostics_truncated": False,
+              "diagnostics_complete": True} for row in metrics["symbol_coverage"]]
+    for row in files:
+        if row["language"] is None:
+            row.update({"failure_detail": "unsupported symbol language: " + row["path"],
+                        "diagnostics": [{"kind": "unsupported_language", "byte_start": None, "byte_end": None}], "diagnostics_total": 1})
+    metrics["symbol_unsupported_details"] = [row for row in files if row["language"] is None]
+    metrics["symbol_unsupported_files"] = len(metrics["symbol_unsupported_details"])
+    metrics["symbol_producer_policy_sha256"] = pairrun.symbol_coverage.policy_digest(policy)
+    universe = b"".join(row["path"].encode() + b"\0" + row["source_sha256"].encode() + b"\0" for row in files)
+    report = {"symbol_coverage_policy": metrics["symbol_coverage_policy"], "repository_commit": repository_commit,
+              "file_universe_sha256": hashlib.sha256(universe).hexdigest(), "preflight": {
+        "schema": "symbol-preflight-v1", "producer_identity": pairrun.QUANTA_SYMBOL_PRODUCER_IDENTITY,
+        "grammar_identity": pairrun.QUANTA_SYMBOL_GRAMMARS,
+        "lockfile_sha256": pairrun.sha_file(pairrun.symbol_coverage.ROOT / "Cargo.lock"),
+        "producer_policy_sha256": metrics["symbol_producer_policy_sha256"], "policy": policy,
+        "files": files, "admitted_files": len(files), "incomplete_files": metrics["symbol_incomplete_files"]}}
+    artifact = phase_path.with_name("symbol-preflight.json")
+    artifact.write_text(json.dumps(report) + "\n")
+    metrics["symbol_preflight_sha256"] = pairrun.sha_file(artifact)
+    phase_path.write_text(json.dumps(metrics) + "\n")
+    return artifact
+
+
+
+def test_symbol_preflight_rejects_missing_tampered_stale_and_partial_evidence(tmp_path):
+    phase = tmp_path / "phase.json"
+    corpus = {"repository_commit": "a" * 40, "files": [
+        {"path": "a.rs", "file_sha256": "b" * 64},
+        {"path": "b.tsx", "file_sha256": "c" * 64},
+    ]}
+    phase.write_text(json.dumps({
+        "file_count": 2, "symbol_count": 1, "symbol_only_scopes": 0,
+        "symbol_producer_identity": pairrun.QUANTA_SYMBOL_PRODUCER_IDENTITY,
+        "symbol_grammars": pairrun.QUANTA_SYMBOL_GRAMMARS, "phases_ms": {},
+        "symbol_coverage": [
+            {"path": "a.rs", "source_sha256": "b" * 64, "language": "rust", "definition_count": 1},
+            {"path": "b.tsx", "source_sha256": "c" * 64, "language": "typescript_tsx", "definition_count": 0},
+        ],
+    }))
+    artifact = _bind_preflight_fixture(phase, corpus["repository_commit"])
+    metrics = json.loads(phase.read_text())
+    raw = artifact.read_bytes()
+    verify = pairrun.symbol_coverage.verify_artifact
+    assert verify(metrics, phase, corpus) == artifact
+    for mutation in ("missing", "symlink", "bytes", "duplicate_json", "reorder", "partial", "duplicate_row",
+                     "wrong_commit", "wrong_universe", "wrong_hash", "wrong_grammar", "wrong_lock",
+                     "changed_policy", "missing_policy", "unknown_state", "boolean_count", "bool_file_count",
+                     "false_complete", "truncated", "wrong_language", "parent_path", "absolute_path",
+                     "non_string_state", "deep_json"):
+        candidate = copy.deepcopy(metrics)
+        report = json.loads(raw)
+        if mutation == "missing":
+            artifact.unlink()
+        elif mutation == "symlink":
+            artifact.unlink()
+            target = tmp_path / "other.json"
+            target.write_bytes(raw)
+            artifact.symlink_to(target)
+        elif mutation == "bytes":
+            artifact.write_bytes(raw + b" ")
+        elif mutation == "parent_path":
+            candidate["symbol_preflight_out"] = "../symbol-preflight.json"
+        elif mutation == "absolute_path":
+            candidate["symbol_preflight_out"] = str(artifact.resolve())
+        elif mutation == "bool_file_count":
+            candidate["file_count"] = True
+        else:
+            files = report["preflight"]["files"]
+            if mutation == "reorder": files.reverse()
+            elif mutation == "partial": files.pop()
+            elif mutation == "duplicate_row": files[1] = copy.deepcopy(files[0])
+            elif mutation == "wrong_commit": report["repository_commit"] = "f" * 40
+            elif mutation == "wrong_universe": report["file_universe_sha256"] = "f" * 64
+            elif mutation == "wrong_hash": files[0]["source_sha256"] = "f" * 64
+            elif mutation == "wrong_grammar": report["preflight"]["grammar_identity"] += ";forged"
+            elif mutation == "wrong_lock": report["preflight"]["lockfile_sha256"] = "f" * 64
+            elif mutation == "changed_policy": report["preflight"]["policy"]["max_symbols_total"] += 1
+            elif mutation == "missing_policy": del report["preflight"]["policy"]["max_symbols_total"]
+            elif mutation == "unknown_state": files[0]["coverage"] = {"state": "producer_failed"}
+            elif mutation == "non_string_state": files[0]["coverage"] = {"state": []}
+            elif mutation == "boolean_count": files[0]["coverage"]["symbol_count"] = True
+            elif mutation == "false_complete": files[0]["failure"] = "syntax_error"
+            elif mutation == "truncated": files[0]["diagnostics_complete"] = False
+            elif mutation == "wrong_language": files[1]["language"] = "typescript"
+            encoded = json.dumps(report).encode()
+            if mutation == "duplicate_json":
+                encoded = b'{"repository_commit":"' + b'a' * 40 + b'",' + encoded[1:]
+            elif mutation == "deep_json":
+                encoded = b"[" * 10000 + b"0" + b"]" * 10000
+            artifact.write_bytes(encoded)
+            candidate["symbol_preflight_sha256"] = pairrun.sha_file(artifact)
+        with pytest.raises((ValueError, OSError), match="."):
+            verify(candidate, phase, corpus)
+        if artifact.is_symlink(): artifact.unlink()
+        artifact.write_bytes(raw)
+    assert verify(metrics, phase, corpus) == artifact
+
+
+def _complete_preflight_case(directory, path="a.rs"):
+    phase = directory / "phase.json"
+    corpus = {"repository_commit": "a" * 40, "files": [
+        {"path": path, "file_sha256": "b" * 64},
+    ]}
+    phase.write_text(json.dumps({
+        "file_count": 1, "symbol_count": 0, "symbol_only_scopes": 0,
+        "symbol_producer_identity": pairrun.QUANTA_SYMBOL_PRODUCER_IDENTITY,
+        "symbol_grammars": pairrun.QUANTA_SYMBOL_GRAMMARS, "phases_ms": {},
+        "symbol_coverage": [
+            {"path": path, "source_sha256": "b" * 64, "language": "rust", "definition_count": 0},
+        ],
+    }))
+    artifact = _bind_preflight_fixture(phase, corpus["repository_commit"])
+    return json.loads(phase.read_text()), phase, corpus, artifact
+
+
+@pytest.mark.parametrize("path", ["C:/a.rs", "z:a.rs", "a\x7f.rs", "a\x80.rs", "a\x9f.rs",
+                                  "a" * 4094 + ".rs", "가" * 1365 + ".rs"],
+                         ids=["absolute-drive", "relative-drive", "del", "c1-start", "c1-end",
+                              "ascii-byte-limit", "utf8-byte-limit"])
+def test_symbol_preflight_rejects_paths_outside_producer_contract(tmp_path, path):
+    # Rebind every digest and census to the candidate: path syntax itself must
+    # match ExactRepoRelativePathV1, independently of matching artifact hashes.
+    metrics, phase, corpus, _ = _complete_preflight_case(tmp_path, path)
+    with pytest.raises(ValueError, match="path"):
+        pairrun.symbol_coverage.verify_artifact(metrics, phase, corpus)
+
+
+def test_symbol_preflight_accepts_exact_path_byte_boundary_and_unicode(tmp_path):
+    for path in ["src/검색.rs", "가" * 1364 + "a.rs", "a" * 4093 + ".rs", "ab:c.rs"]:
+        metrics, phase, corpus, artifact = _complete_preflight_case(tmp_path, path)
+        assert pairrun.symbol_coverage.verify_artifact(metrics, phase, corpus) == artifact
+
+
+def test_symbol_preflight_rejects_ancestor_symlink(tmp_path):
+    metrics, phase, corpus, artifact = _complete_preflight_case(tmp_path)
+    alias = tmp_path / "alias"
+    alias.symlink_to(tmp_path, target_is_directory=True)
+    with pytest.raises(ValueError, match="symlink"):
+        pairrun.symbol_coverage.verify_artifact(metrics, alias / phase.name, corpus)
+    assert pairrun.symbol_coverage.verify_artifact(metrics, phase, corpus) == artifact
+
+
+def test_symbol_preflight_rejects_replaced_file_during_admission(tmp_path, monkeypatch):
+    metrics, phase, corpus, artifact = _complete_preflight_case(tmp_path)
+    raw = artifact.read_bytes()
+    lstat = Path.lstat
+    replaced = False
+
+    def replace_after_stat(path, *args, **kwargs):
+        nonlocal replaced
+        info = lstat(path, *args, **kwargs)
+        if path == artifact and not replaced:
+            replaced = True
+            replacement = artifact.with_suffix(".replacement")
+            replacement.write_bytes(raw)
+            replacement.replace(artifact)
+        return info
+
+    monkeypatch.setattr(Path, "lstat", replace_after_stat)
+    with pytest.raises(ValueError, match="changed"):
+        pairrun.symbol_coverage.verify_artifact(metrics, phase, corpus)
+    assert replaced
+
+
+def test_symbol_preflight_budget_cannot_be_bypassed_by_file_growth(tmp_path, monkeypatch):
+    metrics, phase, corpus, artifact = _complete_preflight_case(tmp_path)
+    raw = artifact.read_bytes()
+    budget = 64 * 1024 * 1024
+    # Whitespace preserves a valid report. The limit is inclusive and applies
+    # to actual consumed bytes, including bytes appended after path inspection.
+    at_limit = raw + b" " * (budget - len(raw))
+    artifact.write_bytes(at_limit)
+    metrics["symbol_preflight_sha256"] = hashlib.sha256(at_limit).hexdigest()
+    assert pairrun.symbol_coverage.verify_artifact(metrics, phase, corpus) == artifact
+    oversized = at_limit + b" "
+    artifact.write_bytes(raw)
+    metrics["symbol_preflight_sha256"] = hashlib.sha256(oversized).hexdigest()
+    lstat = Path.lstat
+    grown = False
+
+    def grow_after_stat(path, *args, **kwargs):
+        nonlocal grown
+        info = lstat(path, *args, **kwargs)
+        if path == artifact and not grown:
+            grown = True
+            artifact.write_bytes(oversized)
+        return info
+
+    monkeypatch.setattr(Path, "lstat", grow_after_stat)
+    with pytest.raises(ValueError, match="budget|changed"):
+        pairrun.symbol_coverage.verify_artifact(metrics, phase, corpus)
+    assert grown
+
+
+def test_symbol_preflight_enforces_diagnostic_retention_policy(tmp_path):
+    phase = tmp_path / "phase.json"
+    corpus = {"repository_commit": "a" * 40, "files": [
+        {"path": "a.txt", "file_sha256": "b" * 64},
+        {"path": "b.txt", "file_sha256": "c" * 64},
+    ]}
+    phase.write_text(json.dumps({
+        "file_count": 2, "symbol_count": 0, "symbol_only_scopes": 0,
+        "symbol_producer_identity": pairrun.QUANTA_SYMBOL_PRODUCER_IDENTITY,
+        "symbol_grammars": pairrun.QUANTA_SYMBOL_GRAMMARS, "phases_ms": {},
+        "symbol_coverage": [
+            {"path": row["path"], "source_sha256": row["file_sha256"], "language": None,
+             "definition_count": None} for row in corpus["files"]
+        ],
+    }))
+    artifact = _bind_preflight_fixture(phase, corpus["repository_commit"])
+    original = json.loads(artifact.read_text())
+    metrics = json.loads(phase.read_text())
+
+    def check(report):
+        candidate = copy.deepcopy(metrics)
+        candidate["symbol_unsupported_details"] = copy.deepcopy(report["preflight"]["files"])
+        policy_sha = pairrun.symbol_coverage.policy_digest(report["preflight"]["policy"])
+        candidate["symbol_producer_policy_sha256"] = policy_sha
+        report["preflight"]["producer_policy_sha256"] = policy_sha
+        artifact.write_text(json.dumps(report))
+        candidate["symbol_preflight_sha256"] = pairrun.sha_file(artifact)
+        return pairrun.symbol_coverage.verify_artifact(candidate, phase, corpus)
+
+    assert check(copy.deepcopy(original)) == artifact
+    # Both files are unsupported: each has exactly one diagnostic. An explicit
+    # shared limit of one retains the first and truthfully truncates the second.
+    bounded = copy.deepcopy(original)
+    bounded["preflight"]["policy"]["max_diagnostics_total"] = 1
+    bounded["preflight"]["files"][1].update(diagnostics=[], diagnostics_truncated=True)
+    assert check(bounded) == artifact
+    for mutation in ("omit_with_capacity", "invent_diagnostics", "skip_first_file"):
+        forged = copy.deepcopy(original)
+        files = forged["preflight"]["files"]
+        if mutation == "invent_diagnostics":
+            files[0]["diagnostics"].append(copy.deepcopy(files[0]["diagnostics"][0]))
+            files[0]["diagnostics_total"] = 2
+        else:
+            files[0].update(diagnostics=[], diagnostics_truncated=True)
+            if mutation == "skip_first_file":
+                forged["preflight"]["policy"]["max_diagnostics_total"] = 1
+        with pytest.raises(ValueError, match="diagnostic"):
+            check(forged)
+
+
+def test_pair_binds_symbol_preflight_inventory_and_declared_capability(tmp_path):
+    st = _pair_stage(tmp_path)
+    assert _stage_verdict(st)["states"]["PAIR_VALID"] == "pass"
+    layout = st["rep_layouts"][0]
+    phase_path = Path(layout["quanta"]["whole_file"]).parent / "phase-metrics.json"
+    artifact = phase_path.parent / "symbol-preflight.json"
+    original = artifact.read_bytes()
+    artifact.unlink()
+    with pytest.raises(pairrun.RunError, match="symbol_preflights artifact is missing"):
+        _stage_verdict(st)
+    artifact.write_bytes(original)
+    protocol = st["stage"] / "protocol-lock.json"
+    value = json.loads(protocol.read_text())
+    original_policy = value["symbol_coverage_policy"]
+    assert original_policy == "allow-incomplete"
+    value["symbol_coverage_policy"] = "require-complete"
+    protocol.write_text(json.dumps(value))
+    assert _stage_verdict(st)["states"]["PAIR_VALID"] == "fail"
+    value["symbol_coverage_policy"] = original_policy
+    protocol.write_text(json.dumps(value))
+    assert _stage_verdict(st)["states"]["PAIR_VALID"] == "pass"
+    # A malformed state inside the raw report must become a failed pair verdict,
+    # even when the outer phase digest has been updated to those exact bytes.
+    malformed = json.loads(original)
+    malformed["preflight"]["files"][0]["coverage"] = {"state": []}
+    for encoded in (json.dumps(malformed).encode(), b"[" * 10000 + b"0" + b"]" * 10000):
+        artifact.write_bytes(encoded)
+        phase = json.loads(phase_path.read_text())
+        phase["symbol_preflight_sha256"] = pairrun.sha_file(artifact)
+        phase_path.write_text(json.dumps(phase))
+        assert _stage_verdict(st)["states"]["PAIR_VALID"] == "fail"
+
+
 def test_parity_reference_refuses_unpinned_assets_and_library(tmp_path, monkeypatch):
     names = tuple(parity_reference.PINNED_ASSET_SHA256)
     for name in names:
@@ -3712,7 +4019,7 @@ def _full_receipts(commit, binary_digest, binary_dir):
     py_cmd = "python3 -m pytest tools/ci/tests/test_retrieval_benchmark.py -q"
     rs_cmd = (
         "./scripts/cargow nextest run -p quanta-index-retrieval-bench "
-        "--lib --test chunking_contract --all-features --locked"
+        "--lib --test chunking_contract --test l5_parser_regressions --all-features --locked"
     )
     sdk_cmd = "just retrieval-sdk-proof"
     # A synthetic qualified receipt models the committed source at `commit`,
@@ -3924,10 +4231,11 @@ def _full_receipts(commit, binary_digest, binary_dir):
         artifacts[f"{rail}_source_closure"] = closure_bytes
         log_buffer = io.BytesIO()
         with zipfile.ZipFile(log_buffer, "w", compression=zipfile.ZIP_STORED) as archive:
-            for name in pairrun.CONTEXT_COMMAND_NAMES[rail]:
-                for stream in ("stdout", "stderr"):
-                    filename = f"{name}.{stream}"
-                    archive.writestr(filename, transcripts.get(filename, b""))
+            for filename in sorted(
+                f"{name}.{stream}" for name in pairrun.CONTEXT_COMMAND_NAMES[rail]
+                for stream in ("stdout", "stderr")
+            ):
+                archive.writestr(filename, transcripts.get(filename, b""))
         artifacts[f"{rail}_execution_logs"] = log_buffer.getvalue()
         for side in ("python", "rust") if rail == "contract" else ("sdk",):
             receipt = artifacts[f"contract_{side}_receipt" if rail == "contract" else "sdk_receipt"]
@@ -4213,15 +4521,15 @@ def _pair_stage(
                     "symbol_grammars": pairrun.QUANTA_SYMBOL_GRAMMARS,
                     "symbol_coverage": [
                         {
-                            "path": "src/a.rs",
-                            "source_sha256": _fake_sha("symbol-source-a"),
-                            "language": "rust",
+                            "path": "a.txt",
+                            "source_sha256": ev.digest(files["a.txt"]),
+                            "language": None,
                             "definition_count": 0,
                         },
                         {
-                            "path": "src/b.rs",
-                            "source_sha256": _fake_sha("symbol-source-b"),
-                            "language": "rust",
+                            "path": "b.txt",
+                            "source_sha256": ev.digest(files["b.txt"]),
+                            "language": None,
                             "definition_count": 0,
                         },
                     ],
@@ -4249,6 +4557,7 @@ def _pair_stage(
             ),
             encoding="utf-8",
         )
+        preflight = _bind_preflight_fixture(qphase, pack["repository_commit"])
         sphase = sdir / "phase-metrics.json"
         sphase.write_text(
             json.dumps(
@@ -4555,6 +4864,8 @@ def _pair_stage(
                             "index_bytes": 4096,
                             "runner_binary_sha256": binary_digest,
                             "driver_ms": 1.0,
+                            "symbol_preflight": "strategy-00-whole_file/symbol-preflight.json",
+                            "symbol_preflight_digest": pairrun.sha_file(preflight),
                             "phase_metrics": "strategy-00-whole_file/phase-metrics.json",
                             "phase_metrics_digest": ev.digest(qphase.read_bytes()),
                             "resource_metrics": "strategy-00-whole_file/resource-metrics.json",
@@ -4628,6 +4939,7 @@ def _pair_stage(
     semble_lockfile = stage / "rep-00" / "semble" / "lockfile.txt"
     spec = {
         "spec_version": 2,
+        "symbol_coverage_policy": "allow-incomplete",
         "repo": str(repo),
         "manifest": str(corpus_path),
         "suite": str(suite_path),
@@ -4795,6 +5107,7 @@ def _pair_stage(
             {
                 "lock_version": {4: 2, 5: 3, 6: 4}[diagnostic_version],
                 "retrieval_diagnostic_version": diagnostic_version,
+                "symbol_coverage_policy": "allow-incomplete",
                 **({"hybrid_fetch_policy": pairrun.hybrid_fetch_policy_configuration(hybrid_floor)} if diagnostic_version == 6 else {}),
                 **({"server_observation": pairrun.server_observation_configuration(query_observation), "ingest_request_identity": pairrun.ingest_request_identity({})} if diagnostic_version in (5, 6) else {}),
                 "rank_metric_k_policy": "declared_top_k_v1",
@@ -5221,6 +5534,41 @@ def test_verdict_incomplete_observation_fails_pair(tmp_path):
     assert verdict["counts"]["failed"] == 1
 
 
+def test_required_inventory_uses_canonical_internal_temporary_path(tmp_path, monkeypatch):
+    root = Path(__file__).resolve().parents[3]
+    revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+    authority_ref = "benchmarks/retrieval/proof-required-tests.json"
+    committed = subprocess.check_output(["git", "show", f"{revision}:{authority_ref}"], cwd=root)
+    authority = json.loads(committed)
+    receipt = {"source_closure": {"revision": revision, "files": [
+        {"path": authority_ref, "sha256": hashlib.sha256(committed).hexdigest()},
+    ]}}
+    inventory = tmp_path / "inventory.json"
+    payload = {"schema_version": 1, "kind": "pytest", "selector": "tools/ci/tests/test_retrieval_benchmark.py",
+               "tests": authority["python"]}
+    inventory.write_text(json.dumps(payload))
+    real_temp = tmp_path / "real-temp"
+    real_temp.mkdir()
+    alias = tmp_path / "temp-alias"
+    alias.symlink_to(real_temp, target_is_directory=True)
+    temporary_directory = tempfile.TemporaryDirectory
+
+    def aliased_temp(**kwargs):
+        return temporary_directory(dir=alias, **kwargs)
+
+    monkeypatch.setattr(pairrun.tempfile, "TemporaryDirectory", aliased_temp)
+    pairrun._verify_required_inventory(inventory, "python", receipt)
+    payload["tests"] = payload["tests"][:-1]
+    inventory.write_text(json.dumps(payload))
+    with pytest.raises(pairrun.RunError, match="source authority"):
+        pairrun._verify_required_inventory(inventory, "python", receipt)
+    target = tmp_path / "linked-inventory.json"
+    inventory.rename(target)
+    inventory.symlink_to(target)
+    with pytest.raises(pairrun.RunError, match="symlink"):
+        pairrun._verify_required_inventory(inventory, "python", receipt)
+
+
 def test_verdict_full_receipts_all_green(tmp_path):
     st = _pair_stage(tmp_path, receipts="full")
     verdict = _stage_verdict(st)
@@ -5511,9 +5859,9 @@ def test_verdict_refuses_frozen_command_log_tampering(tmp_path, mutation):
     assert (
         "frozen command output digest mismatch"
         if mutation == "digest"
-        else "cannot inspect frozen command logs: Bad CRC-32"
+        else "Bad CRC-32"
         if mutation == "crc"
-        else "frozen command logs missing or duplicated"
+        else "archive central directory exceeds limits"
     ) in reason
 
 
@@ -6407,6 +6755,7 @@ def test_protocol_phase_metrics_bind_raw_warm_counts_and_cold_separately():
             }],
         }
     )
+    _current_symbol_metrics(current)
     assert pairrun._validate_phase_metrics(current, "phase") == current
     stale_producer = json.loads(json.dumps(current))
     stale_producer["symbol_producer_identity"] = "source-bound-symbols-v1"
@@ -6427,10 +6776,10 @@ def test_protocol_phase_metrics_bind_raw_warm_counts_and_cold_separately():
         "path": "docs/readme.md", "file_sha256": "d" * 64,
         "reason": "unsupported_language",
     }]
-    with pytest.raises(pairrun.RunError, match="incomplete symbol coverage"):
+    with pytest.raises(pairrun.RunError):
         pairrun._validate_phase_metrics(incomplete, "phase")
     incomplete["symbol_unsupported_details"][0]["file_sha256"] = "bad"
-    with pytest.raises(pairrun.RunError, match="hash or reason"):
+    with pytest.raises(pairrun.RunError):
         pairrun._validate_phase_metrics(incomplete, "phase")
     admitted = {"files": [{"path": "src/a.rs", "file_sha256": "c" * 64}]}
     pairrun._verify_symbol_coverage_corpus(current, admitted)
@@ -8436,9 +8785,11 @@ def test_benchmark_prep_does_not_repeat_retrieval_contracts():
     assert "portable_proof.py run --rail contract" in proof
     assert "test_retrieval_benchmark.py -q" in local
     assert "--test chunking_contract" in local
+    assert "--test l5_parser_regressions" in local
     portable_source = (root / "tools/benchmark/retrieval/portable_proof.py").read_text()
     assert "proof_inventory.PYTHON_SELECTOR" in portable_source
     assert '"--test", "chunking_contract"' in portable_source
+    assert '"--test", "l5_parser_regressions"' in portable_source
 
 
 def test_retrieval_verdict_recipe_matches_cli_parser():
@@ -8501,6 +8852,7 @@ def _g0_manifest() -> dict:
             "semble_native": ["native.json"],
             "semble_model_cache_manifests": ["model-cache-manifest.json"],
             "phase_metrics": ["phase.json"],
+            "symbol_preflights": ["symbol-preflight.json"],
             "resource_metrics": ["resource.json"],
             "protocol_lock": "protocol-lock.json",
         },

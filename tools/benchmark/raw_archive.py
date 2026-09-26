@@ -13,7 +13,10 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-from evidence import IO_CHUNK_BYTES, EvidenceError, RawFile, RawWriter
+if __package__:
+    from .evidence import IO_CHUNK_BYTES, EvidenceError, RawFile, RawWriter
+else:
+    from evidence import IO_CHUNK_BYTES, EvidenceError, RawFile, RawWriter
 
 
 @dataclass(frozen=True)
@@ -198,6 +201,8 @@ def unpack(raw: RawFile, destination: Path, *, limits: ArchiveLimits, admit_name
                 total += entry.file_size
                 if (
                     entry.is_dir()
+                    or entry.orig_filename != entry.filename
+                    or entry.volume != 0
                     or entry.compress_type != zipfile.ZIP_STORED
                     or entry.flag_bits & 1
                     or entry.file_size != entry.compress_size

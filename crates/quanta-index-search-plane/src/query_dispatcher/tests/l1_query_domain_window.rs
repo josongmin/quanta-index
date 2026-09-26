@@ -1,4 +1,5 @@
 //! L1 regressions at the real dispatcher boundary, using an instrumented port.
+//!
 //! Registration in tests/mod.rs is coordinated with L0; no production validator
 //! or replacement window arithmetic is implemented by these fixtures.
 
@@ -74,7 +75,9 @@ fn symbol_conflicts_reject_before_snapshot_open_and_language_empty() -> TestResu
         }
     }
     let calls = state.lock().map_err(|error| error.to_string())?;
-    if !calls.opened_pins.is_empty() || !calls.symbol_top_ks.is_empty() {
+    let invoked = !calls.opened_pins.is_empty() || !calls.symbol_top_ks.is_empty();
+    drop(calls);
+    if invoked {
         return Err("pure domain conflict acquired a snapshot or invoked search".into());
     }
     Ok(())
@@ -105,11 +108,177 @@ fn contradictory_languages_do_not_hide_zero_count() -> TestResult {
         }
     }
     let calls = state.lock().map_err(|error| error.to_string())?;
-    if !calls.opened_pins.is_empty()
+    let invoked = !calls.opened_pins.is_empty()
         || !calls.symbol_top_ks.is_empty()
-        || !calls.search_top_ks.is_empty()
-    {
+        || !calls.search_top_ks.is_empty();
+    drop(calls);
+    if invoked {
         return Err("pure invalid count reached snapshot/search".into());
+    }
+    Ok(())
+}
+
+// Native planner coverage pins the same phrase's rejection independently.
+// This regression requires shared primitive admission before LogicalEmpty;
+// authoring it alone does not establish a reproduced dispatcher defect.
+#[test]
+fn contradictory_languages_do_not_hide_tokenless_phrase() -> TestResult {
+    let state = Arc::new(Mutex::new(RecordingLexicalState::default()));
+    let dispatcher = dispatcher_with_obs(
+        Arc::new(RecordingLexicalOpener {
+            state: Arc::clone(&state),
+            results: Vec::new(),
+        }),
+        Arc::new(RejectSemanticOpener),
+        Arc::new(NoopQueryObsSink),
+    )?;
+    let request = TextQueryRequest::from(symbol_request("lang:python \"!!!\"", Some("rust"))?);
+    let (code, message) = ipc_error_from(dispatcher.dispatch(
+        SearchPlaneQueryIpcRequest::Text(request),
+        &RequestBudgetV1::unbounded(),
+    ))?;
+    if code != SearchPlaneErrorCodeV2::LexTextQueryNoTokens {
+        return Err(
+            format!("tokenless phrase changed meaning on empty scope: {code}: {message}").into(),
+        );
+    }
+    let calls = state.lock().map_err(|error| error.to_string())?;
+    if calls.primitive_queries.len() != 1 {
+        return Err("dispatcher did not invoke exactly one primitive admission".into());
+    }
+    let invoked = !calls.opened_pins.is_empty() || !calls.search_top_ks.is_empty();
+    drop(calls);
+    if invoked {
+        return Err("pure invalid phrase reached snapshot/search".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn l1_real_adapter_admits_primitives_before_language_empty_or_generation_open() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let absent_root = dir.path().join("unopened-lexical");
+    let dispatcher = dispatcher_with_obs(
+        Arc::new(quanta_index_lexical::LexicalAdapter::with_state_root(
+            absent_root.clone(),
+        )),
+        Arc::new(RejectSemanticOpener),
+        Arc::new(NoopQueryObsSink),
+    )?;
+    for manual in ["", "index:no "] {
+        for language in [None, Some("rust")] {
+            for (primitive, expected) in [
+                ("...", SearchPlaneErrorCodeV2::LexTextQueryNoTokens),
+                ("\"!!!\"", SearchPlaneErrorCodeV2::LexTextQueryNoTokens),
+                ("content:!!!", SearchPlaneErrorCodeV2::LexTextQueryNoTokens),
+                (
+                    "repo.has.content(\"!!!\")",
+                    SearchPlaneErrorCodeV2::LexTextQueryNoTokens,
+                ),
+                (
+                    "file.has.content(\"!!!\")",
+                    SearchPlaneErrorCodeV2::LexTextQueryNoTokens,
+                ),
+                (
+                    "patterntype:regexp [",
+                    SearchPlaneErrorCodeV2::LexRegexDialectParseError,
+                ),
+            ] {
+                let query = format!("{manual}lang:python {primitive}");
+                let request = TextQueryRequest::from(symbol_request(&query, language)?);
+                let (code, message) = ipc_error_from(dispatcher.dispatch(
+                    SearchPlaneQueryIpcRequest::Text(request),
+                    &RequestBudgetV1::unbounded(),
+                ))?;
+                if code != expected {
+                    return Err(
+                        format!("{query}, {language:?}: {code} != {expected}: {message}").into(),
+                    );
+                }
+            }
+            let request = symbol_request(&format!("{manual}lang:python ..."), language)?;
+            let (code, message) = ipc_error_from(dispatcher.dispatch(
+                SearchPlaneQueryIpcRequest::Symbol(request),
+                &RequestBudgetV1::unbounded(),
+            ))?;
+            if code != SearchPlaneErrorCodeV2::LexTextQueryNoTokens {
+                return Err(format!("symbol primitive admission: {code}: {message}").into());
+            }
+        }
+        let request = TextQueryRequest::from(symbol_request(
+            &format!("{manual}lang:python needle"),
+            Some("rust"),
+        )?);
+        let response = dispatcher.dispatch(
+            SearchPlaneQueryIpcRequest::Text(request),
+            &RequestBudgetV1::unbounded(),
+        );
+        let SearchPlaneQueryIpcResponse::Text(response) = response else {
+            return Err(format!(
+                "valid contradiction tried opening absent generation: {response:?}"
+            )
+            .into());
+        };
+        if !response.results.is_empty() || !response.explanation.engines_executed.is_empty() {
+            return Err("logical empty acquired execution facts".into());
+        }
+    }
+    if absent_root.exists() {
+        return Err("pure validation materialized adapter state".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn structural_exact_all_callers_propagate_bounded_count_refusal() -> TestResult {
+    use crate::query_dispatcher::tests::support::lexical::recording_lexical_candidate;
+    use crate::query_dispatcher::tests::support::structural::{
+        PatternRoutingStructuralProducer, ready_ledger_with_structural_boolean_chunks,
+        structural_dispatcher_mixed,
+    };
+
+    // The instrumented port pins routing/error propagation. Native L1 tests
+    // independently prove the complete-set port's refusal and positive controls.
+    let dispatcher = structural_dispatcher_mixed(
+        Arc::new(PatternRoutingStructuralProducer::new()),
+        Arc::new(RecordingLexicalOpener {
+            state: Arc::new(Mutex::new(RecordingLexicalState::default())),
+            results: vec![recording_lexical_candidate("chunk-a")],
+        }),
+        ready_ledger_with_structural_boolean_chunks(),
+    )?;
+    for leaf in ["needle", "symbol.has.name(needle)"] {
+        for count in ["", "count:all ", "count:1 "] {
+            let text = format!("{count}{leaf} AND match {{ alpha }}");
+            let request = quanta_index_contract::StructuralQueryRequest {
+                text_query: TextQueryRequest::from(symbol_request(&text, None)?),
+                cursor: None,
+            };
+            let response = dispatcher.dispatch(
+                SearchPlaneQueryIpcRequest::Structural(request),
+                &RequestBudgetV1::unbounded(),
+            );
+            if count == "count:1 " {
+                let (code, message) = ipc_error_from(response)?;
+                if code != SearchPlaneErrorCodeV2::LexFilterInvalidCount {
+                    return Err(format!("{text}: wrong all-port refusal {code}: {message}").into());
+                }
+            } else if let SearchPlaneQueryIpcResponse::Structural(page) = response {
+                let ids: Vec<_> = page
+                    .results
+                    .iter()
+                    .map(|row| row.candidate_id.as_str())
+                    .collect();
+                if ids != ["chunk-a"] {
+                    return Err(format!("{text}: complete-set control returned {ids:?}").into());
+                }
+            } else {
+                return Err(format!(
+                    "{text}: expected complete structural control, got {response:?}"
+                )
+                .into());
+            }
+        }
     }
     Ok(())
 }
@@ -155,10 +324,11 @@ fn language_empty_cannot_hide_unsupported_symbol_text_or_domain_override() -> Te
         }
     }
     let calls = state.lock().map_err(|error| error.to_string())?;
-    if !calls.opened_pins.is_empty()
+    let invoked = !calls.opened_pins.is_empty()
         || !calls.symbol_top_ks.is_empty()
-        || !calls.search_top_ks.is_empty()
-    {
+        || !calls.search_top_ks.is_empty();
+    drop(calls);
+    if invoked {
         return Err("unsupported Symbol text reached snapshot/search".into());
     }
     Ok(())
@@ -186,7 +356,7 @@ fn valid_language_contradiction_has_no_executed_lane_or_backend_search() -> Test
             .coverage()
             .lanes()
             .iter()
-            .any(|lane| lane.executed())
+            .any(quanta_index_contract::LaneTraceV1::executed)
     {
         return Err(format!("logical empty claimed Symbol execution: {symbols:?}").into());
     }
@@ -205,14 +375,16 @@ fn valid_language_contradiction_has_no_executed_lane_or_backend_search() -> Test
             .coverage()
             .lanes()
             .iter()
-            .any(|lane| lane.executed())
+            .any(quanta_index_contract::LaneTraceV1::executed)
     {
         return Err(format!("logical empty claimed Text execution: {text:?}").into());
     }
     let calls = state.lock().map_err(|error| error.to_string())?;
     // A future capability gate may open the immutable view, but it must not
     // execute backend search for the independently contradictory language set.
-    if !calls.symbol_top_ks.is_empty() || !calls.search_top_ks.is_empty() {
+    let invoked = !calls.symbol_top_ks.is_empty() || !calls.search_top_ks.is_empty();
+    drop(calls);
+    if invoked {
         return Err("logical empty invoked backend search".into());
     }
     Ok(())
@@ -433,7 +605,9 @@ fn sourcegraph_symbol_projection_conflict_uses_the_same_pure_admission() -> Test
         }
     }
     let calls = state.lock().map_err(|error| error.to_string())?;
-    if !calls.opened_pins.is_empty() || !calls.symbol_top_ks.is_empty() {
+    let invoked = !calls.opened_pins.is_empty() || !calls.symbol_top_ks.is_empty();
+    drop(calls);
+    if invoked {
         return Err("Sourcegraph pure conflict reached snapshot/search".into());
     }
     Ok(())

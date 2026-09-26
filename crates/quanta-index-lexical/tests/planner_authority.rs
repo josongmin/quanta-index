@@ -12,14 +12,19 @@
 
 #![forbid(unsafe_code)]
 
+#[path = "support/op_fixture.rs"]
+mod op_fixture;
+#[path = "support/source_fixture.rs"]
+mod source_fixture;
+
 use std::error::Error;
 
 use quanta_index_contract::channel::LexicalChannelOp;
 use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
-    BatchIngestMode, ChunkId, ChunkRecord, LQ_VERSION_TAG, LqCountBound, LqExpr, LqFilter, LqLeaf,
-    LqOptions, LqPatternType, LqQuery, LqSpan, LqType, LqYesNoOnly, ManifestGeneration, RepoId,
-    RepoRelativePath, RevisionId, SearchCorpusIngestBatch, UpsertChunk,
+    ChunkId, ChunkRecord, LQ_VERSION_TAG, LqCountBound, LqExpr, LqFilter, LqLeaf, LqOptions,
+    LqPatternType, LqQuery, LqSpan, LqType, LqYesNoOnly, ManifestGeneration, RepoId,
+    RepoRelativePath, RevisionId, UpsertChunk,
 };
 use quanta_index_core::{
     CoreError, LexicalIndexOpenPort, LexicalSearcher, RequestBudgetV1, SearchCorpusBatchBuildPort,
@@ -48,11 +53,8 @@ fn generation() -> ManifestGeneration {
     ManifestGeneration::new(1)
 }
 
-/// Direct lexical builds mutate an incomplete generation.
-///
-/// The read port only accepts a generation sealed through the manifest-digest
-/// carrying batch authority, so planner fixtures seal after applying their
-/// compact op set.
+/// Author canonical source files from the compact test input before ingestion.
+/// The helper binds raw bytes, unit sets, and source publication in one batch.
 trait SealedFixtureBuildPort {
     fn build(
         &self,
@@ -71,25 +73,9 @@ impl SealedFixtureBuildPort for LexicalAdapter {
         generation: ManifestGeneration,
         ops: &[LexicalChannelOp],
     ) -> Result<(), CoreError> {
-        quanta_index_core::LexicalIndexBuildPort::build(self, repo, revision, generation, ops)?;
         SearchCorpusBatchBuildPort::build_batch(
             self,
-            &SearchCorpusIngestBatch {
-                repo_id: repo.clone(),
-                revision_id: revision.clone(),
-                generation,
-                base_generation: None,
-                manifest_digest: format!("planner-test-manifest-digest-{}", generation.get()),
-                batch_digest: format!("planner-test-batch-digest-{}", generation.get()),
-                mode: BatchIngestMode::ReplaceGeneration,
-                bundle_payload: None,
-                clear_surfaces: Vec::new(),
-                replace_scopes: Vec::new(),
-                tombstone_scopes: Vec::new(),
-                semantic_replace_scopes: Vec::new(),
-                semantic_tombstone_scopes: Vec::new(),
-                seal: true,
-            },
+            &op_fixture::batch(repo, revision, generation, ops)?,
         )
     }
 }

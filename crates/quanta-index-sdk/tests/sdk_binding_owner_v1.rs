@@ -126,6 +126,9 @@ fn active_snapshot(repo_id: RepoId) -> SearchPlaneQueryIpcResponse {
 
 fn lexical_candidate(repo: RepoId) -> quanta_index_contract::LexicalCandidate {
     quanta_index_contract::LexicalCandidate {
+        source_repo_id: repo.clone(),
+        source: None,
+        preview: None,
         candidate_id: "cand-1".to_string(),
         repo_id: repo,
         revision_id: revision_id(),
@@ -415,6 +418,9 @@ fn rows_over_request_cap_fails_closed() {
 
 fn owner_hit(candidate_id: &str, score: f32) -> quanta_index_contract::LexicalCandidate {
     quanta_index_contract::LexicalCandidate {
+        source_repo_id: repo_id(),
+        source: None,
+        preview: None,
         candidate_id: candidate_id.to_string(),
         repo_id: repo_id(),
         revision_id: revision_id(),
@@ -433,6 +439,7 @@ fn owner_projection_row(
     candidate: &quanta_index_contract::LexicalCandidate,
 ) -> quanta_index_contract::FileOwnerProjectionRow {
     quanta_index_contract::FileOwnerProjectionRow {
+        source_repo_id: candidate.source_repo_id.clone(),
         candidate_id: candidate.candidate_id.clone(),
         repo_id: candidate.repo_id.clone(),
         revision_id: candidate.revision_id.clone(),

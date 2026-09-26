@@ -1642,7 +1642,7 @@ impl SearchdRuntime {
                 repo_map_activate: repo_map_generation_activate_port,
                 lifecycle: SearchCorpusLifecycleParts {
                     activation_catalog: Arc::clone(&activation_catalog),
-                    idempotency: Arc::clone(&idempotency),
+                    idempotency: idempotency.clone(),
                     ledger: Arc::clone(&ledger),
                     authority: Arc::clone(&authority_inspect_port),
                     promotion,

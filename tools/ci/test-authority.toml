@@ -713,6 +713,12 @@ owner = "quanta-index-lexical"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
+id = "lexical-l3-exact-source"
+path = "crates/quanta-index-lexical/tests/l3_exact_source.rs"
+owner = "quanta-index-lexical"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
 id = "lexical-tantivy-smoke"
 path = "crates/quanta-index-lexical/tests/tantivy_smoke.rs"
 owner = "quanta-index-lexical"

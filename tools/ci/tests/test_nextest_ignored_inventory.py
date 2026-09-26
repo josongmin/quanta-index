@@ -18,12 +18,78 @@ import pytest
 from tools.ci.nextest_events import (
     NextestEvidenceError,
     NextestInventory,
+    parse_nextest,
     parse_nextest_bytes,
     parse_nextest_inventory_bytes,
 )
 
 SUITE = {"crate": "demo", "test_binary": "checks", "kind": "test"}
 PREFIX = "demo::checks$"
+
+
+def test_file_consumer_accepts_large_log_with_bounded_lines(tmp_path, monkeypatch):
+    rows = events(False)
+    path = tmp_path / "events.jsonl"
+    digest = hashlib.sha256()
+    with path.open("wb") as stream:
+        for row in rows:
+            raw = json.dumps({**row, "stdout": "x" * (3 * 1024 * 1024)}).encode() + b"\n"
+            stream.write(raw)
+            digest.update(raw)
+    expected = parse_nextest_inventory_bytes(json.dumps(inventory()).encode())
+    monkeypatch.setattr(Path, "read_bytes", lambda *_: pytest.fail("whole-file read"))
+    parsed = parse_nextest(path, expected)
+    assert (parsed.selected, parsed.executed, parsed.passed, parsed.failed) == (2, 2, 2, 0)
+    assert parsed.passed_names == {PREFIX + "a", PREFIX + "b"}
+    assert parsed.sha256 == digest.hexdigest()
+
+
+def test_file_consumer_refuses_oversized_line_before_json_decode(tmp_path, monkeypatch):
+    from tools.ci import nextest_events as owner
+
+    path = tmp_path / "events.jsonl"
+    path.write_bytes(b" " * (owner.CONTROL_DOCUMENT_BYTES + 1))
+    monkeypatch.setattr(owner.json, "loads", lambda *_a, **_k: pytest.fail("decoded oversized line"))
+    with pytest.raises(NextestEvidenceError, match="line exceeds"):
+        parse_nextest(path)
+
+
+def test_file_consumer_refuses_mutation_during_parse(tmp_path, monkeypatch):
+    from tools.ci import nextest_events as owner
+
+    path = tmp_path / "events.jsonl"
+    path.write_bytes(b"\n".join(json.dumps(row).encode() for row in events(False)) + b"\n")
+    expected = parse_nextest_inventory_bytes(json.dumps(inventory()).encode())
+    decode = owner.json.loads
+    changed = False
+
+    def mutate(raw, **kwargs):
+        nonlocal changed
+        result = decode(raw, **kwargs)
+        if not changed:
+            changed = True
+            with path.open("ab") as stream:
+                stream.write(b" ")
+        return result
+
+    monkeypatch.setattr(owner.json, "loads", mutate)
+    with pytest.raises(NextestEvidenceError):
+        parse_nextest(path, expected)
+    assert changed
+
+
+def test_event_identity_retention_has_an_explicit_limit(monkeypatch):
+    from tools.ci import nextest_events as owner
+
+    monkeypatch.setattr(owner, "CONTROL_DOCUMENT_BYTES", 256)
+    rows = [{"type": "suite", "event": "started", "test_count": 10}]
+    for index in range(10):
+        name = f"case-{index}-" + "x" * 40
+        rows.extend({"type": "test", "event": state, "name": name} for state in ("started", "ok"))
+    rows.append({"type": "suite", "event": "ok", "passed": 10, "failed": 0, "ignored": 0})
+    raw = b"\n".join(json.dumps(row).encode() for row in rows)
+    with pytest.raises(NextestEvidenceError, match="identities exceed"):
+        parse_nextest_bytes(raw)
 
 
 def inventory():

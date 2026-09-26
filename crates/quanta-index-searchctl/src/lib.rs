@@ -3465,6 +3465,10 @@ mod tests {
                     ManifestGeneration::new(7),
                 ),
                 results: vec![SymbolCandidate {
+                    source_repo_id: RepoId::new("repo")
+                        .expect("static fixture ID satisfies canonical policy"),
+                    source: None,
+                    preview: None,
                     candidate_id: "sym-1".to_string(),
                     repo_id: RepoId::new("repo")
                         .expect("static fixture ID satisfies canonical policy"),
@@ -3521,6 +3525,10 @@ mod tests {
                         ManifestGeneration::new(7),
                     ),
                     results: vec![LexicalCandidate {
+                        source_repo_id: RepoId::new("repo")
+                            .expect("static fixture ID satisfies canonical policy"),
+                        source: None,
+                        preview: None,
                         candidate_id: "rt-1".to_string(),
                         repo_id: RepoId::new("repo")
                             .expect("static fixture ID satisfies canonical policy"),
@@ -3584,6 +3592,10 @@ mod tests {
                     ManifestGeneration::new(7),
                 ),
                 results: vec![LexicalCandidate {
+                    source_repo_id: RepoId::new("repo")
+                        .expect("static fixture ID satisfies canonical policy"),
+                    source: None,
+                    preview: None,
                     candidate_id: "cand-1".to_string(),
                     repo_id: RepoId::new("repo")
                         .expect("static fixture ID satisfies canonical policy"),
@@ -3600,6 +3612,8 @@ mod tests {
                 }],
                 window: QueryResultWindowV2::exact_probe(1),
                 file_owner_rows: Some(vec![quanta_index_contract::FileOwnerProjectionRow {
+                    source_repo_id: RepoId::new("repo")
+                        .expect("static fixture ID satisfies canonical policy"),
                     candidate_id: "cand-1".to_string(),
                     repo_id: RepoId::new("repo")
                         .expect("static fixture ID satisfies canonical policy"),
@@ -4605,6 +4619,10 @@ mod tests {
 
     fn sample_candidate(id: &str, score: f32) -> LexicalCandidate {
         LexicalCandidate {
+            source_repo_id: RepoId::new("repo")
+                .expect("static fixture ID satisfies canonical policy"),
+            source: None,
+            preview: None,
             candidate_id: id.to_string(),
             repo_id: RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
             revision_id: RevisionId::new("rev")

@@ -184,6 +184,7 @@ struct StubIngestTransport {
     /// batch it answers; `false` answers the canned receipt verbatim, for
     /// tests that inject a receipt the SDK must refuse.
     names_request_digest: bool,
+    corpus_receipt: Mutex<Option<BatchPublishReceipt>>,
 }
 
 impl StubIngestTransport {
@@ -192,6 +193,16 @@ impl StubIngestTransport {
             requests: Mutex::new(Vec::new()),
             response: Mutex::new(Some(response)),
             names_request_digest: true,
+            corpus_receipt: Mutex::new(None),
+        }
+    }
+
+    // Bind an explicitly supplied receipt to the incoming corpus request.
+    // Receipt mutations remain intact except the existing canonical-digest echo.
+    fn for_corpus_receipt(receipt: BatchPublishReceipt) -> Self {
+        Self {
+            corpus_receipt: Mutex::new(Some(receipt)),
+            ..Self::new(unused_ingest_response())
         }
     }
 
@@ -281,6 +292,26 @@ impl IngestTransport for StubIngestTransport {
             .map_err(|err| crate::SdkError::Protocol(format!("ingest response poisoned: {err}")))?
             .take()
             .ok_or_else(|| crate::SdkError::Protocol("missing stub ingest response".to_string()))?;
+        if let Some(receipt) = self
+            .corpus_receipt
+            .lock()
+            .map_err(|error| crate::SdkError::Protocol(error.to_string()))?
+            .take()
+        {
+            let SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch) = &request.payload
+            else {
+                return Err(crate::SdkError::Protocol(
+                    "corpus fixture received another route".into(),
+                ));
+            };
+            payload = SearchPlaneIngestIpcResponse::SearchCorpusReceipt(
+                quanta_index_contract::SearchCorpusPublishOutcome {
+                    publication: quanta_index_contract::SourcePublicationBinding::for_batch(batch),
+                    receipt,
+                    observation: None,
+                },
+            );
+        }
         if let (true, Some(digest)) = (self.names_request_digest, verified) {
             name_receipt_digest(&mut payload, &digest);
         }
@@ -586,6 +617,9 @@ fn assert_resolved_active_selector(selector: Option<&GenerationSelector>) {
 
 fn sample_hit() -> quanta_index_contract::LexicalCandidate {
     quanta_index_contract::LexicalCandidate {
+        source_repo_id: repo_id(),
+        source: None,
+        preview: None,
         candidate_id: "chunk-1".to_string(),
         repo_id: repo_id(),
         revision_id: revision_id(),
@@ -630,6 +664,9 @@ fn sample_hybrid_seed_candidate() -> quanta_index_contract::SeedCandidate {
 
 fn sample_symbol_hit() -> quanta_index_contract::SymbolCandidate {
     quanta_index_contract::SymbolCandidate {
+        source_repo_id: repo_id(),
+        source: None,
+        preview: None,
         candidate_id: "sym-1".to_string(),
         repo_id: repo_id(),
         revision_id: revision_id(),
@@ -691,9 +728,9 @@ fn sample_chunk() -> ChunkRecord {
         repo_relative_path: RepoRelativePath::new("src/lib.rs"),
         language: ok_or_fail!(LanguageCode::new("rust")),
         start_byte: 0,
-        end_byte: 16,
+        end_byte: 14,
         start_line: 1,
-        end_line: 4,
+        end_line: 1,
         text: "fn sample() {}".into(),
         structural: None,
         parent_chunk_id: None,
@@ -705,6 +742,37 @@ fn sample_search_scope() -> SearchScopeKey {
     SearchScopeKey {
         doc_surface: SearchScopeSurface::File,
         repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+    }
+}
+
+fn sample_source_coverage() -> quanta_index_contract::SourceFileCoverage {
+    quanta_index_contract::SourceFileCoverage {
+        source: quanta_index_contract::SourceFileRevision {
+            file: quanta_index_contract::SourceFileKey {
+                source_repo_id: repo_id(),
+                repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+            },
+            revision_id: revision_id(),
+            // Opaque producer attestations for transport-only fixtures.
+            source_sha256: [1; 32],
+        },
+        language: ok_or_fail!(LanguageCode::new("rust")),
+        producer_policy_sha256: [2; 32],
+        unit_set_sha256: ok_or_fail!(quanta_index_contract::source_file_unit_set_sha256(
+            &[sample_chunk()],
+            &[sample_symbol()],
+        )),
+        text_admitted: true,
+        symbols: quanta_index_contract::SymbolCoverage::Complete { symbol_count: 1 },
+    }
+}
+
+fn sample_source_event() -> quanta_index_contract::SourcePublicationEvent {
+    quanta_index_contract::SourcePublicationEvent {
+        stream_id: "sdk-fixture-stream".into(),
+        event_id: "sdk-fixture-event".into(),
+        expected_base_event_id: None,
+        payload_sha256: [0; 32], // SDK recomputes the payload commitment.
     }
 }
 
@@ -930,10 +998,16 @@ fn unused_control() -> Arc<StubControlTransport> {
     ))
 }
 
+fn unused_ingest_response() -> SearchPlaneIngestIpcResponse {
+    SearchPlaneIngestIpcResponse::Error(SearchPlaneIpcError {
+        code: SearchPlaneErrorCodeV2::Internal,
+        message: "test must install an explicit ingest response".into(),
+        repair: None,
+    })
+}
+
 fn unused_ingest() -> Arc<StubIngestTransport> {
-    Arc::new(StubIngestTransport::new(
-        SearchPlaneIngestIpcResponse::SearchCorpusReceipt(BatchPublishReceipt::default().into()),
-    ))
+    Arc::new(StubIngestTransport::new(unused_ingest_response()))
 }
 
 fn only_query_request(
@@ -2139,9 +2213,7 @@ fn search_corpus_publish_routes_through_ingest_transport_and_carries_typed_recor
         accepted_semantic_tombstone_scopes: 0,
         sealed: true,
     };
-    let ingest = Arc::new(StubIngestTransport::new(
-        SearchPlaneIngestIpcResponse::SearchCorpusReceipt(receipt.clone().into()),
-    ));
+    let ingest = Arc::new(StubIngestTransport::for_corpus_receipt(receipt.clone()));
     let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
     let chunk = sample_chunk();
     let symbol = sample_symbol();
@@ -2151,9 +2223,9 @@ fn search_corpus_publish_routes_through_ingest_transport_and_carries_typed_recor
         ManifestGeneration::new(1),
         "manifest:feed",
     )
+    .source_event(sample_source_event())
     .replace_scope(
-        sample_search_scope(),
-        "scope:feed",
+        sample_source_coverage(),
         vec![chunk.clone()],
         vec![symbol.clone()],
     );
@@ -2189,7 +2261,7 @@ fn search_corpus_publish_routes_through_ingest_transport_and_carries_typed_recor
     let Some(first_scope) = wire.replace_scopes.first() else {
         return;
     };
-    assert_eq!(first_scope.scope, sample_search_scope());
+    assert_eq!(first_scope.coverage, sample_source_coverage());
     assert_eq!(first_scope.chunks, vec![chunk]);
     assert_eq!(first_scope.symbols, vec![symbol]);
 }
@@ -2210,9 +2282,7 @@ fn search_corpus_builder_preserves_semantic_lifecycle_in_canonical_wire_order() 
         accepted_semantic_tombstone_scopes: 2,
         sealed: true,
     };
-    let ingest = Arc::new(StubIngestTransport::new(
-        SearchPlaneIngestIpcResponse::SearchCorpusReceipt(receipt.into()),
-    ));
+    let ingest = Arc::new(StubIngestTransport::for_corpus_receipt(receipt));
     let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
     let scope_a = sample_semantic_scope("symbol-a");
     let scope_b = sample_semantic_scope("symbol-b");
@@ -2224,6 +2294,7 @@ fn search_corpus_builder_preserves_semantic_lifecycle_in_canonical_wire_order() 
         ManifestGeneration::new(1),
         "manifest:semantic",
     )
+    .source_event(sample_source_event())
     .replace_semantic_scope(
         scope_b.clone(),
         "scope:b",
@@ -2288,9 +2359,7 @@ fn search_corpus_builder_preserves_typed_cluster_membership_without_text_inferen
         accepted_semantic_tombstone_scopes: 0,
         sealed: true,
     };
-    let ingest = Arc::new(StubIngestTransport::new(
-        SearchPlaneIngestIpcResponse::SearchCorpusReceipt(receipt.into()),
-    ));
+    let ingest = Arc::new(StubIngestTransport::for_corpus_receipt(receipt));
     let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
     let source_a = sample_cluster_semantic_source("auth-service", "a");
     let source_b = sample_cluster_semantic_source("auth-service", "b");
@@ -2302,6 +2371,7 @@ fn search_corpus_builder_preserves_typed_cluster_membership_without_text_inferen
         ManifestGeneration::new(1),
         "manifest:cluster",
     )
+    .source_event(sample_source_event())
     .replace_semantic_scope(
         sample_cluster_semantic_scope("auth-service"),
         "scope:cluster",
@@ -2331,9 +2401,7 @@ fn search_corpus_builder_preserves_typed_cluster_membership_without_text_inferen
 
 #[test]
 fn search_corpus_builder_rejects_missing_mismatched_or_misplaced_cluster_membership_v1() {
-    let ingest = Arc::new(StubIngestTransport::new(
-        SearchPlaneIngestIpcResponse::SearchCorpusReceipt(BatchPublishReceipt::default().into()),
-    ));
+    let ingest = Arc::new(StubIngestTransport::new(unused_ingest_response()));
     let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
     let cluster_source = sample_cluster_semantic_source("auth-service", "a");
 
@@ -2343,6 +2411,7 @@ fn search_corpus_builder_rejects_missing_mismatched_or_misplaced_cluster_members
         ManifestGeneration::new(1),
         "manifest:cluster-missing",
     )
+    .source_event(sample_source_event())
     .replace_semantic_scope(
         sample_cluster_semantic_scope("auth-service"),
         "scope:cluster-missing",
@@ -2363,6 +2432,7 @@ fn search_corpus_builder_rejects_missing_mismatched_or_misplaced_cluster_members
         ManifestGeneration::new(1),
         "manifest:cluster-mismatch",
     )
+    .source_event(sample_source_event())
     .replace_semantic_scope(
         sample_cluster_semantic_scope("auth-service"),
         "scope:cluster-mismatch",
@@ -2382,6 +2452,7 @@ fn search_corpus_builder_rejects_missing_mismatched_or_misplaced_cluster_members
         ManifestGeneration::new(1),
         "manifest:membership-misplaced",
     )
+    .source_event(sample_source_event())
     .replace_semantic_scope(
         sample_semantic_scope("symbol-a"),
         "scope:membership-misplaced",
@@ -2406,9 +2477,7 @@ fn search_corpus_builder_rejects_missing_mismatched_or_misplaced_cluster_members
 
 #[test]
 fn search_corpus_semantic_surface_conflict_fails_before_transport_io() {
-    let ingest = Arc::new(StubIngestTransport::new(
-        SearchPlaneIngestIpcResponse::SearchCorpusReceipt(BatchPublishReceipt::default().into()),
-    ));
+    let ingest = Arc::new(StubIngestTransport::new(unused_ingest_response()));
     let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
     let batch = SearchCorpusBatch::replace_generation(
         repo_id(),
@@ -2416,6 +2485,7 @@ fn search_corpus_semantic_surface_conflict_fails_before_transport_io() {
         ManifestGeneration::new(1),
         "manifest:conflict",
     )
+    .source_event(sample_source_event())
     .clear_surface(SearchScopeSurface::Symbol)
     .replace_semantic_scope(
         sample_semantic_scope("symbol-conflict"),
@@ -2441,9 +2511,7 @@ fn search_corpus_semantic_surface_conflict_fails_before_transport_io() {
 
 #[test]
 fn search_corpus_semantic_scope_conflicts_fail_before_transport_io() {
-    let ingest = Arc::new(StubIngestTransport::new(
-        SearchPlaneIngestIpcResponse::SearchCorpusReceipt(BatchPublishReceipt::default().into()),
-    ));
+    let ingest = Arc::new(StubIngestTransport::new(unused_ingest_response()));
     let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
     let scope = sample_semantic_scope("symbol-conflict");
     let replace_and_tombstone = SearchCorpusBatch::replace_generation(
@@ -2452,6 +2520,7 @@ fn search_corpus_semantic_scope_conflicts_fail_before_transport_io() {
         ManifestGeneration::new(1),
         "manifest:scope-conflict",
     )
+    .source_event(sample_source_event())
     .replace_semantic_scope(
         scope.clone(),
         "scope:conflict",
@@ -2476,6 +2545,7 @@ fn search_corpus_semantic_scope_conflicts_fail_before_transport_io() {
         ManifestGeneration::new(1),
         "manifest:duplicate-scope",
     )
+    .source_event(sample_source_event())
     .replace_semantic_scope(
         scope.clone(),
         "scope:first",
@@ -2545,25 +2615,47 @@ fn reader_client_routes_lexical_query_surface() {
 }
 
 #[test]
-fn producer_client_publish_search_corpus_accepts_unsealed_batches() {
-    let ingest = Arc::new(StubIngestTransport::new(
-        SearchPlaneIngestIpcResponse::SearchCorpusReceipt(
-            BatchPublishReceipt {
-                generation: ManifestGeneration::new(2),
-                manifest_digest: Some("manifest:unsealed".to_string()),
-                batch_digest: String::new(),
-                applied: true,
-                durable_sequence: 7,
-                semantic_content: None,
-                accepted_clear_surfaces: 0,
-                accepted_replace_scopes: 0,
-                accepted_tombstone_scopes: 0,
-                accepted_semantic_replace_scopes: 0,
-                accepted_semantic_tombstone_scopes: 0,
-                sealed: false,
-            }
-            .into(),
-        ),
+fn producer_client_refuses_missing_source_event_before_transport() {
+    let ingest = unused_ingest();
+    let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
+    let batch = SearchCorpusBatch::replace_generation(
+        repo_id(),
+        revision_id(),
+        ManifestGeneration::new(2),
+        "manifest:no-event",
+    );
+    let error = client
+        .producer()
+        .publish_search_corpus(&batch)
+        .expect_err("generation identity cannot replace producer event identity");
+    assert!(matches!(error, crate::SdkError::Serialization(ref message)
+        if message.contains("source-event identity is required")));
+    assert!(
+        ingest
+            .requests
+            .lock()
+            .expect("ingest request mutex")
+            .is_empty()
+    );
+}
+
+#[test]
+fn producer_client_publish_search_corpus_refuses_unsealed_before_transport() {
+    let ingest = Arc::new(StubIngestTransport::for_corpus_receipt(
+        BatchPublishReceipt {
+            generation: ManifestGeneration::new(2),
+            manifest_digest: Some("manifest:unsealed".to_string()),
+            batch_digest: String::new(),
+            applied: true,
+            durable_sequence: 7,
+            semantic_content: None,
+            accepted_clear_surfaces: 0,
+            accepted_replace_scopes: 0,
+            accepted_tombstone_scopes: 0,
+            accepted_semantic_replace_scopes: 0,
+            accepted_semantic_tombstone_scopes: 0,
+            sealed: false,
+        },
     ));
     let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
     let batch = SearchCorpusBatch::replace_generation(
@@ -2572,23 +2664,20 @@ fn producer_client_publish_search_corpus_accepts_unsealed_batches() {
         ManifestGeneration::new(2),
         "manifest:unsealed",
     )
+    .source_event(sample_source_event())
     .without_seal();
-    let _receipt = ok_or_fail!(client.producer().publish_search_corpus(&batch));
-    let captured = ok_or_fail!(only_ingest_request(ingest.as_ref()));
+    let error = client
+        .producer()
+        .publish_search_corpus(&batch)
+        .expect_err("source-event publication requires a sealed batch");
+    assert!(matches!(error, crate::SdkError::Serialization(ref message)
+        if message.contains("requires a sealed batch")));
     assert!(
-        matches!(
-            captured.payload,
-            SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(_)
-        ),
-        "expected search corpus ingest request, got {:?}",
-        captured.payload
-    );
-    let SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(wire) = &captured.payload else {
-        return;
-    };
-    assert!(
-        !wire.seal,
-        "unsealed producer publish must preserve seal=false"
+        ingest
+            .requests
+            .lock()
+            .expect("ingest request mutex")
+            .is_empty()
     );
 }
 
@@ -2610,11 +2699,15 @@ impl IngestTransport for ObservedIngestTransport {
                 "expected corpus publish".to_string(),
             ));
         };
-        let receipt = BatchPublishReceipt::empty_for(
-            batch.generation,
-            Some(batch.manifest_digest.clone()),
-            batch.batch_digest.clone(),
-        );
+        let receipt = BatchPublishReceipt {
+            sealed: true,
+            ..BatchPublishReceipt::empty_for(
+                batch.generation,
+                Some(batch.manifest_digest.clone()),
+                batch.batch_digest.clone(),
+            )
+        };
+        let publication = quanta_index_contract::SourcePublicationBinding::for_batch(&batch);
         let mut observation = SearchCorpusIngestObservation {
             request_id: request.request_id,
             repo_id: batch.repo_id,
@@ -2622,7 +2715,14 @@ impl IngestTransport for ObservedIngestTransport {
             generation: batch.generation,
             batch_digest: batch.batch_digest,
             status: IngestObservationStatus::Executed,
-            semantic: Some(Box::new(IngestStageReport::default())),
+            semantic: Some(Box::new(IngestStageReport {
+                durations: quanta_index_contract::IngestStageDurations {
+                    total: 11,
+                    seal: Some(11),
+                    ..Default::default()
+                },
+                ..Default::default()
+            })),
             lexical_build_ns: Some(17),
             finalize_ns: Some(23),
             activation_ns: None,
@@ -2646,6 +2746,14 @@ impl IngestTransport for ObservedIngestTransport {
             Some("batch") => observation.batch_digest = "other-batch".to_string(),
             Some("replay") => observation.status = IngestObservationStatus::Replayed,
             Some("activation") => observation.activation_ns = Some(1),
+            Some("seal") => {
+                observation
+                    .semantic
+                    .as_mut()
+                    .expect("fixture semantic stage")
+                    .durations
+                    .seal = None;
+            }
             Some("missing") | None => {}
             Some(other) => {
                 return Err(crate::SdkError::Protocol(format!("unknown mutant {other}")));
@@ -2655,6 +2763,7 @@ impl IngestTransport for ObservedIngestTransport {
             request_id: request.request_id,
             payload: SearchPlaneIngestIpcResponse::SearchCorpusReceipt(
                 SearchCorpusPublishOutcome {
+                    publication,
                     receipt,
                     observation: if self.mutation == Some("missing") {
                         None
@@ -2675,7 +2784,7 @@ fn observed_corpus_publish_propagates_typed_stages_and_rejects_identity_and_repl
         ManifestGeneration::new(2),
         "manifest:observed",
     )
-    .without_seal();
+    .source_event(sample_source_event());
     let client = QuantaIndex::from_transports(
         unused_query(),
         unused_control(),
@@ -2694,6 +2803,7 @@ fn observed_corpus_publish_propagates_typed_stages_and_rejects_identity_and_repl
         "batch",
         "replay",
         "activation",
+        "seal",
         "missing",
     ] {
         let client = QuantaIndex::from_transports(
@@ -2743,16 +2853,15 @@ fn producer_client_publish_search_corpus_and_activate_routes_ingest_then_control
             ack.clone(),
         ),
     ));
-    let ingest = Arc::new(StubIngestTransport::new(
-        SearchPlaneIngestIpcResponse::SearchCorpusReceipt(receipt.clone().into()),
-    ));
+    let ingest = Arc::new(StubIngestTransport::for_corpus_receipt(receipt.clone()));
     let client = QuantaIndex::from_transports(unused_query(), control.clone(), ingest.clone());
     let batch = SearchCorpusBatch::replace_generation(
         repo_id(),
         revision_id(),
         ManifestGeneration::new(7),
         "manifest:activate",
-    );
+    )
+    .source_event(sample_source_event());
     let (observed_receipt, observed_ack) = ok_or_fail!(
         client
             .producer()
@@ -2853,24 +2962,21 @@ fn producer_client_rejects_activation_ack_identity_mismatches_v1() {
         let control = Arc::new(StubControlTransport::new(
             quanta_index_contract::SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(ack),
         ));
-        let ingest = Arc::new(StubIngestTransport::new(
-            SearchPlaneIngestIpcResponse::SearchCorpusReceipt(
-                BatchPublishReceipt {
-                    generation: ManifestGeneration::new(7),
-                    manifest_digest: Some("manifest:activate".to_string()),
-                    batch_digest: String::new(),
-                    applied: true,
-                    durable_sequence: 7,
-                    semantic_content: Some(semantic_roots(7)),
-                    accepted_clear_surfaces: 0,
-                    accepted_replace_scopes: 0,
-                    accepted_tombstone_scopes: 0,
-                    accepted_semantic_replace_scopes: 0,
-                    accepted_semantic_tombstone_scopes: 0,
-                    sealed: true,
-                }
-                .into(),
-            ),
+        let ingest = Arc::new(StubIngestTransport::for_corpus_receipt(
+            BatchPublishReceipt {
+                generation: ManifestGeneration::new(7),
+                manifest_digest: Some("manifest:activate".to_string()),
+                batch_digest: String::new(),
+                applied: true,
+                durable_sequence: 7,
+                semantic_content: Some(semantic_roots(7)),
+                accepted_clear_surfaces: 0,
+                accepted_replace_scopes: 0,
+                accepted_tombstone_scopes: 0,
+                accepted_semantic_replace_scopes: 0,
+                accepted_semantic_tombstone_scopes: 0,
+                sealed: true,
+            },
         ));
         let client = QuantaIndex::from_transports(unused_query(), control, ingest);
         let batch = SearchCorpusBatch::replace_generation(
@@ -2878,7 +2984,8 @@ fn producer_client_rejects_activation_ack_identity_mismatches_v1() {
             revision_id(),
             ManifestGeneration::new(7),
             "manifest:activate",
-        );
+        )
+        .source_event(sample_source_event());
         let error = client
             .producer()
             .publish_search_corpus_and_activate(&batch, Some(previous.clone()))
@@ -2919,16 +3026,15 @@ fn producer_client_refuses_to_activate_on_a_sealed_receipt_without_content_roots
         sealed: true,
     };
     let control = unused_control();
-    let ingest = Arc::new(StubIngestTransport::new(
-        SearchPlaneIngestIpcResponse::SearchCorpusReceipt(receipt.into()),
-    ));
+    let ingest = Arc::new(StubIngestTransport::for_corpus_receipt(receipt));
     let client = QuantaIndex::from_transports(unused_query(), control.clone(), ingest);
     let batch = SearchCorpusBatch::replace_generation(
         repo_id(),
         revision_id(),
         ManifestGeneration::new(7),
         "manifest:activate",
-    );
+    )
+    .source_event(sample_source_event());
     let error = client
         .producer()
         .publish_search_corpus_and_activate(&batch, None)
@@ -2964,22 +3070,27 @@ fn producer_client_rejects_mismatched_sealed_receipt_before_composite_activation
         sealed: true,
     };
     let control = unused_control();
-    let ingest = Arc::new(StubIngestTransport::new(
-        SearchPlaneIngestIpcResponse::SearchCorpusReceipt(receipt.into()),
-    ));
+    let ingest = Arc::new(StubIngestTransport::for_corpus_receipt(receipt));
     let client = QuantaIndex::from_transports(unused_query(), control.clone(), ingest);
     let batch = SearchCorpusBatch::replace_generation(
         repo_id(),
         revision_id(),
         ManifestGeneration::new(7),
         "manifest:expected",
-    );
+    )
+    .source_event(sample_source_event());
     let error = client
         .producer()
         .publish_search_corpus_and_activate(&batch, None)
         .expect_err("mismatched sealed receipt must not be activated");
     assert!(
-        matches!(error, crate::SdkError::Protocol(ref message) if message.contains("manifest digest differs")),
+        matches!(
+            error,
+            crate::SdkError::Binding {
+                axis: crate::ResponseBindingAxis::BatchCommitment,
+                ..
+            }
+        ),
         "expected fail-closed receipt-integrity error, got {error:?}"
     );
     assert!(
@@ -3000,14 +3111,14 @@ fn producer_client_rejects_each_search_corpus_receipt_mismatch_before_activation
         ManifestGeneration::new(7),
         "manifest:receipt-exact",
     )
+    .source_event(sample_source_event())
     .replace_scope(
-        sample_search_scope(),
-        "scope:replace",
+        sample_source_coverage(),
         vec![sample_chunk()],
         vec![sample_symbol()],
     )
-    .tombstone_scope(SearchScopeKey {
-        doc_surface: SearchScopeSurface::Symbol,
+    .tombstone_scope(quanta_index_contract::SourceFileKey {
+        source_repo_id: repo_id(),
         repo_relative_path: RepoRelativePath::new("src/tombstone.rs"),
     });
     let valid = BatchPublishReceipt {
@@ -3065,7 +3176,15 @@ fn producer_client_rejects_each_search_corpus_receipt_mismatch_before_activation
     for (label, receipt) in cases {
         let control = unused_control();
         let ingest = Arc::new(StubIngestTransport::answering_verbatim(
-            SearchPlaneIngestIpcResponse::SearchCorpusReceipt(receipt.into()),
+            SearchPlaneIngestIpcResponse::SearchCorpusReceipt(
+                quanta_index_contract::SearchCorpusPublishOutcome {
+                    publication: quanta_index_contract::SourcePublicationBinding::for_batch(
+                        &ok_or_fail!(batch.to_wire_batch()),
+                    ),
+                    receipt,
+                    observation: None,
+                },
+            ),
         ));
         let client = QuantaIndex::from_transports(unused_query(), control.clone(), ingest);
         let error = client
@@ -3119,7 +3238,8 @@ fn producer_client_rejects_invalid_expected_composite_before_ingest_v1() {
         revision_id(),
         ManifestGeneration::new(7),
         "manifest:7",
-    );
+    )
+    .source_event(sample_source_event());
     let error = client
         .producer()
         .publish_search_corpus_and_activate(&batch, Some(head_with_generation(invalid_expected, 1)))
@@ -3147,7 +3267,8 @@ fn producer_client_delegates_non_advancing_activation_rejection_before_ingest_v1
         revision_id(),
         ManifestGeneration::new(7),
         "manifest:7-new",
-    );
+    )
+    .source_event(sample_source_event());
     let error = client
         .producer()
         .publish_search_corpus_and_activate(
@@ -4272,7 +4393,8 @@ fn lexical_publish_propagates_ingest_error_as_typed_remote() {
         revision_id(),
         ManifestGeneration::new(1),
         "manifest:feed",
-    );
+    )
+    .source_event(sample_source_event());
     let err = client.search_corpus().publish(&batch).err();
     assert!(
         matches!(err, Some(crate::SdkError::Remote { .. })),
@@ -4429,24 +4551,21 @@ fn control_request_id_mismatch_is_rejected_for_activation_and_rollback_v1() {
         ),
         1,
     ));
-    let ingest = Arc::new(StubIngestTransport::new(
-        SearchPlaneIngestIpcResponse::SearchCorpusReceipt(
-            BatchPublishReceipt {
-                generation: ManifestGeneration::new(7),
-                manifest_digest: Some("manifest:request-id".to_string()),
-                batch_digest: String::new(),
-                applied: true,
-                durable_sequence: 7,
-                semantic_content: Some(semantic_roots(7)),
-                accepted_clear_surfaces: 0,
-                accepted_replace_scopes: 0,
-                accepted_tombstone_scopes: 0,
-                accepted_semantic_replace_scopes: 0,
-                accepted_semantic_tombstone_scopes: 0,
-                sealed: true,
-            }
-            .into(),
-        ),
+    let ingest = Arc::new(StubIngestTransport::for_corpus_receipt(
+        BatchPublishReceipt {
+            generation: ManifestGeneration::new(7),
+            manifest_digest: Some("manifest:request-id".to_string()),
+            batch_digest: String::new(),
+            applied: true,
+            durable_sequence: 7,
+            semantic_content: Some(semantic_roots(7)),
+            accepted_clear_surfaces: 0,
+            accepted_replace_scopes: 0,
+            accepted_tombstone_scopes: 0,
+            accepted_semantic_replace_scopes: 0,
+            accepted_semantic_tombstone_scopes: 0,
+            sealed: true,
+        },
     ));
     let client = QuantaIndex::from_transports(unused_query(), activation_control.clone(), ingest);
     let batch = SearchCorpusBatch::replace_generation(
@@ -4454,7 +4573,8 @@ fn control_request_id_mismatch_is_rejected_for_activation_and_rollback_v1() {
         revision_id(),
         ManifestGeneration::new(7),
         "manifest:request-id",
-    );
+    )
+    .source_event(sample_source_event());
     let activation_error = client
         .producer()
         .publish_search_corpus_and_activate(&batch, None)
@@ -5436,6 +5556,9 @@ fn hybrid_builder_refuses_out_of_range_top_k_before_any_round_trip() {
 fn hybrid_explain_carries_the_row_and_both_queries() {
     let row = quanta_index_contract::HybridCandidateV1 {
         candidate: quanta_index_contract::LexicalCandidate {
+            source_repo_id: repo_id(),
+            source: None,
+            preview: None,
             candidate_id: "chunk://alpha".to_string(),
             repo_id: repo_id(),
             revision_id: revision_id(),
@@ -5509,6 +5632,9 @@ fn hybrid_explain_carries_the_row_and_both_queries() {
 
 fn binding_hit(candidate_id: &str, score: f32) -> quanta_index_contract::LexicalCandidate {
     quanta_index_contract::LexicalCandidate {
+        source_repo_id: repo_id(),
+        source: None,
+        preview: None,
         candidate_id: candidate_id.to_string(),
         repo_id: repo_id(),
         revision_id: revision_id(),
@@ -5527,6 +5653,7 @@ fn binding_owner_row(
     candidate: &quanta_index_contract::LexicalCandidate,
 ) -> quanta_index_contract::FileOwnerProjectionRow {
     quanta_index_contract::FileOwnerProjectionRow {
+        source_repo_id: candidate.source_repo_id.clone(),
         candidate_id: candidate.candidate_id.clone(),
         repo_id: candidate.repo_id.clone(),
         revision_id: candidate.revision_id.clone(),
@@ -5765,4 +5892,214 @@ fn zero_response_id_fails_the_echo_check_typed() {
         message.contains("request_id 0"),
         "the refusal must name the zero id, got {message}"
     );
+}
+
+struct L2ReplayIngestTransport {
+    outcome: quanta_index_contract::SearchCorpusPublishOutcome,
+    observed: bool,
+}
+
+impl IngestTransport for L2ReplayIngestTransport {
+    fn send(
+        &self,
+        request: SearchPlaneIngestIpcRequestEnvelope,
+    ) -> Result<SearchPlaneIngestIpcResponseEnvelope, crate::SdkError> {
+        let SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch) = request.payload else {
+            return Err(crate::SdkError::Protocol("expected corpus replay".into()));
+        };
+        let mut outcome = self.outcome.clone();
+        if self.observed {
+            outcome.observation = Some(quanta_index_contract::SearchCorpusIngestObservation {
+                request_id: request.request_id,
+                repo_id: batch.repo_id,
+                revision_id: batch.revision_id,
+                generation: batch.generation,
+                batch_digest: batch.batch_digest,
+                status: quanta_index_contract::IngestObservationStatus::Replayed,
+                semantic: None,
+                lexical_build_ns: None,
+                finalize_ns: None,
+                activation_ns: None,
+            });
+        }
+        Ok(SearchPlaneIngestIpcResponseEnvelope {
+            request_id: request.request_id,
+            payload: SearchPlaneIngestIpcResponse::SearchCorpusReceipt(outcome),
+        })
+    }
+}
+
+fn l2_replay_fixture() -> (
+    SearchCorpusBatch,
+    quanta_index_contract::SearchCorpusPublishOutcome,
+) {
+    let original = SearchCorpusBatch::replace_generation(
+        repo_id(),
+        revision_id(),
+        ManifestGeneration::new(7),
+        "manifest:original",
+    )
+    .source_event(sample_source_event());
+    let wire = ok_or_fail!(original.to_wire_batch());
+    let outcome = quanta_index_contract::SearchCorpusPublishOutcome {
+        publication: quanta_index_contract::SourcePublicationBinding::for_batch(&wire),
+        receipt: BatchPublishReceipt {
+            sealed: true,
+            applied: false,
+            durable_sequence: 17,
+            semantic_content: Some(semantic_roots(7)),
+            ..BatchPublishReceipt::empty_for(
+                wire.generation,
+                Some(wire.manifest_digest),
+                wire.batch_digest,
+            )
+        },
+        observation: None,
+    };
+    let replay = SearchCorpusBatch::replace_generation(
+        repo_id(),
+        ok_or_fail!(RevisionId::new("retargeted-revision")),
+        ManifestGeneration::new(99),
+        "manifest:retargeted",
+    )
+    .source_event(sample_source_event());
+    assert_ne!(
+        ok_or_fail!(replay.batch_digest()),
+        outcome.receipt.batch_digest
+    );
+    (replay, outcome)
+}
+
+#[test]
+fn l2_source_replay_publishes_original_receipt_and_activates_original_pair() {
+    let (batch, expected) = l2_replay_fixture();
+    let original = search_corpus_identity(7, "manifest:original");
+    for observed in [false, true] {
+        let ack = SearchPlaneSearchCorpusActivationCasAck {
+            active: head_with_generation(original.clone(), 1),
+            previous_sealed_active: None,
+        };
+        let control = Arc::new(StubControlTransport::new(
+            quanta_index_contract::SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(
+                ack.clone(),
+            ),
+        ));
+        let client = QuantaIndex::from_transports(
+            unused_query(),
+            control.clone(),
+            Arc::new(L2ReplayIngestTransport {
+                outcome: expected.clone(),
+                observed,
+            }),
+        );
+        if observed {
+            let (outcome, actual_ack) = ok_or_fail!(
+                client
+                    .search_corpus()
+                    .publish_and_activate_observed(&batch, None)
+            );
+            assert_eq!(outcome.publication, expected.publication);
+            assert_eq!(outcome.receipt, expected.receipt);
+            assert_eq!(actual_ack, ack);
+            assert_eq!(
+                outcome.observation.expect("observed replay").generation,
+                batch.generation()
+            );
+        } else {
+            let (receipt, actual_ack) =
+                ok_or_fail!(client.search_corpus().publish_and_activate(&batch, None));
+            assert_eq!(receipt, expected.receipt);
+            assert_eq!(actual_ack, ack);
+        }
+        let request = ok_or_fail!(only_control_request(&control));
+        let quanta_index_contract::SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(
+            request,
+        ) = request.payload
+        else {
+            panic!("expected paired activation");
+        };
+        assert_eq!(request.candidate, original);
+        assert_eq!(request.expected_active, None);
+    }
+    for observed in [false, true] {
+        let client = QuantaIndex::from_transports(
+            unused_query(),
+            unused_control(),
+            Arc::new(L2ReplayIngestTransport {
+                outcome: expected.clone(),
+                observed,
+            }),
+        );
+        let receipt = if observed {
+            ok_or_fail!(client.producer().publish_search_corpus_observed(&batch)).receipt
+        } else {
+            ok_or_fail!(client.search_corpus().publish(&batch))
+        };
+        assert_eq!(receipt, expected.receipt);
+    }
+}
+
+#[test]
+fn l2_source_replay_rejects_false_bindings_with_or_without_observation() {
+    let (batch, valid) = l2_replay_fixture();
+    let mutations: [fn(&mut quanta_index_contract::SearchCorpusPublishOutcome); 14] = [
+        |o| o.publication.event.stream_id = "other".into(),
+        |o| o.publication.event.event_id = "other".into(),
+        |o| o.publication.event.expected_base_event_id = Some("other".into()),
+        |o| o.publication.event.payload_sha256 = [1; 32],
+        |o| o.publication.target.repo_id = RepoId::new("other").expect("fixture repo"),
+        |o| o.publication.target.track = quanta_index_contract::SearchPlaneTrackKind::Semantic,
+        |o| o.publication.target.manifest_generation = ManifestGeneration::new(8),
+        |o| o.publication.target.manifest_digest = "other".into(),
+        |o| o.publication.batch_digest = "a".repeat(64),
+        |o| o.receipt.batch_digest = "b".repeat(64),
+        |o| o.receipt.generation = ManifestGeneration::new(99),
+        |o| o.receipt.applied = true,
+        |o| o.receipt.sealed = false,
+        |o| o.receipt.durable_sequence = 0,
+    ];
+    for mutate in mutations {
+        for observed in [false, true] {
+            let mut outcome = valid.clone();
+            mutate(&mut outcome);
+            let control = unused_control();
+            let client = QuantaIndex::from_transports(
+                unused_query(),
+                control.clone(),
+                Arc::new(L2ReplayIngestTransport { outcome, observed }),
+            );
+            assert!(
+                client
+                    .search_corpus()
+                    .publish_and_activate(&batch, None)
+                    .is_err()
+            );
+            assert!(ok_or_fail!(control.requests.lock()).is_empty());
+        }
+    }
+}
+
+#[test]
+fn l2_source_replay_does_not_redirect_explicit_cas_expectation() {
+    let (batch, outcome) = l2_replay_fixture();
+    let mut expected = search_corpus_head(50, "manifest:current", 3);
+    expected.generation.lexical.revision_id = batch.revision_id().clone();
+    expected.generation.semantic.revision_id = batch.revision_id().clone();
+    let control = unused_control();
+    let client = QuantaIndex::from_transports(
+        unused_query(),
+        control.clone(),
+        Arc::new(L2ReplayIngestTransport {
+            outcome,
+            observed: true,
+        }),
+    );
+    let error = client
+        .search_corpus()
+        .publish_and_activate_observed(&batch, Some(expected))
+        .expect_err("original target cannot advance the requested revision's head");
+    assert!(
+        matches!(error, crate::SdkError::Protocol(ref message) if message.contains("composite activation request is invalid"))
+    );
+    assert!(ok_or_fail!(control.requests.lock()).is_empty());
 }

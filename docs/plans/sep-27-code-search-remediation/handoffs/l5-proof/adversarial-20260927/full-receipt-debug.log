@@ -1,0 +1,20 @@
+F
+=================================== FAILURES ===================================
+_____________________ test_verdict_full_receipts_all_green _____________________
+
+tmp_path = PosixPath('/private/tmp/pytest-of-songmin/pytest-1313/test_verdict_full_receipts_all0')
+
+    def test_verdict_full_receipts_all_green(tmp_path):
+        st = _pair_stage(tmp_path, receipts="full")
+        verdict = _stage_verdict(st)
+>       assert verdict["states"]["CONTRACT_GREEN"] == "pass"
+E       AssertionError: assert 'fail' == 'pass'
+E         
+E         - pass
+E         + fail
+
+tools/ci/tests/test_retrieval_benchmark.py:5440: AssertionError
+=========================== short test summary info ============================
+FAILED tools/ci/tests/test_retrieval_benchmark.py::test_verdict_full_receipts_all_green
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+1 failed in 6.57s

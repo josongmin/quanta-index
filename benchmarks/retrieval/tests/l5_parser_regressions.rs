@@ -100,6 +100,59 @@ fn ordinary_typescript_and_tsx_definitions_remain_source_bound() {
 }
 
 #[test]
+fn private_methods_preserve_definition_identity_across_js_and_ts() {
+    let source = "class Vault { #read() { function nested() {} } read() {} }";
+    for path in [
+        "vault.js",
+        "vault.mjs",
+        "vault.cjs",
+        "vault.jsx",
+        "vault.ts",
+        "vault.tsx",
+    ] {
+        let files = BTreeMap::from([(path.to_string(), source_file(path, source))]);
+        let preflight = preflight_corpus_symbols(&files, &SymbolPreflightOptions::default())
+            .expect("valid private method source");
+        preflight
+            .admit(SymbolCoveragePolicy::RequireComplete)
+            .expect("complete coverage");
+        let records = preflight.symbols().get(path).expect("admitted file");
+        let actual = records
+            .iter()
+            .map(|record| (record.qualified_name.as_ref(), record.symbol_kind.as_str()))
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            records.len(),
+            4,
+            "every named definition exactly once: {path}"
+        );
+        assert_eq!(
+            actual,
+            std::collections::BTreeSet::from([
+                ("Vault", "class"),
+                ("Vault.#read", "method"),
+                ("Vault.#read.nested", "function"),
+                ("Vault.read", "method"),
+            ])
+        );
+        let method = records
+            .iter()
+            .find(|record| record.local_name.as_ref() == "#read")
+            .expect("private method definition");
+        let start = usize::try_from(method.definition_span.byte_start).expect("offset");
+        let end = usize::try_from(method.definition_span.byte_end).expect("offset");
+        assert_eq!(
+            source.get(start..end),
+            Some("#read() { function nested() {} }")
+        );
+        assert_eq!(
+            preflight.report().files.first().expect("one file").coverage,
+            SymbolCoverage::Complete { symbol_count: 4 }
+        );
+    }
+}
+
+#[test]
 fn empty_and_zero_definition_files_differ_from_parse_failure() {
     for path in ["src/empty.ts", "src/empty.tsx"] {
         for source in ["", "// No declarations.\n"] {
@@ -314,15 +367,137 @@ fn symbol_limit_refuses_partial_definition_output() {
 }
 
 #[test]
+fn fatal_producer_failure_is_not_masked_by_an_earlier_recoverable_gap() {
+    let files = BTreeMap::from([
+        ("a.md".to_string(), source_file("a.md", "unsupported")),
+        ("z.ts".to_string(), source_file("z.ts", SENTINEL)),
+    ]);
+    let options = SymbolPreflightOptions {
+        max_symbols_per_file: 0,
+        ..SymbolPreflightOptions::default()
+    };
+    let preflight = preflight_corpus_symbols(&files, &options).expect("complete census");
+    assert_eq!(preflight.report().incomplete_files, 2);
+    for policy in [
+        SymbolCoveragePolicy::RequireComplete,
+        SymbolCoveragePolicy::AllowIncomplete,
+    ] {
+        let error = preflight
+            .admit(policy)
+            .expect_err("producer failure is fatal under either policy");
+        assert!(matches!(
+            error,
+            quanta_index_retrieval_bench::BenchError::Protocol(_)
+        ));
+        assert!(error.to_string().contains("z.ts"));
+    }
+}
+
+#[test]
+fn producer_policy_records_and_commits_effective_extraction_limits() {
+    let files = BTreeMap::from([("empty.ts".to_string(), source_file("empty.ts", ""))]);
+    let options = SymbolPreflightOptions::default();
+    let first = preflight_corpus_symbols(&files, &options).expect("default census");
+    let changed = SymbolPreflightOptions {
+        max_symbols_total: 7,
+        timeout_total: Duration::from_secs(11),
+        ..options
+    };
+    let second = preflight_corpus_symbols(&files, &changed).expect("changed limits census");
+    assert_eq!(second.report().policy.max_symbols_total, 7);
+    assert_eq!(second.report().policy.timeout_total_ns, "11000000000");
+    assert_ne!(
+        first.report().producer_policy_sha256,
+        second.report().producer_policy_sha256
+    );
+    assert_eq!(
+        first.report().grammar_identity,
+        second.report().grammar_identity
+    );
+    assert_eq!(
+        first.report().files.first().expect("first source").coverage,
+        second
+            .report()
+            .files
+            .first()
+            .expect("second source")
+            .coverage
+    );
+}
+
+#[test]
+fn file_and_total_symbol_budgets_refuse_publication_without_losing_the_census() {
+    let files = BTreeMap::from([
+        ("a.ts".to_string(), source_file("a.ts", SENTINEL)),
+        ("m.ts".to_string(), source_file("m.ts", "")),
+        ("z.ts".to_string(), source_file("z.ts", SENTINEL)),
+    ]);
+    let options = SymbolPreflightOptions {
+        max_symbols_total: 1,
+        ..SymbolPreflightOptions::default()
+    };
+    let preflight = preflight_corpus_symbols(&files, &options).expect("budget census");
+    assert_eq!(
+        preflight
+            .report()
+            .files
+            .iter()
+            .map(|row| row.coverage)
+            .collect::<Vec<_>>(),
+        [
+            SymbolCoverage::Complete { symbol_count: 1 },
+            SymbolCoverage::Complete { symbol_count: 0 },
+            SymbolCoverage::ProducerFailed,
+        ]
+    );
+    assert!(
+        preflight
+            .admit(SymbolCoveragePolicy::AllowIncomplete)
+            .is_err()
+    );
+    assert!(
+        preflight
+            .symbols()
+            .get("z.ts")
+            .expect("last source")
+            .is_empty()
+    );
+    let options = SymbolPreflightOptions {
+        max_file_bytes: 0,
+        ..SymbolPreflightOptions::default()
+    };
+    let preflight = preflight_corpus_symbols(&files, &options).expect("file budget census");
+    assert_eq!(preflight.report().admitted_files, 3);
+    assert_eq!(preflight.report().incomplete_files, 2);
+    assert!(
+        preflight
+            .admit(SymbolCoveragePolicy::AllowIncomplete)
+            .is_err()
+    );
+}
+
+#[test]
 fn preflight_rejects_forged_source_before_reporting_coverage() {
-    for mode in 0..3 {
+    for mode in 0..4 {
         let mut file = source_file("a.ts", SENTINEL);
         match mode {
             0 => file.path = "other.ts".to_string(),
             1 => file.sha256 = "0".repeat(64),
-            _ => file.text = "function forged() {}".to_string(),
+            2 => file.text = "function forged() {}".to_string(),
+            _ => file.line_starts = vec![7],
         }
         let files = BTreeMap::from([("a.ts".to_string(), file)]);
+        assert!(matches!(
+            preflight_corpus_symbols(&files, &SymbolPreflightOptions::default()),
+            Err(quanta_index_retrieval_bench::BenchError::Corpus { .. })
+        ));
+    }
+    for (path, text) in [
+        ("../a.ts", SENTINEL),
+        ("a.ts", "// exotic\u{2028}function sentinel() {}"),
+    ] {
+        let file = source_file(path, text);
+        let files = BTreeMap::from([(path.to_string(), file)]);
         assert!(matches!(
             preflight_corpus_symbols(&files, &SymbolPreflightOptions::default()),
             Err(quanta_index_retrieval_bench::BenchError::Corpus { .. })

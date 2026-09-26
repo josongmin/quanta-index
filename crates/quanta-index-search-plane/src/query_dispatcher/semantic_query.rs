@@ -686,6 +686,9 @@ mod seed_fusion_tests {
 
     fn lexical_candidate(id: &str) -> LexicalCandidate {
         LexicalCandidate {
+            source_repo_id: RepoId::new("repo-seed-fusion").expect("fixture source repo"),
+            source: None,
+            preview: None,
             candidate_id: id.to_string(),
             repo_id: RepoId::new("repo-seed-fusion")
                 .expect("static fixture ID satisfies canonical policy"),

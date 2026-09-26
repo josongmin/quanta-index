@@ -84,7 +84,7 @@ fn journal(binding: &SourceEventBindingV1) -> InspectJournal {
                 accepted_clear_surfaces: 0,
                 sealed: true,
                 applied: true,
-                durable_sequence: 41,
+                durable_sequence: 0,
                 semantic_content: Some(SemanticContentRootsV1 {
                     row_root_digest: format!("sha256:{}", "a".repeat(64)),
                     membership_root_digest: format!("sha256:{}", "b".repeat(64)),
@@ -199,22 +199,109 @@ fn source_event_reconciliation_rejects_missing_partial_wrong_receipt() -> TestRe
                 .is_err()
         );
     }
-    probe = journal(&event);
-    if let OperationInspectV1::Committed { receipt, .. } = &mut probe.inspected {
-        receipt.generation = ManifestGeneration::new(9);
+    let mutations: [fn(&mut BatchPublishReceipt, &mut u64); 7] = [
+        |receipt, _| receipt.generation = ManifestGeneration::new(9),
+        |receipt, _| receipt.manifest_digest = Some("different-manifest".into()),
+        |receipt, _| receipt.batch_digest = "b".repeat(64),
+        |receipt, _| receipt.sealed = false,
+        |receipt, _| receipt.semantic_content = None,
+        |receipt, _| {
+            receipt
+                .semantic_content
+                .as_mut()
+                .expect("fixture semantic roots")
+                .row_root_digest = "malformed-root".into();
+        },
+        |_, sequence| *sequence = 0,
+    ];
+    for mutate in mutations {
+        probe = journal(&event);
+        let OperationInspectV1::Committed {
+            receipt,
+            durable_sequence,
+        } = &mut probe.inspected
+        else {
+            panic!("committed fixture");
+        };
+        mutate(receipt, durable_sequence);
+        assert!(
+            catalog
+                .reconcile_source_event(&event.target.repo_id, &event.event, &probe)
+                .is_err()
+        );
+        assert_eq!(
+            catalog
+                .inspect_source_event(&event.target.repo_id, &event.event)?
+                .expect("reservation retained")
+                .phase,
+            SourceEventPhaseV1::Pending
+        );
+        assert!(activate(&catalog, &event).is_err());
     }
-    assert!(
-        catalog
-            .reconcile_source_event(&event.target.repo_id, &event.event, &probe)
-            .is_err()
-    );
+    let staged =
+        catalog.reconcile_source_event(&event.target.repo_id, &event.event, &journal(&event))?;
+    assert_eq!(staged.phase, SourceEventPhaseV1::Staged);
+    Ok(())
+}
+
+#[test]
+fn rollback_and_reopen_preserve_source_high_water_above_the_visible_generation() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let catalog = ActivationCatalog::open(dir.path())?;
+    let first = binding("r1", "stream", "event-1", None, 1);
+    let second = binding("r1", "stream", "event-2", Some("event-1"), 2);
+    let mut expected = None;
+    for event in [&first, &second] {
+        let _reserved = catalog.reserve_source_event(event)?;
+        let _staged =
+            catalog.reconcile_source_event(&event.target.repo_id, &event.event, &journal(event))?;
+        let guard = catalog
+            .lifecycle_coordinator
+            .lock_pair(&event.target.repo_id, &event.target.revision_id)?;
+        let prepared = PreparedSearchCorpusGenerationV1::new(corpus(event)?, expected.take())?;
+        expected = Some(
+            catalog
+                .activate_prepared_under_guard_v1(&guard, &prepared, Some(&event.event))?
+                .active,
+        );
+    }
+    let rolled_back = catalog.rollback(
+        &quanta_index_contract::SearchPlaneRollbackSearchCorpusGenerationCasRequest {
+            expected_active: expected.expect("second active head"),
+            target: corpus(&first)?.to_contract_v1(),
+        },
+    )?;
     assert_eq!(
-        catalog
-            .inspect_source_event(&event.target.repo_id, &event.event)?
-            .expect("reservation retained")
-            .phase,
-        SourceEventPhaseV1::Pending
+        rolled_back.active.generation,
+        corpus(&first)?.to_contract_v1()
     );
+    drop(catalog);
+    let reopened = ActivationCatalog::open(dir.path())?;
+    assert_eq!(
+        reopened.active_search_corpus_v1(&first.target.repo_id, &first.target.revision_id)?,
+        Some(corpus(&first)?)
+    );
+    for event in [&first, &second] {
+        reopened.validate_proved_source_history(&event.target, Some(&event.event))?;
+    }
+    let stale = binding("r1", "stream", "event-3", Some("event-1"), 3);
+    let path = dir
+        .path()
+        .join(repository_envelope::file_name(&first.target.repo_id));
+    let before = std::fs::read(&path)?;
+    assert!(matches!(
+        reopened.reserve_source_event(&stale),
+        Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::DeltaBaseConflict,
+            ..
+        })
+    ));
+    assert_eq!(std::fs::read(&path)?, before);
+    let next = binding("r1", "stream", "event-3", Some("event-2"), 3);
+    assert!(matches!(
+        reopened.reserve_source_event(&next)?,
+        SourceEventReservationV1::Reserved(_)
+    ));
     Ok(())
 }
 
@@ -344,6 +431,61 @@ fn envelope_rejects_legacy_duplicate_reordered_and_oversized_inputs() -> TestRes
     let file = std::fs::OpenOptions::new().write(true).open(&path)?;
     file.set_len(repository_envelope::MAX_ENVELOPE_BYTES as u64 + 1)?;
     assert!(repository_envelope::read_bounded(&path).is_err());
+    Ok(())
+}
+
+#[test]
+fn envelope_rejects_multiple_events_for_one_target_generation() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let catalog = ActivationCatalog::open(dir.path())?;
+    let first = binding("r1", "stream-a", "event", None, 1);
+    let second = binding("r1", "stream-b", "event", None, 2);
+    let _first = catalog.reserve_source_event(&first)?;
+    let path = dir
+        .path()
+        .join(repository_envelope::file_name(&first.target.repo_id));
+    let before = std::fs::read(&path)?;
+    let collision = binding("r1", "stream-b", "event", None, 1);
+    assert!(catalog.reserve_source_event(&collision).is_err());
+    assert_eq!(std::fs::read(&path)?, before);
+    let _second = catalog.reserve_source_event(&second)?;
+    // Equal generation numbers in distinct containing revisions are valid.
+    let other_revision = binding("r2", "stream-c", "event", None, 1);
+    let _other_revision = catalog.reserve_source_event(&other_revision)?;
+    let bytes = std::fs::read(&path)?;
+    let (_, mut state) = repository_envelope::decode(&path, &bytes)?;
+    let row: serde_json::Value = serde_json::from_slice(&bytes)?;
+
+    for manifest_digest in [
+        &first.target.manifest_digest,
+        &second.target.manifest_digest,
+    ] {
+        let mut target = first.target.clone();
+        target.manifest_digest.clone_from(manifest_digest);
+        let mut forged = row.clone();
+        forged[4][1][1] = serde_json::to_value(target)?;
+        let forged_bytes = serde_json::to_vec(&forged)?;
+        assert!(repository_envelope::decode(&path, &forged_bytes).is_err());
+        // Exercise the production restart path as well as the decoder.
+        std::fs::write(&path, &forged_bytes)?;
+        assert!(ActivationCatalog::open(dir.path()).is_err());
+        assert_eq!(std::fs::read(&path)?, forged_bytes);
+    }
+
+    let history = state
+        .histories
+        .get_mut(&first.target.repo_id)
+        .expect("decoded repository history");
+    let duplicate = history
+        .records
+        .get_mut(&(
+            second.event.stream_id.clone(),
+            second.event.event_id.clone(),
+        ))
+        .expect("second event");
+    duplicate.binding.target = first.target.clone();
+    duplicate.binding.journal_key.generation = first.target.manifest_generation;
+    assert!(repository_envelope::encode(&first.target.repo_id, &state).is_err());
     Ok(())
 }
 
@@ -499,5 +641,27 @@ fn stream_capacity_refusal_does_not_evict_identity_or_modify_root() -> TestResul
             .binding,
         original
     );
+    Ok(())
+}
+
+#[test]
+fn poisoned_publication_writer_fences_serving_and_subsequent_mutations() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let catalog = ActivationCatalog::open(dir.path())?;
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _mutation = catalog.mutation.lock().expect("fixture writer lock");
+        panic!("simulated publisher unwind while durable outcome is unknown");
+    }));
+    assert!(caught.is_err());
+    assert!(matches!(
+        catalog.active_inventory_v1(),
+        Err(CoreError::NotReady(_))
+    ));
+    let pending = binding("rev", "stream", "event", None, 1);
+    assert!(matches!(
+        catalog.inspect_source_event(&pending.target.repo_id, &pending.event),
+        Err(CoreError::NotReady(_))
+    ));
+    assert!(catalog.reserve_source_event(&pending).is_err());
     Ok(())
 }

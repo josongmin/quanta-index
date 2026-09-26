@@ -12,6 +12,11 @@
     reason = "Result-returning smoke tests assert with `assert!` on fixture invariants; a violated fixture invariant is not a propagatable error"
 )]
 
+#[path = "support/op_fixture.rs"]
+mod op_fixture;
+#[path = "support/source_fixture.rs"]
+mod source_fixture;
+
 use std::error::Error;
 
 use quanta_index_contract::channel::LexicalChannelOp;
@@ -19,11 +24,11 @@ use quanta_index_contract::lex::{
     LanguageCode, SymbolKindCode, SymbolKindFamily, SymbolRecord, SymbolRelationship, SymbolSpan,
 };
 use quanta_index_contract::{
-    BatchIngestMode, ChunkId, ChunkRecord, ClearLexicalSurface, ExactRepoRelativePathV1,
-    LQ_VERSION_TAG, LexicalFullBundle, LqCase, LqCountBound, LqExpr, LqFileScope, LqFilter, LqLeaf,
-    LqOptions, LqPatternType, LqPredicateArg, LqQuery, LqSelect, LqSpan, LqType, LqVisibility,
-    LqYesNoOnly, ManifestGeneration, QueryConstraintSetV1, RepoId, RepoRelativePath, RevisionId,
-    SearchCorpusIngestBatch, SearchScopeSurface, SymbolId, UpsertChunk, UpsertSymbol,
+    BatchIngestMode, ChunkId, ChunkRecord, ExactRepoRelativePathV1, LQ_VERSION_TAG,
+    LexicalFullBundle, LqCase, LqCountBound, LqExpr, LqFileScope, LqFilter, LqLeaf, LqOptions,
+    LqPatternType, LqPredicateArg, LqQuery, LqSelect, LqSpan, LqType, LqVisibility, LqYesNoOnly,
+    ManifestGeneration, QueryConstraintSetV1, RepoId, RepoRelativePath, RevisionId,
+    SearchScopeSurface, SymbolId, UpsertChunk, UpsertSymbol,
 };
 use quanta_index_core::{
     CoreError, LexicalIndexOpenPort, LexicalPageSpec, RequestBudgetV1, SearchCorpusBatchBuildPort,
@@ -60,11 +65,8 @@ fn generation() -> ManifestGeneration {
     ManifestGeneration::new(1)
 }
 
-/// The legacy build port is deliberately mutation-only.
-///
-/// It has no manifest digest, so it cannot prove a generation is safe to
-/// serve. Keep the compact per-test operation fixtures, but seal each finished
-/// fixture through the digest-carrying ingest port before opening it.
+/// Author canonical source files from the compact test input before ingestion.
+/// The helper binds raw bytes, unit sets, and source publication in one batch.
 trait SealedFixtureBuildPort {
     fn build(
         &self,
@@ -83,25 +85,9 @@ impl SealedFixtureBuildPort for LexicalAdapter {
         generation: ManifestGeneration,
         ops: &[LexicalChannelOp],
     ) -> Result<(), CoreError> {
-        quanta_index_core::LexicalIndexBuildPort::build(self, repo, revision, generation, ops)?;
         SearchCorpusBatchBuildPort::build_batch(
             self,
-            &SearchCorpusIngestBatch {
-                repo_id: repo.clone(),
-                revision_id: revision.clone(),
-                generation,
-                base_generation: None,
-                manifest_digest: format!("test-manifest-digest-{}", generation.get()),
-                batch_digest: format!("test-batch-digest-{}", generation.get()),
-                mode: BatchIngestMode::ReplaceGeneration,
-                bundle_payload: None,
-                clear_surfaces: Vec::new(),
-                replace_scopes: Vec::new(),
-                tombstone_scopes: Vec::new(),
-                semantic_replace_scopes: Vec::new(),
-                semantic_tombstone_scopes: Vec::new(),
-                seal: true,
-            },
+            &op_fixture::batch(repo, revision, generation, ops)?,
         )
     }
 }
@@ -1154,60 +1140,20 @@ fn tantivy_regex_sidecar_verifies_authoritative_text() -> TestResult {
 }
 
 #[test]
-fn symbol_content_authority_shapes_fail_closed_on_both_ingest_paths() -> TestResult {
-    use quanta_index_contract::{
-        ReplaceLexicalScope, SearchCorpusReplaceScope, SearchPlaneErrorCodeV2, SearchScopeKey,
-    };
-    for scoped in [false, true] {
+fn symbol_content_authority_shapes_fail_closed_on_initial_and_replayed_batches() -> TestResult {
+    use quanta_index_contract::SearchPlaneErrorCodeV2;
+    for replayed in [false, true] {
         let dir = tempfile::tempdir()?;
         let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
-        let mut ops = vec![upsert_with_metadata(
-            "chunk",
-            "src/lib.rs",
-            "rust",
-            1,
-            1,
-            "content gate witness",
-        )?];
-        if scoped {
-            let bytes =
-                encode_symbol_payload("sym", "src/symbol.rs", "rust", "needle_symbol", 2, 2)?;
-            let symbol: SymbolRecord = ciborium::from_reader(bytes.as_slice())?;
-            let scope = SearchCorpusReplaceScope {
-                scope: SearchScopeKey {
-                    doc_surface: SearchScopeSurface::File,
-                    repo_relative_path: RepoRelativePath::new("src/symbol.rs"),
-                },
-                scope_digest: "symbol-scope".to_string(),
-                chunks: Vec::new(),
-                symbols: vec![symbol],
-            };
-            let mut payload = Vec::new();
-            ciborium::into_writer(
-                &(
-                    BatchIngestMode::ReplaceGeneration,
-                    None::<ManifestGeneration>,
-                    scope,
-                ),
-                &mut payload,
-            )?;
-            ops.push(LexicalChannelOp::ReplaceLexicalScope(ReplaceLexicalScope {
-                repo_id: repo(),
-                revision_id: revision(),
-                generation: generation(),
-                payload,
-            }));
-        } else {
-            ops.push(upsert_symbol(
-                "sym",
-                "src/symbol.rs",
-                "rust",
-                "needle_symbol",
-                2,
-                2,
-            )?);
+        let ops = vec![
+            upsert_with_metadata("chunk", "src/lib.rs", "rust", 1, 1, "content gate witness")?,
+            upsert_symbol("sym", "src/symbol.rs", "rust", "needle_symbol", 2, 2)?,
+        ];
+        let batch = op_fixture::batch(&repo(), &revision(), generation(), &ops)?;
+        if replayed {
+            adapter.build_batch(&batch)?;
         }
-        adapter.build(&repo(), &revision(), generation(), &ops)?;
+        adapter.build_batch(&batch)?;
         let searcher = adapter.open(&repo(), &revision(), generation())?;
         let budget = RequestBudgetV1::unbounded();
         let keyword = make_query(LqExpr::Leaf(LqLeaf::Keyword("needle_symbol".to_string())));
@@ -1221,7 +1167,7 @@ fn symbol_content_authority_shapes_fail_closed_on_both_ingest_paths() -> TestRes
         ] {
             if rows.len() != 1 || rows.first().is_none_or(|row| row.candidate_id != "sym") {
                 return Err(format!(
-                    "scoped={scoped}: symbol keyword content filter missing: {rows:?}"
+                    "replayed={replayed}: symbol keyword content filter missing: {rows:?}"
                 )
                 .into());
             }
@@ -1239,7 +1185,7 @@ fn symbol_content_authority_shapes_fail_closed_on_both_ingest_paths() -> TestRes
             let rows = searcher.search(&routed, 10, &budget)?;
             if rows.len() != 1 || rows.first().is_none_or(|row| row.candidate_id != "sym") {
                 return Err(format!(
-                    "scoped={scoped}: routed symbol keyword content filter missing: {rows:?}"
+                    "replayed={replayed}: routed symbol keyword content filter missing: {rows:?}"
                 )
                 .into());
             }
@@ -1249,7 +1195,9 @@ fn symbol_content_authority_shapes_fail_closed_on_both_ingest_paths() -> TestRes
             searcher.search_symbols_all(&keyword, &budget)?,
         ] {
             if rows.len() != 1 || rows.first().is_none_or(|row| row.candidate_id != "sym") {
-                return Err(format!("scoped={scoped}: keyword symbol missing: {rows:?}").into());
+                return Err(
+                    format!("replayed={replayed}: keyword symbol missing: {rows:?}").into(),
+                );
             }
         }
         let mut unsupported = Vec::new();
@@ -1315,7 +1263,7 @@ fn symbol_content_authority_shapes_fail_closed_on_both_ingest_paths() -> TestRes
                         ..
                     }
                 ) {
-                    return Err(format!("scoped={scoped}: wrong refusal {error:?}").into());
+                    return Err(format!("replayed={replayed}: wrong refusal {error:?}").into());
                 }
                 Ok(())
             };
@@ -1363,7 +1311,7 @@ fn symbol_content_authority_shapes_fail_closed_on_both_ingest_paths() -> TestRes
                 && (rows.len() != 1 || rows.first().is_none_or(|row| row.candidate_id != "sym"))
             {
                 return Err(format!(
-                    "scoped={scoped}: chunk content repo gate lost symbol keyword: {rows:?}"
+                    "replayed={replayed}: chunk content repo gate lost symbol keyword: {rows:?}"
                 )
                 .into());
             }
@@ -3719,7 +3667,7 @@ fn tantivy_search_all_materializes_full_scope() -> TestResult {
 }
 
 #[test]
-fn clear_only_delta_clones_base_and_removes_only_requested_surface_v1() -> TestResult {
+fn independent_chunk_clear_refuses_and_file_tombstone_preserves_symbols_v1() -> TestResult {
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
     let base_generation = generation();
@@ -3730,18 +3678,34 @@ fn clear_only_delta_clones_base_and_removes_only_requested_surface_v1() -> TestR
     adapter.build(&repo(), &revision(), base_generation, &base_ops)?;
 
     let target_generation = ManifestGeneration::new(2);
-    adapter.build(
-        &repo(),
-        &revision(),
-        target_generation,
-        &[LexicalChannelOp::ClearLexicalSurface(ClearLexicalSurface {
-            repo_id: repo(),
-            revision_id: revision(),
-            generation: target_generation,
-            base_generation: Some(base_generation),
-            surface: SearchScopeSurface::Chunk,
-        })],
-    )?;
+    let mut delta =
+        source_fixture::sealed_batch(&repo(), &revision(), target_generation, Vec::new())?;
+    delta.mode = BatchIngestMode::Delta;
+    delta.base_generation = Some(base_generation);
+    delta.source_event.expected_base_event_id = Some("event-1".into());
+    delta.clear_surfaces = vec![SearchScopeSurface::Chunk];
+    delta.source_event.payload_sha256 = quanta_index_contract::source_event_payload_sha256(&delta)?;
+    match adapter.build_batch(&delta) {
+        Err(CoreError::InvalidContract(message))
+            if message.contains("forbid independent Chunk/Symbol clear") => {}
+        other => return Err(format!("independent clear did not refuse: {other:?}").into()),
+    }
+    let target_dir =
+        quanta_index_core::GenerationStorageKeyV1::for_repo_revision(&repo(), &revision())
+            .generation_dir(dir.path(), target_generation);
+    if target_dir.exists() {
+        return Err("refused clear created target generation state".into());
+    }
+    // Whole-file deletion is the admitted operation for this text-only file.
+    // The separate symbol file and the old immutable generation must survive.
+    delta.clear_surfaces.clear();
+    delta
+        .tombstone_scopes
+        .push(quanta_index_contract::SearchCorpusTombstoneScope {
+            file: source_fixture::file_key(&repo(), "src/smoke.txt"),
+        });
+    delta.source_event.payload_sha256 = quanta_index_contract::source_event_payload_sha256(&delta)?;
+    adapter.build_batch(&delta)?;
 
     let searcher = adapter.open(&repo(), &revision(), target_generation)?;
     let chunk_hits = searcher.search(
@@ -3754,6 +3718,13 @@ fn clear_only_delta_clones_base_and_removes_only_requested_surface_v1() -> TestR
         10,
         &RequestBudgetV1::unbounded(),
     )?;
+    let base = adapter.open(&repo(), &revision(), base_generation)?;
+    let original = base.search(
+        &make_query(LqExpr::Leaf(LqLeaf::Keyword("needle".into()))),
+        10,
+        &RequestBudgetV1::unbounded(),
+    )?;
+    assert_eq!(original.len(), 1);
     assert!(chunk_hits.is_empty());
     assert_eq!(symbol_hits.len(), 1);
     let kept = symbol_hits

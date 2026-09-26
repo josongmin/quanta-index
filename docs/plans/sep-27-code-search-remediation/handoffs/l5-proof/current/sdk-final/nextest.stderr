@@ -1,0 +1,31 @@
+resource admission: waiting lock=/Users/songmin/Library/Caches/quanta-index/resource-admission/build-test.lock
+resource admission: admitted lock=/Users/songmin/Library/Caches/quanta-index/resource-admission/build-test.lock
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.01s
+────────────
+ Nextest run ID a40d9a88-1883-482a-bed5-c449c64ea751 with nextest profile: default
+    Starting 20 tests across 1 binary
+        PASS [   1.562s] quanta-index-retrieval-bench::sdk_roundtrip actual_preflight_binary_reports_all_files_before_strict_refusal
+        PASS [  42.631s] quanta-index-retrieval-bench::sdk_roundtrip actual_runner_binary_emits_receipt_bound_v5_record
+        PASS [   2.102s] quanta-index-retrieval-bench::sdk_roundtrip boot_times_out_when_daemon_never_opens_sockets
+        PASS [   0.155s] quanta-index-retrieval-bench::sdk_roundtrip determinism_probe_repeats_identical_publish
+        PASS [   0.038s] quanta-index-retrieval-bench::sdk_roundtrip explicit_missing_searchd_binary_never_falls_back
+        PASS [   1.736s] quanta-index-retrieval-bench::sdk_roundtrip homonymous_symbols_stay_distinct_units_on_the_symbol_route
+        PASS [   1.381s] quanta-index-retrieval-bench::sdk_roundtrip incomplete_symbol_profile_publishes_malformed_text_and_refuses_symbol_authority
+        PASS [   0.037s] quanta-index-retrieval-bench::sdk_roundtrip missing_pinned_model_fails_boot_without_a_scored_record
+        PASS [   3.278s] quanta-index-retrieval-bench::sdk_roundtrip real_daemon_experimental_fetch_floor_matches_initial_probe_without_changing_default
+        PASS [   1.352s] quanta-index-retrieval-bench::sdk_roundtrip real_daemon_query_observation_off_preserves_results_and_marks_unmeasured
+        PASS [  30.916s] quanta-index-retrieval-bench::sdk_roundtrip real_daemon_roundtrip_publishes_and_queries
+        PASS [   0.033s] quanta-index-retrieval-bench::sdk_roundtrip sdk_frontdoor_static_guard
+        PASS [   1.078s] quanta-index-retrieval-bench::sdk_roundtrip second_boot_over_used_root_is_refused_without_cleanup
+        PASS [   1.344s] quanta-index-retrieval-bench::sdk_roundtrip sentence_and_identifier_queries_anchor_the_same_definition_over_distractors
+        PASS [   0.015s] quanta-index-retrieval-bench::sdk_roundtrip stale_state_root_is_refused
+        PASS [   0.849s] quanta-index-retrieval-bench::sdk_roundtrip symbol_route_answers_from_published_units_and_proves_spans
+        PASS [   1.062s] quanta-index-retrieval-bench::sdk_roundtrip symbol_route_no_answer_is_typed_never_fake_success
+        PASS [   0.012s] quanta-index-retrieval-bench::sdk_roundtrip symlink_state_root_is_refused
+        PASS [   0.146s] quanta-index-retrieval-bench::sdk_roundtrip terminated_daemon_is_typed_and_never_returns_hits
+        PASS [   0.886s] quanta-index-retrieval-bench::sdk_roundtrip unavailable_provider_is_typed_and_never_returns_hits
+────────────
+     Summary [  90.617s] 20 tests run: 20 passed, 0 skipped
+resource admission: released lock=/Users/songmin/Library/Caches/quanta-index/resource-admission/build-test.lock

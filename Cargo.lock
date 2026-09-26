@@ -4624,6 +4624,7 @@ dependencies = [
  "quanta-index-contract",
  "quanta-index-core",
  "quanta-index-ipc",
+ "quanta-index-lexical",
  "quanta-index-lq-bridge",
  "quanta-index-lq-norm",
  "quanta-index-lq-obs",
@@ -5963,8 +5964,6 @@ dependencies = [
 [[package]]
 name = "tantivy-sstable"
 version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c69578242e8e9fc989119f522ba5b49a38ac20f576fc778035b96cc94f41f98e"
 dependencies = [
  "tantivy-bitpacker",
  "tantivy-common",
@@ -6454,8 +6453,6 @@ dependencies = [
 [[package]]
 name = "tree-sitter-typescript"
 version = "0.23.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c5f76ed8d947a75cc446d5fccd8b602ebf0cde64ccf2ffa434d873d7a575eff"
 dependencies = [
  "cc",
  "tree-sitter-language",

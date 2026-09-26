@@ -108,7 +108,8 @@ def test_missing_native_sample_refused():
         capture.payload(data, "parse/1024")
 
 
-def test_replay_refuses_forged_typed_mean(tmp_path):
+@pytest.mark.parametrize("large_log", [False, True])
+def test_replay_refuses_forged_typed_mean(tmp_path, large_log):
     data = raw()
     digest = capture.digest_bytes(b"binary")
     build_argv = [
@@ -152,7 +153,13 @@ def test_replay_refuses_forged_typed_mean(tmp_path):
     run = tmp_path / "runs/r1-0/raw"
     run.mkdir(parents=True)
     for name, content in data.items():
-        (run / name).write_bytes(content)
+        with (run / name).open("wb") as stream:
+            if name == "build.jsonl" and large_log:
+                for _ in range(300):
+                    stream.write(
+                        b'{"reason":"compiler-message","message":"' + b"x" * 65536 + b'"}\n'
+                    )
+            stream.write(content)
     evidence = {
         "run_id": "r1-0",
         "case_id": "parse/1024",
@@ -187,9 +194,43 @@ def test_replay_refuses_forged_typed_mean(tmp_path):
         b'{"reason":"compiler-artifact","target":{"name":"pipeline","kind":["bench"]},"executable":"/fixture/pipeline","features":[]}',
     ],
 )
-def test_malformed_or_partial_cargo_inventory_is_refused(messages):
+def test_malformed_or_partial_cargo_inventory_is_refused(tmp_path, messages):
     with pytest.raises(ValueError):
-        capture._binary(messages, "pipeline")
+        capture._binary(capture.write_raw_file(tmp_path / "build.jsonl", [messages]), "pipeline")
+
+
+def cargo_artifact():
+    return b'{"reason":"compiler-artifact","target":{"name":"pipeline","kind":["bench"]},"executable":"/fixture/pipeline","features":["feature-a"]}\n'
+
+
+@pytest.mark.parametrize("suffix", [b"", b"\n", b"\r\n"])
+def test_cargo_stream_inventory_accepts_exact_terminal_without_materialization(tmp_path, suffix):
+    raw = capture.write_raw_file(
+        tmp_path / "build.jsonl",
+        [
+            b"cargow: routed lane\n",
+            cargo_artifact(),
+            b'  {"reason":"build-finished","success":true}' + suffix,
+        ],
+    )
+    assert capture._binary(raw, "pipeline") == (Path("/fixture/pipeline"), ["feature-a"])
+
+
+@pytest.mark.parametrize(
+    "variant", ["duplicate", "after-terminal", "duplicate-terminal", "partial", "utf8"]
+)
+def test_cargo_stream_refuses_ambiguous_or_partial_terminal_inventory(tmp_path, variant):
+    terminal = b'{"reason":"build-finished","success":true}\n'
+    messages = {
+        "duplicate": cargo_artifact() * 2 + terminal,
+        "after-terminal": terminal + cargo_artifact(),
+        "duplicate-terminal": cargo_artifact() + terminal * 2,
+        "partial": cargo_artifact() + terminal + b'{"reason":',
+        "utf8": cargo_artifact() + terminal + b"\xff",
+    }[variant]
+    raw = capture.write_raw_file(tmp_path / "build.jsonl", [messages])
+    with pytest.raises(ValueError):
+        capture._binary(raw, "pipeline")
 
 
 def test_sigterm_kills_owned_producer(tmp_path):

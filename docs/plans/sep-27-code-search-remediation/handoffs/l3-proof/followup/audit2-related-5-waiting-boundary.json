@@ -1,0 +1,12 @@
+{
+  "captured_utc": "2026-09-26T22:22:33.795840+00:00",
+  "snapshot_sha256": "d294d03405b9e0867ae3456f3aa560905276006b11be6383133747ce5f01666f",
+  "log_prefix_sha256": "d9ef66a26a4e35b17b16b5ed13c8c1c8ba5ddb43646cac69d17c4a1d47224fe0",
+  "log_prefix_bytes": 111,
+  "admitted_marker_absent_after_snapshot": true,
+  "capture_command": [
+    "/Applications/Xcode.app/Contents/Developer/usr/bin/python3",
+    "/private/tmp/qi-l3-native-evidence/capture.py",
+    "/private/tmp/qi-l3-native-evidence/audit2-related-5-waiting-candidate.json"
+  ]
+}

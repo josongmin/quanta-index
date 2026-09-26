@@ -22,7 +22,6 @@ from evidence import (
     RawWriter,
     RunStore,
     _read_control_file,
-    _read_regular_file,
     _run_id,
     canonical_json,
     digest_bytes,
@@ -188,45 +187,56 @@ def payload(raw: dict[str, bytes], case: str) -> dict:
     )
 
 
-def _binary(build_output: bytes, target: str) -> tuple[Path, list[str]]:
-    matches = []
-    finished = 0
-    for line in build_output.decode().splitlines():
-        if not line.startswith("{"):
-            continue  # cargow routing diagnostics are not Cargo messages.
-        message = parse_json(line)
-        if not isinstance(message, dict):
-            raise EvidenceError("Cargo compiler output is not an object")
-        if message.get("reason") == "build-finished":
-            if message.get("success") is not True:
-                raise EvidenceError("Cargo native build verdict is not success")
-            finished += 1
-        if message.get("reason") == "compiler-artifact" and not isinstance(
-            message.get("target"), dict
-        ):
-            raise EvidenceError("Cargo artifact target is malformed")
-        if message.get("reason") == "compiler-artifact" and not isinstance(
-            message["target"].get("kind"), list
-        ):
-            raise EvidenceError("Cargo artifact target kind is malformed")
-        if (
-            message.get("reason") == "compiler-artifact"
-            and message.get("target", {}).get("name") == target
-            and "bench" in message.get("target", {}).get("kind", [])
-            and message.get("executable")
-        ):
-            features = message.get("features")
-            if (
-                not isinstance(message["executable"], str)
-                or not isinstance(features, list)
-                or any(not isinstance(feature, str) for feature in features)
-                or len(set(features)) != len(features)
+def _binary(build_output: RawFile, target: str) -> tuple[Path, list[str]]:
+    def consume(lines):
+        matched = None
+        finished = False
+        for raw_line in lines:
+            try:
+                line = raw_line.decode("utf-8")
+            except UnicodeError as exc:
+                raise EvidenceError("Cargo compiler output is not UTF-8") from exc
+            if not line.lstrip().startswith("{"):
+                continue  # cargow routing diagnostics are not Cargo messages.
+            message = parse_json(line)
+            if not isinstance(message, dict):
+                raise EvidenceError("Cargo compiler output is not an object")
+            if finished:
+                raise EvidenceError("Cargo message follows terminal build-finished")
+            if message.get("reason") == "build-finished":
+                if message.get("success") is not True:
+                    raise EvidenceError("Cargo native build verdict is not success")
+                finished = True
+            if message.get("reason") == "compiler-artifact" and not isinstance(
+                message.get("target"), dict
             ):
-                raise EvidenceError("Cargo executable/features inventory is malformed")
-            matches.append((Path(message["executable"]), features))
-    if len(matches) != 1 or finished != 1:
-        raise EvidenceError("Cargo did not report exactly one registered bench executable")
-    return matches[0]
+                raise EvidenceError("Cargo artifact target is malformed")
+            if message.get("reason") == "compiler-artifact" and not isinstance(
+                message["target"].get("kind"), list
+            ):
+                raise EvidenceError("Cargo artifact target kind is malformed")
+            if (
+                message.get("reason") == "compiler-artifact"
+                and message.get("target", {}).get("name") == target
+                and "bench" in message.get("target", {}).get("kind", [])
+                and message.get("executable")
+            ):
+                features = message.get("features")
+                if (
+                    not isinstance(message["executable"], str)
+                    or not isinstance(features, list)
+                    or any(not isinstance(feature, str) for feature in features)
+                    or len(set(features)) != len(features)
+                ):
+                    raise EvidenceError("Cargo executable/features inventory is malformed")
+                if matched is not None:
+                    raise EvidenceError("Cargo reported duplicate registered bench executables")
+                matched = (Path(message["executable"]), features)
+        if matched is None or not finished:
+            raise EvidenceError("Cargo did not report exactly one registered bench executable")
+        return matched
+
+    return build_output.consume_lines(consume)
 
 
 def replay_run(store: RunStore, evidence: dict, producer: dict | None = None) -> None:
@@ -243,13 +253,17 @@ def replay_run(store: RunStore, evidence: dict, producer: dict | None = None) ->
             "listing.txt",
             "execution.json",
             "rustc.txt",
-            "build.jsonl",
         }
     }
     derived = payload(raw, evidence["case_id"])
     if derived != evidence["payload"]:
         raise EvidenceError("Criterion typed payload differs from native samples")
-    if "execution.json" not in raw or "rustc.txt" not in raw or "build.jsonl" not in raw:
+    build_paths = [
+        store.run_dir(evidence["run_id"]) / ref["path"]
+        for ref in evidence["raw"]
+        if Path(ref["path"]).name == "build.jsonl"
+    ]
+    if "execution.json" not in raw or "rustc.txt" not in raw or len(build_paths) != 1:
         raise EvidenceError("Criterion build/execution provenance is missing")
     execution = parse_json(raw["execution.json"].decode())
     if not isinstance(execution, dict) or execution.get("measure") != evidence["command"]:
@@ -281,7 +295,7 @@ def replay_run(store: RunStore, evidence: dict, producer: dict | None = None) ->
         or argv[7] != producer["target"]
     ):
         raise EvidenceError("Criterion build owner differs from the registered producer")
-    binary, features = _binary(raw["build.jsonl"], argv[7])
+    binary, features = _binary(RawFile.capture(build_paths[0]), argv[7])
     if (
         features != execution.get("features")
         or binary.name != binaries[0]["name"]
@@ -311,7 +325,7 @@ def validate(repo: Path, root: Path, profile: str, registry: dict) -> dict:
         )
         if evidence["build"]["lockfile_digest"] != digest_bytes((repo / "Cargo.lock").read_bytes()):
             raise EvidenceError("Criterion lockfile differs from current source")
-        raw_listing = _read_regular_file(store.run_dir(record["run_id"]) / "raw/listing.txt")
+        raw_listing = _read_control_file(store.run_dir(record["run_id"]) / "raw/listing.txt")
         require_case_inventory(record["family"], listed_cases(raw_listing))
         if set(listed_cases(raw_listing)) != set(document["expected_cases"][record["family"]]):
             raise EvidenceError("capture inventory differs from the independent binary listing")
@@ -398,7 +412,7 @@ def capture(
         output, stderr, build_command = execute(
             build_argv, cwd=repo, env=env, timeout=timeout, log_dir=work / "execution" / "build"
         )
-        binary, features = _binary(output.read_control(), producer["target"])
+        binary, features = _binary(output, producer["target"])
         binary_digest = RawFile.capture(binary).sha256
         rustc, rustc_stderr, _ = execute(
             ["rustc", "-vV"],

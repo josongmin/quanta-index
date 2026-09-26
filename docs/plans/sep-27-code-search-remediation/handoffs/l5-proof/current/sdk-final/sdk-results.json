@@ -1,0 +1,13 @@
+{
+  "activation_ack_digest": "0b2877c9b66881edeeb80a80b5e31462bc70292faaf006813dd9950c229809a7",
+  "binary_digest": "82ea07de4a2d05b8eb38dcda4afc9a74ebfdafa847bcea7ff87a5aec8b677eb8",
+  "command": "just retrieval-sdk-proof",
+  "empty_check": true,
+  "executed": 20,
+  "failed": 0,
+  "passed": 20,
+  "sdk_route": "hybrid,lexical,semantic",
+  "sealed_receipt_digest": "04c9f07a08e84679f5c3dc236c10957a8c6872df36ae3f5234f3b387a856ffa1",
+  "selected": 20,
+  "separate_process": true
+}

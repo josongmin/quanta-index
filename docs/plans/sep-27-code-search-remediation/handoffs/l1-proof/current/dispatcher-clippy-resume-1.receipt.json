@@ -1,0 +1,30 @@
+{
+  "after": "/tmp/quanta-l1-green.diz44g/dispatcher-clippy-resume-1.after.json",
+  "artifacts": [],
+  "before": "/tmp/quanta-l1-green.diz44g/dispatcher-clippy-resume-1.before.json",
+  "classification": "UNCLASSIFIED: inspect execution count, outcome, inputs and source drift before promoting evidence",
+  "command": [
+    "./scripts/cargow",
+    "clippy",
+    "--locked",
+    "-j",
+    "2",
+    "-p",
+    "quanta-index-search-plane",
+    "--lib",
+    "--tests",
+    "--no-deps",
+    "--message-format=json",
+    "--",
+    "-D",
+    "warnings"
+  ],
+  "ended_unix": 1790459347.936407,
+  "executed_result_lines": [],
+  "exit_code": 101,
+  "head_changed": false,
+  "log": "/tmp/quanta-l1-green.diz44g/dispatcher-clippy-resume-1.log",
+  "log_sha256": "47396ecfdf5acefee3306ba186fcb281736044eee90f3f6d5c763d4d971bd228",
+  "source_changed": [],
+  "started_unix": 1790459114.322177
+}

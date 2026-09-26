@@ -446,6 +446,11 @@ impl TantivySearcher {
         plan: &quanta_index_core::ValidatedLexicalPlan,
         budget: &RequestBudgetV1,
     ) -> Result<Option<PreparedExecutableQuery>, CoreError> {
+        crate::planner::LexicalPlanner::validate_query_primitives(
+            plan,
+            &self.regex_policy,
+            budget,
+        )?;
         let (prepared_query, doc_kind) = self.prepare_query_for_plan(plan)?;
         crate::searcher::planner_errors::planner_preflight_expr(
             &prepared_query,

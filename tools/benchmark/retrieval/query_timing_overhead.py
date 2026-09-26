@@ -32,7 +32,9 @@ def compare(on: dict, off: dict, on_phases: dict, off_phases: dict, on_diagnosti
         raise ValueError("on/off hybrid fetch policy or diagnostic version differs")
     for key in ("strategy", "query_schedule", "query_protocol", "task_count", "route_count", "measurement_repetitions", "warmup_passes",
                 "runner_binary_sha256", "file_count", "chunk_count", "symbol_count",
-                "symbol_coverage", "symbol_unsupported_details"):
+                "symbol_coverage", "symbol_unsupported_details", "symbol_coverage_policy",
+                "symbol_grammars", "symbol_producer_identity", "symbol_producer_policy_sha256",
+                "symbol_preflight_sha256", "symbol_incomplete_files", "empty_scopes", "symbol_only_scopes"):
         if key not in on_phases or on_phases[key] != off_phases.get(key):
             raise ValueError(f"on/off frozen configuration differs: {key}")
     def identities(record):
@@ -107,6 +109,10 @@ def main() -> int:
         phases = [load(payload) for payload in payloads[2:4]]
         if any(phase["record_sha256"] != sha(raw) for phase, raw in zip(phases, payloads[:2], strict=True)):
             raise ValueError("on/off phase record digest mismatch")
+        pack = load(payloads[-1])
+        corpus = {"repository_commit": pack["repository_commit"], "files": pack["file_universe"]}
+        for phase, path in zip(phases, paths[2:4], strict=True):
+            pairrun.symbol_coverage.verify_artifact(phase, path, corpus)
         result = compare(*(load(payload) for payload in payloads))
         from tools.benchmark.retrieval.conditional_proof import canonical
         with args.out.open("xb") as stream:

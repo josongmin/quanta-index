@@ -217,6 +217,21 @@ fn search_corpus_dispatcher_with_port(
     lexical: Arc<dyn SearchCorpusIngestPort + Send + Sync>,
     catalog: Arc<MemoryIdempotencyCatalog>,
 ) -> SearchPlaneIngestDispatcher {
+    search_corpus_dispatcher_with_authority(
+        lexical,
+        catalog,
+        Arc::new(super::support::RecordingSearchCorpusAuthority {
+            exact: true,
+            ..Default::default()
+        }),
+    )
+}
+
+fn search_corpus_dispatcher_with_authority(
+    lexical: Arc<dyn SearchCorpusIngestPort + Send + Sync>,
+    catalog: Arc<MemoryIdempotencyCatalog>,
+    authority: Arc<dyn crate::ingest_dispatcher::SearchCorpusAuthorityInspectPort>,
+) -> SearchPlaneIngestDispatcher {
     let unreachable = Arc::new(Unreachable);
     SearchPlaneIngestDispatcher::new(
         lexical,
@@ -232,10 +247,7 @@ fn search_corpus_dispatcher_with_port(
         unreachable,
         catalog.clone(),
         catalog.source_publication.clone(),
-        Arc::new(super::support::RecordingSearchCorpusAuthority {
-            exact: true,
-            ..Default::default()
-        }),
+        authority,
     )
 }
 
@@ -756,7 +768,12 @@ fn a_committed_replay_runs_no_preflight_apply_or_storage() -> TestRes {
         .observation
         .as_ref()
         .ok_or("replay observation missing")?;
-    replay_observation.validate_for(budget.response_request_id(), &batch, &replay.receipt)?;
+    replay_observation.validate_for(
+        budget.response_request_id(),
+        &batch,
+        &replay.publication,
+        &replay.receipt,
+    )?;
     if replay_observation.status != quanta_index_contract::IngestObservationStatus::Replayed
         || replay_observation.semantic.is_some()
         || replay_observation.lexical_build_ns.is_some()
@@ -1095,17 +1112,34 @@ fn source_event_replay_with_new_target_returns_original_receipt_and_sequence() -
     replay.generation = ManifestGeneration::new(99);
     replay.manifest_digest = "new-target-manifest".into();
     stamp_batch_digest_v1(&mut replay)?;
-    let returned = receipt_of(dispatcher.dispatch(
-        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(replay),
+    let response = dispatcher.dispatch(
+        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(replay.clone()),
         &budget,
-    ))?;
-    if returned != first.clone().replayed()
+    );
+    let SearchPlaneIngestIpcResponse::SearchCorpusReceipt(outcome) = response else {
+        return Err(format!("expected original source publication, got {response:?}").into());
+    };
+    let returned = &outcome.receipt;
+    if *returned != first.clone().replayed()
         || counting.applies() != 1
         || counting.preflights() != 1
         || catalog.records() != 1
     {
         return Err(format!("source replay fabricated a receipt or repeated work: first={first:?}, replay={returned:?}").into());
     }
+    // Returning the original journal fields alone is insufficient: the public
+    // response must also satisfy the observation contract consumed by the SDK.
+    // Keep this assertion active while the shared replay binding is repaired.
+    outcome
+        .observation
+        .as_ref()
+        .ok_or("source replay observation missing")?
+        .validate_for(
+            budget.response_request_id(),
+            &replay,
+            &outcome.publication,
+            returned,
+        )?;
     Ok(())
 }
 
@@ -1137,6 +1171,434 @@ fn source_event_payload_reuse_conflicts_before_any_second_apply() -> TestRes {
     {
         return Err(
             format!("different payload reused a source event or caused work: {refused:?}").into(),
+        );
+    }
+    Ok(())
+}
+
+/// Neither dispatcher nor materializer may reserve before repair admission.
+#[test]
+fn source_event_repair_refusal_leaves_the_stream_available_for_a_new_publication() -> TestRes {
+    use quanta_index_contract::{
+        BatchIngestMode, GenerationSnapshot, SearchPlaneErrorCodeV2, SearchPlaneTrackKind,
+    };
+    use quanta_index_core::{GenerationIdentityValidatePort, SourcePublicationCatalogPort as _};
+
+    struct CorruptTarget {
+        generation: ManifestGeneration,
+        track: SearchPlaneTrackKind,
+    }
+    impl GenerationIdentityValidatePort for CorruptTarget {
+        fn validate_generation_identity(
+            &self,
+            candidate: &GenerationSnapshot,
+        ) -> Result<(), CoreError> {
+            if candidate.manifest_generation == self.generation && candidate.track == self.track {
+                return Err(CoreError::Typed {
+                    code: SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
+                    message: "injected target sidecar corruption".into(),
+                });
+            }
+            Ok(())
+        }
+    }
+
+    for track in [
+        SearchPlaneTrackKind::Lexical,
+        SearchPlaneTrackKind::Semantic,
+    ] {
+        let mut delta = fixture_search_corpus_batch()?;
+        delta.mode = BatchIngestMode::Delta;
+        delta.base_generation = Some(ManifestGeneration::new(6));
+        super::support::restamp_search_corpus_fixture(&mut delta)?;
+        delta.validate_v1()?;
+        let catalog = memory_catalog();
+        let ledger = Arc::new(RwLock::new(Ledger::new()));
+        ledger
+            .write()
+            .map_err(|error| format!("test ledger poisoned: {error}"))?
+            .record_historically_sealed_search_corpus(
+                &delta.repo_id,
+                &delta.revision_id,
+                ManifestGeneration::new(6),
+                "manifest:base",
+            );
+        let validator = Arc::new(CorruptTarget {
+            generation: delta.generation,
+            track,
+        });
+        let lexical_builder = Arc::new(FakeSearchCorpusBuilder::default());
+        let semantic_builder = Arc::new(FakeSemanticBuilder::default());
+        let embedder = Arc::new(CountingEmbedder {
+            dimension: SEARCH_OWNED_SEMANTIC_DIMENSION,
+            calls: Mutex::new(0),
+        });
+        let authority = Arc::new(RecordingSearchCorpusAuthority::default());
+        let materializer = DirectSearchCorpusMaterializer::new_with_search_owned_semantics(
+            SearchCorpusMaterializerParts {
+                builder: lexical_builder.clone(),
+                ledger,
+                semantic_ingest: Arc::new(DirectSemanticMaterializer::new(
+                    semantic_builder.clone(),
+                )),
+                semantic_embedder: embedder.clone(),
+                authority: authority.clone(),
+                lexical_generation_validator: validator.clone(),
+                semantic_generation_validator: validator,
+                semantic_content_roots:
+                    crate::content_roots_test_support::generation_keyed_content_roots(),
+                lexical_incomplete_discard: test_incomplete_generation_discard(),
+                semantic_incomplete_discard: test_incomplete_generation_discard(),
+                lexical_reclaim: no_storage_sealed_reclaim(),
+                semantic_reclaim: no_storage_sealed_reclaim(),
+                snapshots: SnapshotRegistries::new(SnapshotRegistryPolicy::DEFAULT),
+                source_publication: catalog.source_publication.clone(),
+                idempotency: catalog.clone(),
+                resource_policy: IngestResourcePolicy::DEFAULT,
+                semantic_stream_policy: SemanticStreamWindowPolicy::DEFAULT,
+                source_egress_policy: None,
+                auxiliary_catalog: memory_aux_catalog(),
+                auxiliary_coordinator: AuxiliaryMutationCoordinator::shared(),
+            },
+        );
+        let counting = Arc::new(CountingSearchCorpus::new(materializer));
+        let dispatcher = search_corpus_dispatcher_with_port(counting.clone(), catalog.clone());
+        let budget = RequestBudgetV1::unbounded();
+        let refused = dispatcher.dispatch(
+            SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(delta.clone()),
+            &budget,
+        );
+        if typed_code_of(&refused)
+            != Some(SearchPlaneErrorCodeV2::SearchCorpusGenerationRepairRequired)
+            || catalog
+                .source_publication
+                .inspect_source_event(&delta.repo_id, &delta.source_event)?
+                .is_some()
+            || counting.applies() != 1
+            || !lexical_builder
+                .batches
+                .lock()
+                .map_err(|error| error.to_string())?
+                .is_empty()
+            || !semantic_builder.take()?.is_empty()
+            || *embedder.calls.lock().map_err(|error| error.to_string())? != 0
+            || !authority
+                .identities
+                .lock()
+                .map_err(|error| error.to_string())?
+                .is_empty()
+        {
+            return Err(format!(
+                "{track:?} repair refusal consumed source authority or mutated a track: {refused:?}"
+            )
+            .into());
+        }
+
+        // Keep the same stream and expected base; a different full event can
+        // use a healthy target because the refused Delta never owned a slot.
+        let mut next = fixture_search_corpus_batch()?;
+        next.generation = ManifestGeneration::new(8);
+        next.source_event.event_id = "after-refused-repair".into();
+        super::support::restamp_search_corpus_fixture(&mut next)?;
+        let receipt = receipt_of(dispatcher.dispatch(
+            SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(next.clone()),
+            &budget,
+        ))?;
+        let record = catalog
+            .source_publication
+            .inspect_source_event(&next.repo_id, &next.source_event)?
+            .ok_or("new publication did not reserve its source event")?;
+        if !receipt.applied
+            || receipt.generation != next.generation
+            || record.phase != quanta_index_core::SourceEventPhaseV1::Staged
+            || record.binding.target.manifest_generation != next.generation
+        {
+            return Err("new publication did not stage after a repair refusal".into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn source_event_semantic_admission_refusal_leaves_no_reservation_or_track_work() -> TestRes {
+    use quanta_index_core::SourcePublicationCatalogPort as _;
+
+    let catalog = memory_catalog();
+    let (materializer, fakes) = search_corpus_materializer(catalog.clone(), false, true);
+    let counting = Arc::new(CountingSearchCorpus::new(materializer));
+    let dispatcher = search_corpus_dispatcher_with_port(counting.clone(), catalog.clone());
+    let mut batch = fixture_search_corpus_batch()?;
+    batch
+        .semantic_replace_scopes
+        .first_mut()
+        .ok_or("fixture semantic scope")?
+        .scope_digest
+        .clear();
+    super::support::restamp_search_corpus_fixture(&mut batch)?;
+    batch.validate_v1()?;
+    batch
+        .validate_surface_mutations_v1()
+        .map_err(|error| error.to_string())?;
+
+    let response = dispatcher.dispatch(
+        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch.clone()),
+        &RequestBudgetV1::unbounded(),
+    );
+    if !matches!(&response, SearchPlaneIngestIpcResponse::Error(error)
+        if error.message.contains("semantic source scope_digest must not be empty"))
+        || catalog
+            .source_publication
+            .inspect_source_event(&batch.repo_id, &batch.source_event)?
+            .is_some()
+        || counting.applies() != 1
+        || !fakes
+            .lexical_builder
+            .batches
+            .lock()
+            .map_err(|error| error.to_string())?
+            .is_empty()
+        || !fakes.semantic_builder.take()?.is_empty()
+        || *fakes
+            .embedder
+            .calls
+            .lock()
+            .map_err(|error| error.to_string())?
+            != 0
+        || !fakes
+            .authority
+            .identities
+            .lock()
+            .map_err(|error| error.to_string())?
+            .is_empty()
+    {
+        return Err(format!(
+            "semantic admission failure reserved or mutated before refusal: {response:?}"
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// Failure after materialization is not proof that a source event never ran.
+#[test]
+fn source_event_apply_errors_retry_the_original_journal_without_retargeting() -> TestRes {
+    use quanta_index_core::{
+        IdempotencyCatalogPort as _, OperationInspectV1, SourceEventPhaseV1,
+        SourcePublicationCatalogPort as _,
+    };
+
+    struct FailAfterPublishOnce {
+        inner: DirectSearchCorpusMaterializer,
+        error: Mutex<Option<CoreError>>,
+        applies: AtomicUsize,
+        preflights: AtomicUsize,
+    }
+    impl SearchCorpusIngestPort for FailAfterPublishOnce {
+        fn preflight_batch(&self, batch: &SearchCorpusIngestBatch) -> Result<(), CoreError> {
+            if self.preflights.fetch_add(1, Ordering::SeqCst) == 1 {
+                return Err(CoreError::Typed {
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::DeltaBaseConflict,
+                    message: "transient source preflight refusal after an uncertain apply".into(),
+                });
+            }
+            self.inner.preflight_batch(batch)
+        }
+
+        fn publish_batch(
+            &self,
+            batch: &SearchCorpusIngestBatch,
+            budget: &RequestBudgetV1,
+        ) -> Result<quanta_index_contract::SearchCorpusPublishOutcome, CoreError> {
+            let _prior = self.applies.fetch_add(1, Ordering::SeqCst);
+            let outcome = self.inner.publish_batch(batch, budget)?;
+            if let Some(error) = self
+                .error
+                .lock()
+                .map_err(|error| CoreError::Storage(error.to_string()))?
+                .take()
+            {
+                return Err(error);
+            }
+            Ok(outcome)
+        }
+    }
+
+    let message = "injected source apply failure after finalization";
+    for failure in [
+        CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusGenerationConflict,
+            message: message.into(),
+        },
+        CoreError::InvalidContract(message.into()),
+        CoreError::Storage(message.into()),
+    ] {
+        let catalog = memory_catalog();
+        let (inner, _fakes) = search_corpus_materializer(catalog.clone(), true, false);
+        let port = Arc::new(FailAfterPublishOnce {
+            inner,
+            error: Mutex::new(Some(failure)),
+            applies: AtomicUsize::new(0),
+            preflights: AtomicUsize::new(0),
+        });
+        let dispatcher = search_corpus_dispatcher_with_port(port.clone(), catalog.clone());
+        let batch = fixture_search_corpus_batch()?;
+        let key = IdempotencyKeyV1 {
+            kind: IngestOperationKindV1::SearchCorpus,
+            repo_id: batch.repo_id.clone(),
+            revision_id: batch.revision_id.clone(),
+            generation: batch.generation,
+            batch_digest: batch.batch_digest.clone(),
+        };
+        let budget = RequestBudgetV1::unbounded();
+        let failed = dispatcher.dispatch(
+            SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch.clone()),
+            &budget,
+        );
+        let pending = catalog
+            .source_publication
+            .inspect_source_event(&batch.repo_id, &batch.source_event)?
+            .ok_or("materialized event lost its reservation")?;
+        if !matches!(&failed, SearchPlaneIngestIpcResponse::Error(error)
+            if error.message.contains(message))
+            || !matches!(catalog.inspect(&key)?, OperationInspectV1::Uncertain { .. })
+            || pending.phase != SourceEventPhaseV1::Pending
+            || pending.binding.journal_key != key
+        {
+            return Err(format!("apply error froze or released a source event: {failed:?}").into());
+        }
+
+        let mut retargeted = batch.clone();
+        retargeted.generation = ManifestGeneration::new(99);
+        stamp_batch_digest_v1(&mut retargeted)?;
+        let refused = dispatcher.dispatch(
+            SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(retargeted),
+            &budget,
+        );
+        if typed_code_of(&refused)
+            != Some(quanta_index_contract::SearchPlaneErrorCodeV2::CatalogBusy)
+            || port.applies.load(Ordering::SeqCst) != 1
+        {
+            return Err("an uncertain source event must retain its original target".into());
+        }
+        let mut changed = batch.clone();
+        changed
+            .replace_scopes
+            .first_mut()
+            .ok_or("fixture replacement")?
+            .coverage
+            .producer_policy_sha256 = [9; 32];
+        super::support::restamp_search_corpus_fixture(&mut changed)?;
+        let refused = dispatcher.dispatch(
+            SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(changed),
+            &budget,
+        );
+        if typed_code_of(&refused)
+            != Some(quanta_index_contract::SearchPlaneErrorCodeV2::BatchDigestConflict)
+            || port.applies.load(Ordering::SeqCst) != 1
+        {
+            return Err("an uncertain source event must reject payload replacement".into());
+        }
+
+        let preflight_refusal = dispatcher.dispatch(
+            SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch.clone()),
+            &budget,
+        );
+        if typed_code_of(&preflight_refusal)
+            != Some(quanta_index_contract::SearchPlaneErrorCodeV2::DeltaBaseConflict)
+            || matches!(catalog.inspect(&key)?, OperationInspectV1::Refused { .. })
+            || catalog
+                .source_publication
+                .inspect_source_event(&batch.repo_id, &batch.source_event)?
+                != Some(pending.clone())
+            || port.applies.load(Ordering::SeqCst) != 1
+        {
+            return Err("retry preflight froze or released the original source event".into());
+        }
+
+        let receipt = receipt_of(dispatcher.dispatch(
+            SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch.clone()),
+            &budget,
+        ))?;
+        let staged = catalog
+            .source_publication
+            .inspect_source_event(&batch.repo_id, &batch.source_event)?
+            .ok_or("retried source event disappeared")?;
+        if !receipt.applied
+            || receipt.durable_sequence == 0
+            || staged.phase != SourceEventPhaseV1::Staged
+            || staged.binding != pending.binding
+            || port.applies.load(Ordering::SeqCst) != 2
+        {
+            return Err(
+                "the original source event did not recover under its retained binding".into(),
+            );
+        }
+        let replay = receipt_of(dispatcher.dispatch(
+            SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch),
+            &budget,
+        ))?;
+        if replay.applied
+            || replay.durable_sequence != receipt.durable_sequence
+            || port.applies.load(Ordering::SeqCst) != 2
+        {
+            return Err("recovered publication did not retain terminal replay semantics".into());
+        }
+    }
+    Ok(())
+}
+
+/// Journal evidence survives in this test, so UNKNOWN_GENERATION must come
+/// from the retained generation authority rather than a missing journal row.
+#[test]
+fn source_event_replay_refuses_reclaimed_original_even_when_journal_survives() -> TestRes {
+    struct Retention(std::sync::atomic::AtomicBool);
+    impl crate::ingest_dispatcher::SearchCorpusAuthorityInspectPort for Retention {
+        fn inspect_sealed_search_corpus(
+            &self,
+            _: &RepoId,
+            _: &RevisionId,
+            _: ManifestGeneration,
+            _: &str,
+        ) -> Result<crate::SealedSearchCorpusAuthorityStateV1, CoreError> {
+            Ok(if self.0.load(Ordering::SeqCst) {
+                crate::SealedSearchCorpusAuthorityStateV1::Exact
+            } else {
+                crate::SealedSearchCorpusAuthorityStateV1::Absent
+            })
+        }
+    }
+    let catalog = memory_catalog();
+    let (materializer, _fakes) = search_corpus_materializer(Arc::clone(&catalog), true, false);
+    let counting = Arc::new(CountingSearchCorpus::new(materializer));
+    let retention = Arc::new(Retention(std::sync::atomic::AtomicBool::new(true)));
+    let dispatcher = search_corpus_dispatcher_with_authority(
+        counting.clone(),
+        Arc::clone(&catalog),
+        retention.clone(),
+    );
+    let budget = RequestBudgetV1::unbounded();
+    let original = fixture_search_corpus_batch()?;
+    let _first = receipt_of(dispatcher.dispatch(
+        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(original.clone()),
+        &budget,
+    ))?;
+    retention.0.store(false, Ordering::SeqCst);
+    let mut replay = original;
+    replay.generation = ManifestGeneration::new(99);
+    replay.manifest_digest = "repackaged-manifest".into();
+    stamp_batch_digest_v1(&mut replay)?;
+    let refused = dispatcher.dispatch(
+        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(replay),
+        &budget,
+    );
+    if typed_code_of(&refused)
+        != Some(quanta_index_contract::SearchPlaneErrorCodeV2::UnknownGeneration)
+        || catalog.records() != 1
+        || counting.applies() != 1
+        || counting.preflights() != 1
+    {
+        return Err(
+            format!("reclaimed source event was replayed or re-materialized: {refused:?}").into(),
         );
     }
     Ok(())

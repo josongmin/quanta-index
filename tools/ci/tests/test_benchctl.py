@@ -495,7 +495,7 @@ def test_dsl_admission_refuses_symlinked_candidate(monkeypatch, tmp_path: Path) 
         "load_artifact",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("symlink was parsed")),
     )
-    with pytest.raises(RuntimeError, match="fresh DSL artifact unreadable"):
+    with pytest.raises(RuntimeError, match="not a regular file"):
         MODULE.admit_dsl_baselines(
             tmp_path,
             profile,
@@ -1407,6 +1407,57 @@ def test_native_raw_filename_collision_refuses_before_promotion(monkeypatch, tmp
     assert not (args["evidence_root"] / "runs").exists()
 
 
+def test_native_publication_does_not_reread_unbounded_artifact_bytes(monkeypatch, tmp_path):
+    args = _native_profile_fixture(monkeypatch, tmp_path, "systems")
+    original = Path.read_bytes
+
+    def bounded_only(path):
+        assert not path.is_relative_to(args["repo_root"] / "artifacts"), (
+            "native artifact whole read"
+        )
+        return original(path)
+
+    monkeypatch.setattr(Path, "read_bytes", bounded_only)
+    assert MODULE.promote_profile_runs(**args) == 0
+
+
+def test_native_preparation_keeps_commitments_not_payload_copies(monkeypatch, tmp_path):
+    from evidence import RawFile
+
+    args = _native_profile_fixture(monkeypatch, tmp_path, "systems")
+    captures, artifacts, payload = MODULE._capture_native_family(
+        args["repo_root"],
+        "freshness",
+        args["manifest"]["families"]["freshness"],
+        args["initial_head"],
+        args["manifest"],
+        0,
+        args["validated_artifacts"],
+    )
+    assert len(captures) == len(artifacts) == 1
+    path, ref = captures[0]
+    assert isinstance(ref, RawFile)
+    assert ref.path == path
+    assert ref.sha256 == "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+    assert payload["kind"] == "freshness"
+
+
+def test_native_prepared_source_mutation_cannot_publish(monkeypatch, tmp_path):
+    import profile_capture
+
+    args = _native_profile_fixture(monkeypatch, tmp_path, "systems")
+    publish = profile_capture.publish_capture
+
+    def mutate(*values, **kwargs):
+        ref = next(iter(kwargs["runs"][0]["raw_files"].values()))
+        ref.path.write_bytes(ref.path.read_bytes() + b" ")
+        return publish(*values, **kwargs)
+
+    monkeypatch.setattr(profile_capture, "publish_capture", mutate)
+    assert MODULE.promote_profile_runs(**args) == 2
+    assert not (args["evidence_root"] / "profiles/systems.json").exists()
+
+
 def test_native_partial_publication_preserves_prior_complete_capture(monkeypatch, tmp_path):
     import evidence_bridge
     from profile_capture import load_capture
@@ -1436,7 +1487,7 @@ def test_native_partial_publication_preserves_prior_complete_capture(monkeypatch
     assert len(document["runs"]) == 2
     assert len(MODULE.RunStore(root).collect([])) == 1
     source = evidence_bridge.source_identity(args["repo_root"], "benchmark-control-plane")
-    lock = MODULE.digest_bytes((args["repo_root"] / "Cargo.lock").read_bytes())
+    lock = "sha256:" + hashlib.sha256((args["repo_root"] / "Cargo.lock").read_bytes()).hexdigest()
     assert MODULE.validate_promoted_runs(root, "systems", args["manifest"], source, lock) == 0
 
 
@@ -1450,7 +1501,7 @@ def test_native_validator_ignores_newer_uncommitted_runs_and_requires_pointer(
     root, repo = args["evidence_root"], args["repo_root"]
     _promote_family_run(root, "freshness", "newer-uncommitted", created_utc="2100-01-01T00:00:00Z")
     source = evidence_bridge.source_identity(repo, "benchmark-control-plane")
-    lock = MODULE.digest_bytes((repo / "Cargo.lock").read_bytes())
+    lock = "sha256:" + hashlib.sha256((repo / "Cargo.lock").read_bytes()).hexdigest()
     assert MODULE.validate_promoted_runs(root, "systems", args["manifest"], source, lock) == 0
     (root / "profiles/systems.json").unlink()
     assert MODULE.validate_promoted_runs(root, "systems", args["manifest"], source, lock) == 2
@@ -1524,6 +1575,8 @@ def test_promotion_refuses_missing_preflight_and_partial_multi_artifact_claim(
     }
     receipt = repo / "preflight.json"
     monkeypatch.setattr(MODULE, "require_clean_preflight_receipt", lambda *_args: None)
+    checker = MODULE._load_lint_module(REPO_ROOT)
+    monkeypatch.setattr(MODULE, "_load_lint_module", lambda *_args: checker)
     digest = "sha256:" + hashlib.sha256(b'{"status":"clean"}').hexdigest()
     assert (
         MODULE.promote_profile_runs(
@@ -1543,7 +1596,7 @@ def test_promotion_refuses_missing_preflight_and_partial_multi_artifact_claim(
         )
         == 2
     )
-    assert "artifact changed after validation" in capsys.readouterr().err
+    assert "inventory exceeds registered count" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(
@@ -1624,6 +1677,8 @@ def test_promotion_refuses_stale_artifact_and_replaced_preflight(
         "profiles": {"one": {"families": ["family"]}},
     }
     monkeypatch.setattr(MODULE, "require_clean_preflight_receipt", lambda *_args: None)
+    checker = MODULE._load_lint_module(REPO_ROOT)
+    monkeypatch.setattr(MODULE, "_load_lint_module", lambda *_args: checker)
     digest = "sha256:" + hashlib.sha256(receipt.read_bytes()).hexdigest()
     assert (
         MODULE.promote_profile_runs(

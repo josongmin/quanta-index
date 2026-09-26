@@ -1,0 +1,52 @@
+{
+  "acceptance_policy": "User explicitly accepts one successful execution; concurrent source changes are recorded as provenance and do not invalidate the observed passing regressions. No reruns solely for source drift.",
+  "audit_raw_artifact_digest_checks": 41,
+  "current_build": "Compilation executes the native and dispatcher tests; former vendor HasLen failure resolved externally.",
+  "files": {
+    "L1_ALL_RESULTS_CALLERS.json": "25d52acd22aade6731e5bca403da3f05cf0cc7f28d52012d92139e2d8d32a30a",
+    "L1_BUILD_BLOCKER.md": "a7d3b1c89a4d75c90c6918ad1fc259d2e1b9cc71112424ca8530b402b8675d11",
+    "L1_CODE_AUDIT.json": "c46049d741b73722e185aa6c9cfcc8fb77da574a2b2a779aaebb10bc408ada23",
+    "L1_CODE_AUDIT.md": "c0b769651cc1370ea545d886973120f677448ff6b45773a4d7bbd62582c8805a",
+    "L1_FIXTURE_MIGRATION.json": "ce7035a0dcbca4c26cf86b48c1fd9f309efb690b42ff0a449b18c34e9bcc32cf",
+    "L1_GOAL_BLOCKED_AUDIT.json": "57dbc0230b4b0728b1c4fd99c1ef20f694fdb3edc40dc8fb7d4b3e3121ee36e2",
+    "L1_HANDOFF.md": "0837425aa3a56a67aaa260ff7bfe67a06556c4192d6a97c33187c3c7b15f2cb9",
+    "L1_PRIMITIVE_ADMISSION_REQUEST.md": "2e59fa5ff91f6542e15f074ec577dd8ca57e16fe52227e76d62973afe100640c",
+    "L1_PROOF.json": "470145943d42b0d190486e4d8ba52d77cc9255e1f502c315194c4943cbfe6477",
+    "L1_REQUIREMENT_AUDIT.json": "3be21dec8e3a45f5ba89b252349d491f637cc3dfad89cdf29e08407bd9d4bdab"
+  },
+  "head": "98601a66d8cab9c86232b3e62ce490c8b43b71b6",
+  "historical_goal_blocker": {
+    "audit": "L1_GOAL_BLOCKED_AUDIT.json",
+    "current_turn_classification": "no progress: unchanged source/API revalidated; no safe action within L1 ownership",
+    "interpretation": "Prior three-turn goal status only. The later audit found and repaired two additional L1-owned defects; its no-safe-action statement was too broad.",
+    "observed_consecutive_goal_turns_lower_bound": 3,
+    "previous_turn_classification": "progress: native regression, source-stable execution and handoff refreshed",
+    "reason": "Shared pure primitive admission API is absent; L0 shared contract freeze prohibits L1 from applying it. No cross-task messaging is permitted.",
+    "scope": "Three consecutive goal turns; current revalidation found the same API absence and unchanged 452-file source closure."
+  },
+  "historical_raw_artifact_digest_checks": 105,
+  "historical_source_union_sha256": "f441ed82d5dfe9ee3f4034820603734e182c47a403224c03bf3fef15720ed593",
+  "latest_audit": "L1_CODE_AUDIT.json",
+  "latest_audit_status": "VERIFIED for the two native exact-all corrections; FAILED for the broader L1 suite because its known primitive-admission regression remains.",
+  "latest_results": {
+    "formatting_and_whitespace": "VERIFIED",
+    "native_L1": {
+      "failed": 1,
+      "passed": 13
+    },
+    "native_combined": {
+      "failed": 1,
+      "passed": 87
+    },
+    "new_regressions": {
+      "failed": 0,
+      "passed": 2
+    },
+    "repository_and_SDK_gates": "NOT_RUN"
+  },
+  "qualification": "Owner-local observed execution results accepted per user instruction. No repository, actual daemon/SDK, release, deployment or performance claim.",
+  "remaining_behavior": "Native Keyword/Content after empty predicate still fails in this audit. Dispatcher tokenless phrase after language contradiction is the historical uncorrected residual; dispatcher was not rerun in this audit.",
+  "requested_scope_status": "FAILED",
+  "state": "partial",
+  "time_unix": 1790461284.2505999
+}

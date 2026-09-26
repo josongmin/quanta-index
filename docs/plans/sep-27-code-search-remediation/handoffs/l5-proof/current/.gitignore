@@ -1,0 +1,2 @@
+# Preserve raw logs alongside their source-bound L5 receipts.
+!*.log

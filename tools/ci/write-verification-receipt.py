@@ -10,9 +10,11 @@ import os
 import subprocess
 from pathlib import Path
 
-from nextest_events import NextestEvidenceError, parse_nextest_bytes, parse_nextest_inventory_bytes
+from nextest_events import NextestEvidenceError, parse_nextest, parse_nextest_inventory
 from proof_json import parse_proof_json
 from source_closure import ClosureError, load_and_verify
+
+from tools.benchmark.evidence import EvidenceError, RawFile, file_digest, read_control
 
 
 def _revision() -> str:
@@ -36,35 +38,34 @@ def _revision() -> str:
 
 
 def _nextest_evidence_summary(
-    evidence: Path, inventory: Path | None
+    evidence: Path | RawFile, inventory: Path | RawFile | None
 ) -> tuple[str, int, str | None]:
     try:
-        evidence_bytes = evidence.read_bytes()
+        evidence_file = RawFile.capture(evidence) if isinstance(evidence, Path) else evidence
         try:
-            inventory_bytes = inventory.read_bytes() if inventory is not None else None
+            inventory_file = RawFile.capture(inventory) if isinstance(inventory, Path) else inventory
             expected = (
-                parse_nextest_inventory_bytes(inventory_bytes)
-                if inventory_bytes is not None
+                parse_nextest_inventory(inventory_file)
+                if inventory_file is not None
                 else None
             )
-        except (NextestEvidenceError, OSError):
-            # Keep a malformed/failing execution as the primary error without
-            # parsing every healthy run twice or reopening its pathname.
-            parse_nextest_bytes(evidence_bytes)
+        except (NextestEvidenceError, OSError, EvidenceError):
+            # Keep a malformed/failing execution as the primary error; both
+            # passes consume the same commitment without retaining payloads.
+            parse_nextest(evidence_file)
             raise
-        parsed = parse_nextest_bytes(evidence_bytes, expected=expected)
-    except (NextestEvidenceError, OSError) as error:
+        parsed = parse_nextest(evidence_file, expected=expected)
+    except (NextestEvidenceError, OSError, EvidenceError) as error:
         raise SystemExit(f"{error}: {evidence}") from error
     inventory_digest = (
-        hashlib.sha256(inventory_bytes).hexdigest() if inventory_bytes is not None else None
+        inventory_file.sha256.removeprefix("sha256:") if inventory_file is not None else None
     )
     return parsed.sha256, parsed.selected, inventory_digest
 
 
-def _summary_json_evidence_summary(evidence: Path, command: str) -> tuple[str, int]:
-    raw = evidence.read_bytes()
-
+def _summary_json_evidence_summary(evidence: Path | RawFile, command: str) -> tuple[str, int]:
     try:
+        raw = read_control(evidence)
         payload = parse_proof_json(raw)
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
         raise SystemExit(f"invalid summary JSON evidence {evidence}: {error}") from error
@@ -101,8 +102,8 @@ def _summary_json_evidence_summary(evidence: Path, command: str) -> tuple[str, i
     return hashlib.sha256(raw).hexdigest(), executed
 
 
-def _input_evidence(values: list[str]) -> list[dict[str, str]]:
-    inputs: list[dict[str, str]] = []
+def _input_evidence(values: list[str]) -> dict[str, RawFile]:
+    inputs: dict[str, RawFile] = {}
     seen: set[str] = set()
     for value in values:
         role, separator, raw_path = value.partition("=")
@@ -112,17 +113,12 @@ def _input_evidence(values: list[str]) -> list[dict[str, str]]:
             raise SystemExit(f"duplicate input evidence role: {role}")
         if any(character not in "abcdefghijklmnopqrstuvwxyz0123456789-_" for character in role):
             raise SystemExit(f"invalid input evidence role: {role}")
-        path = Path(raw_path).resolve()
+        path = Path(raw_path).absolute()
         if not path.is_file():
             raise SystemExit(f"missing input evidence: {path}")
-        inputs.append(
-            {
-                "role": role,
-                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-            }
-        )
+        inputs[role] = RawFile.capture(path)
         seen.add(role)
-    return sorted(inputs, key=lambda entry: entry["role"])
+    return inputs
 
 
 def main() -> int:
@@ -155,7 +151,7 @@ def main() -> int:
         help="raw machine evidence consumed by the summary producer; repeat per input",
     )
     args = parser.parse_args()
-    evidence = args.evidence.resolve()
+    evidence = args.evidence.absolute()
     if not evidence.is_file():
         raise SystemExit(f"missing test evidence: {evidence}")
     source_closure = None
@@ -170,6 +166,8 @@ def main() -> int:
             raise SystemExit(f"invalid source closure: {error}") from error
         revision = source_closure["revision"]
     input_evidence = _input_evidence(args.input_evidence)
+    evidence_file = RawFile.capture(evidence)
+    inventory_file = None
     if source_closure is not None and not input_evidence:
         raise SystemExit("retrieval-authoritative receipt v2 requires raw --input-evidence")
     if args.evidence_format == "summary-json":
@@ -177,12 +175,16 @@ def main() -> int:
             raise SystemExit("summary JSON requires source closure and raw input evidence")
         if args.inventory is not None:
             raise SystemExit("--inventory is only valid for nextest evidence")
-        digest, test_event_count = _summary_json_evidence_summary(evidence, args.command)
+        digest, test_event_count = _summary_json_evidence_summary(evidence_file, args.command)
     else:
-        inventory = args.inventory.resolve() if args.inventory is not None else None
+        inventory = args.inventory.absolute() if args.inventory is not None else None
         if "workspace-nextest" in args.rail and inventory is None:
             raise SystemExit("workspace nextest receipt requires --inventory")
-        digest, test_event_count, inventory_digest = _nextest_evidence_summary(evidence, inventory)
+        digest, test_event_count, inventory_digest = _nextest_evidence_summary(evidence_file, inventory)
+        if inventory is not None:
+            inventory_file = RawFile.capture(inventory)
+            if inventory_file.sha256.removeprefix("sha256:") != inventory_digest:
+                raise SystemExit("receipt inventory changed after parsing")
     receipt = {
         "schema_version": 2 if source_closure is not None else 1,
         "revision": revision,
@@ -195,11 +197,20 @@ def main() -> int:
     }
     if source_closure is not None:
         receipt["source_closure"] = source_closure
-        receipt["input_evidence"] = input_evidence
+        receipt["input_evidence"] = [
+            {"role": role, "sha256": raw.sha256.removeprefix("sha256:")}
+            for role, raw in sorted(input_evidence.items())
+        ]
     if args.inventory is not None:
         receipt["inventory_path"] = args.inventory.resolve().as_posix()
         assert inventory_digest is not None
         receipt["inventory_sha256"] = inventory_digest
+    committed = [evidence_file, *input_evidence.values()]
+    if inventory_file is not None:
+        committed.append(inventory_file)
+    for raw in committed:
+        if file_digest(raw.path) != (raw.sha256, raw.size):
+            raise SystemExit(f"receipt evidence changed during validation: {raw.path}")
     args.out.parent.mkdir(parents=True, exist_ok=True)
     try:
         with args.out.open("x", encoding="utf-8") as stream:

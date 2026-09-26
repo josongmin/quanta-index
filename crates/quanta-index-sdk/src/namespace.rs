@@ -260,40 +260,74 @@ mod tests {
         })
     }
 
+    fn fixture_outcome() -> Result<quanta_index_contract::SearchCorpusPublishOutcome, String> {
+        let batch = fixture_batch()?
+            .to_wire_batch()
+            .map_err(|error| error.to_string())?;
+        Ok(quanta_index_contract::SearchCorpusPublishOutcome {
+            publication: quanta_index_contract::SourcePublicationBinding::for_batch(&batch),
+            receipt: fixture_receipt()?,
+            observation: None,
+        })
+    }
+
     fn assert_test_ok(result: &TestRes) {
         assert!(result.is_ok(), "{result:?}");
     }
 
     fn fixture_batch() -> Result<SearchCorpusBatch, String> {
+        use quanta_index_contract::{
+            ChunkRecord, RepoRelativePath, SourceFileCoverage, SourceFileKey, SourceFileRevision,
+            SymbolCoverage, source_file_unit_set_sha256,
+        };
         let language = LanguageCode::new("rust")
             .map_err(|err| format!("valid language code fixture required: {err}"))?;
+        let repo = RepoId::new("repo").map_err(|err| format!("fixture repository: {err}"))?;
+        let revision = RevisionId::new("rev").map_err(|err| format!("fixture revision: {err}"))?;
+        let path = RepoRelativePath::new("src/lib.rs");
+        let chunks = vec![ChunkRecord {
+            chunk_id: ChunkId::new("c1"),
+            repo_relative_path: path.clone(),
+            language: language.clone(),
+            start_byte: 0,
+            end_byte: 12,
+            start_line: 1,
+            end_line: 2,
+            text: "fn main() {}".to_string().into_boxed_str(),
+            structural: None,
+            parent_chunk_id: None,
+            source_repo_id: None,
+        }];
+        let coverage = SourceFileCoverage {
+            source: SourceFileRevision {
+                file: SourceFileKey {
+                    source_repo_id: repo.clone(),
+                    repo_relative_path: path,
+                },
+                revision_id: revision.clone(),
+                // Opaque producer attestation for this transport-only fixture.
+                source_sha256: [1; 32],
+            },
+            language,
+            producer_policy_sha256: [2; 32],
+            unit_set_sha256: source_file_unit_set_sha256(&chunks, &[])
+                .map_err(|err| format!("fixture units: {err}"))?,
+            text_admitted: true,
+            symbols: SymbolCoverage::Complete { symbol_count: 0 },
+        };
         Ok(SearchCorpusBatch::replace_generation(
-            RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
-            RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
+            repo,
+            revision,
             ManifestGeneration::new(1),
             "manifest:digest",
         )
-        .replace_scope(
-            quanta_index_contract::SearchScopeKey {
-                doc_surface: quanta_index_contract::SearchScopeSurface::File,
-                repo_relative_path: quanta_index_contract::RepoRelativePath::new("src/lib.rs"),
-            },
-            "scope:digest",
-            vec![quanta_index_contract::ChunkRecord {
-                chunk_id: ChunkId::new("c1"),
-                repo_relative_path: quanta_index_contract::RepoRelativePath::new("src/lib.rs"),
-                language,
-                start_byte: 0,
-                end_byte: 12,
-                start_line: 1,
-                end_line: 2,
-                text: "fn main() {}".to_string().into_boxed_str(),
-                structural: None,
-                parent_chunk_id: None,
-                source_repo_id: None,
-            }],
-            Vec::new(),
-        ))
+        .source_event(quanta_index_contract::SourcePublicationEvent {
+            stream_id: "namespace-fixture-stream".into(),
+            event_id: "namespace-fixture-event".into(),
+            expected_base_event_id: None,
+            payload_sha256: [0; 32],
+        })
+        .replace_scope(coverage, chunks, Vec::new()))
     }
 
     fn only_ingest_request(
@@ -319,7 +353,7 @@ mod tests {
             let ingest = Arc::new(StubIngestTransport {
                 requests: Mutex::new(Vec::new()),
                 response: Mutex::new(Some(SearchPlaneIngestIpcResponse::SearchCorpusReceipt(
-                    fixture_receipt()?.into(),
+                    fixture_outcome()?,
                 ))),
             });
             let client = make_client(Arc::clone(&ingest));
@@ -350,7 +384,7 @@ mod tests {
             let sugar_ingest = Arc::new(StubIngestTransport {
                 requests: Mutex::new(Vec::new()),
                 response: Mutex::new(Some(SearchPlaneIngestIpcResponse::SearchCorpusReceipt(
-                    fixture_receipt()?.into(),
+                    fixture_outcome()?,
                 ))),
             });
             let sugar_client = make_client(Arc::clone(&sugar_ingest));
@@ -362,7 +396,7 @@ mod tests {
             let ns_ingest = Arc::new(StubIngestTransport {
                 requests: Mutex::new(Vec::new()),
                 response: Mutex::new(Some(SearchPlaneIngestIpcResponse::SearchCorpusReceipt(
-                    fixture_receipt()?.into(),
+                    fixture_outcome()?,
                 ))),
             });
             let ns_client = make_client(Arc::clone(&ns_ingest));

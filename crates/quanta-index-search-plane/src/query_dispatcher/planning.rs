@@ -52,8 +52,10 @@ impl SearchPlaneDispatcher {
                 .filters
                 .retain(|filter| !matches!(filter, LqFilter::Rev { .. }));
         }
-        let _validated =
+        let validated =
             LexicalPolicy::plan_query(&pure_query, &request.constraints, LexicalEndpoint::Text)?;
+        self.lex_opener
+            .preflight_query_primitives(&validated, budget)?;
         let prepared_language = prepare_language_query_v1(lowered, &request.constraints)?;
         let base_pin = resolve_lexical_request_pin(
             self.activation_catalog.as_ref(),

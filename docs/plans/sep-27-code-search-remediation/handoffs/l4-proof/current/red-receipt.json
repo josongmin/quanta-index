@@ -1,0 +1,15 @@
+{
+  "command": "CARGO_BUILD_JOBS=2 ./scripts/cargow test -p quanta-index-lexical --lib l4_witness_regressions --locked",
+  "exit_code": 101,
+  "passed": 1,
+  "failed": 8,
+  "source_stable": true,
+  "head_before": "98601a66d8cab9c86232b3e62ce490c8b43b71b6",
+  "head_after": "98601a66d8cab9c86232b3e62ce490c8b43b71b6",
+  "source_sha256": "7f606b651ab2ab489e5c6137b4ab677b5834ed92fbafeec2bb669d9fc7be716e",
+  "log_sha256": "fd26a6a5d4a3866f608bff54396a53d7e1cd9a3fb9dd1b9316af42e27c2add6f",
+  "binary_path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-workspace-lane/debug/deps/quanta_index_lexical-ad09f9f32c79e6cf",
+  "binary_mtime_utc": "2026-09-26T21:01:27.912959+00:00",
+  "binary_sha256": null,
+  "binary_digest_status": "NOT_CAPTURED before replacement"
+}

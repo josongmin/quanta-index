@@ -86,6 +86,35 @@ def test_portable_execution_transitively_binds_file_custody_owner() -> None:
     } <= imports
 
 
+def test_retrieval_closure_binds_the_resolved_typescript_grammar() -> None:
+    module = _closure_module()
+    # A producer-side hash of an unused vendor directory is insufficient. The
+    # actual Cargo dependency graph must select and bind those source files.
+    roots = module._cargo_roots(REPO_ROOT, ("quanta-index-retrieval-bench",))
+    assert "vendor/tree-sitter-typescript" in roots
+
+
+def test_local_patch_below_registry_dependency_remains_in_source_closure(tmp_path, monkeypatch):
+    module = _closure_module()
+    metadata = {
+        "packages": [
+            {"id": "app", "name": "app", "source": None, "manifest_path": str(tmp_path / "app/Cargo.toml")},
+            {"id": "registry", "name": "registry", "source": "registry+https://example.invalid", "manifest_path": "/external/registry/Cargo.toml"},
+            {"id": "patch", "name": "patch", "source": None, "manifest_path": str(tmp_path / "vendor/patch/Cargo.toml")},
+        ],
+        "resolve": {"nodes": [
+            {"id": "app", "dependencies": ["registry"]},
+            {"id": "registry", "dependencies": ["patch"]},
+            {"id": "patch", "dependencies": []},
+        ]},
+    }
+    monkeypatch.setattr(module, "_metadata", lambda _repo: metadata)
+    assert module._cargo_roots(tmp_path, ("app",)) == {"app", "vendor/patch"}
+    metadata["resolve"]["nodes"].pop(1)
+    with pytest.raises(module.ClosureError, match="resolve node missing"):
+        module._cargo_roots(tmp_path, ("app",))
+
+
 def test_only_consolidated_ticket_contract_is_bound_as_planning_root() -> None:
     module = _closure_module()
     roots = module.resolve_roots(REPO_ROOT, PROFILE)

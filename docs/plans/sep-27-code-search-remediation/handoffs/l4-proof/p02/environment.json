@@ -1,0 +1,22 @@
+{
+  "rustc": "rustc 1.92.0 (ded5c06cf 2025-12-08)\nbinary: rustc\ncommit-hash: ded5c06cf21d2b93bffd5d884aa6e96934ee4234\ncommit-date: 2025-12-08\nhost: aarch64-apple-darwin\nrelease: 1.92.0\nLLVM version: 21.1.3\n",
+  "cargo": "cargo 1.92.0 (344c4567c 2025-10-21)\n",
+  "platform": "macOS-15.6-arm64-arm-64bit",
+  "machine": "arm64",
+  "canonical_environment": {
+    "RUSTUP_TOOLCHAIN": null,
+    "RUSTC": null,
+    "RUSTC_WRAPPER": "/opt/homebrew/bin/sccache",
+    "RUSTFLAGS": null,
+    "CARGO_ENCODED_RUSTFLAGS": null,
+    "CARGO_TARGET_DIR": "/Users/songmin/Library/Caches/quanta-index/target/902238390faf1c8a/clippy-lane",
+    "CARGO_BUILD_JOBS": "4",
+    "CC": null,
+    "CXX": null,
+    "SDKROOT": "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk",
+    "MACOSX_DEPLOYMENT_TARGET": null,
+    "QUANTA_INDEX_BUILD_LANE": "clippy-lane",
+    "QUANTA_INDEX_SCCACHE": null
+  },
+  "note": "Recorded through canonical environment; per-run explicit overrides are in each receipt. No secrets or registry credentials captured."
+}

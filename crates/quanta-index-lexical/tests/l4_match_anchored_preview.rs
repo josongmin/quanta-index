@@ -38,7 +38,7 @@ fn file_scope(path: &str, marker: &str) -> Result<SearchCorpusReplaceScope, Box<
             symbols: SymbolCoverage::Complete { symbol_count: 1 },
         },
         chunks: vec![ChunkRecord {
-            chunk_id: ChunkId::new("chunk-source"),
+            chunk_id: ChunkId::new(format!("chunk-{path}")),
             repo_relative_path: RepoRelativePath::new(path),
             language: LanguageCode::new("rust")?,
             start_byte: 0,
@@ -51,7 +51,7 @@ fn file_scope(path: &str, marker: &str) -> Result<SearchCorpusReplaceScope, Box<
             source_repo_id: None,
         }],
         symbols: vec![SymbolRecord {
-            symbol_id: SymbolId::new("symbol-needle"),
+            symbol_id: SymbolId::new(format!("symbol-{path}")),
             repo_relative_path: RepoRelativePath::new(path),
             language: LanguageCode::new("rust")?,
             symbol_kind: SymbolKindCode::new("function")?,
@@ -275,5 +275,174 @@ fn request_output_slot_exhaustion_preserves_hits_and_retained_memory_lifetime() 
     );
     drop(request);
     assert_eq!(ledger.resident_bytes(), 0);
+    Ok(())
+}
+
+#[test]
+fn l4_preview_admission_skips_empty_regex_pages() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+    let batch = batch(1, None, vec![file_scope("source.rs", "needle")?])?;
+    adapter.build_batch(&batch)?;
+    let view = adapter.open(&batch.repo_id, &batch.revision_id, batch.generation)?;
+    for index_mode in [None, Some(LqYesNoOnly::No)] {
+        let request = RequestBudgetV1::unbounded();
+        let ledger = request.lexical_preview_budget(10_000_000, 64 * 1024 * 1024)?;
+        let initial_peak = ledger.peak_bytes();
+        let mut absent = query("unused");
+        absent.expr = LqExpr::Leaf(LqLeaf::Regex("absent[0-9]+".into()));
+        absent.options.index_mode = index_mode;
+        assert!(view.search(&absent, 1, &request)?.is_empty());
+        assert_eq!(ledger.used_work(), 0, "no selected row needs a witness");
+        assert_eq!(
+            ledger.peak_bytes(),
+            initial_peak,
+            "no preview executor needed"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn l4_preview_admission_empty_pages_do_not_exhaust_output_slots() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+    let batch = batch(1, None, vec![file_scope("source.rs", "needle")?])?;
+    adapter.build_batch(&batch)?;
+    let view = adapter.open(&batch.repo_id, &batch.revision_id, batch.generation)?;
+    for index_mode in [None, Some(LqYesNoOnly::No)] {
+        let request = RequestBudgetV1::unbounded();
+        let mut absent = query("absent");
+        absent.options.index_mode = index_mode;
+        for _ in 0..256 {
+            assert!(view.search(&absent, 1, &request)?.is_empty());
+        }
+        let mut present = query("needle");
+        present.options.index_mode = index_mode;
+        let hits = view.search(&present, 1, &request)?;
+        assert_eq!(hits.len(), 1);
+        let preview = hits
+            .first()
+            .and_then(|hit| hit.preview.as_ref())
+            .ok_or("preview missing")?;
+        assert_eq!(
+            preview.unavailable_reason, None,
+            "empty pages retained no output"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn l4_preview_admission_unavailable_pages_do_not_exhaust_output_slots() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+    let batch = batch(1, None, vec![file_scope("source.rs", "needle")?])?;
+    adapter.build_batch(&batch)?;
+    let view = adapter.open(&batch.repo_id, &batch.revision_id, batch.generation)?;
+    for index_mode in [None, Some(LqYesNoOnly::No)] {
+        let request = RequestBudgetV1::unbounded();
+        let mut absence = query("unused");
+        absence.expr = LqExpr::Not(Box::new(LqExpr::Leaf(LqLeaf::Keyword("absent".into()))));
+        absence.options.index_mode = index_mode;
+        for _ in 0..256 {
+            let hits = view.search(&absence, 1, &request)?;
+            assert_eq!(hits.len(), 1);
+            assert_eq!(
+                hits.first()
+                    .and_then(|hit| hit.preview.as_ref())
+                    .ok_or("preview missing")?
+                    .unavailable_reason,
+                Some(PreviewUnavailableReason::NoPositiveWitness)
+            );
+        }
+        let mut present = query("needle");
+        present.options.index_mode = index_mode;
+        let hits = view.search(&present, 1, &request)?;
+        assert_eq!(hits.len(), 1);
+        assert_eq!(
+            hits.first()
+                .and_then(|hit| hit.preview.as_ref())
+                .ok_or("preview missing")?
+                .unavailable_reason,
+            None,
+            "unavailable previews retained no output"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn l4_preview_admission_skips_oversized_source_before_regex_compile() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+    let raw = format!("needle{}", " ".repeat(65_536));
+    let batch = batch(1, None, vec![file_scope("source.rs", &raw)?])?;
+    adapter.build_batch(&batch)?;
+    let view = adapter.open(&batch.repo_id, &batch.revision_id, batch.generation)?;
+    for index_mode in [None, Some(LqYesNoOnly::No)] {
+        let request = RequestBudgetV1::unbounded();
+        let ledger = request.lexical_preview_budget(10_000_000, 64 * 1024 * 1024)?;
+        let initial_peak = ledger.peak_bytes();
+        let mut present = query("unused");
+        present.expr = LqExpr::Leaf(LqLeaf::Regex("needle".into()));
+        present.options.index_mode = index_mode;
+        let hits = view.search(&present, 1, &request)?;
+        assert_eq!(hits.len(), 1);
+        let preview = hits
+            .first()
+            .and_then(|hit| hit.preview.as_ref())
+            .ok_or("preview missing")?;
+        assert_eq!(
+            preview.unavailable_reason,
+            Some(PreviewUnavailableReason::WorkBudget)
+        );
+        assert_eq!(ledger.used_work(), 0, "oversized source cannot be rendered");
+        assert_eq!(ledger.peak_bytes(), initial_peak);
+    }
+    Ok(())
+}
+
+#[test]
+fn l4_preview_admission_oversized_row_does_not_refuse_other_selected_rows() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+    let oversized = format!("needle{}", " ".repeat(65_536));
+    let batch = batch(
+        1,
+        None,
+        vec![
+            file_scope("a-large.rs", &oversized)?,
+            file_scope("b-small.rs", "needle")?,
+        ],
+    )?;
+    adapter.build_batch(&batch)?;
+    let view = adapter.open(&batch.repo_id, &batch.revision_id, batch.generation)?;
+    for index_mode in [None, Some(LqYesNoOnly::No)] {
+        let mut present = query("unused");
+        present.expr = LqExpr::Leaf(LqLeaf::Regex("needle".into()));
+        present.options.index_mode = index_mode;
+        let request = RequestBudgetV1::unbounded();
+        let hits = view.search(&present, 2, &request)?;
+        assert_eq!(hits.len(), 2);
+        for hit in &hits {
+            let preview = hit.preview.as_ref().ok_or("preview missing")?;
+            if hit.repo_relative_path.as_str() == "a-large.rs" {
+                assert_eq!(
+                    preview.unavailable_reason,
+                    Some(PreviewUnavailableReason::WorkBudget)
+                );
+                assert!(hit.snippet.is_empty());
+            } else {
+                assert_eq!(hit.repo_relative_path.as_str(), "b-small.rs");
+                assert_eq!(preview.unavailable_reason, None);
+                assert_eq!(hit.snippet, "needle");
+                assert_eq!(
+                    preview.original_focus.map(|range| (range.start, range.end)),
+                    Some((0, 6))
+                );
+            }
+        }
+    }
     Ok(())
 }

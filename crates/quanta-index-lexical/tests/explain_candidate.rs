@@ -9,14 +9,19 @@
 
 #![forbid(unsafe_code)]
 
+#[path = "support/op_fixture.rs"]
+mod op_fixture;
+#[path = "support/source_fixture.rs"]
+mod source_fixture;
+
 use std::error::Error;
 
 use quanta_index_contract::channel::LexicalChannelOp;
 use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
-    BatchIngestMode, CandidatePresenceV1, ChunkId, ChunkRecord, LQ_VERSION_TAG, LqExpr, LqLeaf,
-    LqOptions, LqQuery, LqSpan, LqYesNoOnly, ManifestGeneration, QueryConstraintSetV1, RepoId,
-    RepoRelativePath, RevisionId, SearchCorpusIngestBatch, UpsertChunk,
+    CandidatePresenceV1, ChunkId, ChunkRecord, LQ_VERSION_TAG, LqExpr, LqLeaf, LqOptions, LqQuery,
+    LqSpan, LqYesNoOnly, ManifestGeneration, QueryConstraintSetV1, RepoId, RepoRelativePath,
+    RevisionId, UpsertChunk,
 };
 use quanta_index_core::{
     CoreError, LexicalCandidateExplanationV1, LexicalIndexOpenPort, LexicalPageSpec,
@@ -74,34 +79,11 @@ fn upsert(chunk_id: &str, text: &str) -> Result<LexicalChannelOp, Box<dyn Error>
     }))
 }
 
-/// Build and seal one generation from `ops` (the mutation-only build port
-/// followed by the digest-carrying seal).
+/// Build one canonical, source-bound fixture generation.
 fn seal(adapter: &LexicalAdapter, ops: &[LexicalChannelOp]) -> Result<(), CoreError> {
-    quanta_index_core::LexicalIndexBuildPort::build(
-        adapter,
-        &repo(),
-        &revision(),
-        generation(),
-        ops,
-    )?;
     SearchCorpusBatchBuildPort::build_batch(
         adapter,
-        &SearchCorpusIngestBatch {
-            repo_id: repo(),
-            revision_id: revision(),
-            generation: generation(),
-            base_generation: None,
-            manifest_digest: "manifest:explain".to_string(),
-            batch_digest: "batch:explain".to_string(),
-            mode: BatchIngestMode::ReplaceGeneration,
-            bundle_payload: None,
-            clear_surfaces: Vec::new(),
-            replace_scopes: Vec::new(),
-            tombstone_scopes: Vec::new(),
-            semantic_replace_scopes: Vec::new(),
-            semantic_tombstone_scopes: Vec::new(),
-            seal: true,
-        },
+        &op_fixture::batch(&repo(), &revision(), generation(), ops)?,
     )
 }
 

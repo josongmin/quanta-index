@@ -884,15 +884,16 @@ mod tests {
     type TestRes = Result<(), Box<dyn std::error::Error>>;
 
     fn fixture_chunk() -> Result<ChunkRecord, Box<dyn std::error::Error>> {
+        let text = "lexical chunk body";
         Ok(ChunkRecord {
             chunk_id: ChunkId::new("chunk-1"),
             repo_relative_path: RepoRelativePath::new("src/lib.rs"),
             language: LanguageCode::new("rust").map_err(str::to_string)?,
             start_byte: 0,
-            end_byte: 24,
+            end_byte: u32::try_from(text.len())?,
             start_line: 1,
             end_line: 1,
-            text: "lexical chunk body".to_string().into_boxed_str(),
+            text: text.to_string().into_boxed_str(),
             structural: None,
             parent_chunk_id: None,
             source_repo_id: None,

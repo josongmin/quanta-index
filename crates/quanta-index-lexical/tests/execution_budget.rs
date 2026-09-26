@@ -13,14 +13,16 @@
 
 #![forbid(unsafe_code)]
 
+#[path = "support/source_fixture.rs"]
+mod source_fixture;
+
 use std::error::Error;
 
 use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
-    BatchIngestMode, ChunkId, ChunkRecord, LQ_VERSION_TAG, LqCountBound, LqExpr, LqFilter, LqLeaf,
-    LqOptions, LqQuery, LqSelect, LqSpan, LqType, LqYesNoOnly, ManifestGeneration,
-    QueryConstraintSetV1, RepoId, RepoRelativePath, RevisionId, SearchCorpusIngestBatch,
-    SearchCorpusReplaceScope, SearchScopeKey, SearchScopeSurface,
+    ChunkId, ChunkRecord, LQ_VERSION_TAG, LqCountBound, LqExpr, LqFilter, LqLeaf, LqOptions,
+    LqQuery, LqSelect, LqSpan, LqType, LqYesNoOnly, ManifestGeneration, QueryConstraintSetV1,
+    RepoId, RepoRelativePath, RevisionId, SearchCorpusIngestBatch, SearchCorpusReplaceScope,
 };
 use quanta_index_core::{
     CoreError, LEXICAL_EXAMINED_BUDGET_EXCEEDED_CODE, LexicalExecutionBudgetV1,
@@ -63,13 +65,12 @@ fn scope(index: u32) -> Result<SearchCorpusReplaceScope, Box<dyn Error>> {
     let language = LanguageCode::new("rust")
         .map_err(|err| -> Box<dyn Error> { format!("language code: {err}").into() })?;
     let end_byte = u32::try_from(body.len())?;
-    Ok(SearchCorpusReplaceScope {
-        scope: SearchScopeKey {
-            doc_surface: SearchScopeSurface::File,
-            repo_relative_path: RepoRelativePath::new(&path),
-        },
-        scope_digest: format!("scope:{path}"),
-        chunks: vec![ChunkRecord {
+    Ok(source_fixture::complete_file(
+        source_fixture::file_key(&repo(), &path),
+        &revision(),
+        language.clone(),
+        body.as_bytes(),
+        vec![ChunkRecord {
             chunk_id: ChunkId::new(format!("chunk-{index}")),
             repo_relative_path: RepoRelativePath::new(&path),
             language,
@@ -77,32 +78,22 @@ fn scope(index: u32) -> Result<SearchCorpusReplaceScope, Box<dyn Error>> {
             end_byte,
             start_line: 1,
             end_line: 1,
-            text: body.into_boxed_str(),
+            text: body.clone().into_boxed_str(),
             structural: None,
             parent_chunk_id: None,
             source_repo_id: None,
         }],
-        symbols: Vec::new(),
-    })
+        Vec::new(),
+    )?)
 }
 
 fn sealed_batch() -> Result<SearchCorpusIngestBatch, Box<dyn Error>> {
-    Ok(SearchCorpusIngestBatch {
-        repo_id: repo(),
-        revision_id: revision(),
-        generation: generation(),
-        base_generation: None,
-        manifest_digest: "budget-manifest:1".to_string(),
-        batch_digest: "budget-batch:1".to_string(),
-        mode: BatchIngestMode::ReplaceGeneration,
-        bundle_payload: None,
-        clear_surfaces: Vec::new(),
-        replace_scopes: (1..=DOCS).map(scope).collect::<Result<Vec<_>, _>>()?,
-        tombstone_scopes: Vec::new(),
-        semantic_replace_scopes: Vec::new(),
-        semantic_tombstone_scopes: Vec::new(),
-        seal: true,
-    })
+    Ok(source_fixture::sealed_batch(
+        &repo(),
+        &revision(),
+        generation(),
+        (1..=DOCS).map(scope).collect::<Result<Vec<_>, _>>()?,
+    )?)
 }
 
 fn query(expr: LqExpr, filters: Vec<LqFilter>) -> LqQuery {

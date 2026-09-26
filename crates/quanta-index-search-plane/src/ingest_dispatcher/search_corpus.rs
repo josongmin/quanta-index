@@ -507,6 +507,48 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
         // Repeat immutable base/candidate ownership admission under this
         // operation's lock before reservation, provider calls or either builder.
         self.builder.preflight_batch(batch)?;
+        if !batch.seal {
+            let (lexical, semantic) = generation_pair_from_batch_v1(batch);
+            ensure_generation_is_mutable_v1(
+                self.lexical_generation_validator.as_ref(),
+                &lexical,
+                "lexical",
+            )?;
+            ensure_generation_is_mutable_v1(
+                self.semantic_generation_validator.as_ref(),
+                &semantic,
+                "semantic",
+            )?;
+        }
+        let sealed_plan = if batch.seal {
+            let plan = self.preflight_sealed_generation_v1(batch)?;
+            plan.validate_repair_mode_v1(batch.mode)?;
+            Some(plan)
+        } else {
+            None
+        };
+        let build_lexical = sealed_plan
+            .as_ref()
+            .is_none_or(SealedGenerationBuildPlanV1::build_lexical);
+        let build_semantic = sealed_plan
+            .as_ref()
+            .is_none_or(SealedGenerationBuildPlanV1::build_semantic);
+        // Constructing the borrowed stream validates semantic source records,
+        // the model contract, and egress admission without embedding. These
+        // pure refusals must precede reservation and physical repair too.
+        let mut derived = if build_semantic {
+            Some(derive_semantic_stream_from_semantic_sources_v1(
+                batch,
+                self.semantic_embedder.as_ref(),
+                self.semantic_stream_policy,
+                self.source_egress_policy.as_ref(),
+                budget,
+            )?)
+        } else {
+            None
+        };
+        // Known admission refusals must not consume a stream slot. Once
+        // admitted, reserve before reclaim, discard, or any provider/build work.
         let (target, _) = generation_pair_from_batch_v1(batch);
         let binding = quanta_index_core::SourceEventBindingV1 {
             event: batch.source_event.clone(),
@@ -529,25 +571,6 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
                 }
             }
         }
-        if !batch.seal {
-            let (lexical, semantic) = generation_pair_from_batch_v1(batch);
-            ensure_generation_is_mutable_v1(
-                self.lexical_generation_validator.as_ref(),
-                &lexical,
-                "lexical",
-            )?;
-            ensure_generation_is_mutable_v1(
-                self.semantic_generation_validator.as_ref(),
-                &semantic,
-                "semantic",
-            )?;
-        }
-
-        let sealed_plan = if batch.seal {
-            Some(self.preflight_sealed_generation_v1(batch)?)
-        } else {
-            None
-        };
         if sealed_plan
             .as_ref()
             .is_some_and(SealedGenerationBuildPlanV1::is_finalize_only)
@@ -557,6 +580,7 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
             observation.finalize_ns = Some(elapsed_ingest_ns(started)?);
             observation.status = IngestObservationStatus::FinalizeOnly;
             return Ok(SearchCorpusPublishOutcome {
+                publication: quanta_index_contract::SourcePublicationBinding::for_batch(batch),
                 receipt: self.sealed_receipt_v1(batch)?,
                 observation: Some(observation),
             });
@@ -574,12 +598,6 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
             )?;
         }
 
-        let build_lexical = sealed_plan
-            .as_ref()
-            .is_none_or(SealedGenerationBuildPlanV1::build_lexical);
-        let build_semantic = sealed_plan
-            .as_ref()
-            .is_none_or(SealedGenerationBuildPlanV1::build_semantic);
         if !build_semantic || !build_lexical {
             observation.status = IngestObservationStatus::PartialRecovery;
         }
@@ -591,14 +609,7 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
         // provider failure refuses the batch before the lexical track has
         // mutated, as the all-at-once derivation did. Every source record is
         // validated before the first window is embedded.
-        if build_semantic {
-            let mut derived = derive_semantic_stream_from_semantic_sources_v1(
-                batch,
-                self.semantic_embedder.as_ref(),
-                self.semantic_stream_policy,
-                self.source_egress_policy.as_ref(),
-                budget,
-            )?;
+        if let Some(derived) = derived.as_mut() {
             let (semantic_receipt, semantic_report) = self
                 .semantic_ingest
                 .publish_stream(&derived.header, &mut derived.source)?;
@@ -634,6 +645,7 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
             self.finalize_sealed_generation_v1(batch)?;
             observation.finalize_ns = Some(elapsed_ingest_ns(started)?);
             return Ok(SearchCorpusPublishOutcome {
+                publication: quanta_index_contract::SourcePublicationBinding::for_batch(batch),
                 receipt: self.sealed_receipt_v1(batch)?,
                 observation: Some(observation),
             });
@@ -642,6 +654,7 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
         self.finalize_generation_v1(batch, None)?;
         observation.finalize_ns = Some(elapsed_ingest_ns(started)?);
         Ok(SearchCorpusPublishOutcome {
+            publication: quanta_index_contract::SourcePublicationBinding::for_batch(batch),
             receipt: batch_publish_receipt_v1(batch),
             observation: Some(observation),
         })

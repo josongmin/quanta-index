@@ -1,0 +1,13 @@
+[
+  {
+    "crate": "quanta-index-contract",
+    "modules": [
+      "ipc::ingest",
+      "source_event_payload"
+    ],
+    "links": [
+      "ipc::ingest -> source_event_payload",
+      "source_event_payload -> ipc::ingest"
+    ]
+  }
+]

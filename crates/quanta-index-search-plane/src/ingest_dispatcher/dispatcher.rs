@@ -119,9 +119,9 @@ impl SearchPlaneIngestDispatcher {
     /// 4. **Mutable preflight.** Everything the route can refuse without
     ///    mutating — shape, surface authority, resource envelope, delta
     ///    base, and the auxiliary routes' semantic validation against
-    ///    the ledger — runs now. A frozen-policy refusal is recorded
-    ///    terminally from the prepared mutation (no claim is ever held);
-    ///    anything else returns without a terminal record.
+    ///    the ledger — runs now. Non-source frozen-policy refusals are
+    ///    recorded terminally. Source refusals retain Prepared, so a retry
+    ///    cannot permanently strand an earlier Pending event.
     /// 5. **Fenced claim.** `claim_prepared` hands back the claim every
     ///    later fenced step must carry. A terminal record the inspect
     ///    missed in a race replays exactly here.
@@ -130,10 +130,10 @@ impl SearchPlaneIngestDispatcher {
     /// 7. **Terminal.** `commit` records the versioned receipt, allocates
     ///    the global durable sequence and its journal event in one
     ///    transaction; a commit that fails after a successful apply
-    ///    marks the record `Uncertain`. A typed refusal from the apply
-    ///    is recorded with `record_refused` (a frozen-policy refusal,
-    ///    exact-replayed by retries); an ambiguous failure marks the
-    ///    record `Uncertain` for recovery.
+    ///    marks the record `Uncertain`. Source-corpus apply errors are
+    ///    also uncertain: a typed error can follow reservation or partial
+    ///    track work, so it is not a terminal nonpublication proof. Other
+    ///    routes retain their frozen-policy typed-refusal contract.
     ///
     /// Because the digest is the body's, two bodies can never share a key;
     /// the catalog's own different-body refusal is its invariant, not a
@@ -180,11 +180,15 @@ impl SearchPlaneIngestDispatcher {
             INGEST_CLAIM_LEASE_MS,
             &body_sha256,
         )?;
-        // Stage 4 — mutable preflight. A frozen-policy refusal is
-        // recorded terminally from the prepared mutation: no claim is
-        // ever held, and the retry replays the refusal exactly.
+        // Stage 4 — source preflight remains retryable. A prior attempt can
+        // already own a Pending event and partially materialized tracks; a
+        // current policy/base refusal cannot prove terminal nonpublication.
+        // Leave Prepared for the existing fenced retry path. Other routes
+        // keep their immutable policy-refusal receipts.
         if let Err(error) = preflight(body) {
-            if is_frozen_policy_refusal(&error) {
+            if B::OPERATION != IngestOperationKindV1::SearchCorpus
+                && is_frozen_policy_refusal(&error)
+            {
                 let _refused = self.idempotency.record_refused(&prepared, &error);
             }
             return Err(error);
@@ -216,7 +220,13 @@ impl SearchPlaneIngestDispatcher {
                 }
             },
             Err(error) => {
-                if is_frozen_policy_refusal(&error) {
+                // Once source materialization has started, even a typed
+                // conflict can be transient (for example a pinned repair).
+                // Preserve the reservation and retry its original journal;
+                // freezing this error would strand the stream permanently.
+                if B::OPERATION != IngestOperationKindV1::SearchCorpus
+                    && is_frozen_policy_refusal(&error)
+                {
                     let _refused = self.idempotency.record_refused(&claim, &error);
                 } else {
                     let _uncertain = self.idempotency.mark_uncertain(&claim);
@@ -236,7 +246,13 @@ impl SearchPlaneIngestDispatcher {
         apply: impl FnOnce(
             &quanta_index_contract::SearchCorpusIngestBatch,
         ) -> Result<BatchPublishReceipt, CoreError>,
-    ) -> Result<BatchPublishReceipt, CoreError> {
+    ) -> Result<
+        (
+            BatchPublishReceipt,
+            quanta_index_contract::SourcePublicationBinding,
+        ),
+        CoreError,
+    > {
         let _body_digest = verified_batch_digest_v1(batch)?;
         batch
             .validate_v1()
@@ -282,12 +298,15 @@ impl SearchPlaneIngestDispatcher {
                                 .into(),
                         });
                     }
-                    let _reconciled = self.source_publication.reconcile_source_event(
+                    let reconciled = self.source_publication.reconcile_source_event(
                         &batch.repo_id,
                         &batch.source_event,
                         self.idempotency.as_ref(),
                     )?;
-                    return Ok(receipt.recorded_at(durable_sequence).replayed());
+                    return Ok((
+                        receipt.recorded_at(durable_sequence).replayed(),
+                        publication_binding(&reconciled.binding),
+                    ));
                 }
                 OperationInspectV1::CommittedRepoMap { .. } => {
                     return Err(journal_payload_mismatch(&record.binding.journal_key));
@@ -315,25 +334,19 @@ impl SearchPlaneIngestDispatcher {
                 }
             }
         }
-        let receipt = self.publish_idempotent(batch, |batch| {
-            self.lexical.preflight_batch(batch)?;
-            let binding = quanta_index_core::SourceEventBindingV1 {
-                event: batch.source_event.clone(),
-                target: super::generation_plan::generation_pair_from_batch_v1(batch).0,
-                journal_key: IdempotencyKeyV1 { kind: IngestOperationKindV1::SearchCorpus, repo_id: batch.repo_id.clone(), revision_id: batch.revision_id.clone(), generation: batch.generation, batch_digest: batch.batch_digest.clone() },
-            };
-            match self.source_publication.reserve_source_event(&binding)? {
-                quanta_index_core::SourceEventReservationV1::Reserved(_) => Ok(()),
-                quanta_index_core::SourceEventReservationV1::Existing(record) if record.binding == binding && record.phase == quanta_index_core::SourceEventPhaseV1::Pending => Ok(()),
-                quanta_index_core::SourceEventReservationV1::Existing(_) => Err(CoreError::Typed { code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogBusy, message: "source event raced with an original publication; retry through its original journal".into() }),
-            }
-        }, apply)?;
-        let _reconciled = self.source_publication.reconcile_source_event(
+        // The materializer reserves the event under its operation lock after
+        // physical repair admission and before either track mutates. Reserving
+        // here would consume the stream even when apply refuses a damaged
+        // target before doing any work. Replay and reconciliation still use
+        // this same catalog and the original operation journal.
+        let receipt =
+            self.publish_idempotent(batch, |batch| self.lexical.preflight_batch(batch), apply)?;
+        let reconciled = self.source_publication.reconcile_source_event(
             &batch.repo_id,
             &batch.source_event,
             self.idempotency.as_ref(),
         )?;
-        Ok(receipt)
+        Ok((receipt, publication_binding(&reconciled.binding)))
     }
 
     /// Same seven stages as [`Self::publish_idempotent`], keyed by
@@ -450,10 +463,18 @@ impl SearchPlaneIngestDispatcher {
                 let mut observation = None;
                 match self.publish_source_idempotent(&mut batch, |batch| {
                     let outcome = self.lexical.publish_batch(batch, budget)?;
+                    outcome
+                        .publication
+                        .validate_receipt(
+                            &quanta_index_contract::SourcePublicationBinding::for_batch(batch),
+                            batch.seal,
+                            &outcome.receipt,
+                        )
+                        .map_err(CoreError::InvalidContract)?;
                     observation = outcome.observation;
                     Ok(outcome.receipt)
                 }) {
-                    Ok(receipt) => {
+                    Ok((receipt, publication)) => {
                         if !receipt.applied {
                             observation =
                                 Some(quanta_index_contract::SearchCorpusIngestObservation {
@@ -472,6 +493,7 @@ impl SearchPlaneIngestDispatcher {
                         }
                         SearchPlaneIngestIpcResponse::SearchCorpusReceipt(
                             quanta_index_contract::SearchCorpusPublishOutcome {
+                                publication,
                                 receipt,
                                 observation,
                             },
@@ -693,5 +715,15 @@ fn verified_batch_digest_v1<B: IngestBatchBodyV1 + serde::Serialize>(
                 body.generation().get(),
             ),
         }),
+    }
+}
+
+fn publication_binding(
+    binding: &quanta_index_core::SourceEventBindingV1,
+) -> quanta_index_contract::SourcePublicationBinding {
+    quanta_index_contract::SourcePublicationBinding {
+        event: binding.event.clone(),
+        target: binding.target.clone(),
+        batch_digest: binding.journal_key.batch_digest.clone(),
     }
 }

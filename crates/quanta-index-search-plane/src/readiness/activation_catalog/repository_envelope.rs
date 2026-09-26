@@ -265,7 +265,21 @@ pub(super) fn validate_history(history: &EventHistory) -> Result<(), CoreError> 
             cursor = record.binding.event.expected_base_event_id.as_ref();
         }
     }
+    let mut targets = std::collections::BTreeSet::new();
     for ((stream, event_id), record) in &history.records {
+        // Recovery and persistence must enforce the same generation ownership
+        // as live reservation. A different manifest does not make one physical
+        // generation a second target, even across producer streams.
+        let target = &record.binding.target;
+        if !targets.insert((
+            &target.repo_id,
+            &target.revision_id,
+            target.manifest_generation,
+        )) {
+            return Err(corrupt(
+                "target generation belongs to multiple source events",
+            ));
+        }
         if record.phase == SourceEventPhaseV1::Active
             && !accepted.contains(&(stream.clone(), event_id.clone()))
         {

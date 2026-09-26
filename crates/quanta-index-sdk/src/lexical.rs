@@ -268,7 +268,7 @@ impl<const SEALED: bool> SearchCorpusBatch<SEALED> {
     }
 
     /// The wire batch, stamped with its canonical digest.
-    fn to_wire_batch(&self) -> Result<SearchCorpusIngestBatch, SdkError> {
+    pub(super) fn to_wire_batch(&self) -> Result<SearchCorpusIngestBatch, SdkError> {
         if !SEALED {
             return Err(SdkError::Serialization(
                 "source-event publication requires a sealed batch".into(),
@@ -420,7 +420,7 @@ impl<'a> SearchCorpusNamespace<'a> {
             ));
         }
         let request = SearchPlaneActivateSearchCorpusGenerationCasRequest {
-            candidate: search_corpus_identity_from_sealed_receipt_v1(batch, &outcome.receipt)?,
+            candidate: search_corpus_identity_from_sealed_receipt_v1(&outcome)?,
             expected_active,
         };
         request.validate_v1().map_err(|error| {
@@ -469,27 +469,22 @@ fn batch_lexical_scope_v1(batch: &SearchCorpusBatch) -> quanta_index_contract::G
     }
 }
 
-/// The composite candidate a sealed receipt describes: the batch's
-/// identity on both tracks (the publish already proved the receipt names
-/// this batch) and the semantic content roots the receipt attested.
+/// The original publication on both tracks and its attested semantic roots.
+/// A replay must never activate the caller's unmaterialized retarget.
 fn search_corpus_identity_from_sealed_receipt_v1(
-    batch: &SearchCorpusBatch,
-    receipt: &BatchReceipt,
+    outcome: &quanta_index_contract::SearchCorpusPublishOutcome,
 ) -> Result<SearchCorpusGenerationIdentityV1, SdkError> {
-    let Some(semantic_content) = receipt.semantic_content.clone() else {
+    let Some(semantic_content) = outcome.receipt.semantic_content.clone() else {
         return Err(SdkError::Protocol(
             "sealed receipt attests no semantic content roots; the candidate cannot name what the plane sealed"
                 .to_string(),
         ));
     };
     let identity = SearchCorpusGenerationIdentityV1 {
-        lexical: batch_lexical_scope_v1(batch),
+        lexical: outcome.publication.target.clone(),
         semantic: quanta_index_contract::GenerationSnapshot {
-            repo_id: batch.repo_id().clone(),
-            revision_id: batch.revision_id().clone(),
             track: SearchPlaneTrackKind::Semantic,
-            manifest_generation: batch.generation(),
-            manifest_digest: batch.manifest_digest().to_string(),
+            ..outcome.publication.target.clone()
         },
         semantic_content,
     };
@@ -554,13 +549,12 @@ fn dispatch_search_corpus_publish_outcome_v1<const SEALED: bool>(
     wire_batch.validate_surface_mutations_v1().map_err(|err| {
         SdkError::Protocol(format!("invalid search corpus surface mutation: {err}"))
     })?;
-    let batch_digest = wire_batch.batch_digest.clone();
     let response = client.dispatch_ingest(
         SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(wire_batch),
     )?;
     match response {
         SearchPlaneIngestIpcResponse::SearchCorpusReceipt(outcome) => {
-            validate_search_corpus_publish_receipt_v1(batch, &batch_digest, &outcome.receipt)?;
+            validate_search_corpus_publish_receipt_v1(batch, &outcome.receipt)?;
             Ok(outcome)
         }
         other @ (SearchPlaneIngestIpcResponse::HistoryReceipt(_)
@@ -657,24 +651,10 @@ fn validate_semantic_cluster_membership_authority_v1(
 
 fn validate_search_corpus_publish_receipt_v1<const SEALED: bool>(
     batch: &SearchCorpusBatch<SEALED>,
-    batch_digest: &str,
     receipt: &BatchReceipt,
 ) -> Result<(), SdkError> {
-    if receipt.generation != batch.generation() {
-        return Err(SdkError::Protocol(
-            "search corpus receipt generation differs from the published batch".to_string(),
-        ));
-    }
-    if receipt.manifest_digest.as_deref() != Some(batch.manifest_digest()) {
-        return Err(SdkError::Protocol(
-            "search corpus receipt manifest digest differs from the published batch".to_string(),
-        ));
-    }
-    if receipt.batch_digest != batch_digest {
-        return Err(SdkError::Protocol(
-            "search corpus receipt batch digest differs from the published batch".to_string(),
-        ));
-    }
+    // The transport binding has already checked event, original target and
+    // digest. Counts and seal remain invariant under source-event replay.
     if receipt.sealed != SEALED {
         return Err(SdkError::Protocol(format!(
             "search corpus receipt seal mismatch: expected {SEALED}, received {}",

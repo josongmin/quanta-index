@@ -19,10 +19,11 @@ from evidence import (
     EvidenceError,
     RawFile,
     RunStore,
-    _read_regular_file,
+    _read_control_file,
     _run_id,
     canonical_json,
     digest_bytes,
+    file_digest,
     parse_json,
     validate_payload,
     write_raw_file,
@@ -140,7 +141,7 @@ def replay_run(store: RunStore, evidence: dict) -> None:
     ):
         raise EvidenceError("lexical replay has wrong family/profile/product/scope")
     raw = store.run_dir(evidence["run_id"]) / "raw"
-    origin = parse_json(_read_regular_file(raw / "capture-origin.json").decode())
+    origin = parse_json(_read_control_file(raw / "capture-origin.json").decode())
     if not isinstance(origin, dict) or set(origin) != {
         "capture_id",
         "execution_root",
@@ -172,32 +173,32 @@ def replay_run(store: RunStore, evidence: dict) -> None:
         or not Path(command["argv"][0]).is_absolute()
     ):
         raise EvidenceError("lexical command differs from registered scorer")
-    if origin["owner_digest"] != digest_bytes(_read_regular_file(Path(owner.__file__))):
+    if origin["owner_digest"] != file_digest(Path(owner.__file__))[0]:
         raise EvidenceError(
             "lexical scorer source changed; historical report needs its original owner"
         )
-    spec = parse_json(_read_regular_file(raw / "frozen-spec.json").decode())
+    spec = parse_json(_read_control_file(raw / "frozen-spec.json").decode())
     if spec != {
         "schema_version": 1,
         **{role: str(native / f"input-{role}") for role in owner.INPUT_ROLES},
     }:
         raise EvidenceError("lexical frozen spec differs from captured role paths")
     selection, _original_paths = corpus_binding.read_spec(
-        _read_regular_file(raw / "original-spec.json"), owner.INPUT_ROLES
+        _read_control_file(raw / "original-spec.json"), owner.INPUT_ROLES
     )
     paths = frozen_inputs(raw)
     capsule = RawFile.capture(raw / "corpus-release.zip")
-    binding_raw = _read_regular_file(raw / "corpus-binding.json")
+    binding_raw = _read_control_file(raw / "corpus-binding.json")
     binding = corpus_binding.replay(
         capsule,
         selection,
-        _read_regular_file(paths["suite"]),
-        _read_regular_file(paths["query_pack"]),
+        _read_control_file(paths["suite"]),
+        _read_control_file(paths["query_pack"]),
     )
     if parse_json(binding_raw.decode()) != binding:
         raise EvidenceError("lexical corpus/view/query binding differs from retained Git objects")
     summary = owner.evaluate_capture(paths)
-    if parse_json(_read_regular_file(raw / "report.json").decode()) != summary:
+    if parse_json(_read_control_file(raw / "report.json").decode()) != summary:
         raise EvidenceError("lexical raw report differs from owner recomputation")
     pack = owner._read(paths["query_pack"])
     if evidence["payload"] != payloads(summary, pack)[evidence["case_id"]]:
@@ -206,7 +207,7 @@ def replay_run(store: RunStore, evidence: dict) -> None:
         {
             "id": role,
             "availability": "present",
-            "digest": digest_bytes(_read_regular_file(path)),
+            "digest": file_digest(path)[0],
             "reason": None,
         }
         for role, path in paths.items()
@@ -241,7 +242,7 @@ def capture(repo: Path, root: Path, registry: dict, spec_path: Path, timeout: in
         raise EvidenceError("lexical driver must come from the requested checkout")
     if root.resolve().is_relative_to(repo.resolve()):
         raise EvidenceError("lexical evidence must stay outside the checkout")
-    original = _read_regular_file(spec_path)
+    original = _read_control_file(spec_path)
     selection, paths = corpus_binding.read_spec(original, owner.INPUT_ROLES)
     release = Path(selection["release_path"])
     if root.resolve().is_relative_to(release.resolve()) or release.resolve().is_relative_to(
@@ -253,19 +254,22 @@ def capture(repo: Path, root: Path, registry: dict, spec_path: Path, timeout: in
     require_clean_worktree(repo)
     head = resolve_checkout_head(repo)
     source = source_identity(repo, "benchmark-retrieval")
-    contents = {role: _read_regular_file(path) for role, path in paths.items()}
-    if _read_regular_file(spec_path) != original:
+    contents = {role: RawFile.capture(path) for role, path in paths.items()}
+    if _read_control_file(spec_path) != original:
         raise EvidenceError("lexical spec changed during freeze")
     _directories(root)
     capture_id = f"lexical-{uuid.uuid4().hex}"
     native = root / "work" / capture_id
     native.mkdir(parents=True, exist_ok=False)
     binding, capsule = corpus_binding.capture(
-        release, selection, contents["suite"], contents["query_pack"], native / "corpus-release.zip"
+        release,
+        selection,
+        contents["suite"].read_control(),
+        contents["query_pack"].read_control(),
+        native / "corpus-release.zip",
     )
     binding_raw = canonical_json(binding).encode()
-    for role, content in contents.items():
-        (native / f"input-{role}").write_bytes(content)
+    frozen = {role: content.copy_to(native / f"input-{role}") for role, content in contents.items()}
     (native / "original-spec.json").write_bytes(original)
     (native / "corpus-binding.json").write_bytes(binding_raw)
     (native / "frozen-spec.json").write_text(
@@ -296,9 +300,11 @@ def capture(repo: Path, root: Path, registry: dict, spec_path: Path, timeout: in
     if python_digest != RawFile.capture(Path(sys.executable).resolve()).sha256:
         raise EvidenceError("lexical Python executable changed during scoring")
     summary = owner.evaluate_capture(frozen_inputs(native))
-    if parse_json(_read_regular_file(native / "report.json").decode()) != summary:
+    if parse_json(_read_control_file(native / "report.json").decode()) != summary:
         raise EvidenceError("lexical producer report differs from independent raw replay")
     typed = payloads(summary, owner._read(native / "input-query_pack"))
+    if any(file_digest(raw.path) != (raw.sha256, raw.size) for raw in frozen.values()):
+        raise EvidenceError("lexical frozen inputs changed during scoring")
     raw = {path.name: RawFile.capture(path) for path in native.iterdir()}
     spool = root / "work" / capture_id / "prepared"
     toolchain = f"Python {platform.python_version()}"
@@ -314,7 +320,7 @@ def capture(repo: Path, root: Path, registry: dict, spec_path: Path, timeout: in
                             "capture_id": capture_id,
                             "execution_root": str(native),
                             "producer": command,
-                            "owner_digest": digest_bytes(_read_regular_file(Path(owner.__file__))),
+                            "owner_digest": file_digest(Path(owner.__file__))[0],
                             "python_digest": python_digest,
                             "toolchain": toolchain,
                         }
@@ -350,7 +356,7 @@ def capture(repo: Path, root: Path, registry: dict, spec_path: Path, timeout: in
             build={
                 "toolchain": toolchain,
                 "target_triple": f"{sys.platform}-{platform.machine()}",
-                "lockfile_digest": digest_bytes((repo / "uv.lock").read_bytes()),
+                "lockfile_digest": file_digest(repo / "uv.lock")[0],
                 "profile": "lexical-recorded-scoring",
                 "flags": [],
                 "binaries": [{"name": "python", "sha256": python_digest}],
@@ -359,7 +365,7 @@ def capture(repo: Path, root: Path, registry: dict, spec_path: Path, timeout: in
                 {
                     "id": role,
                     "availability": "present",
-                    "digest": digest_bytes(content),
+                    "digest": content.sha256,
                     "reason": None,
                 }
                 for role, content in contents.items()
@@ -414,9 +420,10 @@ def validate(repo: Path, root: Path, registry: dict) -> dict:
     store = RunStore(root)
     for record in document["runs"]:
         evidence = store.load(record["run_id"])
-        if not evidence["run_id"].startswith(document["capture_id"] + "-") or evidence["build"][
-            "lockfile_digest"
-        ] != digest_bytes((repo / "uv.lock").read_bytes()):
+        if (
+            not evidence["run_id"].startswith(document["capture_id"] + "-")
+            or evidence["build"]["lockfile_digest"] != file_digest(repo / "uv.lock")[0]
+        ):
             raise EvidenceError("lexical profile mixes captures or stale lockfile")
         replay_run(store, evidence)
     return document

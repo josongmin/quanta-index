@@ -174,9 +174,11 @@ pub(super) fn require_token_pin(
     })
 }
 
-/// Logical empty plans never mint a continuation. An authenticated token from
-/// a nonempty plan cannot be replayed into a newly contradictory constraint set,
-/// even when language lowering has removed that distinction from the AST.
+/// Logical empty plans never mint a continuation.
+///
+/// An authenticated token from a nonempty plan cannot be replayed into a newly
+/// contradictory constraint set, even when language lowering has removed that
+/// distinction from the AST.
 pub(super) fn require_cursor_on_nonempty_plan(
     has_cursor: bool,
     force_empty: bool,

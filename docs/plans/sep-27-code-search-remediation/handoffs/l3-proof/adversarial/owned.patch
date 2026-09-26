@@ -1,0 +1,190 @@
+--- a/crates/quanta-index-lexical/src/ranked_page.rs
++++ b/crates/quanta-index-lexical/src/ranked_page.rs
+@@ -728,7 +728,11 @@
+     }
+ 
+     fn harvest(self) -> Self::Fruit {
+-        self.finish()
++        let collection = self.collection.clone();
++        // Key decoding is deferred until harvest. Preserve its first integrity
++        // error instead of visiting another segment and masking it with a later
++        // resource refusal.
++        self.finish().inspect_err(|_| collection.abort())
+     }
+ }
+ 
+--- a/crates/quanta-index-lexical/src/ranked_page_tests.rs
++++ b/crates/quanta-index-lexical/src/ranked_page_tests.rs
+@@ -671,6 +671,60 @@
+ }
+ 
+ #[test]
++fn l3_group_harvest_corruption_stops_before_the_next_segment() -> TestResult {
++    use tantivy::SegmentComponent;
++    use tantivy::directory::Directory;
++
++    let index = index_with(&[&["first.rs"], &["second.rs"]])?;
++    let first = index.reader()?.searcher().segment_readers()[0].segment_id();
++    let meta = index
++        .searchable_segment_metas()?
++        .into_iter()
++        .find(|meta| meta.id() == first)
++        .ok_or("first segment metadata")?;
++    let file = meta.relative_path(SegmentComponent::FastFields);
++    let mut bytes = index.directory().atomic_read(&file)?;
++    let marker = b"fixture-repo";
++    let locations: Vec<_> = bytes
++        .windows(marker.len())
++        .enumerate()
++        .filter_map(|(offset, value)| (value == marker).then_some(offset))
++        .collect();
++    assert_eq!(locations.len(), 1, "one uncompressed dictionary key");
++    // Preserve the column/index layout while making a group key non-UTF-8.
++    // Ordinals can still be collected; decoding fails only during harvest.
++    bytes[locations[0]] = 0xff;
++    index.directory().atomic_write(&file, &bytes)?;
++    let searcher = index.reader()?.searcher();
++    assert_eq!(searcher.segment_readers()[0].segment_id(), first);
++
++    for work in [3, 100] {
++        let query = MeasuredQuery::default();
++        let resources = LexicalCollectionBudget::new(work, 1_000_000)?;
++        let collection =
++            CollectionBudget::new(LexicalExecutionBudgetV1::new(10)?, resources.clone());
++        let result = budgeted_collection(
++            &searcher,
++            &query,
++            &GroupedPageCollector::new(ProjectionGroup::Path, 1.0, collection.clone()),
++            &RequestBudgetV1::unbounded(),
++            collection,
++            "test:harvest-corruption",
++        );
++        assert!(
++            matches!(result, Err(CoreError::Storage(ref message)) if message.contains("utf-8")),
++            "work={work}: {result:?}"
++        );
++        assert_eq!(query.opened.load(Ordering::Relaxed), 1);
++        assert_eq!(query.scored.load(Ordering::Relaxed), 1);
++        assert_eq!(resources.used_work(), 3);
++        assert_eq!(resources.resident_bytes(), 0);
++        assert!(resources.failure().is_none());
++    }
++    Ok(())
++}
++
++#[test]
+ fn l3_work_cap_refuses_before_next_native_advance() -> TestResult {
+     let index = index_with(&[&["a", "b", "c", "d"]])?;
+     let searcher = index.reader()?.searcher();
+@@ -1138,3 +1192,111 @@
+     assert_eq!(resources.resident_bytes(), 0);
+     Ok(())
+ }
++
++#[test]
++fn l3_adversarial_pages_and_groups_match_fixed_score_and_tie_oracles() -> TestResult {
++    use quanta_index_contract::{LexicalCursor, ManifestGeneration};
++
++    let index = index_with(&[
++        &["c.rs", "a.rs", "b.rs"],
++        &["b.rs", "a.rs", "é.rs"],
++        &["a.rs", "b.rs", "z.rs"],
++    ])?;
++    let searcher = index.reader()?.searcher();
++    assert_eq!(searcher.segment_readers().len(), 3);
++    // Each segment's first row scores 10; the remaining rows score 1. These
++    // goldens specify the external order without using the production sorter.
++    let scored = [
++        "a.rs-2", "b.rs-1", "c.rs-0", "a.rs-0", "a.rs-1", "b.rs-0", "b.rs-2", "z.rs-0", "é.rs-0",
++    ];
++    let tied = [
++        "a.rs-0", "a.rs-1", "a.rs-2", "b.rs-0", "b.rs-1", "b.rs-2", "c.rs-0", "z.rs-0", "é.rs-0",
++    ];
++    let query = MeasuredQuery {
++        first_score: Some(10.0),
++        ..MeasuredQuery::default()
++    };
++    for boost in [0.0, 1.0, 2.5] {
++        let oracle = if boost == 0.0 { &tied } else { &scored };
++        for count in [false, true] {
++            for limit in [1, 2, 4, 8] {
++                let mut after = None;
++                let mut walked = Vec::new();
++                let mut exhausted = false;
++                for _page in 0..=oracle.len() {
++                    let ledger = collection(20, searcher.segment_readers().len())?;
++                    let resources = ledger.resources.clone();
++                    let collector = RankedPageCollector::new(limit, after.clone(), boost, count)
++                        .with_resource_budget(ledger.clone());
++                    let fruit = budgeted_collection(
++                        &searcher,
++                        &query,
++                        &collector,
++                        &RequestBudgetV1::unbounded(),
++                        ledger,
++                        "test:adversarial-page",
++                    )?;
++                    if count {
++                        assert_eq!(fruit.matched, u64::try_from(oracle.len() - walked.len())?);
++                    }
++                    assert!(fruit.rows.len() <= limit);
++                    if fruit.rows.is_empty() {
++                        exhausted = true;
++                        drop(fruit);
++                        assert_eq!(resources.resident_bytes(), 0);
++                        break;
++                    }
++                    after = fruit.rows.last().map(|row| {
++                        Arc::new(LexicalCursor::at(
++                            ManifestGeneration::new(1),
++                            row.key.order_key(),
++                        ))
++                    });
++                    walked.extend(fruit.rows.iter().map(|row| row.key.candidate_id.clone()));
++                    drop(fruit);
++                    assert_eq!(resources.resident_bytes(), 0);
++                    assert!(resources.failure().is_none());
++                }
++                assert!(exhausted, "boost={boost}, count={count}, limit={limit}");
++                assert_eq!(
++                    walked.as_slice(),
++                    oracle.as_slice(),
++                    "boost={boost}, count={count}, limit={limit}"
++                );
++            }
++        }
++        for group in [ProjectionGroup::Path, ProjectionGroup::Repo] {
++            let ledger = collection(20, searcher.segment_readers().len())?;
++            let resources = ledger.resources.clone();
++            let fruit = budgeted_collection(
++                &searcher,
++                &query,
++                &GroupedPageCollector::new(group, boost, ledger.clone()),
++                &RequestBudgetV1::unbounded(),
++                ledger,
++                "test:adversarial-group",
++            )?;
++            let expected: &[&str] = match (group, boost == 0.0) {
++                (ProjectionGroup::Path, false) => {
++                    &["a.rs-2", "b.rs-1", "c.rs-0", "z.rs-0", "é.rs-0"]
++                }
++                (ProjectionGroup::Path, true) => {
++                    &["a.rs-0", "b.rs-0", "c.rs-0", "z.rs-0", "é.rs-0"]
++                }
++                (ProjectionGroup::Repo, false) => &["a.rs-2"],
++                (ProjectionGroup::Repo, true) => &["a.rs-0"],
++            };
++            let actual: Vec<_> = fruit
++                .representatives
++                .iter()
++                .map(|row| row.key.candidate_id.as_str())
++                .collect();
++            assert_eq!(actual, expected);
++            assert_eq!(fruit.matched, 9);
++            drop(fruit);
++            assert_eq!(resources.resident_bytes(), 0);
++            assert!(resources.failure().is_none());
++        }
++    }
++    Ok(())
++}

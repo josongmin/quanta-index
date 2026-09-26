@@ -28,7 +28,11 @@ members = [
     "benchmarks/retrieval",
     "benchmarks/bench-protocol",
 ]
+exclude = ["vendor/tree-sitter-typescript", "vendor/tantivy-sstable"]
 resolver = "2"
+
+[patch.crates-io]
+tantivy-sstable = { path = "vendor/tantivy-sstable" }
 
 
 [workspace.package]
@@ -174,7 +178,7 @@ tree-sitter-go = "0.25"
 tree-sitter-javascript = "0.25"
 tree-sitter-python = "0.25"
 tree-sitter-rust = "0.24"
-tree-sitter-typescript = "0.23"
+tree-sitter-typescript = { version = "=0.23.2", path = "vendor/tree-sitter-typescript" }
 unicode-normalization = "0.1"
 
 [profile.dev]

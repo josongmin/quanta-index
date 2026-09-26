@@ -19,15 +19,12 @@ except ModuleNotFoundError:  # direct script invocation
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
     from tools.ci.nextest_events import NextestEvidenceError, parse_nextest_inventory_bytes
 
-from tools.ci.lint.handoff_validation import _read_repo_regular_bytes
+from tools.benchmark.evidence import RawFile, read_control
 from tools.ci.proof_execution_result import pytest_junit_identity
 
 
-def _evidence_bytes(value: Path | bytes) -> bytes:
-    if isinstance(value, bytes):
-        return value
-    path = value.absolute()
-    return _read_repo_regular_bytes(path.parent, path.name, label="proof evidence")
+def _evidence_bytes(value: Path | RawFile | bytes) -> bytes:
+    return read_control(value)
 
 
 PYTHON_SELECTOR = "tools/ci/tests/test_retrieval_benchmark.py"
@@ -45,7 +42,7 @@ def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
     return result
 
 
-def _load_json(path: Path | bytes) -> object:
+def _load_json(path: Path | RawFile | bytes) -> object:
     try:
         return json.loads(_evidence_bytes(path), object_pairs_hook=_unique_object)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
@@ -64,7 +61,7 @@ def _identities(value: object, label: str) -> list[str]:
 
 
 def verify_inventory_authority(
-    inventory: Path | bytes, role: str, authority_path: Path = DEFAULT_AUTHORITY
+    inventory: Path | RawFile | bytes, role: str, authority_path: Path = DEFAULT_AUTHORITY
 ) -> None:
     """Reject collections that differ from the source-controlled required tests."""
     if role not in {"python", "rust", "sdk"}:

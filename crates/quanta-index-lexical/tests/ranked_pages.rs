@@ -15,16 +15,19 @@
 
 #![forbid(unsafe_code)]
 
+#[path = "support/source_fixture.rs"]
+mod source_fixture;
+
 use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use std::error::Error;
 
 use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
-    BatchIngestMode, ChunkId, ChunkRecord, LQ_VERSION_TAG, LexicalCandidate, LexicalCursor,
-    LqCountBound, LqExpr, LqFilter, LqLeaf, LqOptions, LqQuery, LqSelect, LqSpan,
-    ManifestGeneration, QueryConstraintSetV1, RepoId, RepoRelativePath, RevisionId,
-    SearchCorpusIngestBatch, SearchCorpusReplaceScope, SearchScopeKey, SearchScopeSurface,
+    ChunkId, ChunkRecord, LQ_VERSION_TAG, LexicalCandidate, LexicalCursor, LqCountBound, LqExpr,
+    LqFilter, LqLeaf, LqOptions, LqQuery, LqSelect, LqSpan, ManifestGeneration,
+    QueryConstraintSetV1, RepoId, RepoRelativePath, RevisionId, SearchCorpusIngestBatch,
+    SearchCorpusReplaceScope,
 };
 use quanta_index_core::{
     CoreError, LexicalIndexOpenPort, LexicalPageSpec, LexicalSearcher, RequestBudgetV1,
@@ -80,15 +83,20 @@ fn matches(chunk: u32) -> bool {
 fn scope(file: u32) -> Result<SearchCorpusReplaceScope, Box<dyn Error>> {
     let language = LanguageCode::new("rust")
         .map_err(|err| -> Box<dyn Error> { format!("language code: {err}").into() })?;
+    let mut raw_source = String::new();
     let chunks = (0..CHUNKS_PER_FILE)
         .map(|chunk| {
             let text = chunk_text(file, chunk);
+            let start_byte = u32::try_from(raw_source.len())?;
+            raw_source.push_str(&text);
+            let end_byte = u32::try_from(raw_source.len())?;
+            raw_source.push('\n');
             Ok(ChunkRecord {
                 chunk_id: ChunkId::new(format!("chunk-{file:02}-{chunk}")),
                 repo_relative_path: RepoRelativePath::new(path(file)),
                 language: language.clone(),
-                start_byte: 0,
-                end_byte: u32::try_from(text.len())?,
+                start_byte,
+                end_byte,
                 // Lines tie across files and differ within one.
                 start_line: chunk.saturating_mul(10).saturating_add(1),
                 end_line: chunk.saturating_mul(10).saturating_add(5),
@@ -99,36 +107,25 @@ fn scope(file: u32) -> Result<SearchCorpusReplaceScope, Box<dyn Error>> {
             })
         })
         .collect::<Result<Vec<_>, Box<dyn Error>>>()?;
-    Ok(SearchCorpusReplaceScope {
-        scope: SearchScopeKey {
-            doc_surface: SearchScopeSurface::File,
-            repo_relative_path: RepoRelativePath::new(path(file)),
-        },
-        scope_digest: format!("scope:{}", path(file)),
+    Ok(source_fixture::complete_file(
+        source_fixture::file_key(&repo(), &path(file)),
+        &revision(),
+        language,
+        raw_source.as_bytes(),
         chunks,
-        symbols: Vec::new(),
-    })
+        Vec::new(),
+    )?)
 }
 
 /// The files are written in reverse path order, so the index order is the
 /// opposite of the page order.
 fn sealed_batch() -> Result<SearchCorpusIngestBatch, Box<dyn Error>> {
-    Ok(SearchCorpusIngestBatch {
-        repo_id: repo(),
-        revision_id: revision(),
-        generation: generation(),
-        base_generation: None,
-        manifest_digest: "ranked-manifest:1".to_string(),
-        batch_digest: "ranked-batch:1".to_string(),
-        mode: BatchIngestMode::ReplaceGeneration,
-        bundle_payload: None,
-        clear_surfaces: Vec::new(),
-        replace_scopes: (0..FILES).rev().map(scope).collect::<Result<Vec<_>, _>>()?,
-        tombstone_scopes: Vec::new(),
-        semantic_replace_scopes: Vec::new(),
-        semantic_tombstone_scopes: Vec::new(),
-        seal: true,
-    })
+    Ok(source_fixture::sealed_batch(
+        &repo(),
+        &revision(),
+        generation(),
+        (0..FILES).rev().map(scope).collect::<Result<Vec<_>, _>>()?,
+    )?)
 }
 
 fn query(filters: Vec<LqFilter>) -> LqQuery {

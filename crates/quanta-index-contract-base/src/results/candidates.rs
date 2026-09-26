@@ -325,7 +325,7 @@ impl<'de> Deserialize<'de> for LexicalCandidate {
 }
 
 impl LexicalCandidate {
-    /// Check identity agreement; source bytes and rendering are verified by the reader.
+    /// Check identity and emitted-byte consistency; immutable bytes remain reader-owned.
     pub fn validate_source_metadata(&self) -> Result<(), &'static str> {
         if let Some(source) = &self.source {
             if source.file.source_repo_id != self.source_repo_id {
@@ -336,8 +336,17 @@ impl LexicalCandidate {
                 return Err("candidate path disagrees with source file identity");
             }
         }
+        PreviewMetadata::validate_highlight_ranges(
+            &self.snippet,
+            self.snippet_hit_offset,
+            &self.highlights,
+        )?;
         if let Some(preview) = &self.preview {
-            preview.validate()?;
+            preview.validate_highlights(
+                &self.snippet,
+                self.snippet_hit_offset,
+                &self.highlights,
+            )?;
             if preview.source != self.source
                 && (preview.unavailable_reason.is_none() || preview.source.is_some())
             {

@@ -24,4 +24,5 @@ sha2.workspace = true
 rustix.workspace = true
 
 [dev-dependencies]
+quanta-index-lexical = { version = "0.1.0", path = "../quanta-index-lexical" }
 tempfile.workspace = true

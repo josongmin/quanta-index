@@ -19,6 +19,10 @@ source grammar, shared scanner, C headers, Rust bindings and queries. Build-time
 source hashing in the retrieval producer binds actual vendored bytes into its
 reported policy. `quanta-provenance.json` records original inputs and component
 receipt identity; it is documentation, not an authority to skip verification.
+The Rust binding additionally exports `QUANTA_COMPATIBILITY_PATCH_ID`; the
+producer references it so an accidentally retained registry dependency cannot
+compile while claiming the vendored grammar identity. Existing binding APIs
+remain unchanged.
 
 ## Regeneration
 

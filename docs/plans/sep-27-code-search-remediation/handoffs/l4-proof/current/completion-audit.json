@@ -1,0 +1,182 @@
+{
+  "utc": "2026-09-26T21:25:06.161844+00:00",
+  "head": "98601a66d8cab9c86232b3e62ce490c8b43b71b6",
+  "dirty_state": " M Cargo.lock\n M Cargo.toml\n M benchmarks/retrieval/build.rs\n M benchmarks/retrieval/proof-required-tests.json\n M benchmarks/retrieval/src/batch.rs\n M benchmarks/retrieval/src/main.rs\n M benchmarks/retrieval/src/symbols.rs\n M benchmarks/retrieval/src/symbols/preflight.rs\n M benchmarks/retrieval/tests/l5_parser_regressions.rs\n M benchmarks/retrieval/tests/sdk_roundtrip.rs\n M crates/quanta-index-contract/src/ipc/ingest_observation.rs\n M crates/quanta-index-contract/tests/hybrid_candidate_contract.rs\n M crates/quanta-index-contract/tests/ipc_query_result_v2_contract.rs\n M crates/quanta-index-contract/tests/lexical_cursor_contract.rs\n M crates/quanta-index-core/tests/hybrid_policy.rs\n M crates/quanta-index-lexical/src/searcher/candidates.rs\n M crates/quanta-index-lexical/src/searcher/manual_scan.rs\n M crates/quanta-index-lexical/src/searcher/match_sets.rs\n M crates/quanta-index-lexical/src/searcher/planner_errors.rs\n M crates/quanta-index-lexical/src/searcher/predicate_plan.rs\n M crates/quanta-index-lexical/src/searcher/snippets.rs\n M crates/quanta-index-lexical/src/symbol.rs\n M crates/quanta-index-lexical/tests/cancellation_inside_search.rs\n M crates/quanta-index-lexical/tests/execution_budget.rs\n M crates/quanta-index-lexical/tests/explain_candidate.rs\n M crates/quanta-index-lexical/tests/l1_query_domain_window.rs\n M crates/quanta-index-lexical/tests/l2_file_mutation.rs\n M crates/quanta-index-lexical/tests/l3_exact_source.rs\n M crates/quanta-index-lexical/tests/planner_authority.rs\n M crates/quanta-index-lexical/tests/ranked_pages.rs\n M crates/quanta-index-lexical/tests/regex_cache_bounds.rs\n M crates/quanta-index-lexical/tests/regex_literal_alternation.rs\n M crates/quanta-index-lexical/tests/tantivy_smoke.rs\n M crates/quanta-index-lexical/tests/unicode_normalization_goldens.rs\n M crates/quanta-index-lq-text-normalizer/src/tokens.rs\n M crates/quanta-index-sdk/src/tests.rs\n M crates/quanta-index-sdk/tests/sdk_binding_owner_v1.rs\n M crates/quanta-index-search-plane/src/auxiliary_authority.rs\n M crates/quanta-index-search-plane/src/ingest_dispatcher/tests/idempotency.rs\n M crates/quanta-index-search-plane/src/ingest_dispatcher/tests/l2_file_mutation.rs\n M crates/quanta-index-search-plane/src/ingest_dispatcher/tests/support.rs\n M crates/quanta-index-search-plane/src/query_dispatcher/continuation.rs\n M crates/quanta-index-search-plane/src/query_dispatcher/routes/lexical.rs\n M crates/quanta-index-search-plane/src/query_dispatcher/semantic_query.rs\n M crates/quanta-index-search-plane/src/query_dispatcher/tests/l1_query_domain_window.rs\n M crates/quanta-index-search-plane/src/query_dispatcher/tests/lexical.rs\n M crates/quanta-index-search-plane/src/query_dispatcher/tests/lexical_pages.rs\n M crates/quanta-index-search-plane/src/query_dispatcher/tests/structural.rs\n M crates/quanta-index-search-plane/src/query_dispatcher/tests/support/common.rs\n M crates/quanta-index-search-plane/src/query_dispatcher/tests/support/lexical.rs\n M crates/quanta-index-search-plane/src/readiness/activation_catalog.rs\n M crates/quanta-index-search-plane/src/readiness/activation_catalog/repository_envelope.rs\n M crates/quanta-index-search-plane/src/readiness/activation_catalog/source_events.rs\n M crates/quanta-index-search-plane/src/readiness/activation_catalog/tests.rs\n M crates/quanta-index-search-plane/src/readiness/ledger_apply.rs\n M crates/quanta-index-search-plane/src/readiness/structural_state.rs\n M crates/quanta-index-search-plane/src/readiness/tests/mod.rs\n M crates/quanta-index-search-plane/src/readiness/tests/search_corpus_history.rs\n M crates/quanta-index-search-plane/src/readiness/tests/support.rs\n M crates/quanta-index-search-plane/src/search_corpus_lifecycle.rs\n M crates/quanta-index-searchctl/src/lib.rs\n M crates/quanta-index-searchctl/tests/cli_smoke.rs\n M crates/quanta-index-searchd/src/app/runtime.rs\n M docs/build-resource-budget.md\n M docs/plans/sep-27-code-search-remediation/handoffs/L1_HANDOFF.md\n M docs/plans/sep-27-code-search-remediation/handoffs/L2_HANDOFF.md\n M docs/plans/sep-27-code-search-remediation/handoffs/L2_HANDOFF.source.json\n M docs/plans/sep-27-code-search-remediation/handoffs/L3_HANDOFF.md\n M docs/plans/sep-27-code-search-remediation/handoffs/L3_HANDOFF.source.json\n M docs/plans/sep-27-code-search-remediation/handoffs/L4_HANDOFF.md\n M docs/plans/sep-27-code-search-remediation/handoffs/L5_HANDOFF.md\n M docs/plans/sep-27-code-search-remediation/handoffs/L5_HANDOFF.source.json\n M docs/plans/sep-27-misc/tickets/INDEX.md\n M tools/benchmark/agent_outcome/__main__.py\n M tools/benchmark/criterion_capture.py\n M tools/benchmark/evidence.py\n M tools/benchmark/raw_archive.py\n M tools/benchmark/recorded_capture.py\n M tools/ci/test-authority.toml\n M tools/ci/tests/test_agent_outcome_benchmark.py\n M tools/ci/tests/test_bench_protocol_conformance.py\n M tools/ci/tests/test_benchmark_source_closure.py\n M tools/ci/tests/test_criterion_capture.py\n M tools/ci/tests/test_pair_capture.py\n M tools/ci/tests/test_recorded_capture.py\n M vendor/tree-sitter-typescript/QUANTA.md\n M vendor/tree-sitter-typescript/bindings/rust/lib.rs\n M vendor/tree-sitter-typescript/quanta-provenance.json\n?? crates/quanta-index-lexical/tests/support/\n?? crates/quanta-index-search-plane/src/readiness/tests/source_file_chunks.rs\n?? docs/plans/sep-27-code-search-remediation/handoffs/L1_ALL_RESULTS_CALLERS.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/L1_FIXTURE_MIGRATION.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/L1_PRIMITIVE_ADMISSION_REQUEST.md\n?? docs/plans/sep-27-code-search-remediation/handoffs/L2_REPLAY_BINDING_REQUEST.md\n?? docs/plans/sep-27-code-search-remediation/handoffs/L2_RR_REOPEN.source.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/L3_EXACT_MANUAL_HOOK.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/L3_EXACT_MANUAL_HOOK.patch\n?? docs/plans/sep-27-code-search-remediation/handoffs/L3_EXACT_PLAN_HOOK.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/L3_EXACT_PLAN_HOOK.patch\n?? docs/plans/sep-27-code-search-remediation/handoffs/L3_GOAL_AUDIT.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/L3_PREDECODE_BOUNDARY.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/L4_REGEX_BUDGET_RESIDUAL.md\n?? docs/plans/sep-27-code-search-remediation/handoffs/L5_GOAL_AUDIT.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/L5_TEST_MIGRATION.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/L5_VENDOR_MANIFEST.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l3-proof/\n?? docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/current/\n",
+  "prior_goal_turn": "progress: refreshed tests after concurrent input changes and corrected unsupported aggregate heap wording",
+  "state": "blocked",
+  "source_revalidation": {
+    "stable-final-tests": {
+      "status": "BLOCKED",
+      "changed_inputs": [
+        "crates/quanta-index-lexical/src/searcher/planner_errors.rs"
+      ],
+      "inputs_stable_during_run": true,
+      "input_count": 255,
+      "source_sha256": "30e0b455f909cd634f3d7c90eb7d8dc721e3bd5639f7f08392e87bf9fe7d8553"
+    },
+    "refresh-standalone": {
+      "status": "VERIFIED",
+      "changed_inputs": [],
+      "inputs_stable_during_run": true,
+      "input_count": 32,
+      "source_sha256": "bb12d5922bb3426eea51145181d38b55570c077f8d25dbae6bf6c70afad84880"
+    },
+    "refresh-standalone-clippy": {
+      "status": "VERIFIED",
+      "changed_inputs": [],
+      "inputs_stable_during_run": true,
+      "input_count": 35,
+      "source_sha256": "8468c8c6ba66acef8fa93844191702b013d15e35e12509233d6b06235cfb6c1f"
+    }
+  },
+  "failed_lint_owners": {
+    "crates/quanta-index-lexical/src/budgeted_search.rs": {
+      "sha256": "44b0e931ee2da8a666a1fd4f91c32a50471739ba4130f8b70438bf2b120f0967",
+      "unchanged_since_failed_gate": true
+    },
+    "crates/quanta-index-lexical/src/planner.rs": {
+      "sha256": "7201c842907a073bc2d72cd04efcc6c7097c4926b5c43b6e3fc1abd4855c972d",
+      "unchanged_since_failed_gate": true
+    },
+    "crates/quanta-index-lexical/src/ranked_rows.rs": {
+      "sha256": "64adec09366ffbb2bfa79167e1434f61bb3f240544f4a3c222fbe9a0442cba3a",
+      "unchanged_since_failed_gate": true
+    },
+    "crates/quanta-index-lexical/src/sealed_generation/coverage.rs": {
+      "sha256": "ecf95c03bd7cd64d4387a6b615c32b4ca9edf44f5e8ccc313f0afbaba3165e9a",
+      "unchanged_since_failed_gate": true
+    },
+    "crates/quanta-index-lexical/src/adapter_ingest.rs": {
+      "sha256": "360e0baa43aeecc2f5ffde013cd1ebb2b4e556c3ecaca685d6a235a82b914b91",
+      "unchanged_since_failed_gate": true
+    }
+  },
+  "requirements": [
+    {
+      "requirement": "selected_top_k_only",
+      "status": "BLOCKED",
+      "evidence_and_scope": "manual_scan.rs and paging.rs render selected immutable document addresses; native adapter tests. Current-source qualification is stale after a post-run planner_errors.rs change."
+    },
+    {
+      "requirement": "token_phrase_semantics",
+      "status": "BLOCKED",
+      "evidence_and_scope": "Shared tokenization and phrase_ranges/contains_phrase owner; permanent token-prefix and CRLF phrase regressions. Current-source qualification is stale after a post-run planner_errors.rs change."
+    },
+    {
+      "requirement": "same_regex_executor_semantics",
+      "status": "VERIFIED",
+      "evidence_and_scope": "RegexExecutor::find_ranges_bounded uses the compiled matcher used by verify; 78 owner tests. Native regex fixture has the native evidence status separately."
+    },
+    {
+      "requirement": "case_and_nfc_owner_reuse",
+      "status": "VERIFIED",
+      "evidence_and_scope": "MappedText calls existing nfc/case owners; substring predicate and range use the same helper. No new recall policy."
+    },
+    {
+      "requirement": "positive_boolean_witnesses",
+      "status": "BLOCKED",
+      "evidence_and_scope": "Permanent false-AND, negated-OR, NOT and content-filter tests; false branches roll back witnesses. Current-source qualification is stale after a post-run planner_errors.rs change."
+    },
+    {
+      "requirement": "path_and_synthetic_label_separation",
+      "status": "BLOCKED",
+      "evidence_and_scope": "Owner and adapter fixtures assert Path/SyntheticSymbolLabel kinds with no source excerpt coordinates. Current-source qualification is stale after a post-run planner_errors.rs change."
+    },
+    {
+      "requirement": "immutable_stored_source",
+      "status": "BLOCKED",
+      "evidence_and_scope": "Selected row, sealed coverage, source identity, chunk extent/digest and text authority checks; renderer opens no checkout file. Native fixture-file mutation is below SDK checkout-routing proof. Current-source qualification is stale after a post-run planner_errors.rs change."
+    },
+    {
+      "requirement": "unicode_interval_provenance",
+      "status": "VERIFIED",
+      "evidence_and_scope": "Private maps verify indexed NFC; permanent decomposition, combining reorder, Hangul and expanding-case fixtures in 19 normalizer tests."
+    },
+    {
+      "requirement": "chunk_normalization_boundary",
+      "status": "VERIFIED",
+      "evidence_and_scope": "l4_chunk_normalization_cannot_borrow_adjacent_chunk and source interval checks."
+    },
+    {
+      "requirement": "focus_and_utf8_bounds",
+      "status": "BLOCKED",
+      "evidence_and_scope": "Fixed 200-byte and 241-byte focus oracles; UTF-8, CRLF, zero-width, and ordinary-positive owner fixtures. Current-source qualification is stale after a post-run planner_errors.rs change."
+    },
+    {
+      "requirement": "optional_preview_preserves_hits",
+      "status": "BLOCKED",
+      "evidence_and_scope": "Native 257th request-output group regression retains hit with WorkBudget; byte/entry/work refusal owner tests. Current-source qualification is stale after a post-run planner_errors.rs change."
+    },
+    {
+      "requirement": "integrity_errors_are_mandatory",
+      "status": "BLOCKED",
+      "evidence_and_scope": "Raw/NFC tamper and missing/malformed/duplicate field tests; typed integrity errors are distinct from unavailable metadata. Current-source qualification is stale after a post-run planner_errors.rs change."
+    },
+    {
+      "requirement": "source_transform_map_witness_and_interrupt_limits",
+      "status": "BLOCKED",
+      "evidence_and_scope": "Explicit caps and cooperative checks; interrupted and deadline owner tests. One bounded engine search/sort remains nonpreemptible. Current-source qualification is stale after a post-run planner_errors.rs change."
+    },
+    {
+      "requirement": "aggregate_regex_heap_admission",
+      "status": "BLOCKED",
+      "evidence_and_scope": "Fixed 16 MiB executor charge is not qualified as an aggregate compiler/HIR/cache heap bound. L4_REGEX_BUDGET_RESIDUAL.md records the shared compiler/dependency/lifetime boundary; no reproduced overrun claimed."
+    },
+    {
+      "requirement": "request_cache_binding",
+      "status": "BLOCKED",
+      "evidence_and_scope": "Request-local executor pool keyed by leaf; canonical pattern binding checked. Existing generation-bound bitmap cache is separate; Boolean witnesses are recomposed per query. Current-source qualification is stale after a post-run planner_errors.rs change."
+    },
+    {
+      "requirement": "permanent_regressions_and_current_green",
+      "status": "BLOCKED",
+      "evidence_and_scope": "Nine fixed independent oracles and additional owner regressions remain permanent and pass on the current source. Old RED log/source evidence is historical and its binary identity is excluded. Current-source qualification is stale after a post-run planner_errors.rs change."
+    },
+    {
+      "requirement": "native_adapter_wiring",
+      "status": "BLOCKED",
+      "evidence_and_scope": "Recorded test command executes 163 lexical library plus 4 adapter tests over real sealed read views, indexed/manual paths and request lease retention. Current-source qualification is stale after a post-run planner_errors.rs change."
+    },
+    {
+      "requirement": "public_sdk_daemon_proof",
+      "status": "NOT_RUN",
+      "evidence_and_scope": "Original L4 handoff contract explicitly leaves public-path execution to L0; input and expected span packet is present. Native fixtures are not promoted to SDK proof."
+    },
+    {
+      "requirement": "required_lexical_lint_gate",
+      "status": "BLOCKED",
+      "evidence_and_scope": "Last executed gate FAILED with 15 diagnostics in five owner-external files; each file hash still matches that failing run. Unchanged failure not rerun."
+    },
+    {
+      "requirement": "standalone_tests_and_lint",
+      "status": "VERIFIED",
+      "evidence_and_scope": "97 standalone tests; all-target clippy has its own exact input revalidation."
+    },
+    {
+      "requirement": "handoff_scope_provenance_and_exclusions",
+      "status": "VERIFIED",
+      "evidence_and_scope": "L4_HANDOFF.md, L4_REGEX_BUDGET_RESIDUAL.md and exact command/source/artifact receipts retain ownership, shared connections and public NOT_RUN."
+    },
+    {
+      "requirement": "commit_push_reset_or_agent_creation",
+      "status": "NOT_APPLICABLE",
+      "evidence_and_scope": "Not requested and explicitly prohibited; none performed by L4."
+    },
+    {
+      "requirement": "cross_task_messages_after_user_stop",
+      "status": "NOT_APPLICABLE",
+      "evidence_and_scope": "User prohibited sending and receiving messages; no cross-task tool action was performed afterward."
+    },
+    {
+      "requirement": "historical_red_binary_identity",
+      "status": "BLOCKED",
+      "evidence_and_scope": "The native old renderer log records 1 passed/8 failed with stable source; its binary digest was not captured before replacement. Do not promote that historical receipt to a fully bound binary qualification."
+    }
+  ],
+  "blocked_audit": {
+    "consecutive_goal_turns": 3,
+    "same_condition": "Required lexical lint gate has 15 unmodified owner-external diagnostics; no authorization to edit those owners and cross-task messages prohibited.",
+    "remaining_dependency": "Shared-owner lint/compiler resource integration; current local handoff and completion audit have been delivered.",
+    "completion_proven": false
+  }
+}

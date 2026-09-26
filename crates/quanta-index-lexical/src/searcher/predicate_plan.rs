@@ -21,6 +21,14 @@ impl TantivySearcher {
         args: &[LqPredicateArg],
         budget: &RequestBudgetV1,
     ) -> Result<LqExpr, CoreError> {
+        if let Some(predicate) = quanta_index_core::LexicalPredicateV1::from_canonical_name(name)
+            && predicate.exact_symbol_name_argument(args)?.is_some()
+        {
+            return Ok(LqExpr::Leaf(LqLeaf::Predicate {
+                name: name.to_owned(),
+                args: args.to_vec(),
+            }));
+        }
         let Some((canonical_name, canonical_args)) =
             self.canonicalize_predicate_call(name, args)?
         else {
@@ -147,6 +155,12 @@ impl TantivySearcher {
         match expr {
             LqExpr::Empty => Ok((LqExpr::Empty, Vec::new(), Vec::new())),
             LqExpr::Leaf(LqLeaf::Predicate { name, args }) => {
+                if let Some(predicate) =
+                    quanta_index_core::LexicalPredicateV1::from_canonical_name(name)
+                    && predicate.exact_symbol_name_argument(args)?.is_some()
+                {
+                    return Ok((expr.clone(), Vec::new(), Vec::new()));
+                }
                 let Some((canonical_name, canonical_args)) =
                     self.canonicalize_predicate_call(name, args)?
                 else {
@@ -265,6 +279,18 @@ impl TantivySearcher {
         budget: &RequestBudgetV1,
     ) -> Result<PreparedPredicatePlan, CoreError> {
         if let LqExpr::Leaf(LqLeaf::Predicate { name, args }) = &query.expr {
+            if let Some(predicate) =
+                quanta_index_core::LexicalPredicateV1::from_canonical_name(name)
+                && predicate.exact_symbol_name_argument(args)?.is_some()
+            {
+                return Ok(PreparedPredicatePlan {
+                    expr: query.expr.clone(),
+                    allowed_paths: None,
+                    allowed_repo_ids: None,
+                    allowed_candidate_ids: None,
+                    force_empty: false,
+                });
+            }
             let Some((canonical_name, canonical_args)) =
                 self.canonicalize_predicate_call(name, args)?
             else {

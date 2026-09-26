@@ -1,0 +1,25 @@
+{
+  "status": "VERIFIED",
+  "scope": "Independent Python NFC oracle for the long combining-sequence fixture only; not Rust execution or heap proof.",
+  "python": "3.9.6",
+  "unicode_data": "13.0.0",
+  "raw_bytes": 16385,
+  "nfc_bytes": 16384,
+  "raw_sha256": "153699ac23923d05d49ee53d9f490ba82c088f03659a2c09e31d61273d2a4eb4",
+  "nfc_sha256": "a9b5597c49c264a3794c429a759a2968223eb4f6214868edc1bc9837a83f14f5",
+  "expected_ranges": {
+    "composed_focus_raw": [
+      0,
+      5
+    ],
+    "first_reordered_mark_nfc": [
+      8192,
+      8194
+    ],
+    "first_reordered_mark_raw": [
+      1,
+      3
+    ]
+  },
+  "action": "Python: raw = 'a' + '\\u0315\\u0300' * 4096; golden = '\u00e0' + '\\u0300' * 4095 + '\\u0315' * 4096; assert unicodedata.normalize('NFC', raw) == golden; verify the recorded byte slices."
+}

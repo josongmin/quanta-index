@@ -36,6 +36,10 @@ where
 )]
 fn lexical_row(id: &str, score: f32) -> LexicalCandidate {
     LexicalCandidate {
+        source_repo_id: RepoId::new("repo-1")
+            .expect("static fixture ID satisfies canonical policy"),
+        source: None,
+        preview: None,
         candidate_id: id.to_owned(),
         repo_id: RepoId::new("repo-1").expect("static fixture ID satisfies canonical policy"),
         revision_id: RevisionId::new("rev-1")

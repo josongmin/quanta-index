@@ -5,11 +5,28 @@ from __future__ import annotations
 import hashlib
 import io
 import json
-from collections.abc import Iterator, Mapping
+import sys
+from collections.abc import Iterable, Iterator, Mapping
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import BinaryIO
+
+try:
+    from tools.benchmark.evidence import (
+        CONTROL_DOCUMENT_BYTES,
+        EvidenceError,
+        RawFile,
+        read_control,
+    )
+except ModuleNotFoundError:  # direct CI script invocation
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from tools.benchmark.evidence import (
+        CONTROL_DOCUMENT_BYTES,
+        EvidenceError,
+        RawFile,
+        read_control,
+    )
 
 
 class NextestEvidenceError(ValueError):
@@ -86,11 +103,11 @@ class NextestInventory(Mapping[str, SuiteIdentity]):
         return len(self._selected)
 
 
-def parse_nextest_inventory(path: Path) -> NextestInventory:
+def parse_nextest_inventory(path: Path | RawFile) -> NextestInventory:
     """Return selected event names and their suite identity from nextest list JSON."""
     try:
-        raw = path.read_bytes()
-    except OSError as error:
+        raw = read_control(path)
+    except (OSError, EvidenceError) as error:
         raise NextestEvidenceError(f"invalid nextest inventory: {error}") from error
     return parse_nextest_inventory_bytes(raw)
 
@@ -98,8 +115,9 @@ def parse_nextest_inventory(path: Path) -> NextestInventory:
 def parse_nextest_inventory_bytes(raw: bytes) -> NextestInventory:
     """Parse exactly the bytes whose digest is recorded by the receipt writer."""
     try:
+        raw = read_control(raw)
         payload = json.loads(raw, object_pairs_hook=_unique_object, parse_constant=_reject_constant)
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+    except (UnicodeDecodeError, json.JSONDecodeError, EvidenceError) as error:
         raise NextestEvidenceError(f"invalid nextest inventory: {error}") from error
     if (
         not isinstance(payload, dict)
@@ -185,24 +203,26 @@ def parse_nextest_inventory_bytes(raw: bytes) -> NextestInventory:
 
 
 def parse_nextest(
-    path: Path, expected: Mapping[str, SuiteIdentity] | None = None
+    path: Path | RawFile, expected: Mapping[str, SuiteIdentity] | None = None
 ) -> NextestEvidence:
     try:
-        stream = path.open("rb")
-    except OSError as error:
+        raw = RawFile.capture(path) if isinstance(path, Path) else path
+        return raw.consume_lines(lambda lines: _parse_nextest_stream(nullcontext(lines), expected))
+    except (OSError, EvidenceError) as error:
         raise NextestEvidenceError(f"cannot read nextest evidence: {error}") from error
-    return _parse_nextest_stream(stream, expected)
 
 
 def parse_nextest_bytes(
     raw: bytes, expected: Mapping[str, SuiteIdentity] | None = None
 ) -> NextestEvidence:
     """Interpret the same immutable bytes captured and hashed by the caller."""
-    return _parse_nextest_stream(io.BytesIO(raw), expected)
+    with io.BytesIO(raw) as stream:
+        lines = iter(lambda: stream.readline(CONTROL_DOCUMENT_BYTES + 1), b"")
+        return _parse_nextest_stream(nullcontext(lines), expected)
 
 
 def _parse_nextest_stream(
-    stream: BinaryIO, expected: Mapping[str, SuiteIdentity] | None
+    stream: AbstractContextManager[Iterable[bytes]], expected: Mapping[str, SuiteIdentity] | None
 ) -> NextestEvidence:
     digest = hashlib.sha256()
     counts = {"ok": 0, "failed": 0, "ignored": 0, "timeout": 0}
@@ -213,9 +233,12 @@ def _parse_nextest_stream(
     active_suites: dict[tuple[str, str, str] | None, dict[str, int | None]] = {}
     started_suites: dict[str, tuple[str, str, str] | None] = {}
     inventory = expected if isinstance(expected, NextestInventory) else None
+    metadata_bytes = 0
     try:
-        with stream:
-            for line in stream:
+        with stream as lines:
+            for line in lines:
+                if len(line) > CONTROL_DOCUMENT_BYTES:
+                    raise NextestEvidenceError("nextest event line exceeds explicit byte limit")
                 digest.update(line)
                 try:
                     event = json.loads(
@@ -248,6 +271,9 @@ def _parse_nextest_stream(
                     else:
                         suite_identity = None
                     if outcome == "started":
+                        metadata_bytes += len(json.dumps(suite_identity).encode("utf-8"))
+                        if metadata_bytes > CONTROL_DOCUMENT_BYTES:
+                            raise NextestEvidenceError("nextest retained identities exceed byte limit")
                         if suite_identity in active_suites:
                             raise NextestEvidenceError("duplicate nextest suite start")
                         if suite_identity is None and active_suites:
@@ -321,6 +347,10 @@ def _parse_nextest_stream(
                 name = event.get("name")
                 if not isinstance(name, str) or not name:
                     raise NextestEvidenceError("nextest test event lacks a name")
+                if name not in started and name not in terminal:
+                    metadata_bytes += len(json.dumps(name).encode("utf-8"))
+                    if metadata_bytes > CONTROL_DOCUMENT_BYTES:
+                        raise NextestEvidenceError("nextest retained identities exceed byte limit")
                 if expected is not None:
                     if name not in expected:
                         if inventory is None or name not in inventory.ignored \

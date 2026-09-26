@@ -28,6 +28,7 @@ except ModuleNotFoundError:  # direct script invocation
     from tools.benchmark.retrieval import contract_proof, proof_inventory, sdk_proof
     from tools.ci import source_closure
 
+from tools.benchmark.evidence import RawFile, file_digest, read_control
 from tools.benchmark.producer_execution import execute
 from tools.benchmark.retrieval.tool_custody import (
     ToolCustody,
@@ -36,7 +37,6 @@ from tools.benchmark.retrieval.tool_custody import (
     validate_environment,
 )
 from tools.ci.lint.handoff_validation import (
-    _read_repo_regular_bytes,
     _sha256_repo_regular_file,
 )
 
@@ -53,7 +53,7 @@ WRAPPER = ROOT / "scripts/cargow"
 PYTHON_COMMAND = "python3 -m pytest tools/ci/tests/test_retrieval_benchmark.py -q"
 RUST_COMMAND = (
     "./scripts/cargow nextest run -p quanta-index-retrieval-bench "
-    "--lib --test chunking_contract --all-features --locked"
+    "--lib --test chunking_contract --test l5_parser_regressions --all-features --locked"
 )
 SDK_COMMAND = "just retrieval-sdk-proof"
 _ACTIVE_CUSTODY: contextvars.ContextVar[tuple[ToolCustody, dict[str, str]] | None] = (
@@ -62,11 +62,7 @@ _ACTIVE_CUSTODY: contextvars.ContextVar[tuple[ToolCustody, dict[str, str]] | Non
 
 
 def _sha(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
+    return file_digest(path)[0].removeprefix("sha256:")
 
 
 def _is_sha256(value: object) -> bool:
@@ -79,10 +75,12 @@ def _is_sha256(value: object) -> bool:
 
 def _json(path: Path) -> object:
     path = path.absolute()
-    return _json_bytes(_read_repo_regular_bytes(path.parent, path.name, label="proof JSON"))
+    return _json_bytes(read_control(path))
 
 
-def _json_bytes(raw: bytes) -> object:
+def _json_bytes(raw: RawFile | bytes) -> object:
+    raw = read_control(raw)
+
     def unique(pairs: list[tuple[str, object]]) -> dict[str, object]:
         result: dict[str, object] = {}
         for key, value in pairs:
@@ -97,7 +95,7 @@ def _json_bytes(raw: bytes) -> object:
     return json.loads(raw, object_pairs_hook=unique, parse_constant=constant)
 
 
-def selected_test_binaries(raw_collection_bytes: bytes) -> dict[str, Path]:
+def selected_test_binaries(raw_collection_bytes: RawFile | bytes) -> dict[str, Path]:
     """Derive mandatory compiled executable roles from raw nextest collection.
 
     v2 contexts require these roles; v1 receipts are not silently upgraded.
@@ -105,6 +103,7 @@ def selected_test_binaries(raw_collection_bytes: bytes) -> dict[str, Path]:
     """
     from tools.ci.nextest_events import parse_nextest_inventory_bytes
 
+    raw_collection_bytes = read_control(raw_collection_bytes)
     # Share the exact selected-test/filter/count parser used by the raw oracle.
     parse_nextest_inventory_bytes(raw_collection_bytes)
     payload = _json_bytes(raw_collection_bytes)
@@ -139,7 +138,7 @@ def selected_test_binaries(raw_collection_bytes: bytes) -> dict[str, Path]:
     return dict(sorted(result.items()))
 
 
-def _bind_test_binaries(raw: bytes) -> dict[str, dict[str, str]]:
+def _bind_test_binaries(raw: RawFile | bytes) -> dict[str, dict[str, str]]:
     active = _ACTIVE_CUSTODY.get()
     if active is None:
         raise ValueError("compiled test binary binding requires controlled execution")
@@ -154,7 +153,7 @@ def _bind_test_binaries(raw: bytes) -> dict[str, dict[str, str]]:
 
 
 def verify_reused_build(
-    binary_raw: bytes, metadata_raw: bytes, collection_raw: bytes, *, workspace_root: Path
+    binary_raw: RawFile | bytes, metadata_raw: RawFile | bytes, collection_raw: RawFile | bytes, *, workspace_root: Path
 ) -> dict[str, Path]:
     """Cross-check actual native build metadata against the selected collection."""
     selected = selected_test_binaries(collection_raw)
@@ -226,7 +225,7 @@ def _reuse_nextest(wrapper: str, operation: str, out: Path, *args: str) -> list[
     )
 
 
-def _reuse_input_epoch(path: Path, expected: bytes) -> tuple:
+def _reuse_input_epoch(path: Path, expected: RawFile) -> tuple:
     """Bind no-follow input bytes and local file/ancestor identity, not attestation."""
     try:
         return _capture_reuse_input_epoch(path, expected)
@@ -234,30 +233,30 @@ def _reuse_input_epoch(path: Path, expected: bytes) -> tuple:
         raise ValueError(f"nextest reuse input unavailable or changed: {path}: {error}") from error
 
 
-def _capture_reuse_input_epoch(path: Path, expected: bytes) -> tuple:
+def _capture_reuse_input_epoch(path: Path, expected: RawFile) -> tuple:
     fields = ("st_dev", "st_ino", "st_mode", "st_size", "st_mtime_ns", "st_ctime_ns")
     before = tuple(getattr(path.lstat(), field) for field in fields)
     chain = tuple(
         (str(parent), parent.lstat().st_dev, parent.lstat().st_ino, parent.lstat().st_mode)
         for parent in path.parents
     )
-    actual = _read_repo_regular_bytes(path.parent, path.name, label="nextest reuse input")
+    actual = file_digest(path)
     after = tuple(getattr(path.lstat(), field) for field in fields)
-    if before != after or actual != expected:
+    if before != after or actual != (expected.sha256, expected.size):
         raise ValueError("nextest reuse input changed before execution")
-    return before, chain, hashlib.sha256(actual).hexdigest()
+    return before, chain, actual
 
 
 def _run_reused_nextest(
     wrapper: str,
     out: Path,
     commands: list[dict[str, object]],
-    binary_raw: bytes,
-    metadata_raw: bytes,
+    binary_raw: RawFile,
+    metadata_raw: RawFile,
     *,
     env_overrides: dict[str, str],
     operation: str = "run",
-) -> bytes:
+) -> RawFile:
     # Collection and execution consume the same one-time build. Neither may
     # reinterpret mutable metadata or independently prepare another binary set.
     if operation not in {"list", "run"}:
@@ -281,6 +280,7 @@ def _run_reused_nextest(
 
 
 def _write(path: Path, data: bytes) -> None:
+    read_control(data)
     with path.open("xb") as stream:
         stream.write(data)
         stream.flush()
@@ -466,7 +466,7 @@ def _run(
     *,
     env_overrides: dict[str, str] | None = None,
     expected_executable_sha256: str | None = None,
-) -> bytes:
+) -> RawFile:
     started = time.monotonic_ns()
     if not argv or not Path(argv[0]).is_absolute():
         raise ValueError(f"{name} requires an absolute executable")
@@ -500,7 +500,7 @@ def _run(
     verified = time.monotonic_ns()
     stdout = f"{name}.stdout"
     stderr = f"{name}.stderr"
-    output.copy_to(out / stdout)
+    retained_output = output.copy_to(out / stdout)
     errors.copy_to(out / stderr)
     commands.append(
         {
@@ -534,7 +534,7 @@ def _run(
             "excludes": "timing-file write and work outside this command",
         },
     )
-    return output.read_control()
+    return retained_output
 
 
 def _run_fresh_recipe(argv: list[str], out: Path, commands: list[dict[str, object]]) -> None:
@@ -581,7 +581,7 @@ def _target_dir(wrapper: str, out: Path, commands: list[dict[str, object]]) -> P
         out,
         commands,
     )
-    payload = json.loads(raw)
+    payload = _json_bytes(raw)
     value = payload.get("target_directory") if isinstance(payload, dict) else None
     if not isinstance(value, str) or not value or not Path(value).is_absolute():
         raise ValueError("cargo metadata lacks an absolute target directory")
@@ -696,7 +696,7 @@ def _expected_commands(
         base,
     )
     if rail == "contract":
-        selector = ["-p", PACKAGE, "--lib", "--test", "chunking_contract", *FLAGS]
+        selector = ["-p", PACKAGE, "--lib", "--test", "chunking_contract", "--test", "l5_parser_regressions", *FLAGS]
         return [
             source,
             (
@@ -864,7 +864,7 @@ def _produce(rail: str, out: Path, revision: str, tools: dict[str, dict[str, str
         )
         python_inventory = _artifact(out, "python-inventory.json", raw_evidence)
         proof_inventory.verify_inventory_authority(python_inventory, "python")
-        selector = ["-p", PACKAGE, "--lib", "--test", "chunking_contract", *FLAGS]
+        selector = ["-p", PACKAGE, "--lib", "--test", "chunking_contract", "--test", "l5_parser_regressions", *FLAGS]
         build_raw = _run(
             "rust-build",
             _cargo(
@@ -881,19 +881,19 @@ def _produce(rail: str, out: Path, revision: str, tools: dict[str, dict[str, str
             commands,
         )
         _target_dir(wrapper, out, commands)
-        metadata_raw = (out / "metadata.stdout").read_bytes()
-        _run_reused_nextest(
+        metadata_raw = RawFile.capture(out / "metadata.stdout")
+        collected = _run_reused_nextest(
             wrapper, out, commands, build_raw, metadata_raw, env_overrides={}, operation="list"
         )
         rust_inventory = out / "rust-inventory.json"
-        _write(rust_inventory, (out / "rust-collection.stdout").read_bytes())
+        collected.copy_to(rust_inventory)
         _artifact(out, "rust-inventory.json", raw_evidence)
         proof_inventory.verify_inventory_authority(rust_inventory, "rust")
 
         verify_reused_build(
-            build_raw, metadata_raw, rust_inventory.read_bytes(), workspace_root=ROOT
+            build_raw, metadata_raw, collected, workspace_root=ROOT
         )
-        binaries = _bind_test_binaries(rust_inventory.read_bytes())
+        binaries = _bind_test_binaries(collected)
         pytest_argv = [
             python,
             "-m",
@@ -904,11 +904,11 @@ def _produce(rail: str, out: Path, revision: str, tools: dict[str, dict[str, str
         ]
         _run("python-test", pytest_argv, out, commands)
         junit = _artifact(out, "python-junit.xml", raw_evidence)
-        _run_reused_nextest(
+        events = _run_reused_nextest(
             wrapper, out, commands, build_raw, metadata_raw, env_overrides=environment
         )
         rust_events = out / "rust-test.stdout"
-        _write(out / "rust-nextest.jsonl", rust_events.read_bytes())
+        events.copy_to(out / "rust-nextest.jsonl")
         _artifact(out, "rust-nextest.jsonl", raw_evidence)
         python_summary = contract_proof.pytest_summary(junit, python_inventory)
         rust_summary = contract_proof.nextest_summary(rust_events, rust_inventory)
@@ -968,11 +968,11 @@ def _produce(rail: str, out: Path, revision: str, tools: dict[str, dict[str, str
             commands,
         )
         target = _target_dir(wrapper, out, commands)
-        metadata_raw = (out / "metadata.stdout").read_bytes()
+        metadata_raw = RawFile.capture(out / "metadata.stdout")
         collected = _run_reused_nextest(
             wrapper, out, commands, build_raw, metadata_raw, env_overrides={}, operation="list"
         )
-        _write(out / "nextest-inventory.json", collected)
+        collected.copy_to(out / "nextest-inventory.json")
 
         verify_reused_build(build_raw, metadata_raw, collected, workspace_root=ROOT)
         suffix = ".exe" if os.name == "nt" else ""
@@ -1003,7 +1003,7 @@ def _produce(rail: str, out: Path, revision: str, tools: dict[str, dict[str, str
                 "QUANTA_INDEX_SEARCHD_BIN": str(searchd),
             },
         )
-        _write(out / "nextest.jsonl", events)
+        events.copy_to(out / "nextest.jsonl")
         _artifact(out, "nextest.jsonl", raw_evidence)
         record = _artifact(out, "actual-runner-record.json", raw_evidence)
         summary = sdk_proof.build_summary(
@@ -1056,17 +1056,17 @@ def _canonical_receipt(
     inputs: dict[str, Path],
     closure: dict[str, object],
     execution_root: Path | None = None,
-    captured: dict[str, bytes] | None = None,
+    captured: dict[str, RawFile] | None = None,
 ) -> None:
-    def raw(value: Path) -> bytes:
-        if captured is not None:
-            return captured[value.name]
-        return _read_repo_regular_bytes(
-            value.absolute().parent, value.name, label="canonical evidence"
-        )
+    commitments = {} if captured is None else captured
+
+    def raw(value: Path) -> RawFile:
+        if value.name not in commitments:
+            commitments[value.name] = RawFile.capture(value)
+        return commitments[value.name]
 
     receipt = _json_bytes(raw(path))
-    summary_bytes = raw(summary)
+    summary_bytes = raw(summary).read_control()
     if not isinstance(receipt, dict) or set(receipt) != {
         "schema_version",
         "revision",
@@ -1085,7 +1085,7 @@ def _canonical_receipt(
         raise ValueError(f"canonical summary command mismatch: {summary}")
     wanted_inputs = sorted(
         (
-            {"role": role, "sha256": hashlib.sha256(raw(value)).hexdigest()}
+            {"role": role, "sha256": raw(value).sha256.removeprefix("sha256:")}
             for role, value in inputs.items()
         ),
         key=lambda item: item["role"],
@@ -1106,6 +1106,10 @@ def _canonical_receipt(
         or receipt["input_evidence"] != wanted_inputs
     ):
         raise ValueError(f"canonical receipt differs from source and machine evidence: {path}")
+    if captured is None:
+        for value in commitments.values():
+            if file_digest(value.path) != (value.sha256, value.size):
+                raise ValueError("canonical evidence changed during validation")
 
 
 def validate(
@@ -1125,16 +1129,20 @@ def validate(
     if receipt_path.name == "execution-context.pending.json" and not _allow_pending:
         raise ValueError("unpublished proof execution context")
     out = receipt_path.parent
-    captured: dict[str, bytes] = {}
+    captured: dict[str, RawFile] = {}
 
-    def capture(name: str) -> bytes:
+    def capture(name: str) -> RawFile:
         _inside(out, name)
         if name not in captured:
-            captured[name] = _read_repo_regular_bytes(out, name, label="portable proof evidence")
+            captured[name] = RawFile.capture(out / name)
         return captured[name]
 
     def captured_digest(name: str) -> str:
-        return hashlib.sha256(capture(name)).hexdigest()
+        return capture(name).sha256.removeprefix("sha256:")
+
+    def same_bytes(left: str, right: str) -> bool:
+        a, b = capture(left), capture(right)
+        return (a.sha256, a.size) == (b.sha256, b.size)
 
     execution_root = out if execution_root is None else execution_root
     if not execution_root.is_absolute() or ".." in execution_root.parts:
@@ -1316,9 +1324,9 @@ def validate(
     if context["rail"] == "contract":
         proof_inventory.verify_inventory_authority(capture("python-inventory.json"), "python")
         proof_inventory.verify_inventory_authority(capture("rust-inventory.json"), "rust")
-        if capture("rust-inventory.json") != capture("rust-collection.stdout"):
+        if not same_bytes("rust-inventory.json", "rust-collection.stdout"):
             raise ValueError("rust collection output differs from inventory")
-        if capture("rust-nextest.jsonl") != capture("rust-test.stdout"):
+        if not same_bytes("rust-nextest.jsonl", "rust-test.stdout"):
             raise ValueError("rust nextest output differs from raw evidence")
         expected = {
             "contract_python_results.json": contract_proof.pytest_summary(
@@ -1363,9 +1371,9 @@ def validate(
         )
     else:
         proof_inventory.verify_inventory_authority(capture("nextest-inventory.json"), "sdk")
-        if capture("nextest-inventory.json") != capture("rust-collection.stdout") or capture(
-            "nextest.jsonl"
-        ) != capture("rust-test.stdout"):
+        if not same_bytes("nextest-inventory.json", "rust-collection.stdout") or not same_bytes(
+            "nextest.jsonl", "rust-test.stdout"
+        ):
             raise ValueError("SDK collection/test output differs from raw evidence")
         metadata = _json_bytes(capture("metadata.stdout"))
         target = metadata.get("target_directory") if isinstance(metadata, dict) else None
@@ -1410,6 +1418,9 @@ def validate(
     for name, summary in expected.items():
         if _json_bytes(capture(name)) != summary:
             raise ValueError(f"proof summary differs from machine evidence: {name}")
+    for raw in captured.values():
+        if file_digest(raw.path) != (raw.sha256, raw.size):
+            raise ValueError("portable proof evidence changed during validation")
     return context
 
 

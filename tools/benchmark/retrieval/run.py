@@ -30,11 +30,11 @@ import subprocess
 import sys
 import tempfile
 import time
-import zipfile
+from contextlib import contextmanager
 from pathlib import Path
 
 try:
-    from tools.benchmark.retrieval import linux_isolation, linux_process, portable_proof
+    from tools.benchmark.retrieval import linux_isolation, linux_process, portable_proof, symbol_coverage
     from tools.benchmark.retrieval import query_plan as qp
     from tools.benchmark.retrieval import semble as semble_adapter
     from tools.benchmark.retrieval.contract_proof import nextest_summary, pytest_summary
@@ -62,6 +62,7 @@ except ImportError:  # direct script invocation: import the sibling module
     import linux_isolation  # noqa: E402
     import linux_process  # noqa: E402
     import portable_proof  # noqa: E402
+    import symbol_coverage  # noqa: E402
     import query_plan as qp  # noqa: E402
     import semble as semble_adapter  # noqa: E402
     from contract_proof import nextest_summary, pytest_summary  # noqa: E402
@@ -85,6 +86,9 @@ except ImportError:  # direct script invocation: import the sibling module
     from proof_inventory import verify_inventory_authority  # noqa: E402
     from sdk_proof import build_summary_from_evidence  # noqa: E402
 
+from tools.benchmark import raw_archive
+from tools.benchmark.evidence import RawFile, parse_json, read_control, write_raw_file
+
 VERDICT_VERSION = 2
 MANIFEST_VERSION = 2
 PILOT_OBSERVATIONS_FLOOR = 1000
@@ -99,10 +103,7 @@ SEMBLE_PROFILES = (
     "semantic-only",
 )
 QUANTA_SYMBOL_PRODUCER_IDENTITY = "source-bound-symbols-v2"
-QUANTA_SYMBOL_GRAMMARS = (
-    "tree-sitter@0.25;rust@0.24;go@0.25;javascript@0.25;"
-    "python@0.25;typescript@0.23"
-)
+QUANTA_SYMBOL_GRAMMARS = symbol_coverage.grammar_identity()
 
 
 def _validate_semble_profile(value: object, where: str) -> dict:
@@ -198,54 +199,67 @@ RUNNER_BUNDLE_MEMBERS = (
     "finite_json.py",
     "linux_isolation.py",
 )
+RUNNER_ENTRYPOINT = b"from semble import main\nraise SystemExit(main())\n"
+RUNNER_BUNDLE_LIMITS = raw_archive.ArchiveLimits(
+    max_bytes=16 * 1024 * 1024, max_entries=len(RUNNER_BUNDLE_MEMBERS) + 2,
+    max_directory_bytes=16 * 1024,
+)
 
 
 def build_runner_bundle(destination: Path) -> dict:
     """Build a deterministic stdlib zipapp from the frozen source list."""
     source_root = Path(__file__).resolve().parent
-    members: dict[str, bytes] = {
-        name: (source_root / name).read_bytes() for name in RUNNER_BUNDLE_MEMBERS
-    }
-    members["__main__.py"] = (
-        b"from semble import main\n"
-        b"raise SystemExit(main())\n"
-    )
-    manifest = {
-        "schema_version": 1,
-        "entrypoint": "semble:main",
-        "members": [
-            {"path": name, "sha256": digest(data), "size": len(data)}
-            for name, data in sorted(members.items())
-        ],
-    }
-    members["bundle-manifest.json"] = canonical_bytes(manifest) + b"\n"
-    with zipfile.ZipFile(destination, "x", compression=zipfile.ZIP_STORED) as archive:
-        for name, data in sorted(members.items()):
-            info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
-            info.create_system = 3
-            info.external_attr = 0o100644 << 16
-            archive.writestr(info, data)
+    try:
+        members = {name: RawFile.capture(source_root / name) for name in RUNNER_BUNDLE_MEMBERS}
+        with tempfile.TemporaryDirectory(prefix="retrieval-runner-bundle-") as directory:
+            root = Path(directory).resolve(strict=True)
+            members["__main__.py"] = write_raw_file(root / "__main__.py", [RUNNER_ENTRYPOINT])
+            manifest = {
+                "schema_version": 1,
+                "entrypoint": "semble:main",
+                "members": [
+                    {"path": name, "sha256": raw.sha256.removeprefix("sha256:"), "size": raw.size}
+                    for name, raw in sorted(members.items())
+                ],
+            }
+            manifest_bytes = canonical_bytes(manifest) + b"\n"
+            members["bundle-manifest.json"] = write_raw_file(root / "bundle-manifest.json", [manifest_bytes])
+            bundled = raw_archive.pack(members, destination, limits=RUNNER_BUNDLE_LIMITS)
+    except (OSError, ValueError) as exc:
+        raise RunError(f"cannot build runner bundle: {exc}") from exc
     return {
         "path": destination.name,
-        "sha256": sha_file(destination),
-        "manifest_sha256": digest(members["bundle-manifest.json"]),
+        "sha256": bundled.sha256.removeprefix("sha256:"),
+        "manifest_sha256": digest(manifest_bytes),
         "manifest": manifest,
     }
 
 
 def validate_runner_bundle(path: Path, expected: dict) -> None:
-    if sha_file(path) != expected.get("sha256"):
+    bundled = _proof_file(path)
+    if bundled.sha256.removeprefix("sha256:") != expected.get("sha256"):
         raise RunError("runner bundle digest mismatch")
+    names = {"bundle-manifest.json", "__main__.py", *RUNNER_BUNDLE_MEMBERS}
+
+    def admit(observed):
+        if set(observed) != names:
+            raise RunError("runner bundle member set differs from frozen source")
+
     try:
-        with zipfile.ZipFile(path) as archive:
-            names = archive.namelist()
-            if names != sorted(names) or len(names) != len(set(names)):
-                raise RunError("runner bundle members are unordered or duplicated")
-            observed = {name: archive.read(name) for name in names}
-    except (OSError, zipfile.BadZipFile, KeyError) as exc:
+        with tempfile.TemporaryDirectory(prefix="retrieval-runner-replay-") as directory:
+            root = Path(directory).resolve(strict=True)
+            raw_archive.unpack(bundled, root, limits=RUNNER_BUNDLE_LIMITS, admit_names=admit)
+            observed = {name: RawFile.capture(root / name) for name in names}
+            _validate_runner_bundle_members(observed, expected)
+        if _proof_file(path) != bundled:
+            raise RunError("runner bundle changed during validation")
+    except (OSError, ValueError) as exc:
         raise RunError(f"runner bundle is unreadable: {exc}") from exc
-    manifest_bytes = observed.pop("bundle-manifest.json", None)
-    if manifest_bytes is None or digest(manifest_bytes) != expected.get("manifest_sha256"):
+
+
+def _validate_runner_bundle_members(observed: dict[str, RawFile], expected: dict) -> None:
+    manifest_bytes = observed.pop("bundle-manifest.json").read_control()
+    if digest(manifest_bytes) != expected.get("manifest_sha256"):
         raise RunError("runner bundle manifest digest mismatch")
     if set(observed) != {"__main__.py", *RUNNER_BUNDLE_MEMBERS}:
         raise RunError("runner bundle member set differs from frozen source")
@@ -278,11 +292,15 @@ def validate_runner_bundle(path: Path, expected: dict) -> None:
         raise RunError("runner bundle member manifest is incomplete")
     if canonical_bytes(manifest) + b"\n" != manifest_bytes:
         raise RunError("runner bundle declared manifest differs from embedded bytes")
-    for name, data in observed.items():
-        if rows[name] != {"path": name, "sha256": digest(data), "size": len(data)}:
+    for name, raw in observed.items():
+        if rows[name] != {"path": name, "sha256": raw.sha256.removeprefix("sha256:"), "size": raw.size}:
             raise RunError("runner bundle member bytes differ from manifest")
-        if name in RUNNER_BUNDLE_MEMBERS and data != (Path(__file__).resolve().parent / name).read_bytes():
-            raise RunError("runner bundle member differs from frozen source")
+        if name in RUNNER_BUNDLE_MEMBERS:
+            source = _proof_file(Path(__file__).resolve().parent / name)
+            if (raw.sha256, raw.size) != (source.sha256, source.size):
+                raise RunError("runner bundle member differs from frozen source")
+        elif raw.read_control() != RUNNER_ENTRYPOINT:
+            raise RunError("runner bundle entrypoint differs from prescribed bootstrap")
 
 
 class RunError(ValueError):
@@ -2267,6 +2285,7 @@ SPEC_REQUIRED = (
     "searchd_expected_sha256",
 )
 SPEC_OPTIONAL = (
+    "symbol_coverage_policy",
     "routes",
     "blinding",
     "suite_secret_root",
@@ -2376,6 +2395,10 @@ CONTEXT_COMMAND_NAMES = {
     ),
 }
 MAX_CONTEXT_LOG_BYTES = 64 * 1024 * 1024
+# Payload admission is unchanged. ZIP envelope and central metadata have
+# separate finite allowances, checked before the shared parser allocates them.
+CONTEXT_ZIP_OVERHEAD_BYTES = 64 * 1024
+CONTEXT_ZIP_DIRECTORY_BYTES = 32 * 1024
 
 
 def _is_hex(value: object, length: int) -> bool:
@@ -2635,6 +2658,8 @@ def load_spec(path: Path) -> dict:
             raise RunError(f"spec.{key} must be a nonempty string")
     if spec["spec_version"] != 2:
         raise RunError("spec.spec_version must be 2")
+    if spec.get("symbol_coverage_policy", "require-complete") not in ("require-complete", "allow-incomplete"):
+        raise RunError("unknown symbol coverage policy")
     profiles = spec["execution_profiles"]
     if not isinstance(profiles, dict) or set(profiles) not in ({"quanta"}, {"quanta", "semble"}):
         raise RunError("spec.execution_profiles must contain quanta and optional semble")
@@ -3707,6 +3732,7 @@ def run_quanta_strategy(
     diagnostic_path = (run_dir / "retrieval-diagnostic.json").resolve()
     resource_path = (run_dir / "resource-metrics.json").resolve()
     refusal_path = (run_dir / "query-plan-refusal.json").resolve()
+    preflight_path = (run_dir / "symbol-preflight.json").resolve()
     command = [
         spec["runner_binary"],
         "run",
@@ -3753,6 +3779,10 @@ def run_quanta_strategy(
             "access_block_log",
             "attested-only: no suite path is passed to the runner; pack blindness verified by freeze",
         ),
+        "--symbol-preflight-out",
+        str(preflight_path),
+        "--symbol-coverage",
+        spec.get("symbol_coverage_policy", "require-complete"),
         "--metrics-out",
         str(phase_path),
         "--diagnostics-out",
@@ -3852,9 +3882,13 @@ def run_quanta_strategy(
     if _validate_ingest_diagnostic(diagnostic["ingest"], read_json(record_path)) != ingest_request_identity(spec):
         raise RunError("captured ingest identity differs from requested batch scope")
     index_bytes = tree_size(state_root)
-    phase = read_json(phase_path)
-    if not isinstance(phase, dict):
-        raise RunError(f"Rust runner phase metrics are not an object for {name}")
+    phase = _validate_phase_metrics(read_json(phase_path), f"Rust runner phase metrics for {name}")
+    if phase["symbol_coverage_policy"] != spec.get("symbol_coverage_policy", "require-complete"):
+        raise RunError("Rust runner symbol coverage policy differs from the requested profile")
+    try:
+        symbol_coverage.verify_artifact(phase, phase_path, read_json(Path(spec["manifest"])))
+    except (ValueError, OSError, KeyError, TypeError) as exc:
+        raise RunError(f"Rust runner preflight evidence is invalid: {exc}") from exc
     model_dir = Path(spec["quanta_model_dir"]) if "quanta_model_dir" in spec else None
     bind_storage_metrics(
         resource_path,
@@ -3879,6 +3913,8 @@ def run_quanta_strategy(
         "runner_binary_sha256": runner_binary_sha256,
         "driver_ms": resource["elapsed_ms"],
         "index_bytes": index_bytes,
+        "symbol_preflight": preflight_path.relative_to(out_abs).as_posix(),
+        "symbol_preflight_digest": sha_file(preflight_path),
         "phase_metrics": phase_path.relative_to(out_abs).as_posix(),
         "phase_metrics_digest": sha_file(phase_path),
         "retrieval_diagnostic": diagnostic_path.relative_to(out_abs).as_posix(),
@@ -4061,6 +4097,7 @@ def _validate_manifest_shape(payload: object) -> dict:
         "semble_native",
         "semble_model_cache_manifests",
         "phase_metrics",
+        "symbol_preflights",
         "resource_metrics",
         "protocol_lock",
     }
@@ -4095,6 +4132,7 @@ def _validate_manifest_shape(payload: object) -> dict:
             "semble_native",
             "semble_model_cache_manifests",
             "phase_metrics",
+            "symbol_preflights",
             "resource_metrics",
             "annotation_receipts",
         ):
@@ -4475,6 +4513,8 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
             "warm_query",
             "unattributed",
         }
+        if schema_version == 2:
+            expected_phases.add("symbol_preflight")
         if protocol_mode:
             expected_phases.add("warmup")
     else:
@@ -4528,6 +4568,12 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
                 "symbol_unsupported_files",
                 "symbol_unsupported_details",
                 "symbol_only_scopes",
+                "empty_scopes",
+                "symbol_coverage_policy",
+                "symbol_preflight_out",
+                "symbol_preflight_sha256",
+                "symbol_producer_policy_sha256",
+                "symbol_incomplete_files",
             }
         )
     if protocol_mode:
@@ -4619,80 +4665,10 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
         ):
             raise RunError(f"{where} has invalid observed wrapped-call duration")
     if system == "quanta" and schema_version == 2:
-        if (
-            type(metrics["symbol_count"]) is not int
-            or metrics["symbol_count"] < 0
-            or metrics["symbol_producer_identity"] != QUANTA_SYMBOL_PRODUCER_IDENTITY
-            or metrics["symbol_grammars"] != QUANTA_SYMBOL_GRAMMARS
-        ):
-            raise RunError(f"{where} has invalid symbol producer evidence")
-        for key in ("symbol_unsupported_files", "symbol_only_scopes"):
-            if (
-                type(metrics[key]) is not int
-                or metrics[key] < 0
-                or metrics[key] > metrics["file_count"]
-            ):
-                raise RunError(f"{where}.{key} is outside the admitted file count")
-        unsupported = metrics.get("symbol_unsupported_details", [])
-        if not isinstance(unsupported, list) or len(unsupported) != metrics["symbol_unsupported_files"]:
-            raise RunError(f"{where} unsupported symbol details differ from count")
-        unsupported_paths = []
-        for index, raw in enumerate(unsupported):
-            row = _exact_keys(
-                raw, {"path", "file_sha256", "reason"},
-                f"{where}.symbol_unsupported_details[{index}]",
-            )
-            path = row["path"]
-            if (
-                not isinstance(path, str) or not path or path.startswith("/")
-                or "\\" in path or "\x00" in path
-                or any(part in ("", ".", "..") for part in path.split("/"))
-            ):
-                raise RunError(f"{where} unsupported symbol path is invalid")
-            if not _is_hex(row["file_sha256"], 64) or row["reason"] != "unsupported_language":
-                raise RunError(f"{where} unsupported symbol hash or reason is invalid")
-            unsupported_paths.append(path)
-        if unsupported_paths != sorted(set(unsupported_paths)):
-            raise RunError(f"{where} unsupported symbol paths are duplicate or reordered")
-        if metrics["symbol_unsupported_files"] != 0:
-            raise RunError(f"{where} has incomplete symbol coverage")
-        coverage = metrics["symbol_coverage"]
-        if not isinstance(coverage, list) or len(coverage) != metrics["file_count"]:
-            raise RunError(f"{where} symbol coverage does not enumerate every file")
-        language_by_extension = {
-            "rs": "rust", "go": "go", "py": "python",
-            "js": "javascript", "mjs": "javascript", "cjs": "javascript", "jsx": "javascript",
-            "ts": "typescript", "mts": "typescript", "cts": "typescript", "tsx": "typescript_tsx",
-        }
-        covered_paths = []
-        definition_sum = 0
-        for index, raw in enumerate(coverage):
-            row = _exact_keys(
-                raw, {"path", "source_sha256", "language", "definition_count"},
-                f"{where}.symbol_coverage[{index}]",
-            )
-            path = row["path"]
-            if (
-                not isinstance(path, str)
-                or not path
-                or path.startswith("/")
-                or "\\" in path
-                or "\x00" in path
-                or any(part in ("", ".", "..") for part in path.split("/"))
-                or "." not in path
-            ):
-                raise RunError(f"{where} symbol coverage path is invalid")
-            expected_language = language_by_extension.get(path.rsplit(".", 1)[-1])
-            if expected_language is None or row["language"] != expected_language:
-                raise RunError(f"{where} symbol coverage grammar mismatch: {path}")
-            if not _is_hex(row["source_sha256"], 64):
-                raise RunError(f"{where} symbol coverage source hash is invalid: {path}")
-            if type(row["definition_count"]) is not int or row["definition_count"] < 0:
-                raise RunError(f"{where} symbol coverage definition count is invalid: {path}")
-            covered_paths.append(path)
-            definition_sum += row["definition_count"]
-        if covered_paths != sorted(set(covered_paths)) or definition_sum != metrics["symbol_count"]:
-            raise RunError(f"{where} symbol coverage is duplicate, reordered, or incomplete")
+        try:
+            symbol_coverage.validate_metrics(metrics, QUANTA_SYMBOL_GRAMMARS)
+        except (ValueError, KeyError, TypeError) as exc:
+            raise RunError(f"{where}: {exc}") from exc
     expected_layer = (
         "runner_monotonic_wall_v1" if system == "quanta" else "worker_monotonic_wall_v1"
     )
@@ -5590,6 +5566,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         "semble_native",
         "semble_model_cache_manifests",
         "phase_metrics",
+        "symbol_preflights",
         "resource_metrics",
     ):
         resolved[key] = [_resolve_artifact(root, ref, f"artifacts.{key}") for ref in artifacts[key]]
@@ -5719,6 +5696,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         "execution_profiles",
         "execution_profiles_sha256",
         "retrieval_diagnostic_version",
+        "symbol_coverage_policy",
         "rank_metric_k_policy",
     }
     if parent_binding is not None:
@@ -5748,6 +5726,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             type(protocol_payload["lock_version"]) is int
             and protocol_payload["lock_version"] in (2, 3, 4)
             and type(protocol_payload["retrieval_diagnostic_version"]) is int
+            and protocol_payload["symbol_coverage_policy"] in ("require-complete", "allow-incomplete")
             and
             all(
                 _is_hex(protocol_payload[key], 64)
@@ -6063,11 +6042,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     # Record <-> capture-manifest binding.
     bound_records: set[str] = set()
     record_digests = {sha_file(Path(path)) for path in resolved["records"]}
-    marked_quanta_digests = {
-        sha_file(Path(path))
-        for path, entry in validated.items()
-        if entry["system"] == "quanta" and entry["run"].get("span_accounting_version") == 1
-    }
+    bound_preflights: list[Path] = []
     phase_record_digests: list[str] = []
     phase_by_record: dict[str, dict] = {}
     phase_ok = len(resolved["phase_metrics"]) == len(resolved["records"])
@@ -6077,8 +6052,11 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             metrics = _validate_phase_metrics(read_json(Path(path)), f"phase metrics {path}")
             if metrics["schema_version"] != 2:
                 raise RunError("current pair replay requires phase metrics schema_version 2")
-            if metrics["system"] == "quanta" and metrics["record_sha256"] in marked_quanta_digests:
+            if metrics["system"] == "quanta":
                 _verify_symbol_coverage_corpus(metrics, corpus_payload)
+                bound_preflights.append(symbol_coverage.verify_artifact(metrics, Path(path), corpus_payload).resolve())
+                if metrics["symbol_coverage_policy"] != protocol_payload.get("symbol_coverage_policy"):
+                    raise RunError("symbol coverage admission policy differs from frozen protocol")
             phase_record_digests.append(metrics["record_sha256"])
             if metrics["record_sha256"] in phase_by_record:
                 phase_ok = False
@@ -6095,6 +6073,9 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         except (RunError, ValueError, OSError) as exc:
             phase_ok = False
             pair_note(f"phase_metrics_invalid:{exc}", ("T12",))
+    if sorted(bound_preflights) != sorted(resolved["symbol_preflights"]) or len(bound_preflights) != len(set(bound_preflights)):
+        phase_ok = False
+        pair_note("symbol_preflight_archive_inventory_mismatch", ("T12",))
     if set(phase_record_digests) != record_digests or len(phase_record_digests) != len(
         record_digests
     ):
@@ -6240,11 +6221,11 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             index_bytes = run_entry.get("index_bytes")
             if type(index_bytes) is not int or index_bytes < 0:
                 resource_ok = False
-            for metric_key in ("phase_metrics", "resource_metrics"):
+            for metric_key in ("phase_metrics", "symbol_preflight", "resource_metrics"):
                 metric_ref = run_entry.get(metric_key)
                 metric_digest = run_entry.get(f"{metric_key}_digest")
                 if not isinstance(metric_ref, str) or not _is_hex(metric_digest, 64):
-                    if metric_key == "phase_metrics":
+                    if metric_key in ("phase_metrics", "symbol_preflight"):
                         phase_ok = False
                     else:
                         resource_ok = False
@@ -6255,12 +6236,23 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 except OSError:
                     actual_metric_digest = None
                 if actual_metric_digest != metric_digest:
-                    if metric_key == "phase_metrics":
+                    if metric_key in ("phase_metrics", "symbol_preflight"):
                         phase_ok = False
                     else:
                         resource_ok = False
             ref = run_entry.get("record")
             want = run_entry.get("record_digest")
+            try:
+                phase_path = _resolve_artifact(path.parent, run_entry.get("phase_metrics"), "capture phase")
+                preflight_path = _resolve_artifact(path.parent, run_entry.get("symbol_preflight"), "capture preflight")
+                phase_payload = read_json(phase_path)
+                if (phase_payload["record_sha256"] != want
+                        or preflight_path != (phase_path.parent / phase_payload["symbol_preflight_out"]).resolve()
+                        or sha_file(preflight_path) != phase_payload["symbol_preflight_sha256"]):
+                    raise RunError("capture preflight owner binding differs")
+            except (KeyError, TypeError, ValueError, OSError) as exc:
+                phase_ok = False
+                pair_note(f"symbol_preflight_capture_binding:{exc}", ("T12",))
             target = None
             if isinstance(ref, str) and ref:
                 candidate = Path(ref)
@@ -6605,7 +6597,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 "rust": (
                     "retrieval-contract-rust",
                     "./scripts/cargow nextest run -p quanta-index-retrieval-bench "
-                    "--lib --test chunking_contract --all-features --locked",
+                    "--lib --test chunking_contract --test l5_parser_regressions --all-features --locked",
                     "nextest-jsonl",
                     nextest_summary,
                 ),
@@ -7542,6 +7534,7 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
     protocol_lock = {
         "lock_version": 4,
         "retrieval_diagnostic_version": 6,
+        "symbol_coverage_policy": spec.get("symbol_coverage_policy", "require-complete"),
         "server_observation": server_observation_configuration(spec.get("query_stage_observation", "enabled")),
         "hybrid_fetch_policy": hybrid_fetch_policy_configuration(spec.get("experimental_hybrid_fetch_floor", "100")),
         "ingest_request_identity": ingest_request_identity(spec),
@@ -7997,6 +7990,55 @@ def _verify_receipt_inputs(receipt: dict, expected: dict[str, Path], where: str)
         raise RunError(f"{where} raw input evidence mismatch")
 
 
+def _context_log_names(rail: str) -> set[str]:
+    return {f"{name}.{stream}" for name in CONTEXT_COMMAND_NAMES[rail]
+            for stream in ("stdout", "stderr")}
+
+
+def _context_archive_limits(rail: str) -> raw_archive.ArchiveLimits:
+    return raw_archive.ArchiveLimits(
+        max_bytes=MAX_CONTEXT_LOG_BYTES + CONTEXT_ZIP_OVERHEAD_BYTES,
+        max_entries=len(_context_log_names(rail)),
+        max_directory_bytes=CONTEXT_ZIP_DIRECTORY_BYTES,
+    )
+
+
+@contextmanager
+def _frozen_context_logs(path: Path | RawFile, rail: str):
+    """Own extracted file lifetimes; only bounded controls may become bytes."""
+    expected = _context_log_names(rail)
+
+    def admit(names):
+        if set(names) != expected or len(names) != len(expected):
+            raise RunError("frozen command logs missing or duplicated")
+
+    with tempfile.TemporaryDirectory(prefix="retrieval-command-logs-") as directory:
+        root = Path(directory).resolve(strict=True)
+        try:
+            raw_archive.unpack(path if isinstance(path, RawFile) else RawFile.capture(path), root,
+                               limits=_context_archive_limits(rail), admit_names=admit)
+            logs = {name: RawFile.capture(root / name) for name in expected}
+            if sum(log.size for log in logs.values()) > MAX_CONTEXT_LOG_BYTES:
+                raise RunError("oversized command logs")
+        except (OSError, ValueError) as exc:
+            raise RunError(f"{rail} execution context cannot inspect frozen command logs: {exc}") from exc
+        yield logs
+
+
+def _proof_control(path: Path | RawFile):
+    try:
+        return parse_json(read_control(path).decode("utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RunError(f"cannot read bounded proof control: {exc}") from exc
+
+
+def _proof_file(path: Path) -> RawFile:
+    try:
+        return RawFile.capture(path)
+    except (OSError, ValueError) as exc:
+        raise RunError(f"cannot capture proof input: {exc}") from exc
+
+
 def _verify_execution_context(
     path: Path,
     closure_path: Path,
@@ -8009,8 +8051,12 @@ def _verify_execution_context(
 ) -> dict:
     """Check frozen bytes and prescribed syntax; OS/tool execution remains unattested."""
     where = f"{rail} execution context"
+    context_file, closure_file = _proof_file(path), _proof_file(closure_path)
+    logs_file = _proof_file(logs_path)
+    raw_files = {name: _proof_file(artifact) for name, artifact in raw.items()}
+    inputs = [context_file, closure_file, logs_file, *raw_files.values()]
     context = _exact_keys(
-        read_json(path),
+        _proof_control(context_file),
         {
             "schema_version",
             "rail",
@@ -8030,13 +8076,13 @@ def _verify_execution_context(
         or not _is_hex(context["revision"], 40)
     ):
         raise RunError(f"{where} schema/rail/revision mismatch")
-    closure = _validate_source_closure_shape(read_json(closure_path), f"{where} source closure")
+    closure = _validate_source_closure_shape(_proof_control(closure_file), f"{where} source closure")
     if context["revision"] != closure["revision"]:
         raise RunError(f"{where} source revision mismatch")
-    expected_raw = {"source-closure.json": closure_path, **raw}
+    expected_raw = {"source-closure.json": closure_file, **raw_files}
     recorded_raw = _exact_keys(context["raw_evidence"], set(expected_raw), f"{where}.raw_evidence")
     for name, artifact in expected_raw.items():
-        if recorded_raw[name] != sha_file(artifact):
+        if recorded_raw[name] != artifact.sha256.removeprefix("sha256:"):
             raise RunError(f"{where} raw evidence digest mismatch: {name}")
     os_row = _exact_keys(
         context["os"], {"system", "release", "machine", "python_version"}, f"{where}.os"
@@ -8058,7 +8104,7 @@ def _verify_execution_context(
             raise RunError(f"{where} malformed tool identity: {name}")
     collection_name = "nextest-inventory.json" if rail == "sdk" else "rust-inventory.json"
     try:
-        selected_binaries = portable_proof.selected_test_binaries(raw[collection_name].read_bytes())
+        selected_binaries = portable_proof.selected_test_binaries(raw_files[collection_name])
     except (OSError, ValueError) as exc:
         raise RunError(f"{where} selected executable collection refused: {exc}") from exc
     binary_names = set(selected_binaries) | ({"runner", "searchd"} if rail == "sdk" else set())
@@ -8080,9 +8126,9 @@ def _verify_execution_context(
         if name in selected_binaries and binary["path"] != str(selected_binaries[name]):
             raise RunError(f"{where} binary path differs from raw collection: {name}")
         try:
-            frozen_sha = portable_proof._sha256_repo_regular_file(
-                binary_root, name, label="frozen execution context binary"
-            )
+            frozen_binary = _proof_file(binary_root / name)
+            inputs.append(frozen_binary)
+            frozen_sha = frozen_binary.sha256.removeprefix("sha256:")
         except (OSError, ValueError) as exc:
             raise RunError(f"{where} frozen binary refused: {name}: {exc}") from exc
         if frozen_sha != binary["sha256"]:
@@ -8115,33 +8161,21 @@ def _verify_execution_context(
     )
     if len(commands) != len(expected):
         raise RunError(f"{where} command count mismatch")
-    expected_logs = {
-        f"{name}.{stream}"
-        for name in CONTEXT_COMMAND_NAMES[rail]
-        for stream in ("stdout", "stderr")
-    }
+    with _frozen_context_logs(logs_file, rail) as logs:
+        _verify_context_commands(commands, expected, logs, raw_files, collection_name, rail)
+    for captured in inputs:
+        if _proof_file(captured.path) != captured:
+            raise RunError(f"{where} input changed during verification: {captured.path}")
     try:
-        archive = zipfile.ZipFile(logs_path)
-    except (OSError, zipfile.BadZipFile, EOFError, RuntimeError) as exc:
-        raise RunError(f"{where} cannot read frozen command logs: {exc}") from exc
-    try:
-        with archive:
-            if set(archive.namelist()) != expected_logs or len(archive.namelist()) != len(
-                expected_logs
-            ):
-                raise RunError(f"{where} frozen command logs missing or duplicated")
-            total_log_bytes = 0
-            for name in expected_logs:
-                info = archive.getinfo(name)
-                total_log_bytes += info.file_size
-                if (
-                    info.compress_type != zipfile.ZIP_STORED
-                    or total_log_bytes > MAX_CONTEXT_LOG_BYTES
-                ):
-                    raise RunError(f"{where} oversized or compressed command logs")
-            frozen_log_bytes = {name: archive.read(name) for name in expected_logs}
-    except (OSError, zipfile.BadZipFile, EOFError, RuntimeError, KeyError) as exc:
-        raise RunError(f"{where} cannot inspect frozen command logs: {exc}") from exc
+        if set(entry.name for entry in binary_root.iterdir()) != binary_names:
+            raise RunError(f"{where} frozen binary inventory changed during verification")
+    except OSError as exc:
+        raise RunError(f"{where} frozen binary inventory refused: {exc}") from exc
+    return closure
+
+
+def _verify_context_commands(commands, expected, logs, raw, collection_name, rail):
+    where = f"{rail} execution context"
     reuse_build_raw = {}
     for index, (row, (name, argv, overrides)) in enumerate(zip(commands, expected)):
         command = _exact_keys(
@@ -8183,16 +8217,16 @@ def _verify_execution_context(
                 command[f"{stream}_sha256"], 64
             ):
                 raise RunError(f"{where} malformed command output digest: {name}")
-            output_bytes = frozen_log_bytes[command[stream]]
-            observed_digest = hashlib.sha256(output_bytes).hexdigest()
+            output = logs[command[stream]]
+            observed_digest = output.sha256.removeprefix("sha256:")
             if observed_digest != command[f"{stream}_sha256"]:
                 raise RunError(f"{where} frozen command output digest mismatch: {command[stream]}")
             if stream == "stdout" and name in {"rust-build", "metadata", "rust-collection"}:
-                reuse_build_raw[name] = output_bytes
+                reuse_build_raw[name] = output
             raw_name = {"rust-collection": collection_name,
                         "rust-test": "nextest.jsonl" if rail == "sdk" else "rust-nextest.jsonl"}.get(name)
             if stream == "stdout" and raw_name is not None:
-                if observed_digest != sha_file(raw[raw_name]):
+                if observed_digest != raw[raw_name].sha256.removeprefix("sha256:"):
                     raise RunError(f"{where} raw evidence differs from command output: {name}")
     try:
         portable_proof.verify_reused_build(
@@ -8201,7 +8235,6 @@ def _verify_execution_context(
         )
     except ValueError as exc:
         raise RunError(f"{where} native reused build refused: {exc}") from exc
-    return closure
 
 
 def _verify_receipt_test_count(receipt: dict, results: dict, where: str) -> None:
@@ -8230,7 +8263,9 @@ def _verify_required_inventory(inventory: Path, role: str, receipt: dict) -> Non
     if hashlib.sha256(committed).hexdigest() != matching[0]:
         raise RunError(f"{role} required test authority differs from receipt source closure")
     with tempfile.TemporaryDirectory(prefix="qi-required-tests-") as directory:
-        committed_path = Path(directory) / "proof-required-tests.json"
+        # This is our newly allocated scratch directory, not an evidence path.
+        # Resolve host aliases such as macOS /tmp before the strict reader.
+        committed_path = Path(directory).resolve(strict=True) / "proof-required-tests.json"
         committed_path.write_bytes(committed)
         try:
             verify_inventory_authority(inventory, role, committed_path)
@@ -8417,26 +8452,22 @@ def freeze_receipts(spec: dict, stage: Path) -> dict[str, str]:
             continue
         source = Path(receipts[key])
         try:
-            before = sha_file(source)
             target = target_dir / f"{key}{source.suffix or '.json'}"
-            shutil.copyfile(source, target)
-            after = sha_file(target)
-        except OSError as exc:
+            RawFile.capture(source).copy_to(target)
+        except (OSError, ValueError) as exc:
             raise RunError(f"cannot freeze receipt artifact {key}: {exc}") from exc
-        if before != after:
-            raise RunError(f"receipt artifact changed during freeze: {key}")
         frozen[key] = str(target)
     for rail in ("contract", "sdk"):
         key = f"{rail}_execution_context"
         if key not in receipts:
             continue
         source_dir = Path(receipts[key]).parent
-        context = read_json(Path(frozen[key]))
+        context = _proof_control(Path(frozen[key]))
         if not isinstance(context, dict) or type(context.get("schema_version")) is not int \
             or context["schema_version"] != portable_proof.EXECUTION_CONTEXT_VERSION:
             raise RunError("execution context schema mismatch during freeze")
         try:
-            selected = portable_proof.selected_test_binaries((source_dir / "rust-collection.stdout").read_bytes())
+            selected = portable_proof.selected_test_binaries(RawFile.capture(source_dir / "rust-collection.stdout"))
         except (OSError, ValueError) as exc:
             raise RunError(f"cannot freeze selected executable collection: {exc}") from exc
         roles = set(selected) | ({"runner", "searchd"} if rail == "sdk" else set())
@@ -8451,42 +8482,26 @@ def freeze_receipts(spec: dict, stage: Path) -> dict[str, str]:
                 raise RunError("execution context binary differs from selected collection")
             source_binary = Path(binary["path"])
             try:
-                before = portable_proof._sha256_repo_regular_file(
-                    source_binary.parent, source_binary.name, label="execution context binary"
-                )
+                captured = RawFile.capture(source_binary)
+                if captured.sha256.removeprefix("sha256:") != binary["sha256"]:
+                    raise RunError(f"execution context binary changed during freeze: {role}")
                 target_binary = binary_root / role
-                shutil.copyfile(source_binary, target_binary)
-                after = portable_proof._sha256_repo_regular_file(
-                    binary_root, role, label="frozen execution context binary"
-                )
+                captured.copy_to(target_binary)
             except (OSError, ValueError) as exc:
                 raise RunError(f"cannot freeze execution context binary: {role}: {exc}") from exc
-            if before != after or before != binary["sha256"]:
-                raise RunError(f"execution context binary changed during freeze: {role}")
         try:
             if set(entry.name for entry in binary_root.iterdir()) != roles:
                 raise RunError("frozen execution context binary inventory mismatch")
         except OSError as exc:
             raise RunError(f"cannot inspect frozen execution context binaries: {exc}") from exc
         target = target_dir / f"{rail}_execution_logs.zip"
-        total = 0
-        with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_STORED) as archive:
-            for name in CONTEXT_COMMAND_NAMES[rail]:
-                for stream in ("stdout", "stderr"):
-                    filename = f"{name}.{stream}"
-                    source = source_dir / filename
-                    try:
-                        size = source.stat().st_size
-                    except OSError as exc:
-                        raise RunError(f"missing execution command log: {source}: {exc}") from exc
-                    total += size
-                    if not source.is_file() or total > MAX_CONTEXT_LOG_BYTES:
-                        raise RunError(f"execution command logs are invalid or oversized: {source}")
-                    before = sha_file(source)
-                    payload = source.read_bytes()
-                    if len(payload) != size or before != hashlib.sha256(payload).hexdigest():
-                        raise RunError(f"execution command log changed during freeze: {source}")
-                    archive.writestr(filename, payload)
+        try:
+            logs = {name: RawFile.capture(source_dir / name) for name in _context_log_names(rail)}
+            if sum(log.size for log in logs.values()) > MAX_CONTEXT_LOG_BYTES:
+                raise RunError("execution command logs are oversized")
+            raw_archive.pack(logs, target, limits=_context_archive_limits(rail))
+        except (OSError, ValueError) as exc:
+            raise RunError(f"cannot freeze {rail} execution command logs: {exc}") from exc
         frozen[f"{rail}_execution_logs"] = str(target)
     return frozen
 
@@ -8688,6 +8703,7 @@ def build_run_manifest(
     model_cache_manifests: list[str] = []
     quanta_manifests: list[str] = []
     phase_metrics: list[str] = []
+    symbol_preflights: list[str] = []
     resource_metrics: list[str] = []
     for layout in rep_layouts:
         for record in sorted(layout["quanta"].values()):
@@ -8711,6 +8727,7 @@ def build_run_manifest(
                 raise RunError("quanta manifest run is malformed while collecting metrics")
             for key, target in (
                 ("phase_metrics", phase_metrics),
+                ("symbol_preflight", symbol_preflights),
                 ("resource_metrics", resource_metrics),
             ):
                 ref = run_entry.get(key)
@@ -8933,6 +8950,7 @@ def build_run_manifest(
         "semble_native": sorted(natives),
         "semble_model_cache_manifests": sorted(model_cache_manifests),
         "phase_metrics": sorted(phase_metrics),
+        "symbol_preflights": sorted(symbol_preflights),
         "resource_metrics": sorted(resource_metrics),
         "protocol_lock": "protocol-lock.json",
     }

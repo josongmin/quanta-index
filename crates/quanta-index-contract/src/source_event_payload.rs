@@ -9,6 +9,7 @@ use sha2::{Digest as _, Sha256};
 use crate::{SearchCorpusIngestBatch, SourceCoverageError};
 
 /// Hash the complete source mutation payload, not its materialization target.
+///
 /// Source revisions are carried by file coverage; containing revision/generation,
 /// manifest identity, transport digest and seal state are excluded. The event's
 /// stream/id/base are separately bound by the durable publication catalog.

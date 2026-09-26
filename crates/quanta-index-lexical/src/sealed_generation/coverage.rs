@@ -1,5 +1,7 @@
 //! Admitted source files, including files without indexed units, bound to the
-//! existing lexical generation. This artifact is not a parser completeness
+//! existing lexical generation.
+//!
+//! This artifact is not a parser completeness
 //! proof: source hashes and extraction policy remain producer attestations.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -117,7 +119,9 @@ pub(crate) fn decode_coverage(
 }
 
 /// Conservative retained-heap admission estimate, not measured allocator use
-/// or RSS. Charge a full 16-slot B-tree node per file (including links/header),
+/// or RSS.
+///
+/// Charge a full 16-slot B-tree node per file (including links/header),
 /// both the map key and the duplicate source key, all retained strings, and
 /// the event's actual String capacities. This intentionally overestimates
 /// partially occupied nodes. Decode compacts opaque ID string allocations.
@@ -226,7 +230,9 @@ pub(crate) fn write_staged_coverage(
     )
 }
 
-/// Compute an immutable candidate before any index or sidecar mutation. Empty
+/// Compute an immutable candidate before any index or sidecar mutation.
+///
+/// Empty
 /// replacements remain members of the admitted file universe. A delta retains
 /// every unchanged entry, including failed or unrequested symbol extraction.
 pub(crate) fn apply_file_coverage(

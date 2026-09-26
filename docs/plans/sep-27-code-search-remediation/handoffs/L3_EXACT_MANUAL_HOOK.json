@@ -1,0 +1,19 @@
+{
+  "status": "SUPERSEDED_BY_APPLIED_IMPLEMENTATION",
+  "targets": [
+    {
+      "target": "crates/quanta-index-lexical/src/symbol.rs",
+      "source_sha256": "4b9a31a6a297e7dcae7d7b451f7b014db2657f069204f6e021a73b7c6dc31569"
+    },
+    {
+      "target": "crates/quanta-index-lexical/src/searcher/manual_scan.rs",
+      "source_sha256": "4d296b1bfadc6f5833be25b969a06d21af802aac123abf11dd3270177b5a1db2"
+    }
+  ],
+  "patch_sha256": "61170e3aa60cc9fe660b495e9310d3a1911069f5eeb73dc9d3a2c07b6f88cb3d",
+  "depends_on": "L3_EXACT_PLAN_HOOK.patch",
+  "scope": "Forward sealed document through recursive manual expression matching; compare canonical dedicated stored name fields using shared normalization; preserve general content predicate matching",
+  "historical_status": "UNAPPLIED_UNVERIFIED_REVIEW_PATCH",
+  "current_evidence_run": "rr-owner-final-4",
+  "note": "Historical proposal only; final implementation includes all three preparation entries and the current manual document view. Do not apply this patch again."
+}

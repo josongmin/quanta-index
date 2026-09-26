@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import re
 import sys
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Optional
+
+# Script and imported adapter entrypoints use the same file-custody owner.
+BENCHMARK_ROOT = Path(__file__).resolve().parents[1]
+if str(BENCHMARK_ROOT) not in sys.path:
+    sys.path.insert(0, str(BENCHMARK_ROOT))
+from evidence import CONTROL_DOCUMENT_BYTES, EvidenceError, RawFile  # noqa: E402
 
 ARMS = ("A", "B", "C")
 ARM_KINDS = {"A": "no_index", "B": "production_router", "C": "oracle_gold_context"}
@@ -264,36 +269,52 @@ def _paired(rows: list[dict[str, Any]]) -> list[dict[str, dict[str, Any]]]:
     return result
 
 
-def load(path: Path) -> tuple[list[dict[str, dict[str, Any]]], str]:
-    digest = hashlib.sha256()
-    rows: list[dict[str, Any]] = []
+def load_file(raw: RawFile) -> list[dict[str, dict[str, Any]]]:
+    """Validate one committed JSONL stream; retain only bounded pair metadata."""
+
+    def consume(lines):
+        rows: list[dict[str, Any]] = []
+        metadata_bytes = 0
+        for line, raw_line in enumerate(lines, 1):
+            try:
+                text = raw_line.decode("utf-8")
+            except UnicodeError as exc:
+                raise InvalidEvidence(f"line {line}: invalid UTF-8: {exc}") from exc
+            if not text.strip():
+                raise InvalidEvidence(f"line {line}: blank JSONL row")
+            try:
+                row = json.loads(
+                    text,
+                    parse_float=Decimal,
+                    parse_constant=_reject_constant,
+                    object_pairs_hook=_object_no_duplicates,
+                )
+            except (json.JSONDecodeError, InvalidEvidence) as exc:
+                raise InvalidEvidence(f"line {line}: {exc}") from exc
+            checked = _validate_row(row, line)
+            del checked["trajectory"]  # Keep only validated metrics and pair identity.
+            # Pairing needs global identity and ordering, not raw trajectory
+            # retention. Bound that control state independently of raw size.
+            metadata_bytes += len(json.dumps(checked, default=str, separators=(",", ":")))
+            if metadata_bytes > CONTROL_DOCUMENT_BYTES:
+                raise InvalidEvidence("paired metadata exceeds explicit control byte limit")
+            rows.append(checked)
+        if not rows:
+            raise InvalidEvidence("empty JSONL input")
+        return _paired(rows)
+
     try:
-        with path.open("rb") as handle:
-            for line, raw_line in enumerate(handle, 1):
-                digest.update(raw_line)
-                try:
-                    text = raw_line.decode("utf-8")
-                except UnicodeError as exc:
-                    raise InvalidEvidence(f"line {line}: invalid UTF-8: {exc}") from exc
-                if not text.strip():
-                    raise InvalidEvidence(f"line {line}: blank JSONL row")
-                try:
-                    row = json.loads(
-                        text,
-                        parse_float=Decimal,
-                        parse_constant=_reject_constant,
-                        object_pairs_hook=_object_no_duplicates,
-                    )
-                except (json.JSONDecodeError, InvalidEvidence) as exc:
-                    raise InvalidEvidence(f"line {line}: {exc}") from exc
-                checked = _validate_row(row, line)
-                del checked["trajectory"]  # Keep only validated metrics and pair identity.
-                rows.append(checked)
-    except OSError as exc:
+        return raw.consume_lines(consume, max_line_bytes=CONTROL_DOCUMENT_BYTES)
+    except (OSError, EvidenceError) as exc:
         raise InvalidEvidence(f"cannot read JSONL: {exc}") from exc
-    if not rows:
-        raise InvalidEvidence("empty JSONL input")
-    return _paired(rows), "sha256:" + digest.hexdigest()
+
+
+def load(path: Path) -> tuple[list[dict[str, dict[str, Any]]], str]:
+    try:
+        raw = RawFile.capture(path)
+        return load_file(raw), raw.sha256
+    except (OSError, EvidenceError) as exc:
+        raise InvalidEvidence(f"cannot read JSONL: {exc}") from exc
 
 
 def _metrics(row: dict[str, Any]) -> dict[str, Any]:

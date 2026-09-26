@@ -499,29 +499,43 @@ pub(crate) fn structural_chunks_transition(
     let clear = batch.clear_surfaces.contains(&SearchScopeSurface::Chunk);
     let mut removed = BTreeSet::new();
     if !clear && let Some(state) = current {
-        let paths: BTreeSet<&str> = batch
+        let files: BTreeSet<_> = batch
             .replace_scopes
             .iter()
-            .map(|scope| scope.scope.repo_relative_path.as_str())
+            .map(|scope| {
+                (
+                    &scope.coverage.source.file.source_repo_id,
+                    &scope.coverage.source.file.repo_relative_path,
+                )
+            })
             .chain(
                 batch
                     .tombstone_scopes
                     .iter()
-                    .map(|scope| scope.scope.repo_relative_path.as_str()),
+                    .map(|scope| (&scope.file.source_repo_id, &scope.file.repo_relative_path)),
             )
             .collect();
         removed.extend(
             state
                 .chunks()
                 .iter()
-                .filter(|(_chunk_id, chunk)| paths.contains(chunk.repo_relative_path.as_str()))
+                .filter(|(_chunk_id, chunk)| {
+                    files.contains(&(
+                        chunk.searchable_repo_id(&batch.repo_id),
+                        &chunk.repo_relative_path,
+                    ))
+                })
                 .map(|(chunk_id, _chunk)| chunk_id.clone()),
         );
     }
     let upserts = batch
         .replace_scopes
         .iter()
-        .flat_map(|scope| scope.chunks.iter().cloned())
+        .flat_map(|scope| {
+            scope.chunks.iter().cloned().map(move |chunk| {
+                StructuralAuthorityState::bind_chunk_source(chunk, &scope.coverage.source.file)
+            })
+        })
         .collect();
     StructuralChunksDelta {
         generation,

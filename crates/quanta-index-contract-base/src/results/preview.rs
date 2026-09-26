@@ -1,8 +1,9 @@
 //! Preview provenance, independent of ranked-hit identity and completeness.
+//!
 //! Ranges are chunk-relative byte intervals; a file offset exists only when a
 //! verified chunk base and immutable source identity are supplied together.
 
-use crate::SourceFileRevision;
+use crate::{HighlightSpan, SourceFileRevision};
 use core::fmt;
 use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
@@ -91,6 +92,9 @@ impl PreviewMetadata {
         if self.chunk_start_byte.is_some() && self.source.is_none() {
             return Err("chunk base requires source identity");
         }
+        if self.kind != PreviewKind::SourceChunk && self.chunk_start_byte.is_some() {
+            return Err("path/synthetic previews cannot claim a chunk base");
+        }
         if self.unavailable_reason.is_some() || self.kind != PreviewKind::SourceChunk {
             if self.original_focus.is_some()
                 || self.original_context.is_some()
@@ -126,6 +130,110 @@ impl PreviewMetadata {
             let _file_end = base
                 .checked_add(context.end)
                 .ok_or("source file byte offset overflow")?;
+        }
+        Ok(())
+    }
+
+    /// Check the emitted excerpt against this metadata.
+    ///
+    /// This proves wire-local byte lengths and UTF-8 boundaries, not agreement
+    /// with an immutable source file or the independently indexed NFC text.
+    pub fn validate_emission(&self, snippet: &str) -> Result<(), &'static str> {
+        self.validate()?;
+        if self.unavailable_reason.is_some() {
+            if !snippet.is_empty() {
+                return Err("unavailable preview cannot emit text");
+            }
+            return Ok(());
+        }
+        if self.kind == PreviewKind::Path {
+            let source = self.source.as_ref().ok_or("path preview requires source")?;
+            if snippet != source.file.repo_relative_path.as_str() {
+                return Err("path preview must emit its bound source path");
+            }
+            return Ok(());
+        }
+        if self.kind == PreviewKind::SourceChunk {
+            let context = self.original_context.ok_or("source context missing")?;
+            let focus = self.original_focus.ok_or("source focus missing")?;
+            let size =
+                u64::try_from(snippet.len()).map_err(|_overflow| "snippet length overflow")?;
+            if context.end.checked_sub(context.start) != Some(size) {
+                return Err("source context length disagrees with emitted snippet");
+            }
+            let start = focus
+                .start
+                .checked_sub(context.start)
+                .ok_or("focus before context")?;
+            let end = focus
+                .end
+                .checked_sub(context.start)
+                .ok_or("focus before context")?;
+            let local_start = usize::try_from(start).map_err(|_overflow| "focus start overflow")?;
+            let local_end = usize::try_from(end).map_err(|_overflow| "focus end overflow")?;
+            if snippet.get(local_start..local_end).is_none() {
+                return Err("source focus is not UTF-8 aligned within emitted snippet");
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn validate_highlight_ranges(
+        snippet: &str,
+        snippet_hit_offset: Option<u32>,
+        highlights: &[HighlightSpan],
+    ) -> Result<(), &'static str> {
+        let mut previous = None;
+        for span in highlights {
+            let start =
+                usize::try_from(span.start).map_err(|_overflow| "highlight start overflow")?;
+            let len = usize::try_from(span.len).map_err(|_overflow| "highlight length overflow")?;
+            let end = start.checked_add(len).ok_or("highlight end overflow")?;
+            if len == 0 || snippet.get(start..end).is_none() {
+                return Err("highlight must cover nonempty UTF-8-aligned snippet bytes");
+            }
+            let key = (span.start, span.len);
+            if previous.is_some_and(|prior| prior >= key) {
+                return Err("preview highlights must be sorted and unique");
+            }
+            previous = Some(key);
+        }
+        if snippet_hit_offset != highlights.first().map(|span| span.start) {
+            return Err("preview hit offset must identify its first highlight");
+        }
+        Ok(())
+    }
+
+    pub(super) fn validate_highlights(
+        &self,
+        snippet: &str,
+        snippet_hit_offset: Option<u32>,
+        highlights: &[HighlightSpan],
+    ) -> Result<(), &'static str> {
+        self.validate_emission(snippet)?;
+        if self.unavailable_reason.is_some() || self.kind == PreviewKind::Path {
+            if snippet_hit_offset.is_some() || !highlights.is_empty() {
+                return Err("unavailable/path previews cannot emit highlights");
+            }
+            return Ok(());
+        }
+        if self.kind == PreviewKind::SourceChunk {
+            let context = self.original_context.ok_or("source context missing")?;
+            let focus = self.original_focus.ok_or("source focus missing")?;
+            let start = focus
+                .start
+                .checked_sub(context.start)
+                .ok_or("focus before context")?;
+            let len = focus
+                .end
+                .checked_sub(focus.start)
+                .ok_or("focus is inverted")?;
+            let primary = highlights
+                .first()
+                .ok_or("source focus has no primary highlight")?;
+            if u64::from(primary.start) != start || u64::from(primary.len) != len {
+                return Err("source focus disagrees with the primary snippet highlight");
+            }
         }
         Ok(())
     }

@@ -223,9 +223,17 @@ impl SearchPlaneDispatcher {
         let execution = LaneExecutionRecorderV1::new();
         budget.checkpoint("symbol:entry")?;
         let _accepted_top_k = validate_query_top_k(request.top_k)?;
-        let lowered = lower_lexical_text_query(&TextQueryRequest::from(request.clone()))?;
-        let _validated =
+        // The page token is authenticated below. Query lowering accepts only
+        // the query inputs, as on the Text route, not its continuation token.
+        let pageless = TextQueryRequest {
+            cursor: None,
+            ..TextQueryRequest::from(request.clone())
+        };
+        let lowered = lower_lexical_text_query(&pageless)?;
+        let validated =
             LexicalPolicy::plan_query(&lowered, &request.constraints, LexicalEndpoint::Symbol)?;
+        self.lex_opener
+            .preflight_query_primitives(&validated, budget)?;
         let opened = request
             .cursor
             .as_ref()

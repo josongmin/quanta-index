@@ -30,6 +30,18 @@ pub(crate) fn stub_artifact_identity(
 pub(crate) struct RejectLexicalOpener;
 
 impl LexicalIndexOpenPort for RejectLexicalOpener {
+    fn preflight_query_primitives(
+        &self,
+        plan: &quanta_index_core::ValidatedLexicalPlan,
+        budget: &quanta_index_core::RequestBudgetV1,
+    ) -> Result<(), CoreError> {
+        quanta_index_lexical::planner::LexicalPlanner::validate_query_primitives(
+            plan,
+            &quanta_index_lexical::regex::RegexPolicy::defaults(),
+            budget,
+        )
+    }
+
     fn open(
         &self,
         _repo: &RepoId,
@@ -136,9 +148,10 @@ impl LexicalSearcher for StubLexicalSearcher {
 
     fn search_all(
         &self,
-        _query: &quanta_index_contract::LqQuery,
+        query: &quanta_index_contract::LqQuery,
         _budget: &RequestBudgetV1,
     ) -> Result<Vec<LexicalCandidate>, CoreError> {
+        validate_fixture_exact_all_count(query)?;
         Ok(self.results.clone())
     }
 
@@ -199,6 +212,18 @@ pub(crate) struct StubLexicalOpener {
 }
 
 impl LexicalIndexOpenPort for StubLexicalOpener {
+    fn preflight_query_primitives(
+        &self,
+        plan: &quanta_index_core::ValidatedLexicalPlan,
+        budget: &quanta_index_core::RequestBudgetV1,
+    ) -> Result<(), CoreError> {
+        quanta_index_lexical::planner::LexicalPlanner::validate_query_primitives(
+            plan,
+            &quanta_index_lexical::regex::RegexPolicy::defaults(),
+            budget,
+        )
+    }
+
     fn open(
         &self,
         _repo: &RepoId,
@@ -225,6 +250,7 @@ impl LexicalIndexOpenPort for StubLexicalOpener {
 
 #[derive(Default)]
 pub(crate) struct RecordingLexicalState {
+    pub(crate) primitive_queries: Vec<LqQuery>,
     pub(crate) search_top_ks: Vec<u32>,
     /// The boundary every text page was asked to continue after.
     pub(crate) search_afters: Vec<Option<quanta_index_contract::LexicalCursor>>,
@@ -374,9 +400,10 @@ impl LexicalSearcher for RecordingLexicalSearcher {
 
     fn search_all(
         &self,
-        _query: &quanta_index_contract::LqQuery,
+        query: &quanta_index_contract::LqQuery,
         _budget: &RequestBudgetV1,
     ) -> Result<Vec<LexicalCandidate>, CoreError> {
+        validate_fixture_exact_all_count(query)?;
         Ok(self.results.clone())
     }
 
@@ -457,6 +484,23 @@ pub(crate) struct RecordingLexicalOpener {
 }
 
 impl LexicalIndexOpenPort for RecordingLexicalOpener {
+    fn preflight_query_primitives(
+        &self,
+        plan: &quanta_index_core::ValidatedLexicalPlan,
+        budget: &quanta_index_core::RequestBudgetV1,
+    ) -> Result<(), CoreError> {
+        self.state
+            .lock()
+            .map_err(|err| CoreError::Storage(format!("lexical state poisoned: {err}")))?
+            .primitive_queries
+            .push(plan.query().clone());
+        quanta_index_lexical::planner::LexicalPlanner::validate_query_primitives(
+            plan,
+            &quanta_index_lexical::regex::RegexPolicy::defaults(),
+            budget,
+        )
+    }
+
     fn open(
         &self,
         repo: &RepoId,
@@ -579,6 +623,13 @@ fn symbol_fixture_all(
     results: &[LexicalCandidate],
     query: &LqQuery,
 ) -> Result<Vec<SymbolCandidate>, CoreError> {
+    validate_fixture_exact_all_count(query)?;
+    let mut rows: Vec<_> = results.iter().map(symbol_fixture_candidate).collect();
+    rows.sort_by(|left, right| left.order_key().order(&right.order_key()));
+    Ok(rows)
+}
+
+fn validate_fixture_exact_all_count(query: &LqQuery) -> Result<(), CoreError> {
     if matches!(
         query.options.count,
         Some(quanta_index_contract::LqCountBound::Bounded(_))
@@ -588,7 +639,5 @@ fn symbol_fixture_all(
             message: "exact-all fixture cannot honor a bounded count".into(),
         });
     }
-    let mut rows: Vec<_> = results.iter().map(symbol_fixture_candidate).collect();
-    rows.sort_by(|left, right| left.order_key().order(&right.order_key()));
-    Ok(rows)
+    Ok(())
 }

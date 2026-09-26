@@ -12,10 +12,15 @@ import argparse
 import hashlib
 import json
 import math
-import stat
 import statistics
 from pathlib import Path
 
+from tools.benchmark.evidence import (
+    CONTROL_DOCUMENT_BYTES,
+    RawFile,
+    _read_control_file,
+    file_digest,
+)
 from tools.benchmark.retrieval.evaluator import canonical, digest
 from tools.benchmark.retrieval.finite_json import is_finite_json_number
 from tools.benchmark.retrieval.query_plan import execution_profile
@@ -60,18 +65,8 @@ def latency_summary(values: list[object], expected_count: int, layer: str) -> di
 
 
 def _bytes(path: Path) -> bytes:
-    before = path.lstat()
-    if not stat.S_ISREG(before.st_mode):
-        raise ValueError(f"lexical input is not a regular file: {path}")
-    data = path.read_bytes()
-    after = path.lstat()
-
-    def identity(value):
-        return (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
-
-    if identity(before) != identity(after):
-        raise ValueError(f"lexical input changed while reading: {path}")
-    return data
+    """Lexical control JSON is bounded; observation JSONL uses the line owner."""
+    return _read_control_file(path)
 
 
 def _unique_object(pairs):
@@ -100,7 +95,7 @@ def _read(path: Path) -> dict:
 
 
 def _sha(path: Path) -> str:
-    return hashlib.sha256(_bytes(path)).hexdigest()
+    return file_digest(path)[0].removeprefix("sha256:")
 
 
 def _tasks(suite: dict, pack: dict) -> dict[str, tuple[str, list[str]]]:
@@ -173,59 +168,66 @@ def product_result(product: str, path: Path, expected: dict[str, tuple[str, list
         for _, gold in expected.values()
     ):
         raise ValueError(f"{product}: empty or duplicate golden file inventory")
-    raw = _bytes(path)
-    rows = [_json(line) for line in raw.splitlines() if line]
-    if any(not isinstance(row, dict) for row in rows):
-        raise ValueError(f"{product}: malformed raw observation")
-    selected = [row for row in rows if row.get("lane") == "symbol_only"]
-    if len(selected) != len(expected):
-        raise ValueError(f"{product}: incomplete symbol-only lane")
-    seen: set[str] = set()
-    hits = 0
-    elapsed: list[object] = []
-    per_query = []
-    for row in selected:
-        task_id = row.get("task_id")
-        if not isinstance(task_id, str) or task_id not in expected or task_id in seen:
-            raise ValueError(f"{product}: missing or duplicate task")
-        seen.add(task_id)
-        query, gold = expected[task_id]
-        if row.get("submitted_query") != query or row.get("gold_paths") != gold:
-            raise ValueError(f"{product}: {task_id} query or gold differs")
-        if product == "cs":
-            if type(row.get("exit_code")) is not int or row["exit_code"] != 0:
-                raise ValueError(f"{product}: {task_id} failed process")
-            paths = row.get("paths")
-        else:
+    raw = RawFile.capture(path)
+
+    def consume(lines):
+        seen: set[str] = set()
+        hits = metadata_bytes = 0
+        elapsed: list[object] = []
+        per_query = []
+        for line in lines:
+            row = _json(line)
+            if row.get("lane") != "symbol_only":
+                continue  # Other recorded lanes are not scored by this diagnostic.
+            task_id = row.get("task_id")
+            if not isinstance(task_id, str) or task_id not in expected or task_id in seen:
+                raise ValueError(f"{product}: missing or duplicate task")
+            seen.add(task_id)
+            query, gold = expected[task_id]
+            if row.get("submitted_query") != query or row.get("gold_paths") != gold:
+                raise ValueError(f"{product}: {task_id} query or gold differs")
+            if product == "cs":
+                if type(row.get("exit_code")) is not int or row["exit_code"] != 0:
+                    raise ValueError(f"{product}: {task_id} failed process")
+                paths = row.get("paths")
+            else:
+                if (
+                    type(row.get("http_status")) is not int
+                    or row["http_status"] != 200
+                    or row.get("error") is not None
+                ):
+                    raise ValueError(f"{product}: {task_id} failed request")
+                if product == "opengrok" and row.get("field") != "full":
+                    raise ValueError(f"{product}: {task_id} used a non-full field")
+                paths = row.get("file_paths_top_10")
             if (
-                type(row.get("http_status")) is not int
-                or row["http_status"] != 200
-                or row.get("error") is not None
+                not isinstance(paths, list)
+                or len(paths) > 10
+                or any(not isinstance(value, str) or not value for value in paths)
+                or len(paths) != len(set(paths))
             ):
-                raise ValueError(f"{product}: {task_id} failed request")
-            if product == "opengrok" and row.get("field") != "full":
-                raise ValueError(f"{product}: {task_id} used a non-full field")
-            paths = row.get("file_paths_top_10")
-        if (
-            not isinstance(paths, list)
-            or len(paths) > 10
-            or any(not isinstance(value, str) or not value for value in paths)
-            or len(paths) != len(set(paths))
-        ):
-            raise ValueError(f"{product}: {task_id} malformed result paths")
-        hit = bool(set(paths) & set(gold))
-        if row.get("file_hit_at_10") is not hit:
-            raise ValueError(f"{product}: {task_id} hit flag differs from paths")
-        hits += hit
-        elapsed.append(row.get("elapsed_ms"))
-        per_query.append(
-            {
-                "task_id": task_id,
-                "file_hit_at_10": hit,
-                "file_recall_at_10": len(set(paths) & set(gold)) / len(gold),
-                "query_latency_ms": row.get("elapsed_ms"),
-            }
-        )
+                raise ValueError(f"{product}: {task_id} malformed result paths")
+            hit = bool(set(paths) & set(gold))
+            if row.get("file_hit_at_10") is not hit:
+                raise ValueError(f"{product}: {task_id} hit flag differs from paths")
+            hits += hit
+            elapsed.append(row.get("elapsed_ms"))
+            per_query.append(
+                {
+                    "task_id": task_id,
+                    "file_hit_at_10": hit,
+                    "file_recall_at_10": len(set(paths) & set(gold)) / len(gold),
+                    "query_latency_ms": row.get("elapsed_ms"),
+                }
+            )
+            metadata_bytes += len(canonical(per_query[-1]))
+            if metadata_bytes > CONTROL_DOCUMENT_BYTES:
+                raise ValueError("lexical result metadata exceeds explicit control byte limit")
+        if len(seen) != len(expected):
+            raise ValueError(f"{product}: incomplete symbol-only lane")
+        return hits, elapsed, per_query
+
+    hits, elapsed, per_query = raw.consume_lines(consume)
     return {
         "hits": hits,
         "tasks": len(expected),
@@ -234,7 +236,7 @@ def product_result(product: str, path: Path, expected: dict[str, tuple[str, list
         / len(expected),
         "per_query": sorted(per_query, key=lambda row: row["task_id"]),
         "latency_ms": latency_summary(elapsed, len(expected), TIMING_LAYERS[product]),
-        "raw_sha256": hashlib.sha256(raw).hexdigest(),
+        "raw_sha256": raw.sha256.removeprefix("sha256:"),
     }
 
 
@@ -326,10 +328,7 @@ def pair_result(
         recalls = [row.get("file_recall_at_10") for row in route_rows]
         flags = [row.get("file_hit_at_10") for row in route_rows]
         if (
-            any(
-                not is_finite_json_number(value) or not 0 <= value <= 1
-                for value in recalls
-            )
+            any(not is_finite_json_number(value) or not 0 <= value <= 1 for value in recalls)
             or any(type(value) is not bool for value in flags)
             or any(flag != (value > 0) for flag, value in zip(flags, recalls, strict=True))
             or abs(math.fsum(recalls) / task_count - recall) > 1e-10

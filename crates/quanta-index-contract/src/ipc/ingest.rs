@@ -877,9 +877,9 @@ impl SearchCorpusIngestBatch {
         }
         self.source_event
             .validate()
-            .map_err(|_| SearchCorpusBatchShapeErrorV1::SourceEventInvalid)?;
+            .map_err(|_invalid| SearchCorpusBatchShapeErrorV1::SourceEventInvalid)?;
         if crate::source_event_payload_sha256(self)
-            .map_err(|_| SearchCorpusBatchShapeErrorV1::SourceEventInvalid)?
+            .map_err(|_invalid| SearchCorpusBatchShapeErrorV1::SourceEventInvalid)?
             != self.source_event.payload_sha256
         {
             return Err(SearchCorpusBatchShapeErrorV1::SourceEventPayloadMismatch);
@@ -938,7 +938,7 @@ pub fn validate_lexical_file_mutations_v1(
         scope
             .coverage
             .validate()
-            .map_err(|_| SearchCorpusSurfaceMutationConflictV1::InvalidCoverage)?;
+            .map_err(|_invalid| SearchCorpusSurfaceMutationConflictV1::InvalidCoverage)?;
         let key = &scope.coverage.source.file;
         if !replace_scope_keys.insert(key) {
             return Err(
@@ -963,8 +963,9 @@ pub fn validate_lexical_file_mutations_v1(
             if chunk.language != scope.coverage.language {
                 return Err(SearchCorpusSurfaceMutationConflictV1::RecordLanguageMismatch);
             }
-            if chunk.end_byte.checked_sub(chunk.start_byte).map(u64::from)
-                != u64::try_from(chunk.text.len()).ok()
+            let text_bytes = u64::try_from(chunk.text.len())
+                .map_err(|_overflow| SearchCorpusSurfaceMutationConflictV1::InvalidRecordRange)?;
+            if chunk.end_byte.checked_sub(chunk.start_byte).map(u64::from) != Some(text_bytes)
                 || chunk.end_line < chunk.start_line
             {
                 return Err(SearchCorpusSurfaceMutationConflictV1::InvalidRecordRange);
@@ -994,15 +995,18 @@ pub fn validate_lexical_file_mutations_v1(
             }
         }
         let count = u64::try_from(scope.symbols.len())
-            .map_err(|_| SearchCorpusSurfaceMutationConflictV1::CoverageUnitMismatch)?;
+            .map_err(|_overflow| SearchCorpusSurfaceMutationConflictV1::CoverageUnitMismatch)?;
         let symbols_match = match scope.coverage.symbols {
             crate::SymbolCoverage::Complete { symbol_count } => symbol_count == count,
-            _ => count == 0,
+            crate::SymbolCoverage::NotRequested
+            | crate::SymbolCoverage::Unsupported
+            | crate::SymbolCoverage::ParseFailed
+            | crate::SymbolCoverage::ProducerFailed => count == 0,
         };
         if !symbols_match
             || (!scope.coverage.text_admitted && !scope.chunks.is_empty())
             || crate::source_file_unit_set_sha256(&scope.chunks, &scope.symbols)
-                .map_err(|_| SearchCorpusSurfaceMutationConflictV1::CoverageUnitMismatch)?
+                .map_err(|_invalid| SearchCorpusSurfaceMutationConflictV1::CoverageUnitMismatch)?
                 != scope.coverage.unit_set_sha256
         {
             return Err(SearchCorpusSurfaceMutationConflictV1::CoverageUnitMismatch);
@@ -1013,7 +1017,7 @@ pub fn validate_lexical_file_mutations_v1(
         scope
             .file
             .validate()
-            .map_err(|_| SearchCorpusSurfaceMutationConflictV1::InvalidCoverage)?;
+            .map_err(|_invalid| SearchCorpusSurfaceMutationConflictV1::InvalidCoverage)?;
         let key = &scope.file;
         if !tombstone_scope_keys.insert(key) {
             return Err(
@@ -4290,27 +4294,38 @@ impl<'de> Deserialize<'de> for StructuralIngestBatch {
     }
 }
 
-// =============================================================================
-// Search-corpus observation request binding
-// =============================================================================
+// Batch-dependent binding helpers live beside the request DTO so transient
+// response observations do not depend back on the ingest request module.
+impl super::SourcePublicationBinding {
+    #[must_use]
+    pub fn for_batch(batch: &SearchCorpusIngestBatch) -> Self {
+        Self {
+            event: batch.source_event.clone(),
+            target: crate::GenerationSnapshot {
+                repo_id: batch.repo_id.clone(),
+                revision_id: batch.revision_id.clone(),
+                track: crate::SearchPlaneTrackKind::Lexical,
+                manifest_generation: batch.generation,
+                manifest_digest: batch.manifest_digest.clone(),
+            },
+            batch_digest: batch.batch_digest.clone(),
+        }
+    }
+}
 
 impl super::SearchCorpusIngestObservation {
-    /// Reject observations from other calls and invalid stage/status claims.
     pub fn validate_for(
         &self,
         request_id: u64,
-        batch: &crate::SearchCorpusIngestBatch,
+        batch: &SearchCorpusIngestBatch,
+        publication: &super::SourcePublicationBinding,
         receipt: &BatchPublishReceipt,
     ) -> Result<(), String> {
         self.validate_identity(
             request_id,
-            &crate::GenerationPin::new(
-                batch.repo_id.clone(),
-                batch.revision_id.clone(),
-                batch.generation,
-            ),
-            &batch.batch_digest,
+            &super::SourcePublicationBinding::for_batch(batch),
             batch.seal,
+            publication,
             receipt,
         )
     }
@@ -4514,6 +4529,10 @@ impl<'de> Deserialize<'de> for SearchPlaneIngestIpcRequest {
 
 /// Typed ingest response payload returned by `ingest.sock`.
 #[derive(Clone, Debug, PartialEq)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "wire payloads retain the existing by-value API; boxing adds allocation and changes construction across unrelated ingest routes"
+)]
 pub enum SearchPlaneIngestIpcResponse {
     SearchCorpusReceipt(super::SearchCorpusPublishOutcome),
     HistoryReceipt(BatchPublishReceipt),
@@ -5645,7 +5664,16 @@ mod tests {
         batch.tombstone_scopes.clear();
         batch.replace_scopes[0].chunks[0].repo_relative_path =
             RepoRelativePath::new("src/other.rs");
-        assert!(batch.validate_surface_mutations_v1().is_err());
+        let scope = &mut batch.replace_scopes[0];
+        scope.coverage.unit_set_sha256 =
+            crate::source_file_unit_set_sha256(&scope.chunks, &scope.symbols)
+                .expect("fixture units encode");
+        assert_eq!(
+            batch.validate_surface_mutations_v1(),
+            Err(SearchCorpusSurfaceMutationConflictV1::RecordPathMismatch(
+                SearchScopeSurface::Chunk
+            ))
+        );
     }
 
     #[test]
@@ -5984,21 +6012,26 @@ mod tests {
         let envelope = SearchPlaneIngestIpcResponseEnvelope {
             request_id: 3,
             payload: SearchPlaneIngestIpcResponse::SearchCorpusReceipt(
-                BatchPublishReceipt {
-                    generation: ManifestGeneration::new(1),
-                    manifest_digest: Some("digest-lex".to_string()),
-                    batch_digest: "batch:fixture".to_string(),
-                    applied: true,
-                    durable_sequence: 7,
-                    semantic_content: None,
-                    accepted_replace_scopes: 1,
-                    accepted_tombstone_scopes: 0,
-                    accepted_semantic_replace_scopes: 0,
-                    accepted_semantic_tombstone_scopes: 0,
-                    accepted_clear_surfaces: 0,
-                    sealed: true,
-                }
-                .into(),
+                crate::SearchCorpusPublishOutcome {
+                    publication: crate::SourcePublicationBinding::for_batch(
+                        &fixture_search_corpus_batch(),
+                    ),
+                    observation: None,
+                    receipt: BatchPublishReceipt {
+                        generation: ManifestGeneration::new(1),
+                        manifest_digest: Some("digest-lex".to_string()),
+                        batch_digest: "batch:fixture".to_string(),
+                        applied: true,
+                        durable_sequence: 7,
+                        semantic_content: None,
+                        accepted_replace_scopes: 1,
+                        accepted_tombstone_scopes: 0,
+                        accepted_semantic_replace_scopes: 0,
+                        accepted_semantic_tombstone_scopes: 0,
+                        accepted_clear_surfaces: 0,
+                        sealed: true,
+                    },
+                },
             ),
         };
         let bytes = encode(&envelope)?;

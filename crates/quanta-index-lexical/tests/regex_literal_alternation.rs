@@ -19,13 +19,15 @@
 
 #![forbid(unsafe_code)]
 
+#[path = "support/source_fixture.rs"]
+mod source_fixture;
+
 use std::error::Error;
 
 use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
-    BatchIngestMode, ChunkId, ChunkRecord, LQ_VERSION_TAG, LqExpr, LqLeaf, LqOptions, LqQuery,
-    LqSpan, ManifestGeneration, RepoId, RepoRelativePath, RevisionId, SearchCorpusIngestBatch,
-    SearchCorpusReplaceScope, SearchScopeKey, SearchScopeSurface,
+    ChunkId, ChunkRecord, LQ_VERSION_TAG, LqExpr, LqLeaf, LqOptions, LqQuery, LqSpan,
+    ManifestGeneration, RepoId, RepoRelativePath, RevisionId, SearchCorpusReplaceScope,
 };
 use quanta_index_core::{
     LexicalIndexOpenPort, LexicalSearcher, RequestBudgetV1, SearchCorpusBatchBuildPort,
@@ -73,15 +75,14 @@ fn scope(
     chunk_id: &str,
     body: &str,
 ) -> Result<SearchCorpusReplaceScope, Box<dyn Error>> {
-    Ok(SearchCorpusReplaceScope {
-        scope: SearchScopeKey {
-            doc_surface: SearchScopeSurface::File,
-            repo_relative_path: RepoRelativePath::new(path),
-        },
-        scope_digest: format!("scope:{path}"),
-        chunks: vec![chunk(path, chunk_id, body)?],
-        symbols: Vec::new(),
-    })
+    Ok(source_fixture::complete_file(
+        source_fixture::file_key(&repo(), path),
+        &revision(),
+        LanguageCode::new("rust").map_err(str::to_string)?,
+        body.as_bytes(),
+        vec![chunk(path, chunk_id, body)?],
+        Vec::new(),
+    )?)
 }
 
 /// One sealed generation holding `(path, chunk_id, body)` rows.
@@ -91,22 +92,12 @@ fn build(adapter: &LexicalAdapter, rows: &[(&str, &str, &str)]) -> TestResult {
     for (path, chunk_id, body) in rows {
         replace_scopes.push(scope(path, chunk_id, body)?);
     }
-    adapter.build_batch(&SearchCorpusIngestBatch {
-        repo_id: repo(),
-        revision_id: revision(),
+    adapter.build_batch(&source_fixture::sealed_batch(
+        &repo(),
+        &revision(),
         generation,
-        base_generation: None,
-        manifest_digest: "regex-alternation-manifest".to_string(),
-        batch_digest: "regex-alternation-batch".to_string(),
-        mode: BatchIngestMode::ReplaceGeneration,
-        bundle_payload: None,
-        clear_surfaces: Vec::new(),
         replace_scopes,
-        tombstone_scopes: Vec::new(),
-        semantic_replace_scopes: Vec::new(),
-        semantic_tombstone_scopes: Vec::new(),
-        seal: true,
-    })?;
+    )?)?;
     Ok(())
 }
 

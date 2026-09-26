@@ -22,7 +22,7 @@ def test_command_timings_separate_execution_and_custody(monkeypatch, tmp_path):
         ),
     )
     commands = []
-    assert proof._run("example", [sys.executable], tmp_path, commands) == b"out"
+    assert proof._run("example", [sys.executable], tmp_path, commands).read_control() == b"out"
     timing = json.loads((tmp_path / "example.timing.json").read_bytes())
     assert timing == {
         "schema_version": 1,

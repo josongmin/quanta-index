@@ -16,7 +16,8 @@
 //!    [`RegexErrorCode::ParseFail`];
 //! 4. run [`crate::dialect::dialect_filter`] over the HIR;
 //! 5. estimate NFA states via [`crate::estimate_nfa_states`];
-//! 6. compile with `regex::bytes::Regex::new`, wrapping `regex::Error`
+//! 6. remove unobserved explicit captures, then compile with
+//!    `regex::bytes::Regex::new`, wrapping `regex::Error`
 //!    into [`RegexErrorCode::ExecutionInternal`].
 //!
 //! Verify path: [`RegexExecutor::verify`] calls
@@ -30,6 +31,7 @@
 //! [`RegexErrorCode::Interrupted`] when it answers `true`.
 
 use core::time::Duration;
+use std::borrow::Cow;
 use std::time::Instant;
 
 use quanta_index_lq_trigram::{DocId, DocResolver};
@@ -101,7 +103,12 @@ impl RegexExecutor {
         let hir = parse_hir(pattern)?;
         dialect_filter(&hir)?;
         let _estimated: u64 = estimate_nfa_states(&hir)?;
-        let compiled = regex::bytes::Regex::new(pattern).map_err(|e| {
+        // Only boolean truth and whole-match ranges escape this executor.
+        // Backreferences are forbidden, so explicit capture storage cannot
+        // affect either result. Keeping it grows the engine's per-state cache
+        // with every capture, even when the actual source focus is tiny.
+        let execution_pattern = without_explicit_captures(pattern, &hir)?;
+        let compiled = regex::bytes::Regex::new(&execution_pattern).map_err(|e| {
             RegexError::new(
                 RegexErrorCode::ExecutionInternal,
                 format!("regex::Regex::new rejected pattern: {e}"),
@@ -262,9 +269,59 @@ impl RegexExecutor {
     }
 }
 
+/// Drop capture storage that is unobservable through truth and whole-match APIs.
+fn without_explicit_captures<'a>(pattern: &'a str, hir: &Hir) -> Result<Cow<'a, str>, RegexError> {
+    if hir.properties().explicit_captures_len() == 0 {
+        return Ok(Cow::Borrowed(pattern));
+    }
+    let mut ast = regex_syntax::ast::parse::Parser::new()
+        .parse(pattern)
+        .map_err(|error| {
+            RegexError::new(
+                RegexErrorCode::ExecutionInternal,
+                format!("validated regex AST could not be reconstructed: {error}"),
+            )
+        })?;
+    erase_capture_storage(&mut ast);
+    Ok(Cow::Owned(ast.to_string()))
+}
+
+fn erase_capture_storage(ast: &mut regex_syntax::ast::Ast) {
+    use regex_syntax::ast::{Ast, Flags, GroupKind};
+    match ast {
+        Ast::Group(group) => {
+            if group.is_capturing() {
+                group.kind = GroupKind::NonCapturing(Flags {
+                    span: group.span,
+                    items: Vec::new(),
+                });
+            }
+            erase_capture_storage(&mut group.ast);
+        }
+        Ast::Repetition(repetition) => erase_capture_storage(&mut repetition.ast),
+        Ast::Concat(concat) => {
+            for child in &mut concat.asts {
+                erase_capture_storage(child);
+            }
+        }
+        Ast::Alternation(alternation) => {
+            for child in &mut alternation.asts {
+                erase_capture_storage(child);
+            }
+        }
+        Ast::Empty(_)
+        | Ast::Flags(_)
+        | Ast::Literal(_)
+        | Ast::Dot(_)
+        | Ast::Assertion(_)
+        | Ast::ClassUnicode(_)
+        | Ast::ClassPerl(_)
+        | Ast::ClassBracketed(_) => {}
+    }
+}
+
 /// Parse `pattern` through `regex_syntax`, translating AST-stage
-/// rejections into typed [`RegexErrorCode::ForbiddenSyntax`] where
-/// applicable.
+/// rejections into typed [`RegexErrorCode::ForbiddenSyntax`] where applicable.
 fn parse_hir(pattern: &str) -> Result<Hir, RegexError> {
     match regex_syntax::parse(pattern) {
         Ok(h) => Ok(h),
@@ -342,6 +399,57 @@ mod tests {
     use crate::errors::{ForbiddenKind, RegexErrorCode};
     use quanta_index_lq_trigram::{DocId, DocResolver};
     use std::collections::BTreeMap;
+
+    #[test]
+    fn l4_capture_heavy_matcher_retains_only_whole_match_slots()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // This valid expression has a six-byte focus but hundreds of optional
+        // captures. The executor never exposes those capture groups; retaining
+        // them makes the engine's per-state capture tables grow quadratically.
+        let pattern = format!("needle{}", "(a?)".repeat(512));
+        let executor = RegexExecutor::compile(&pattern)?;
+        assert_eq!(executor.pattern(), pattern);
+        assert_eq!(executor.compiled.captures_len(), 1);
+        assert!(executor.verify(b"needle"));
+        assert_eq!(
+            executor
+                .find_ranges_bounded(b"needle", 6, 2, &|| false)?
+                .ranges,
+            vec![0..6]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn l4_unobserved_capture_removal_preserves_reference_ranges()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for pattern in [
+            "(ab|a)+",
+            "(?i:(?<named>é))",
+            "(x?)(y*)",
+            "(?x)(a) # comment\n (b)",
+            "((?:)?)",
+            "(?i)(K)(ſ)",
+        ] {
+            let reference = regex::bytes::Regex::new(pattern)?;
+            let executor = RegexExecutor::compile(pattern)?;
+            for source in ["ababa", "É é", "xxyyy", "ab", "", "\u{212a}S", "é"] {
+                let expected: Vec<_> = reference
+                    .find_iter(source.as_bytes())
+                    .map(|m| m.range())
+                    .collect();
+                let actual =
+                    executor.find_ranges_bounded(source.as_bytes(), 128, 128, &|| false)?;
+                assert!(actual.exhausted);
+                assert_eq!(actual.ranges, expected, "{pattern:?} on {source:?}");
+                assert_eq!(
+                    executor.verify(source.as_bytes()),
+                    reference.is_match(source.as_bytes())
+                );
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn l4_ranges_share_case_and_pattern_semantics() -> Result<(), Box<dyn std::error::Error>> {

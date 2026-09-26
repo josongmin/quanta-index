@@ -19,6 +19,9 @@ type TestResult = Result<(), Box<dyn Error>>;
 )]
 fn candidate(id: &str) -> LexicalCandidate {
     LexicalCandidate {
+        source_repo_id: RepoId::new("r").expect("static fixture ID satisfies canonical policy"),
+        source: None,
+        preview: None,
         candidate_id: id.to_string(),
         repo_id: RepoId::new("r").expect("static fixture ID satisfies canonical policy"),
         revision_id: RevisionId::new("v").expect("static fixture ID satisfies canonical policy"),

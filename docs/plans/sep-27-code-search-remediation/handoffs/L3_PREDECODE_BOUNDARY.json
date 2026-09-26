@@ -1,0 +1,35 @@
+{
+  "status": "VERIFIED",
+  "boundary": "native ranked-key predecode allocation",
+  "owner": "vendor/tantivy-sstable Dictionary<VoidSSTable>::ord_to_term_budgeted",
+  "evidence_run": "rr-owner-final-4",
+  "inputs": {
+    "Cargo.toml": "a00e8dbd972a051c9b70decbd2359bcca40b638d8eaaf04e9316762f85cac462",
+    "Cargo.lock": "05044065eae52f79a67378cfa995414c08f77e6910e30bd8bb36dae92ef362d5",
+    "crates/quanta-index-lexical/src/ranked_page.rs": "c2ff0cbae991ad3db1f02ba426ca546bd948897b710b9d6ea89759994873e3f7",
+    "crates/quanta-index-lexical/src/ranked_page_tests.rs": "d8264f034cabe1cc68e0259ec0bd3fabcea3d3cb33404819c55acc5dad019654",
+    "vendor/tantivy-sstable/src/dictionary.rs": "cdda481d7b24fa936eb2696a30915bc38d25715beaedb5534b18e180e9bae6ec",
+    "vendor/tantivy-sstable/src/block_reader.rs": "ca5a5ced91ab138145c9ec185899e72a63669393c2ace897b4a05aa71f062465",
+    "vendor/tantivy-sstable/src/delta.rs": "f87a2980410e00e0be95a92618ad43824055847ab150c25ff8810156e47cbf73",
+    "vendor/tantivy-sstable/src/vint.rs": "c3faa73baf4bed33f963db92fabb994f8f4819d6241d32bb9ae767aaad03de6f"
+  },
+  "admission": [
+    "encoded block IO",
+    "bounded decode buffers and one bulk zstd context",
+    "exact retained output with lifetime guard"
+  ],
+  "malformed_rejection": [
+    "unknown or overflowing bounds",
+    "bad block header/compression flag",
+    "truncated or overflowing key varints",
+    "prefix outside reconstructed key",
+    "suffix past block end"
+  ],
+  "excluded": [
+    "Allocator metadata/realloc internals and process RSS",
+    "Query preparation/native caches/manual scan materialization/required output payloads",
+    "Generic Boolean pruning performance; TermQuery native WAND is covered",
+    "Unselected suites, daemon installation, deployment, ranking quality and holdout metrics"
+  ],
+  "supersedes": "Prior blocked status based on the unmodified upstream ordinal API; no persistent producer key limit was invented."
+}

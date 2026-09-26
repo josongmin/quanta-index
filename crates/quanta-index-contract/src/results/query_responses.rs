@@ -268,7 +268,7 @@ macro_rules! impl_symbol_candidate_serde {
 impl_symbol_candidate_serde!(SYMBOL_CANDIDATE_FIELDS, SymbolCandidateVisitor);
 
 impl SymbolCandidate {
-    /// Check identity agreement; source bytes and rendering are verified by the reader.
+    /// Check identity and emitted-byte consistency; immutable bytes remain reader-owned.
     pub fn validate_source_metadata(&self) -> Result<(), &'static str> {
         if let Some(source) = &self.source {
             if source.file.source_repo_id != self.source_repo_id {
@@ -280,7 +280,7 @@ impl SymbolCandidate {
             }
         }
         if let Some(preview) = &self.preview {
-            preview.validate()?;
+            preview.validate_emission(&self.snippet)?;
             if preview.source != self.source
                 && (preview.unavailable_reason.is_none() || preview.source.is_some())
             {

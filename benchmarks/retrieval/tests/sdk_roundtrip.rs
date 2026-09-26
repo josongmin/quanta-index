@@ -1156,6 +1156,10 @@ fn actual_preflight_binary_reports_all_files_before_strict_refusal() {
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
+        assert_eq!(output.status.code(), Some(if success { 0 } else { 2 }));
+        if !success {
+            assert!(String::from_utf8_lossy(&output.stderr).contains("symbol preflight refused"));
+        }
         let report: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&report_path).expect("complete report"))
                 .expect("JSON");
@@ -1209,6 +1213,10 @@ fn incomplete_symbol_profile_publishes_malformed_text_and_refuses_symbol_authori
         &[
             ("a.ts", "function sentinel() {}"),
             ("empty.ts", ""),
+            ("notes.md", "unsupportedmarker source text"),
+            ("notes.txt", "plaintextmarker source text"),
+            ("LICENSE", "extensionlessmarker source text"),
+            ("opaque.custom", "unclassifiedmarker source text"),
             ("z.ts", "invalid code"),
         ],
     );
@@ -1247,11 +1255,14 @@ fn incomplete_symbol_profile_publishes_malformed_text_and_refuses_symbol_authori
         },
     )
     .expect("explicit incomplete admission");
-    assert_eq!(assembly.scopes, 3);
+    assert_eq!(assembly.scopes, 7);
     assert_eq!(assembly.empty_scopes, ["empty.ts"]);
     let state = tempfile::tempdir().expect("state");
     let session = boot_session(&state.path().join("daemon"), &identity);
-    publish_and_activate(&session, &batch, &identity, None).expect("publish source facts");
+    let (receipt, _activation, observation) =
+        publish_and_activate(&session, &batch, &identity, None).expect("publish source facts");
+    assert_eq!(receipt.accepted_replace_scopes, 7);
+    assert_eq!(observation.repo_id, identity.repo_id);
     let query = |route, text| {
         query_route(&RouteQuery {
             client: session.client(),
@@ -1265,17 +1276,55 @@ fn incomplete_symbol_profile_publishes_malformed_text_and_refuses_symbol_authori
         })
     };
     let lexical = query("lexical", "invalid");
-    let symbols = query("symbol", "sentinel");
+    let unsupported_text = query("lexical", "unsupportedmarker");
+    let plain_text = [
+        ("notes.txt", query("lexical", "plaintextmarker")),
+        ("LICENSE", query("lexical", "extensionlessmarker")),
+        ("opaque.custom", query("lexical", "unclassifiedmarker")),
+    ];
+    let narrow = query("symbol", "path:a.ts sentinel");
+    let empty = query("symbol", "path:empty.ts sentinel");
+    let refusals = [
+        ("symbol", "sentinel"),
+        ("symbol", "path:z.ts absent"),
+        ("lexical", "select:symbol sentinel"),
+        ("lexical", "type:symbol sentinel"),
+    ]
+    .map(|(route, text)| (route, text, query(route, text)));
     session.stop().expect("stop");
     let QueryOutcome::ReturnedWindow { hits, .. } = lexical else {
         panic!("malformed source text must remain searchable: {lexical:?}");
     };
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].path, "z.ts");
-    assert!(
-        matches!(symbols, QueryOutcome::SdkFailure { ref code, .. } if code == "SYMBOL_COVERAGE_INCOMPLETE"),
-        "{symbols:?}"
-    );
+    let QueryOutcome::ReturnedWindow { hits, .. } = unsupported_text else {
+        panic!("unsupported-language source must remain searchable: {unsupported_text:?}");
+    };
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].path, "notes.md");
+    for (path, outcome) in plain_text {
+        let QueryOutcome::ReturnedWindow { hits, .. } = outcome else {
+            panic!("admitted plain source must remain searchable: {outcome:?}");
+        };
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].path, path);
+    }
+    let QueryOutcome::ReturnedWindow { hits, .. } = narrow else {
+        panic!("complete narrow symbol scope must remain queryable: {narrow:?}");
+    };
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].path, "a.ts");
+    let QueryOutcome::ReturnedWindow { hits, window, .. } = empty else {
+        panic!("complete zero-symbol scope must be an ordinary empty result: {empty:?}");
+    };
+    assert!(hits.is_empty());
+    assert!(window.outcome().is_exhausted());
+    for (route, text, outcome) in refusals {
+        assert!(
+            matches!(outcome, QueryOutcome::SdkFailure { ref code, .. } if code == "SYMBOL_COVERAGE_INCOMPLETE"),
+            "{route} {text}: {outcome:?}"
+        );
+    }
 }
 
 #[test]
@@ -1361,62 +1410,98 @@ fn actual_runner_binary_emits_receipt_bound_v5_record() {
     let metrics_out = evidence.join("phase-metrics.json");
     let refusal_out = evidence.join("query-plan-refusal.json");
     let state = evidence.join("state");
-    let output = Command::new(&runner)
-        .args([
-            "run",
-            "--repo",
-            repo.to_str().expect("repo path"),
-            "--manifest",
-            manifest_path.to_str().expect("manifest path"),
-            "--strategy",
-            "whole_file",
-            "--query-pack",
-            pack_path.to_str().expect("pack path"),
-            "--routes",
-            "lexical,semantic,hybrid",
-            "--query-input-policy",
-            "native",
-            "--top-k",
-            "10",
-            "--state-root",
-            state.to_str().expect("state path"),
-            "--searchd-bin",
-            searchd.to_str().expect("searchd path"),
-            "--searchd-expected-sha256",
-            &searchd_digest,
-            "--embedder",
-            EMBEDDER,
-            "--repo-id",
-            "runner-binary-repo",
-            "--revision-id",
-            &commit,
-            "--generation",
-            "1",
-            "--runner-name",
-            "quanta-sdk-runner",
-            "--runner-revision",
-            &format!("sha256:{runner_digest}"),
-            "--run-id",
-            "actual-runner-binary",
-            "--blinding",
-            "attested",
-            "--isolation-method",
-            "test-fixture-no-gold-mounted",
-            "--access-block-log",
-            "attested-fixture-pack-only",
-            "--out",
-            out.to_str().expect("output path"),
-            "--diagnostics-out",
-            diagnostic_out.to_str().expect("diagnostic path"),
-            "--experimental-hybrid-fetch-floor",
-            "50",
-            "--metrics-out",
-            metrics_out.to_str().expect("metrics path"),
-            "--refusal-out",
-            refusal_out.to_str().expect("refusal path"),
-        ])
-        .output()
-        .expect("runner starts");
+    let mut command = Command::new(&runner);
+    let _command = command.args([
+        "run",
+        "--repo",
+        repo.to_str().expect("repo path"),
+        "--manifest",
+        manifest_path.to_str().expect("manifest path"),
+        "--strategy",
+        "whole_file",
+        "--query-pack",
+        pack_path.to_str().expect("pack path"),
+        "--routes",
+        "lexical,semantic,hybrid",
+        "--query-input-policy",
+        "native",
+        "--top-k",
+        "10",
+        "--state-root",
+        state.to_str().expect("state path"),
+        "--searchd-bin",
+        searchd.to_str().expect("searchd path"),
+        "--searchd-expected-sha256",
+        &searchd_digest,
+        "--embedder",
+        EMBEDDER,
+        "--repo-id",
+        "runner-binary-repo",
+        "--revision-id",
+        &commit,
+        "--generation",
+        "1",
+        "--runner-name",
+        "quanta-sdk-runner",
+        "--runner-revision",
+        &format!("sha256:{runner_digest}"),
+        "--run-id",
+        "actual-runner-binary",
+        "--blinding",
+        "attested",
+        "--isolation-method",
+        "test-fixture-no-gold-mounted",
+        "--access-block-log",
+        "attested-fixture-pack-only",
+        "--out",
+        out.to_str().expect("output path"),
+        "--diagnostics-out",
+        diagnostic_out.to_str().expect("diagnostic path"),
+        "--experimental-hybrid-fetch-floor",
+        "50",
+        "--metrics-out",
+        metrics_out.to_str().expect("metrics path"),
+        "--refusal-out",
+        refusal_out.to_str().expect("refusal path"),
+    ]);
+    let sibling = evidence.join("sibling");
+    std::fs::create_dir(&sibling).expect("sibling dir");
+    let mut aliases = vec![sibling.join("../record.json"), state.clone()];
+    #[cfg(unix)]
+    {
+        let parent_alias = fixture.path().join("evidence-alias");
+        std::os::unix::fs::symlink(&evidence, &parent_alias).expect("parent alias");
+        aliases.push(parent_alias.join("phase-metrics.json"));
+    }
+    for alias in aliases {
+        let refused = Command::new(&runner)
+            .args(command.get_args())
+            .arg("--symbol-preflight-out")
+            .arg(&alias)
+            .output()
+            .expect("conflicting output probe starts");
+        assert_eq!(refused.status.code(), Some(2));
+        assert!(
+            String::from_utf8_lossy(&refused.stderr)
+                .contains("must differ from every other output/state path"),
+            "unexpected refusal: {}",
+            String::from_utf8_lossy(&refused.stderr)
+        );
+        for path in [
+            &out,
+            &metrics_out,
+            &diagnostic_out,
+            &refusal_out,
+            &state,
+            &alias,
+        ] {
+            assert!(
+                !path.exists(),
+                "conflict must refuse before creating {path:?}"
+            );
+        }
+    }
+    let output = command.output().expect("runner starts");
     assert!(
         output.status.success(),
         "runner failed: stdout={} stderr={}",
@@ -1449,6 +1534,40 @@ fn actual_runner_binary_emits_receipt_bound_v5_record() {
     let metrics: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&metrics_out).expect("phase metrics bytes"))
             .expect("phase metrics JSON");
+    let preflight_bytes = std::fs::read(
+        evidence.join(
+            metrics["symbol_preflight_out"]
+                .as_str()
+                .expect("preflight artifact path"),
+        ),
+    )
+    .expect("preflight artifact bytes");
+    assert_eq!(
+        metrics["symbol_preflight_sha256"],
+        sha256_hex(&preflight_bytes)
+    );
+    let preflight: serde_json::Value =
+        serde_json::from_slice(&preflight_bytes).expect("preflight JSON");
+    assert_eq!(preflight["preflight"]["admitted_files"], universe.len());
+    assert_eq!(preflight["preflight"]["incomplete_files"], 0);
+    assert_eq!(metrics["symbol_coverage_policy"], "require-complete");
+    assert_eq!(metrics["symbol_incomplete_files"], 0);
+    assert!(
+        metrics["phases_ms"]["symbol_preflight"]
+            .as_f64()
+            .is_some_and(|value| value >= 0.0)
+    );
+    let phase_sum = metrics["phases_ms"]
+        .as_object()
+        .expect("phase ledger")
+        .values()
+        .map(|value| value.as_f64().expect("measured phase"))
+        .sum::<f64>();
+    let total = metrics["total_ms"].as_f64().expect("overall measured time");
+    assert!(
+        (phase_sum - total).abs() <= total.max(1.0) * 1e-9,
+        "phase ledger must account for each duration once: sum={phase_sum} total={total}"
+    );
     let coverage = metrics["symbol_coverage"]
         .as_array()
         .expect("per-file symbol coverage");

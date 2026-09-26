@@ -489,6 +489,7 @@ fn retention_missing_active_history_preserves_activation_and_empty_history_v1() 
         let _activation = catalog.activate_prepared_under_guard_v1(
             &guard,
             &PreparedSearchCorpusGenerationV1::new(active.clone(), None)?,
+            None,
         )?;
     }
     let history_before =
@@ -536,6 +537,7 @@ fn retention_active_digest_mismatch_preserves_activation_and_history_v1() -> Tes
         let _activation = catalog.activate_prepared_under_guard_v1(
             &guard,
             &PreparedSearchCorpusGenerationV1::new(active.clone(), None)?,
+            None,
         )?;
     }
     let history_before =
@@ -621,6 +623,7 @@ fn retention_required_set_exhaustion_preserves_activation_and_history_v1() -> Te
         let _activation = catalog.activate_prepared_under_guard_v1(
             &guard,
             &PreparedSearchCorpusGenerationV1::new(active.clone(), None)?,
+            None,
         )?;
     }
     let history_before = search_corpus_history_file_names_v1(&store, &repo, &revision)?;
@@ -681,6 +684,7 @@ fn retention_preserves_rolled_back_active_generation_before_next_activation_v1()
         let activation = catalog.activate_prepared_under_guard_v1(
             &guard,
             &PreparedSearchCorpusGenerationV1::new(generation_two, None)?,
+            None,
         )?;
         drop(guard);
         let guard = coordinator.lock_pair(&repo, &revision)?;

@@ -58,9 +58,10 @@ impl TantivySearcher {
 
     /// The projection a text query's `select:`/`type:` filter asks for.
     ///
-    /// `select:repo` keeps one row for the generation's repository; a path
+    /// `select:repo` keeps one row per source repository; a path
     /// or file projection (`select:path`, `select:file`, `select:file.owners`,
-    /// `type:path`) keeps one row per path. With both, the coarser wins.
+    /// `type:path`) keeps one row per (source repository, path). With both,
+    /// the coarser projection wins.
     pub(crate) fn projection_group(query: &LqQuery) -> Option<ProjectionGroup> {
         if Self::projects_repo_surface(query) {
             Some(ProjectionGroup::Repo)

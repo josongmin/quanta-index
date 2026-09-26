@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import hashlib
 import io
 import json
 import os
@@ -47,7 +46,14 @@ from compare_dsl_bench import (  # noqa: E402
     require_complete_baseline_candidate,
     require_no_pending_admission,
 )
-from evidence import EvidenceError, RunStore, digest_bytes  # noqa: E402
+from evidence import (  # noqa: E402
+    EvidenceError,
+    RawFile,
+    RunStore,
+    _read_control_file,
+    digest_of,
+    file_digest,
+)
 from manifest import DEFAULT_MANIFEST_PATH, ManifestError, load_manifest  # noqa: E402
 from registry import load_registry, registry_digest  # noqa: E402
 
@@ -305,8 +311,8 @@ def admit_dsl_baselines(
     if names != ["dsl-warm", "dsl-cold"]:
         raise RuntimeError("DSL baseline admission requires the exact warm/cold family pair")
     try:
-        current_receipt_digest = hashlib.sha256(receipt.read_bytes()).hexdigest()
-    except OSError as exc:
+        current_receipt_digest = file_digest(receipt)[0].removeprefix("sha256:")
+    except (OSError, ValueError) as exc:
         raise RuntimeError(f"DSL preflight receipt disappeared: {exc}") from exc
     if current_receipt_digest != preflight_digest:
         raise RuntimeError("DSL preflight receipt changed during capture")
@@ -326,20 +332,16 @@ def admit_dsl_baselines(
             raise RuntimeError(f"DSL baseline family {name!r} has no exact artifact/baseline pair")
         artifact_path = repo_root / relative_artifact
         try:
-            descriptor = os.open(artifact_path, os.O_RDONLY | os.O_NOFOLLOW)
-            with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
-                artifact_stat = os.fstat(handle.fileno())
-                if not stat.S_ISREG(artifact_stat.st_mode):
-                    raise RuntimeError(f"DSL artifact is not a regular file: {artifact_path}")
-                if min(artifact_stat.st_mtime_ns, artifact_stat.st_ctime_ns) < capture_started_ns:
-                    raise RuntimeError(f"DSL artifact was not written by this run: {artifact_path}")
-                content = handle.read()
-                if _file_identity(os.fstat(handle.fileno())) != _file_identity(artifact_stat):
-                    raise RuntimeError(f"DSL artifact changed while reading: {artifact_path}")
+            artifact_stat = artifact_path.lstat()
+            if not stat.S_ISREG(artifact_stat.st_mode):
+                raise RuntimeError(f"DSL artifact is not a regular file: {artifact_path}")
+            if min(artifact_stat.st_mtime_ns, artifact_stat.st_ctime_ns) < capture_started_ns:
+                raise RuntimeError(f"DSL artifact was not written by this run: {artifact_path}")
+            content = _read_control_file(artifact_path).decode("utf-8")
             current_stat = artifact_path.lstat()
             if _file_identity(current_stat) != _file_identity(artifact_stat):
                 raise RuntimeError(f"DSL artifact changed after reading: {artifact_path}")
-        except (OSError, UnicodeError) as exc:
+        except (OSError, ValueError) as exc:
             raise RuntimeError(f"fresh DSL artifact unreadable: {artifact_path}: {exc}") from exc
         try:
             artifact = load_artifact(artifact_path, role="baseline candidate", content=content)
@@ -365,8 +367,8 @@ def admit_dsl_baselines(
         if current_identity != identity:
             raise RuntimeError(f"DSL artifact changed during admission: {artifact_path}")
     try:
-        final_receipt_digest = hashlib.sha256(receipt.read_bytes()).hexdigest()
-    except OSError as exc:
+        final_receipt_digest = file_digest(receipt)[0].removeprefix("sha256:")
+    except (OSError, ValueError) as exc:
         raise RuntimeError(f"DSL preflight receipt disappeared: {exc}") from exc
     if final_receipt_digest != preflight_digest:
         raise RuntimeError("DSL preflight receipt changed during admission")
@@ -398,8 +400,8 @@ def publish_dsl_baseline_pair(prepared: list[tuple[Path, str]]) -> None:
         if not stat.S_ISREG(destination_stat.st_mode):
             raise RuntimeError(f"DSL baseline is not a regular file: {destination}")
         try:
-            prior[destination] = destination.read_text(encoding="utf-8")
-        except (OSError, UnicodeError) as exc:
+            prior[destination] = _read_control_file(destination).decode("utf-8")
+        except (OSError, ValueError) as exc:
             raise RuntimeError(f"cannot preserve DSL baseline {destination}: {exc}") from exc
 
     try:
@@ -457,7 +459,7 @@ def publish_dsl_baseline_pair(prepared: list[tuple[Path, str]]) -> None:
 def require_clean_preflight_receipt(receipt: Path, profile: str) -> None:
     """A diagnostic contention override cannot qualify a benchmark run."""
     try:
-        payload = _strict_json_bytes(receipt.read_bytes())
+        payload = _strict_json_bytes(_read_control_file(receipt))
     except (OSError, ValueError) as exc:
         raise RuntimeError(f"cannot read timing preflight receipt {receipt}: {exc}") from exc
     if not isinstance(payload, dict) or (
@@ -572,8 +574,8 @@ def summarize(repo_root: Path, profile: dict[str, object], manifest: dict[str, o
         artifacts: list[dict[str, object]] = []
         for path in paths:
             try:
-                payload = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError) as exc:
+                payload = json.loads(_read_control_file(path))
+            except (OSError, ValueError) as exc:
                 artifacts.append({"path": str(path.relative_to(repo_root)), "error": str(exc)})
                 continue
             if not isinstance(payload, dict):
@@ -805,13 +807,16 @@ def replay_command(repo_root: Path, reference: str, evidence_root: Path | None) 
         checker = _load_lint_module(repo_root)
         family = native_families[evidence["family"]]
         artifacts = []
+        if len(evidence["raw"]) > checker.native_artifact_limit(evidence["family"]):
+            print("ERROR: replay native inventory exceeds registered count", file=sys.stderr)
+            return 2
         for reference in evidence["raw"]:
             native = run_dir / reference["path"]
             if native.suffix != ".json":
                 print("ERROR: replay native artifact is not JSON", file=sys.stderr)
                 return 2
             try:
-                artifact = checker.parse_artifact_bytes(native.read_bytes())
+                artifact = checker.parse_artifact_bytes(_read_control_file(native))
             except (OSError, ValueError, json.JSONDecodeError) as exc:
                 print(f"ERROR: replay cannot parse native raw {native}: {exc}", file=sys.stderr)
                 return 2
@@ -906,10 +911,13 @@ def _capture_native_family(
 ):
     from evidence_bridge import native_payload_from_artifacts
 
-    paths = sorted(repo_root.glob(entry["artifact_glob"]))
+    checker = _load_lint_module(repo_root)
+    paths = checker.expand(
+        repo_root, entry["artifact_glob"], limit=checker.native_artifact_limit(family)
+    )
     if not paths:
         raise EvidenceError(f"family {family!r} has no artifact")
-    checker, captures, artifacts = None, [], []
+    captures, artifacts = [], []
     for path in paths:
         if (
             path.is_symlink()
@@ -918,12 +926,10 @@ def _capture_native_family(
             or path.stat().st_mtime_ns < capture_started_ns
         ):
             raise EvidenceError(f"artifact is not fresh regular output: {path}")
-        raw = path.read_bytes()
-        if validated_artifacts.get(path.relative_to(repo_root).as_posix()) != digest_bytes(raw):
+        raw = RawFile.capture(path)
+        if validated_artifacts.get(path.relative_to(repo_root).as_posix()) != raw.sha256:
             raise EvidenceError(f"artifact changed after validation: {path}")
-        if checker is None:
-            checker = _load_lint_module(repo_root)
-        artifact = checker.parse_artifact_bytes(raw)
+        artifact = checker.parse_artifact_bytes(raw.read_control())
         refusals = checker.check_artifact(
             artifact,
             dimension=family,
@@ -955,7 +961,6 @@ def promote_profile_runs(
     execution: dict[str, object] | None = None,
 ) -> int:
     """Publish exactly one complete native profile; latest is advisory only."""
-    from evidence import digest_bytes, write_raw_file
     from evidence_bridge import (
         host_identity,
         source_identity,
@@ -973,11 +978,11 @@ def promote_profile_runs(
     hostname = socket.gethostname() or "unknown"
     try:
         require_clean_preflight_receipt(receipt, profile_name)
-        receipt_bytes = receipt.read_bytes()
-    except (RuntimeError, OSError) as exc:
+        receipt_digest, _ = file_digest(receipt)
+    except (RuntimeError, OSError, ValueError) as exc:
         print(f"ERROR: cannot read clean benchmark preflight receipt: {exc}", file=sys.stderr)
         return 2
-    if digest_bytes(receipt_bytes) != preflight_digest:
+    if receipt_digest != preflight_digest:
         print("ERROR: benchmark preflight receipt changed during capture", file=sys.stderr)
         return 2
     lease_mode = "shared"
@@ -1026,26 +1031,21 @@ def promote_profile_runs(
         if any(a.get("detail", {}).get("passed") is False for a in artifacts):
             verdict_status = "fail"
             verdict_reason = "rail verdict false"
-        run_id = f"{family}-{stamp}-{digest_bytes(b''.join(raw for _, raw in captures))[7:15]}"
+        inventory_digest = digest_of([[path.name, raw.sha256, raw.size] for path, raw in captures])
+        run_id = f"{family}-{stamp}-{inventory_digest[7:15]}"
         try:
             prepared_run = dict(
                 run_id=run_id,
                 family=family,
                 profile=profile_name,
                 created_utc=created,
-                raw_files={
-                    native.name: write_raw_file(
-                        evidence_root / "work" / f"{profile_name}-{stamp}" / family / native.name,
-                        [content],
-                    )
-                    for native, content in captures
-                },
+                raw_files={native.name: raw for native, raw in captures},
                 payload=payload,
                 source=source,
                 build={
                     "toolchain": _toolchain_identity(repo_root),
                     "target_triple": f"{sys.platform}-{platform.machine()}",
-                    "lockfile_digest": digest_bytes((repo_root / "Cargo.lock").read_bytes()),
+                    "lockfile_digest": file_digest(repo_root / "Cargo.lock")[0],
                     "profile": "producer-recipe",
                     "flags": [],
                     "binaries": [],
@@ -1226,14 +1226,20 @@ def snapshot_profile_artifacts(
     repo_root: Path, profile_name: str, manifest: dict[str, object]
 ) -> dict[str, str]:
     """Freeze the exact native bytes accepted before a comparator runs."""
-    from evidence import digest_bytes
-
     families = manifest["families"]
     selected = manifest["profiles"][profile_name]["families"]
     assert isinstance(families, dict)
     frozen: dict[str, str] = {}
+    checker = _load_lint_module(repo_root)
     for family in selected:
-        paths = sorted(repo_root.glob(families[family]["artifact_glob"]))
+        try:
+            paths = checker.expand(
+                repo_root,
+                families[family]["artifact_glob"],
+                limit=checker.native_artifact_limit(family),
+            )
+        except ValueError as exc:
+            raise RuntimeError(f"cannot freeze native inventory: {exc}") from exc
         if not paths:
             raise RuntimeError(f"family {family!r} has no validated artifact")
         for path in paths:
@@ -1249,8 +1255,8 @@ def snapshot_profile_artifacts(
                     f"artifact belongs to multiple profile families: {relative_path}"
                 )
             try:
-                frozen[relative_path] = digest_bytes(path.read_bytes())
-            except OSError as exc:
+                frozen[relative_path] = file_digest(path)[0]
+            except (OSError, ValueError) as exc:
                 raise RuntimeError(f"cannot freeze artifact {path}: {exc}") from exc
     return frozen
 
@@ -1924,11 +1930,11 @@ def main(argv: list[str] | None = None) -> int:
         try:
             require_clean_preflight_receipt(receipt, args.profile)
             require_frozen_source(repo_root, initial_head)
-            preflight_digest = hashlib.sha256(receipt.read_bytes()).hexdigest()
+            preflight_digest = file_digest(receipt)[0].removeprefix("sha256:")
         except RuntimeError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 2
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             print(f"ERROR: timing preflight receipt disappeared: {exc}", file=sys.stderr)
             return 2
         recipes = profile["recipes"]
@@ -1970,13 +1976,12 @@ def main(argv: list[str] | None = None) -> int:
         }
     evidence_root = resolve_evidence_root(getattr(args, "evidence_root", None))
     if args.command == "validate" and evidence_root is not None:
-        from evidence import digest_bytes
         from evidence_bridge import source_identity
 
         try:
             require_clean_worktree(repo_root)
             expected_source = source_identity(repo_root, "benchmark-control-plane")
-            expected_lock = digest_bytes((repo_root / "Cargo.lock").read_bytes())
+            expected_lock = file_digest(repo_root / "Cargo.lock")[0]
         except (RuntimeError, EvidenceError, OSError) as exc:
             print(f"ERROR: cannot establish current validation identity: {exc}", file=sys.stderr)
             return 2

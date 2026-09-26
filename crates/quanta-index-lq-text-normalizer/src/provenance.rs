@@ -75,7 +75,8 @@ impl<'a> MappedText<'a> {
     /// decomposition, NFC scalar origins and folded scalar origins, including
     /// temporaries. [`Self::allocation_bound`] supplies a conservative bound for
     /// caller reservations, including the library's normalization buffers.
-    /// Canonical-order sorts are in-place and cancellation is checked around
+    /// Owner canonical-order sorts are in-place; the library's stable-sort
+    /// scratch is included in the reservation. Cancellation is checked around
     /// each bounded normalization segment. One library iterator step/sort is
     /// not preemptible; raw input bytes and entries limit that work.
     pub fn new(
@@ -177,15 +178,23 @@ impl<'a> MappedText<'a> {
     /// Conservative requested-heap-capacity bound, not an RSS measurement.
     ///
     /// Canonical decompositions are bounded before NFC iteration. Each of the
-    /// library's two normalization buffers holds at most that many scalars.
+    /// library's two normalization buffers holds at most that many scalars,
+    /// with capacity growth below twice the scalar count. Decomposition stores
+    /// `(u8, char)` entries; recomposition stores `char` entries.
+    /// The pinned Rust stable sort also requests at most one decomposition
+    /// entry per scalar as heap scratch (small sorts use stack storage).
     /// Entry capacities across all owner vectors sum to `max_entries`; output
     /// string capacity is at most `max_bytes`. Extra space covers small inline
     /// buffers and per-scalar case temporaries. Overflow refuses reservation.
     #[must_use]
     pub fn allocation_bound(max_bytes: usize, max_entries: usize) -> Option<usize> {
+        let normalization_bytes = core::mem::size_of::<(u8, char)>()
+            .checked_add(core::mem::size_of::<char>())?
+            .checked_mul(2)?
+            .checked_add(core::mem::size_of::<(u8, char)>())?;
         let entry_bytes = core::mem::size_of::<Decomposed>()
             .max(core::mem::size_of::<ScalarOrigin>())
-            .checked_add(core::mem::size_of::<char>().checked_mul(2)?)?;
+            .checked_add(normalization_bytes)?;
         max_entries
             .checked_mul(entry_bytes)?
             .checked_add(max_bytes)?
@@ -500,6 +509,24 @@ mod tests {
             Err(MappingError::Interrupted)
         ));
         assert!(MappedText::allocation_bound(usize::MAX, 1).is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn l4_long_combining_segment_preserves_fixed_reordering_intervals() -> Result<(), MappingError>
+    {
+        // 8,193 scalars exercise the library's heap-backed stable sort. The
+        // golden is independent: grave (CCC 230) precedes comma-above-right
+        // (CCC 232), and the first grave composes with the leading ASCII a.
+        let raw = format!("a{}", "\u{315}\u{300}".repeat(4096));
+        let indexed = format!("à{}{}", "\u{300}".repeat(4095), "\u{315}".repeat(4096));
+        let mapped = MappedText::new(&raw, &indexed, CaseMode::Sensitive, 32_768, 65_536, &|| {
+            false
+        })?;
+        assert_eq!(mapped.text(), indexed);
+        assert_eq!(mapped.source_range(0..2)?, 0..5);
+        assert_eq!(mapped.source_range(8192..8194)?, 1..3);
+        assert_eq!(mapped.source_range(0..indexed.len())?, 0..raw.len());
         Ok(())
     }
 

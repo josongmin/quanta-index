@@ -25,10 +25,10 @@ mod preflight;
 use preflight::ExtractionControl;
 pub use preflight::{
     SymbolCoveragePolicy, SymbolFileDiagnostic, SymbolFileReport, SymbolPreflight,
-    SymbolPreflightOptions, SymbolPreflightReport, preflight_corpus_symbols,
+    SymbolPreflightOptions, SymbolPreflightPolicy, SymbolPreflightReport, preflight_corpus_symbols,
 };
 
-/// Pinned grammar identity bound into every scope digest (batch.rs). The
+/// Pinned grammar identity bound into every producer policy. The
 /// versions mirror the workspace lockfile; changing a grammar changes the
 /// digest and invalidates frozen evidence.
 pub const SYMBOL_PRODUCER_GRAMMARS: &str = concat!(
@@ -40,6 +40,10 @@ pub const SYMBOL_PRODUCER_GRAMMARS: &str = concat!(
     "typescript@0.23.2+quanta-typescript-compatibility-1;vendored-source-sha256=",
     env!("QI_TYPESCRIPT_GRAMMAR_SHA256"),
 );
+
+// Refuse compilation against an unpatched registry dependency. Hashing a local
+// vendor directory alone must not claim that those bytes were linked.
+const _: &str = tree_sitter_typescript::QUANTA_COMPATIBILITY_PATCH_ID;
 
 /// Producer identity for batch digests.
 pub const SYMBOL_PRODUCER_IDENTITY: &str = "source-bound-symbols-v2";
@@ -192,6 +196,7 @@ impl SymbolLanguage {
                 "function_declaration"
                 | "generator_function_declaration"
                 | "function_item"
+                | "function_signature_item"
                 | "function_definition",
             ) => Some(if container_is_type {
                 "method"
@@ -352,6 +357,7 @@ fn go_receiver_type(def_node: Node<'_>, source: &str) -> Result<String, SymbolEx
 
 const RUST_QUERY: &str = r"
 (function_item name: (identifier) @name) @def
+(trait_item body: (declaration_list (function_signature_item name: (identifier) @name) @def))
 (struct_item name: (type_identifier) @name) @def
 (enum_item name: (type_identifier) @name) @def
 (trait_item name: (type_identifier) @name) @def
@@ -374,7 +380,7 @@ const JAVASCRIPT_QUERY: &str = r"
 (function_declaration name: (identifier) @name) @def
 (generator_function_declaration name: (identifier) @name) @def
 (class_declaration name: (identifier) @name) @def
-(method_definition name: (property_identifier) @name) @def
+(method_definition name: [(property_identifier) (private_property_identifier)] @name) @def
 ";
 
 const TYPESCRIPT_QUERY: &str = r"
@@ -760,12 +766,15 @@ pub fn extract_corpus_symbols(
     let preflight = preflight_corpus_symbols(files, &SymbolPreflightOptions::default())?;
     preflight
         .admit(SymbolCoveragePolicy::RequireComplete)
-        .map_err(|error| match error {
-            crate::BenchError::Chunk { path, message } => crate::BenchError::Chunk {
-                path,
-                message: format!("symbol extraction coverage failure: {message}"),
-            },
-            other => other,
+        .map_err(|error| {
+            if let crate::BenchError::Chunk { path, message } = error {
+                crate::BenchError::Chunk {
+                    path,
+                    message: format!("symbol extraction coverage failure: {message}"),
+                }
+            } else {
+                error
+            }
         })?;
     Ok(CorpusSymbolExtraction {
         symbols: preflight.into_symbols(),
@@ -1000,7 +1009,7 @@ mod tests {
                 .err()
                 .expect("forged source hash must abort")
                 .to_string()
-                .contains("symbol source path/hash/text differs")
+                .contains("symbol source path/hash/text/line model differs")
         );
     }
 
@@ -1087,6 +1096,14 @@ mod tests {
     fn rust_trait_methods_are_methods_and_body_fns_stay_functions() {
         let source = "trait Store {\n    fn load(&self);\n}\nimpl Store for u8 {\n    fn load(&self) {\n        let helper = || 1;\n        fn nested() {}\n    }\n}\n";
         let records = extract_symbols("src/store.rs", source).expect("rust parses");
+        assert_eq!(records.len(), 4, "trait, trait method, impl method, local fn");
+        for name in ["Store::load", "u8::load"] {
+            let method = records
+                .iter()
+                .find(|record| qualified(record) == name)
+                .expect("each distinct method definition must be present");
+            assert_eq!(method.symbol_kind.as_str(), "method");
+        }
         assert_eq!(
             find(&records, "load").symbol_kind.as_str(),
             "method",

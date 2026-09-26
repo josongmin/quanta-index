@@ -18,10 +18,11 @@ from evidence import (
     EvidenceError,
     RawFile,
     RunStore,
-    _read_regular_file,
+    _read_control_file,
     _run_id,
     canonical_json,
     digest_bytes,
+    file_digest,
     parse_json,
     validate_payload,
     write_raw_file,
@@ -78,7 +79,7 @@ def proof_payload(native: Path, context: dict, source: dict) -> dict:
         if context["rail"] == "sdk"
         else ["contract_python_results.json", "contract_rust_results.json"]
     )
-    summaries = [parse_json(_read_regular_file(native / name).decode()) for name in names]
+    summaries = [parse_json(_read_control_file(native / name).decode()) for name in names]
     for summary in summaries:
         if not isinstance(summary, dict) or any(
             type(summary.get(key)) is not int
@@ -94,7 +95,7 @@ def proof_payload(native: Path, context: dict, source: dict) -> dict:
             )
         ):
             raise EvidenceError("proof summary is incomplete or failed")
-    closure = parse_json(_read_regular_file(native / "source-closure.json").decode())
+    closure = parse_json(_read_control_file(native / "source-closure.json").decode())
     if (
         not isinstance(closure, dict)
         or context.get("revision") != source["revision"]
@@ -110,7 +111,7 @@ def proof_payload(native: Path, context: dict, source: dict) -> dict:
         },
         "source_digest": source["closure_digest"],
         "execution_context_digest": digest_bytes(
-            _read_regular_file(native / "execution-context.json")
+            _read_control_file(native / "execution-context.json")
         ),
     }
     validate_payload(payload)
@@ -128,7 +129,7 @@ def replay_run(store: RunStore, evidence: dict) -> None:
     ):
         raise EvidenceError("retrieval proof family/profile/payload mismatch")
     raw = store.run_dir(evidence["run_id"]) / "raw"
-    origin = parse_json(_read_regular_file(raw / "capture-origin.json").decode())
+    origin = parse_json(_read_control_file(raw / "capture-origin.json").decode())
     if not isinstance(origin, dict) or set(origin) != {"capture_id", "execution_root", "producer"}:
         raise EvidenceError("retrieval proof origin is malformed")
     _run_id(origin["capture_id"])
@@ -139,7 +140,7 @@ def replay_run(store: RunStore, evidence: dict) -> None:
         raise EvidenceError("retrieval proof origin has no absolute execution root")
     if not evidence["run_id"].startswith(origin["capture_id"] + "-"):
         raise EvidenceError("retrieval proof mixes captures")
-    context = parse_json(_read_regular_file(raw / "execution-context.json").decode())
+    context = parse_json(_read_control_file(raw / "execution-context.json").decode())
     if not isinstance(context, dict) or not isinstance(context.get("binaries"), dict):
         raise EvidenceError("retrieval proof context is malformed")
     if context.get("rail") != RAILS[family] or origin["producer"] != evidence["command"]:
@@ -151,7 +152,7 @@ def replay_run(store: RunStore, evidence: dict) -> None:
     ]:
         raise EvidenceError("retrieval proof command differs from the registered producer")
     expected_binaries = set(
-        portable_proof.selected_test_binaries(_read_regular_file(raw / "rust-collection.stdout"))
+        portable_proof.selected_test_binaries(_read_control_file(raw / "rust-collection.stdout"))
     ) | ({"runner", "searchd"} if RAILS[family] == "sdk" else set())
     if set(context["binaries"]) != expected_binaries:
         raise EvidenceError("retrieval proof binary role inventory is malformed")
@@ -163,7 +164,7 @@ def replay_run(store: RunStore, evidence: dict) -> None:
     )
     if proof_payload(raw, checked, evidence["source"]) != evidence["payload"]:
         raise EvidenceError("retrieval proof typed counts differ from raw evidence")
-    closure = parse_json(_read_regular_file(raw / "source-closure.json").decode())
+    closure = parse_json(_read_control_file(raw / "source-closure.json").decode())
     expected_inputs = {
         "execution-context": evidence["payload"]["execution_context_digest"],
         "native-source": "sha256:" + closure["digest"],
@@ -231,7 +232,7 @@ def capture(repo: Path, root: Path, registry: dict, timeout: int) -> dict:
         if context["rail"] != RAILS[family]:
             raise EvidenceError("retrieval producer emitted the wrong rail")
         require_frozen_source(repo, head)
-        closure = parse_json(_read_regular_file(native / "source-closure.json").decode())
+        closure = parse_json(_read_control_file(native / "source-closure.json").decode())
         if "sha256:" + closure["digest"] != native_source["closure_digest"]:
             raise EvidenceError(
                 "native proof source closure differs from the frozen producer source"
@@ -291,7 +292,7 @@ def capture(repo: Path, root: Path, registry: dict, timeout: int) -> dict:
             build={
                 "toolchain": context["tools"]["rustc"]["version"],
                 "target_triple": target_identity(context),
-                "lockfile_digest": digest_bytes((repo / "Cargo.lock").read_bytes()),
+                "lockfile_digest": file_digest(repo / "Cargo.lock")[0],
                 "profile": "proof",
                 "flags": portable_proof.FLAGS,
                 "binaries": [
@@ -349,7 +350,7 @@ def validate(repo: Path, root: Path, registry: dict) -> dict:
         if not record["run_id"].startswith(document["capture_id"] + "-"):
             raise EvidenceError("retrieval proof profile mixes captures")
         evidence = store.load(record["run_id"])
-        if evidence["build"]["lockfile_digest"] != digest_bytes((repo / "Cargo.lock").read_bytes()):
+        if evidence["build"]["lockfile_digest"] != file_digest(repo / "Cargo.lock")[0]:
             raise EvidenceError("retrieval proof lockfile is stale")
         replay_run(store, evidence)
     return document

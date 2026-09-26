@@ -59,6 +59,9 @@ fn symbol_hits_project_into_all_overlapping_chunks_deterministically()
     ])?;
     let buckets = symbol_hits_to_structural_buckets(
         vec![SymbolCandidate {
+            source_repo_id: RepoId::new("repo-map-ipc").expect("fixture source repo"),
+            source: None,
+            preview: None,
             candidate_id: "symbol-hit-1".to_string(),
             repo_id: RepoId::new("repo-map-ipc")
                 .expect("static fixture ID satisfies canonical policy"),

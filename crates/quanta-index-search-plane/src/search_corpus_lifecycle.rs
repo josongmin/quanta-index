@@ -622,9 +622,8 @@ mod tests {
         SnapshotRegistries, SnapshotRegistryPolicy,
     };
     use quanta_index_core::{
-        CoreError, IdempotencyCatalogPort, LexicalIndexOpenPort, LexicalSearcher,
-        OperationInspectV1, RequestBudgetV1, SemanticIndexOpenPort, SemanticSearcher,
-        SourcePublicationCatalogPort,
+        CoreError, LexicalIndexOpenPort, LexicalSearcher, RequestBudgetV1, SemanticIndexOpenPort,
+        SemanticSearcher,
     };
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -667,6 +666,18 @@ mod tests {
     }
 
     impl LexicalIndexOpenPort for EchoLexicalOpener {
+        fn preflight_query_primitives(
+            &self,
+            plan: &quanta_index_core::ValidatedLexicalPlan,
+            budget: &quanta_index_core::RequestBudgetV1,
+        ) -> Result<(), CoreError> {
+            quanta_index_lexical::planner::LexicalPlanner::validate_query_primitives(
+                plan,
+                &quanta_index_lexical::regex::RegexPolicy::defaults(),
+                budget,
+            )
+        }
+
         fn open(
             &self,
             _repo: &RepoId,

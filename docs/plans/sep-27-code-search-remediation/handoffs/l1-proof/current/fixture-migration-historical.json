@@ -1,0 +1,107 @@
+{
+  "after": {
+    "dirty": " M benchmarks/retrieval/build.rs\n M benchmarks/retrieval/proof-required-tests.json\n M benchmarks/retrieval/src/batch.rs\n M benchmarks/retrieval/src/main.rs\n M benchmarks/retrieval/src/symbols.rs\n M benchmarks/retrieval/src/symbols/preflight.rs\n M benchmarks/retrieval/tests/sdk_roundtrip.rs\n M crates/quanta-index-contract/src/ipc/ingest_observation.rs\n M crates/quanta-index-contract/tests/hybrid_candidate_contract.rs\n M crates/quanta-index-contract/tests/ipc_query_result_v2_contract.rs\n M crates/quanta-index-contract/tests/lexical_cursor_contract.rs\n M crates/quanta-index-core/tests/hybrid_policy.rs\n M crates/quanta-index-lexical/src/searcher/snippets.rs\n M crates/quanta-index-lexical/tests/cancellation_inside_search.rs\n M crates/quanta-index-lexical/tests/execution_budget.rs\n M crates/quanta-index-lexical/tests/explain_candidate.rs\n M crates/quanta-index-lexical/tests/l2_file_mutation.rs\n M crates/quanta-index-lexical/tests/planner_authority.rs\n M crates/quanta-index-lexical/tests/ranked_pages.rs\n M crates/quanta-index-lexical/tests/regex_cache_bounds.rs\n M crates/quanta-index-lexical/tests/regex_literal_alternation.rs\n M crates/quanta-index-lexical/tests/tantivy_smoke.rs\n M crates/quanta-index-lexical/tests/unicode_normalization_goldens.rs\n M crates/quanta-index-lq-text-normalizer/src/tokens.rs\n M crates/quanta-index-sdk/src/tests.rs\n M crates/quanta-index-sdk/tests/sdk_binding_owner_v1.rs\n M crates/quanta-index-search-plane/src/auxiliary_authority.rs\n M crates/quanta-index-search-plane/src/ingest_dispatcher/tests/idempotency.rs\n M crates/quanta-index-search-plane/src/query_dispatcher/tests/l1_query_domain_window.rs\n M crates/quanta-index-search-plane/src/readiness/activation_catalog.rs\n M crates/quanta-index-search-plane/src/readiness/activation_catalog/source_events.rs\n M crates/quanta-index-search-plane/src/readiness/activation_catalog/tests.rs\n M crates/quanta-index-search-plane/src/readiness/ledger_apply.rs\n M crates/quanta-index-search-plane/src/readiness/structural_state.rs\n M crates/quanta-index-search-plane/src/readiness/tests/mod.rs\n M crates/quanta-index-search-plane/src/readiness/tests/support.rs\n M crates/quanta-index-searchctl/src/lib.rs\n M crates/quanta-index-searchctl/tests/cli_smoke.rs\n M docs/build-resource-budget.md\n M docs/plans/sep-27-code-search-remediation/handoffs/L2_HANDOFF.md\n M docs/plans/sep-27-code-search-remediation/handoffs/L2_HANDOFF.source.json\n M docs/plans/sep-27-code-search-remediation/handoffs/L3_HANDOFF.md\n M docs/plans/sep-27-code-search-remediation/handoffs/L3_HANDOFF.source.json\n M docs/plans/sep-27-code-search-remediation/handoffs/L4_HANDOFF.md\n M docs/plans/sep-27-code-search-remediation/handoffs/L5_HANDOFF.md\n M docs/plans/sep-27-code-search-remediation/handoffs/L5_HANDOFF.source.json\n M docs/plans/sep-27-misc/tickets/INDEX.md\n M tools/benchmark/raw_archive.py\n M tools/ci/test-authority.toml\n M tools/ci/tests/test_bench_protocol_conformance.py\n M tools/ci/tests/test_pair_capture.py\n M vendor/tree-sitter-typescript/QUANTA.md\n M vendor/tree-sitter-typescript/bindings/rust/lib.rs\n M vendor/tree-sitter-typescript/quanta-provenance.json\n?? crates/quanta-index-lexical/tests/support/\n?? crates/quanta-index-search-plane/src/readiness/tests/source_file_chunks.rs\n?? docs/plans/sep-27-code-search-remediation/handoffs/L5_TEST_MIGRATION.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/L5_VENDOR_MANIFEST.json\n",
+    "files": {
+      "crates/quanta-index-lexical/tests/cancellation_inside_search.rs": "72781bfe0d73d803ad41eee242451c9291af4569bd0b796cbe6d9e0f622ac9e9",
+      "crates/quanta-index-lexical/tests/execution_budget.rs": "8b86d3333f99a7be506fbe53612231950d243e827bb85984104e08776b25cb62",
+      "crates/quanta-index-lexical/tests/explain_candidate.rs": "f178d3094edf7487a3081a4d9b8da9173f04c9b290ce24ad02aaa2c9612e7514",
+      "crates/quanta-index-lexical/tests/planner_authority.rs": "a79502e1112ba2eb72ed76d6d1fb6845bee036b129a794a76da7105d4615c108",
+      "crates/quanta-index-lexical/tests/ranked_pages.rs": "d5371b9d38c224a9b2a2df6770a15d754f756fc5ef20de6286bdd641955f6674",
+      "crates/quanta-index-lexical/tests/regex_cache_bounds.rs": "016d278718753423752f38c9581846d9d8f71120dde44ed05c266d725bfaecea",
+      "crates/quanta-index-lexical/tests/regex_literal_alternation.rs": "49e9de4bb9acea361afc77569b54e6defcc2195b317662139724b2a4205faaa9",
+      "crates/quanta-index-lexical/tests/support/op_fixture.rs": "d46ef947e562ad8be856c3f969126d76009709f9246a05dcf58129a2336f515d",
+      "crates/quanta-index-lexical/tests/support/source_fixture.rs": "8747b7d9ad8d76f6b841729b89cf681e8fdf45265579d8376edfab914f6674cf",
+      "crates/quanta-index-lexical/tests/tantivy_smoke.rs": "b606c556f4a1f179ee8b05928f38f25d18977f0d46c0ebee891d54439f30b0be",
+      "crates/quanta-index-lexical/tests/unicode_normalization_goldens.rs": "0913199d088923d8ab185901c439c5ae6df073e85b02626e879789d58476a10a",
+      "crates/quanta-index-search-plane/src/query_dispatcher/tests/l1_query_domain_window.rs": "4b1f298c69537c6b0134201f6c0323c70387b60aec93b29581bae82cb179fc3e"
+    },
+    "head": "98601a66d8cab9c86232b3e62ce490c8b43b71b6"
+  },
+  "before": {
+    "dirty": " M benchmarks/retrieval/build.rs\n M benchmarks/retrieval/proof-required-tests.json\n M benchmarks/retrieval/src/batch.rs\n M benchmarks/retrieval/src/main.rs\n M benchmarks/retrieval/src/symbols.rs\n M benchmarks/retrieval/src/symbols/preflight.rs\n M benchmarks/retrieval/tests/sdk_roundtrip.rs\n M crates/quanta-index-contract/src/ipc/ingest_observation.rs\n M crates/quanta-index-contract/tests/hybrid_candidate_contract.rs\n M crates/quanta-index-contract/tests/ipc_query_result_v2_contract.rs\n M crates/quanta-index-contract/tests/lexical_cursor_contract.rs\n M crates/quanta-index-core/tests/hybrid_policy.rs\n M crates/quanta-index-lexical/src/searcher/snippets.rs\n M crates/quanta-index-lexical/tests/cancellation_inside_search.rs\n M crates/quanta-index-lexical/tests/execution_budget.rs\n M crates/quanta-index-lexical/tests/explain_candidate.rs\n M crates/quanta-index-lexical/tests/l2_file_mutation.rs\n M crates/quanta-index-lexical/tests/planner_authority.rs\n M crates/quanta-index-lexical/tests/ranked_pages.rs\n M crates/quanta-index-lexical/tests/regex_cache_bounds.rs\n M crates/quanta-index-lexical/tests/regex_literal_alternation.rs\n M crates/quanta-index-lexical/tests/tantivy_smoke.rs\n M crates/quanta-index-lexical/tests/unicode_normalization_goldens.rs\n M crates/quanta-index-lq-text-normalizer/src/tokens.rs\n M crates/quanta-index-sdk/src/tests.rs\n M crates/quanta-index-sdk/tests/sdk_binding_owner_v1.rs\n M crates/quanta-index-search-plane/src/auxiliary_authority.rs\n M crates/quanta-index-search-plane/src/ingest_dispatcher/tests/idempotency.rs\n M crates/quanta-index-search-plane/src/query_dispatcher/tests/l1_query_domain_window.rs\n M crates/quanta-index-search-plane/src/readiness/activation_catalog.rs\n M crates/quanta-index-search-plane/src/readiness/activation_catalog/source_events.rs\n M crates/quanta-index-search-plane/src/readiness/activation_catalog/tests.rs\n M crates/quanta-index-search-plane/src/readiness/ledger_apply.rs\n M crates/quanta-index-search-plane/src/readiness/structural_state.rs\n M crates/quanta-index-search-plane/src/readiness/tests/mod.rs\n M crates/quanta-index-search-plane/src/readiness/tests/support.rs\n M crates/quanta-index-searchctl/src/lib.rs\n M crates/quanta-index-searchctl/tests/cli_smoke.rs\n M docs/build-resource-budget.md\n M docs/plans/sep-27-code-search-remediation/handoffs/L2_HANDOFF.md\n M docs/plans/sep-27-code-search-remediation/handoffs/L2_HANDOFF.source.json\n M docs/plans/sep-27-code-search-remediation/handoffs/L3_HANDOFF.md\n M docs/plans/sep-27-code-search-remediation/handoffs/L3_HANDOFF.source.json\n M docs/plans/sep-27-code-search-remediation/handoffs/L4_HANDOFF.md\n M docs/plans/sep-27-code-search-remediation/handoffs/L5_HANDOFF.md\n M docs/plans/sep-27-code-search-remediation/handoffs/L5_HANDOFF.source.json\n M docs/plans/sep-27-misc/tickets/INDEX.md\n M tools/benchmark/raw_archive.py\n M tools/ci/test-authority.toml\n M tools/ci/tests/test_bench_protocol_conformance.py\n M tools/ci/tests/test_pair_capture.py\n M vendor/tree-sitter-typescript/QUANTA.md\n M vendor/tree-sitter-typescript/bindings/rust/lib.rs\n M vendor/tree-sitter-typescript/quanta-provenance.json\n?? crates/quanta-index-lexical/tests/support/\n?? crates/quanta-index-search-plane/src/readiness/tests/source_file_chunks.rs\n?? docs/plans/sep-27-code-search-remediation/handoffs/L5_TEST_MIGRATION.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/L5_VENDOR_MANIFEST.json\n",
+    "files": {
+      "crates/quanta-index-lexical/tests/cancellation_inside_search.rs": "72781bfe0d73d803ad41eee242451c9291af4569bd0b796cbe6d9e0f622ac9e9",
+      "crates/quanta-index-lexical/tests/execution_budget.rs": "8b86d3333f99a7be506fbe53612231950d243e827bb85984104e08776b25cb62",
+      "crates/quanta-index-lexical/tests/explain_candidate.rs": "f178d3094edf7487a3081a4d9b8da9173f04c9b290ce24ad02aaa2c9612e7514",
+      "crates/quanta-index-lexical/tests/planner_authority.rs": "a79502e1112ba2eb72ed76d6d1fb6845bee036b129a794a76da7105d4615c108",
+      "crates/quanta-index-lexical/tests/ranked_pages.rs": "d5371b9d38c224a9b2a2df6770a15d754f756fc5ef20de6286bdd641955f6674",
+      "crates/quanta-index-lexical/tests/regex_cache_bounds.rs": "016d278718753423752f38c9581846d9d8f71120dde44ed05c266d725bfaecea",
+      "crates/quanta-index-lexical/tests/regex_literal_alternation.rs": "49e9de4bb9acea361afc77569b54e6defcc2195b317662139724b2a4205faaa9",
+      "crates/quanta-index-lexical/tests/support/op_fixture.rs": "d46ef947e562ad8be856c3f969126d76009709f9246a05dcf58129a2336f515d",
+      "crates/quanta-index-lexical/tests/support/source_fixture.rs": "8747b7d9ad8d76f6b841729b89cf681e8fdf45265579d8376edfab914f6674cf",
+      "crates/quanta-index-lexical/tests/tantivy_smoke.rs": "b606c556f4a1f179ee8b05928f38f25d18977f0d46c0ebee891d54439f30b0be",
+      "crates/quanta-index-lexical/tests/unicode_normalization_goldens.rs": "0913199d088923d8ab185901c439c5ae6df073e85b02626e879789d58476a10a",
+      "crates/quanta-index-search-plane/src/query_dispatcher/tests/l1_query_domain_window.rs": "4b1f298c69537c6b0134201f6c0323c70387b60aec93b29581bae82cb179fc3e"
+    },
+    "head": "98601a66d8cab9c86232b3e62ce490c8b43b71b6"
+  },
+  "behavioral_test_status": "NOT_RUN",
+  "checks": [
+    {
+      "command": [
+        "rustfmt",
+        "--check",
+        "--edition",
+        "2024",
+        "--config",
+        "skip_children=true",
+        "crates/quanta-index-lexical/tests/tantivy_smoke.rs",
+        "crates/quanta-index-lexical/tests/execution_budget.rs",
+        "crates/quanta-index-lexical/tests/ranked_pages.rs",
+        "crates/quanta-index-lexical/tests/planner_authority.rs",
+        "crates/quanta-index-lexical/tests/explain_candidate.rs",
+        "crates/quanta-index-lexical/tests/regex_literal_alternation.rs",
+        "crates/quanta-index-lexical/tests/regex_cache_bounds.rs",
+        "crates/quanta-index-lexical/tests/unicode_normalization_goldens.rs",
+        "crates/quanta-index-lexical/tests/cancellation_inside_search.rs",
+        "crates/quanta-index-lexical/tests/support/source_fixture.rs",
+        "crates/quanta-index-lexical/tests/support/op_fixture.rs",
+        "crates/quanta-index-search-plane/src/query_dispatcher/tests/l1_query_domain_window.rs"
+      ],
+      "exit_code": 0,
+      "raw_output": "/tmp/quanta-l1-green.diz44g/fixture-static/check-0.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--check",
+        "--",
+        "crates/quanta-index-lexical/tests/tantivy_smoke.rs",
+        "crates/quanta-index-lexical/tests/execution_budget.rs",
+        "crates/quanta-index-lexical/tests/ranked_pages.rs",
+        "crates/quanta-index-lexical/tests/planner_authority.rs",
+        "crates/quanta-index-lexical/tests/explain_candidate.rs",
+        "crates/quanta-index-lexical/tests/regex_literal_alternation.rs",
+        "crates/quanta-index-lexical/tests/regex_cache_bounds.rs",
+        "crates/quanta-index-lexical/tests/unicode_normalization_goldens.rs",
+        "crates/quanta-index-lexical/tests/cancellation_inside_search.rs",
+        "crates/quanta-index-lexical/tests/support/source_fixture.rs",
+        "crates/quanta-index-lexical/tests/support/op_fixture.rs",
+        "crates/quanta-index-search-plane/src/query_dispatcher/tests/l1_query_domain_window.rs"
+      ],
+      "exit_code": 0,
+      "raw_output": "/tmp/quanta-l1-green.diz44g/fixture-static/check-1.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "classification": "VERIFIED",
+  "platform": "macOS-15.6-arm64-arm-64bit",
+  "reason": "L0 retains serialized Rust execution slot and shared core source freeze; no slot transfer received. User disabled cross-task messaging.",
+  "rustfmt": "rustfmt 1.8.0-stable (ded5c06cf2 2025-12-08)",
+  "scope": "Rust formatting/parser check and whitespace only for the listed 12 edited Rust files. No Rust compilation or behavioral tests executed.",
+  "static_test_counts": {
+    "crates/quanta-index-lexical/tests/cancellation_inside_search.rs": 3,
+    "crates/quanta-index-lexical/tests/execution_budget.rs": 4,
+    "crates/quanta-index-lexical/tests/explain_candidate.rs": 4,
+    "crates/quanta-index-lexical/tests/planner_authority.rs": 7,
+    "crates/quanta-index-lexical/tests/ranked_pages.rs": 5,
+    "crates/quanta-index-lexical/tests/regex_cache_bounds.rs": 4,
+    "crates/quanta-index-lexical/tests/regex_literal_alternation.rs": 2,
+    "crates/quanta-index-lexical/tests/tantivy_smoke.rs": 37,
+    "crates/quanta-index-lexical/tests/unicode_normalization_goldens.rs": 8,
+    "crates/quanta-index-search-plane/src/query_dispatcher/tests/l1_query_domain_window.rs": 10
+  },
+  "time_unix": 1790456740.195036
+}

@@ -213,6 +213,10 @@ fn semantic_scope() -> TextQueryRequest {
 )]
 fn lexical_candidate() -> LexicalCandidate {
     LexicalCandidate {
+        source_repo_id: RepoId::new("repo-1")
+            .expect("static fixture ID satisfies canonical policy"),
+        source: None,
+        preview: None,
         candidate_id: "cand-1".to_owned(),
         repo_id: RepoId::new("repo-1").expect("static fixture ID satisfies canonical policy"),
         revision_id: RevisionId::new("rev-1")
@@ -254,6 +258,9 @@ fn hybrid_candidate() -> HybridCandidateV1 {
 
 fn symbol_candidate() -> Result<SymbolCandidate, Box<dyn std::error::Error>> {
     Ok(SymbolCandidate {
+        source_repo_id: RepoId::new("repo-1")?,
+        source: None,
+        preview: None,
         candidate_id: "sym-1".to_owned(),
         repo_id: RepoId::new("repo-1")?,
         revision_id: RevisionId::new("rev-1")?,
@@ -1308,6 +1315,8 @@ fn search_plane_ipc_response_v2_roundtrips_file_owner_projection_rows() -> TestR
         results: vec![lexical_candidate()],
         window: QueryResultWindowV2::exact_probe(1),
         file_owner_rows: Some(vec![quanta_index_contract::FileOwnerProjectionRow {
+            source_repo_id: RepoId::new("repo-1")
+                .expect("static fixture ID satisfies canonical policy"),
             // S21-07 pairing: the row must name the ranked candidate's
             // identity (see `lexical_candidate` below).
             candidate_id: "cand-1".to_string(),

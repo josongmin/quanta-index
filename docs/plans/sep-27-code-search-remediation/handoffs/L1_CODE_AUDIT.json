@@ -1,0 +1,1368 @@
+{
+  "acceptance_policy": "User explicitly accepts one successful execution; concurrent source changes are recorded as provenance and do not invalidate the observed passing regressions. No reruns solely for source drift.",
+  "auxiliary": [
+    {
+      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/audit/run.py",
+      "sha256": "3e815958cb07a63cd34a0e2374310aab4d9ecd30ab59e464ca7c33a25a4e556f",
+      "uncompressed_sha256": "3e815958cb07a63cd34a0e2374310aab4d9ecd30ab59e464ca7c33a25a4e556f"
+    },
+    {
+      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/audit/snapshot.py",
+      "sha256": "ea8fcfa9107cac7e2ec9babea75fd701acd158ed566cb541b39a8eede26d50d3",
+      "uncompressed_sha256": "ea8fcfa9107cac7e2ec9babea75fd701acd158ed566cb541b39a8eede26d50d3"
+    },
+    {
+      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/audit/port-before.rs",
+      "sha256": "d0730882655e7d55ed1bc41e8ba3e27bed1475481fe0b62c2ec445180ffd1f60",
+      "uncompressed_sha256": "d0730882655e7d55ed1bc41e8ba3e27bed1475481fe0b62c2ec445180ffd1f60"
+    },
+    {
+      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/audit/port-after.rs",
+      "sha256": "e822c1110dbbf2315531035a93d814c4f34eaff0dd3a93164341bc50460047c1",
+      "uncompressed_sha256": "e822c1110dbbf2315531035a93d814c4f34eaff0dd3a93164341bc50460047c1"
+    },
+    {
+      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/audit/admission-capture.json",
+      "sha256": "1eda16a7ed2c50cf6cb12821e307992f4efa14e7544a0b3899be593e641b1f66",
+      "uncompressed_sha256": "1eda16a7ed2c50cf6cb12821e307992f4efa14e7544a0b3899be593e641b1f66"
+    },
+    {
+      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/audit/cargo",
+      "sha256": "47fd0ff8a9be6ce8aa50fe5dca526c5ab7ad69e9f0201d740c99905282202164",
+      "uncompressed_sha256": "47fd0ff8a9be6ce8aa50fe5dca526c5ab7ad69e9f0201d740c99905282202164"
+    },
+    {
+      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/audit/audit-static.receipt.json",
+      "sha256": "2ad3187acc703d511809ef4bcf737212d61d6b8d3f12b6c6a095099aa125206e",
+      "uncompressed_sha256": "2ad3187acc703d511809ef4bcf737212d61d6b8d3f12b6c6a095099aa125206e"
+    },
+    {
+      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/audit/audit-static-0.log.gz",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "uncompressed_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/audit/audit-static-1.log.gz",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "uncompressed_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "current_snapshots": {
+    "native": {
+      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/audit/native.closeout.json",
+      "sha256": "06bbe99167ba2497c7c5c73f829feee707d1d945aacbdc8e3b0709d93b3e00c2",
+      "uncompressed_sha256": "06bbe99167ba2497c7c5c73f829feee707d1d945aacbdc8e3b0709d93b3e00c2"
+    },
+    "native_all": {
+      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/audit/native_all.closeout.json",
+      "sha256": "075954cdd575961dbfb432b6701dec45dc822cef4bb46547f617d942d6631570",
+      "uncompressed_sha256": "075954cdd575961dbfb432b6701dec45dc822cef4bb46547f617d942d6631570"
+    }
+  },
+  "dirty": " M Cargo.lock\n M Cargo.toml\n M Justfile\n M benchmarks/retrieval/build.rs\n M benchmarks/retrieval/proof-required-tests.json\n M benchmarks/retrieval/src/batch.rs\n M benchmarks/retrieval/src/diagnostics.rs\n M benchmarks/retrieval/src/main.rs\n M benchmarks/retrieval/src/symbols.rs\n M benchmarks/retrieval/src/symbols/preflight.rs\n M benchmarks/retrieval/tests/l5_parser_regressions.rs\n M benchmarks/retrieval/tests/sdk_roundtrip.rs\n M crates/quanta-index-contract-base/src/results/candidates.rs\n M crates/quanta-index-contract-base/src/results/preview.rs\n M crates/quanta-index-contract/src/ipc/ingest.rs\n M crates/quanta-index-contract/src/ipc/ingest_observation.rs\n M crates/quanta-index-contract/src/results/query_responses.rs\n M crates/quanta-index-contract/tests/hybrid_candidate_contract.rs\n M crates/quanta-index-contract/tests/ipc_query_result_v2_contract.rs\n M crates/quanta-index-contract/tests/lexical_cursor_contract.rs\n M crates/quanta-index-core/tests/hybrid_policy.rs\n M crates/quanta-index-lexical/src/adapter_ingest.rs\n M crates/quanta-index-lexical/src/budgeted_search.rs\n M crates/quanta-index-lexical/src/planner.rs\n M crates/quanta-index-lexical/src/ranked_page.rs\n M crates/quanta-index-lexical/src/ranked_page_tests.rs\n M crates/quanta-index-lexical/src/ranked_rows.rs\n M crates/quanta-index-lexical/src/sealed_generation/coverage.rs\n M crates/quanta-index-lexical/src/searcher/candidates.rs\n M crates/quanta-index-lexical/src/searcher/manual_scan.rs\n M crates/quanta-index-lexical/src/searcher/match_sets.rs\n M crates/quanta-index-lexical/src/searcher/paging.rs\n M crates/quanta-index-lexical/src/searcher/planner_errors.rs\n M crates/quanta-index-lexical/src/searcher/port.rs\n M crates/quanta-index-lexical/src/searcher/predicate_plan.rs\n M crates/quanta-index-lexical/src/searcher/snippets.rs\n M crates/quanta-index-lexical/src/symbol.rs\n M crates/quanta-index-lexical/tests/cancellation_inside_search.rs\n M crates/quanta-index-lexical/tests/execution_budget.rs\n M crates/quanta-index-lexical/tests/explain_candidate.rs\n M crates/quanta-index-lexical/tests/l1_query_domain_window.rs\n M crates/quanta-index-lexical/tests/l2_file_mutation.rs\n M crates/quanta-index-lexical/tests/l3_exact_source.rs\n M crates/quanta-index-lexical/tests/l4_match_anchored_preview.rs\n M crates/quanta-index-lexical/tests/planner_authority.rs\n M crates/quanta-index-lexical/tests/ranked_pages.rs\n M crates/quanta-index-lexical/tests/regex_cache_bounds.rs\n M crates/quanta-index-lexical/tests/regex_literal_alternation.rs\n M crates/quanta-index-lexical/tests/tantivy_smoke.rs\n M crates/quanta-index-lexical/tests/unicode_normalization_goldens.rs\n M crates/quanta-index-lq-regex/src/executor.rs\n M crates/quanta-index-lq-text-normalizer/src/provenance.rs\n M crates/quanta-index-lq-text-normalizer/src/tokens.rs\n M crates/quanta-index-sdk/src/binding.rs\n M crates/quanta-index-sdk/src/lexical.rs\n M crates/quanta-index-sdk/src/namespace.rs\n M crates/quanta-index-sdk/src/tests.rs\n M crates/quanta-index-sdk/tests/sdk_binding_owner_v1.rs\n M crates/quanta-index-search-plane/src/auxiliary_authority.rs\n M crates/quanta-index-search-plane/src/ingest_dispatcher/dispatcher.rs\n M crates/quanta-index-search-plane/src/ingest_dispatcher/generation_plan.rs\n M crates/quanta-index-search-plane/src/ingest_dispatcher/search_corpus.rs\n M crates/quanta-index-search-plane/src/ingest_dispatcher/tests/idempotency.rs\n M crates/quanta-index-search-plane/src/ingest_dispatcher/tests/l2_file_mutation.rs\n M crates/quanta-index-search-plane/src/ingest_dispatcher/tests/search_corpus.rs\n M crates/quanta-index-search-plane/src/ingest_dispatcher/tests/support.rs\n M crates/quanta-index-search-plane/src/query_dispatcher/continuation.rs\n M crates/quanta-index-search-plane/src/query_dispatcher/routes/lexical.rs\n M crates/quanta-index-search-plane/src/query_dispatcher/semantic_query.rs\n M crates/quanta-index-search-plane/src/query_dispatcher/tests/l1_query_domain_window.rs\n M crates/quanta-index-search-plane/src/query_dispatcher/tests/lexical.rs\n M crates/quanta-index-search-plane/src/query_dispatcher/tests/lexical_pages.rs\n M crates/quanta-index-search-plane/src/query_dispatcher/tests/structural.rs\n M crates/quanta-index-search-plane/src/query_dispatcher/tests/support/common.rs\n M crates/quanta-index-search-plane/src/query_dispatcher/tests/support/lexical.rs\n M crates/quanta-index-search-plane/src/readiness/activation_catalog.rs\n M crates/quanta-index-search-plane/src/readiness/activation_catalog/repository_envelope.rs\n M crates/quanta-index-search-plane/src/readiness/activation_catalog/source_events.rs\n M crates/quanta-index-search-plane/src/readiness/activation_catalog/tests.rs\n M crates/quanta-index-search-plane/src/readiness/ledger_apply.rs\n M crates/quanta-index-search-plane/src/readiness/structural_state.rs\n M crates/quanta-index-search-plane/src/readiness/tests/mod.rs\n M crates/quanta-index-search-plane/src/readiness/tests/search_corpus_history.rs\n M crates/quanta-index-search-plane/src/readiness/tests/support.rs\n M crates/quanta-index-search-plane/src/search_corpus_lifecycle.rs\n M crates/quanta-index-search-plane/src/semantic_derive.rs\n M crates/quanta-index-searchctl/src/lib.rs\n M crates/quanta-index-searchctl/tests/cli_smoke.rs\n M crates/quanta-index-searchd-runtime/tests/sdk_frontdoor.rs\n M crates/quanta-index-searchd/src/app/runtime.rs\n M docs/build-resource-budget.md\n M docs/plans/sep-27-code-search-remediation/handoffs/L1_HANDOFF.md\n M docs/plans/sep-27-code-search-remediation/handoffs/L2_HANDOFF.md\n M docs/plans/sep-27-code-search-remediation/handoffs/L2_HANDOFF.source.json\n M docs/plans/sep-27-code-search-remediation/handoffs/L3_HANDOFF.md\n M docs/plans/sep-27-code-search-remediation/handoffs/L3_HANDOFF.source.json\n M docs/plans/sep-27-code-search-remediation/handoffs/L4_HANDOFF.md\n M docs/plans/sep-27-code-search-remediation/handoffs/L5_HANDOFF.md\n M docs/plans/sep-27-code-search-remediation/handoffs/L5_HANDOFF.source.json\n M docs/plans/sep-27-code-search-remediation/readme.md\n M docs/plans/sep-27-code-search-remediation/rfcs/CS-PROD-01-parser-coverage-and-vite.md\n M docs/plans/sep-27-misc/tickets/INDEX.md\n M tools/benchmark/agent_outcome/__main__.py\n M tools/benchmark/benchctl.py\n M tools/benchmark/compare_dsl_bench.py\n M tools/benchmark/criterion_capture.py\n M tools/benchmark/evidence.py\n M tools/benchmark/lexical_capture.py\n M tools/benchmark/raw_archive.py\n M tools/benchmark/recorded_capture.py\n M tools/benchmark/retrieval/README.md\n M tools/benchmark/retrieval/contract_proof.py\n M tools/benchmark/retrieval/lexical_file_comparison.py\n M tools/benchmark/retrieval/pair-spec.schema.json\n M tools/benchmark/retrieval/portable_proof.py\n M tools/benchmark/retrieval/proof_inventory.py\n M tools/benchmark/retrieval/query_timing_overhead.py\n M tools/benchmark/retrieval/run-manifest.schema.json\n M tools/benchmark/retrieval/run.py\n M tools/benchmark/retrieval/sdk_proof.py\n M tools/benchmark/retrieval_capture.py\n M tools/ci/lint/check-bench-artifacts.py\n M tools/ci/nextest_events.py\n M tools/ci/source_closure.py\n M tools/ci/test-authority.toml\n M tools/ci/tests/test_agent_outcome_benchmark.py\n M tools/ci/tests/test_bench_protocol_conformance.py\n M tools/ci/tests/test_benchctl.py\n M tools/ci/tests/test_benchmark_source_closure.py\n M tools/ci/tests/test_cargo_preparation.py\n M tools/ci/tests/test_check_bench_artifacts.py\n M tools/ci/tests/test_compare_dsl_bench.py\n M tools/ci/tests/test_criterion_capture.py\n M tools/ci/tests/test_lexical_capture.py\n M tools/ci/tests/test_lexical_file_comparison.py\n M tools/ci/tests/test_nextest_ignored_inventory.py\n M tools/ci/tests/test_pair_capture.py\n M tools/ci/tests/test_portable_proof.py\n M tools/ci/tests/test_portable_tool_execution.py\n M tools/ci/tests/test_proof_command_timings.py\n M tools/ci/tests/test_recorded_capture.py\n M tools/ci/tests/test_retrieval_benchmark.py\n M tools/ci/tests/test_retrieval_capture.py\n M tools/ci/tests/test_retrieval_contract_proof.py\n M tools/ci/tests/test_retrieval_sdk_proof.py\n M tools/ci/tests/test_write_verification_receipt.py\n M tools/ci/write-verification-receipt.py\n M vendor/tree-sitter-typescript/QUANTA.md\n M vendor/tree-sitter-typescript/bindings/rust/lib.rs\n M vendor/tree-sitter-typescript/quanta-provenance.json\n?? crates/quanta-index-contract-base/tests/l4_preview_emission.rs\n?? crates/quanta-index-contract/tests/l4_preview_wire.rs\n?? crates/quanta-index-lexical/tests/support/\n?? crates/quanta-index-search-plane/src/readiness/tests/source_file_chunks.rs\n?? docs/plans/sep-27-code-search-remediation/handoffs/L1_ALL_RESULTS_CALLERS.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/L1_BUILD_BLOCKER.md\n?? docs/plans/sep-27-code-search-remediation/handoffs/L1_CLOSEOUT.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/L1_FIXTURE_MIGRATION.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/L1_GOAL_BLOCKED_AUDIT.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/L1_PRIMITIVE_ADMISSION_REQUEST.md\n?? docs/plans/sep-27-code-search-remediation/handoffs/L1_PROOF.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/L1_REQUIREMENT_AUDIT.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/L2_REPLAY_BINDING_REQUEST.md\n?? docs/plans/sep-27-code-search-remediation/handoffs/L2_RR_REOPEN.source.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/L3_EXACT_MANUAL_HOOK.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/L3_EXACT_MANUAL_HOOK.patch\n?? docs/plans/sep-27-code-search-remediation/handoffs/L3_EXACT_PLAN_HOOK.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/L3_EXACT_PLAN_HOOK.patch\n?? docs/plans/sep-27-code-search-remediation/handoffs/L3_GOAL_AUDIT.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/L3_PREDECODE_BOUNDARY.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/L3_RR_AUDIT.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/L4_REGEX_BUDGET_RESIDUAL.md\n?? docs/plans/sep-27-code-search-remediation/handoffs/L5_BLOCKED_AUDIT.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/L5_COMPLETION.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/L5_GOAL_AUDIT.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/L5_TEST_MIGRATION.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/L5_VENDOR_MANIFEST.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/\n?? docs/plans/sep-27-code-search-remediation/handoffs/l3-proof/\n?? docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/current/\n?? docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/p02/\n?? docs/plans/sep-27-code-search-remediation/handoffs/l5-proof/\n?? tools/benchmark/retrieval/symbol_coverage.py\n?? vendor/tantivy-sstable/\n",
+  "excluded_claims": [
+    "Full engine completion",
+    "Ranking quality, performance, memory improvement",
+    "An observed successful run does not establish unexecuted repository or SDK gates",
+    "Unchanged-input RED/GREEN pairing across independently changing shared sources"
+  ],
+  "findings": [
+    {
+      "file": "crates/quanta-index-lexical/src/searcher/port.rs",
+      "id": "L1-AUDIT-01",
+      "line": 370,
+      "oracle": "Fixture-authored five Symbol IDs; eight mode/count/domain combinations failed before correction.",
+      "priority": "P2",
+      "status": "VERIFIED",
+      "test": "l1_audit_exact_all_symbol_name_uses_the_normal_query_rewrite",
+      "title": "Missing canonical symbol-name rewrite in Text exact-all port"
+    },
+    {
+      "file": "crates/quanta-index-lexical/src/searcher/port.rs",
+      "id": "L1-AUDIT-02",
+      "line": 422,
+      "oracle": "Two authored source repo representatives; four indexed select/type/count combinations lost source-b before correction.",
+      "priority": "P2",
+      "status": "VERIFIED",
+      "test": "l1_audit_exact_all_repo_projection_retains_each_source",
+      "title": "Indexed repo projection truncates other source repository groups"
+    }
+  ],
+  "full_L1_status": "FAILED",
+  "head": "98601a66d8cab9c86232b3e62ce490c8b43b71b6",
+  "lint_status": "NOT_RUN",
+  "modified_production": [
+    "crates/quanta-index-lexical/src/searcher/port.rs"
+  ],
+  "modified_test": [
+    "crates/quanta-index-lexical/tests/l1_query_domain_window.rs"
+  ],
+  "new_corrections_status": "VERIFIED",
+  "rails": [
+    {
+      "admitted_after": null,
+      "admitted_before": null,
+      "after": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/audit/audit-native-red-1.after.json",
+        "sha256": "30fcec23ac9889bc5d2d30f3709b4cf4e344f1286762d4d050b391ab62a6f8c2",
+        "uncompressed_sha256": "30fcec23ac9889bc5d2d30f3709b4cf4e344f1286762d4d050b391ab62a6f8c2"
+      },
+      "artifacts": [],
+      "before": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/audit/audit-native-red-1.before.json",
+        "sha256": "30fcec23ac9889bc5d2d30f3709b4cf4e344f1286762d4d050b391ab62a6f8c2",
+        "uncompressed_sha256": "30fcec23ac9889bc5d2d30f3709b4cf4e344f1286762d4d050b391ab62a6f8c2"
+      },
+      "capture_phase": "Before queue admission through command completion",
+      "command": [
+        "./scripts/cargow",
+        "test",
+        "--locked",
+        "-j",
+        "2",
+        "-p",
+        "quanta-index-lexical",
+        "--test",
+        "l1_query_domain_window",
+        "--message-format=json",
+        "--",
+        "l1_audit_"
+      ],
+      "counts": null,
+      "diagnostics": [
+        {
+          "code": {
+            "code": "E0592",
+            "explanation": "This error occurs when you defined methods or associated functions with same\nname.\n\nErroneous code example:\n\n```compile_fail,E0592\nstruct Foo;\n\nimpl Foo {\n    fn bar() {} // previous definition here\n}\n\nimpl Foo {\n    fn bar() {} // duplicate definition here\n}\n```\n\nA similar error is E0201. The difference is whether there is one declaration\nblock or not. To avoid this error, you must give each `fn` a unique name.\n\n```\nstruct Foo;\n\nimpl Foo {\n    fn bar() {}\n}\n\nimpl Foo {\n    fn baz() {} // define with different name\n}\n```\n"
+          },
+          "locations": [
+            {
+              "file": "crates/quanta-index-contract/src/ipc/ingest.rs",
+              "line": 4299
+            }
+          ],
+          "message": "duplicate definitions with name `validate_for`"
+        },
+        {
+          "code": {
+            "code": "E0308",
+            "explanation": "Expected type did not match the received type.\n\nErroneous code examples:\n\n```compile_fail,E0308\nfn plus_one(x: i32) -> i32 {\n    x + 1\n}\n\nplus_one(\"Not a number\");\n//       ^^^^^^^^^^^^^^ expected `i32`, found `&str`\n\nif \"Not a bool\" {\n// ^^^^^^^^^^^^ expected `bool`, found `&str`\n}\n\nlet x: f32 = \"Not a float\";\n//     ---   ^^^^^^^^^^^^^ expected `f32`, found `&str`\n//     |\n//     expected due to this\n```\n\nThis error occurs when an expression was used in a place where the compiler\nexpected an expression of a different type. It can occur in several cases, the\nmost common being when calling a function and passing an argument which has a\ndifferent type than the matching type in the function declaration.\n"
+          },
+          "locations": [
+            {
+              "file": "crates/quanta-index-contract/src/ipc/ingest.rs",
+              "line": 4305
+            }
+          ],
+          "message": "arguments to this method are incorrect"
+        }
+      ],
+      "execution_status": "FAILED",
+      "exit_code": 101,
+      "label": "audit-native-red-1",
+      "log": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/audit/audit-native-red-1.log.gz",
+        "sha256": "58458bc4a5180dec67c26739caa3a1cb209c475134d304189c4935cb86318030",
+        "uncompressed_sha256": "c3d805662e6584cbf7a1d776608d2d2e996daf218967b51dd0043e9e1c8a9709"
+      },
+      "queue_through_completion_changes": [],
+      "receipt": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/audit/audit-native-red-1.receipt.json",
+        "sha256": "3d8a459e7a157ce2f5b2f6cb17ccb8af92fe9d7e1b70f0b66b31b0fbd9a9bf7e",
+        "uncompressed_sha256": "3d8a459e7a157ce2f5b2f6cb17ccb8af92fe9d7e1b70f0b66b31b0fbd9a9bf7e"
+      },
+      "source_changed_during_run": [],
+      "source_changed_since_run": [
+        "crates/quanta-index-contract-base/src/results/candidates.rs",
+        "crates/quanta-index-contract-base/src/results/preview.rs",
+        "crates/quanta-index-contract/src/ipc/ingest.rs",
+        "crates/quanta-index-contract/src/ipc/ingest_observation.rs",
+        "crates/quanta-index-contract/src/results/query_responses.rs",
+        "crates/quanta-index-lexical/src/budgeted_search.rs",
+        "crates/quanta-index-lexical/src/ranked_page.rs",
+        "crates/quanta-index-lexical/src/ranked_page_tests.rs",
+        "crates/quanta-index-lexical/src/searcher/candidates.rs",
+        "crates/quanta-index-lexical/src/searcher/port.rs"
+      ],
+      "source_manifest_sha256": "1be304bf132fdf58204eec18e57d7a9cb7382d570dab21899a1f4648b69da5b6",
+      "source_matches_current": false,
+      "source_stable_during_run": true,
+      "tests": []
+    },
+    {
+      "admitted_after": null,
+      "admitted_before": null,
+      "after": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/audit/audit-native-red-2.after.json",
+        "sha256": "d191de97dc93ca2021d8fc5e60ba0d271950ff119f5d275212be5276dde1c003",
+        "uncompressed_sha256": "d191de97dc93ca2021d8fc5e60ba0d271950ff119f5d275212be5276dde1c003"
+      },
+      "artifacts": [
+        {
+          "features": [],
+          "fresh": false,
+          "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical#0.1.0",
+          "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-integration-lane/debug/dump_predicate_capabilities",
+          "profile": {
+            "debug_assertions": true,
+            "debuginfo": 1,
+            "opt_level": "0",
+            "overflow_checks": true,
+            "test": false
+          },
+          "sha256": "456062f8d5cd693aa520f8f373ab38a8565327fe7bcfb27dfdb3ada2ab64fce1",
+          "target": {
+            "crate_types": [
+              "bin"
+            ],
+            "doc": true,
+            "doctest": false,
+            "edition": "2024",
+            "kind": [
+              "bin"
+            ],
+            "name": "dump_predicate_capabilities",
+            "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical/src/bin/dump_predicate_capabilities.rs",
+            "test": true
+          }
+        },
+        {
+          "features": [],
+          "fresh": false,
+          "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical#0.1.0",
+          "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-integration-lane/debug/deps/l1_query_domain_window-c8c35a2ce0bb26c0",
+          "profile": {
+            "debug_assertions": true,
+            "debuginfo": 1,
+            "opt_level": "0",
+            "overflow_checks": true,
+            "test": true
+          },
+          "sha256": "6b3903bd360fddaf61095815b0d9b6326d308e0481027f3aba1c9b2a6933b28d",
+          "target": {
+            "crate_types": [
+              "bin"
+            ],
+            "doc": false,
+            "doctest": false,
+            "edition": "2024",
+            "kind": [
+              "test"
+            ],
+            "name": "l1_query_domain_window",
+            "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical/tests/l1_query_domain_window.rs",
+            "test": true
+          }
+        }
+      ],
+      "before": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/audit/audit-native-red-2.before.json",
+        "sha256": "33327df77147bb72fcbdf535e3d5e82461db2dc297661d39fea2cf7c79059b08",
+        "uncompressed_sha256": "33327df77147bb72fcbdf535e3d5e82461db2dc297661d39fea2cf7c79059b08"
+      },
+      "capture_phase": "Before queue admission through command completion",
+      "command": [
+        "./scripts/cargow",
+        "test",
+        "--locked",
+        "-j",
+        "2",
+        "-p",
+        "quanta-index-lexical",
+        "--test",
+        "l1_query_domain_window",
+        "--message-format=json",
+        "--",
+        "l1_audit_"
+      ],
+      "counts": {
+        "failed": 2,
+        "ignored": 0,
+        "passed": 0
+      },
+      "diagnostics": [],
+      "execution_status": "FAILED",
+      "exit_code": 101,
+      "label": "audit-native-red-2",
+      "log": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/audit/audit-native-red-2.log.gz",
+        "sha256": "8a7c209ed56820445c08f85fa3e8faf3dc3d30c1591589ffbbe1d6347558604f",
+        "uncompressed_sha256": "df7224d2b1a70173a9baf7c9002fb1029c15f1c1096eda15b113475e0cb70270"
+      },
+      "queue_through_completion_changes": [
+        "crates/quanta-index-lexical/src/budgeted_search.rs"
+      ],
+      "receipt": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/audit/audit-native-red-2.receipt.json",
+        "sha256": "2327963b9ee571291ecbd23e1e4e38b8154ed297f7ac998709ae12a2a0c2b055",
+        "uncompressed_sha256": "2327963b9ee571291ecbd23e1e4e38b8154ed297f7ac998709ae12a2a0c2b055"
+      },
+      "source_changed_during_run": [
+        "crates/quanta-index-lexical/src/budgeted_search.rs"
+      ],
+      "source_changed_since_run": [
+        "crates/quanta-index-contract-base/src/results/candidates.rs",
+        "crates/quanta-index-contract-base/src/results/preview.rs",
+        "crates/quanta-index-contract/src/ipc/ingest.rs",
+        "crates/quanta-index-contract/src/ipc/ingest_observation.rs",
+        "crates/quanta-index-contract/src/results/query_responses.rs",
+        "crates/quanta-index-lexical/src/budgeted_search.rs",
+        "crates/quanta-index-lexical/src/ranked_page.rs",
+        "crates/quanta-index-lexical/src/ranked_page_tests.rs",
+        "crates/quanta-index-lexical/src/searcher/candidates.rs",
+        "crates/quanta-index-lexical/src/searcher/port.rs"
+      ],
+      "source_manifest_sha256": "0ece015e9f471458aa5da69b05a378c29c3d6655ed87b1fd8bad57afa9bf72e3",
+      "source_matches_current": false,
+      "source_stable_during_run": false,
+      "tests": [
+        "test l1_audit_exact_all_symbol_name_uses_the_normal_query_rewrite ... FAILED",
+        "test l1_audit_exact_all_repo_projection_retains_each_source ... FAILED"
+      ]
+    },
+    {
+      "admitted_after": null,
+      "admitted_before": null,
+      "after": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/audit/audit-native-red-3.after.json",
+        "sha256": "d191de97dc93ca2021d8fc5e60ba0d271950ff119f5d275212be5276dde1c003",
+        "uncompressed_sha256": "d191de97dc93ca2021d8fc5e60ba0d271950ff119f5d275212be5276dde1c003"
+      },
+      "artifacts": [
+        {
+          "features": [],
+          "fresh": false,
+          "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical#0.1.0",
+          "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-integration-lane/debug/dump_predicate_capabilities",
+          "profile": {
+            "debug_assertions": true,
+            "debuginfo": 1,
+            "opt_level": "0",
+            "overflow_checks": true,
+            "test": false
+          },
+          "sha256": "de953802358f4e6ec469c1154cc73ff9ce22573c61dd5414e8c627e5a553d53d",
+          "target": {
+            "crate_types": [
+              "bin"
+            ],
+            "doc": true,
+            "doctest": false,
+            "edition": "2024",
+            "kind": [
+              "bin"
+            ],
+            "name": "dump_predicate_capabilities",
+            "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical/src/bin/dump_predicate_capabilities.rs",
+            "test": true
+          }
+        },
+        {
+          "features": [],
+          "fresh": false,
+          "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical#0.1.0",
+          "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-integration-lane/debug/deps/l1_query_domain_window-c8c35a2ce0bb26c0",
+          "profile": {
+            "debug_assertions": true,
+            "debuginfo": 1,
+            "opt_level": "0",
+            "overflow_checks": true,
+            "test": true
+          },
+          "sha256": "87e923436adda6eb7873ff868f36e581bb22baa90389ba172f30255abf7786bd",
+          "target": {
+            "crate_types": [
+              "bin"
+            ],
+            "doc": false,
+            "doctest": false,
+            "edition": "2024",
+            "kind": [
+              "test"
+            ],
+            "name": "l1_query_domain_window",
+            "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical/tests/l1_query_domain_window.rs",
+            "test": true
+          }
+        }
+      ],
+      "before": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/audit/audit-native-red-3.before.json",
+        "sha256": "d191de97dc93ca2021d8fc5e60ba0d271950ff119f5d275212be5276dde1c003",
+        "uncompressed_sha256": "d191de97dc93ca2021d8fc5e60ba0d271950ff119f5d275212be5276dde1c003"
+      },
+      "capture_phase": "Before queue admission through command completion",
+      "command": [
+        "./scripts/cargow",
+        "test",
+        "--locked",
+        "-j",
+        "2",
+        "-p",
+        "quanta-index-lexical",
+        "--test",
+        "l1_query_domain_window",
+        "--message-format=json",
+        "--",
+        "l1_audit_"
+      ],
+      "counts": {
+        "failed": 2,
+        "ignored": 0,
+        "passed": 0
+      },
+      "diagnostics": [],
+      "execution_status": "FAILED",
+      "exit_code": 101,
+      "label": "audit-native-red-3",
+      "log": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/audit/audit-native-red-3.log.gz",
+        "sha256": "f3993c45de1a343079c560eb5033329576d437bfcb87aa7b9930ad99785443ce",
+        "uncompressed_sha256": "8ebbcbfbf732db541462a9b15d460bc3368a6caa4fb92a2996d566f3e60d7888"
+      },
+      "queue_through_completion_changes": [],
+      "receipt": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/audit/audit-native-red-3.receipt.json",
+        "sha256": "d92b8e97b51ae08ebe3587366914285f8f0c434fc4cad7e219432c4f45175535",
+        "uncompressed_sha256": "d92b8e97b51ae08ebe3587366914285f8f0c434fc4cad7e219432c4f45175535"
+      },
+      "source_changed_during_run": [],
+      "source_changed_since_run": [
+        "crates/quanta-index-contract-base/src/results/candidates.rs",
+        "crates/quanta-index-contract-base/src/results/preview.rs",
+        "crates/quanta-index-contract/src/ipc/ingest.rs",
+        "crates/quanta-index-contract/src/ipc/ingest_observation.rs",
+        "crates/quanta-index-contract/src/results/query_responses.rs",
+        "crates/quanta-index-lexical/src/budgeted_search.rs",
+        "crates/quanta-index-lexical/src/ranked_page.rs",
+        "crates/quanta-index-lexical/src/ranked_page_tests.rs",
+        "crates/quanta-index-lexical/src/searcher/candidates.rs",
+        "crates/quanta-index-lexical/src/searcher/port.rs"
+      ],
+      "source_manifest_sha256": "9eeb3198d969f54aae2cc898573df0ee73eccc721eb522ba18bdd2641dd825eb",
+      "source_matches_current": false,
+      "source_stable_during_run": true,
+      "tests": [
+        "test l1_audit_exact_all_repo_projection_retains_each_source ... FAILED",
+        "test l1_audit_exact_all_symbol_name_uses_the_normal_query_rewrite ... FAILED"
+      ]
+    },
+    {
+      "admitted_after": null,
+      "admitted_before": null,
+      "after": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/audit/audit-native-green-1.after.json",
+        "sha256": "d8d01c02ed3ae99749e45f002dbea9867affe11a7fd5b344c5196806185c0454",
+        "uncompressed_sha256": "d8d01c02ed3ae99749e45f002dbea9867affe11a7fd5b344c5196806185c0454"
+      },
+      "artifacts": [
+        {
+          "features": [],
+          "fresh": false,
+          "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical#0.1.0",
+          "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-integration-lane/debug/dump_predicate_capabilities",
+          "profile": {
+            "debug_assertions": true,
+            "debuginfo": 1,
+            "opt_level": "0",
+            "overflow_checks": true,
+            "test": false
+          },
+          "sha256": "1381fb518c92337e61c89573a7f0a8f76e1313cb9ae03143b1e5c2cb4842ef3c",
+          "target": {
+            "crate_types": [
+              "bin"
+            ],
+            "doc": true,
+            "doctest": false,
+            "edition": "2024",
+            "kind": [
+              "bin"
+            ],
+            "name": "dump_predicate_capabilities",
+            "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical/src/bin/dump_predicate_capabilities.rs",
+            "test": true
+          }
+        },
+        {
+          "features": [],
+          "fresh": false,
+          "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical#0.1.0",
+          "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-integration-lane/debug/deps/l1_query_domain_window-c8c35a2ce0bb26c0",
+          "profile": {
+            "debug_assertions": true,
+            "debuginfo": 1,
+            "opt_level": "0",
+            "overflow_checks": true,
+            "test": true
+          },
+          "sha256": "d4b275486606c1c1be8bc5b3fbce68b5facda579af48495dca100c1b9040a6b2",
+          "target": {
+            "crate_types": [
+              "bin"
+            ],
+            "doc": false,
+            "doctest": false,
+            "edition": "2024",
+            "kind": [
+              "test"
+            ],
+            "name": "l1_query_domain_window",
+            "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical/tests/l1_query_domain_window.rs",
+            "test": true
+          }
+        }
+      ],
+      "before": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/audit/audit-native-green-1.before.json",
+        "sha256": "f1364eb92558841ddc25beb0e1a408bc8f720f57743bb78a3e8765c4214f6a52",
+        "uncompressed_sha256": "f1364eb92558841ddc25beb0e1a408bc8f720f57743bb78a3e8765c4214f6a52"
+      },
+      "capture_phase": "Before queue admission through command completion",
+      "command": [
+        "./scripts/cargow",
+        "test",
+        "--locked",
+        "-j",
+        "2",
+        "-p",
+        "quanta-index-lexical",
+        "--test",
+        "l1_query_domain_window",
+        "--message-format=json",
+        "--",
+        "l1_audit_"
+      ],
+      "counts": {
+        "failed": 0,
+        "ignored": 0,
+        "passed": 2
+      },
+      "diagnostics": [],
+      "execution_status": "VERIFIED",
+      "exit_code": 0,
+      "label": "audit-native-green-1",
+      "log": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/audit/audit-native-green-1.log.gz",
+        "sha256": "7271201a138312a2090903a1bb2b78c76db11ef3cff61d335e1eaeda939ce4cc",
+        "uncompressed_sha256": "59634ac6202d540ba54a4ddecd3cf2129761a946e56bef2721f317307c879e0e"
+      },
+      "queue_through_completion_changes": [
+        "crates/quanta-index-lexical/src/budgeted_search.rs",
+        "crates/quanta-index-lexical/src/ranked_page.rs"
+      ],
+      "receipt": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/audit/audit-native-green-1.receipt.json",
+        "sha256": "aec77815646912d6be1d095cdc7ec54659e1c23f7c9ed3d3638d7e3c59fe497b",
+        "uncompressed_sha256": "aec77815646912d6be1d095cdc7ec54659e1c23f7c9ed3d3638d7e3c59fe497b"
+      },
+      "source_changed_during_run": [
+        "crates/quanta-index-lexical/src/budgeted_search.rs",
+        "crates/quanta-index-lexical/src/ranked_page.rs"
+      ],
+      "source_changed_since_run": [
+        "crates/quanta-index-contract-base/src/results/candidates.rs",
+        "crates/quanta-index-contract-base/src/results/preview.rs",
+        "crates/quanta-index-contract/src/ipc/ingest.rs",
+        "crates/quanta-index-contract/src/ipc/ingest_observation.rs",
+        "crates/quanta-index-contract/src/results/query_responses.rs",
+        "crates/quanta-index-lexical/src/searcher/candidates.rs"
+      ],
+      "source_manifest_sha256": "58de3eb6bbbcd2876af6ae2ef285f30dd0e61b872c104016c7263e461cf63e67",
+      "source_matches_current": false,
+      "source_stable_during_run": false,
+      "tests": [
+        "test l1_audit_exact_all_symbol_name_uses_the_normal_query_rewrite ... ok",
+        "test l1_audit_exact_all_repo_projection_retains_each_source ... ok"
+      ]
+    },
+    {
+      "admitted_after": null,
+      "admitted_before": null,
+      "after": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/audit/audit-native-controls-1.after.json",
+        "sha256": "f06dafdc726e98d5d0bb4b61e65e4ecce72c8f53ae6f85dad932480c1e549964",
+        "uncompressed_sha256": "f06dafdc726e98d5d0bb4b61e65e4ecce72c8f53ae6f85dad932480c1e549964"
+      },
+      "artifacts": [
+        {
+          "features": [],
+          "fresh": false,
+          "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical#0.1.0",
+          "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-integration-lane/debug/deps/planner_authority-e7bba82baf1edaa6",
+          "profile": {
+            "debug_assertions": true,
+            "debuginfo": 1,
+            "opt_level": "0",
+            "overflow_checks": true,
+            "test": true
+          },
+          "sha256": "f29fd5027f73d4aa145a5322d7d1a351ed3d7ef97b7e02ce1ee1240511311108",
+          "target": {
+            "crate_types": [
+              "bin"
+            ],
+            "doc": false,
+            "doctest": false,
+            "edition": "2024",
+            "kind": [
+              "test"
+            ],
+            "name": "planner_authority",
+            "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical/tests/planner_authority.rs",
+            "test": true
+          }
+        },
+        {
+          "features": [],
+          "fresh": false,
+          "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical#0.1.0",
+          "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-integration-lane/debug/deps/explain_candidate-5bd1c62fe42e92c5",
+          "profile": {
+            "debug_assertions": true,
+            "debuginfo": 1,
+            "opt_level": "0",
+            "overflow_checks": true,
+            "test": true
+          },
+          "sha256": "f78afcc5451e2910598a0ff75873414b0e0ada3a43c19a213e26dfccff092065",
+          "target": {
+            "crate_types": [
+              "bin"
+            ],
+            "doc": false,
+            "doctest": false,
+            "edition": "2024",
+            "kind": [
+              "test"
+            ],
+            "name": "explain_candidate",
+            "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical/tests/explain_candidate.rs",
+            "test": true
+          }
+        },
+        {
+          "features": [],
+          "fresh": true,
+          "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical#0.1.0",
+          "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-integration-lane/debug/dump_predicate_capabilities",
+          "profile": {
+            "debug_assertions": true,
+            "debuginfo": 1,
+            "opt_level": "0",
+            "overflow_checks": true,
+            "test": false
+          },
+          "sha256": "fa211946d38b176819b89508a8ce5641e22096c6e416a4f288e6791df8cfa6ce",
+          "target": {
+            "crate_types": [
+              "bin"
+            ],
+            "doc": true,
+            "doctest": false,
+            "edition": "2024",
+            "kind": [
+              "bin"
+            ],
+            "name": "dump_predicate_capabilities",
+            "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical/src/bin/dump_predicate_capabilities.rs",
+            "test": true
+          }
+        },
+        {
+          "features": [],
+          "fresh": false,
+          "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical#0.1.0",
+          "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-integration-lane/debug/deps/regex_cache_bounds-c60f14d46ea005ce",
+          "profile": {
+            "debug_assertions": true,
+            "debuginfo": 1,
+            "opt_level": "0",
+            "overflow_checks": true,
+            "test": true
+          },
+          "sha256": "066a06dda343e403de4f629f000c70621f5ab33d2e32c90a83e9bf5c239a3259",
+          "target": {
+            "crate_types": [
+              "bin"
+            ],
+            "doc": false,
+            "doctest": false,
+            "edition": "2024",
+            "kind": [
+              "test"
+            ],
+            "name": "regex_cache_bounds",
+            "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical/tests/regex_cache_bounds.rs",
+            "test": true
+          }
+        },
+        {
+          "features": [],
+          "fresh": false,
+          "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical#0.1.0",
+          "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-integration-lane/debug/deps/execution_budget-95a8f51d025ccadf",
+          "profile": {
+            "debug_assertions": true,
+            "debuginfo": 1,
+            "opt_level": "0",
+            "overflow_checks": true,
+            "test": true
+          },
+          "sha256": "c97e80ad799b1c23b150214865145d2ae610ccfc5b4475c659804b973af26f2a",
+          "target": {
+            "crate_types": [
+              "bin"
+            ],
+            "doc": false,
+            "doctest": false,
+            "edition": "2024",
+            "kind": [
+              "test"
+            ],
+            "name": "execution_budget",
+            "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical/tests/execution_budget.rs",
+            "test": true
+          }
+        },
+        {
+          "features": [],
+          "fresh": false,
+          "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical#0.1.0",
+          "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-integration-lane/debug/deps/regex_literal_alternation-7f75ed8887e67f53",
+          "profile": {
+            "debug_assertions": true,
+            "debuginfo": 1,
+            "opt_level": "0",
+            "overflow_checks": true,
+            "test": true
+          },
+          "sha256": "5d5d3283fbccf9163e442737f312aed099577b081591e2972c35ce244ec1d99d",
+          "target": {
+            "crate_types": [
+              "bin"
+            ],
+            "doc": false,
+            "doctest": false,
+            "edition": "2024",
+            "kind": [
+              "test"
+            ],
+            "name": "regex_literal_alternation",
+            "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical/tests/regex_literal_alternation.rs",
+            "test": true
+          }
+        },
+        {
+          "features": [],
+          "fresh": false,
+          "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical#0.1.0",
+          "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-integration-lane/debug/deps/l1_query_domain_window-c8c35a2ce0bb26c0",
+          "profile": {
+            "debug_assertions": true,
+            "debuginfo": 1,
+            "opt_level": "0",
+            "overflow_checks": true,
+            "test": true
+          },
+          "sha256": "9b84c2a6793844587ec9657da0584f5dbca5127a2790c5fe8ca67c7981ab7f27",
+          "target": {
+            "crate_types": [
+              "bin"
+            ],
+            "doc": false,
+            "doctest": false,
+            "edition": "2024",
+            "kind": [
+              "test"
+            ],
+            "name": "l1_query_domain_window",
+            "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical/tests/l1_query_domain_window.rs",
+            "test": true
+          }
+        },
+        {
+          "features": [],
+          "fresh": false,
+          "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical#0.1.0",
+          "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-integration-lane/debug/deps/ranked_pages-d0d033f0ceedd60b",
+          "profile": {
+            "debug_assertions": true,
+            "debuginfo": 1,
+            "opt_level": "0",
+            "overflow_checks": true,
+            "test": true
+          },
+          "sha256": "efcf9fce83a1af6c383682e492a2476434fb066b789d7227a903cb6b4d789ac5",
+          "target": {
+            "crate_types": [
+              "bin"
+            ],
+            "doc": false,
+            "doctest": false,
+            "edition": "2024",
+            "kind": [
+              "test"
+            ],
+            "name": "ranked_pages",
+            "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical/tests/ranked_pages.rs",
+            "test": true
+          }
+        },
+        {
+          "features": [],
+          "fresh": false,
+          "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical#0.1.0",
+          "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-integration-lane/debug/deps/tantivy_smoke-7bf47f8919c7e815",
+          "profile": {
+            "debug_assertions": true,
+            "debuginfo": 1,
+            "opt_level": "0",
+            "overflow_checks": true,
+            "test": true
+          },
+          "sha256": "a90355a3982133d1d0a7400c19f010d8488320dcdb4b426d077f03403ea1fbcd",
+          "target": {
+            "crate_types": [
+              "bin"
+            ],
+            "doc": false,
+            "doctest": false,
+            "edition": "2024",
+            "kind": [
+              "test"
+            ],
+            "name": "tantivy_smoke",
+            "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical/tests/tantivy_smoke.rs",
+            "test": true
+          }
+        },
+        {
+          "features": [],
+          "fresh": false,
+          "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical#0.1.0",
+          "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-integration-lane/debug/deps/unicode_normalization_goldens-fcc8517f0837b86e",
+          "profile": {
+            "debug_assertions": true,
+            "debuginfo": 1,
+            "opt_level": "0",
+            "overflow_checks": true,
+            "test": true
+          },
+          "sha256": "73a68a33a795cffa08c16c3f6e0b92d091ff5975ea25f8ffb77e0162fb0cf418",
+          "target": {
+            "crate_types": [
+              "bin"
+            ],
+            "doc": false,
+            "doctest": false,
+            "edition": "2024",
+            "kind": [
+              "test"
+            ],
+            "name": "unicode_normalization_goldens",
+            "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical/tests/unicode_normalization_goldens.rs",
+            "test": true
+          }
+        },
+        {
+          "features": [],
+          "fresh": false,
+          "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical#0.1.0",
+          "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-integration-lane/debug/deps/cancellation_inside_search-cde64eb65e1e78f4",
+          "profile": {
+            "debug_assertions": true,
+            "debuginfo": 1,
+            "opt_level": "0",
+            "overflow_checks": true,
+            "test": true
+          },
+          "sha256": "8b4bed6660c66618021d49db13e571c1e17b1199ff7705feb7f54b0ff099c3fd",
+          "target": {
+            "crate_types": [
+              "bin"
+            ],
+            "doc": false,
+            "doctest": false,
+            "edition": "2024",
+            "kind": [
+              "test"
+            ],
+            "name": "cancellation_inside_search",
+            "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical/tests/cancellation_inside_search.rs",
+            "test": true
+          }
+        }
+      ],
+      "before": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/audit/audit-native-controls-1.before.json",
+        "sha256": "27f39ff55771cbc886f8fb1733d051ab8ab34e83430955af370d26398f58ea71",
+        "uncompressed_sha256": "27f39ff55771cbc886f8fb1733d051ab8ab34e83430955af370d26398f58ea71"
+      },
+      "capture_phase": "Before queue admission through command completion",
+      "command": [
+        "./scripts/cargow",
+        "test",
+        "--locked",
+        "-j",
+        "2",
+        "-p",
+        "quanta-index-lexical",
+        "--message-format=json",
+        "--test",
+        "tantivy_smoke",
+        "--test",
+        "execution_budget",
+        "--test",
+        "ranked_pages",
+        "--test",
+        "planner_authority",
+        "--test",
+        "explain_candidate",
+        "--test",
+        "regex_literal_alternation",
+        "--test",
+        "regex_cache_bounds",
+        "--test",
+        "unicode_normalization_goldens",
+        "--test",
+        "cancellation_inside_search",
+        "--test",
+        "l1_query_domain_window",
+        "--no-fail-fast"
+      ],
+      "counts": {
+        "failed": 1,
+        "ignored": 0,
+        "passed": 87
+      },
+      "diagnostics": [],
+      "execution_status": "FAILED",
+      "exit_code": 101,
+      "label": "audit-native-controls-1",
+      "log": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/audit/audit-native-controls-1.log.gz",
+        "sha256": "eb52306de3ac8cf3c688e2d9963668582a151b21a0c76065e96b5da5fcab5d87",
+        "uncompressed_sha256": "dcd3ad0f097dd4c2ec9d0b23d06044b2d5477956dc2ab58bba525b3fad10244e"
+      },
+      "queue_through_completion_changes": [
+        "crates/quanta-index-lexical/src/searcher/candidates.rs"
+      ],
+      "receipt": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/audit/audit-native-controls-1.receipt.json",
+        "sha256": "2dcbc875783baeca228f2587b83d58e41d63fdf5e07cf5ecf07aada44e6d8caa",
+        "uncompressed_sha256": "2dcbc875783baeca228f2587b83d58e41d63fdf5e07cf5ecf07aada44e6d8caa"
+      },
+      "source_changed_during_run": [
+        "crates/quanta-index-lexical/src/searcher/candidates.rs"
+      ],
+      "source_changed_since_run": [
+        "crates/quanta-index-contract-base/src/results/candidates.rs",
+        "crates/quanta-index-contract-base/src/results/preview.rs",
+        "crates/quanta-index-contract/src/ipc/ingest.rs",
+        "crates/quanta-index-contract/src/ipc/ingest_observation.rs",
+        "crates/quanta-index-contract/src/results/query_responses.rs",
+        "crates/quanta-index-lexical/src/searcher/candidates.rs"
+      ],
+      "source_manifest_sha256": "5df6b2021b5fc5a05ec756dcc17ae701d380c8f1e7b902e32c4bf430faf28773",
+      "source_matches_current": false,
+      "source_stable_during_run": false,
+      "tests": [
+        "test a_cancelled_budget_is_observed_inside_the_unindexed_scan ... ok",
+        "test a_cancelled_budget_is_observed_inside_regex_verification ... ok",
+        "test a_cancelled_or_expired_budget_is_observed_inside_the_native_collect ... ok",
+        "test zero_budget_is_refused_at_construction ... ok",
+        "test exact_set_executions_within_the_budget_serve_with_exact_totals ... ok",
+        "test unindexed_scans_over_the_budget_are_refused_before_scanning ... ok",
+        "test exact_set_executions_over_the_budget_are_refused_but_pages_serve ... ok",
+        "test a_boost_in_the_plan_is_the_weight_and_scales_the_emitted_score ... ok",
+        "test an_unindexed_scan_explains_through_the_same_per_document_matcher ... ok",
+        "test every_ranked_candidate_explains_to_exactly_its_emitted_score_in_rank_order ... ok",
+        "test presence_is_an_exact_lookup_independent_of_the_corpus_around_the_candidate ... ok",
+        "test invalid_fetch_cannot_mint_zero_exact_count_before_execution ... ok",
+        "test symbol_as_text_explanation_keeps_domain_when_a_predicate_is_empty ... ok",
+        "test projection_cannot_reroute_unsupported_symbol_regex_to_text ... ok",
+        "test exact_all_ports_refuse_bounded_count_and_preserve_full_set_controls ... ok",
+        "test empty_repo_predicate_cannot_hide_invalid_count ... ok",
+        "test invalid_predicate_arguments_keep_registry_code_before_empty_results ... ok",
+        "test l1_audit_exact_all_symbol_name_uses_the_normal_query_rewrite ... ok",
+        "test predicate_result_empty_cannot_hide_tokenless_phrase ... ok",
+        "test predicate_result_empty_cannot_hide_keyword_or_content_tokens ... FAILED",
+        "test invalid_regex_keeps_dialect_code_before_empty_results ... ok",
+        "test generic_text_symbol_selection_preserves_fixture_membership ... ok",
+        "test l1_audit_exact_all_repo_projection_retains_each_source ... ok",
+        "test symbol_endpoint_rejects_text_projections_with_and_without_hits ... ok",
+        "test symbol_count_cap_preserves_rows_when_explicitly_walking_boundaries ... ok",
+        "test keyword_with_regexp_pattern_type_routes_through_planner_dialect_filter ... ok",
+        "test rev_filter_returns_not_implemented ... ok",
+        "test regex_leaf_small_corpus_returns_hits_via_planner ... ok",
+        "test type_commit_returns_not_implemented ... ok",
+        "test count_zero_returns_typed_invalid_count ... ok",
+        "test fork_only_without_metadata_returns_typed_fork_unavailable ... ok",
+        "test archived_only_without_metadata_returns_typed_archived_unavailable ... ok",
+        "test a_cursor_from_another_generation_is_refused ... ok",
+        "test a_counted_page_counts_the_rows_after_its_cursor ... ok",
+        "test a_boosted_ranking_is_the_same_order ... ok",
+        "test a_projection_pages_through_each_files_first_row ... ok",
+        "test pages_are_prefixes_of_the_ranking_and_the_walk_reproduces_it ... ok",
+        "test a_broad_regex_is_served_but_not_cached_and_a_narrow_one_is_a_shared_hit ... ok",
+        "test a_regex_restricts_to_exactly_what_an_independent_engine_matches ... ok",
+        "test eviction_and_generation_reclaim_do_not_break_a_held_searcher ... ok",
+        "test resident_bytes_never_exceed_the_policy_under_many_distinct_regexes ... ok",
+        "test alternation_regex_returns_documents_matching_any_branch ... ok",
+        "test case_folded_literal_regex_matches_the_same_text_as_the_keyword_route ... ok",
+        "test tantivy_executes_repo_has_content_predicate_under_or_and_not ... ok",
+        "test tantivy_executes_repo_has_file_predicate_as_repo_gate ... ok",
+        "test tantivy_executes_index_no_full_scan_with_scoped_content_predicate ... ok",
+        "test tantivy_applies_query_boost_to_scores ... ok",
+        "test tantivy_executes_phrase_adjacency_without_unordered_match ... ok",
+        "test tantivy_count_all_keeps_the_page_and_reports_the_exact_total ... ok",
+        "test tantivy_executes_repo_allow_list_across_indexed_source_repo_ids ... ok",
+        "test tantivy_executes_numeric_content_predicates ... ok",
+        "test tantivy_executes_native_predicate_aliases ... ok",
+        "test language_constraint_is_pushed_into_one_pre_limit_candidate_query_v1 ... ok",
+        "test exact_path_constraint_is_applied_before_limit_and_on_index_no_scan_v1 ... ok",
+        "test exact_path_constraint_only_query_treats_dsl_metacharacters_as_literal_v1 ... ok",
+        "test tantivy_executes_file_has_content_predicate_phrase_and_regex ... ok",
+        "test tantivy_executes_repo_file_path_and_lang_filters ... ok",
+        "test independent_chunk_clear_refuses_and_file_tombstone_preserves_symbols_v1 ... ok",
+        "test tantivy_executes_repo_has_file_predicate_under_or_and_not ... ok",
+        "test tantivy_executes_repo_has_file_predicate_with_lang_matcher ... ok",
+        "test tantivy_index_round_trip ... ok",
+        "test tantivy_executes_simple_path_term_surface_without_boolean_path_leakage ... ok",
+        "test tantivy_honors_case_sensitive_keyword_queries ... ok",
+        "test tantivy_executes_repo_metadata_filters_when_bundle_payload_is_typed ... ok",
+        "test tantivy_executes_scoped_file_content_predicates_across_boolean_contexts ... ok",
+        "test tantivy_executes_whole_document_regex_and_rejects_false_positive ... ok",
+        "test tantivy_repo_has_content_true_gate_narrows_by_indexed_source_repo_id ... ok",
+        "test tantivy_phrase_sidecar_uses_text_authority_and_case_rules ... ok",
+        "test tantivy_repo_has_file_true_gate_narrows_by_indexed_source_repo_id ... ok",
+        "test symbol_content_authority_shapes_fail_closed_on_initial_and_replayed_batches ... ok",
+        "test tantivy_executes_supported_type_and_select_filters ... ok",
+        "test tantivy_regex_sidecar_verifies_authoritative_text ... ok",
+        "test tantivy_repo_has_content_phrase_and_raw_string_true_gate_narrows_by_indexed_source_repo_id ... ok",
+        "test tantivy_search_all_materializes_full_scope ... ok",
+        "test tantivy_select_file_collapses_multiple_chunks_per_path ... ok",
+        "test tantivy_select_repo_uses_canonical_representative_when_scores_tie ... ok",
+        "test tantivy_type_path_collapses_multiple_chunks_per_path ... ok",
+        "test tantivy_top_k_stabilizes_keyword_path_surface_without_losing_content_hits ... ok",
+        "test tantivy_select_path_collapses_multiple_chunks_per_path ... ok",
+        "test tantivy_type_repo_collapses_to_repo_representative ... ok",
+        "test composed_and_decomposed_spellings_agree_across_keyword_and_phrase ... ok",
+        "test token_less_text_query_is_refused_typed_on_both_routes ... ok",
+        "test a_generation_sealed_under_the_previous_format_is_refused_typed ... ok",
+        "test over_long_token_is_refused_on_token_surfaces_and_found_by_raw ... ok",
+        "test a_delta_over_a_previous_format_base_is_refused_typed ... ok",
+        "test a_generation_stamped_with_another_normalizer_is_refused_typed ... ok",
+        "test keyword_index_and_phrase_sidecar_agree_on_every_corpus_token ... ok",
+        "test golden_table_holds_on_both_routes ... ok"
+      ]
+    },
+    {
+      "admitted_after": null,
+      "admitted_before": null,
+      "after": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/audit/audit-native-final-1.after.json",
+        "sha256": "68991508ff8c1dac247816bfe112a07878e660e7dd9bf60121b1106ca3def9da",
+        "uncompressed_sha256": "68991508ff8c1dac247816bfe112a07878e660e7dd9bf60121b1106ca3def9da"
+      },
+      "artifacts": [
+        {
+          "features": [],
+          "fresh": false,
+          "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical#0.1.0",
+          "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-integration-lane/debug/dump_predicate_capabilities",
+          "profile": {
+            "debug_assertions": true,
+            "debuginfo": 1,
+            "opt_level": "0",
+            "overflow_checks": true,
+            "test": false
+          },
+          "sha256": "e10d62f129e89d2b90dc366bb098e65c41fe5d9bfc19b6a5bcecd696d8b0ed19",
+          "target": {
+            "crate_types": [
+              "bin"
+            ],
+            "doc": true,
+            "doctest": false,
+            "edition": "2024",
+            "kind": [
+              "bin"
+            ],
+            "name": "dump_predicate_capabilities",
+            "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical/src/bin/dump_predicate_capabilities.rs",
+            "test": true
+          }
+        },
+        {
+          "features": [],
+          "fresh": false,
+          "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical#0.1.0",
+          "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-integration-lane/debug/deps/l1_query_domain_window-c8c35a2ce0bb26c0",
+          "profile": {
+            "debug_assertions": true,
+            "debuginfo": 1,
+            "opt_level": "0",
+            "overflow_checks": true,
+            "test": true
+          },
+          "sha256": "8cffd49ec72f0dffe27d08a81bec8d05fb75ab8a9ed2f81143e7f7df6b80153e",
+          "target": {
+            "crate_types": [
+              "bin"
+            ],
+            "doc": false,
+            "doctest": false,
+            "edition": "2024",
+            "kind": [
+              "test"
+            ],
+            "name": "l1_query_domain_window",
+            "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical/tests/l1_query_domain_window.rs",
+            "test": true
+          }
+        }
+      ],
+      "before": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/audit/audit-native-final-1.before.json",
+        "sha256": "5965898339650bda525871ed7d5cccbe03af5d13c11e8808af86be3914d7b08a",
+        "uncompressed_sha256": "5965898339650bda525871ed7d5cccbe03af5d13c11e8808af86be3914d7b08a"
+      },
+      "capture_phase": "Before queue admission through command completion",
+      "command": [
+        "./scripts/cargow",
+        "test",
+        "--locked",
+        "-j",
+        "2",
+        "-p",
+        "quanta-index-lexical",
+        "--test",
+        "l1_query_domain_window",
+        "--message-format=json"
+      ],
+      "counts": {
+        "failed": 1,
+        "ignored": 0,
+        "passed": 13
+      },
+      "diagnostics": [],
+      "execution_status": "FAILED",
+      "exit_code": 101,
+      "label": "audit-native-final-1",
+      "log": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/audit/audit-native-final-1.log.gz",
+        "sha256": "75520ae2c4124961425c1af2637d340bba9e496766d5a62a5793cb091715d99d",
+        "uncompressed_sha256": "003fcf43deae6db4ac680ff6819a8efc894350644d0a76e362ced2a34515f8a7"
+      },
+      "queue_through_completion_changes": [
+        "crates/quanta-index-contract-base/src/results/candidates.rs",
+        "crates/quanta-index-contract-base/src/results/preview.rs",
+        "crates/quanta-index-contract/src/results/query_responses.rs"
+      ],
+      "receipt": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/audit/audit-native-final-1.receipt.json",
+        "sha256": "9bacd98cd01a3440e0136c6c58d010dbd5f5a129273e89c339e51a40b5e6ffe6",
+        "uncompressed_sha256": "9bacd98cd01a3440e0136c6c58d010dbd5f5a129273e89c339e51a40b5e6ffe6"
+      },
+      "source_changed_during_run": [
+        "crates/quanta-index-contract-base/src/results/candidates.rs",
+        "crates/quanta-index-contract-base/src/results/preview.rs",
+        "crates/quanta-index-contract/src/results/query_responses.rs"
+      ],
+      "source_changed_since_run": [
+        "crates/quanta-index-contract-base/src/results/candidates.rs",
+        "crates/quanta-index-contract-base/src/results/preview.rs",
+        "crates/quanta-index-contract/src/ipc/ingest.rs",
+        "crates/quanta-index-contract/src/ipc/ingest_observation.rs",
+        "crates/quanta-index-lexical/src/searcher/candidates.rs"
+      ],
+      "source_manifest_sha256": "f64b5603223c29af219da1630b9c65392419ea9de78c3a7a77dced75cd8d1786",
+      "source_matches_current": false,
+      "source_stable_during_run": false,
+      "tests": [
+        "test predicate_result_empty_cannot_hide_tokenless_phrase ... ok",
+        "test generic_text_symbol_selection_preserves_fixture_membership ... ok",
+        "test l1_audit_exact_all_repo_projection_retains_each_source ... ok",
+        "test invalid_fetch_cannot_mint_zero_exact_count_before_execution ... ok",
+        "test empty_repo_predicate_cannot_hide_invalid_count ... ok",
+        "test invalid_regex_keeps_dialect_code_before_empty_results ... ok",
+        "test exact_all_ports_refuse_bounded_count_and_preserve_full_set_controls ... ok",
+        "test l1_audit_exact_all_symbol_name_uses_the_normal_query_rewrite ... ok",
+        "test symbol_as_text_explanation_keeps_domain_when_a_predicate_is_empty ... ok",
+        "test predicate_result_empty_cannot_hide_keyword_or_content_tokens ... FAILED",
+        "test invalid_predicate_arguments_keep_registry_code_before_empty_results ... ok",
+        "test projection_cannot_reroute_unsupported_symbol_regex_to_text ... ok",
+        "test symbol_endpoint_rejects_text_projections_with_and_without_hits ... ok",
+        "test symbol_count_cap_preserves_rows_when_explicitly_walking_boundaries ... ok"
+      ]
+    },
+    {
+      "admitted_after": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/audit/audit-native-final-2.admitted-after.json",
+        "sha256": "cc82cf44677fb22e67d57de74694151810696f57734d50dd734e851297f22fa6",
+        "uncompressed_sha256": "cc82cf44677fb22e67d57de74694151810696f57734d50dd734e851297f22fa6"
+      },
+      "admitted_before": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/audit/audit-native-final-2.admitted-before.json",
+        "sha256": "f7a40245daca63ea893278525636c0cecf8b64f03d9484bfbd58104eb48ae1a3",
+        "uncompressed_sha256": "f7a40245daca63ea893278525636c0cecf8b64f03d9484bfbd58104eb48ae1a3"
+      },
+      "after": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/audit/audit-native-final-2.after.json",
+        "sha256": "99bb07f4056aa602dc607222f76675ef6614be87bb60fe99bfd892b38e94f133",
+        "uncompressed_sha256": "99bb07f4056aa602dc607222f76675ef6614be87bb60fe99bfd892b38e94f133"
+      },
+      "artifacts": [
+        {
+          "features": [],
+          "fresh": false,
+          "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical#0.1.0",
+          "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-integration-lane/debug/dump_predicate_capabilities",
+          "profile": {
+            "debug_assertions": true,
+            "debuginfo": 1,
+            "opt_level": "0",
+            "overflow_checks": true,
+            "test": false
+          },
+          "sha256": "6e14bccc3ab67ab1afa5b26ffba915ab038a7d098fa632759ec39b0bca85841c",
+          "target": {
+            "crate_types": [
+              "bin"
+            ],
+            "doc": true,
+            "doctest": false,
+            "edition": "2024",
+            "kind": [
+              "bin"
+            ],
+            "name": "dump_predicate_capabilities",
+            "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical/src/bin/dump_predicate_capabilities.rs",
+            "test": true
+          }
+        },
+        {
+          "features": [],
+          "fresh": false,
+          "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical#0.1.0",
+          "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-integration-lane/debug/deps/l1_query_domain_window-c8c35a2ce0bb26c0",
+          "profile": {
+            "debug_assertions": true,
+            "debuginfo": 1,
+            "opt_level": "0",
+            "overflow_checks": true,
+            "test": true
+          },
+          "sha256": "41c1380814b45daf381e346e6ca9bf6dca397e30f5df994ad0420a87eeef2150",
+          "target": {
+            "crate_types": [
+              "bin"
+            ],
+            "doc": false,
+            "doctest": false,
+            "edition": "2024",
+            "kind": [
+              "test"
+            ],
+            "name": "l1_query_domain_window",
+            "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical/tests/l1_query_domain_window.rs",
+            "test": true
+          }
+        }
+      ],
+      "before": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/audit/audit-native-final-2.before.json",
+        "sha256": "a199a93bfec6fbbcc30355d432463a96eab91a29eb0bd6f920e6c1dfe867c93b",
+        "uncompressed_sha256": "a199a93bfec6fbbcc30355d432463a96eab91a29eb0bd6f920e6c1dfe867c93b"
+      },
+      "capture_phase": "After canonical lock admission, immediately around real Cargo",
+      "command": [
+        "./scripts/cargow",
+        "test",
+        "--locked",
+        "-j",
+        "2",
+        "-p",
+        "quanta-index-lexical",
+        "--test",
+        "l1_query_domain_window",
+        "--message-format=json"
+      ],
+      "counts": {
+        "failed": 1,
+        "ignored": 0,
+        "passed": 13
+      },
+      "diagnostics": [],
+      "execution_status": "FAILED",
+      "exit_code": 101,
+      "label": "audit-native-final-2",
+      "log": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/audit/audit-native-final-2.log.gz",
+        "sha256": "a55a9e8085608417afae2300fd73a20323ae95560cd3439c02254f9f73f45a10",
+        "uncompressed_sha256": "a6abd6008dc72e9f1361f0a4df76ba627163eae3cfed0eca1f71182c7037209c"
+      },
+      "queue_through_completion_changes": [
+        "crates/quanta-index-lexical/src/searcher/candidates.rs"
+      ],
+      "receipt": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/audit/audit-native-final-2.receipt.json",
+        "sha256": "13e5773062be2865e23955adfc470f5b0b2363db9305ea56b5b29be0a5e8e981",
+        "uncompressed_sha256": "13e5773062be2865e23955adfc470f5b0b2363db9305ea56b5b29be0a5e8e981"
+      },
+      "source_changed_during_run": [
+        "crates/quanta-index-lexical/src/searcher/candidates.rs"
+      ],
+      "source_changed_since_run": [
+        "crates/quanta-index-contract-base/src/results/candidates.rs",
+        "crates/quanta-index-contract-base/src/results/preview.rs",
+        "crates/quanta-index-lexical/src/searcher/candidates.rs"
+      ],
+      "source_manifest_sha256": "bbcd9d5f8debb51dd5495ca0c8f57e3df38307d2287c0a0061e10b31d4fa890c",
+      "source_matches_current": false,
+      "source_stable_during_run": false,
+      "tests": [
+        "test l1_audit_exact_all_symbol_name_uses_the_normal_query_rewrite ... ok",
+        "test predicate_result_empty_cannot_hide_tokenless_phrase ... ok",
+        "test invalid_regex_keeps_dialect_code_before_empty_results ... ok",
+        "test invalid_fetch_cannot_mint_zero_exact_count_before_execution ... ok",
+        "test l1_audit_exact_all_repo_projection_retains_each_source ... ok",
+        "test predicate_result_empty_cannot_hide_keyword_or_content_tokens ... FAILED",
+        "test generic_text_symbol_selection_preserves_fixture_membership ... ok",
+        "test symbol_as_text_explanation_keeps_domain_when_a_predicate_is_empty ... ok",
+        "test projection_cannot_reroute_unsupported_symbol_regex_to_text ... ok",
+        "test invalid_predicate_arguments_keep_registry_code_before_empty_results ... ok",
+        "test empty_repo_predicate_cannot_hide_invalid_count ... ok",
+        "test exact_all_ports_refuse_bounded_count_and_preserve_full_set_controls ... ok",
+        "test symbol_endpoint_rejects_text_projections_with_and_without_hits ... ok",
+        "test symbol_count_cap_preserves_rows_when_explicitly_walking_boundaries ... ok"
+      ]
+    }
+  ],
+  "raw_artifact_digest_checks": 41,
+  "remaining": [
+    "Native Keyword/Content and dispatcher phrase primitive admission; shared API ownership remains outside L1.",
+    "Repository-wide and actual daemon/SDK qualification NOT_RUN."
+  ],
+  "reviewed_source": {
+    "crates/quanta-index-core/src/domains/lexical/query_plan.rs": "6b3f95221e53e6abbfd18c23f341d8add7f0e3949c2797248d06c94be10c2495",
+    "crates/quanta-index-lexical/src/dense_admission.rs": "e939bab101d2d52a7e12949fc38c004023b5bb6ea36a60a2e41f315029d3a34f",
+    "crates/quanta-index-lexical/src/searcher/manual_scan.rs": "bc48555c66b4846bafdc2debdcb8addad41b6c6be72c177a84eed825571c55ce",
+    "crates/quanta-index-lexical/src/searcher/planner_errors.rs": "1b0acc9e2b92052bd8f4718d28ec0eeea25a559a82ce9164b4656d5c8cab6175",
+    "crates/quanta-index-lexical/src/searcher/port.rs": "e822c1110dbbf2315531035a93d814c4f34eaff0dd3a93164341bc50460047c1",
+    "crates/quanta-index-lexical/src/searcher/prepare.rs": "02b4ca6984a1038b77abdd85f1bab933d817557e449b7e7b0fb18c9d03164a4c",
+    "crates/quanta-index-search-plane/src/query_dispatcher/continuation.rs": "6708316c63bf64a691625b69254f22c30d468ecf4f93bf26fe1cecf244f38122",
+    "crates/quanta-index-search-plane/src/query_dispatcher/planning.rs": "8f3d39a6a98f63fe149b1ec3116264320cd0ff5c9544d050279e93aa468da669",
+    "crates/quanta-index-search-plane/src/query_dispatcher/routes/lexical.rs": "0780cc06d80227a1cc5712414a28ae9c0c747102a1289885765b18f1f9d949c0",
+    "crates/quanta-index-search-plane/src/query_dispatcher/routes/structural/lexical_leaves.rs": "5bc4405eeddec108b53f82cfe79fbba4a79be419a8f42fa91b6aeaec4ae00123",
+    "crates/quanta-index-search-plane/src/query_dispatcher/routes/structural/lowering.rs": "239610e5e7dbe585d66fe5ed5ed16d1b253ae20fb32b12f1cb20764965259d72",
+    "crates/quanta-index-search-plane/src/query_dispatcher/window.rs": "83590aa98c51d8f8e5954a261842606c6a6faaf5208a1a76cd91bea4f360b8f2"
+  },
+  "scope": "Real sealed native exact-all port only; fixtures author IDs, source repositories, and cardinalities. Ordinary search is a positive control. No public SDK regression claimed for the two new findings.",
+  "state": "partial",
+  "static_checks_scope": "Formatting and whitespace for the two audit-edited files only",
+  "static_checks_status": "VERIFIED",
+  "time_unix": 1790461247.07757
+}

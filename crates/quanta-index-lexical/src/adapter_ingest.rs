@@ -6,8 +6,9 @@ use crate::generation_dir::{ensure_unsealed, is_writer_lock_entry, read_lexical_
 use crate::index_store::{lexical_sealed_identity_path, persist_lexical_sealed_identity};
 use crate::overlay_codec::OverlayFamily;
 use crate::overlay_codec::{
-    encode_file_contributor_batch, encode_file_ownership_batch, encode_repo_commit_recency_batch,
-    encode_repo_description_batch, encode_repo_meta_batch, encode_repo_topic_batch,
+    decode_repo_metadata_payload, encode_file_contributor_batch, encode_file_ownership_batch,
+    encode_repo_commit_recency_batch, encode_repo_description_batch, encode_repo_meta_batch,
+    encode_repo_topic_batch,
 };
 use crate::sealed_generation::coverage::{
     SOURCE_FILE_COVERAGE_FILE_NAME, apply_file_coverage, read_staged_coverage,
@@ -149,6 +150,9 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
         batch
             .validate_surface_mutations_v1()
             .map_err(|error| CoreError::InvalidContract(error.to_string()))?;
+        if let Some(payload) = &batch.bundle_payload {
+            let _metadata = decode_repo_metadata_payload(payload)?;
+        }
         let identity = GenerationSnapshot {
             repo_id: batch.repo_id.clone(),
             revision_id: batch.revision_id.clone(),
@@ -162,8 +166,22 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
             generation: batch.generation,
         });
         if lexical_sealed_identity_path(&directory).exists() {
-            self.validate_generation_identity(&identity)?;
-            let proved = walk_sealed_generation(&directory, &identity, &mut DiscardingVisitor)?;
+            // A full replacement can reach the existing identity-fenced repair
+            // planner for damaged content. Proving that content here would
+            // refuse before the materializer can reclaim and rebuild it. This
+            // is mutation admission only: the sealed identity must still match,
+            // and neither build nor open accepts an unproved generation.
+            let (_directory, _observed) =
+                self.sealed_generation_dir_for(&identity, "batch preflight")?;
+            let proved = match walk_sealed_generation(&directory, &identity, &mut DiscardingVisitor)
+            {
+                Ok(proved) => proved,
+                Err(CoreError::Typed {
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
+                    ..
+                }) if batch.mode == BatchIngestMode::ReplaceGeneration => return Ok(()),
+                Err(error) => return Err(error),
+            };
             if proved.source_publication.as_ref() != Some(&batch.source_event) {
                 return Err(CoreError::InvalidContract(
                     "lexical: sealed target belongs to another source event".into(),
@@ -184,6 +202,9 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
         batch.validate_v1().map_err(|error| {
             CoreError::InvalidContract(format!("lexical: batch admission: {error}"))
         })?;
+        if let Some(payload) = &batch.bundle_payload {
+            let _metadata = decode_repo_metadata_payload(payload)?;
+        }
         let candidate = GenerationSnapshot {
             repo_id: batch.repo_id.clone(),
             revision_id: batch.revision_id.clone(),
@@ -442,6 +463,20 @@ impl LexicalAdapter {
                 }
                 let verified =
                     walk_sealed_generation(&base_dir, &identity, &mut DiscardingVisitor)?;
+                // A current source high-water alone cannot authorize cloning an
+                // older physical snapshot: unchanged files would be resurrected
+                // while the new event claims to extend the current lineage.
+                // Prove the actual inherited snapshot is the declared parent.
+                if verified.source_publication.as_ref().is_none_or(|event| {
+                    event.stream_id != batch.source_event.stream_id
+                        || Some(&event.event_id)
+                            != batch.source_event.expected_base_event_id.as_ref()
+                }) {
+                    return Err(CoreError::Typed {
+                        code: quanta_index_contract::SearchPlaneErrorCodeV2::DeltaBaseConflict,
+                        message: "lexical: delta base source event differs from the declared stream parent; publish a full replacement to start another lineage".into(),
+                    });
+                }
                 self.validate_inherited_candidate_ownership(&verified.index, batch)?;
                 verified.coverage.ok_or_else(|| CoreError::Typed { code: quanta_index_contract::SearchPlaneErrorCodeV2::SymbolCoverageUnavailable, message: "lexical: coverage delta requires a base with admitted file coverage; rebuild the generation".into() })?
             }
@@ -506,8 +541,8 @@ impl LexicalAdapter {
             .iter()
             .map(|scope| &scope.coverage.source.file)
             .chain(batch.tombstone_scopes.iter().map(|scope| &scope.file))
-            .map(|file| {
-                Box::new(crate::text_docs::source_file_query(&self.fields, file)) as Box<dyn Query>
+            .map(|file| -> Box<dyn Query> {
+                Box::new(crate::text_docs::source_file_query(&self.fields, file))
             })
             .collect();
         let conflict = BooleanQuery::new(vec![
@@ -638,8 +673,10 @@ fn validate_raw_file_mutations(ops: &[LexicalChannelOp]) -> Result<(), CoreError
                 )?;
                 clear.push(payload.surface);
             }
-            LexicalChannelOp::FullBundle(_)
-            | LexicalChannelOp::UpsertChunk(_)
+            LexicalChannelOp::FullBundle(bundle) => {
+                let _metadata = decode_repo_metadata_payload(&bundle.payload)?;
+            }
+            LexicalChannelOp::UpsertChunk(_)
             | LexicalChannelOp::UpsertSymbol(_)
             | LexicalChannelOp::UpsertCommit(_)
             | LexicalChannelOp::UpsertRef(_)

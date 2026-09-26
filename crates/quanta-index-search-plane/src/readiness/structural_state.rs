@@ -10,7 +10,7 @@ use std::fmt;
 use imbl::OrdMap;
 use quanta_index_contract::AuxEpochV1;
 use quanta_index_contract::lex::{ParseTreeRecord, compute_parse_tree_source_hash};
-use quanta_index_contract::{ChunkId, ChunkRecord};
+use quanta_index_contract::{ChunkId, ChunkRecord, RepoId, SourceFileKey};
 use quanta_index_core::{AuxiliaryGenerationKeyV1, CoreError};
 use serde::de::{MapAccess, Visitor};
 use serde::ser::SerializeStruct;
@@ -127,17 +127,41 @@ impl StructuralAuthorityState {
         self.chunks.clear();
     }
 
-    /// Replace every chunk at `path` with `chunks`.
-    pub(crate) fn replace_scope_chunks(&mut self, path: &str, chunks: Vec<ChunkRecord>) {
-        self.tombstone_scope_chunks(path);
+    /// Bind admitted file ownership when the producer omitted the optional
+    /// chunk facet. The coverage key, not the materialization target, owns it.
+    pub(crate) fn bind_chunk_source(mut chunk: ChunkRecord, file: &SourceFileKey) -> ChunkRecord {
+        if chunk.source_repo_id.is_none() {
+            chunk.source_repo_id = Some(file.source_repo_id.clone());
+        }
+        chunk
+    }
+
+    /// Replace only chunks belonging to this exact source repository and path.
+    pub(crate) fn replace_file_chunks(
+        &mut self,
+        file: &SourceFileKey,
+        target_repo: &RepoId,
+        chunks: Vec<ChunkRecord>,
+    ) {
+        self.tombstone_file_chunks(file, target_repo);
         for chunk in chunks {
+            let chunk = Self::bind_chunk_source(chunk, file);
             self.restore_chunk(chunk.chunk_id.clone(), chunk);
         }
     }
 
-    /// Drop every chunk at `path`.
-    pub(crate) fn tombstone_scope_chunks(&mut self, path: &str) {
-        for chunk_id in self.chunk_ids_at_path(path) {
+    /// Drop only this source file; a matching path in another repo survives.
+    pub(crate) fn tombstone_file_chunks(&mut self, file: &SourceFileKey, target_repo: &RepoId) {
+        let removed: Vec<ChunkId> = self
+            .chunks
+            .iter()
+            .filter(|(_, chunk)| {
+                chunk.repo_relative_path == file.repo_relative_path
+                    && chunk.searchable_repo_id(target_repo) == &file.source_repo_id
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for chunk_id in removed {
             self.remove_chunk(&chunk_id);
         }
     }

@@ -1,146 +1,25 @@
 {
-  "schema": "l3-static-owner-snapshot-v1",
-  "captured_at": "2026-09-26T20:18:21.698832+00:00",
-  "head": "106d7abec2dd3fa03f9db5a19a3de41df2f0afad",
-  "dirty_status": "## main...origin/main\n M crates/quanta-index-contract/src/ipc/ingest.rs\n M crates/quanta-index-core/src/domains/lexical/mod.rs\n M crates/quanta-index-core/src/domains/lexical/outbound.rs\n M crates/quanta-index-core/src/lib.rs\n M crates/quanta-index-lexical/src/budgeted_search.rs\n M crates/quanta-index-lexical/src/ranked_page.rs\n M crates/quanta-index-lexical/src/searcher/paging.rs\n M crates/quanta-index-lexical/src/searcher/snippets.rs\n M crates/quanta-index-lq-regex/src/executor.rs\n M crates/quanta-index-search-plane/src/ingest_dispatcher/tests/mod.rs\n M docs/plans/sep-27-misc/tickets/INDEX.md\n M tools/benchmark/evidence.py\n M tools/ci/tests/test_retrieval_benchmark.py\n?? benchmarks/retrieval/tests/fixtures/\n?? benchmarks/retrieval/tests/l5_parser_regressions.rs\n?? crates/quanta-index-lexical/src/ranked_page_tests.rs\n?? crates/quanta-index-lexical/tests/l1_query_domain_window.rs\n?? crates/quanta-index-lexical/tests/l2_file_mutation.rs\n?? crates/quanta-index-search-plane/src/ingest_dispatcher/tests/l2_file_mutation.rs\n?? crates/quanta-index-search-plane/src/query_dispatcher/tests/l1_query_domain_window.rs\n?? docs/plans/sep-27-code-search-remediation/handoffs/\n?? docs/plans/sep-27-code-search-remediation/l2-g0-request.md\n?? docs/plans/sep-27-code-search-remediation/l2-preparation-receipt.json\n",
-  "owned_files": [
-    "crates/quanta-index-lexical/src/budgeted_search.rs",
-    "crates/quanta-index-lexical/src/ranked_page.rs",
-    "crates/quanta-index-lexical/src/ranked_page_tests.rs",
-    "crates/quanta-index-lexical/src/searcher/paging.rs"
-  ],
-  "source_files": [
-    {
-      "path": "crates/quanta-index-lexical/src/budgeted_search.rs",
-      "sha256": "202f37abff86d381858234b374db7441a608e280e2684dbafbbbcbf6d751939a"
-    },
-    {
-      "path": "crates/quanta-index-lexical/src/ranked_page.rs",
-      "sha256": "4b841b732d18bed62313e3e12e5ef933910c4488df5a03175300305553a71ce8"
-    },
-    {
-      "path": "crates/quanta-index-lexical/src/ranked_page_tests.rs",
-      "sha256": "5cb47c06cadf84ac9a095a054443950f46d8ed90816fd59b8d4d7b4cdbfcbdb0"
-    },
-    {
-      "path": "crates/quanta-index-lexical/src/searcher/paging.rs",
-      "sha256": "be3af19cc43ef8d414ed4d9deaefe1953056e0d167ce3be0587ebff242b47e69"
-    },
-    {
-      "path": "Cargo.toml",
-      "sha256": "5ae90ed4d711fdc8959df5911b9be05f26b7918e9b111267728bf6acef329b4f"
-    },
-    {
-      "path": "Cargo.lock",
-      "sha256": "3898378bc888e76e0fa52016a19a1fe9cd0d3e75d4651f68af8c681902b1cd45"
-    },
-    {
-      "path": "rust-toolchain.toml",
-      "sha256": "c3b14ae51e250f5dfbccefccabcead245ffb3ee3b023050aa79e3cc544023d69"
-    },
-    {
-      "path": ".cargo/config.toml",
-      "sha256": "f6308580477cf746b7a3fa03750293049dd4fe07b78fbed3f98b125663686234"
-    },
-    {
-      "path": "scripts/cargow",
-      "sha256": "488fcd15987f5cd273ccbb831ab22d1c54d9c0f35eef459663594cfdbe35ed8a"
-    },
-    {
-      "path": "scripts/quanta-index-env.sh",
-      "sha256": "f9528acfe86dd5f468fe03e663ac0704a3c36e70c6563e16c7febf1162080624"
-    },
-    {
-      "path": "crates/quanta-index-lexical/Cargo.toml",
-      "sha256": "5e5b15c6be0236a4e33f155818844f0e6f04182dc02d1361cf2eb4a8f5f57f8a"
-    },
-    {
-      "path": "crates/quanta-index-lexical/src/symbol.rs",
-      "sha256": "54d1b501aa6913bc5aa82d0cec29a38a325f3d9f27e82b0b674f5eebc0307dbd"
-    },
-    {
-      "path": "crates/quanta-index-lexical/src/schema.rs",
-      "sha256": "8900968c99e04a783726b86adfbcabcb46b76bf65502103c139a6f137dde6d72"
-    },
-    {
-      "path": "crates/quanta-index-lexical/src/documents.rs",
-      "sha256": "c16757b83bffc80f593003e4f00c1b66425d343606e4898e7ed78a560e5147ab"
-    },
-    {
-      "path": "crates/quanta-index-lexical/src/adapter.rs",
-      "sha256": "995f45d7d1d27a4b90c0764a3c84e3ec500f294d3838f178e99ffe0e19ae6939"
-    },
-    {
-      "path": "crates/quanta-index-lexical/src/searcher/candidates.rs",
-      "sha256": "ab7c0f6be13047c37b7990e1951e89456e6ee55aeaa90d7a7ad1b90078221c02"
-    },
-    {
-      "path": "crates/quanta-index-lexical/src/searcher/query_rewrite.rs",
-      "sha256": "b5ebe0482060462c74a3b83a62026124f1ff19a21e686f442c5b6175a5073b1f"
-    },
-    {
-      "path": "crates/quanta-index-core/src/domains/lexical/service.rs",
-      "sha256": "eb8f8abbfaec1e294ddf538b6f9f0249c6e9bc8dc60e7954b9f7f94417501b0a"
-    }
-  ],
-  "checks": [
-    {
-      "argv": [
-        "rustfmt",
-        "--version"
-      ],
-      "exit_code": 0,
-      "stdout": "rustfmt 1.8.0-stable (ded5c06cf2 2025-12-08)\n",
-      "stderr": "",
-      "output_sha256": "02058478f40d18f8607dff4bc218ddca297cbdd1952b3e7bf0f419251987385a"
-    },
-    {
-      "argv": [
-        "rustfmt",
-        "--edition",
-        "2024",
-        "--config",
-        "skip_children=true",
-        "--check",
-        "crates/quanta-index-lexical/src/budgeted_search.rs",
-        "crates/quanta-index-lexical/src/ranked_page.rs",
-        "crates/quanta-index-lexical/src/ranked_page_tests.rs",
-        "crates/quanta-index-lexical/src/searcher/paging.rs"
-      ],
-      "exit_code": 0,
-      "stdout": "",
-      "stderr": "",
-      "output_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-    },
-    {
-      "argv": [
-        "git",
-        "diff",
-        "--check",
-        "--",
-        "crates/quanta-index-lexical/src/budgeted_search.rs",
-        "crates/quanta-index-lexical/src/ranked_page.rs",
-        "crates/quanta-index-lexical/src/ranked_page_tests.rs",
-        "crates/quanta-index-lexical/src/searcher/paging.rs"
-      ],
-      "exit_code": 0,
-      "stdout": "",
-      "stderr": "",
-      "output_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-    }
-  ],
-  "compile": "NOT_RUN",
-  "behavior": "NOT_RUN",
-  "tests_executed": null,
-  "scope": "static formatting and diff whitespace only; selected reviewed inputs, not a compiled dependency closure",
-  "excluded": [
-    "full source closure",
-    "native tests",
-    "public path",
-    "memory/runtime performance",
-    "exact-name implementation",
-    "source-aware identity implementation",
-    "work/byte ledger completion"
-  ],
-  "rust_slot": "L0 01a0dea8-aa8e-7d73-857f-b174f7be64fe holds slot; await release"
+  "state": "BLOCKED",
+  "scope": "Current shared-source qualification; the L3 repair is verified on the separately bound frozen snapshot",
+  "head": "98601a66d8cab9c86232b3e62ce490c8b43b71b6",
+  "current_receipt": {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/L3_ADVERSARIAL.source.json",
+    "sha256": "6be54ab43a1a76d66b01cb6073d351d0261ebcbad15c6ad3cd63cc3f8a442310"
+  },
+  "claims": {
+    "repair_on_frozen_source": "VERIFIED",
+    "adversarial_order_oracle_on_frozen_source": "VERIFIED",
+    "current_selected_lexical_tests": "BLOCKED",
+    "whole_repository_CI": "NOT_RUN",
+    "installed_daemon_E2E": "NOT_RUN",
+    "performance_RSS_ranking_quality": "NOT_RUN"
+  },
+  "last_verified_snapshot": {
+    "run": "audit3-final-2",
+    "passed": 190,
+    "failed": 0,
+    "selected_input_sha256": "546cc7b000c7f0bbee6d7ac64725789d81acf1eacc6056aef735b419600b04c8",
+    "receipt": "docs/plans/sep-27-code-search-remediation/handoffs/l3-proof/adversarial/verified-snapshot-L3_ADVERSARIAL.source.json",
+    "sha256": "db2cae59afe32e1a09818ef5a5f31c65ab698c293e2028c5fdbb3685b555da83"
+  }
 }

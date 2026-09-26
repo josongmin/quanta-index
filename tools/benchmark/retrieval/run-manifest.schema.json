@@ -90,7 +90,7 @@
     },
     "artifacts": {
       "type": "object", "additionalProperties": false,
-      "required": ["suite", "query_pack", "corpus_manifest", "mapping_proof", "latency_matrix", "host_start", "host_end", "host_profile", "records", "reports", "quanta_manifests", "semble_adapter_manifest", "semble_lockfile", "semble_native", "semble_model_cache_manifests", "phase_metrics", "resource_metrics", "protocol_lock"],
+      "required": ["suite", "query_pack", "corpus_manifest", "mapping_proof", "latency_matrix", "host_start", "host_end", "host_profile", "records", "reports", "quanta_manifests", "semble_adapter_manifest", "semble_lockfile", "semble_native", "semble_model_cache_manifests", "phase_metrics", "symbol_preflights", "resource_metrics", "protocol_lock"],
       "properties": {
         "suite": {"type": "string", "minLength": 1},
         "query_pack": {"type": "string", "minLength": 1},
@@ -131,6 +131,7 @@
           "type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1},
           "description": "One symlink-free pinned model cache manifest per Semble capture root."
         },
+        "symbol_preflights": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
         "phase_metrics": {
           "type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1},
           "description": "One monotonic phase-boundary artifact per raw capture."

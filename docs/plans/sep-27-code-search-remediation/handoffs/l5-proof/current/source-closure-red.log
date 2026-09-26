@@ -1,0 +1,33 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+_____ test_local_patch_below_registry_dependency_remains_in_source_closure _____
+
+tmp_path = PosixPath('/private/tmp/pytest-of-songmin/pytest-1270/test_local_patch_below_registr0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x1073696e0>
+
+    def test_local_patch_below_registry_dependency_remains_in_source_closure(tmp_path, monkeypatch):
+        module = _closure_module()
+        metadata = {
+            "packages": [
+                {"id": "app", "name": "app", "source": None, "manifest_path": str(tmp_path / "app/Cargo.toml")},
+                {"id": "registry", "name": "registry", "source": "registry+https://example.invalid", "manifest_path": "/external/registry/Cargo.toml"},
+                {"id": "patch", "name": "patch", "source": None, "manifest_path": str(tmp_path / "vendor/patch/Cargo.toml")},
+            ],
+            "resolve": {"nodes": [
+                {"id": "app", "dependencies": ["registry"]},
+                {"id": "registry", "dependencies": ["patch"]},
+                {"id": "patch", "dependencies": []},
+            ]},
+        }
+        monkeypatch.setattr(module, "_metadata", lambda _repo: metadata)
+>       assert module._cargo_roots(tmp_path, ("app",)) == {"app", "vendor/patch"}
+E       AssertionError: assert {'app'} == {'app', 'vendor/patch'}
+E         
+E         Extra items in the right set:
+E         'vendor/patch'
+E         Use -v to get more diff
+
+tools/ci/tests/test_benchmark_source_closure.py:112: AssertionError
+=========================== short test summary info ============================
+FAILED tools/ci/tests/test_benchmark_source_closure.py::test_local_patch_below_registry_dependency_remains_in_source_closure
+1 failed, 55 deselected in 9.50s

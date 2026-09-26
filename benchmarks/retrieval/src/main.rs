@@ -42,7 +42,7 @@ use quanta_index_retrieval_bench::sdk::{
     RouteQuery, publish_and_activate, query_route, resolve_searchd_binary, verify_searchd_digest,
 };
 use quanta_index_retrieval_bench::symbols::{
-    SymbolCoveragePolicy, SymbolPreflightOptions, extract_corpus_symbols, preflight_corpus_symbols,
+    SymbolCoveragePolicy, SymbolPreflightOptions, preflight_corpus_symbols,
 };
 use quanta_index_retrieval_bench::{BenchError, BenchResult, sha256_hex};
 use quanta_index_search_plane::{HybridFetchFloorPolicy, QueryStageObservationPolicy};
@@ -283,6 +283,10 @@ fn chunk_with_strategy(
 }
 
 fn write_json(path: &Path, value: &serde_json::Value) -> BenchResult<()> {
+    write_json_bound(path, value).map(drop)
+}
+
+fn write_json_bound(path: &Path, value: &serde_json::Value) -> BenchResult<String> {
     let rendered = serde_json::to_string_pretty(value).map_err(|err| BenchError::Json {
         path: path.display().to_string(),
         message: err.to_string(),
@@ -295,11 +299,12 @@ fn write_json(path: &Path, value: &serde_json::Value) -> BenchResult<()> {
             path: path.display().to_string(),
             message: format!("refusing to overwrite benchmark evidence: {err}"),
         })?;
-    file.write_all(format!("{rendered}\n").as_bytes())
-        .map_err(|err| BenchError::Io {
-            path: path.display().to_string(),
-            message: err.to_string(),
-        })
+    let bytes = format!("{rendered}\n").into_bytes();
+    file.write_all(&bytes).map_err(|err| BenchError::Io {
+        path: path.display().to_string(),
+        message: err.to_string(),
+    })?;
+    Ok(sha256_hex(&bytes))
 }
 
 fn query_plan_error_details(error: &QueryPlanError) -> serde_json::Value {
@@ -394,7 +399,7 @@ fn plan_query_pack(
     Ok((policy, config, plans))
 }
 
-fn require_external_path(repo: &Path, path: &Path, label: &str) -> BenchResult<()> {
+fn require_external_path(repo: &Path, path: &Path, label: &str) -> BenchResult<PathBuf> {
     if !path.is_absolute() {
         return Err(BenchError::Config(format!(
             "{label} must be an absolute path"
@@ -419,7 +424,10 @@ fn require_external_path(repo: &Path, path: &Path, label: &str) -> BenchResult<(
             "{label} must be outside the frozen repository"
         )));
     }
-    Ok(())
+    let name = path
+        .file_name()
+        .ok_or_else(|| BenchError::Config(format!("{label} has no file name")))?;
+    Ok(canonical_parent.join(name))
 }
 
 fn validate_blinding_claim(
@@ -495,7 +503,7 @@ fn run_symbol_preflight(args: &Args) -> BenchResult<()> {
     let policy = SymbolCoveragePolicy::parse(policy_text)?;
     let repo = PathBuf::from(required(args, "repo")?);
     let out = PathBuf::from(required(args, "out")?);
-    require_external_path(&repo, &out, "--out")?;
+    let _external_path = require_external_path(&repo, &out, "--out")?;
     if out.exists() {
         return Err(BenchError::Config(format!(
             "--out already exists: {}",
@@ -556,7 +564,7 @@ fn run_chunk(args: &Args) -> BenchResult<()> {
     let files = load_corpus(&repo, &manifest, &limits)?;
     let selection = chunk_with_strategy(&required(args, "strategy")?, args, &files)?;
     let out = PathBuf::from(required(args, "out")?);
-    require_external_path(&repo, &out, "--out")?;
+    let _external_path = require_external_path(&repo, &out, "--out")?;
     if out.exists() {
         return Err(BenchError::Config(format!(
             "--out already exists: {}",
@@ -700,9 +708,9 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         )));
     }
     let state_root = PathBuf::from(required(args, "state-root")?);
-    require_external_path(&repo, &state_root, "--state-root")?;
+    let _external_path = require_external_path(&repo, &state_root, "--state-root")?;
     let out = PathBuf::from(required(args, "out")?);
-    require_external_path(&repo, &out, "--out")?;
+    let _external_path = require_external_path(&repo, &out, "--out")?;
     if out.exists() {
         return Err(BenchError::Config(format!(
             "--out already exists: {}",
@@ -711,7 +719,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
     }
     let metrics_out = args.flags.get("metrics-out").map(PathBuf::from);
     if let Some(path) = &metrics_out {
-        require_external_path(&repo, path, "--metrics-out")?;
+        let _external_path = require_external_path(&repo, path, "--metrics-out")?;
         if path.exists() {
             return Err(BenchError::Config(format!(
                 "--metrics-out already exists: {}",
@@ -721,7 +729,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
     }
     let diagnostics_out = args.flags.get("diagnostics-out").map(PathBuf::from);
     if let Some(path) = &diagnostics_out {
-        require_external_path(&repo, path, "--diagnostics-out")?;
+        let _external_path = require_external_path(&repo, path, "--diagnostics-out")?;
         if path.exists() {
             return Err(BenchError::Config(format!(
                 "--diagnostics-out already exists: {}",
@@ -730,7 +738,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         }
     }
     let refusal_out = PathBuf::from(required(args, "refusal-out")?);
-    require_external_path(&repo, &refusal_out, "--refusal-out")?;
+    let _external_path = require_external_path(&repo, &refusal_out, "--refusal-out")?;
     if refusal_out.exists() {
         return Err(BenchError::Config(format!(
             "--refusal-out already exists: {}",
@@ -746,7 +754,8 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             path.push(".symbol-preflight.json");
             PathBuf::from(path)
         });
-    require_external_path(&repo, &symbol_preflight_out, "--symbol-preflight-out")?;
+    let _external_path =
+        require_external_path(&repo, &symbol_preflight_out, "--symbol-preflight-out")?;
     if symbol_preflight_out.exists() {
         return Err(BenchError::Config(format!(
             "symbol preflight evidence already exists: {}",
@@ -778,6 +787,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         .map_err(|error| BenchError::Config(error.to_string()))?;
     let mut output_paths = BTreeSet::new();
     for (label, path) in [
+        ("--state-root", Some(&state_root)),
         ("--out", Some(&out)),
         ("--metrics-out", metrics_out.as_ref()),
         ("--diagnostics-out", diagnostics_out.as_ref()),
@@ -785,13 +795,26 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         ("--symbol-preflight-out", Some(&symbol_preflight_out)),
     ] {
         if let Some(path) = path
-            && !output_paths.insert(path)
+            && !output_paths.insert(require_external_path(&repo, path, label)?)
         {
             return Err(BenchError::Config(format!(
-                "{label} must differ from every other output path"
+                "{label} must differ from every other output/state path after resolving its parent"
             )));
         }
     }
+    if let Some(path) = &metrics_out
+        && require_external_path(&repo, path, "--metrics-out")?.parent()
+            != require_external_path(&repo, &symbol_preflight_out, "--symbol-preflight-out")?
+                .parent()
+    {
+        return Err(BenchError::Config(
+            "symbol preflight and phase metrics must share an evidence directory".to_string(),
+        ));
+    }
+    let symbol_preflight_ref = symbol_preflight_out
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| BenchError::Config("preflight artifact name is not UTF-8".to_string()))?;
     // The query plan is a preflight contract. No corpus chunking, daemon
     // boot, publication, or measured request may happen before every task
     // has one accepted plan.
@@ -809,19 +832,22 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         .map(|file| (file.path.clone(), file.clone()))
         .collect();
     let discovery_elapsed = overall.elapsed();
+    let symbol_preflight_start = Instant::now();
     let symbol_preflight = preflight_corpus_symbols(
         &by_path,
         &symbol_preflight_options(args, limits.max_file_bytes)?,
     )?;
-    write_json(
+    let symbol_preflight_sha256 = write_json_bound(
         &symbol_preflight_out,
         &serde_json::json!({
             "symbol_coverage_policy": symbol_policy_text,
             "repository_commit": manifest.repository_commit,
+            "file_universe_sha256": quanta_index_retrieval_bench::corpus::universe_digest(&manifest.files),
             "preflight": symbol_preflight.report(),
         }),
     )?;
     symbol_preflight.admit(symbol_policy)?;
+    let symbol_preflight_elapsed = symbol_preflight_start.elapsed();
 
     let chunk_start = Instant::now();
     let selection = chunk_with_strategy(&required(args, "strategy")?, args, &files)?;
@@ -1228,7 +1254,8 @@ fn run_capture(args: &Args) -> BenchResult<()> {
     let shutdown_elapsed = shutdown_start.elapsed();
     let overall_elapsed = overall.elapsed();
     let phase_sum = discovery_elapsed
-        .checked_add(chunk_elapsed)
+        .checked_add(symbol_preflight_elapsed)
+        .and_then(|value| value.checked_add(chunk_elapsed))
         .and_then(|value| value.checked_add(boot_elapsed))
         .and_then(|value| value.checked_add(publish_elapsed))
         .and_then(|value| value.checked_add(first_query_elapsed))
@@ -1300,7 +1327,8 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         "symbol_grammars": quanta_index_retrieval_bench::symbols::SYMBOL_PRODUCER_GRAMMARS,
         "symbol_coverage": symbol_coverage,
         "symbol_coverage_policy": symbol_policy_text,
-        "symbol_preflight_out": symbol_preflight_out,
+        "symbol_preflight_out": symbol_preflight_ref,
+        "symbol_preflight_sha256": symbol_preflight_sha256,
         "symbol_producer_policy_sha256": symbol_preflight.report().producer_policy_sha256,
         "symbol_incomplete_files": symbol_preflight.report().incomplete_files,
         "symbol_unsupported_files": symbol_preflight.report().files.iter().filter(|file| file.coverage == quanta_index_contract::SymbolCoverage::Unsupported).count(),
@@ -1312,6 +1340,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         "measurement_repetitions": query_protocol.as_ref().map_or(1, |value| value.measurement_schedules.len()),
         "phases_ms": {
             "discovery": discovery_elapsed.as_secs_f64() * 1000.0,
+            "symbol_preflight": symbol_preflight_elapsed.as_secs_f64() * 1000.0,
             "chunk": chunk_elapsed.as_secs_f64() * 1000.0,
             "model_provider_prepare": boot_elapsed.as_secs_f64() * 1000.0,
             "embed_publish_seal_activate": publish_elapsed.as_secs_f64() * 1000.0,
@@ -1550,7 +1579,12 @@ mod tests {
         assert!(require_external_path(&repo, &repo.join("run.json"), "--out").is_err());
         let output = external.join("run.json");
         assert!(require_external_path(&repo, &output, "--out").is_ok());
-        write_json(&output, &serde_json::json!({"run": 1})).expect("first write");
+        let digest =
+            write_json_bound(&output, &serde_json::json!({"run": 1})).expect("first write");
+        assert_eq!(
+            digest,
+            sha256_hex(&std::fs::read(&output).expect("exact artifact bytes"))
+        );
         assert!(write_json(&output, &serde_json::json!({"run": 2})).is_err());
         let saved = std::fs::read_to_string(&output).expect("saved output");
         assert!(saved.contains("\"run\": 1"));

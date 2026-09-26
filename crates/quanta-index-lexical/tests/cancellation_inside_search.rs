@@ -1,24 +1,23 @@
-//! W5 phase 2 — the request budget is observed inside a lexical
-//! execution, not only at the dispatcher's checkpoints around it.
+//! Pre-interrupted requests stop at primitive admission before native work.
 //!
-//! Every case hands the adapter a budget that is already interrupted, so
-//! the only place the interruption can be observed is inside the adapter:
-//! in the native collect, in the unindexed scan loop, or in the regex
-//! verification. The typed answer names that checkpoint. The same queries
-//! under an unbounded budget serve, which pins that the refusal is the
-//! budget and not the query.
+//! Each route still returns the canonical cancellation/deadline code and names
+//! the checkpoint that observed it. Under an unbounded budget the same query
+//! serves its independently fixed row count. These entry tests do not claim a
+//! mid-loop interruption; direct BudgetProbe/collector tests cover that layer.
 
 #![forbid(unsafe_code)]
+
+#[path = "support/source_fixture.rs"]
+mod source_fixture;
 
 use std::error::Error;
 use std::time::{Duration, Instant};
 
 use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
-    BatchIngestMode, ChunkId, ChunkRecord, LQ_VERSION_TAG, LqExpr, LqLeaf, LqOptions, LqQuery,
-    LqSpan, LqYesNoOnly, ManifestGeneration, QueryConstraintSetV1, RepoId, RepoRelativePath,
-    RevisionId, SearchCorpusIngestBatch, SearchCorpusReplaceScope, SearchScopeKey,
-    SearchScopeSurface,
+    ChunkId, ChunkRecord, LQ_VERSION_TAG, LqExpr, LqLeaf, LqOptions, LqQuery, LqSpan, LqYesNoOnly,
+    ManifestGeneration, QueryConstraintSetV1, RepoId, RepoRelativePath, RevisionId,
+    SearchCorpusIngestBatch, SearchCorpusReplaceScope,
 };
 use quanta_index_core::{
     CoreError, LexicalExecutionBudgetV1, LexicalIndexOpenPort, LexicalPageSpec,
@@ -60,13 +59,12 @@ fn scope(index: u32) -> Result<SearchCorpusReplaceScope, Box<dyn Error>> {
     let language = LanguageCode::new("rust")
         .map_err(|err| -> Box<dyn Error> { format!("language code: {err}").into() })?;
     let end_byte = u32::try_from(body.len())?;
-    Ok(SearchCorpusReplaceScope {
-        scope: SearchScopeKey {
-            doc_surface: SearchScopeSurface::File,
-            repo_relative_path: RepoRelativePath::new(&path),
-        },
-        scope_digest: format!("scope:{path}"),
-        chunks: vec![ChunkRecord {
+    Ok(source_fixture::complete_file(
+        source_fixture::file_key(&repo(), &path),
+        &revision(),
+        language.clone(),
+        body.as_bytes(),
+        vec![ChunkRecord {
             chunk_id: ChunkId::new(format!("chunk-{index}")),
             repo_relative_path: RepoRelativePath::new(&path),
             language,
@@ -74,32 +72,22 @@ fn scope(index: u32) -> Result<SearchCorpusReplaceScope, Box<dyn Error>> {
             end_byte,
             start_line: 1,
             end_line: 1,
-            text: body.into_boxed_str(),
+            text: body.clone().into_boxed_str(),
             structural: None,
             parent_chunk_id: None,
             source_repo_id: None,
         }],
-        symbols: Vec::new(),
-    })
+        Vec::new(),
+    )?)
 }
 
 fn sealed_batch() -> Result<SearchCorpusIngestBatch, Box<dyn Error>> {
-    Ok(SearchCorpusIngestBatch {
-        repo_id: repo(),
-        revision_id: revision(),
-        generation: generation(),
-        base_generation: None,
-        manifest_digest: "cancel-manifest:1".to_string(),
-        batch_digest: "cancel-batch:1".to_string(),
-        mode: BatchIngestMode::ReplaceGeneration,
-        bundle_payload: None,
-        clear_surfaces: Vec::new(),
-        replace_scopes: (1..=DOCS).map(scope).collect::<Result<Vec<_>, _>>()?,
-        tombstone_scopes: Vec::new(),
-        semantic_replace_scopes: Vec::new(),
-        semantic_tombstone_scopes: Vec::new(),
-        seal: true,
-    })
+    Ok(source_fixture::sealed_batch(
+        &repo(),
+        &revision(),
+        generation(),
+        (1..=DOCS).map(scope).collect::<Result<Vec<_>, _>>()?,
+    )?)
 }
 
 fn query(expr: LqExpr, options: LqOptions) -> LqQuery {
@@ -183,10 +171,9 @@ fn expect_interrupted(
     }
 }
 
-/// The native collect observes the budget: a cancelled request and a
-/// passed deadline are both answered from inside the collect.
+/// Native search rejects an already interrupted budget before planning work.
 #[test]
-fn a_cancelled_or_expired_budget_is_observed_inside_the_native_collect() -> TestResult {
+fn a_cancelled_or_expired_budget_is_refused_before_native_collection() -> TestResult {
     let (_dir, adapter) = seeded()?;
     let searcher = adapter.open(&repo(), &revision(), generation())?;
     let unconstrained = QueryConstraintSetV1::unconstrained();
@@ -214,7 +201,7 @@ fn a_cancelled_or_expired_budget_is_observed_inside_the_native_collect() -> Test
             )
             .map(|page| page.candidates.len()),
         REQUEST_CANCELLED_CODE,
-        "lexical:collect",
+        "lexical primitive admission",
     )?;
     expect_interrupted(
         searcher
@@ -226,20 +213,14 @@ fn a_cancelled_or_expired_budget_is_observed_inside_the_native_collect() -> Test
             )
             .map(|page| page.candidates.len()),
         REQUEST_DEADLINE_EXCEEDED_CODE,
-        "lexical:collect",
+        "lexical primitive admission",
     )
 }
 
-/// Regex verification walks every prefiltered candidate; the budget is
-/// observed between candidates, before any collect runs.
-///
-/// The interrupted query runs first: a verified set is cached by pattern
-/// (QI-BB-024), and a cached set has no verification loop to interrupt,
-/// so the same query served once would be observed at the collect
-/// instead. That the control afterwards serves from the cache is the
-/// second half of the proof.
+/// Both cold and warm regex queries reject an already cancelled request at
+/// admission. The successful middle query remains the execution control.
 #[test]
-fn a_cancelled_budget_is_observed_inside_regex_verification() -> TestResult {
+fn a_cancelled_budget_is_refused_before_cold_or_warm_regex_execution() -> TestResult {
     let (_dir, adapter) = seeded()?;
     let searcher = adapter.open(&repo(), &revision(), generation())?;
     let unconstrained = QueryConstraintSetV1::unconstrained();
@@ -254,7 +235,7 @@ fn a_cancelled_budget_is_observed_inside_regex_verification() -> TestResult {
             )
             .map(|page| page.candidates.len()),
         REQUEST_CANCELLED_CODE,
-        "lexical:regex-verify",
+        "lexical primitive admission",
     )?;
     let served = searcher.search_constrained(
         &regex_query(),
@@ -269,8 +250,7 @@ fn a_cancelled_budget_is_observed_inside_regex_verification() -> TestResult {
         )
         .into());
     }
-    // Served once, the verified set is cached and a cancelled request is
-    // observed at the collect, not in a verification that no longer runs.
+    // A warm match cache does not bypass request admission.
     expect_interrupted(
         searcher
             .search_constrained(
@@ -281,14 +261,13 @@ fn a_cancelled_budget_is_observed_inside_regex_verification() -> TestResult {
             )
             .map(|page| page.candidates.len()),
         REQUEST_CANCELLED_CODE,
-        "lexical:collect",
+        "lexical primitive admission",
     )
 }
 
-/// An `index:no` scan walks every stored document; the budget is observed
-/// in that loop.
+/// The manual route observes a pre-cancelled budget before scanning documents.
 #[test]
-fn a_cancelled_budget_is_observed_inside_the_unindexed_scan() -> TestResult {
+fn a_cancelled_budget_is_refused_before_the_unindexed_scan() -> TestResult {
     let (_dir, adapter) = seeded()?;
     let searcher = adapter.open(&repo(), &revision(), generation())?;
     let unconstrained = QueryConstraintSetV1::unconstrained();
@@ -317,6 +296,6 @@ fn a_cancelled_budget_is_observed_inside_the_unindexed_scan() -> TestResult {
             )
             .map(|page| page.candidates.len()),
         REQUEST_CANCELLED_CODE,
-        "lexical:scan",
+        "lexical primitive admission",
     )
 }

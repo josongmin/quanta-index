@@ -1,0 +1,28 @@
+{
+  "command": [
+    "./scripts/cargow",
+    "--lane",
+    "test-fast-lane",
+    "test",
+    "-p",
+    "quanta-index-contract",
+    "--test",
+    "lexical_cursor_contract",
+    "--test",
+    "hybrid_candidate_contract",
+    "--test",
+    "ipc_query_result_v2_contract",
+    "--locked"
+  ],
+  "exit_code": 0,
+  "changed_inputs": [],
+  "head_before": "98601a66d8cab9c86232b3e62ce490c8b43b71b6",
+  "head_after": "98601a66d8cab9c86232b3e62ce490c8b43b71b6",
+  "log_path": "/private/tmp/qi-l3-native-evidence/contract-fixtures.log",
+  "log_sha256": "1a94ed0d212b5e51571b4f5a83a4eefc51d425828ae7b434d8d1c25f083fc93d",
+  "binary_sha256": {
+    "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-fast-lane/debug/deps/hybrid_candidate_contract-01fd9d6d434af073": "db091ce87579e990183d7a95e16d6cc2f9fa88f3d20221ed9a262a14629c604a",
+    "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-fast-lane/debug/deps/ipc_query_result_v2_contract-17ec0ae2b03dada5": "cba94f4dd1e48cc7b482f7040c42dce34edddb57f60586f1bdbcb9d43d62de64",
+    "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-fast-lane/debug/deps/lexical_cursor_contract-99f16c36a3ae9a4c": "104abe1e08857bec7867073bc84bd21bfcfb86c53410c4344f158e97e38141e8"
+  }
+}

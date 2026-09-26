@@ -1,0 +1,114 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+__ test_symbol_preflight_rejects_missing_tampered_stale_and_partial_evidence ___
+
+tmp_path = PosixPath('/private/tmp/pytest-of-songmin/pytest-1302/test_symbol_preflight_rejects_0')
+
+    def test_symbol_preflight_rejects_missing_tampered_stale_and_partial_evidence(tmp_path):
+        phase = tmp_path / "phase.json"
+        corpus = {"repository_commit": "a" * 40, "files": [
+            {"path": "a.rs", "file_sha256": "b" * 64},
+            {"path": "b.tsx", "file_sha256": "c" * 64},
+        ]}
+        phase.write_text(json.dumps({
+            "file_count": 2, "symbol_count": 1, "symbol_only_scopes": 0,
+            "symbol_producer_identity": pairrun.QUANTA_SYMBOL_PRODUCER_IDENTITY,
+            "symbol_grammars": pairrun.QUANTA_SYMBOL_GRAMMARS, "phases_ms": {},
+            "symbol_coverage": [
+                {"path": "a.rs", "source_sha256": "b" * 64, "language": "rust", "definition_count": 1},
+                {"path": "b.tsx", "source_sha256": "c" * 64, "language": "typescript_tsx", "definition_count": 0},
+            ],
+        }))
+        artifact = _bind_preflight_fixture(phase, corpus["repository_commit"])
+        metrics = json.loads(phase.read_text())
+        raw = artifact.read_bytes()
+        verify = pairrun.symbol_coverage.verify_artifact
+        assert verify(metrics, phase, corpus) == artifact
+        for mutation in ("missing", "symlink", "bytes", "duplicate_json", "reorder", "partial", "duplicate_row",
+                         "wrong_commit", "wrong_universe", "wrong_hash", "wrong_grammar", "wrong_lock",
+                         "changed_policy", "missing_policy", "unknown_state", "boolean_count", "bool_file_count",
+                         "false_complete", "truncated", "wrong_language", "parent_path", "absolute_path",
+                         "non_string_state"):
+            candidate = copy.deepcopy(metrics)
+            report = json.loads(raw)
+            if mutation == "missing":
+                artifact.unlink()
+            elif mutation == "symlink":
+                artifact.unlink()
+                target = tmp_path / "other.json"
+                target.write_bytes(raw)
+                artifact.symlink_to(target)
+            elif mutation == "bytes":
+                artifact.write_bytes(raw + b" ")
+            elif mutation == "parent_path":
+                candidate["symbol_preflight_out"] = "../symbol-preflight.json"
+            elif mutation == "absolute_path":
+                candidate["symbol_preflight_out"] = str(artifact.resolve())
+            elif mutation == "bool_file_count":
+                candidate["file_count"] = True
+            else:
+                files = report["preflight"]["files"]
+                if mutation == "reorder": files.reverse()
+                elif mutation == "partial": files.pop()
+                elif mutation == "duplicate_row": files[1] = copy.deepcopy(files[0])
+                elif mutation == "wrong_commit": report["repository_commit"] = "f" * 40
+                elif mutation == "wrong_universe": report["file_universe_sha256"] = "f" * 64
+                elif mutation == "wrong_hash": files[0]["source_sha256"] = "f" * 64
+                elif mutation == "wrong_grammar": report["preflight"]["grammar_identity"] += ";forged"
+                elif mutation == "wrong_lock": report["preflight"]["lockfile_sha256"] = "f" * 64
+                elif mutation == "changed_policy": report["preflight"]["policy"]["max_symbols_total"] += 1
+                elif mutation == "missing_policy": del report["preflight"]["policy"]["max_symbols_total"]
+                elif mutation == "unknown_state": files[0]["coverage"] = {"state": "producer_failed"}
+                elif mutation == "non_string_state": files[0]["coverage"] = {"state": []}
+                elif mutation == "boolean_count": files[0]["coverage"]["symbol_count"] = True
+                elif mutation == "false_complete": files[0]["failure"] = "syntax_error"
+                elif mutation == "truncated": files[0]["diagnostics_complete"] = False
+                elif mutation == "wrong_language": files[1]["language"] = "typescript"
+                encoded = json.dumps(report).encode()
+                if mutation == "duplicate_json":
+                    encoded = b'{"repository_commit":"' + b'a' * 40 + b'",' + encoded[1:]
+                artifact.write_bytes(encoded)
+                candidate["symbol_preflight_sha256"] = pairrun.sha_file(artifact)
+            with pytest.raises((ValueError, OSError), match="."):
+>               verify(candidate, phase, corpus)
+
+tools/ci/tests/test_retrieval_benchmark.py:155: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tools/benchmark/retrieval/symbol_coverage.py:252: in verify_artifact
+    validate_report_row(row)
+tools/benchmark/retrieval/symbol_coverage.py:182: in validate_report_row
+    state, _ = validate_row(row)
+               ^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+row = {'path': 'a.rs', 'language': 'rust', 'coverage': {'state': []}, 'failure': None, ...}
+
+    def validate_row(row: dict) -> tuple[str, int | None]:
+        path = row["path"]
+        if (not isinstance(path, str) or not path or path.startswith("/") or "\\" in path
+                or any(ord(c) < 32 for c in path) or any(p in ("", ".", "..") for p in path.split("/"))):
+            raise ValueError("symbol coverage path is invalid")
+        if not is_sha(row["source_sha256"]):
+            raise ValueError("symbol coverage source hash is invalid")
+        language = LANGUAGES.get(path.rsplit(".", 1)[-1]) if "." in path else None
+        if row["language"] != language:
+            raise ValueError("symbol coverage grammar mismatch")
+        coverage = row["coverage"]
+        if not isinstance(coverage, dict):
+            raise ValueError("symbol coverage state must be explicit")
+        state = coverage.get("state")
+        if state == "complete":
+            exact(coverage, {"state", "symbol_count"}, "complete coverage")
+            if language is None or not count(coverage["symbol_count"]) or row["failure"] is not None:
+                raise ValueError("invalid complete symbol coverage")
+            return state, coverage["symbol_count"]
+        exact(coverage, {"state"}, "incomplete coverage")
+        expected_failure = {"unsupported": "unsupported_language", "parse_failed": "syntax_error"}
+>       if state not in expected_failure or row["failure"] != expected_failure[state]:
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       TypeError: unhashable type: 'list'
+
+tools/benchmark/retrieval/symbol_coverage.py:127: TypeError
+=========================== short test summary info ============================
+FAILED tools/ci/tests/test_retrieval_benchmark.py::test_symbol_preflight_rejects_missing_tampered_stale_and_partial_evidence
+1 failed, 326 deselected in 2.69s

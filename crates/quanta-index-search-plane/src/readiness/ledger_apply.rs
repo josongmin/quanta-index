@@ -240,8 +240,9 @@ impl Ledger {
                     payload.generation,
                     now,
                     |state| {
-                        state.replace_scope_chunks(
-                            scope.scope.repo_relative_path.as_str(),
+                        state.replace_file_chunks(
+                            &scope.coverage.source.file,
+                            &payload.repo_id,
                             scope.chunks,
                         );
                         Ok(())
@@ -257,7 +258,7 @@ impl Ledger {
                     payload.generation,
                     now,
                     |state| {
-                        state.tombstone_scope_chunks(scope.scope.repo_relative_path.as_str());
+                        state.tombstone_file_chunks(&scope.file, &payload.repo_id);
                         Ok(())
                     },
                 )

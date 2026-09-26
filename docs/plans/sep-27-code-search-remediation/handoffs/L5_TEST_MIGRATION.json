@@ -1,0 +1,86 @@
+{
+  "schema": "l5-required-test-migration-v1",
+  "before_sha256": "de9c06b467ccdc8541ff89ec9c773d2b2c77a0433078fa5bc5f7b300932c1a50",
+  "after_sha256": "5980297775da57abdd5d04a2e7711df7ab2c07fb544442b18c46fd54b88cddc5",
+  "mapping": [
+    {
+      "old": "quanta-index-retrieval-bench::quanta_index_retrieval_bench$batch::tests::combined_replacement_carries_chunks_and_symbols_together",
+      "replacement": "quanta-index-retrieval-bench::quanta_index_retrieval_bench$batch::tests::combined_replacement_carries_chunks_symbols_and_source_coverage",
+      "reason": "Preserves combined chunk+symbol replacement and adds source/coverage commitments."
+    },
+    {
+      "old": "quanta-index-retrieval-bench::quanta_index_retrieval_bench$batch::tests::scope_digest_is_order_independent_across_shuffled_inputs",
+      "replacement": "quanta-index-retrieval-bench::quanta_index_retrieval_bench$batch::tests::canonical_unit_commitment_is_independent_of_chunk_vector_order",
+      "reason": "Tests the shared canonical unit-set commitment replacing removed private scope digest."
+    },
+    {
+      "old": "quanta-index-retrieval-bench::quanta_index_retrieval_bench$batch::tests::symbol_id_colliding_with_a_chunk_id_refuses",
+      "replacement": "quanta-index-retrieval-bench::quanta_index_retrieval_bench$batch::tests::chunk_id_colliding_with_an_actual_symbol_id_refuses",
+      "reason": "Uses a source-derived symbol ID instead of forged symbol facts; collision still refuses."
+    },
+    {
+      "old": "quanta-index-retrieval-bench::quanta_index_retrieval_bench$batch::tests::symbol_only_change_moves_the_scope_digest",
+      "replacement": "quanta-index-retrieval-bench::quanta_index_retrieval_bench$batch::tests::source_bound_symbol_only_change_moves_unit_commitment",
+      "reason": "Changes actual source and re-extracts; commitment changes without allowing forged facts."
+    },
+    {
+      "old": "quanta-index-retrieval-bench::quanta_index_retrieval_bench$batch::tests::symbol_only_files_publish_their_scope_and_empty_files_skip",
+      "replacement": "quanta-index-retrieval-bench::quanta_index_retrieval_bench$batch::tests::symbol_only_and_empty_files_both_publish_canonical_coverage",
+      "reason": "Preserves symbol-only admission and replaces obsolete empty-skip expectation with G0 required empty-file membership."
+    }
+  ],
+  "new_l5_regressions": [
+    "generic_typeof_import_call_accepts_a_trailing_comma",
+    "type_namespace_reexport_accepts_valid_syntax_without_inventing_a_definition",
+    "ordinary_typescript_and_tsx_definitions_remain_source_bound",
+    "empty_and_zero_definition_files_differ_from_parse_failure",
+    "a_final_file_parse_failure_cannot_return_partial_corpus_success",
+    "corpus_extraction_retains_admitted_empty_files",
+    "preflight_reports_every_admitted_file_even_after_the_first_failure",
+    "bounded_diagnostics_retain_all_failed_file_counts",
+    "cancelled_and_timed_out_census_never_becomes_complete_zero",
+    "symbol_limit_refuses_partial_definition_output",
+    "preflight_rejects_forged_source_before_reporting_coverage",
+    "empty_file_coverage_binds_shared_identity_and_canonical_empty_unit_set",
+    "preflight_preserves_existing_supported_language_extraction",
+    "preflight_diagnostic_ranges_are_sorted_and_bound_to_source_bytes"
+  ],
+  "new_sdk_regressions": [
+    "actual_preflight_binary_reports_all_files_before_strict_refusal",
+    "incomplete_symbol_profile_publishes_malformed_text_and_refuses_symbol_authority"
+  ],
+  "counts": {
+    "python": 328,
+    "rust": 129,
+    "sdk": 20
+  },
+  "execution_status": "Current follow-up: 132 Rust owner and 477 Python tests passed; registered Python 328. SDK process proof remains on the earlier frozen snapshot and was not rerun.",
+  "followup_added_tests": [
+    "batch::tests::duplicate_unit_ids_across_source_files_refuse",
+    "batch::tests::incomplete_profile_preserves_plain_and_unclassified_text",
+    "l5_parser_regressions::fatal_producer_failure_is_not_masked_by_an_earlier_recoverable_gap",
+    "l5_parser_regressions::file_and_total_symbol_budgets_refuse_publication_without_losing_the_census",
+    "l5_parser_regressions::producer_policy_records_and_commits_effective_extraction_limits",
+    "test_pair_binds_symbol_preflight_inventory_and_declared_capability",
+    "test_required_inventory_uses_canonical_internal_temporary_path",
+    "test_symbol_preflight_enforces_diagnostic_retention_policy",
+    "test_symbol_preflight_rejects_missing_tampered_stale_and_partial_evidence"
+  ],
+  "expanded_existing_regressions": {
+    "actual_runner_binary_emits_receipt_bound_v5_record": [
+      "canonical parent output collision",
+      "state-root collision",
+      "refuse before artifacts or daemon state",
+      "successful distinct-output control"
+    ],
+    "incomplete_symbol_profile_publishes_malformed_text_and_refuses_symbol_authority": [
+      "unsupported text admission",
+      "complete narrow symbol scope",
+      "Complete(0) query",
+      "failed narrow zero-match scope",
+      "generic select:symbol/type:symbol coverage gate"
+    ]
+  },
+  "completion": "L5_COMPLETION.json",
+  "followup_audit": "L5_ADVERSARIAL_AUDIT.json"
+}

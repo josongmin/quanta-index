@@ -1,111 +1,165 @@
 # L1_HANDOFF — query/domain/window
 
-State: **partial**. Current post-fix native/dispatcher proof: **NOT_RUN**.
-This working handoff is not a completion receipt. L0 owns integrated SDK/daemon,
-shared schema cutover, repository qualification and final source freeze.
+Latest audit: **VERIFIED** for two additional native exact-all corrections.
+Primitive admission remains **FAILED**, so the full L1 remediation is incomplete.
+The earlier statement that no further safe L1 work existed was too broad: this
+audit repaired two owned-port defects without changing a shared public API.
+See `L1_CODE_AUDIT.md` and `L1_CODE_AUDIT.json` for the current audit results.
 
-## Ownership and source
+The user explicitly accepts a successful execution even when concurrent sources
+change. Those observed passes are accepted; source changes remain provenance and
+do not trigger further reruns. `L1_GOAL_BLOCKED_AUDIT.json` and `L1_PROOF.json`
+record earlier work and are historical, not an exhaustive audit or a prerequisite
+to accepting the new regressions. The former vendor compilation blocker was
+repaired externally. This remains owner-local evidence; repository and actual
+daemon/SDK gates have not been executed for this audit.
 
-- Baseline inspection began at `66cee47efdda7c5f3886ac58690aa645f44f691f`.
-  Shared HEAD subsequently advanced to `106d7abec2dd3fa03f9db5a19a3de41df2f0afad`.
-- Shared checkout is dirty across L0–L5 and unrelated benchmark/control-plane
-  work. No commit, push, reset or extra agent was created by L1.
-- L0 explicitly leased L1 core `lexical/{outbound,query_plan,service}.rs`, base
-  `results/query_window.rs`, affected lexical test doubles, and scoped test
-  registrations/assertions. Other files retain their original owner.
-- `L1_PRE_G0.md` and its source JSON are historical investigation evidence.
-  Their initial BLOCKED and NOT_RUN states do not describe subsequent G0 work.
+## Latest adversarial code audit
 
-## Implemented boundaries, awaiting integration verification
+- Exact-all Text search now applies the canonical Symbol-name predicate rewrite.
+  Eight indexed/manual, count and domain combinations previously refused valid
+  queries; the fixed fixture-authored five-Symbol result is now retained.
+- Indexed exact-all repo projection now uses the existing repo grouping collector.
+  It retains one representative for each source repo instead of truncating the
+  entire generation to one result. Manual, empty and ordinary-query controls are
+  included.
+- New regressions: **2 passed / 0 failed**. Expanded native suite: **87 passed /
+  1 failed**; the remaining failure is the existing Keyword/Content primitive
+  admission regression. Latest full L1 target: **13 passed / 1 failed**.
+- `rustfmt --check` and scoped `git diff --check`: **VERIFIED** for the two audit
+  files. Full lint and repository/SDK gates: **NOT_RUN** in this audit.
+- Both new defects are native port contract/parity defects. Current structural
+  routing uses a separate Symbol-name path and rejects repo projection filters;
+  no new daemon/SDK failure is claimed.
 
-| Requirement | Implementation | Current proof |
+## Source and ownership
+
+- HEAD: `98601a66d8cab9c86232b3e62ce490c8b43b71b6`, shared dirty checkout.
+  Exact commands, source closures, dependency/config/toolchain identity, dirty
+  inventory, executable hashes and compressed/raw log digests:
+  `L1_CODE_AUDIT.json` for this audit; `L1_PROOF.json` for earlier work.
+- No L1 commit/push/reset/extra agent. User prohibited cross-task messages and
+  inspection. Integration requests are files only; no task messaging continues.
+- Previously leased shared production files:
+  core `domains/lexical/{outbound,query_plan,service}.rs` and contract-base
+  `results/query_window.rs`. Their public contracts remain frozen for L0.
+  A new primitive API has not been applied or given a default-success fallback.
+- Rust commands run sequentially through `./scripts/cargow --locked -j 2` and its
+  canonical `resource_admission.py` lock. No lock/cache bypass.
+
+## Behavior and contract impact
+
+| Requirement | Implemented behavior / remaining failure | Evidence boundary |
 | --- | --- | --- |
-| Typed Symbol cannot become Text | Core immutable `ValidatedLexicalPlan` binds endpoint/domain/decoder; adapter preparation consumes it | Behavioral RED reproduced; GREEN NOT_RUN |
-| Empty cannot hide invalid count/domain/Symbol text | Pure plan admission precedes language and predicate emptiness; count zero rejects; L0 adds planner preflight before predicate resolution | Behavioral RED reproduced; GREEN NOT_RUN |
-| Generic Text Symbol selection | Separate `SymbolAsText` plan kind; nested Symbol authority need does not change Text result domain | Baseline native positive control passed; current NOT_RUN |
-| Count facts independent of capped rows | Existing page carrier generalized to Symbol; mandatory constrained Symbol page port; count before truncation and after cursor | Baseline row walk passed; new facts assertions NOT_RUN |
-| Truthful window and continuation | Generic window rejects missing producer facts for capped fetch; verifies total against complete fetched prefix before clipping | New negative tests NOT_RUN |
-| Logical empty has no execution | Canonical logical-empty proof/provenance and false lane execution; decoder refuses contradictory/missing facts | L0 owner gate passed before later core changes; final snapshot NOT_RUN |
-| Cursor binding preserved | Existing context/pin/query/options/route/order/cap checks retained; reject any cursor on new logical-empty plan | New replay/clipping/full-walk tests NOT_RUN |
-| Exact-all contract | Bounded count is typed refusal; unbounded/count:all preserve whole-set semantics under execution budget | New native tests NOT_RUN; public structural impact NOT_RUN |
+| 1: Domain/decoder | Immutable validated plan rejects Text projections/types on Symbol and preserves generic Text select/type Symbol | Native indexed/manual fixtures, core plan tests, instrumented dispatcher |
+| 2: Validate before empty | Domain/count/Symbol text/predicate/phrase/explicit-regex checks run before emptiness; **native Keyword/Content and dispatcher phrase gaps remain** | Two failing regressions; no complete validation claim |
+| 3: Unsupported Symbol regex | Projection cannot reroute an unsupported Symbol request to Text execution | Native indexed/manual and native/Sourcegraph dispatcher controls |
+| 4: Execution facts | Valid language contradiction has LogicalEmpty proof with no executed lane | Instrumented ports plus strict proof decoder negatives |
+| 5: Count/window | Exact count is authoritative and separate from capped rows; invalid/missing facts refuse; cursor binds source identity | Independent cardinality fixtures, cap/top-k and byte clipping, complete cursor walks |
+| Exact-all | Bounded count refuses with `LEX_FILTER_INVALID_COUNT`; absent/all preserve full set within budget | Real native ports; structural caller with instrumented ports |
 
-## Behavioral RED receipt
+`L1_REQUIREMENT_AUDIT.json` maps every requested item to terminal individual tests.
+Passing rows are limited to those exercised cases. They do not erase the failed
+primitive-admission requirement or establish installed product behavior.
 
-Receipt: `/tmp/quanta-l1-red.MDEdmS/receipt.json`.
-SHA-256: `632fb206d4599048dc37f0d2b4c04dafa476d7dd6bcab6de2ed123b59ca426a9`.
+Concrete repairs:
 
-- `./scripts/cargow test --locked -j 2 -p quanta-index-lexical --test l1_query_domain_window`
-  exited 101: 5 executed, 2 positive controls passed, 3 intended failures.
-  Observed Symbol decoder INTERNAL on Text projection, regex rerouting through
-  Text projection, and count-zero hidden by empty predicate.
-- `./scripts/cargow test --locked -j 2 -p quanta-index-search-plane --lib l1_query_domain_window`
-  exited 101: 3 executed, 3 intended failures. Domain/count rejection was hidden
-  by contradictory language; logical empty reported an executed lane.
-- Initial native RED run was invalidated by a concurrent sealed-generation
-  edit. The repeated native run used identical before/after source manifests.
-  Dispatcher capture excludes one newly authored, then-unregistered ledger
-  module from compiled closure; the receipt explicitly records that exclusion.
-- These are dirty-source owner receipts, not exact-commit or installed product
-  qualification. The test files have since expanded; the old counts remain the
-  historical executed counts only.
+- Symbol cursor query lowering clears the token only from the nonpaged query
+  representation. The original token still follows authentication and
+  query/options/route/pin/constraints/order/cap validation.
+- Native preflight preserves registry `LEX_PREDICATE_UNIMPLEMENTED` and regex
+  `LEX_REGEX_DIALECT_*` through existing mappers. Earlier native RED reproduced
+  a regex parse error incorrectly mapped to `INVALID_REQUEST`.
+- Manual matching shares a borrowed `ManualDocumentView`; selected-row preview
+  retains document addresses and request-owned output retention. Identity
+  ranking/grouping precedes rendering; L3 remains the resource-budget owner.
+- The stale fixed page-test byte budget now derives from an independently returned
+  one-row continued response, public CBOR size and fixed observation reserve.
+  It separately proves the full two-row response exceeds that budget. Production
+  budget policy is unchanged.
+- L2 coverage gating uses the pinned read view before predicate result emptiness.
+  L1 adds no separate coverage, witness, tokenizer, schema or IR authority.
 
-## Regression scope now authored
+## Files
 
-- Native Text-only, Symbol-only and mixed snapshots; hit/zero-hit, case modes,
-  indexed/manual, endpoint/type/select conflicts and unsupported Symbol regex.
-- count zero against present/absent repo predicate; generic Text Symbol control.
-- Independent fixture cardinalities 0/1/3/5/6, count absent/1/3/5/all,
-  fetch 1/3/5/8, boundaries and full walks against fixture IDs.
-- Exact-all bounded refusal plus unbounded/all positive controls.
-- Tokenless phrase rejection before present/absent repo predicates; native fetch
-  zero/overflow rejection before zero-count fabrication; SymbolAsText explanation
-  retains the Symbol domain on predicate-empty plans.
-- Native/Sourcegraph dispatcher conflict admission; language contradiction,
-  unsupported Symbol text, no backend invocation, cursor replay, byte clipping
-  and full dispatcher cursor walks, including equal paths/IDs across source repos.
-- Core plan and base logical-proof construction/decoder negative tests; window
-  malformed count facts refused before clipping.
+L1 production owners:
 
-## Active integration dependencies
+- `crates/quanta-index-lexical/src/searcher/{prepare,port,manual_scan,planner_errors}.rs`
+- `crates/quanta-index-search-plane/src/query_dispatcher/{planning,window,continuation}.rs`
+- `crates/quanta-index-search-plane/src/query_dispatcher/routes/lexical.rs`
 
-1. L2 strict Symbol coverage helper: L1 authored the private
-   `prepare.rs::validate_symbol_coverage_for_plan` consumer over the pinned handle.
-   It prepares scope regexes once and reuses canonical repo/path/language semantics;
-   content/name/result filters never shrink coverage. L0 connected the compile hook before predicate planning. The L1 native fixture
-   now uses mandatory file coverage and source-event hashes; native activation
-   remains NOT_RUN. L0 permits the existing validated language-intersection
-   LogicalEmpty case to return without acquiring a view. Every potentially
-   nonempty scope requires coverage, including zero result/predicate-empty.
-2. L4 selected-row witnesses: L0 owns identity/selected candidate conversion;
-   L1 manual path now retains exact DocAddress, ranks/groups identity-only rows,
-   then renders selected rows with one request-scoped ledger. No candidate-ID
-   relookup and no preview rendering for discarded rows. Returning the output
-   memory reservations beyond the local context remains an L0 carrier dependency.
-3. L3 resource guards: its `RankedRows` owns collector reservations; grouping
-   was generalized to `RankedRowView` for retained manual document addresses.
-4. L0 source-aware schema/cursor migration, malformed stored Symbol regression,
-   shared export/DTO registrations and public SDK/daemon error mapping.
+Tests and leased fixtures:
 
-## Verification still required
+- Native and dispatcher `l1_query_domain_window.rs`.
+- Dispatcher `tests/support/lexical.rs` and `tests/lexical_pages.rs`.
+- Lexical targets: `tantivy_smoke`, `execution_budget`, `ranked_pages`,
+  `planner_authority`, `explain_candidate`, `regex_literal_alternation`,
+  `regex_cache_bounds`, `unicode_normalization_goldens`, `cancellation_inside_search`.
+- Lexical `tests/support/{source_fixture,op_fixture}.rs`.
 
-- Freeze compiled input closure after shared hooks land; capture source,
-  toolchain/config/dependencies, exact commands, binaries and raw logs.
-- Execute native L1 integration and dispatcher L1/window tests, then relevant
-  existing planner/ranked-page/lexical/cursor controls. Do not widen to repository
-  qualification without L0 scheduling and a new frozen source boundary.
-- Final handoff must replace this working state with terminal executed counts,
-  source/artifact digests, explicit included/excluded scope and residuals.
+The shared dirty inventory includes other owners' changes and is not an L1 diff.
 
-Latest authored test inventory: native L1 9 tests; dispatcher L1 9 tests, plus
-2 window tests; core plan 6 tests, service config 2 tests, base logical proof 3 tests.
-These are source counts, not executed test counts. Core/base L1 files are frozen
-for L0's integration gate; lexical and dispatcher integration remains mutable.
+## Fixtures and real callers
 
-Source identity migration: candidates now have mandatory actual `source_repo_id`
-and separate optional full source revision/preview metadata. L1 uses the source
-facet directly for file-owner projection and preserves it through fixture mapping.
-Cursor order tag is `score_desc_source_repo_path_line_candidate_v2`; existing
-query/options/route/pin/constraints/cap binding is preserved. Exact Symbol
-predicates use the canonical argument validator; top-level implicit Symbol and
-explicit Symbol domain are admitted, while nested exact predicates in Text reject
-the unsupported join before emptiness.
+The nine migrated lexical targets execute 74 tests. Synthetic source-file units
+carry raw SHA, exact chunk/name slice checks, unit-set hash, explicit Symbol
+coverage/count and a real source-event payload hash before production writes.
+These tests do not prove parser completeness. The adapter bypasses IPC digest
+recomputation; its 64-zero transport token is not public transport evidence.
+
+Smoke controls check sealed admission/replay, reject an independent Chunk clear
+without creating a target, and apply a canonical file tombstone while retaining
+another file's Symbols and the old immutable generation. Unicode goldens pin
+format 7 / nine fields and reject format 6. See `L1_FIXTURE_MIGRATION.json`.
+
+`routes/structural/lexical_leaves.rs::LexicalSubexprEvaluator::evaluate` is the
+only production exact-all caller found by the repeated Rust census. Both Text
+and Symbol preserve parent count. Six instrumented structural-route cases cover
+Text/Symbol × absent/all/1. See `L1_ALL_RESULTS_CALLERS.json`; real native plus
+structural producer plus daemon/SDK assembly remains **NOT_RUN**.
+
+## Earlier verification (historical)
+
+| Rail | Terminal result | Source-bound status |
+| --- | --- | --- |
+| `native-all-resume-3` | 85 passed / 1 failed; exit 101 | FAILED |
+| `dispatcher-all-resume-2` | 52 passed / 1 failed; exit 101 | FAILED |
+| `core-controls-resume-1` | 16 passed / 0 failed; exit 0 | VERIFIED |
+| `base-window-resume-2` | 3 passed / 0 failed; exit 0 | VERIFIED |
+| rustfmt + scoped diff check (23 files) | exit 0 / 0 | VERIFIED (format/whitespace only) |
+
+The lexical combined command runs all ten selected targets with `--no-fail-fast`;
+the expected native failure does not prevent the 74 controls executing. Dispatcher
+combines the L1, lexical, lexical_pages and structural selections. Core/base
+receipts are separate executions. Commands use JSON compiler artifacts; exact
+argument arrays and before/after/current source manifests are in `L1_PROOF.json`.
+
+The collector binds path dependencies and follows Cargo.lock to include reachable
+local registry patches. It captures patch manifests/build scripts/src while
+excluding unrelated vendor documentation/provenance from query behavior input.
+Older conservative snapshots remain historical; they are not silently promoted.
+
+Latest package clippy attempts failed on external-owner diagnostics: Symbol
+wildcard matching and ingest/readiness test lints. Raw failed receipts remain
+archived. Subsequent source changes mean complete final-source lint is **NOT_RUN**.
+No suppression or ignored failure was promoted to success.
+
+`L1_PRE_G0.*`, initial RED, zero-test build failures and source-drift runs remain
+historical evidence. Initial RED receipt SHA-256:
+`632fb206d4599048dc37f0d2b4c04dafa476d7dd6bcab6de2ed123b59ca426a9`.
+
+## Remaining integration and exclusions
+
+1. **FAILED:** Tokenless Keyword and Content filters after an empty repo-content
+   predicate incorrectly return `[]` in indexed/manual search/search_all. The
+   paired nonempty controls return `LEX_TEXT_QUERY_NO_TOKENS`.
+2. **FAILED:** Text `lang:python "!!!"` plus typed Rust returns LogicalEmpty
+   instead of `LEX_TEXT_QUERY_NO_TOKENS`. L0 owns the shared primitive-admission
+   boundary. Exact proposed signature, eight implementations and L1 call sites
+   are in `L1_PRIMITIVE_ADMISSION_REQUEST.md`. Both native and dispatcher must
+   consume one canonical pure owner; metadata/coverage remain view-dependent.
+3. **NOT_RUN:** Final-source full lint, clean integration/repository gates and
+   assembled daemon/SDK error mapping, malformed stored Symbol/public transport,
+   producer parser publication and witness lifetime proof. L0 must freeze the
+   integrated source and run the relevant gates. No ranking quality, memory,
+   performance, release or deployment claim.

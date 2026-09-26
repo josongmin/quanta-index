@@ -49,6 +49,27 @@ def _load_module(name: str, path: Path):
 COMPARE = _load_module("compare_dsl_bench", COMPARE_PATH)
 
 
+@pytest.mark.parametrize("source", ["path", "content"])
+def test_comparator_refuses_oversized_native_control(tmp_path, source):
+    path = tmp_path / "oversize.json"
+    limit = COMPARE.CONTROL_DOCUMENT_BYTES
+    with path.open("wb") as stream:
+        stream.truncate(limit + 1)
+    with pytest.raises(COMPARE.ArtifactRefused, match="exceeds"):
+        COMPARE.load_artifact(
+            path, role="current", content=" " * (limit + 1) if source == "content" else None
+        )
+
+
+def test_comparator_control_reader_refuses_symlink(tmp_path):
+    real = tmp_path / "real"
+    real.write_bytes(b"{}")
+    alias = tmp_path / "alias"
+    alias.symlink_to(real)
+    with pytest.raises(COMPARE.ArtifactRefused, match="symlink"):
+        COMPARE.load_artifact(alias, role="current")
+
+
 def test_comparator_refuses_interrupted_baseline_pair(tmp_path: Path) -> None:
     baseline = tmp_path / "warm-matrix.json"
     marker = tmp_path / ".dsl-admission-pending"

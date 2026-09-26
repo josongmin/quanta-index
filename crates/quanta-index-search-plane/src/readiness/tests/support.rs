@@ -181,6 +181,15 @@ pub(super) fn install_chunk_with_id(
     path: &str,
     text: &str,
 ) -> TestResult {
+    let mut record = chunk_record(path, text)?;
+    record.chunk_id = ChunkId::new(chunk_id);
+    let replacement = file_replacement(
+        quanta_index_contract::SourceFileKey {
+            source_repo_id: repo_id(),
+            repo_relative_path: RepoRelativePath::new(path),
+        },
+        vec![record],
+    )?;
     let op = LexicalChannelOp::ReplaceLexicalScope(ReplaceLexicalScope {
         repo_id: repo_id(),
         revision_id: revision_id(),
@@ -188,20 +197,33 @@ pub(super) fn install_chunk_with_id(
         payload: encode_cbor(&(
             BatchIngestMode::ReplaceGeneration,
             None::<ManifestGeneration>,
-            SearchCorpusReplaceScope {
-                scope: scope(path),
-                scope_digest: "scope:lex".to_string(),
-                chunks: vec![{
-                    let mut record = chunk_record(path, text)?;
-                    record.chunk_id = ChunkId::new(chunk_id);
-                    record
-                }],
-                symbols: Vec::new(),
-            },
+            replacement,
         ))?,
     });
     ledger.apply_lexical_authority_op(&op, std::time::Instant::now())?;
     Ok(())
+}
+
+pub(super) fn file_replacement(
+    file: quanta_index_contract::SourceFileKey,
+    chunks: Vec<ChunkRecord>,
+) -> Result<SearchCorpusReplaceScope, Box<dyn std::error::Error>> {
+    Ok(SearchCorpusReplaceScope {
+        coverage: quanta_index_contract::SourceFileCoverage {
+            source: quanta_index_contract::SourceFileRevision {
+                file,
+                revision_id: revision_id(),
+                source_sha256: [1; 32],
+            },
+            language: rust_language()?,
+            producer_policy_sha256: [2; 32],
+            unit_set_sha256: quanta_index_contract::source_file_unit_set_sha256(&chunks, &[])?,
+            text_admitted: true,
+            symbols: quanta_index_contract::SymbolCoverage::NotRequested,
+        },
+        chunks,
+        symbols: Vec::new(),
+    })
 }
 
 pub(super) fn install_parse_tree(ledger: &mut Ledger, text: &str) -> TestResult {

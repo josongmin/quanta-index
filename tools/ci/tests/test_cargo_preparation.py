@@ -23,7 +23,7 @@ def test_one_preparation_preserves_original_selection_and_reuses_both_commands(
     native = [argv for argv, _ in calls if argv[3:5] in (["nextest", "list"], ["nextest", "run"])]
     selector = ["-p", "quanta-index-retrieval-bench"]
     selector += (
-        ["--lib", "--test", "chunking_contract"]
+        ["--lib", "--test", "chunking_contract", "--test", "l5_parser_regressions"]
         if rail == "contract"
         else ["--test", "sdk_roundtrip"]
     )
@@ -137,6 +137,8 @@ def test_collection_refuses_changed_input_before_launch(tmp_path, monkeypatch, n
     build, metadata = b"build", b"metadata"
     (tmp_path / "rust-build.stdout").write_bytes(build)
     (tmp_path / "metadata.stdout").write_bytes(metadata)
+    build = portable_proof.RawFile.capture(tmp_path / "rust-build.stdout")
+    metadata = portable_proof.RawFile.capture(tmp_path / "metadata.stdout")
     (tmp_path / name).write_bytes(b"different identity")
     monkeypatch.setattr(
         portable_proof, "_run", lambda *_a, **_k: pytest.fail("collection launched")

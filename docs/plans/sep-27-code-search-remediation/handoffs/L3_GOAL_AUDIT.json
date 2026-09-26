@@ -1,0 +1,75 @@
+{
+  "head": "98601a66d8cab9c86232b3e62ce490c8b43b71b6",
+  "state": "VERIFIED",
+  "scope": "L3 owner correctness and selected consumer fixtures on a dirty working source; not whole repository or installed-product qualification",
+  "requirements": [
+    {
+      "requirement": "A exact local/qualified, overloads and nested definitions",
+      "status": "VERIFIED",
+      "evidence": "rr-owner-final-4"
+    },
+    {
+      "requirement": "A raw spelling/signature/definition facts",
+      "status": "VERIFIED",
+      "evidence": "rr-owner-final-4"
+    },
+    {
+      "requirement": "A broad symbol and ordinary content controls",
+      "status": "VERIFIED",
+      "evidence": "rr-owner-final-4"
+    },
+    {
+      "requirement": "B source owner distinct from containing pin",
+      "status": "VERIFIED",
+      "evidence": "rr-owner-final-4"
+    },
+    {
+      "requirement": "B source/file/repo identity and cursor pages",
+      "status": "VERIFIED",
+      "evidence": "rr-owner-final-4"
+    },
+    {
+      "requirement": "B restrictions before grouping, stable ties and late best hit",
+      "status": "VERIFIED",
+      "evidence": "rr-owner-final-4"
+    },
+    {
+      "requirement": "C native visit/group/merge/buffer/inflight admission",
+      "status": "VERIFIED",
+      "evidence": "rr-owner-final-4"
+    },
+    {
+      "requirement": "C decode allocation admission and release",
+      "status": "VERIFIED",
+      "evidence": "rr-owner-final-4"
+    },
+    {
+      "requirement": "C cancellation/deadline and TermQuery WAND",
+      "status": "VERIFIED",
+      "evidence": "rr-owner-final-4"
+    },
+    {
+      "requirement": "SDK/CLI selected fixture migration",
+      "status": "VERIFIED",
+      "evidence": "rr-owner-final-4"
+    },
+    {
+      "requirement": "Full request memory/RSS and ranking performance",
+      "status": "NOT_RUN",
+      "evidence": "Excluded from this scoped claim"
+    },
+    {
+      "requirement": "Installed searchd and full repository qualification",
+      "status": "NOT_RUN",
+      "evidence": "Excluded from this scoped claim"
+    }
+  ],
+  "prior_blocked_audit": "Superseded on the explicit resumed repair request; exact hooks and canonical bounded decode are now implemented and verified locally.",
+  "communication": "No inter-task calls or subagents",
+  "proof_limits": [
+    "Allocator metadata/realloc internals and process RSS",
+    "Query preparation/native caches/manual scan materialization/required output payloads",
+    "Generic Boolean pruning performance; TermQuery native WAND is covered",
+    "Unselected suites, daemon installation, deployment, ranking quality and holdout metrics"
+  ]
+}

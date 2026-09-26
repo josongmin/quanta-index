@@ -216,8 +216,8 @@ macro_rules! coverage_record_serde {
     ($name:ident { $($field:ident: $ty:ty),+ $(,)? } validate $validate:expr) => {
         impl Serialize for $name {
             fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-                ($validate)(self).map_err(serde::ser::Error::custom)?;
                 const FIELDS: &[&str] = &[$(stringify!($field)),+];
+                ($validate)(self).map_err(serde::ser::Error::custom)?;
                 let mut record = serializer.serialize_struct(stringify!($name), FIELDS.len())?;
                 $(record.serialize_field(stringify!($field), &self.$field)?;)+
                 record.end()
@@ -289,6 +289,7 @@ impl Write for DigestWriter {
 }
 
 /// SHA-256 of the domain followed by a fixed-order CBOR pair `(chunks, symbols)`.
+///
 /// Each vector is sorted by its typed ID and uses the complete record's manual
 /// wire serializer. Input order has no authority; duplicate IDs never collapse.
 pub fn source_file_unit_set_sha256(

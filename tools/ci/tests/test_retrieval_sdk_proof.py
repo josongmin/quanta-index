@@ -68,6 +68,20 @@ def test_build_summary_binds_actual_runner_and_machine_counts(tmp_path: Path) ->
     }
 
 
+def test_large_runner_binary_is_hashed_without_control_document_admission(tmp_path, monkeypatch):
+    record, nextest, runner = _fixture(tmp_path)
+    content = b"binary" * (3 * 1024 * 1024)
+    runner.write_bytes(content)
+    expected = hashlib.sha256(content).hexdigest()
+    payload = json.loads(record.read_text())
+    payload["captures"]["run-lexical"]["runner_binary"]["digest"] = expected
+    record.write_text(json.dumps(payload))
+    monkeypatch.setattr(Path, "read_bytes", lambda *_: pytest.fail("whole binary read"))
+    result = MODULE.build_summary(record, nextest, runner)
+    assert result["passed"] == 1
+    assert result["binary_digest"] == expected
+
+
 def test_build_summary_rejects_binary_substitution(tmp_path: Path) -> None:
     record, nextest, runner = _fixture(tmp_path)
     runner.write_bytes(b"substituted")

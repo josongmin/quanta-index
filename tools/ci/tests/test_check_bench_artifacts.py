@@ -22,6 +22,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPT_PATH = REPO_ROOT / "tools" / "ci" / "lint" / "check-bench-artifacts.py"
 
@@ -455,6 +457,52 @@ def test_duplicate_native_verdict_is_refused(tmp_path: Path) -> None:
     assert any("duplicate" in refusal.reason for refusal in refusals)
 
 
+@pytest.mark.parametrize("dimension,count", [("scale", 2), ("concurrency", 4)])
+def test_native_inventory_limit_refuses_before_parsing(tmp_path, monkeypatch, dimension, count):
+    for index in range(count):
+        (tmp_path / f"summary-{index}.json").write_bytes(b"{}")
+
+    def forbidden(_raw):
+        pytest.fail("out-of-contract inventory reached JSON decoding")
+
+    monkeypatch.setattr(MODULE, "parse_artifact_bytes", forbidden)
+    refusals, checked, absent = MODULE.check_families(
+        tmp_path, ((dimension, "summary-*.json"),), head=HEAD, require=True
+    )
+    assert checked == absent == []
+    assert len(refusals) == 1
+    assert "inventory exceeds registered count" in refusals[0].reason
+
+
+def test_native_control_limit_refuses_before_json_decode(tmp_path, monkeypatch):
+    path = tmp_path / "summary.json"
+    with path.open("wb") as stream:
+        stream.truncate(MODULE.CONTROL_DOCUMENT_BYTES + 1)
+
+    def forbidden(_raw):
+        pytest.fail("oversized control document reached JSON decoding")
+
+    monkeypatch.setattr(MODULE, "parse_artifact_bytes", forbidden)
+    refusals, checked, absent = MODULE.check_families(
+        tmp_path, (("scale", "summary.json"),), head=HEAD, require=True
+    )
+    assert checked == [path] and absent == []
+    assert len(refusals) == 1
+    assert "control document exceeds" in refusals[0].reason
+
+
+@pytest.mark.parametrize("alias", ["leaf", "parent"])
+def test_native_control_reader_refuses_symlink_alias(tmp_path, alias):
+    real = tmp_path / "real"
+    real.mkdir()
+    write(real / "summary.json", artifact("scale"))
+    link = tmp_path / "link"
+    link.symlink_to(real / "summary.json" if alias == "leaf" else real)
+    pattern = "link" if alias == "leaf" else "link/summary.json"
+    refusals, _, _ = MODULE.check_families(tmp_path, (("scale", pattern),), head=HEAD, require=True)
+    assert len(refusals) == 1 and "symlink" in refusals[0].reason
+
+
 def test_the_cli_walks_fresh_families_and_baselines(tmp_path: Path, capsys) -> None:
     install_manifest(tmp_path)
     write(tmp_path / "artifacts/dsl-bench/warm-matrix.json", artifact())
@@ -728,8 +776,15 @@ def test_every_public_native_row_enum_tag_is_accepted() -> None:
     # Fixed public serialization oracle from artifact.rs, not imported validator domains.
     domains = {
         "route_family": (
-            "lexical", "semantic", "hybrid", "symbol", "repomap", "history",
-            "runtime_catalog", "structural", "adversarial",
+            "lexical",
+            "semantic",
+            "hybrid",
+            "symbol",
+            "repomap",
+            "history",
+            "runtime_catalog",
+            "structural",
+            "adversarial",
         ),
         "syntax": ("native", "sourcegraph"),
         "result_shape": ("candidates", "commits", "diff_paths", "typed_error", "empty"),
@@ -757,8 +812,12 @@ def test_native_unsigned_scalar_widths_match_public_rust_dto() -> None:
     )
     for path, bits, minimum in fields:
         for scalar, allowed in (
-            (minimum, True), ((1 << bits) - 1, True),
-            (minimum - 1, False), (1 << bits, False), (True, False), (1.0, False),
+            (minimum, True),
+            ((1 << bits) - 1, True),
+            (minimum - 1, False),
+            (1 << bits, False),
+            (True, False),
+            (1.0, False),
         ):
             value = artifact()
             if path[0] == "disk_amplification":
@@ -771,7 +830,8 @@ def test_native_unsigned_scalar_widths_match_public_rust_dto() -> None:
                 disk = value["disk_amplification"]
                 disk["ratio"] = (
                     float(disk["bytes_written"]) / float(disk["changed_bytes"])
-                    if disk["changed_bytes"] else None
+                    if disk["changed_bytes"]
+                    else None
                 )
             reasons = MODULE.check_envelope(value, dimension="dsl-warm", head=HEAD)
             assert (reasons == []) == allowed, (path, scalar, reasons)

@@ -333,19 +333,23 @@ def _cargo_roots(repo: Path, package_names: tuple[str, ...]) -> set[str]:
         raise ClosureError(f"cargo packages missing from workspace: {', '.join(missing)}")
     pending = list(wanted)
     closure: set[str] = set()
+    visited: set[str] = set()
     while pending:
         package_id = pending.pop()
-        if package_id in closure:
+        if package_id in visited:
             continue
         package = by_id.get(package_id)
         node = node_by_id.get(package_id)
         if package is None:
             raise ClosureError(f"cargo dependency package missing from metadata: {package_id}")
-        if package.get("source") is not None:
-            continue
         if node is None:
-            raise ClosureError(f"cargo resolve node missing for local package: {package_id}")
-        closure.add(package_id)
+            kind = "local" if package.get("source") is None else "external"
+            raise ClosureError(f"cargo resolve node missing for {kind} package: {package_id}")
+        visited.add(package_id)
+        # A registry dependency may resolve through a local [patch] package.
+        # Traverse every edge, but bind only repository-owned source roots.
+        if package.get("source") is None:
+            closure.add(package_id)
         dependencies = node.get("dependencies")
         if not isinstance(dependencies, list):
             raise ClosureError(f"cargo resolve node has invalid dependencies: {package_id}")

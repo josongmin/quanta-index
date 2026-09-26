@@ -1,0 +1,26 @@
+{
+  "after": "/tmp/quanta-l1-green.diz44g/native-final-5.after.json",
+  "artifacts": [],
+  "before": "/tmp/quanta-l1-green.diz44g/native-final-5.before.json",
+  "classification": "UNCLASSIFIED: inspect execution count, outcome, inputs and source drift before promoting evidence",
+  "command": [
+    "./scripts/cargow",
+    "test",
+    "--locked",
+    "-j",
+    "2",
+    "-p",
+    "quanta-index-lexical",
+    "--test",
+    "l1_query_domain_window",
+    "--message-format=json"
+  ],
+  "ended_unix": 1790458332.513498,
+  "executed_result_lines": [],
+  "exit_code": 101,
+  "head_changed": false,
+  "log": "/tmp/quanta-l1-green.diz44g/native-final-5.log",
+  "log_sha256": "e80c5ccc8d413bfc2b1d3e6646083384b0b57cbea475098c7943ade5842f3432",
+  "source_changed": [],
+  "started_unix": 1790458329.687791
+}

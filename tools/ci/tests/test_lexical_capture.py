@@ -261,6 +261,43 @@ def test_missing_corpus_custody_artifact_cannot_replay(
         capture.replay_run(store, evidence)
 
 
+def test_lexical_adapter_streams_observation_freeze(
+    tmp_path, lexical_release_seed, synthetic_admission, monkeypatch
+):
+    spec, paths = inputs(tmp_path, lexical_release_seed)
+    original = Path.read_bytes
+
+    def no_observation_bytes(path):
+        assert path not in {paths[role] for role in paths if role.endswith("_rows")}
+        assert not (path.name.startswith("input-") and path.name.endswith("_rows"))
+        return original(path)
+
+    monkeypatch.setattr(Path, "read_bytes", no_observation_bytes)
+    root = tmp_path / "evidence"
+    document = capture.capture(capture.ROOT, root, load_registry(), spec, 60)
+    assert len(document["runs"]) == 5
+    assert capture.validate(capture.ROOT, root, load_registry()) == document
+
+
+def test_lexical_frozen_input_mutation_cannot_publish(
+    tmp_path, lexical_release_seed, synthetic_admission, monkeypatch
+):
+    spec, _ = inputs(tmp_path, lexical_release_seed)
+    execute = capture.execute
+
+    def mutate(argv, **kwargs):
+        result = execute(argv, **kwargs)
+        frozen = Path(argv[argv.index("--spec") + 1]).parent / "input-cs_rows"
+        frozen.write_bytes(frozen.read_bytes() + b" ")
+        return result
+
+    monkeypatch.setattr(capture, "execute", mutate)
+    root = tmp_path / "evidence"
+    with pytest.raises(ValueError):
+        capture.capture(capture.ROOT, root, load_registry(), spec, 60)
+    assert not (root / "profiles" / f"{capture.PROFILE}.json").exists()
+
+
 def test_legacy_unbound_spec_refuses_before_publication(tmp_path):
     spec = tmp_path / "legacy.json"
     spec.write_text(json.dumps({"schema_version": 1}))

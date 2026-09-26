@@ -1,6 +1,9 @@
 # SEP-27 — Code search remediation RFCs
 
-Status: **PROPOSED — consolidated final recommendation; implementation NOT_RUN**.
+Status: **PROPOSED packet; current implementation evidence is scoped per RFC**.
+L5 producer/parser and its shared integration are verified on the exact dirty
+snapshot recorded in [L5_HANDOFF](handoffs/L5_HANDOFF.md). This does not qualify
+the other RFCs or whole-repository CI/release.
 Prepared: 2026-09-27. Source baseline:
 `main@66cee47efdda7c5f3886ac58690aa645f44f691f`, clean before these documentation edits.
 
@@ -61,9 +64,11 @@ choice and test it; do not use an unbound proposal as a qualification contract.
 | Benchmark measurement | [CS-BENCH-04](rfcs/CS-BENCH-04-comparators-performance-and-incremental.md) | Local comparators, equivalent work, latency, resources and updates | BENCH-01/02/03; shared MISC execution prerequisites |
 | Integration | [CS-INT-01](rfcs/CS-INT-01-integration-and-qualification.md) | Coordinated cutover, serial integration and final proof | Required scope of the nine RFCs above |
 
-All ten RFCs are PROPOSED. Implementation, regression execution and final
-qualification on their proposed source are **NOT_RUN**. Existing failed
-diagnostics are identified individually in the evidence register.
+All ten RFCs originated as proposals. Current implementation and regression
+status is recorded in each RFC and its source-bound handoff; the L5 update is in
+[CS-PROD-01](rfcs/CS-PROD-01-parser-coverage-and-vite.md). Packet-wide final
+qualification is **NOT_RUN**. Existing failed diagnostics are identified
+individually in the evidence register.
 
 ## 3. Findings-to-work traceability
 

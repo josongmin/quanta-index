@@ -43,6 +43,7 @@ BENCHMARK_DIR = REPO_ROOT / "tools" / "benchmark"
 if str(BENCHMARK_DIR) not in sys.path:
     sys.path.insert(0, str(BENCHMARK_DIR))
 
+from evidence import CONTROL_DOCUMENT_BYTES, _read_control_file  # noqa: E402
 from manifest import (  # noqa: E402
     ManifestError,
     baseline_families,
@@ -210,7 +211,9 @@ def _validate_rows(rows: list[object], *, dimension: str) -> list[str]:
                 reasons.append(f"{where}.{key} is not a non-negative integer in u64 range")
         result_count = row.get("result_count")
         if result_count is not None and not is_unsigned_integer(result_count, 64):
-            reasons.append(f"{where}.result_count is not a non-negative integer in u64 range or null")
+            reasons.append(
+                f"{where}.result_count is not a non-negative integer in u64 range or null"
+            )
         typed_error = row.get("typed_error_code")
         if typed_error is not None and (not isinstance(typed_error, str) or not typed_error):
             reasons.append(f"{where}.typed_error_code is not a non-empty string or null")
@@ -327,7 +330,9 @@ def check_envelope(
     if isinstance(resources, dict):
         peak = resources.get("peak_rss_bytes")
         if not is_unsigned_integer(peak, 64, minimum=1):
-            reasons.append(f"resources.peak_rss_bytes {peak!r} is not a positive integer in u64 range")
+            reasons.append(
+                f"resources.peak_rss_bytes {peak!r} is not a positive integer in u64 range"
+            )
 
     phases = payload.get("phases")
     reasons.extend(_missing(phases, PHASE_KEYS, "phases"))
@@ -347,7 +352,9 @@ def check_envelope(
             changed_bytes = amplification.get("changed_bytes")
             for key, value in (("bytes_written", bytes_written), ("changed_bytes", changed_bytes)):
                 if not is_unsigned_integer(value, 64):
-                    reasons.append(f"disk_amplification.{key} is not a non-negative integer in u64 range")
+                    reasons.append(
+                        f"disk_amplification.{key} is not a non-negative integer in u64 range"
+                    )
             ratio = amplification.get("ratio")
             if changed_bytes == 0:
                 if ratio is not None:
@@ -407,6 +414,8 @@ def check_envelope(
 
 def parse_artifact_bytes(raw: bytes) -> object:
     """Parse native evidence without last-key-wins or non-finite defaults."""
+    if len(raw) > CONTROL_DOCUMENT_BYTES:
+        raise ValueError("native control document exceeds explicit byte limit")
 
     def unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
         result: dict[str, object] = {}
@@ -474,9 +483,19 @@ def check_artifact(
     return reasons
 
 
-def expand(repo_root: Path, pattern: str) -> list[Path]:
+def native_artifact_limit(dimension: str) -> int:
+    """Registered native captures have one summary, except fixed concurrency fan-out."""
+    return len(CONCURRENCY_COUNTS) if dimension == "concurrency" else 1
+
+
+def expand(repo_root: Path, pattern: str, *, limit: int) -> list[Path]:
     if any(char in pattern for char in "*?["):
-        return sorted(repo_root.glob(pattern))
+        paths = []
+        for path in repo_root.glob(pattern):
+            if len(paths) == limit:
+                raise ValueError("native artifact inventory exceeds registered count")
+            paths.append(path)
+        return sorted(paths)
     path = repo_root / pattern
     return [path] if path.exists() else []
 
@@ -494,7 +513,11 @@ def check_families(
     checked: list[Path] = []
     absent: list[str] = []
     for dimension, pattern in families:
-        paths = expand(repo_root, pattern)
+        try:
+            paths = expand(repo_root, pattern, limit=native_artifact_limit(dimension))
+        except ValueError as exc:
+            refusals.append(Refusal(repo_root / pattern, str(exc)))
+            continue
         if not paths:
             absent.append(dimension)
             if require:
@@ -515,7 +538,7 @@ def check_families(
         for path in paths:
             checked.append(path)
             try:
-                payload = parse_artifact_bytes(path.read_bytes())
+                payload = parse_artifact_bytes(_read_control_file(path))
             except (OSError, ValueError) as exc:
                 refusals.append(Refusal(path, f"unreadable: {exc}"))
                 continue

@@ -1,0 +1,534 @@
+{
+  "classification": "FAILED",
+  "evidence_scope": "Individual owner-local passing regressions only. VERIFIED requirement rows are scoped to these listed cases, not exhaustive or installed product qualification.",
+  "head": "98601a66d8cab9c86232b3e62ce490c8b43b71b6",
+  "purpose": "Requirement-to-evidence map; test existence and this file do not establish completion.",
+  "remaining": [
+    "L0 shared pure primitive admission and L1 call-site integration",
+    "final-source package lint (latest attempts failed on external-owner diagnostics)",
+    "clean-source repository and daemon/SDK qualification"
+  ],
+  "requirements": [
+    {
+      "evidence": [
+        {
+          "log": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/native-all-resume-3.log.gz",
+            "sha256": "46c4c7bea3ca621ccf2497b974d14c640965568deac2fc482a476fbf4eac5a89",
+            "uncompressed_sha256": "180e0ec4fe8668e92c3bb1cbd17bb3cf473b25f8e4b8f360862d1e8a060a216d"
+          },
+          "rail": "native_all",
+          "receipt": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/native-all-resume-3.receipt.json",
+            "sha256": "fbda245c68b99bdb6201458d0078e413f8906ed651e3cdfcccd9672939c534bf",
+            "uncompressed_sha256": "fbda245c68b99bdb6201458d0078e413f8906ed651e3cdfcccd9672939c534bf"
+          },
+          "source_manifest_sha256": "0e0efb284fde4b7664cef66dda9dfff0cda47f67b8cb4882f99c09bfe54a049f",
+          "status": "VERIFIED",
+          "test": "symbol_endpoint_rejects_text_projections_with_and_without_hits"
+        },
+        {
+          "log": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/native-all-resume-3.log.gz",
+            "sha256": "46c4c7bea3ca621ccf2497b974d14c640965568deac2fc482a476fbf4eac5a89",
+            "uncompressed_sha256": "180e0ec4fe8668e92c3bb1cbd17bb3cf473b25f8e4b8f360862d1e8a060a216d"
+          },
+          "rail": "native_all",
+          "receipt": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/native-all-resume-3.receipt.json",
+            "sha256": "fbda245c68b99bdb6201458d0078e413f8906ed651e3cdfcccd9672939c534bf",
+            "uncompressed_sha256": "fbda245c68b99bdb6201458d0078e413f8906ed651e3cdfcccd9672939c534bf"
+          },
+          "source_manifest_sha256": "0e0efb284fde4b7664cef66dda9dfff0cda47f67b8cb4882f99c09bfe54a049f",
+          "status": "VERIFIED",
+          "test": "generic_text_symbol_selection_preserves_fixture_membership"
+        },
+        {
+          "log": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/dispatcher-all-resume-2.log.gz",
+            "sha256": "026f1690823f615d5567594a6e4ca7a4fb7304022a22def9ac805c06e69b4f45",
+            "uncompressed_sha256": "48093fb747c01b806ac40f1ea14bcff0cb0c99bc1b0d9c20d8ebdae050d3513f"
+          },
+          "rail": "dispatcher_all",
+          "receipt": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/dispatcher-all-resume-2.receipt.json",
+            "sha256": "3340580aa6c2cd47c751272143b56ed06a52aa2b1cfa1b6e5a04efa6f6823f3b",
+            "uncompressed_sha256": "3340580aa6c2cd47c751272143b56ed06a52aa2b1cfa1b6e5a04efa6f6823f3b"
+          },
+          "source_manifest_sha256": "a8e634fbf4c2948d66c23b5c9e32683146994c003b9e3c6ae3ab1cbe40fc0f58",
+          "status": "VERIFIED",
+          "test": "symbol_conflicts_reject_before_snapshot_open_and_language_empty"
+        },
+        {
+          "log": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/dispatcher-all-resume-2.log.gz",
+            "sha256": "026f1690823f615d5567594a6e4ca7a4fb7304022a22def9ac805c06e69b4f45",
+            "uncompressed_sha256": "48093fb747c01b806ac40f1ea14bcff0cb0c99bc1b0d9c20d8ebdae050d3513f"
+          },
+          "rail": "dispatcher_all",
+          "receipt": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/dispatcher-all-resume-2.receipt.json",
+            "sha256": "3340580aa6c2cd47c751272143b56ed06a52aa2b1cfa1b6e5a04efa6f6823f3b",
+            "uncompressed_sha256": "3340580aa6c2cd47c751272143b56ed06a52aa2b1cfa1b6e5a04efa6f6823f3b"
+          },
+          "source_manifest_sha256": "a8e634fbf4c2948d66c23b5c9e32683146994c003b9e3c6ae3ab1cbe40fc0f58",
+          "status": "VERIFIED",
+          "test": "sourcegraph_symbol_projection_conflict_uses_the_same_pure_admission"
+        }
+      ],
+      "id": "1",
+      "requirement": "Symbol endpoint keeps one compatible execution domain and decoder; invalid Text projections/types refuse before search.",
+      "scope": "Native indexed/manual, Text/Symbol/mixed fixtures and instrumented dispatcher; public daemon mapping excluded.",
+      "status": "VERIFIED",
+      "tests": [
+        "symbol_endpoint_rejects_text_projections_with_and_without_hits",
+        "generic_text_symbol_selection_preserves_fixture_membership",
+        "symbol_conflicts_reject_before_snapshot_open_and_language_empty",
+        "sourcegraph_symbol_projection_conflict_uses_the_same_pure_admission"
+      ]
+    },
+    {
+      "evidence": [
+        {
+          "log": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/native-all-resume-3.log.gz",
+            "sha256": "46c4c7bea3ca621ccf2497b974d14c640965568deac2fc482a476fbf4eac5a89",
+            "uncompressed_sha256": "180e0ec4fe8668e92c3bb1cbd17bb3cf473b25f8e4b8f360862d1e8a060a216d"
+          },
+          "rail": "native_all",
+          "receipt": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/native-all-resume-3.receipt.json",
+            "sha256": "fbda245c68b99bdb6201458d0078e413f8906ed651e3cdfcccd9672939c534bf",
+            "uncompressed_sha256": "fbda245c68b99bdb6201458d0078e413f8906ed651e3cdfcccd9672939c534bf"
+          },
+          "source_manifest_sha256": "0e0efb284fde4b7664cef66dda9dfff0cda47f67b8cb4882f99c09bfe54a049f",
+          "status": "VERIFIED",
+          "test": "empty_repo_predicate_cannot_hide_invalid_count"
+        },
+        {
+          "log": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/native-all-resume-3.log.gz",
+            "sha256": "46c4c7bea3ca621ccf2497b974d14c640965568deac2fc482a476fbf4eac5a89",
+            "uncompressed_sha256": "180e0ec4fe8668e92c3bb1cbd17bb3cf473b25f8e4b8f360862d1e8a060a216d"
+          },
+          "rail": "native_all",
+          "receipt": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/native-all-resume-3.receipt.json",
+            "sha256": "fbda245c68b99bdb6201458d0078e413f8906ed651e3cdfcccd9672939c534bf",
+            "uncompressed_sha256": "fbda245c68b99bdb6201458d0078e413f8906ed651e3cdfcccd9672939c534bf"
+          },
+          "source_manifest_sha256": "0e0efb284fde4b7664cef66dda9dfff0cda47f67b8cb4882f99c09bfe54a049f",
+          "status": "VERIFIED",
+          "test": "invalid_fetch_cannot_mint_zero_exact_count_before_execution"
+        },
+        {
+          "log": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/native-all-resume-3.log.gz",
+            "sha256": "46c4c7bea3ca621ccf2497b974d14c640965568deac2fc482a476fbf4eac5a89",
+            "uncompressed_sha256": "180e0ec4fe8668e92c3bb1cbd17bb3cf473b25f8e4b8f360862d1e8a060a216d"
+          },
+          "rail": "native_all",
+          "receipt": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/native-all-resume-3.receipt.json",
+            "sha256": "fbda245c68b99bdb6201458d0078e413f8906ed651e3cdfcccd9672939c534bf",
+            "uncompressed_sha256": "fbda245c68b99bdb6201458d0078e413f8906ed651e3cdfcccd9672939c534bf"
+          },
+          "source_manifest_sha256": "0e0efb284fde4b7664cef66dda9dfff0cda47f67b8cb4882f99c09bfe54a049f",
+          "status": "VERIFIED",
+          "test": "invalid_predicate_arguments_keep_registry_code_before_empty_results"
+        },
+        {
+          "log": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/native-all-resume-3.log.gz",
+            "sha256": "46c4c7bea3ca621ccf2497b974d14c640965568deac2fc482a476fbf4eac5a89",
+            "uncompressed_sha256": "180e0ec4fe8668e92c3bb1cbd17bb3cf473b25f8e4b8f360862d1e8a060a216d"
+          },
+          "rail": "native_all",
+          "receipt": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/native-all-resume-3.receipt.json",
+            "sha256": "fbda245c68b99bdb6201458d0078e413f8906ed651e3cdfcccd9672939c534bf",
+            "uncompressed_sha256": "fbda245c68b99bdb6201458d0078e413f8906ed651e3cdfcccd9672939c534bf"
+          },
+          "source_manifest_sha256": "0e0efb284fde4b7664cef66dda9dfff0cda47f67b8cb4882f99c09bfe54a049f",
+          "status": "VERIFIED",
+          "test": "invalid_regex_keeps_dialect_code_before_empty_results"
+        },
+        {
+          "log": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/native-all-resume-3.log.gz",
+            "sha256": "46c4c7bea3ca621ccf2497b974d14c640965568deac2fc482a476fbf4eac5a89",
+            "uncompressed_sha256": "180e0ec4fe8668e92c3bb1cbd17bb3cf473b25f8e4b8f360862d1e8a060a216d"
+          },
+          "rail": "native_all",
+          "receipt": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/native-all-resume-3.receipt.json",
+            "sha256": "fbda245c68b99bdb6201458d0078e413f8906ed651e3cdfcccd9672939c534bf",
+            "uncompressed_sha256": "fbda245c68b99bdb6201458d0078e413f8906ed651e3cdfcccd9672939c534bf"
+          },
+          "source_manifest_sha256": "0e0efb284fde4b7664cef66dda9dfff0cda47f67b8cb4882f99c09bfe54a049f",
+          "status": "VERIFIED",
+          "test": "predicate_result_empty_cannot_hide_tokenless_phrase"
+        },
+        {
+          "log": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/dispatcher-all-resume-2.log.gz",
+            "sha256": "026f1690823f615d5567594a6e4ca7a4fb7304022a22def9ac805c06e69b4f45",
+            "uncompressed_sha256": "48093fb747c01b806ac40f1ea14bcff0cb0c99bc1b0d9c20d8ebdae050d3513f"
+          },
+          "rail": "dispatcher_all",
+          "receipt": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/dispatcher-all-resume-2.receipt.json",
+            "sha256": "3340580aa6c2cd47c751272143b56ed06a52aa2b1cfa1b6e5a04efa6f6823f3b",
+            "uncompressed_sha256": "3340580aa6c2cd47c751272143b56ed06a52aa2b1cfa1b6e5a04efa6f6823f3b"
+          },
+          "source_manifest_sha256": "a8e634fbf4c2948d66c23b5c9e32683146994c003b9e3c6ae3ab1cbe40fc0f58",
+          "status": "VERIFIED",
+          "test": "contradictory_languages_do_not_hide_zero_count"
+        },
+        {
+          "log": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/dispatcher-all-resume-2.log.gz",
+            "sha256": "026f1690823f615d5567594a6e4ca7a4fb7304022a22def9ac805c06e69b4f45",
+            "uncompressed_sha256": "48093fb747c01b806ac40f1ea14bcff0cb0c99bc1b0d9c20d8ebdae050d3513f"
+          },
+          "rail": "dispatcher_all",
+          "receipt": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/dispatcher-all-resume-2.receipt.json",
+            "sha256": "3340580aa6c2cd47c751272143b56ed06a52aa2b1cfa1b6e5a04efa6f6823f3b",
+            "uncompressed_sha256": "3340580aa6c2cd47c751272143b56ed06a52aa2b1cfa1b6e5a04efa6f6823f3b"
+          },
+          "source_manifest_sha256": "a8e634fbf4c2948d66c23b5c9e32683146994c003b9e3c6ae3ab1cbe40fc0f58",
+          "status": "FAILED",
+          "test": "contradictory_languages_do_not_hide_tokenless_phrase"
+        },
+        {
+          "log": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/native-all-resume-3.log.gz",
+            "sha256": "46c4c7bea3ca621ccf2497b974d14c640965568deac2fc482a476fbf4eac5a89",
+            "uncompressed_sha256": "180e0ec4fe8668e92c3bb1cbd17bb3cf473b25f8e4b8f360862d1e8a060a216d"
+          },
+          "rail": "native_all",
+          "receipt": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/native-all-resume-3.receipt.json",
+            "sha256": "fbda245c68b99bdb6201458d0078e413f8906ed651e3cdfcccd9672939c534bf",
+            "uncompressed_sha256": "fbda245c68b99bdb6201458d0078e413f8906ed651e3cdfcccd9672939c534bf"
+          },
+          "source_manifest_sha256": "0e0efb284fde4b7664cef66dda9dfff0cda47f67b8cb4882f99c09bfe54a049f",
+          "status": "FAILED",
+          "test": "predicate_result_empty_cannot_hide_keyword_or_content_tokens"
+        }
+      ],
+      "id": "2",
+      "requirement": "Empty shortcuts cannot hide invalid input.",
+      "scope": "Native Keyword/expression and Content-filter token validation: eight invalid empty-predicate requests incorrectly succeed (indexed/manual, search/search_all). Dispatcher phrase is hidden by contradictory language. Shared canonical primitive admission is required. Consult individual evidence validity.",
+      "status": "FAILED",
+      "tests": [
+        "empty_repo_predicate_cannot_hide_invalid_count",
+        "invalid_fetch_cannot_mint_zero_exact_count_before_execution",
+        "invalid_predicate_arguments_keep_registry_code_before_empty_results",
+        "invalid_regex_keeps_dialect_code_before_empty_results",
+        "predicate_result_empty_cannot_hide_tokenless_phrase",
+        "contradictory_languages_do_not_hide_zero_count",
+        "contradictory_languages_do_not_hide_tokenless_phrase",
+        "predicate_result_empty_cannot_hide_keyword_or_content_tokens"
+      ]
+    },
+    {
+      "evidence": [
+        {
+          "log": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/native-all-resume-3.log.gz",
+            "sha256": "46c4c7bea3ca621ccf2497b974d14c640965568deac2fc482a476fbf4eac5a89",
+            "uncompressed_sha256": "180e0ec4fe8668e92c3bb1cbd17bb3cf473b25f8e4b8f360862d1e8a060a216d"
+          },
+          "rail": "native_all",
+          "receipt": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/native-all-resume-3.receipt.json",
+            "sha256": "fbda245c68b99bdb6201458d0078e413f8906ed651e3cdfcccd9672939c534bf",
+            "uncompressed_sha256": "fbda245c68b99bdb6201458d0078e413f8906ed651e3cdfcccd9672939c534bf"
+          },
+          "source_manifest_sha256": "0e0efb284fde4b7664cef66dda9dfff0cda47f67b8cb4882f99c09bfe54a049f",
+          "status": "VERIFIED",
+          "test": "projection_cannot_reroute_unsupported_symbol_regex_to_text"
+        },
+        {
+          "log": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/dispatcher-all-resume-2.log.gz",
+            "sha256": "026f1690823f615d5567594a6e4ca7a4fb7304022a22def9ac805c06e69b4f45",
+            "uncompressed_sha256": "48093fb747c01b806ac40f1ea14bcff0cb0c99bc1b0d9c20d8ebdae050d3513f"
+          },
+          "rail": "dispatcher_all",
+          "receipt": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/dispatcher-all-resume-2.receipt.json",
+            "sha256": "3340580aa6c2cd47c751272143b56ed06a52aa2b1cfa1b6e5a04efa6f6823f3b",
+            "uncompressed_sha256": "3340580aa6c2cd47c751272143b56ed06a52aa2b1cfa1b6e5a04efa6f6823f3b"
+          },
+          "source_manifest_sha256": "a8e634fbf4c2948d66c23b5c9e32683146994c003b9e3c6ae3ab1cbe40fc0f58",
+          "status": "VERIFIED",
+          "test": "language_empty_cannot_hide_unsupported_symbol_text_or_domain_override"
+        }
+      ],
+      "id": "3",
+      "requirement": "Select cannot bypass unsupported Symbol regex admission.",
+      "scope": "Native indexed/manual and instrumented dispatcher native/Sourcegraph routing controls.",
+      "status": "VERIFIED",
+      "tests": [
+        "projection_cannot_reroute_unsupported_symbol_regex_to_text",
+        "language_empty_cannot_hide_unsupported_symbol_text_or_domain_override"
+      ]
+    },
+    {
+      "evidence": [
+        {
+          "log": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/dispatcher-all-resume-2.log.gz",
+            "sha256": "026f1690823f615d5567594a6e4ca7a4fb7304022a22def9ac805c06e69b4f45",
+            "uncompressed_sha256": "48093fb747c01b806ac40f1ea14bcff0cb0c99bc1b0d9c20d8ebdae050d3513f"
+          },
+          "rail": "dispatcher_all",
+          "receipt": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/dispatcher-all-resume-2.receipt.json",
+            "sha256": "3340580aa6c2cd47c751272143b56ed06a52aa2b1cfa1b6e5a04efa6f6823f3b",
+            "uncompressed_sha256": "3340580aa6c2cd47c751272143b56ed06a52aa2b1cfa1b6e5a04efa6f6823f3b"
+          },
+          "source_manifest_sha256": "a8e634fbf4c2948d66c23b5c9e32683146994c003b9e3c6ae3ab1cbe40fc0f58",
+          "status": "VERIFIED",
+          "test": "valid_language_contradiction_has_no_executed_lane_or_backend_search"
+        },
+        {
+          "log": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/base-window-resume-2.log.gz",
+            "sha256": "58e408e35d9ada04c48c062e99ec75283e0708e6ae5023d5fad1df592b583966",
+            "uncompressed_sha256": "1838aa97c9a02c2303449533f47c7743e6a2bc1340cc2915963f55e7e60d9354"
+          },
+          "rail": "base_window",
+          "receipt": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/base-window-resume-2.receipt.json",
+            "sha256": "bde7692df0e0d7e8c3138d8b2767229c8cd63edc3b3ea8345ef9d6b8c3f3a7c6",
+            "uncompressed_sha256": "bde7692df0e0d7e8c3138d8b2767229c8cd63edc3b3ea8345ef9d6b8c3f3a7c6"
+          },
+          "source_manifest_sha256": "eb3eda4f43f58d9f0660838b07f3fd65ab3229af1fc86d961ecfd9c48c0c0474",
+          "status": "VERIFIED",
+          "test": "logical_empty_has_explicit_proof_and_never_claims_backend_execution"
+        },
+        {
+          "log": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/base-window-resume-2.log.gz",
+            "sha256": "58e408e35d9ada04c48c062e99ec75283e0708e6ae5023d5fad1df592b583966",
+            "uncompressed_sha256": "1838aa97c9a02c2303449533f47c7743e6a2bc1340cc2915963f55e7e60d9354"
+          },
+          "rail": "base_window",
+          "receipt": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/base-window-resume-2.receipt.json",
+            "sha256": "bde7692df0e0d7e8c3138d8b2767229c8cd63edc3b3ea8345ef9d6b8c3f3a7c6",
+            "uncompressed_sha256": "bde7692df0e0d7e8c3138d8b2767229c8cd63edc3b3ea8345ef9d6b8c3f3a7c6"
+          },
+          "source_manifest_sha256": "eb3eda4f43f58d9f0660838b07f3fd65ab3229af1fc86d961ecfd9c48c0c0474",
+          "status": "VERIFIED",
+          "test": "logical_empty_refuses_mixed_execution_and_proof_claims"
+        },
+        {
+          "log": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/base-window-resume-2.log.gz",
+            "sha256": "58e408e35d9ada04c48c062e99ec75283e0708e6ae5023d5fad1df592b583966",
+            "uncompressed_sha256": "1838aa97c9a02c2303449533f47c7743e6a2bc1340cc2915963f55e7e60d9354"
+          },
+          "rail": "base_window",
+          "receipt": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/base-window-resume-2.receipt.json",
+            "sha256": "bde7692df0e0d7e8c3138d8b2767229c8cd63edc3b3ea8345ef9d6b8c3f3a7c6",
+            "uncompressed_sha256": "bde7692df0e0d7e8c3138d8b2767229c8cd63edc3b3ea8345ef9d6b8c3f3a7c6"
+          },
+          "source_manifest_sha256": "eb3eda4f43f58d9f0660838b07f3fd65ab3229af1fc86d961ecfd9c48c0c0474",
+          "status": "VERIFIED",
+          "test": "exhaustion_proof_decode_rejects_extra_missing_duplicate_or_unknown_fields"
+        }
+      ],
+      "id": "4",
+      "requirement": "No lane execution claim before actual invocation; valid logical empty has explicit proof.",
+      "scope": "Instrumented opener/searcher plus canonical contract proof decoder. Installed runtime telemetry excluded.",
+      "status": "VERIFIED",
+      "tests": [
+        "valid_language_contradiction_has_no_executed_lane_or_backend_search",
+        "logical_empty_has_explicit_proof_and_never_claims_backend_execution",
+        "logical_empty_refuses_mixed_execution_and_proof_claims",
+        "exhaustion_proof_decode_rejects_extra_missing_duplicate_or_unknown_fields"
+      ]
+    },
+    {
+      "evidence": [
+        {
+          "log": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/native-all-resume-3.log.gz",
+            "sha256": "46c4c7bea3ca621ccf2497b974d14c640965568deac2fc482a476fbf4eac5a89",
+            "uncompressed_sha256": "180e0ec4fe8668e92c3bb1cbd17bb3cf473b25f8e4b8f360862d1e8a060a216d"
+          },
+          "rail": "native_all",
+          "receipt": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/native-all-resume-3.receipt.json",
+            "sha256": "fbda245c68b99bdb6201458d0078e413f8906ed651e3cdfcccd9672939c534bf",
+            "uncompressed_sha256": "fbda245c68b99bdb6201458d0078e413f8906ed651e3cdfcccd9672939c534bf"
+          },
+          "source_manifest_sha256": "0e0efb284fde4b7664cef66dda9dfff0cda47f67b8cb4882f99c09bfe54a049f",
+          "status": "VERIFIED",
+          "test": "symbol_count_cap_preserves_rows_when_explicitly_walking_boundaries"
+        },
+        {
+          "log": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/dispatcher-all-resume-2.log.gz",
+            "sha256": "026f1690823f615d5567594a6e4ca7a4fb7304022a22def9ac805c06e69b4f45",
+            "uncompressed_sha256": "48093fb747c01b806ac40f1ea14bcff0cb0c99bc1b0d9c20d8ebdae050d3513f"
+          },
+          "rail": "dispatcher_all",
+          "receipt": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/dispatcher-all-resume-2.receipt.json",
+            "sha256": "3340580aa6c2cd47c751272143b56ed06a52aa2b1cfa1b6e5a04efa6f6823f3b",
+            "uncompressed_sha256": "3340580aa6c2cd47c751272143b56ed06a52aa2b1cfa1b6e5a04efa6f6823f3b"
+          },
+          "source_manifest_sha256": "a8e634fbf4c2948d66c23b5c9e32683146994c003b9e3c6ae3ab1cbe40fc0f58",
+          "status": "VERIFIED",
+          "test": "count_windows_preserve_exact_cardinality_and_complete_cursor_walks"
+        },
+        {
+          "log": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/dispatcher-all-resume-2.log.gz",
+            "sha256": "026f1690823f615d5567594a6e4ca7a4fb7304022a22def9ac805c06e69b4f45",
+            "uncompressed_sha256": "48093fb747c01b806ac40f1ea14bcff0cb0c99bc1b0d9c20d8ebdae050d3513f"
+          },
+          "rail": "dispatcher_all",
+          "receipt": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/dispatcher-all-resume-2.receipt.json",
+            "sha256": "3340580aa6c2cd47c751272143b56ed06a52aa2b1cfa1b6e5a04efa6f6823f3b",
+            "uncompressed_sha256": "3340580aa6c2cd47c751272143b56ed06a52aa2b1cfa1b6e5a04efa6f6823f3b"
+          },
+          "source_manifest_sha256": "a8e634fbf4c2948d66c23b5c9e32683146994c003b9e3c6ae3ab1cbe40fc0f58",
+          "status": "VERIFIED",
+          "test": "clipped_count_page_continues_from_last_retained_row_without_omissions"
+        },
+        {
+          "log": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/dispatcher-all-resume-2.log.gz",
+            "sha256": "026f1690823f615d5567594a6e4ca7a4fb7304022a22def9ac805c06e69b4f45",
+            "uncompressed_sha256": "48093fb747c01b806ac40f1ea14bcff0cb0c99bc1b0d9c20d8ebdae050d3513f"
+          },
+          "rail": "dispatcher_all",
+          "receipt": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/dispatcher-all-resume-2.receipt.json",
+            "sha256": "3340580aa6c2cd47c751272143b56ed06a52aa2b1cfa1b6e5a04efa6f6823f3b",
+            "uncompressed_sha256": "3340580aa6c2cd47c751272143b56ed06a52aa2b1cfa1b6e5a04efa6f6823f3b"
+          },
+          "source_manifest_sha256": "a8e634fbf4c2948d66c23b5c9e32683146994c003b9e3c6ae3ab1cbe40fc0f58",
+          "status": "VERIFIED",
+          "test": "cursor_walk_distinguishes_equal_paths_and_ids_in_different_sources"
+        },
+        {
+          "log": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/dispatcher-all-resume-2.log.gz",
+            "sha256": "026f1690823f615d5567594a6e4ca7a4fb7304022a22def9ac805c06e69b4f45",
+            "uncompressed_sha256": "48093fb747c01b806ac40f1ea14bcff0cb0c99bc1b0d9c20d8ebdae050d3513f"
+          },
+          "rail": "dispatcher_all",
+          "receipt": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/dispatcher-all-resume-2.receipt.json",
+            "sha256": "3340580aa6c2cd47c751272143b56ed06a52aa2b1cfa1b6e5a04efa6f6823f3b",
+            "uncompressed_sha256": "3340580aa6c2cd47c751272143b56ed06a52aa2b1cfa1b6e5a04efa6f6823f3b"
+          },
+          "source_manifest_sha256": "a8e634fbf4c2948d66c23b5c9e32683146994c003b9e3c6ae3ab1cbe40fc0f58",
+          "status": "VERIFIED",
+          "test": "missing_count_fact_cannot_turn_a_capped_page_into_exact_exhaustion"
+        },
+        {
+          "log": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/dispatcher-all-resume-2.log.gz",
+            "sha256": "026f1690823f615d5567594a6e4ca7a4fb7304022a22def9ac805c06e69b4f45",
+            "uncompressed_sha256": "48093fb747c01b806ac40f1ea14bcff0cb0c99bc1b0d9c20d8ebdae050d3513f"
+          },
+          "rail": "dispatcher_all",
+          "receipt": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/dispatcher-all-resume-2.receipt.json",
+            "sha256": "3340580aa6c2cd47c751272143b56ed06a52aa2b1cfa1b6e5a04efa6f6823f3b",
+            "uncompressed_sha256": "3340580aa6c2cd47c751272143b56ed06a52aa2b1cfa1b6e5a04efa6f6823f3b"
+          },
+          "source_manifest_sha256": "a8e634fbf4c2948d66c23b5c9e32683146994c003b9e3c6ae3ab1cbe40fc0f58",
+          "status": "VERIFIED",
+          "test": "clipping_cannot_hide_an_exact_count_below_observed_rows"
+        },
+        {
+          "log": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/dispatcher-all-resume-2.log.gz",
+            "sha256": "026f1690823f615d5567594a6e4ca7a4fb7304022a22def9ac805c06e69b4f45",
+            "uncompressed_sha256": "48093fb747c01b806ac40f1ea14bcff0cb0c99bc1b0d9c20d8ebdae050d3513f"
+          },
+          "rail": "dispatcher_all",
+          "receipt": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/dispatcher-all-resume-2.receipt.json",
+            "sha256": "3340580aa6c2cd47c751272143b56ed06a52aa2b1cfa1b6e5a04efa6f6823f3b",
+            "uncompressed_sha256": "3340580aa6c2cd47c751272143b56ed06a52aa2b1cfa1b6e5a04efa6f6823f3b"
+          },
+          "source_manifest_sha256": "a8e634fbf4c2948d66c23b5c9e32683146994c003b9e3c6ae3ab1cbe40fc0f58",
+          "status": "VERIFIED",
+          "test": "cursor_cannot_replay_into_a_new_language_contradiction"
+        }
+      ],
+      "id": "5",
+      "requirement": "Count/window/cursor facts remain authoritative through caps and byte clipping.",
+      "scope": "Fixture-authored independent cardinalities and IDs, cap/top-k boundaries and complete walks; selected existing page controls.",
+      "status": "VERIFIED",
+      "tests": [
+        "symbol_count_cap_preserves_rows_when_explicitly_walking_boundaries",
+        "count_windows_preserve_exact_cardinality_and_complete_cursor_walks",
+        "clipped_count_page_continues_from_last_retained_row_without_omissions",
+        "cursor_walk_distinguishes_equal_paths_and_ids_in_different_sources",
+        "missing_count_fact_cannot_turn_a_capped_page_into_exact_exhaustion",
+        "clipping_cannot_hide_an_exact_count_below_observed_rows",
+        "cursor_cannot_replay_into_a_new_language_contradiction"
+      ]
+    },
+    {
+      "evidence": [
+        {
+          "log": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/native-all-resume-3.log.gz",
+            "sha256": "46c4c7bea3ca621ccf2497b974d14c640965568deac2fc482a476fbf4eac5a89",
+            "uncompressed_sha256": "180e0ec4fe8668e92c3bb1cbd17bb3cf473b25f8e4b8f360862d1e8a060a216d"
+          },
+          "rail": "native_all",
+          "receipt": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/native-all-resume-3.receipt.json",
+            "sha256": "fbda245c68b99bdb6201458d0078e413f8906ed651e3cdfcccd9672939c534bf",
+            "uncompressed_sha256": "fbda245c68b99bdb6201458d0078e413f8906ed651e3cdfcccd9672939c534bf"
+          },
+          "source_manifest_sha256": "0e0efb284fde4b7664cef66dda9dfff0cda47f67b8cb4882f99c09bfe54a049f",
+          "status": "VERIFIED",
+          "test": "exact_all_ports_refuse_bounded_count_and_preserve_full_set_controls"
+        },
+        {
+          "log": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/dispatcher-all-resume-2.log.gz",
+            "sha256": "026f1690823f615d5567594a6e4ca7a4fb7304022a22def9ac805c06e69b4f45",
+            "uncompressed_sha256": "48093fb747c01b806ac40f1ea14bcff0cb0c99bc1b0d9c20d8ebdae050d3513f"
+          },
+          "rail": "dispatcher_all",
+          "receipt": {
+            "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/current/dispatcher-all-resume-2.receipt.json",
+            "sha256": "3340580aa6c2cd47c751272143b56ed06a52aa2b1cfa1b6e5a04efa6f6823f3b",
+            "uncompressed_sha256": "3340580aa6c2cd47c751272143b56ed06a52aa2b1cfa1b6e5a04efa6f6823f3b"
+          },
+          "source_manifest_sha256": "a8e634fbf4c2948d66c23b5c9e32683146994c003b9e3c6ae3ab1cbe40fc0f58",
+          "status": "VERIFIED",
+          "test": "structural_exact_all_callers_propagate_bounded_count_refusal"
+        }
+      ],
+      "id": "ALL",
+      "requirement": "Inventory actual exact-all callers; verify required behavior without inventing other defects.",
+      "scope": "Real native complete-set ports and real structural route with instrumented ports; no real native+structural assembled E2E claim.",
+      "status": "VERIFIED",
+      "tests": [
+        "exact_all_ports_refuse_bounded_count_and_preserve_full_set_controls",
+        "structural_exact_all_callers_propagate_bounded_count_refusal"
+      ]
+    }
+  ],
+  "source_union_sha256": "f441ed82d5dfe9ee3f4034820603734e182c47a403224c03bf3fef15720ed593",
+  "state": "partial"
+}

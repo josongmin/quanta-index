@@ -1,0 +1,44 @@
+{
+  "upstream_crate": "tantivy-sstable",
+  "upstream_version": "0.3.0",
+  "registry_source": "crates.io",
+  "upstream_files_sha256": {
+    "Cargo.toml": "5f4183fb4ceb578689523f1b1dc0855a7a2c109fccb1d0db831227697ffef9a4",
+    "README.md": "25228e5a8b50937da719a9d60993e2b1dc26dfcd7fa829dfd9a19963146005cf",
+    "Cargo.toml.orig": "1155481e2800d7c4105a62219d80826b584581de58820ac1e2bd931b49649df9",
+    "benches/ord_to_term.rs": "96eadc0ac7e4a54519e6702c2727b68bee91e6fb902f4e9f7da7b48de0ef98c8",
+    "benches/stream_bench.rs": "16c034da1606be707e8a6a51fa87feb138c65edd6fdc7baa2bf8e38bb15e1a29",
+    "src/lib.rs": "0a8e98ac78fd56340de22515b72c1e5175959f4952f605892d4de45f4f1153d3",
+    "src/streamer.rs": "7a94393f557d4f8de71eb6c73bc60b94274edd76d776e12e13467a181f9bb77e",
+    "src/dictionary.rs": "54e8408fed3458932382f7030b097fd5b36001ee27acbd643bf6301487b9409d",
+    "src/sstable_index_v2.rs": "f8324631f3b7c7049e5b09f15803a766e209ac2b04718e5b2ebe94d95dd485eb",
+    "src/vint.rs": "7db79f99660a7f336025b63d354d1262cc0b9a51a4c0ce7b7ab31c5c7caaf98d",
+    "src/block_reader.rs": "ce2466217e76d5203bb9c149e60779a41b6b98e28d728f28ebfaefe44b5ec3e3",
+    "src/delta.rs": "a5709dcd2bf9f6b02557f67afc4cd8c38f1a651407542571c6259cd2ae2467c0",
+    "src/sstable_index_v3.rs": "4c9e50d6b5962d5730e845ef537e323aa876dbde92513542a4137ca1190860e7",
+    "src/merge/heap_merge.rs": "997ee08cdcaae9e65d03cf2a7eb1f41a4c9128cb68dc88a5d67b09d256bc6cdf",
+    "src/merge/mod.rs": "072cf51773d727847d0f7dd9ac571f5f1154f99307196b42e52f760b9b0ed52f",
+    "src/value/void.rs": "020c7a844b0c02ca2fa7cbb6b3c4cee679ad27ab3d9f13986355221aadf707ad",
+    "src/value/u64_monotonic.rs": "91ae300175565fa6d794a02ed0f4475694499383fd0dc62c983fbc9bbef5b2e0",
+    "src/value/range.rs": "63d173f4313b21b87a39b7159d56689171d1bfc1de0d6337269906bc4620f2ab",
+    "src/value/index.rs": "27af4db501a3749b159acfe357b909e72bdc2158bb5db5e02bdf8aec45388ad0",
+    "src/value/mod.rs": "4a8c92dcd3e093328c5afc045c8c3a5bbe0774622e29a40c4131f2542a6945fe"
+  },
+  "change_scope": "Budget-admitted ordinal string decoding; serialized SSTable format unchanged",
+  "license_source": {
+    "path": "/Users/songmin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tantivy-0.22.1/LICENSE",
+    "sha256": "acacd14bebbffdb30d62443c282fb4da3e81915a9f69c63d5d745a029f44de8a"
+  },
+  "upstream_registry_checksum": "c69578242e8e9fc989119f522ba5b49a38ac20f576fc778035b96cc94f41f98e",
+  "modified_files_sha256": {
+    "src/dictionary.rs": "cdda481d7b24fa936eb2696a30915bc38d25715beaedb5534b18e180e9bae6ec",
+    "src/vint.rs": "c3faa73baf4bed33f963db92fabb994f8f4819d6241d32bb9ae767aaad03de6f",
+    "src/block_reader.rs": "ca5a5ced91ab138145c9ec185899e72a63669393c2ace897b4a05aa71f062465",
+    "src/delta.rs": "f87a2980410e00e0be95a92618ad43824055847ab150c25ff8810156e47cbf73"
+  },
+  "additional_files_sha256": {
+    "LICENSE": "acacd14bebbffdb30d62443c282fb4da3e81915a9f69c63d5d745a029f44de8a",
+    "AUTHORS": "141e25490cf9e0d3a05374171cb0a42c91a0cf0fb2041ba4c010f466e89b596d",
+    "QUANTA.md": "e92aa85e8a754a8ff486dfe3abb85f67f5acc63eb32ec25e5ec5b46824017598"
+  }
+}

@@ -7,7 +7,7 @@
 //! shared coverage commits the source bytes, symbol payload and producer
 //! policy. Empty files are admitted with explicit zero-unit coverage.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
@@ -59,7 +59,7 @@ impl BatchIdentity {
 }
 
 fn language_for(path: &str) -> BenchResult<LanguageCode> {
-    let code = match path.rsplit('.').next().unwrap_or("") {
+    let code = match path.rsplit_once('.').map_or("", |(_, extension)| extension) {
         "rs" => "rust",
         "py" => "python",
         "js" | "mjs" | "cjs" | "jsx" => "javascript",
@@ -80,11 +80,9 @@ fn language_for(path: &str) -> BenchResult<LanguageCode> {
         "sh" | "bash" => "shell",
         "css" => "css",
         "html" => "html",
-        other => {
-            return Err(BenchError::Config(format!(
-                "no language mapping for admitted file (exclude it from the manifest): {path} (.{other})"
-            )));
-        }
+        // Unclassified admitted UTF-8 is a text surface. Strict symbol admission
+        // has already refused it; AllowIncomplete preserves Unsupported facts.
+        _ => "text",
     };
     LanguageCode::new(code).map_err(|err| BenchError::Config(format!("bad language code: {err}")))
 }
@@ -174,6 +172,7 @@ pub fn assemble_batch(
     )
     .source_event(source_event);
     let mut report = BatchAssemblyReport::default();
+    let mut unit_ids = BTreeSet::new();
     for (path, file) in files {
         let file_chunks: &[Chunk] = chunks.get(path).map_or(&[], Vec::as_slice);
         let file_symbols = preflight
@@ -193,8 +192,22 @@ pub fn assemble_batch(
             source_sha256: Sha256::digest(&file.bytes).into(),
         };
         let coverage = preflight.coverage_for(source, language_for(path)?, file, &records)?;
+        for id in records
+            .iter()
+            .map(|chunk| chunk.chunk_id.as_str())
+            .chain(file_symbols.iter().map(|symbol| symbol.symbol_id.as_str()))
+        {
+            if !unit_ids.insert(id.to_string()) {
+                return Err(BenchError::Protocol(format!(
+                    "duplicate published unit ID across source files: {id}"
+                )));
+            }
+        }
         batch = batch.replace_scope(coverage, records, file_symbols.clone());
-        report.scopes += 1;
+        report.scopes = report
+            .scopes
+            .checked_add(1)
+            .ok_or_else(|| BenchError::Protocol("source scope count overflow".to_string()))?;
         report.chunks = report
             .chunks
             .checked_add(file_chunks.len())
@@ -322,6 +335,37 @@ mod tests {
     const RUST_SOURCE: &str = "pub fn first() {}\npub fn second() {}\n";
 
     #[test]
+    fn incomplete_profile_preserves_plain_and_unclassified_text() {
+        let source = files(&[
+            ("notes.txt", "plain text marker"),
+            ("LICENSE", "extensionless marker"),
+            ("opaque.custom", "unclassified marker"),
+            ("rs", "extensionless Rust-like filename"),
+            ("json", "extensionless JSON-like filename"),
+        ]);
+        let chunks = source
+            .iter()
+            .map(|(path, file)| (path.clone(), vec![chunk(path, &file.text)]))
+            .collect();
+        assert!(build(&source, &chunks, SymbolCoveragePolicy::RequireComplete).is_err());
+        let (batch, report) = build(&source, &chunks, SymbolCoveragePolicy::AllowIncomplete)
+            .expect("explicit text admission must retain every unsupported source");
+        assert_eq!((report.scopes, report.chunks, report.symbols), (5, 5, 0));
+        for scope in batch.replace_scopes() {
+            assert_eq!(scope.coverage.language.as_str(), "text");
+            assert_eq!(scope.coverage.symbols, SymbolCoverage::Unsupported);
+            assert!(scope.coverage.text_admitted);
+            assert_eq!(scope.chunks.len(), 1);
+            assert_eq!(scope.chunks[0].language.as_str(), "text");
+        }
+        assert_eq!(batch.semantic_replace_scopes().len(), 5);
+        for scope in batch.semantic_replace_scopes() {
+            assert_eq!(scope.sources.len(), 1);
+            assert_eq!(scope.sources[0].language.as_deref(), Some("text"));
+        }
+    }
+
+    #[test]
     fn combined_replacement_carries_chunks_symbols_and_source_coverage() {
         let files = files(&[("src/lib.rs", RUST_SOURCE)]);
         let chunks = BTreeMap::from([(
@@ -345,7 +389,7 @@ mod tests {
             identity().repo_id
         );
         assert_eq!((scope.chunks.len(), scope.symbols.len()), (1, 2));
-        batch
+        let _digest = batch
             .batch_digest()
             .expect("SDK finalizes source event before transport digest");
     }
@@ -414,6 +458,13 @@ mod tests {
             SymbolCoverage::Complete { symbol_count: 0 }
         );
         assert!(empty.chunks.is_empty() && empty.symbols.is_empty());
+        assert!(empty.coverage.text_admitted);
+        let symbol_only = batch
+            .replace_scopes()
+            .iter()
+            .find(|scope| scope.coverage.source.file.repo_relative_path.as_str() == "src/boot.ts")
+            .expect("symbol-only source");
+        assert!(!symbol_only.coverage.text_admitted);
     }
     #[test]
     fn canonical_unit_commitment_is_independent_of_chunk_vector_order() {
@@ -500,5 +551,45 @@ mod tests {
         let foreign =
             BTreeMap::from([("other.rs".to_string(), vec![chunk("other.rs", RUST_SOURCE)])]);
         assert!(build(&source, &foreign, SymbolCoveragePolicy::RequireComplete).is_err());
+    }
+
+    #[test]
+    fn duplicate_unit_ids_across_source_files_refuse() {
+        let source = files(&[("a.ts", "function a() {}"), ("b.ts", "function b() {}")]);
+        let preflight = preflight_corpus_symbols(&source, &SymbolPreflightOptions::default())
+            .expect("preflight");
+        let foreign_symbol_id = preflight
+            .symbols()
+            .get("b.ts")
+            .expect("b symbols")
+            .first()
+            .expect("b definition")
+            .symbol_id
+            .as_str();
+        for collision in ["same-chunk-id", foreign_symbol_id] {
+            let mut a = chunk("a.ts", "function a() {}");
+            let mut b = chunk("b.ts", "function b() {}");
+            a.chunk_id = collision.to_string();
+            if collision == "same-chunk-id" {
+                b.chunk_id = collision.to_string();
+            }
+            let chunks =
+                BTreeMap::from([("a.ts".to_string(), vec![a]), ("b.ts".to_string(), vec![b])]);
+            let error = assemble_batch(
+                &identity(),
+                &chunks,
+                &source,
+                &preflight,
+                SymbolCoveragePolicy::RequireComplete,
+                event(),
+            )
+            .err()
+            .expect("global collision refuses");
+            assert!(
+                error
+                    .to_string()
+                    .contains("duplicate published unit ID across source files")
+            );
+        }
     }
 }

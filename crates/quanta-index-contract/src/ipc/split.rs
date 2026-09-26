@@ -96,6 +96,10 @@ pub struct SearchPlaneQueryIpcRequestEnvelope {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "wire payloads retain the existing by-value API; boxing adds allocation and changes construction across unrelated query routes"
+)]
 pub enum SearchPlaneQueryIpcRequest {
     ResolveActiveGeneration(CurrentGenerationRequest),
     ResolveLexicalGeneration(TextQueryRequest),

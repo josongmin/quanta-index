@@ -1,0 +1,28 @@
+{
+  "after": "/tmp/quanta-l1-audit.touy8xnn/audit-native-red-1.after.json",
+  "artifacts": [],
+  "before": "/tmp/quanta-l1-audit.touy8xnn/audit-native-red-1.before.json",
+  "classification": "UNCLASSIFIED: inspect execution count, outcome, inputs and source drift before promoting evidence",
+  "command": [
+    "./scripts/cargow",
+    "test",
+    "--locked",
+    "-j",
+    "2",
+    "-p",
+    "quanta-index-lexical",
+    "--test",
+    "l1_query_domain_window",
+    "--message-format=json",
+    "--",
+    "l1_audit_"
+  ],
+  "ended_unix": 1790460390.4997592,
+  "executed_result_lines": [],
+  "exit_code": 101,
+  "head_changed": false,
+  "log": "/tmp/quanta-l1-audit.touy8xnn/audit-native-red-1.log",
+  "log_sha256": "c3d805662e6584cbf7a1d776608d2d2e996daf218967b51dd0043e9e1c8a9709",
+  "source_changed": [],
+  "started_unix": 1790460384.78465
+}

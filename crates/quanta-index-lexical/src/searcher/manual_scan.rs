@@ -49,6 +49,14 @@ impl<T: RankedRowView> RankedRowView for ManualRankedCandidate<T> {
     }
 }
 
+/// Borrowed fields from the same stored document throughout Boolean evaluation.
+struct ManualDocumentView<'a> {
+    doc: &'a TantivyDocument,
+    source_repo_id: &'a str,
+    repo_relative_path: &'a str,
+    content: &'a str,
+}
+
 impl TantivySearcher {
     /// Whether `haystack` holds the token sequence of `text`, on the
     /// `index:no` route.
@@ -421,38 +429,49 @@ impl TantivySearcher {
         }
     }
 
-    pub(crate) fn manual_expr_matches(
+    fn manual_expr_matches(
         &self,
+        view: &ManualDocumentView<'_>,
         expr: &LqExpr,
         options: &LqOptions,
-        source_repo_id: &str,
-        repo_relative_path: &str,
-        content: &str,
         include_path_terms: bool,
         budget: &RequestBudgetV1,
     ) -> Result<bool, CoreError> {
         match expr {
+            LqExpr::Leaf(LqLeaf::Predicate { name, args })
+                if quanta_index_core::LexicalPredicateV1::from_canonical_name(name)
+                    .is_some_and(|predicate| {
+                        matches!(
+                            predicate,
+                            quanta_index_core::LexicalPredicateV1::SymbolLocalNameExact
+                                | quanta_index_core::LexicalPredicateV1::SymbolQualifiedNameExact
+                        )
+                    }) =>
+            {
+                crate::symbol::exact_symbol_name_matches(
+                    &self.fields,
+                    view.doc,
+                    name,
+                    args,
+                    options,
+                )?
+                .ok_or_else(|| {
+                    CoreError::Storage("lexical: exact symbol predicate lost its policy".into())
+                })
+            }
             LqExpr::Empty => Ok(true),
             LqExpr::Leaf(leaf) => self.manual_leaf_matches(
                 leaf,
                 options,
-                source_repo_id,
-                repo_relative_path,
-                content,
+                view.source_repo_id,
+                view.repo_relative_path,
+                view.content,
                 include_path_terms,
                 budget,
             ),
             LqExpr::All(children) => {
                 for child in children {
-                    if !self.manual_expr_matches(
-                        child,
-                        options,
-                        source_repo_id,
-                        repo_relative_path,
-                        content,
-                        false,
-                        budget,
-                    )? {
+                    if !self.manual_expr_matches(view, child, options, false, budget)? {
                         return Ok(false);
                     }
                 }
@@ -460,29 +479,15 @@ impl TantivySearcher {
             }
             LqExpr::Any(children) => {
                 for child in children {
-                    if self.manual_expr_matches(
-                        child,
-                        options,
-                        source_repo_id,
-                        repo_relative_path,
-                        content,
-                        false,
-                        budget,
-                    )? {
+                    if self.manual_expr_matches(view, child, options, false, budget)? {
                         return Ok(true);
                     }
                 }
                 Ok(false)
             }
-            LqExpr::Not(inner) => Ok(!self.manual_expr_matches(
-                inner,
-                options,
-                source_repo_id,
-                repo_relative_path,
-                content,
-                false,
-                budget,
-            )?),
+            LqExpr::Not(inner) => {
+                Ok(!self.manual_expr_matches(view, inner, options, false, budget)?)
+            }
         }
     }
 
@@ -744,12 +749,16 @@ impl TantivySearcher {
         let include_path_terms =
             Self::enables_path_term_surface(&prepared.predicate_plan.expr, &query.options);
         let content = self.doc_content_text(doc);
+        let view = ManualDocumentView {
+            doc,
+            source_repo_id: &source_repo_id,
+            repo_relative_path: &repo_relative_path,
+            content: &content,
+        };
         if !self.manual_expr_matches(
+            &view,
             &prepared.predicate_plan.expr,
             &query.options,
-            &source_repo_id,
-            &repo_relative_path,
-            &content,
             include_path_terms,
             budget,
         )? {

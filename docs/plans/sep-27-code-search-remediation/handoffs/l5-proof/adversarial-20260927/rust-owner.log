@@ -1,0 +1,162 @@
+resource admission: waiting lock=/Users/songmin/Library/Caches/quanta-index/resource-admission/build-test.lock
+resource admission: admitted lock=/Users/songmin/Library/Caches/quanta-index/resource-admission/build-test.lock
+    Blocking waiting for file lock on build directory
+   Compiling quanta-index-retrieval-bench v0.1.0 (/Users/songmin/.codex/worktrees/l5-adversarial-proof/quanta-index/benchmarks/retrieval)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 14s
+     Running unittests src/lib.rs (/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-daemon-lane/debug/deps/quanta_index_retrieval_bench-03fd051ec4e1712e)
+
+running 87 tests
+test chunking::core::tests::token_unit_matches_evaluator_cases ... ok
+test corpus::tests::exotic_boundaries_are_detected ... ok
+test corpus::tests::line_split_matches_python_model_for_lf_crlf_and_cr ... ok
+test canonical::tests::canonical_form_sorts_keys_and_holds_utf8 ... ok
+test corpus::tests::manifest_rejects_repeated_keys_and_unknown_file_fields ... ok
+test canonical::tests::canonical_form_refuses_floats ... ok
+test corpus::tests::materialized_corpus_requires_exact_files_and_no_git_metadata ... ok
+test corpus::tests::unsafe_manifest_paths_fail ... ok
+test corpus::tests::universe_digest_is_order_independent ... ok
+test diagnostics::tests::missing_response_observations_stay_null_never_defaulted ... ok
+test diagnostics::tests::preserves_executed_vs_contributed_lanes_and_window_counts ... ok
+test profile::tests::default_is_the_pinned_potion_code_provider ... ok
+test profile::tests::hash_requires_explicit_development_selector ... ok
+test diagnostics::tests::refuses_missing_result_or_lane_provenance ... ok
+test diagnostics::tests::preserves_hybrid_lane_provenance_and_record_binding ... ok
+test diagnostics::tests::uses_record_span_when_sdk_hit_is_unanchored ... ok
+test query_plan::tests::execution_profile_has_stable_capture_scoped_identity ... ok
+test published_units::tests::registry_refuses_units_that_do_not_match_source_bytes_or_line_projection ... ok
+test query_plan::tests::identity_digests_bind_original_policy_and_effective_requests ... ok
+test query_plan::tests::literal_policy_emits_single_phrase_request ... ok
+test query_plan::tests::literal_policy_refuses_unindexable_text ... ok
+test query_plan::tests::literal_policy_round_trips_adversarial_strings ... ok
+test query_plan::tests::native_policy_preserves_and_semantics_verbatim ... ok
+test published_units::tests::duplicate_and_cross_namespace_ids_refuse ... ok
+test query_plan::tests::natural_language_plan_applies_min_token_filter_before_dedup ... ok
+test query_plan::tests::natural_language_plan_dedups_preserving_first_occurrence_and_case ... ok
+test query_plan::tests::natural_language_plan_drops_joiner_only_runs ... ok
+test query_plan::tests::natural_language_plan_enforces_index_term_byte_cap ... ok
+test query_plan::tests::natural_language_plan_keeps_joined_punctuation_tokens ... ok
+test query_plan::tests::natural_language_plan_normalizes_nfc_before_identity_and_emission ... ok
+test query_plan::tests::natural_language_plan_is_deterministic_token_or ... ok
+test batch::tests::incomplete_profile_keeps_text_and_typed_parse_failure ... ok
+test published_units::tests::registry_keeps_kinds_apart_and_counts_them ... ok
+test query_plan::tests::natural_language_plan_refuses_empty_token_set ... ok
+test query_plan::tests::natural_language_plan_refuses_over_limit_plans ... ok
+test query_plan::tests::natural_language_plan_refuses_oversized_single_token ... ok
+test query_plan::tests::policy_config_identity_changes_with_config_fields ... ok
+test query_plan::tests::unknown_policy_is_a_typed_refusal ... ok
+test record::tests::gold_bearing_pack_keys_are_rejected ... ok
+test query_plan::tests::native_policy_enforces_exact_parser_input_byte_boundary ... ok
+test record::tests::indexed_span_remains_distinct_from_scored_line_projection ... ok
+test record::tests::pack_contract_rejects_unknown_fields_that_could_leak_labels ... ok
+test record::tests::outcome_statuses_never_silently_downgrade ... ok
+test record::tests::pack_universe_digest_matches_evaluator_oracle ... ok
+test record::tests::repeated_pack_keys_are_rejected_before_gold_can_be_hidden ... ok
+test record::tests::unanchored_semantic_hit_uses_only_the_exact_published_chunk ... ok
+test record::tests::current_record_assembles_captures_and_byte_spans ... ok
+test record::tests::current_record_refuses_broken_capture_binding ... ok
+test schedule::tests::accepts_digest_bound_permutations ... ok
+test schedule::tests::rejects_mutated_schedule ... ok
+test schedule::tests::decoding_rejects_unknown_duplicate_and_missing_fields ... ok
+test sdk::empty_status_tests::activation_ack_forgeries_refuse ... ok
+test sdk::empty_status_tests::explicit_binary_pin_never_falls_back ... ok
+test sdk::empty_status_tests::error_classification_preserves_typed_outcomes ... ok
+test sdk::empty_status_tests::empty_status_requires_correct_identity_and_no_active_tracks ... ok
+test batch::tests::incomplete_profile_preserves_plain_and_unclassified_text ... ok
+test record::tests::v3_pack_loads_and_echoes_contract ... ok
+test sdk::empty_status_tests::sealed_receipt_forgeries_refuse ... ok
+test sdk::empty_status_tests::unset_pin_refuses_without_discovery ... ok
+test sdk::empty_status_tests::daemon_digest_pin_is_verified ... ok
+test record::tests::v3_pack_rejects_v2_and_contract_drift ... ok
+test symbols::tests::go_functions_methods_and_types ... ok
+test symbols::tests::go_value_receivers_and_plain_type_definitions ... ok
+test symbols::tests::homonymous_definitions_keep_distinct_ids ... ok
+test batch::tests::chunk_id_colliding_with_an_actual_symbol_id_refuses ... ok
+test symbols::tests::crlf_line_spans_stay_consistent ... ok
+test symbols::tests::lone_cr_line_model_matches_the_corpus_splitter ... ok
+test symbols::tests::python_definitions_and_decorator_span ... ok
+test batch::tests::combined_replacement_carries_chunks_symbols_and_source_coverage ... ok
+test symbols::tests::javascript_and_typescript_definitions ... ok
+test symbols::tests::rust_trait_methods_are_methods_and_body_fns_stay_functions ... ok
+test symbols::tests::rust_definitions_qualify_methods_inside_impls ... ok
+test symbols::tests::extraction_is_deterministic_and_ids_bind_identity ... ok
+test symbols::tests::jsx_and_versioned_ts_extensions_map ... ok
+test symbols::tests::typescript_namespaces_qualify_their_members ... ok
+test symbols::tests::tsx_files_use_the_tsx_grammar ... ok
+test symbols::tests::unicode_identifiers_and_attribute_span ... ok
+test symbols::tests::unknown_extensions_and_parse_failures_are_typed ... ok
+test batch::tests::canonical_unit_commitment_is_independent_of_chunk_vector_order ... ok
+test batch::tests::symbol_only_and_empty_files_both_publish_canonical_coverage ... ok
+test batch::tests::duplicate_unit_ids_across_source_files_refuse ... ok
+test batch::tests::forged_chunk_bytes_or_foreign_source_paths_refuse ... ok
+test batch::tests::source_bound_symbol_only_change_moves_unit_commitment ... ok
+test symbols::tests::rust_impl_generics_stripped_from_container_names ... ok
+test query_plan::tests::unicode_scalar_token_property_matches_pinned_ucd17_oracle ... ok
+test symbols::tests::nested_python_and_typescript_functions_stay_functions ... ok
+test corpus::tests::checkout_proof_rejects_dirty_wrong_commit_and_untracked_admissions ... ok
+
+test result: ok. 87 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.53s
+
+     Running unittests src/main.rs (/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-daemon-lane/debug/deps/quanta_index_retrieval_bench-9567ca8c6ff2f9c2)
+
+running 3 tests
+test tests::isolated_record_requires_external_proof_binding ... ok
+test tests::query_plan_preflight_writes_one_create_new_refusal ... ok
+test tests::evidence_output_is_external_and_never_overwritten ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/chunking_contract.rs (/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-daemon-lane/debug/deps/chunking_contract-7b13564d3997670c)
+
+running 25 tests
+test chunker_names_and_configs_match_frozen_v3 ... ok
+test strict_and_line_aligned_diverge_with_the_same_parameters ... ok
+test strict_window_overlap_union_is_exact_by_hand ... ok
+test strict_window_hand_calculated_spans_cut_mid_line ... ok
+test strict_window_splits_single_oversize_line_by_hand ... ok
+test exotic_line_boundaries_are_refused ... ok
+test strict_window_snaps_end_back_to_utf8_boundary ... ok
+test bom_flows_through_as_plain_utf8_bytes ... ok
+test manifest_rejects_unknown_fields_duplicates_and_bad_paths ... ok
+test validator_rejects_utf8_split ... ok
+test fixed_window_rejects_degenerate_parameters ... ok
+test corpus_loader_rejects_binary_symlink_oversize_and_mismatch ... ok
+test token_counts_match_byte_slices ... ok
+test oversized_items_fall_back_instead_of_silently_rechunking ... ok
+test syntax_splits_rust_items_and_flags_fallbacks ... ok
+test validator_rejects_mutated_spans_ids_and_order ... ok
+test strict_window_ends_at_byte_caps_not_line_ends ... ok
+test whole_file_is_a_single_diagnostic_control ... ok
+test coverage_accounts_overlap_and_fallbacks ... ok
+test chunk_ids_are_stable_and_unique ... ok
+test fixed_window_covers_bytes_with_declared_overlap ... ok
+test duplicate_symbols_in_different_files_do_not_collide ... ok
+test syntax_follows_parser_items_not_head_keywords ... ok
+test syntax_handles_crlf_unicode_and_missing_trailing_newline ... ok
+test chunking_is_deterministic_across_runs ... ok
+
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running tests/l5_parser_regressions.rs (/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-daemon-lane/debug/deps/l5_parser_regressions-8c16253d9ef16453)
+
+running 17 tests
+test preflight_rejects_forged_source_before_reporting_coverage ... ok
+test empty_file_coverage_binds_shared_identity_and_canonical_empty_unit_set ... ok
+test preflight_diagnostic_ranges_are_sorted_and_bound_to_source_bytes ... ok
+test ordinary_typescript_and_tsx_definitions_remain_source_bound ... ok
+test bounded_diagnostics_retain_all_failed_file_counts ... ok
+test preflight_reports_every_admitted_file_even_after_the_first_failure ... ok
+test a_final_file_parse_failure_cannot_return_partial_corpus_success ... ok
+test cancelled_and_timed_out_census_never_becomes_complete_zero ... ok
+test corpus_extraction_retains_admitted_empty_files ... ok
+test type_namespace_reexport_accepts_valid_syntax_without_inventing_a_definition ... ok
+test symbol_limit_refuses_partial_definition_output ... ok
+test fatal_producer_failure_is_not_masked_by_an_earlier_recoverable_gap ... ok
+test empty_and_zero_definition_files_differ_from_parse_failure ... ok
+test generic_typeof_import_call_accepts_a_trailing_comma ... ok
+test producer_policy_records_and_commits_effective_extraction_limits ... ok
+test preflight_preserves_existing_supported_language_extraction ... ok
+test file_and_total_symbol_budgets_refuse_publication_without_losing_the_census ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
+resource admission: released lock=/Users/songmin/Library/Caches/quanta-index/resource-admission/build-test.lock

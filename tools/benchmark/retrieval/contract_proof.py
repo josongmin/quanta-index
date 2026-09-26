@@ -14,6 +14,7 @@ try:
     from tools.ci.junit_events import JUnitEvidenceError, parse_pytest_junit_bytes
     from tools.ci.nextest_events import (
         NextestEvidenceError,
+        parse_nextest,
         parse_nextest_bytes,
         parse_nextest_inventory_bytes,
     )
@@ -23,18 +24,16 @@ except ModuleNotFoundError:  # direct script invocation
     from tools.ci.junit_events import JUnitEvidenceError, parse_pytest_junit_bytes
     from tools.ci.nextest_events import (
         NextestEvidenceError,
+        parse_nextest,
         parse_nextest_bytes,
         parse_nextest_inventory_bytes,
     )
 
-from tools.ci.lint.handoff_validation import _read_repo_regular_bytes
+from tools.benchmark.evidence import RawFile, read_control
 
 
-def _evidence_bytes(value: Path | bytes) -> bytes:
-    if isinstance(value, bytes):
-        return value
-    path = value.absolute()
-    return _read_repo_regular_bytes(path.parent, path.name, label="proof evidence")
+def _evidence_bytes(value: Path | RawFile | bytes) -> bytes:
+    return read_control(value)
 
 
 PYTHON_SELECTOR = "tools/ci/tests/test_retrieval_benchmark.py"
@@ -49,7 +48,7 @@ def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
     return result
 
 
-def _load_pytest_inventory(path: Path | bytes) -> set[str]:
+def _load_pytest_inventory(path: Path | RawFile | bytes) -> set[str]:
     try:
         payload = json.loads(_evidence_bytes(path), object_pairs_hook=_unique_object)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -70,7 +69,7 @@ def _load_pytest_inventory(path: Path | bytes) -> set[str]:
     return set(payload["tests"])
 
 
-def pytest_summary(path: Path | bytes, inventory: Path | bytes | None = None) -> dict[str, object]:
+def pytest_summary(path: Path | RawFile | bytes, inventory: Path | RawFile | bytes | None = None) -> dict[str, object]:
     try:
         expected = _load_pytest_inventory(inventory) if inventory is not None else None
         counts, _ = parse_pytest_junit_bytes(_evidence_bytes(path), expected)
@@ -82,16 +81,16 @@ def pytest_summary(path: Path | bytes, inventory: Path | bytes | None = None) ->
     }
 
 
-def nextest_summary(path: Path | bytes, inventory: Path | bytes | None = None) -> dict[str, object]:
+def nextest_summary(path: Path | RawFile | bytes, inventory: Path | RawFile | bytes | None = None) -> dict[str, object]:
     try:
         expected = parse_nextest_inventory_bytes(_evidence_bytes(inventory)) if inventory is not None else None
-        evidence = parse_nextest_bytes(_evidence_bytes(path), expected)
+        evidence = parse_nextest_bytes(path, expected) if isinstance(path, bytes) else parse_nextest(path, expected)
     except NextestEvidenceError as error:
         raise SystemExit(f"{error}: {path}") from error
     return {
         "command": (
             "./scripts/cargow nextest run -p quanta-index-retrieval-bench "
-            "--lib --test chunking_contract --all-features --locked"
+            "--lib --test chunking_contract --test l5_parser_regressions --all-features --locked"
         ),
         "selected": evidence.selected,
         "executed": evidence.executed,

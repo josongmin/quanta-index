@@ -263,7 +263,7 @@ impl LexicalPlanner {
         if let Some(predicate) = LexicalPredicateV1::from_canonical_name(name)
             && predicate
                 .exact_symbol_name_argument(args)
-                .map_err(|_| LexicalPlannerError::UnsupportedFilterCombo)?
+                .map_err(|_invalid_exact_argument| LexicalPlannerError::UnsupportedFilterCombo)?
                 .is_some()
         {
             // Retain the exact predicate for the STRING-field compiler. It is

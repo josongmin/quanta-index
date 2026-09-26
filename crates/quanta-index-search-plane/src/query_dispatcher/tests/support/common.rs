@@ -152,6 +152,9 @@ pub(crate) fn manual_query(expr: LqExpr, filters: Vec<LqFilter>) -> LqQuery {
 
 pub(crate) fn candidate(id: &str, score: f32) -> LexicalCandidate {
     LexicalCandidate {
+        source_repo_id: RepoId::new("repo-map-ipc").expect("fixture source repo"),
+        source: None,
+        preview: None,
         candidate_id: id.to_string(),
         repo_id: RepoId::new("repo-map-ipc").expect("static fixture ID satisfies canonical policy"),
         revision_id: RevisionId::new("rev-map-ipc")
@@ -169,6 +172,9 @@ pub(crate) fn candidate(id: &str, score: f32) -> LexicalCandidate {
 
 pub(crate) fn symbol_candidate(id: &str, score: f32) -> SymbolCandidate {
     SymbolCandidate {
+        source_repo_id: RepoId::new("repo-map-ipc").expect("fixture source repo"),
+        source: None,
+        preview: None,
         candidate_id: id.to_string(),
         repo_id: RepoId::new("repo-map-ipc").expect("static fixture ID satisfies canonical policy"),
         revision_id: RevisionId::new("rev-map-ipc")

@@ -14,7 +14,7 @@ use quanta_index_contract::{
 use quanta_index_core::{
     CoreError, GenerationIdentityValidatePort, IdempotencyCatalogPort as _, IdempotencyKeyV1,
     IngestResourcePolicy, RequestBudgetV1, SearchCorpusIngestPort, SemanticIngestPort,
-    SemanticStreamWindowPolicy,
+    SemanticStreamWindowPolicy, SourcePublicationCatalogPort as _,
 };
 
 use crate::ingest_dispatcher::auxiliary::AuxiliaryMutationCoordinator;
@@ -32,7 +32,7 @@ use crate::ingest_dispatcher::tests::support::{
     ScriptedSealedReclaim, TestRes, ZeroMutationProbe, always_valid_generation,
     build_then_valid_generation, fixture_search_corpus_batch, incomplete_then_valid_generation,
     memory_aux_catalog, memory_catalog, multi_scope_corpus_batch, no_storage_sealed_reclaim,
-    recording_search_corpus_authority, search_corpus_materializer,
+    recording_search_corpus_authority, restamp_search_corpus_fixture, search_corpus_materializer,
     test_incomplete_generation_discard,
 };
 use crate::readiness::SearchCorpusHistoryRetentionReceiptV1;
@@ -53,7 +53,14 @@ fn search_corpus_receipt_exactly_acknowledges_semantic_replace_and_tombstone_mut
         sources: Vec::new(),
         cluster_memberships: Vec::new(),
     }];
-    batch.semantic_tombstone_scopes = vec![semantic_scope];
+    let mut retired_scope = semantic_scope;
+    retired_scope.owner_id = "symbol:retired-receipt-cardinality".into();
+    batch.semantic_tombstone_scopes = vec![retired_scope];
+    restamp_search_corpus_fixture(&mut batch)?;
+    batch.validate_v1()?;
+    batch
+        .validate_surface_mutations_v1()
+        .map_err(|error| error.to_string())?;
 
     let receipt = batch_publish_receipt_v1(&batch);
     if receipt.accepted_semantic_replace_scopes != 1
@@ -62,6 +69,46 @@ fn search_corpus_receipt_exactly_acknowledges_semantic_replace_and_tombstone_mut
         return Err(
             format!("search-corpus receipt lost semantic mutation partition: {receipt:?}").into(),
         );
+    }
+    Ok(())
+}
+
+#[test]
+fn delta_finalization_inherits_untouched_chunk_authority_and_retries_after_base_retirement() -> TestRes {
+    let probe = ZeroMutationProbe::new(always_valid_generation());
+    let base = multi_scope_corpus_batch()?;
+    let retain_base = SearchCorpusHistoryRetentionReceiptV1::retaining_generations_v1(
+        &base.repo_id, &base.revision_id, [base.generation],
+    );
+    probe.materializer.finalize_generation_v1(&base, Some(&retain_base))?;
+    let mut delta = base.clone();
+    delta.generation = ManifestGeneration::new(base.generation.get() + 1);
+    delta.base_generation = Some(base.generation);
+    delta.mode = BatchIngestMode::Delta;
+    delta.source_event.expected_base_event_id = Some(base.source_event.event_id.clone());
+    delta.source_event.event_id = "next-event".into();
+    delta.manifest_digest = "manifest:delta".into();
+    delta.replace_scopes.truncate(1);
+    for chunk in &mut delta.replace_scopes.first_mut().ok_or("fixture a.rs")?.chunks {
+        chunk.chunk_id = quanta_index_contract::ChunkId::new(format!("new-{}", chunk.chunk_id.as_str()));
+    }
+    delta.tombstone_scopes = vec![quanta_index_contract::SearchCorpusTombstoneScope {
+        file: base.replace_scopes.get(2).ok_or("fixture c.rs")?.coverage.source.file.clone(),
+    }];
+    delta.semantic_replace_scopes.clear();
+    restamp_search_corpus_fixture(&mut delta)?;
+    let retain_delta = SearchCorpusHistoryRetentionReceiptV1::retaining_generations_v1(
+        &delta.repo_id, &delta.revision_id, [delta.generation],
+    );
+    // The retention transaction can retire the original base. Reconciliation
+    // must retain the complete already-published target chunk universe.
+    for _attempt in 0..2 {
+        probe.materializer.finalize_generation_v1(&delta, Some(&retain_delta))?;
+        let guard = probe.ledger.read().map_err(|e| e.to_string())?;
+        let state = guard.structural_state(&delta.repo_id, &delta.revision_id, delta.generation)
+            .ok_or("missing delta chunk authority")?;
+        let ids: Vec<_> = state.chunks().keys().map(|id| id.as_str()).collect();
+        assert_eq!(ids, vec!["b-1", "new-a-1", "new-a-2"]);
     }
     Ok(())
 }
@@ -107,6 +154,8 @@ fn malformed_or_baseless_batches_change_zero_bytes() -> TestRes {
     let mut unsealed_base = fixture_search_corpus_batch()?;
     unsealed_base.mode = BatchIngestMode::Delta;
     unsealed_base.base_generation = Some(ManifestGeneration::new(3));
+    restamp_search_corpus_fixture(&mut unsealed_base)?;
+    unsealed_base.validate_v1()?;
     match probe
         .materializer
         .publish_batch(&unsealed_base, &RequestBudgetV1::unbounded())
@@ -769,6 +818,7 @@ fn a_sealed_but_corrupt_track_is_rebuilt_by_a_replace_seal_and_refused_for_a_del
     let semantic_builder = Arc::new(FakeSemanticBuilder::default());
     let lexical_builder = Arc::new(FakeSearchCorpusBuilder::default());
     let ledger = Arc::new(RwLock::new(Ledger::new()));
+    let source_publication = super::support::test_source_catalog();
     let materializer = DirectSearchCorpusMaterializer::new_with_search_owned_semantics(
         SearchCorpusMaterializerParts {
             builder: lexical_builder.clone(),
@@ -790,7 +840,7 @@ fn a_sealed_but_corrupt_track_is_rebuilt_by_a_replace_seal_and_refused_for_a_del
             lexical_reclaim: lexical_reclaim.clone(),
             semantic_reclaim: no_storage_sealed_reclaim(),
             snapshots: SnapshotRegistries::new(crate::SnapshotRegistryPolicy::DEFAULT),
-            source_publication: super::support::test_source_catalog(),
+            source_publication: source_publication.clone(),
             idempotency: memory_catalog(),
             resource_policy: IngestResourcePolicy::DEFAULT,
             semantic_stream_policy: SemanticStreamWindowPolicy::DEFAULT,
@@ -805,6 +855,8 @@ fn a_sealed_but_corrupt_track_is_rebuilt_by_a_replace_seal_and_refused_for_a_del
     let mut delta = batch.clone();
     delta.mode = BatchIngestMode::Delta;
     delta.base_generation = Some(ManifestGeneration::new(6));
+    restamp_search_corpus_fixture(&mut delta)?;
+    delta.validate_v1()?;
     ledger
         .write()
         .map_err(|err| format!("ledger poisoned: {err}"))?
@@ -819,6 +871,12 @@ fn a_sealed_but_corrupt_track_is_rebuilt_by_a_replace_seal_and_refused_for_a_del
             if code == quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusGenerationRepairRequired
                 && message.contains("publish a ReplaceGeneration seal batch") => {}
         other => return Err(format!("delta over a corrupt track answered {other:?}").into()),
+    }
+    if source_publication
+        .inspect_source_event(&delta.repo_id, &delta.source_event)?
+        .is_some()
+    {
+        return Err("a repair-mode refusal must not reserve the source stream".into());
     }
     if !lexical_reclaim.reclaimed().is_empty()
         || !lexical_builder
@@ -867,6 +925,8 @@ fn a_delta_over_a_corrupt_base_is_refused_with_the_repair() -> TestRes {
     let mut delta = fixture_search_corpus_batch()?;
     delta.mode = BatchIngestMode::Delta;
     delta.base_generation = Some(ManifestGeneration::new(3));
+    restamp_search_corpus_fixture(&mut delta)?;
+    delta.validate_v1()?;
     probe
         .ledger
         .write()
@@ -920,6 +980,8 @@ fn search_corpus_materializer_derives_search_owned_semantic_batch() -> TestRes {
     );
     let mut batch = fixture_search_corpus_batch()?;
     batch.clear_surfaces = vec![SearchScopeSurface::Module];
+    restamp_search_corpus_fixture(&mut batch)?;
+    batch.validate_v1()?;
     let receipt = materializer.publish_batch(&batch, &RequestBudgetV1::unbounded())?;
     if !receipt.sealed || receipt.accepted_clear_surfaces != 1 {
         return Err("derived semantic search-corpus receipt must preserve seal".into());

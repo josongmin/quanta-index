@@ -52,6 +52,18 @@ pub trait SearchCorpusBatchBuildPort: Send + Sync {
 
 /// Open an existing lexical index for query.
 pub trait LexicalIndexOpenPort: Send + Sync {
+    /// Validate query primitives without opening a generation or reading data.
+    ///
+    /// Call after domain admission and before any logical-empty shortcut.
+    /// Implementations must use the same literal/predicate authorities and
+    /// policies as execution. Snapshot capability checks belong to the read
+    /// handle; they must not be simulated with absent metadata here.
+    fn preflight_query_primitives(
+        &self,
+        plan: &super::query_plan::ValidatedLexicalPlan,
+        budget: &RequestBudgetV1,
+    ) -> Result<(), CoreError>;
+
     fn open(
         &self,
         repo: &RepoId,
