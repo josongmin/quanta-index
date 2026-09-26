@@ -1,7 +1,8 @@
 //! `CommitSha` newtype + `CommitRecord`.
 //!
-//! Wire shape: [`docs/ssot/producer-handoff.md`](../../../../docs/ssot/producer-handoff.md)
-//! §3.1.1.
+//! This file defines the commit wire shape;
+//! `docs/adr/MAY-27-002-sdk-ingress-and-public-surface-boundary.md` owns
+//! ingress boundaries.
 //!
 //! `CommitSha` is a 20-byte git SHA-1 with a fixed 40-hex-char canonical
 //! display. Construction is fallible via [`CommitSha::from_hex`]; on the wire
@@ -204,9 +205,8 @@ impl<'de> Deserialize<'de> for CommitSha {
     }
 }
 
-/// Producer-authored commit record per
-/// [`docs/ssot/producer-handoff.md`](../../../../docs/ssot/producer-handoff.md)
-/// §3.1.1.
+/// Producer-authored commit record under the ingress ownership decision in
+/// `docs/adr/MAY-27-002-sdk-ingress-and-public-surface-boundary.md`.
 ///
 /// `parents` carries the full DAG view at integration time; empty for root
 /// commits. `is_merge` is producer-set and is **not** recomputed by the search

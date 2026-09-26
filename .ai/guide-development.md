@@ -19,7 +19,7 @@
 | [`docs/ssot/README.md`](../docs/ssot/README.md) | SSOT index |
 | [`docs/ssot/may-23-storage-architecture-endgame-implementation.md`](../docs/ssot/may-23-storage-architecture-endgame-implementation.md) | search-plane implementation plan |
 | [`docs/plans/may-25-lexical-enhancement/lexical-capability-matrix.md`](../docs/plans/may-25-lexical-enhancement/lexical-capability-matrix.md) | DSL capability matrix |
-| `git show eff53181:docs/bugbash/sep-16/findings.md` | current production-readiness inventory |
+| [`SEP-21 decisions`](../docs/adr/SEP-21-DECISION-REGISTRY.md) and [residual ledger](../docs/plans/sep-21-search-plane-sota-hardening/tickets/FINAL-RESIDUAL-EXECUTION-PLAN.md) | Current contract and unfinished readiness work; the Sep-16 audit is historical |
 
 Historical only:
 

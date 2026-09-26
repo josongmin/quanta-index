@@ -44,8 +44,8 @@
 //!    deltas. Lets gen N+1 inherit from gen N rather than rebuilding from
 //!    scratch.
 //!
-//! See `docs/ssot/producer-handoff.md` §3 for the producer/search-plane
-//! delta-handling contract these patterns satisfy.
+//! Producer/search-plane ingress ownership is defined in
+//! `docs/adr/MAY-27-002-sdk-ingress-and-public-surface-boundary.md`.
 //!
 //! ## Posting sources
 //!

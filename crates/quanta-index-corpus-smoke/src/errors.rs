@@ -1,19 +1,15 @@
 //! Typed errors for corpus loading and conformance verdicts.
 //!
-//! `ConformanceError` is the placeholder for the closed-set
-//! `LexicalErrorCode` that PRE-CONTRACT-EXT will add to
-//! `quanta-index-contract`. Every code listed in
-//! `docs/plans/may-24-lexical-indexing-sourcegraph/usecase.md` §0
-//! has exactly one variant here, so cutover to the real contract enum
-//! is a structural rename, not a behavior change.
+//! `ConformanceError` is the crate-local closed error vocabulary. Its exact
+//! variants are defined below; `docs/adr/JUN-02-001-search-dsl-authority-and-runtime-contract.md`
+//! owns the product-level DSL contract, not this enum's variant inventory.
 
 use core::fmt;
 
-/// Closed-set placeholder for `LexicalErrorCode`.
+/// Closed-set corpus-conformance error codes.
 ///
-/// Variants mirror `usecase.md` §0 Error codes table. When
-/// PRE-CONTRACT-EXT lands, every external `ConformanceError` use site
-/// becomes a `LexicalErrorCode` and this type is deleted.
+/// Variants originate from the historical use-case error table. This local
+/// type is not itself the public `LexicalErrorCode` contract.
 #[derive(Clone, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
 pub enum ConformanceError {
     ParseError,

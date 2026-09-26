@@ -6,12 +6,12 @@
 
 Status: `proof-accounted`
 Date: `2026-06-02`
-Program owner: `git show eff53181:docs/plans/jun-2-dsl-final-cut/tickets/JFC-00-truth-freeze-and-scope-lock.md`
-Evidence origin: `git show eff53181:docs/plans/may-25-lexical-enhancement/tickets/LXE-00-truth-freeze-and-executable-matrix.md`
-Authority spec: `git show eff53181:docs/plans/may-24-lexical-indexing-sourcegraph/dsl.md`
+Historical program owner: `git show eff53181:docs/plans/jun-2-dsl-final-cut/tickets/JFC-00-truth-freeze-and-scope-lock.md`
+Historical evidence origin: `git show eff53181:docs/plans/may-25-lexical-enhancement/tickets/LXE-00-truth-freeze-and-executable-matrix.md`
+Current decision authority: [JUN-02-001](../../adr/JUN-02-001-search-dsl-authority-and-runtime-contract.md)
 Machine-readable ledger: [dsl-proof-ledger.toml](dsl-proof-ledger.toml)
 
-이 문서는 `dsl.md` 항목별 현재 proof inventory다. 목적은 "전부 green" 선언이 아니라 각 표면이 현재 어떤 증거 상태인지 정확히 하나로 분류하는 것이다.
+이 문서는 원래 DSL 표면(`git show eff53181:docs/plans/may-24-lexical-indexing-sourcegraph/dsl.md`)별 현재 proof inventory다. 목적은 "전부 green" 선언이 아니라 각 표면이 현재 어떤 증거 상태인지 정확히 하나로 분류하는 것이다.
 
 ## Status Legend
 

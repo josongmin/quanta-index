@@ -1,8 +1,9 @@
 //! Golden corpus — Sourcegraph syntax → expected LQ shape (or typed reject).
 //!
-//! Each row is one [BRIDGE-01 § 6.1](../../../../docs/plans/may-24-lexical-indexing-sourcegraph/tickets/BRIDGE-01.md)
-//! subset-table outcome. Rows 1–8 are the original bridge subset; rows 9–19
-//! cover JFC-05 widened history/runtime filter lowering (translator-only proof;
+//! Each row checks the code-owned bridge subset under the promotion rule in
+//! `docs/adr/JUN-06-001-sourcegraph-compatibility-boundary.md`. Rows 1–8 are
+//! the original bridge subset; rows 9–19 cover JFC-05 widened history/runtime
+//! filter lowering (translator-only proof;
 //! executable SG/native parity lives in `e2e_dual_syntax_lowering_parity`).
 
 use quanta_index_contract::{LqExpr, LqFilter, LqLeaf, LqPredicateArg, LqType, LqYesNoOnly};

@@ -94,9 +94,10 @@ Current verification posture (2026-09-16):
   - `just rust-fuzz-smoke`
   - `just rust-profile test-daemon`
 - these prove correctness of the current code substrate, not production ops readiness;
-- `git show eff53181:docs/bugbash/sep-16/findings.md` records
-  open P1/P2 operational and contract gaps on HEAD `4914156` and later; treat
-  bugbash as the current production-readiness inventory until remediated.
+- the Sep-16 bugbash is historical (`git show eff53181:docs/bugbash/sep-16/findings.md`);
+  use the [SEP-21 decision registry](docs/adr/SEP-21-DECISION-REGISTRY.md),
+  [current residual ledger](docs/plans/sep-21-search-plane-sota-hardening/tickets/FINAL-RESIDUAL-EXECUTION-PLAN.md),
+  live source and fresh receipts for production-readiness claims.
 
 Code-search benchmark (local setup observed 2026-09-26):
 

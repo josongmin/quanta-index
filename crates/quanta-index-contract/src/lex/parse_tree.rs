@@ -1,21 +1,15 @@
 //! `ParseTreeRecord` + `ParseNode` (recursive).
 //!
-//! PROPOSED: gated on STR-01 Option A integration decision
-//! ([`docs/plans/may-24-lexical-indexing-sourcegraph/tickets/STR-01.md`](../../../../docs/plans/may-24-lexical-indexing-sourcegraph/tickets/STR-01.md)
-//! §1.1; [`docs/ssot/producer-handoff.md`](../../../../docs/ssot/producer-handoff.md)
-//! §3.3 + AMB-PROD-11). If Option B is selected at wave-5 entry, this op
-//! never appears on the wire and these types remain a scaffold-only shape so
-//! downstream `lq_structural` can compile against one canonical surface.
-//!
-//! Wire shape: producer-handoff §3.3.1.
+//! This file defines the recursive wire shape. A type definition alone does
+//! not establish producer adoption or public ingress support; those claims
+//! require the boundary in
+//! `docs/adr/MAY-27-002-sdk-ingress-and-public-surface-boundary.md`.
 //!
 //! `ParseNode` is recursive (children: `Vec<ParseNode>`). Serialization /
 //! deserialization is therefore reentrant; we rely on serde's seed-driven
-//! tree walk (no explicit stack) which is fine for the producer-side depth
-//! caps (STR-01 §3 — 16-depth limit applies to the **pattern**, not the
-//! parsed tree, but producer-side records still bound at the 16 MiB frame cap
-//! per channel-architecture.md §4.2). The pattern-side depth limit is enforced
-//! elsewhere; this contract scaffold does not impose one.
+//! tree walk (no explicit stack). The historical STR-01 16-depth limit
+//! applies to the **pattern**, not this parsed tree. Transport must bound
+//! record size separately; this type does not impose either limit.
 
 use core::fmt;
 

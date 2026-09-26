@@ -7,11 +7,9 @@
 //! PRE-NORM — Canonical DSL parser, normalizer, and CBOR/SHA-256 hasher
 //! for the LQ family.
 //!
-//! Status: **Wave-0 prerequisite, partial bootstrap.** The AST module
-//! ([`ast`]) was landed by a TDD-step agent; the tokenizer, parser,
-//! normalizer, hasher, and limits modules are pending — see ticket spec
-//! `docs/plans/may-24-lexical-indexing-sourcegraph/tickets/PRE-NORM.md`
-//! §5 for the remaining step ordering.
+//! The implemented parser, normalizer, hasher and limits are the executable
+//! authority. Product-level DSL decisions live in
+//! `docs/adr/JUN-02-001-search-dsl-authority-and-runtime-contract.md`.
 //!
 //! Surface guarantees:
 //!

@@ -1,8 +1,8 @@
 //! [`BridgeCandidate`] — the bridge wire shape for an
 //! already-translated Sourcegraph query.
 //!
-//! Per [BRIDGE-01 § 4 deliverable
-//! 3](../../../../docs/plans/may-24-lexical-indexing-sourcegraph/tickets/BRIDGE-01.md),
+//! Per the current Sourcegraph compatibility boundary
+//! (`docs/adr/JUN-06-001-sourcegraph-compatibility-boundary.md`),
 //! every bridge output carries:
 //!
 //! - `source_syntax`: the original Sourcegraph input string (retained

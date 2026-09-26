@@ -1,13 +1,10 @@
 //! Canonical LQ-family wire types — additive scaffold for the
 //! `PRE-CONTRACT-EXT` consolidation pass.
 //!
-//! This module lands the contract-side canonical shapes that the 16 `lq_*`
-//! crates currently duplicate as private placeholders (per
-//! [`docs/plans/may-24-lexical-indexing-sourcegraph/tickets/PRE-CONTRACT-EXT.md`](../../../../docs/plans/may-24-lexical-indexing-sourcegraph/tickets/PRE-CONTRACT-EXT.md)).
-//! Wire shapes are pinned in
-//! [`docs/ssot/producer-handoff.md`](../../../../docs/ssot/producer-handoff.md)
-//! (sections 3.1.1, 3.2, 3.3, 3.4 — `CommitRecord`, `DirtyRecord`,
-//! `ParseTreeRecord`, `SymbolRecord`).
+//! This module owns canonical lexical wire shapes, including `CommitRecord`,
+//! `DirtyRecord`, `ParseTreeRecord` and `SymbolRecord`. The types and their
+//! serializers below define the exact fields. The SDK/ingress ownership rule
+//! is `docs/adr/MAY-27-002-sdk-ingress-and-public-surface-boundary.md`.
 //!
 //! Per `CLAUDE.md` D18, every type below carries a manual `impl Serialize` /
 //! `impl<'de> Deserialize<'de>`. No proc-macro derives.

@@ -64,6 +64,15 @@ The decision describes compatibility for the checked inventory, not marketing
 parity with every current or future Sourcegraph feature. A new upstream syntax
 cell starts as unsupported until the promotion rule passes.
 
+The one-way bridge lowers its recognized Sourcegraph subset to the canonical
+typed LQ query. Unknown or refused forms return typed errors; no parser-only
+acceptance or generic fallback is a support claim. Its accepted release tag
+and translator version are explicit code-owned pins, and bridge output carries
+the translator version. Changing either pin requires compatibility review and
+the relevant parser, lowering and execution proofs; a calendar alone is not
+evidence of a safe bump. The source tables and golden rows own exact filter
+spellings, not this ADR's prose.
+
 ## Consequences
 
 - Capability matrices are generated or mechanically checked against code.

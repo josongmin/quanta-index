@@ -1,7 +1,7 @@
 # Architecture Decision Records
 
-이 디렉터리는 현재 product architecture decision의 canonical owner다. Historical probe와 campaign-local
-결정 기록은 원래 위치에 남기되, 현재 구현을 구속하는 결정은 여기의 `Accepted` ADR만 권위로 사용한다.
+이 디렉터리는 현재 product architecture decision의 canonical owner다. 완료된 historical probe와
+campaign-local 기록은 Git 이력에서 회수하며, 현재 구현을 구속하는 결정은 여기의 `Accepted` ADR만 권위로 사용한다.
 
 상태:
 

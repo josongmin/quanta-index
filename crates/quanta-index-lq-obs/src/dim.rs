@@ -18,9 +18,8 @@ pub const PER_FIELD_CHAR_CAP: usize = 256;
 
 /// Layer-B global tenant cap per OBS-01 § 4.4.
 ///
-/// Sized for the [`feature-scope.md`
-/// § 7](../../../../docs/plans/may-24-lexical-indexing-sourcegraph/feature-scope.md)
-/// 100,000-repo capacity bound × ≈ 1× per-tenant safety margin.
+/// Historical 100,000-repo capacity target; the enforced value is this
+/// constant, not a deleted planning packet.
 pub const MAX_DISTINCT_TENANTS_GLOBAL: u32 = 100_000;
 
 /// Layer-B per-tenant repo cap per OBS-01 § 4.4. Beyond this the metric backend

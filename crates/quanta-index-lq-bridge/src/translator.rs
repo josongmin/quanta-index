@@ -1,14 +1,15 @@
 //! Sourcegraph → LQ lowering.
 //!
 //! [`translate_query`] is the one-way translator surface from
-//! [BRIDGE-01](../../../../docs/plans/may-24-lexical-indexing-sourcegraph/tickets/BRIDGE-01.md).
+//! `docs/adr/JUN-06-001-sourcegraph-compatibility-boundary.md`.
 //! It lowers an already-parsed [`SgQuery`] directly into the canonical
 //! `LqQuery` wire shape. There is no bridge-local placeholder AST and no
 //! second compiler stage in `search-plane`; Sourcegraph syntax joins the same
 //! canonical query family that native text syntax uses.
 //!
-//! ## Decision table (from
-//! [BRIDGE-01 § 5 step 5 / § 6.1](../../../../docs/plans/may-24-lexical-indexing-sourcegraph/tickets/BRIDGE-01.md))
+//! ## Implementation decision table
+//!
+//! The ADR owns the support-promotion rule; this table owns exact lowering.
 //!
 //! | Sourcegraph filter | Bucket | LQ lowering |
 //! |---|---|---|

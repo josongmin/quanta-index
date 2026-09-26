@@ -166,9 +166,10 @@ pub(crate) fn ensure_base_generation_is_servable(base_dir: &Path) -> Result<(), 
 /// (QI-BB-006). Tantivy segment files are immutable across commits and the
 /// sidecars are replaced by atomic rename, so a shared inode is only ever read
 /// through, never written through. The two entries Tantivy does rewrite in
-/// place are copied instead — see [`is_generation_local_entry`]. Gate evidence
-/// for the immutability claim lives in
-/// `docs/bugbash/sep-16/adr/G0-L-tantivy-snapshot-reuse.md`.
+/// place are copied instead — see [`is_generation_local_entry`]. Historical
+/// gate rationale is recoverable with
+/// `git show eff53181:docs/bugbash/sep-16/adr/G0-L-tantivy-snapshot-reuse.md`;
+/// current qualification still requires a fresh source-bound receipt.
 pub(crate) fn clone_generation_directory_preserving_existing(
     src: &Path,
     dst: &Path,

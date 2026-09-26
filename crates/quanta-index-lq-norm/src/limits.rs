@@ -1,9 +1,9 @@
 //! Bounded-input limits enforced by the LQ parser, normalizer, and regex
 //! guard.
 //!
-//! Source of truth is the RFC (`docs/plans/may-24-lexical-indexing-sourcegraph/rfc.md`)
-//! § Capacity and SLO Targets, restated in `dsl.md` §13. Every limit here is
-//! a hard parser/normalizer rejection threshold; exceeding any of them yields
+//! These constants are the executable limit authority under
+//! `docs/adr/JUN-02-001-search-dsl-authority-and-runtime-contract.md`. Every
+//! limit here is a hard parser/normalizer rejection threshold; exceeding it yields
 //! a typed [`crate::errors::LqParseErrorCode`] variant — never a silent clip.
 
 /// 16 KiB — maximum raw input length before tokenization. RFC rule 7.

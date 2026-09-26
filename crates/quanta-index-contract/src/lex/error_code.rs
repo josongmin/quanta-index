@@ -8,12 +8,10 @@
 //! against the closed table; an unknown code fails closed per `CLAUDE.md`
 //! Safety rules (no silent fallback to a generic / Unknown variant).
 //!
-//! Spec source: the per-crate code tables enumerated in
-//! [`docs/plans/may-24-lexical-indexing-sourcegraph/tickets/PRE-CONTRACT-EXT.md`](../../../../docs/plans/may-24-lexical-indexing-sourcegraph/tickets/PRE-CONTRACT-EXT.md).
-//! Final reconciliation against `usecase.md` §0 is the consuming ticket's job
-//! (PRE-NORM, LEX-01..05, LEX-07, STR-01, BRIDGE-01); this scaffold lists every
-//! variant claimed by the per-crate placeholders so they can route through one
-//! canonical enum.
+//! This enum is the code-owned closed vocabulary under the ingress boundary
+//! in `docs/adr/MAY-27-002-sdk-ingress-and-public-surface-boundary.md`.
+//! It lists variants used by the LQ-family consumers so they can route through
+//! one canonical enum.
 
 use core::fmt;
 

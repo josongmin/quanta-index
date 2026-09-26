@@ -43,8 +43,8 @@
 //!
 //! D18 — no proc-macro derives.
 //!
-//! See also `docs/ssot/producer-handoff.md` §3 for the producer/search-plane
-//! delta-handling contract this builder satisfies.
+//! Producer/search-plane ingress ownership is defined in
+//! `docs/adr/MAY-27-002-sdk-ingress-and-public-surface-boundary.md`.
 
 use std::collections::{BTreeMap, BTreeSet};
 

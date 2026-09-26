@@ -14,7 +14,7 @@ Whole-DSL execution ownership closed in
 This packet retains the active proof inventory and capability matrix for all
 accounted surfaces. Executable capability remains code-owned.
 
-이 pack은 더 이상 "전부 completed"로 닫지 않는다. 현재 목표는 `docs/plans/may-24-lexical-indexing-sourcegraph/dsl.md`의 각 표면이 정확히 하나의 proof state를 가지게 하는 것이다.
+이 pack은 더 이상 "전부 completed"로 닫지 않는다. 현재 목표는 [JUN-02-001](../../adr/JUN-02-001-search-dsl-authority-and-runtime-contract.md)의 각 표면이 정확히 하나의 proof state를 가지게 하는 것이다. 원래 표면 목록은 `git show eff53181:docs/plans/may-24-lexical-indexing-sourcegraph/dsl.md`에서 회수한다.
 
 ## Current Contract
 

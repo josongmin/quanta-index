@@ -1,7 +1,8 @@
 //! `DirtyRecord`.
 //!
-//! Wire shape: [`docs/ssot/producer-handoff.md`](../../../../docs/ssot/producer-handoff.md)
-//! §3.2.1 (`UpsertDirty` payload).
+//! This file defines the wire shape for the `UpsertDirty` payload subset;
+//! `docs/adr/MAY-27-002-sdk-ingress-and-public-surface-boundary.md` owns
+//! ingress boundaries.
 //!
 //! This is the **payload subset** of the producer's `UpsertDirty` entry;
 //! repo / revision / generation travel on the enclosing

@@ -91,7 +91,8 @@ impl PositionsErrorCode {
 /// The `SCREAMING_SNAKE_CASE` wire form is the crate-internal contract.
 /// The planner layer maps these to the spec-facing kebab-case strings
 /// (`"phrase-length"`, `"adjacency-scan-docs"`, etc.) at the boundary —
-/// see [LEX-03 §4.2](../../../docs/plans/may-24-lexical-indexing-sourcegraph/tickets/LEX-03.md).
+/// see the planner's boundary mapping. The ADR owns product-level DSL semantics,
+/// not this enum's spelling table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum LimitDimension {
     /// `terms.len() > MAX_PHRASE_LEN` on `query_phrase`.
