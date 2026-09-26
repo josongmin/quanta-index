@@ -74,4 +74,4 @@ observation or PID start identity from the filtered metric rows alone.
 
 Completed implementation checkpoints and raw artifact references are
 recoverable with `git show eff53181:<path>`. Remaining execution is owned by
-[the active SEP-26 packet](../plans/sep-26-retrieval-remediation/tickets/INDEX.md).
+[the SEP-27 execution SSOT](../plans/sep-27-misc/tickets/INDEX.md).

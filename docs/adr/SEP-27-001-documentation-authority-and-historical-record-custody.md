@@ -66,7 +66,9 @@ records are listed in [the documentation history index](../ARCHIVE-INDEX.md).
 Completed implementation plans are grouped in
 [the plan history index](../plans/ARCHIVE-INDEX.md). The later SEP-26 retrieval
 packet follows the same rule: accepted decisions in SEP-26-001/002/003,
-unfinished execution in its active gap register, historical detail in Git.
+unfinished execution and inline contracts in the
+[SEP-27 execution SSOT](../plans/sep-27-misc/tickets/INDEX.md), historical detail
+in Git or the verified external content backup for dirty/untracked preimages.
 
 ## Consequences
 

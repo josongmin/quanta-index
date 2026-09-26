@@ -11,6 +11,7 @@ import subprocess
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 CLEANUP_TIMEOUT_SECONDS = 10
@@ -18,6 +19,40 @@ CLEANUP_TIMEOUT_SECONDS = 10
 
 class ProducerExecutionError(ValueError):
     """A producer did not complete under its execution/cleanup contract."""
+
+
+@contextmanager
+def _child_exit_notifications():
+    """Wake the private guard on SIGCHLD, including exits during Popen.
+
+    The pipe is installed before spawning and is nonblocking at both ends.
+    A full pipe already represents a pending wakeup; terminal status is always
+    obtained from waitpid through Popen.poll, never from the notification byte.
+    """
+    read_fd, write_fd = os.pipe()
+    try:
+        os.set_blocking(read_fd, False)
+        os.set_blocking(write_fd, False)
+        previous_handler = signal.signal(signal.SIGCHLD, lambda *_: None)
+        previous_wakeup = None
+        previous_mask = None
+        try:
+            previous_wakeup = signal.set_wakeup_fd(write_fd, warn_on_full_buffer=False)
+            # Popen inherits the controlling thread's signal mask. A blocked
+            # SIGCHLD must not turn an exited child into a timeout.
+            previous_mask = signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGCHLD})
+            yield read_fd
+        finally:
+            try:
+                if previous_mask is not None:
+                    signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+                if previous_wakeup is not None:
+                    signal.set_wakeup_fd(previous_wakeup)
+            finally:
+                signal.signal(signal.SIGCHLD, previous_handler)
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
 
 
 def _owned_child(lifeline: int, terminal: int, argv: list[str]) -> int:
@@ -34,15 +69,27 @@ def _owned_child(lifeline: int, terminal: int, argv: list[str]) -> int:
     ):
         raise ProducerExecutionError("owned child requires distinct pipes and a command")
 
-    with selectors.DefaultSelector() as watch:
+    with _child_exit_notifications() as notifications, selectors.DefaultSelector() as watch:
         watch.register(lifeline, selectors.EVENT_READ)
+        watch.register(notifications, selectors.EVENT_READ)
 
-        def parent_gone() -> bool:
-            if not watch.select(0):
-                return False
-            if os.read(lifeline, 1):
-                raise ProducerExecutionError("unexpected parent-liveness pipe data")
-            return True
+        def parent_gone(timeout: float | None = 0) -> bool:
+            for key, _ in watch.select(timeout):
+                if key.fd == lifeline:
+                    if os.read(lifeline, 1):
+                        raise ProducerExecutionError("unexpected parent-liveness pipe data")
+                    return True
+                if key.fd == notifications:
+                    # Coalesced or unrelated SIGCHLD events only request another
+                    # poll. Drain them without creating a busy-loop or treating
+                    # stopped/continued children as completed producers.
+                    while True:
+                        try:
+                            if not os.read(notifications, 4096):
+                                raise ProducerExecutionError("child notification pipe closed")
+                        except BlockingIOError:
+                            break
+            return False
 
         # Never launch work after the controlling descriptor has already closed.
         if parent_gone():
@@ -66,7 +113,11 @@ def _owned_child(lifeline: int, terminal: int, argv: list[str]) -> int:
                     if os.write(terminal, record) != len(record):
                         raise ProducerExecutionError("incomplete child terminal record")
                     reported = True
-                watch.select(0.05)
+                # Both exit and controller loss wake this wait immediately.
+                # The guard remains alive after publishing, pinning the group
+                # identity until the controller performs custody cleanup.
+                if parent_gone(None):
+                    os.killpg(os.getpid(), signal.SIGKILL)
         finally:
             # Unexpected guard failure also terminates its owned group. It has no
             # valid terminal record and therefore cannot establish completion.

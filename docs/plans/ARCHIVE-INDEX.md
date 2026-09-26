@@ -28,17 +28,25 @@ work remains in active tickets and qualification ledgers.
 | Superseded `sep-21-search-plane-sota-hardening/tickets/ACTION-LIST.md` | 1 | [current residual audit](sep-21-search-plane-sota-hardening/tickets/CURRENT-RESIDUAL-2026-09-26.md), [execution plan](sep-21-search-plane-sota-hardening/tickets/FINAL-RESIDUAL-EXECUTION-PLAN.md) |
 | Historical child of active `may-25-search-owned-semantic-derivation` | 1 | Semantic generation ADR and active parent |
 | Superseded `sep-23-search-config-profiles/sdk-interface.md` | 1 | [SDK](../adr/MAY-27-002-sdk-ingress-and-public-surface-boundary.md), active Sep-24 draft |
-| Historical `sep-26-bench-migration` audit/closeout | 2 | [Verification ADR](../adr/JUN-08-001-verification-hellgate-and-benchmark-separation.md), active current audit |
-| Superseded `sep-26-bench-migration` implementation inventory/matrix | 2 | [registry](../../tools/benchmark/registry.toml), [current audit](sep-26-bench-migration/tickets/CURRENT-AUDIT.md) |
-| Completed `sep-26-bench-migration/tickets/BM-03-DECISION.md` | 1 | [Benchmark orchestration ADR](../adr/SEP-27-002-single-benchmark-orchestrator-and-typed-evidence.md); active BM-03 ticket retained |
-| Historical `sep-26-retrieval-remediation/tickets` | 17 | [SEP-26 ADRs](../adr/SEP-26-DECISION-REGISTRY.md), [active gaps](sep-26-retrieval-remediation/tickets/GAP-REGISTER.md) |
+| Historical `sep-26-bench-migration` audit/closeout | 2 | [Verification ADR](../adr/JUN-08-001-verification-hellgate-and-benchmark-separation.md), [execution SSOT](sep-27-misc/tickets/INDEX.md) |
+| Superseded `sep-26-bench-migration` implementation inventory/matrix | 2 | [registry](../../tools/benchmark/registry.toml), [execution SSOT](sep-27-misc/tickets/INDEX.md) |
+| Completed `sep-26-bench-migration/tickets/BM-03-DECISION.md` | 1 | [Benchmark orchestration ADR](../adr/SEP-27-002-single-benchmark-orchestrator-and-typed-evidence.md); execution contract consolidated |
+| Historical `sep-26-retrieval-remediation/tickets` | 17 | [SEP-26 ADRs](../adr/SEP-26-DECISION-REGISTRY.md), [execution SSOT](sep-27-misc/tickets/INDEX.md) |
 
 Total: 215 removed historical plan Markdown files. The SEP-26 historical
 archive manifest and initial `audit-evidence.json` were also removed; both are
 recoverable at the same Git revision.
 
-Still live: the May-25 lexical closeout and capability
-matrix, active semantic packet, Sep-21 residual execution,
-Sep-23 retrieval benchmark, Sep-23/24 drafts, Sep-26 benchmark migration,
-and the SEP-26 retrieval gap register and test plan. A packet is not closed
-merely because one historical child was removed.
+Still live: the May-25 lexical closeout and capability matrix, active semantic
+packet, Sep-21 residual execution and Sep-23/24 drafts. RB/BM/RBR and TOPT
+execution contracts now live only in the [SEP-27 SSOT](sep-27-misc/tickets/INDEX.md).
+A packet is not complete merely because its superseded documents were removed.
+
+## SEP-27 additional consolidation
+
+Removed 25 plan Markdown files: eleven RB, eleven BM and three RBR files.
+Together with four handoffs and twelve TOPT files, this is 41 documents; these
+counts are additional to the historical 215 above. Contracts, acceptance
+matrices and remaining work were inlined in the SSOT; no redirect stubs remain.
+Exact dirty/untracked preimages are recoverable from the content backup recorded
+in the [documentation recovery index](../ARCHIVE-INDEX.md#sep-27-execution-consolidation).

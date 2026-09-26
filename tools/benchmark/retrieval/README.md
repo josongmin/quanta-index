@@ -213,7 +213,7 @@ Each system consumes a projected pack (same tasks/universe/commit, narrowed
 routes, rebound suite commitment); the merge re-derives and re-validates
 every projection with this evaluator before scoring. Records, corpora,
 caches and reports stay under an explicit output root outside the checkout.
-See `docs/plans/sep-23-retrieval-bench/tickets/` for the protocol and the
+See the [execution SSOT](../../../docs/plans/sep-27-misc/tickets/INDEX.md) for the inline protocol and the
 `just retrieval-*` recipes for the registered entry points.
 
 ## Pair spec schema
@@ -450,7 +450,7 @@ quiet-host pair meeting their proof and sample floors. The commands above
 prove code paths, not W0-B, `PERF_QUALIFIED` or `QUALITY_DELTA`. An external
 2026-09-24 exploratory pair at source `96642c06` did pass `PAIR_VALID` and
 relocated verdict replay, but used self-authored gold and carried no
-qualification claim (see the ticket [index](../../../docs/plans/sep-23-retrieval-bench/tickets/INDEX.md)).
+qualification claim (see the [execution SSOT](../../../docs/plans/sep-27-misc/tickets/INDEX.md)).
 No tracked real-pair `run-manifest.json` or `verdict.json` is a qualified
 benchmark result here; external W0-B evidence is required before a quality claim.
 

@@ -43,6 +43,7 @@ import re
 import subprocess
 import sys
 from collections.abc import Sequence
+from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -1348,19 +1349,56 @@ def mean_ci(
         {"task_id": task_id, "stratum": category, "delta": delta}
         for task_id, category, delta in paired
     ]
-    seed_sha256 = digest(canonical(seed_material))
-    rng = random.Random(int(seed_sha256[:16], 16))
+    seed_bytes = canonical(seed_material)
+    seed_sha256 = digest(seed_bytes)
     resamples = 10_000
-    sampled_means: list[float] = []
-    for _ in range(resamples):
+    # Cache only pure numeric work, never repository/evidence admission. Exact
+    # canonical bytes distinguish signed zero, identities, strata and values.
+    # Large inputs bypass retention, bounding the cache to 32 * 64 KiB of keys.
+    bounds = _bootstrap_bounds if len(seed_bytes) <= 65_536 else _bootstrap_bounds.__wrapped__
+    lower, upper = bounds(seed_bytes, resamples)
+    return {
+        "sample_count": n,
+        "method": "paired_stratified_bootstrap_percentile_v1",
+        "resamples": resamples,
+        "seed_sha256": seed_sha256,
+        "strata": stratum_counts,
+        "mean": mean,
+        "lower_95": lower,
+        "upper_95": upper,
+    }
+
+
+@lru_cache(maxsize=32)
+def _bootstrap_bounds(seed_bytes: bytes, resamples: int) -> tuple[float, float]:
+    """Immutable percentile values for an already validated canonical sample."""
+    grouped: dict[str, list[float]] = {}
+    for row in json.loads(seed_bytes):
+        grouped.setdefault(row["stratum"], []).append(row["delta"])
+    groups = [grouped[category] for category in sorted(grouped)]
+    count = sum(len(rows) for rows in groups)
+    # A constant stratum has only one possible resample. Keep the original
+    # group/value addition order (including float rounding) for exact parity.
+    if all(all(value == rows[0] for value in rows) for rows in groups):
         total = 0.0
-        count = 0
-        for category in sorted(grouped):
-            rows = grouped[category]
-            for _index in range(len(rows)):
-                total += rows[rng.randrange(len(rows))][1]
-                count += 1
-        sampled_means.append(total / count)
+        for rows in groups:
+            for value in rows:
+                total += value
+        value = total / count
+        # Keep percentile interpolation too: v*(1-w) + v*w can round
+        # differently from v even when every sampled mean is identical.
+        sampled_means = [value] * resamples
+    else:
+        rng = random.Random(int(digest(seed_bytes)[:16], 16))
+        randrange = rng.randrange
+        indexed_groups = [(rows, len(rows)) for rows in groups]
+        sampled_means = []
+        for _ in range(resamples):
+            total = 0.0
+            for rows, size in indexed_groups:
+                for _index in range(size):
+                    total += rows[randrange(size)]
+            sampled_means.append(total / count)
     sampled_means.sort()
 
     def quantile(p: float) -> float:
@@ -1372,16 +1410,7 @@ def mean_ci(
         weight = position - lower
         return sampled_means[lower] * (1.0 - weight) + sampled_means[upper] * weight
 
-    return {
-        "sample_count": n,
-        "method": "paired_stratified_bootstrap_percentile_v1",
-        "resamples": resamples,
-        "seed_sha256": seed_sha256,
-        "strata": stratum_counts,
-        "mean": mean,
-        "lower_95": quantile(0.025),
-        "upper_95": quantile(0.975),
-    }
+    return quantile(0.025), quantile(0.975)
 
 
 def _task_language(task: dict[str, Any]) -> str:

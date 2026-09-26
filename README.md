@@ -99,10 +99,10 @@ Current verification posture (2026-09-16):
   [current residual ledger](docs/plans/sep-21-search-plane-sota-hardening/tickets/FINAL-RESIDUAL-EXECUTION-PLAN.md),
   live source and fresh receipts for production-readiness claims.
 
-Code-search benchmark (local setup observed 2026-09-26):
+Code-search benchmark and test-optimization work:
 
-- [Comparison plan and local path inventory](docs/plans/sep-23-retrieval-bench/tickets/CODE-SEARCH-COMPARATORS-2026-09.md) identifies the external Semble 0.6.0 environment, frozen candidate corpus, exploratory Quanta/Semble/Sourcegraph/OpenGrok/codespelunker captures, evidence gates, and execution order. These machine-specific paths are observations, not repository prerequisites.
-- [RB-00–RB-06 test plan](docs/plans/sep-23-retrieval-bench/tickets/TEST-PLAN.md) remains the qualification contract; [SEP-26-002](docs/adr/SEP-26-002-retrieval-observation-experiment-and-default-policy.md) defines comparator profile separation, and the comparator note records the RBR-07 full-vector parity run plus two replayed 2026-09-26 Gin/ripgrep exploratory pairs. These and earlier ten-repository pairs are diagnostic, not independent-gold quality or qualified speed evidence.
+- [SEP-27 execution SSOT](docs/plans/sep-27-misc/tickets/INDEX.md) contains the current audit, structural implementation tickets, full retrieval acceptance contract, test-optimization invariants, measurement rules and external-input boundaries inline.
+- Frozen local contract/SDK proof and historical exploratory comparisons are not current-source, independent-gold quality or qualified speed evidence. The SSOT separates those scopes; retired packets are not live authorities.
 - Corpus checkouts, indexes, models, and raw results stay **outside** this repository. Do not infer current benchmark qualification from a package installation or a historical pair verdict.
 
 Build artifacts:

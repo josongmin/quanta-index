@@ -498,25 +498,23 @@ def test_retrieval_source_closure_includes_transitive_execution_owners() -> None
     } <= paths
 
 
-def test_retrieval_source_closure_binds_both_ticket_contract_packets() -> None:
-    # The active remediation packet is a source-bound contract exactly like
-    # the original sep-23 benchmark packet: both must stay inside the
-    # retrieval closure so contract edits invalidate existing receipts.
+def test_retrieval_source_closure_binds_consolidated_ticket_contract() -> None:
+    # Consolidation moves, rather than removes, the normative contract from
+    # source custody. Contract edits must invalidate existing receipts.
     paths = set(source_closure.PROFILES["retrieval"]["paths"])
     assert {
-        "docs/plans/sep-23-retrieval-bench",
-        "docs/plans/sep-26-retrieval-remediation",
+        "docs/plans/sep-27-misc/tickets",
     } <= paths
 
 
-def test_source_closure_rejects_remediation_contract_drift(
+def test_source_closure_rejects_consolidated_contract_drift(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Additions, edits, deletions, and committed changes under the SEP-26
-    # remediation packet must each invalidate a previously captured closure
+    # Additions, edits, deletions, and committed changes under the consolidated
+    # packet must each invalidate a previously captured closure
     # manifest before any receipt bound to it is trusted.
     source = _clean_repo(tmp_path)
-    tickets = source / "docs/plans/sep-26-retrieval-remediation/tickets"
+    tickets = source / "docs/plans/sep-27-misc/tickets"
     tickets.mkdir(parents=True)
     ticket = tickets / "INDEX.md"
     ticket.write_text("# ticket contract\n", encoding="utf-8")
@@ -525,11 +523,11 @@ def test_source_closure_rejects_remediation_contract_drift(
     monkeypatch.setitem(
         source_closure.PROFILES,
         "fixture",
-        {"cargo_packages": (), "paths": ("docs/plans/sep-26-retrieval-remediation",)},
+        {"cargo_packages": (), "paths": ("docs/plans/sep-27-misc/tickets",)},
     )
     manifest = source_closure.build_manifest(source, "fixture")
     assert [entry["path"] for entry in manifest["files"]] == [
-        "docs/plans/sep-26-retrieval-remediation/tickets/INDEX.md"
+        "docs/plans/sep-27-misc/tickets/INDEX.md"
     ]
 
     # Uncommitted modification of a bound contract document.
@@ -539,10 +537,10 @@ def test_source_closure_rejects_remediation_contract_drift(
     subprocess.run(["git", "checkout", "--", "."], cwd=source, check=True)
 
     # Untracked addition inside the contract directory.
-    (tickets / "RBR-13-new.md").write_text("# untracked addition\n", encoding="utf-8")
+    (tickets / "MISC-new.md").write_text("# untracked addition\n", encoding="utf-8")
     with pytest.raises(source_closure.ClosureError, match="dirty relevant source"):
         source_closure.verify_manifest(source, manifest)
-    (tickets / "RBR-13-new.md").unlink()
+    (tickets / "MISC-new.md").unlink()
 
     # Uncommitted deletion of a bound contract document.
     ticket.unlink()

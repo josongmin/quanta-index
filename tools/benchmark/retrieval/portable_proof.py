@@ -16,6 +16,7 @@ import os
 import platform
 import sys
 import tempfile
+import time
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -407,6 +408,7 @@ def _run(
     env_overrides: dict[str, str] | None = None,
     expected_executable_sha256: str | None = None,
 ) -> bytes:
+    started = time.monotonic_ns()
     if not argv or not Path(argv[0]).is_absolute():
         raise ValueError(f"{name} requires an absolute executable")
     active = _ACTIVE_CUSTODY.get()
@@ -423,6 +425,7 @@ def _run(
         active[0].check()
     elif expected_executable_sha256 is not None:
         raise ValueError("expected executable identity requires controlled execution")
+    prepared = time.monotonic_ns()
     try:
         output, errors, _ = execute(
             argv,
@@ -431,8 +434,10 @@ def _run(
             timeout=PROOF_COMMAND_TIMEOUT_SECONDS,
         )
     finally:
+        executed = time.monotonic_ns()
         if active is not None:
             active[0].check()
+    verified = time.monotonic_ns()
     stdout = f"{name}.stdout"
     stderr = f"{name}.stderr"
     _write(out / stdout, output)
@@ -452,6 +457,20 @@ def _run(
             "stderr_sha256": hashlib.sha256(errors).hexdigest(),
         }
     )
+    recorded = time.monotonic_ns()
+    # Diagnostic timing only: kept outside the execution-context schema and
+    # never accepted as proof of correctness or qualified product performance.
+    _write_json(out / f"{name}.timing.json", {
+        "schema_version": 1,
+        "kind": "proof_command_timing_diagnostic",
+        "command": name,
+        "prepare_ns": prepared - started,
+        "execute_ns": executed - prepared,
+        "verify_ns": verified - executed,
+        "record_ns": recorded - verified,
+        "total_ns": recorded - started,
+        "excludes": "timing-file write and work outside this command",
+    })
     return output
 
 

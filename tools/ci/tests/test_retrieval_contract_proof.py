@@ -24,6 +24,26 @@ MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 
 
+def test_required_python_inventory_matches_live_collection(tmp_path: Path) -> None:
+    """Catch a stale checked-in authority before an expensive native proof run."""
+    inventory = tmp_path / "python-inventory.json"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "tools/benchmark/retrieval/proof_inventory.py"),
+            "--out",
+            str(inventory),
+        ],
+        cwd=ROOT,
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert inventory.is_file()
+
+
 def test_proof_recipes_capture_source_once_before_execution(tmp_path: Path) -> None:
     for name in ("retrieval-contract-proof", "retrieval-sdk-proof"):
         completed = subprocess.run(

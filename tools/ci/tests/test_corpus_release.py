@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -20,8 +21,10 @@ def git(root, *args):
     return subprocess.check_output(["git", "-C", str(root), *args])
 
 
-@pytest.fixture
-def source(tmp_path):
+@pytest.fixture(scope="session")
+def source_seed(tmp_path_factory):
+    """Build real Git objects once; tests only mutate independent copies."""
+    tmp_path = tmp_path_factory.mktemp("corpus-source-seed")
     checkouts = tmp_path / "checkouts"
     root = checkouts / "fixture"
     root.mkdir(parents=True)
@@ -69,6 +72,25 @@ def source(tmp_path):
     spec_path = tmp_path / "spec.json"
     spec_path.write_text(json.dumps(spec))
     return checkouts, root, spec_path, spec
+
+
+@pytest.fixture
+def source(source_seed, tmp_path):
+    checkouts, _, spec_path, spec = source_seed
+    target = tmp_path / "checkouts"
+    # Copy the object database too: clones/hardlinks can couple corruption tests.
+    shutil.copytree(checkouts, target, symlinks=True)
+    recipe = tmp_path / "spec.json"
+    shutil.copy2(spec_path, recipe)
+    return target, target / "fixture", recipe, copy.deepcopy(spec)
+
+
+@pytest.fixture(scope="session")
+def release_seed(source_seed, tmp_path_factory):
+    """Reusable producer input for consumer tests, never a cached verdict."""
+    target = tmp_path_factory.mktemp("corpus-release-seed") / "release"
+    corpus.create(source_seed[2], source_seed[0], target)
+    return target
 
 
 def release(source, tmp_path):

@@ -74,8 +74,8 @@ are distinct from functional correctness.
 ## Consequences
 
 - The historical RBR packet is recoverable from Git history, not a live status authority.
-- Current decisions live only in accepted ADRs; unfinished execution work lives only in the active gap register.
-- A documentation change under the remediation packet requires new source-bound proof before current qualification.
+- Current decisions live in accepted ADRs; unfinished execution work and its inline acceptance contract live in the SEP-27 execution SSOT.
+- A normative SSOT change requires new source-bound proof before current qualification.
 - Current verification and qualification status is maintained in the
-  [active gap register](../plans/sep-26-retrieval-remediation/tickets/GAP-REGISTER.md),
+  [execution SSOT](../plans/sep-27-misc/tickets/INDEX.md),
   not in this decision record.

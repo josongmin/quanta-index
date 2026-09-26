@@ -78,5 +78,5 @@ matrix, but it cannot change public defaults or claim semantic quality without t
 
 The completed RBR packets were removed from the live tree after consolidation.
 Their exact pre-deletion bodies are available with
-`git show eff53181:<path>`; [the active packet](../plans/sep-26-retrieval-remediation/tickets/INDEX.md)
+`git show eff53181:<path>`; [the execution SSOT](../plans/sep-27-misc/tickets/INDEX.md)
 owns remaining execution.

@@ -1,6 +1,7 @@
 """Lexical common custody proofs use fixture observations, never fake searches."""
 
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -16,8 +17,10 @@ from tools.benchmark.retrieval.query_plan import execution_profile
 from tools.ci.tests.test_lexical_file_comparison import fixture_inputs
 
 
-def inputs(tmp_path):
-    _, _, suite, pack = fixture_inputs(tmp_path)
+@pytest.fixture(scope="session")
+def lexical_release_seed(tmp_path_factory):
+    """Share immutable corpus construction; each consumer gets independent bytes."""
+    tmp_path = tmp_path_factory.mktemp("lexical-release-seed")
     import corpus_release as corpus
 
     checkouts = tmp_path / "checkouts"
@@ -40,7 +43,16 @@ def inputs(tmp_path):
     recipe_path = tmp_path / "recipe.json"
     recipe_path.write_text(json.dumps(recipe))
     release_root = tmp_path / "corpus-release"
-    release = corpus.create(recipe_path, checkouts, release_root)
+    corpus.create(recipe_path, checkouts, release_root)
+    return release_root
+
+
+def inputs(tmp_path, lexical_release_seed):
+    _, _, suite, pack = fixture_inputs(tmp_path)
+    release_root = tmp_path / "corpus-release"
+    shutil.copytree(lexical_release_seed, release_root, symlinks=True)
+    release = json.loads((release_root / "release.json").read_bytes())
+    commit = release["repositories"][0]["recipe"]["revision"]
     view = release["repositories"][0]["views"]["code_only"]
     manifest = json.loads((release_root / view["manifest"]).read_bytes())
     for payload in (suite, pack):
@@ -148,11 +160,11 @@ def synthetic_admission(monkeypatch):
 
 
 def test_complete_profile_executes_owner_and_replays_frozen_observations(
-    tmp_path, synthetic_admission, capsys
+    tmp_path, lexical_release_seed, synthetic_admission, capsys
 ):
     import benchctl
 
-    spec, paths = inputs(tmp_path)
+    spec, paths = inputs(tmp_path, lexical_release_seed)
     registry = load_registry()
     root = tmp_path / "evidence"
     document = capture.capture(capture.ROOT, root, registry, spec, 60)
@@ -180,8 +192,10 @@ def test_complete_profile_executes_owner_and_replays_frozen_observations(
         capture.replay_run(store, bad)
 
 
-def test_incomplete_input_cannot_replace_previous_profile(tmp_path, synthetic_admission):
-    spec, paths = inputs(tmp_path)
+def test_incomplete_input_cannot_replace_previous_profile(
+    tmp_path, synthetic_admission, lexical_release_seed
+):
+    spec, paths = inputs(tmp_path, lexical_release_seed)
     registry = load_registry()
     root = tmp_path / "evidence"
     capture.capture(capture.ROOT, root, registry, spec, 60)
@@ -220,8 +234,10 @@ def test_cli_missing_spec_and_mixed_controls_refuse_before_producer(tmp_path, ca
     assert not root.exists()
 
 
-def test_corrupt_frozen_input_is_not_a_zero_score(tmp_path, synthetic_admission):
-    spec, _ = inputs(tmp_path)
+def test_corrupt_frozen_input_is_not_a_zero_score(
+    tmp_path, synthetic_admission, lexical_release_seed
+):
+    spec, _ = inputs(tmp_path, lexical_release_seed)
     root = tmp_path / "evidence"
     document = capture.capture(capture.ROOT, root, load_registry(), spec, 60)
     store = RunStore(root)
@@ -232,8 +248,10 @@ def test_corrupt_frozen_input_is_not_a_zero_score(tmp_path, synthetic_admission)
 
 
 @pytest.mark.parametrize("artifact", ["corpus-release.zip", "corpus-binding.json"])
-def test_missing_corpus_custody_artifact_cannot_replay(tmp_path, synthetic_admission, artifact):
-    spec, _ = inputs(tmp_path)
+def test_missing_corpus_custody_artifact_cannot_replay(
+    tmp_path, synthetic_admission, artifact, lexical_release_seed
+):
+    spec, _ = inputs(tmp_path, lexical_release_seed)
     root = tmp_path / "evidence"
     document = capture.capture(capture.ROOT, root, load_registry(), spec, 60)
     store = RunStore(root)
@@ -252,8 +270,8 @@ def test_legacy_unbound_spec_refuses_before_publication(tmp_path):
     assert not root.exists()
 
 
-def test_evidence_release_overlap_refuses_before_mutation(tmp_path):
-    spec, _ = inputs(tmp_path)
+def test_evidence_release_overlap_refuses_before_mutation(tmp_path, lexical_release_seed):
+    spec, _ = inputs(tmp_path, lexical_release_seed)
     root = Path(json.loads(spec.read_bytes())["corpus"]["release_path"])
     before = (root / "release.json").read_bytes()
     with pytest.raises(ValueError, match="roots overlap"):
@@ -263,8 +281,10 @@ def test_evidence_release_overlap_refuses_before_mutation(tmp_path):
 
 
 @pytest.mark.parametrize("status,state", [("timeout", "timeout"), ("unavailable", "unsupported")])
-def test_typed_retrieval_retains_non_scored_states_without_zero(tmp_path, status, state):
-    _, paths = inputs(tmp_path)
+def test_typed_retrieval_retains_non_scored_states_without_zero(
+    tmp_path, status, state, lexical_release_seed
+):
+    _, paths = inputs(tmp_path, lexical_release_seed)
     summary = capture.owner.evaluate_capture(paths)
     summary["pair"]["routes"]["quanta_lexical"]["per_query"][0]["status"] = status
     summary["pair"]["routes"]["quanta_lexical"]["per_query"][0]["file_recall_at_10"] = 0.0
@@ -282,8 +302,8 @@ def test_typed_retrieval_retains_non_scored_states_without_zero(tmp_path, status
         {"file_recall_at_10": 1.1},
     ],
 )
-def test_malformed_or_unrepresentable_rows_refuse(tmp_path, change):
-    _, paths = inputs(tmp_path)
+def test_malformed_or_unrepresentable_rows_refuse(tmp_path, change, lexical_release_seed):
+    _, paths = inputs(tmp_path, lexical_release_seed)
     summary = capture.owner.evaluate_capture(paths)
     summary["pair"]["routes"]["quanta_lexical"]["per_query"][0].update(change)
     with pytest.raises(ValueError):

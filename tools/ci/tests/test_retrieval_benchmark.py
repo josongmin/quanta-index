@@ -6680,7 +6680,7 @@ def test_retrieval_source_closure_profile_covers_authority_surfaces():
         "Cargo.lock",
         "Cargo.toml",
         "Justfile",
-        "docs/plans/sep-23-retrieval-bench",
+        "docs/plans/sep-27-misc/tickets",
         "tools/benchmark/retrieval",
         "tools/ci/nextest_events.py",
         "tools/ci/source_closure.py",

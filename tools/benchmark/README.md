@@ -35,7 +35,7 @@ changed input is refused. `summarize` is read-only and labels observed files
 a HEAD-matching artifact captured before local source edits cannot be
 requalified as evidence for the dirty tree.
 
-## Capture capabilities (2026-09-26 source audit)
+## Capture capabilities and qualification boundary
 
 Registration is not execution support. `list`/`plan` expose all registered
 families; the current end-to-end native capture path is narrower:
@@ -53,7 +53,7 @@ Unsupported profiles do not execute a supported subset and then claim a full
 capture. `summarize` reports `registered_not_captured` with an unknown (null)
 measurement count; `preflight` explicitly refuses rather than raising a lookup
 exception. These are implementation gaps, not missing license/gold/quiet-host
-inputs. See the [current audit](../../docs/plans/sep-26-bench-migration/tickets/CURRENT-AUDIT.md).
+inputs. See the [execution SSOT](../../docs/plans/sep-27-misc/tickets/INDEX.md).
 
 ## Immutable runs and typed evidence
 

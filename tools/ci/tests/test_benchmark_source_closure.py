@@ -35,10 +35,10 @@ def _git(repo: Path, *args: str) -> None:
 def _synthetic_repo(tmp_path: Path) -> tuple[Path, object]:
     module = _closure_module()
     repo = tmp_path / "repo"
-    (repo / "docs" / "plans" / "sep-26-bench-migration" / "tickets").mkdir(parents=True)
+    (repo / "docs" / "plans" / "unrelated-history").mkdir(parents=True)
     (repo / "tools" / "benchmark").mkdir(parents=True)
     (repo / "tools" / "benchmark" / "registry.toml").write_text("x\n", encoding="utf-8")
-    (repo / "docs" / "plans" / "sep-26-bench-migration" / "tickets" / "INDEX.md").write_text(
+    (repo / "docs" / "plans" / "unrelated-history" / "INDEX.md").write_text(
         "plan\n", encoding="utf-8"
     )
     module.PROFILES["bm-synthetic"] = {
@@ -58,6 +58,7 @@ def test_normative_benchmark_files_are_bound() -> None:
     profile = module.PROFILES[PROFILE]
     paths = set(profile["paths"])
     for required in (
+        "docs/plans/sep-27-misc/tickets",
         "tools/benchmark/registry.toml",
         "tools/benchmark/registry.py",
         "tools/benchmark/evidence.py",
@@ -73,12 +74,12 @@ def test_normative_benchmark_files_are_bound() -> None:
     assert "quanta-index-bench-protocol" in profile["cargo_packages"]
 
 
-def test_planning_history_is_excluded_from_the_normative_closure() -> None:
+def test_only_consolidated_ticket_contract_is_bound_as_planning_root() -> None:
     module = _closure_module()
     roots = module.resolve_roots(REPO_ROOT, PROFILE)
-    assert not any(root.startswith("docs/plans/sep-26-bench-migration") for root in roots), (
-        "a planning-status edit must not invalidate benchmark proof"
-    )
+    assert [root for root in roots if root.startswith("docs/plans/")] == [
+        "docs/plans/sep-27-misc/tickets"
+    ]
 
 
 def test_every_declared_normative_path_exists() -> None:
@@ -170,7 +171,7 @@ def test_dirty_normative_file_is_refused(tmp_path: Path) -> None:
 def test_unrelated_planning_edit_does_not_invalidate(tmp_path: Path) -> None:
     repo, module = _synthetic_repo(tmp_path)
     manifest = module.build_manifest(repo, "bm-synthetic")
-    (repo / "docs" / "plans" / "sep-26-bench-migration" / "tickets" / "INDEX.md").write_text(
+    (repo / "docs" / "plans" / "unrelated-history" / "INDEX.md").write_text(
         "plan v2\n", encoding="utf-8"
     )
     module.verify_manifest(repo, manifest)

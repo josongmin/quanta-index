@@ -17,12 +17,24 @@ import corpus_binding as binding
 from evidence import EvidenceError
 
 from tools.benchmark.retrieval.retrieval_contract import canonical
-from tools.ci.tests.test_corpus_release import release, source  # noqa: F401
+from tools.ci.tests.test_corpus_release import (  # noqa: F401
+    release,
+    release_seed,
+    source,
+    source_seed,
+)
 
 
 @pytest.fixture
-def inputs(source, tmp_path):  # noqa: F811
-    root, document = release(source, tmp_path)
+def inputs(release_seed, tmp_path):  # noqa: F811
+    # Validation remains per call; only immutable fixture construction is shared.
+    root = tmp_path / "release"
+    shutil.copytree(release_seed, root, symlinks=True)
+    return inputs_from_release(root)
+
+
+def inputs_from_release(root):
+    document = json.loads((root / "release.json").read_bytes())
     selected = document["repositories"][0]["views"]["code_only"]
     manifest = json.loads((root / selected["manifest"]).read_bytes())
     suite = {
@@ -40,9 +52,28 @@ def inputs(source, tmp_path):  # noqa: F811
     return root, selection, suite, pack
 
 
-@pytest.mark.parametrize("view", ["code_only", "developer_search"])
-def test_capsule_replays_after_original_sources_are_unavailable(inputs, source, view):  # noqa: F811
+def test_mutated_consumer_copy_cannot_poison_next_case(inputs, release_seed, tmp_path):  # noqa: F811
     root, selection, suite, pack = inputs
+    relative = "views/fixture/code_only/src/main.rs"
+    pristine = (release_seed / relative).read_bytes()
+    view = root / relative
+    view.chmod(0o644)
+    view.write_bytes(b"corrupted independent test input")
+    with pytest.raises(EvidenceError):
+        binding.capture(root, selection, canonical(suite), canonical(pack))
+    assert (release_seed / relative).read_bytes() == pristine
+    fresh = tmp_path / "next-consumer"
+    shutil.copytree(release_seed, fresh, symlinks=True)
+    selection = {**selection, "release_path": str(fresh)}
+    result, capsule = binding.capture(fresh, selection, canonical(suite), canonical(pack))
+    assert binding.replay(capsule, selection, canonical(suite), canonical(pack)) == result
+
+
+@pytest.mark.parametrize("view", ["code_only", "developer_search"])
+def test_capsule_replays_after_original_sources_are_unavailable(source, tmp_path, view):  # noqa: F811
+    # This oracle must remove the actual producer checkout, not a spare seed copy.
+    original, _ = release(source, tmp_path)
+    root, selection, suite, pack = inputs_from_release(original)
     if view != selection["view"]:
         document = json.loads((root / "release.json").read_bytes())
         metadata = document["repositories"][0]["views"][view]
@@ -57,6 +88,7 @@ def test_capsule_replays_after_original_sources_are_unavailable(inputs, source, 
     assert result["file_universe_digest"] == "sha256:" + suite["file_universe_digest"]
     shutil.rmtree(source[0])
     root.rename(root.with_name("original-unavailable"))
+    assert not source[0].exists() and not root.exists()
     assert binding.replay(capsule, selection, canonical(suite), canonical(pack)) == result
     with zipfile.ZipFile(io.BytesIO(capsule)) as archive:
         assert archive.namelist() == ["bundles/fixture.bundle", "recipe.json", "release.json"]

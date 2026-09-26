@@ -31,8 +31,7 @@ PROFILES = {
             "docs/adr/SEP-26-002-retrieval-observation-experiment-and-default-policy.md",
             "docs/adr/SEP-26-003-retrieval-evidence-custody-and-qualification.md",
             "docs/adr/SEP-26-DECISION-REGISTRY.md",
-            "docs/plans/sep-23-retrieval-bench",
-            "docs/plans/sep-26-retrieval-remediation",
+            "docs/plans/sep-27-misc/tickets",
             "scripts/cargow",
             "scripts/quanta-index-env.sh",
             "rust-toolchain.toml",
@@ -59,11 +58,12 @@ PROFILES = {
         # Normative benchmark registration/evidence/CLI surface only. Product
         # source is bound separately through the envelope's Git revision and
         # measured binary digests; the retrieval rail keeps its own profile.
-        # Planning/history under docs/plans/sep-26-bench-migration is
-        # deliberately excluded: a status edit is not a contract change.
+        # The consolidated packet contains normative acceptance contracts.
+        # Bind it; unrelated planning/history remains outside this closure.
         "cargo_packages": ("quanta-index-bench-protocol",),
         "paths": (
             ".github/workflows/ci.yml",
+            "docs/plans/sep-27-misc/tickets",
             ".cargo/config.toml",
             "Cargo.lock",
             "Cargo.toml",
