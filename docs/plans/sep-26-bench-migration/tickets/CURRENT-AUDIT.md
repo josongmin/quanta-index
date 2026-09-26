@@ -62,7 +62,57 @@ system Python 3.9 rather than uv Python 3.13.9. That source (`e11efc58`) is not
 accepted as locked-runtime proof. The recipe now invokes
 `uv run --frozen --extra dev python -m pytest` internally. Frozen corrected
 source is `816dac2aa5c4b0f0d4de741f5d595e4cd0146e12` under
-`/tmp/quanta-micro-audit.EwaPQA/proof-ci-runtime`; full recipe result is pending.
+`/tmp/quanta-micro-audit.EwaPQA/proof-ci-runtime`; its terminal recipe result is
+recorded below.
+
+The rejected system-Python run has a terminal result: **FAILED, 17 failed and
+469 passed in 332.16 s**, receipt
+`/tmp/quanta-micro-audit.EwaPQA/benchmark-control-frozen.xml`, SHA-256
+`ab8a5f8df444ac450b82496d8b720fdb200e3e53b723736c447526a66621793f`.
+Its failures include
+Python 3.9 rejecting `zip(..., strict=True)` in the frozen tests/owners. No
+failed run is discarded or promoted as a success; the internally uv-bound
+source is verified separately.
+
+The frozen authority guard suite at `816dac2a` completed with 166 passed in
+146.54 s; the actual authority command also returned OK. JUnit
+`/tmp/quanta-micro-audit.EwaPQA/benchmark-authority-runtime-frozen.xml`, SHA-256
+`12151c701164a7206104be476e081b6ee88321461257b1b9cc1a86e9887ea447`.
+The new locked recipe executes `.venv/bin/python3` (uv CPython 3.13.9), verified
+from its live process, rather than the former system interpreter. Its terminal
+20-file result is **VERIFIED: 486 passed in 269.77 s**, receipt
+`/tmp/quanta-micro-audit.EwaPQA/benchmark-control-runtime-frozen.xml`, SHA-256
+`46f1b32c859290e858c78f9949624689fd374ffa15aa795fff8dfbd124b5aafc`.
+Main additionally selects agent-outcome and
+concurrency sample contracts: 37 selected tests passed in 17.84 s on dirty main,
+receipt `/tmp/quanta-micro-audit.EwaPQA/benchmark-full-owner-selection-current.xml`,
+SHA-256 `f368ab22de09ea4988e752f59317815f674fd2821d0a202d9b6912aa4b4fd565`.
+The guard now checks that every normative control-plane test path is selected,
+not just the seven new owners. These different-source results are not composable
+into qualification of the current 22-file recipe.
+
+Shared main advanced externally to `bc7946309a65a0dd70ee0e90f768c7386e9390b5`.
+The snapshot receipt identities above remain unchanged. The CI/Justfile/catalog/
+closure/guard write set is frozen for coordinated final integration; whole-main
+and hosted CI results are still NOT_RUN in this owner checkpoint.
+
+Minimum-runtime contract correction (newer source/lock, separate from the 486
+receipt): the package previously declared Python >=3.9 although benchmark
+owners use `zip(strict=True)` (the rejected 3.9 run demonstrates the mismatch).
+`pyproject.toml` now requires >=3.10; `uv lock --offline` pruned the unsupported
+3.9 dependency forks. Comparing sorted package/version tuples against the
+816dac2a lock introduced no new version tuple. `uv lock --check --offline`
+passed, and explicitly requesting `/usr/bin/python3` refused Python 3.9.6 with
+exit 2 before executing user code. Selected lexical capture/scorer/manifest
+tests passed: 37 in 9.79 s under the new lock on dirty main, receipt
+`/tmp/quanta-micro-audit.EwaPQA/benchmark-runtime-floor-current.xml`.
+This is not a Python 3.10 full-suite compatibility receipt. The conservative
+Ruff syntax target remains unchanged; broad legacy lint-rule migration is not
+silently coupled to the runtime floor fix.
+`uv run --frozen --extra dev ruff check . --output-format json --output-file
+/tmp/quanta-micro-audit.EwaPQA/ruff-runtime-floor-current.json` returned exit 0
+with zero diagnostics on dirty main at `349090ca1ff5db875814dda848f01baf71131a10`.
+This read-only lint check does not qualify the unexecuted product/native rails.
 
 The earlier frozen lexical owner regression at `febcb612` has now terminated:
 449 passed in 1623.68 s. Receipt

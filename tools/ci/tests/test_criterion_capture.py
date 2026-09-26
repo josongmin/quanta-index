@@ -602,6 +602,7 @@ def test_execution_monitors_high_numbered_pipe_descriptors(tmp_path, monkeypatch
         try:
             for fd in original:
                 duplicated.append(fcntl.fcntl(fd, fcntl.F_DUPFD, 2048))
+                os.set_inheritable(duplicated[-1], False)
         except BaseException:
             for fd in duplicated:
                 os.close(fd)

@@ -689,7 +689,7 @@ mod tests {
             assert!(row.remove(field).is_some());
             assert!(verified_rows(&[record], &changed).is_err());
         }
-        let mut forged = stored.clone();
+        let mut forged = stored;
         let row = forged
             .get_mut("semantic")
             .expect("semantic")

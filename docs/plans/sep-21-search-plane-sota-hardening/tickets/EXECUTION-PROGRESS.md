@@ -4,7 +4,9 @@
 
 Review and repair on shared dirty main
 `577d60b518344163145ad2f1afe1f3e7c656762e`; another writer advanced main to
-`b24d11489d250613c4871df6d65fa3d7e70daef4`. Other writers' changes were
+`b24d11489d250613c4871df6d65fa3d7e70daef4`, then through
+`bc7946309a65a0dd70ee0e90f768c7386e9390b5` to
+`349090ca1ff5db875814dda848f01baf71131a10`. Other writers' changes were
 preserved; no commit, push, deployment or activation was performed.
 
 - RCA: the session shim returned after its direct child exited. A same-group
@@ -79,16 +81,16 @@ preserved; no commit, push, deployment or activation was performed.
   The executor now requires default SIGCHLD before creating pipes or children;
   neither unsupported mode is silently reset or accepted. Both negatives
   independently assert that the command's marker was never created.
-- Final locked owner command is the same complete two-file command above:
+- Reaping-admission owner command is the same complete two-file command above:
   exit 0, 69 passed, 32.27s. Raw `owners-with-reaping-custody.log`, SHA-256
   `a46b8aca6289109f9d438e1d120048a3c12dcaf9454f9a7c3d4b7f6845dbd253`.
   The same complete four-file caller command re-executed after the admission
   change: exit 0, 87 passed, 20.91s. Raw
   `callers-with-reaping-custody.log`, SHA-256
   `5c4fb45e71cf50065c5ab33ae6e6ed52d2e29a3f7b59564ff3ca4896cfd94aa5`.
-  Final owner SHA-256:
+  Owner SHA-256 before the following selector change:
   `4ca9bf58c5061aa9125893b3312bc14706d5150cd24131900d7463667def922e`;
-  final owner test SHA-256:
+  corresponding owner test SHA-256:
   `69290229cd6516697a007861124625d74fce5c9e6d40b06394e24593516c6867`.
 - System-Python compatibility only:
   `python3 -m pytest tools/ci/tests/test_criterion_capture.py -q -k
@@ -100,6 +102,68 @@ preserved; no commit, push, deployment or activation was performed.
   proof environment or repository qualification. Scoped Ruff check/format and
   final whitespace check passed; owner/caller hashes stayed fixed across final
   local proof execution.
+- Final RR found the same fixed-descriptor-range problem in both pipe watchers:
+  real pipes duplicated to fd 2048+ triggered `select()` ValueError before
+  command completion. Locked `test_criterion_capture.py -q -k high_numbered
+  --tb=short`: exit 1, 1 failed / 53 deselected, 4.77s. Raw
+  `red-high-fd.log`, SHA-256
+  `2f7f1710979bf1f6cbd5e5630d62cdc74296265dc40988d1695f2bc174378c0b`.
+  Both liveness and terminal/output watchers now use `DefaultSelector`, with
+  the same deadlines and group-custody ordering. No fixed-fd fallback or second
+  execution path remains.
+- The first post-selector owner/system-Python runs stopped at the high-FD
+  fixture. Live PID/parent/group inspection isolated a fixture error:
+  `F_DUPFD` cleared close-on-exec, unlike the real `os.pipe()` contract, leaving
+  Popen's exec-error writer inherited by its child and blocking spawn. Exact
+  owned pytest PIDs 68496 and 69335 were stopped; both handles terminated
+  exit 137, and their liveness-bound shim PIDs disappeared. The incomplete
+  `owners-selector-final.log` and `system-python-selector-final.log` remain
+  preserved and are not pass evidence. The fixture now marks each duplicated
+  descriptor non-inheritable; production deadlines/oracles were not relaxed.
+- Final complete locked two-file owner command above, after fixture correction:
+  exit 0, 70 passed, 19.35s, no skips. Actual fd 2048+ case executed.
+  `owners-selector-fixture-fixed.log`, SHA-256
+  `81a54bd15fc233eec5cad9c1757bcf29d5939540580f5937fab09864bfa11dbf`.
+  The current-selector complete four-file caller command above terminated
+  exit 0, 87 passed, 73.39s. `callers-selector-final.log`, SHA-256
+  `12dc0ea59928f4d14412212da8584ad0643c841efde19124d787c41fc290e01b`.
+- Final system-Python compatibility command adds `or high_numbered` to the
+  selector above: exit 0, 10 passed / 44 deselected, 7.82s, no skips;
+  `system-python-selector-fixture-fixed.log`, SHA-256
+  `8965439aacb4297b52e2e1e8af7ceecbb8ea1673ba67a901d515a4a5114c9093`.
+  This remains Python 3.9.6/pytest 6.2.5 unlocked compatibility only.
+- Final frozen source-unit identities communicated to the integration owner:
+  executor `94986689b30276c952780d5fc111c8e8fa15cda9ecce11383c5a3f4c6f6fe062`;
+  criterion owner test
+  `3af71c13891966b30f846257f6ebba3084a1236620e3b60335569fb1d57cbec2`;
+  portable owner test
+  `2be396afe82c4b0213ac10b68f2885c9f95107976e3dc8c572b352dd5f8af609`;
+  portable caller and uv.lock remain at the hashes above. No further code/test
+  write is planned by this owner. Shared main movement and an older whole-Python
+  snapshot cannot be composed with these local results into current-source
+  qualification. Scoped Ruff check/format and whitespace checks passed.
+- Dependency freeze recheck detected another writer raising `requires-python`
+  to >=3.10 and rewriting uv.lock. The earlier c9064e8-bound local results are
+  historical, not evidence for the new dependency state. No dependency edit was
+  reverted or made by this execution owner. Final integration handshake was
+  corrected before accepting current-input results.
+- Reissued the same complete two-file locked owner command on current inputs:
+  exit 0, 70 passed, 22.33s. Raw `owners-current-lock.log`, SHA-256
+  `255ecd2d3900ea5cc527422b37746a42846f7135faa618eb7e1630f9d96e805b`.
+  Reissued the same complete four-file caller command: exit 0, 87 passed,
+  14.80s. Raw `callers-current-lock.log`, SHA-256
+  `cfce67b910a5ea8a9a91be805e6ea55c9c7b4acf9906b7fb8a2aa841ccfecd90`.
+  Current dependency identities, unchanged across these final executions:
+  uv.lock `1bf905b8501cd4eb902aee46d027532e6dd3a9337f5a4c7b968d6934648a4486`;
+  pyproject.toml
+  `f27a7f9e3814af0f8e21cf2b8c7d0bc20ef766d3a39b9f617e6237ee13d9ca21`.
+  Executor/owner-test/portable-test/portable-caller hashes remain at the frozen
+  identities above. Runtime remains Python 3.13.9/pytest 9.1.1/macOS 15.6 arm64.
+  The system-Python 3.9 results are legacy source compatibility observations,
+  outside the new declared project Python floor; they do not establish project
+  support or current repository qualification. Main is
+  `349090ca1ff5db875814dda848f01baf71131a10` plus shared dirty source. No
+  final-source whole-repository/release qualification is claimed.
 - Residual audit: portable proof's actual toolchain/wrapper execution binding
   remains R0 OPEN_PROOF_GAP. `semantic/build.rs` still performs per-owner
   serial deletes; the 1820-owner batch multiplier is source-observed, not

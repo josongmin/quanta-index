@@ -38,6 +38,7 @@ try:
     from tools.benchmark.retrieval import query_plan as qp
     from tools.benchmark.retrieval import semble as semble_adapter
     from tools.benchmark.retrieval.contract_proof import nextest_summary, pytest_summary
+    from tools.benchmark.retrieval.finite_json import is_finite_json_number
     from tools.benchmark.retrieval.evaluator import (
         CHUNK_STRATEGIES,
         RUNNER_SCHEMA_VERSION,
@@ -64,6 +65,7 @@ except ImportError:  # direct script invocation: import the sibling module
     import query_plan as qp  # noqa: E402
     import semble as semble_adapter  # noqa: E402
     from contract_proof import nextest_summary, pytest_summary  # noqa: E402
+    from finite_json import is_finite_json_number  # noqa: E402
     from evaluator import (  # noqa: E402
         CHUNK_STRATEGIES,
         RUNNER_SCHEMA_VERSION,
@@ -114,7 +116,7 @@ def _validate_semble_profile(value: object, where: str) -> dict:
     }
     if mode == "hybrid-no-rerank":
         alpha = value["alpha"]
-        if value["profile_id"] != "semble-hybrid-no-rerank-v1" or value["rerank"] is not False or type(alpha) not in (int, float) or isinstance(alpha, bool) or not math.isfinite(alpha) or not 0 <= alpha <= 1:
+        if value["profile_id"] != "semble-hybrid-no-rerank-v1" or value["rerank"] is not False or not is_finite_json_number(alpha) or not 0 <= alpha <= 1:
             raise RunError(f"{where} hybrid profile is invalid")
     elif mode in fixed:
         profile_id, alpha, rerank = fixed[mode]
@@ -191,6 +193,7 @@ ISOLATION_PROOF_VERSION = 3
 RUNNER_BUNDLE_MEMBERS = (
     "semble.py",
     "retrieval_contract.py",
+    "finite_json.py",
     "linux_isolation.py",
 )
 
@@ -3436,7 +3439,7 @@ def validate_retrieval_diagnostic(
         "retrieval diagnostic timing",
     )
     if detail["clock"] != "runner_monotonic_wall_v1" or any(
-        type(value) not in (int, float) or not math.isfinite(value) or value < 0
+        not is_finite_json_number(value) or value < 0
         for key, value in detail.items()
         if key != "clock"
     ):
@@ -3575,8 +3578,7 @@ def validate_retrieval_diagnostic(
                 or candidate["end_line"] != scored.get("end_line")
                 or not isinstance(candidate["candidate_id"], str)
                 or not candidate["candidate_id"]
-                or type(candidate["score"]) not in (int, float)
-                or not math.isfinite(candidate["score"])
+                or not is_finite_json_number(candidate["score"])
                 or not isinstance(candidate["contributions"], list)
             ):
                 raise RunError("retrieval diagnostic candidate is invalid")
@@ -3591,8 +3593,7 @@ def validate_retrieval_diagnostic(
                     or lane["lane"] in seen_lanes
                     or type(lane["rank"]) is not int
                     or lane["rank"] < 1
-                    or type(lane["raw_score"]) not in (int, float)
-                    or not math.isfinite(lane["raw_score"])
+                    or not is_finite_json_number(lane["raw_score"])
                 ):
                     raise RunError("retrieval diagnostic lane is invalid")
                 if diagnostic["schema_version"] in (3, 4, 5, 6) and not (
@@ -4309,7 +4310,7 @@ def _valid_bootstrap_ci(ci: object, sample_count: int, *, estimable: bool) -> bo
         ci.get("resamples") == 10_000
         and _is_hex(ci.get("seed_sha256"), 64)
         and all(
-            isinstance(ci.get(key), (int, float)) and math.isfinite(ci[key])
+            is_finite_json_number(ci.get(key))
             for key in ("mean", "lower_95", "upper_95")
         )
         and ci["lower_95"] <= ci["mean"] <= ci["upper_95"]
@@ -4330,9 +4331,7 @@ def _valid_stratified_delta(strata: object, sample_count: int, expected_mean: fl
             if type(entry["sample_count"]) is not int or entry["sample_count"] < 1:
                 return False
             observed += entry["sample_count"]
-            if not isinstance(entry["mean_delta"], (int, float)) or not math.isfinite(
-                entry["mean_delta"]
-            ):
+            if not is_finite_json_number(entry["mean_delta"]):
                 return False
             weighted_sum += float(entry["mean_delta"]) * entry["sample_count"]
             ci = entry["ci_95"]
@@ -4366,8 +4365,7 @@ def _qualified_uncertainty(comparison: object) -> bool:
     primary_mean = comparison.get("primary_delta")
     if (
         comparison.get("sample_count") != primary_count
-        or not isinstance(primary_mean, (int, float))
-        or not math.isfinite(primary_mean)
+        or not is_finite_json_number(primary_mean)
         or not math.isclose(float(ci["mean"]), float(primary_mean), rel_tol=1e-12, abs_tol=1e-12)
     ):
         return False
@@ -4408,9 +4406,7 @@ def _qualified_uncertainty(comparison: object) -> bool:
             or not _valid_stratified_delta(no_answer["strata"], 0, None)
         ):
             return False
-    elif not isinstance(no_answer["mean_delta"], (int, float)) or not math.isfinite(
-        no_answer["mean_delta"]
-    ):
+    elif not is_finite_json_number(no_answer["mean_delta"]):
         return False
     elif (
         no_answer["ci_95"].get("status") != "not_applicable"
@@ -4523,9 +4519,7 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
             raise RunError(f"{where} has unknown Semble profile")
         if profile == "hybrid-no-rerank":
             if (
-                isinstance(alpha, bool)
-                or not isinstance(alpha, (int, float))
-                or not math.isfinite(alpha)
+                not is_finite_json_number(alpha)
                 or not 0 <= alpha <= 1
                 or rerank is not False
             ):
@@ -4716,8 +4710,7 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
             ):
                 raise RunError(f"{where} warm latency task map differs from the protocol")
             if (
-                type(cold[route]) not in (int, float)
-                or not math.isfinite(cold[route])
+                not is_finite_json_number(cold[route])
                 or cold[route] < 0
             ):
                 raise RunError(f"{where} cold latency is invalid")
@@ -4728,14 +4721,14 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
                 ):
                     raise RunError(f"{where} warm latency count differs for {route}/{task_id}")
                 for value in values:
-                    if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+                    if not is_finite_json_number(value) or value < 0:
                         raise RunError(f"{where} warm latency is invalid for {route}/{task_id}")
     phases = _exact_keys(metrics["phases_ms"], expected_phases, f"{where}.phases_ms")
     for key, value in phases.items():
-        if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+        if not is_finite_json_number(value) or value < 0:
             raise RunError(f"{where}.phases_ms.{key} must be finite and nonnegative")
     total = metrics["total_ms"]
-    if type(total) not in (int, float) or not math.isfinite(total) or total <= 0:
+    if not is_finite_json_number(total) or total <= 0:
         raise RunError(f"{where}.total_ms must be finite and positive")
     if not math.isclose(sum(phases.values()), total, rel_tol=1e-9, abs_tol=0.01):
         raise RunError(f"{where} phase sum differs from total")
@@ -4924,8 +4917,7 @@ def _validate_linux_resource_metrics(payload: dict, where: str) -> dict:
     if metrics["exit_code"] != 0 or metrics["timed_out"] is not False:
         raise RunError(f"{where} does not describe a successful bounded process")
     if (
-        type(metrics["elapsed_ms"]) not in (int, float)
-        or not math.isfinite(metrics["elapsed_ms"])
+        not is_finite_json_number(metrics["elapsed_ms"])
         or metrics["elapsed_ms"] <= 0
     ):
         raise RunError(f"{where}.elapsed_ms must be finite and positive")
@@ -5105,16 +5097,14 @@ def _validate_resource_metrics(payload: object, where: str) -> dict:
     if metrics["exit_code"] != 0 or metrics["timed_out"] is not False:
         raise RunError(f"{where} does not describe a successful bounded process")
     if (
-        type(metrics["elapsed_ms"]) not in (int, float)
-        or not math.isfinite(metrics["elapsed_ms"])
+        not is_finite_json_number(metrics["elapsed_ms"])
         or metrics["elapsed_ms"] <= 0
     ):
         raise RunError(f"{where}.elapsed_ms must be finite and positive")
     if type(metrics["peak_rss_bytes"]) is not int or metrics["peak_rss_bytes"] <= 0:
         raise RunError(f"{where}.peak_rss_bytes must be positive")
     if (
-        type(metrics["peak_cpu_percent"]) not in (int, float)
-        or not math.isfinite(metrics["peak_cpu_percent"])
+        not is_finite_json_number(metrics["peak_cpu_percent"])
         or metrics["peak_cpu_percent"] < 0
     ):
         raise RunError(f"{where}.peak_cpu_percent must be finite and nonnegative")
@@ -5136,8 +5126,7 @@ def _validate_resource_metrics(payload: object, where: str) -> dict:
         if type(row["samples"]) is not int or row["samples"] < 1:
             raise RunError(f"{where}.processes[{index}].samples must be positive")
         if (
-            type(row["peak_cpu_percent"]) not in (int, float)
-            or not math.isfinite(row["peak_cpu_percent"])
+            not is_finite_json_number(row["peak_cpu_percent"])
             or row["peak_cpu_percent"] < 0
         ):
             raise RunError(f"{where}.processes[{index}].peak_cpu_percent is invalid")
@@ -7592,9 +7581,9 @@ def _sample_value(value: object, where: str) -> float | None:
     """A matrix sample: finite number >= 0, or None when unknown. Never 0-filled."""
     if value is None:
         return None
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    if type(value) not in (int, float):
         raise RunError(f"{where} latency is not a number or null")
-    if not math.isfinite(value) or value < 0:
+    if not is_finite_json_number(value) or value < 0:
         raise RunError(f"{where} latency is not finite and >= 0")
     return float(value)
 

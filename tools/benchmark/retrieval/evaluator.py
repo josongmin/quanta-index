@@ -49,10 +49,12 @@ from typing import Any
 try:
     from tools.benchmark.retrieval import query_plan as query_plan_contract
     from tools.benchmark.retrieval import retrieval_contract
+    from tools.benchmark.retrieval.finite_json import is_finite_json_number
 except ModuleNotFoundError:  # direct script invocation
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
     from tools.benchmark.retrieval import query_plan as query_plan_contract
     from tools.benchmark.retrieval import retrieval_contract
+    from tools.benchmark.retrieval.finite_json import is_finite_json_number
 
 SCHEMA_VERSION = 3
 RUNNER_SCHEMA_VERSION = 5
@@ -144,9 +146,7 @@ def grade_value(value: Any, where: str) -> int:
 
 def finite_timing(value: Any, where: str) -> float:
     require(
-        (type(value) is int or type(value) is float)
-        and math.isfinite(float(value))
-        and float(value) >= 0,
+        is_finite_json_number(value) and value >= 0,
         f"{where} timing must be a finite number >= 0",
     )
     return float(value)
@@ -252,7 +252,7 @@ def validate_execution_profile(value: Any, system: str, where: str) -> dict[str,
     if mode == "hybrid-no-rerank":
         require(profile["profile_id"] == "semble-hybrid-no-rerank-v1", f"{where}.profile_id mismatch")
         alpha = profile["alpha"]
-        require(type(alpha) in (int, float) and not isinstance(alpha, bool) and math.isfinite(alpha) and 0 <= alpha <= 1, f"{where}.alpha is invalid")
+        require(is_finite_json_number(alpha) and 0 <= alpha <= 1, f"{where}.alpha is invalid")
         require(profile["rerank"] is False, f"{where}.rerank must be false")
     else:
         require(mode in modes, f"{where}.mode is unknown")

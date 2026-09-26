@@ -14,6 +14,7 @@ from pathlib import Path
 
 from tools.benchmark.retrieval import run as pairrun
 from tools.benchmark.retrieval.conditional_proof import load, sha
+from tools.benchmark.retrieval.finite_json import is_finite_json_number
 
 
 def compare(on: dict, off: dict, on_phases: dict, off_phases: dict, on_diagnostic: dict, off_diagnostic: dict, pack: dict) -> dict:
@@ -59,7 +60,7 @@ def compare(on: dict, off: dict, on_phases: dict, off_phases: dict, on_diagnosti
             measured_off = off_phases["warm_latencies_ms"][route].get(task_id)
             repetitions = on_phases["measurement_repetitions"]
             if not isinstance(measured_off, list) or len(measured_on) != repetitions or len(measured_off) != repetitions or repetitions < 2 \
-                or any(type(value) not in (int, float) or not math.isfinite(value) or value <= 0
+                or any(not is_finite_json_number(value) or value <= 0
                        for value in measured_on + measured_off):
                 raise ValueError("on/off sample coverage is missing or invalid")
             left, right = statistics.median(measured_on), statistics.median(measured_off)

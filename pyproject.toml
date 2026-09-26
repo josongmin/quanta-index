@@ -3,7 +3,7 @@ name = "quanta-index-tools"
 version = "0.1.0"
 description = "Prompt-manager and developer tooling for quanta-index"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = [
     "jinja2>=3.1.4",
     "jsonschema>=4.23.0",

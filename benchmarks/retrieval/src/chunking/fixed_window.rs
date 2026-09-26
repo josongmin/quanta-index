@@ -250,12 +250,12 @@ impl Chunker for StrictWindowChunker {
                     message: "window advance failed to terminate".to_string(),
                 });
             }
-            let mut end = snap_backward(&file.text, start.saturating_add(self.window_bytes));
-            end = end.max(start.saturating_add(1)).min(file.text.len());
+            let end = snap_backward(&file.text, start.saturating_add(self.window_bytes));
             if end <= start {
                 return Err(BenchError::Chunk {
                     path: file.path.clone(),
-                    message: "window collapsed to zero length".to_string(),
+                    message: "window byte budget cannot contain the next UTF-8 code point"
+                        .to_string(),
                 });
             }
             let start_line = file.line_of_offset(start)?;
@@ -308,7 +308,10 @@ impl Chunker for StrictWindowChunker {
             if end >= file.text.len() {
                 break;
             }
-            let next = snap_forward(&file.text, start.saturating_add(step));
+            // Snapping the cap backward and the step forward independently
+            // can skip a whole code point. Clamp to the emitted end, which
+            // is a valid boundary and strictly beyond start.
+            let next = snap_forward(&file.text, start.saturating_add(step)).min(end);
             if next <= start {
                 return Err(BenchError::Chunk {
                     path: file.path.clone(),

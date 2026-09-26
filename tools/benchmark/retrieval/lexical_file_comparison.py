@@ -17,6 +17,7 @@ import statistics
 from pathlib import Path
 
 from tools.benchmark.retrieval.evaluator import canonical, digest
+from tools.benchmark.retrieval.finite_json import is_finite_json_number
 from tools.benchmark.retrieval.query_plan import execution_profile
 
 PRODUCTS = ("sourcegraph", "opengrok", "cs")
@@ -42,7 +43,7 @@ TIMING_LAYERS = {
 
 def latency_summary(values: list[object], expected_count: int, layer: str) -> dict:
     if len(values) != expected_count or any(
-        type(value) not in (int, float) or not math.isfinite(value) or value < 0 for value in values
+        not is_finite_json_number(value) or value < 0 for value in values
     ):
         raise ValueError(f"{layer}: missing, non-finite or invalid latency observation")
     ordered = sorted(values)
@@ -326,7 +327,7 @@ def pair_result(
         flags = [row.get("file_hit_at_10") for row in route_rows]
         if (
             any(
-                type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 1
+                not is_finite_json_number(value) or not 0 <= value <= 1
                 for value in recalls
             )
             or any(type(value) is not bool for value in flags)
@@ -342,8 +343,7 @@ def pair_result(
         )
         reported_mean = data.get("mean_query_latency_ms")
         if (
-            type(reported_mean) not in (int, float)
-            or not math.isfinite(reported_mean)
+            not is_finite_json_number(reported_mean)
             or abs(latency["mean_ms"] - reported_mean) > 1e-6
         ):
             raise ValueError(f"pair report {route} mean latency differs from observations")

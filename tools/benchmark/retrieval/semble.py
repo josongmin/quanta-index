@@ -32,6 +32,7 @@ import sys
 from pathlib import Path
 
 try:
+    from tools.benchmark.retrieval.finite_json import is_finite_json_number
     from tools.benchmark.retrieval.retrieval_contract import (
         TOKEN_RE,
         TOKENIZER,
@@ -43,6 +44,7 @@ try:
     )
 except ImportError:  # direct script invocation: import the sibling module
     sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from finite_json import is_finite_json_number  # noqa: E402
     from retrieval_contract import (  # noqa: E402
         TOKEN_RE,
         TOKENIZER,
@@ -63,7 +65,7 @@ def execution_profile(mode: str, alpha: float | None) -> dict:
         "semantic-only": ("semble-semantic-only-v1", None, "not_applicable"),
     }
     if mode == "hybrid-no-rerank":
-        if type(alpha) not in (int, float) or isinstance(alpha, bool) or not math.isfinite(alpha) or not 0 <= alpha <= 1:
+        if not is_finite_json_number(alpha) or not 0 <= alpha <= 1:
             raise AdapterError("hybrid-no-rerank requires finite alpha in [0, 1]")
         return {"profile_id": "semble-hybrid-no-rerank-v1", "mode": mode, "alpha": float(alpha), "rerank": False}
     if mode not in fixed or alpha is not None:
@@ -147,7 +149,7 @@ def main() -> int:
         raise SystemExit(f"worker refuses unknown semble profile: {profile}")
     alpha = spec.get("alpha") if profile == "hybrid-no-rerank" else None
     if profile == "hybrid-no-rerank" and (
-        not isinstance(alpha, (int, float)) or isinstance(alpha, bool) or not 0.0 <= float(alpha) <= 1.0
+        type(alpha) not in (int, float) or not 0.0 <= alpha <= 1.0
     ):
         raise SystemExit("hybrid-no-rerank profile requires an explicit alpha in [0, 1]")
     alpha = float(alpha) if alpha is not None else None
@@ -671,7 +673,7 @@ def validate_native_profile_report(
                 raise AdapterError("Semble hybrid event did not enter both lanes exactly once")
             if event["actual_rerank"] is not (profile == "native-default"):
                 raise AdapterError("Semble event rerank differs from the profile")
-            if type(event["actual_alpha"]) not in (int, float) or isinstance(event["actual_alpha"], bool) or not math.isfinite(event["actual_alpha"]) or not 0 <= event["actual_alpha"] <= 1:
+            if not is_finite_json_number(event["actual_alpha"]) or not 0 <= event["actual_alpha"] <= 1:
                 raise AdapterError("Semble event actual alpha is invalid")
             if profile == "hybrid-no-rerank" and event["actual_alpha"] != alpha:
                 raise AdapterError("Semble event actual alpha differs from requested alpha")
@@ -1430,10 +1432,7 @@ def validate_worker_phase_timings(
         phases["warm_query"] = native_payload.get("warm_query_ms")
 
     def finite_nonnegative(value: object) -> bool:
-        try:
-            return type(value) in (int, float) and value >= 0 and math.isfinite(value)
-        except OverflowError:
-            return False
+        return is_finite_json_number(value) and value >= 0
 
     if any(not finite_nonnegative(value) for value in phases.values()):
         raise AdapterError("Semble worker omitted finite nonnegative phase timings")

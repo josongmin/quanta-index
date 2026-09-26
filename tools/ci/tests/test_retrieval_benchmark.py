@@ -8643,11 +8643,23 @@ def test_conditional_vector_replay_checks_full_vector_and_batch_permutation():
         "pairwise_cosine_upper": [[1.0], []], "dimension": 256,
     }
     assert cp.model_rows(observed, baseline, inputs)[1] == 2
-    for bad in (True, float("nan"), float("inf"), 1.1):
+    for bad in (True, float("nan"), float("inf"), 10**400, 1.1):
         mutant = json.loads(json.dumps(baseline))
         mutant["pairwise_cosine_upper"][0][0] = bad
         with pytest.raises(ValueError):
             cp.model_rows(observed, mutant, inputs)
+    for field in ("vectors", "norms"):
+        mutant = json.loads(json.dumps(baseline))
+        if field == "vectors":
+            mutant[field][0][0] = 10**400
+        else:
+            mutant[field][0] = 10**400
+        with pytest.raises(ValueError):
+            cp.model_rows(observed, mutant, inputs)
+    mutant = json.loads(json.dumps(observed))
+    mutant["vectors"][0][0] = 10**400
+    with pytest.raises(ValueError):
+        cp.model_rows(mutant, baseline, inputs)
     for bad in (256.0, True):
         for source in ("observed", "reference"):
             actual, expected = json.loads(json.dumps(observed)), json.loads(json.dumps(baseline))
@@ -8793,6 +8805,14 @@ def _conditional_incremental_unit_oracle():
             receipts[key]["stages"]["membership_append_calls"] = sum(
                 any(membership["members"] for membership in scope["cluster_memberships"])
                 for scope in item["replace_scopes"])
+            # Hand-counted producer operations: one scope or mutation per
+            # receipt, two before owners, and the listed fresh owner counts.
+            stages = receipts[key]["stages"]
+            stages["semantic_delete_calls"] = stages["membership_delete_calls"] = 1
+            stages["semantic_delete_commits"] = (2 if key == "before" else 1 if key == "delta"
+                else {"append": 3, "clear_surface": 1, "membership_replace": 2, "replace": 2, "tombstone": 1}[kind])
+            stages["membership_delete_commits"] = int(
+                kind == "membership_replace" or kind == "clear_surface" and key == "delta")
         outputs.append({"case_id": kind, "fresh": golden_state(fresh), "before": golden_state(before),
             "incremental": golden_state(fresh), "receipts": receipts})
     return {"schema_version": 1, "cases": cases}, {"schema_version": 1, "cases": outputs}
@@ -8907,7 +8927,7 @@ def test_conditional_incremental_replay_compares_payload_membership_and_empty_st
                 case[batch]["model_contract"][field] = value
         with pytest.raises(ValueError, match="model|dimension"):
             cp.incremental_rows(output, bad_plan)
-    for vector in ([True, 0.], [1e39, 0.], [0., 0.], [2., 0.], [1.]):
+    for vector in ([True, 0.], [1e39, 0.], [10**400, 0.], [0., 0.], [2., 0.], [1.]):
         bad_plan = json.loads(json.dumps(plan))
         bad_plan["cases"][0]["before"]["replace_scopes"][0]["embeddings"][0]["vector"] = vector
         with pytest.raises(ValueError, match="vector"):
@@ -8920,6 +8940,10 @@ def test_conditional_incremental_replay_compares_payload_membership_and_empty_st
     wrong_dimension["cases"][0]["incremental"]["semantic"]["rows"][0]["vector"] = [1.]
     with pytest.raises(ValueError, match="dimension"):
         cp.incremental_rows(wrong_dimension, plan)
+    huge_raw = json.loads(json.dumps(output))
+    huge_raw["cases"][0]["incremental"]["semantic"]["rows"][0]["vector"] = [10**400, 0.]
+    with pytest.raises(ValueError, match="finite full vector"):
+        cp.incremental_rows(huge_raw, plan)
     bundle = _conditional_context_unit_bundle(plan, output)
     assert cp.validate_results(bundle, "incremental_rows") == bundle
     for field, value in (("schema_version", 2.0), ("exit_code", False), ("exit_code", 0.0)):
@@ -8968,6 +8992,11 @@ def test_conditional_incremental_replay_compares_payload_membership_and_empty_st
         lambda context: context.update(uv_lock_sha256="d" * 64),
         lambda context: context.update(inputs=cp.artifact(b"{}")),
         lambda context: context.update(records=cp.artifact(cp.canonical([]))),
+        lambda context: context.update(records=cp.artifact(cp.canonical([{"captures": []}]))),
+        lambda context: context["build"].update(stdout=cp.artifact(b"[]")),
+        lambda context: context["build"].update(stdout=cp.artifact(b'{"reason":"compiler-artifact","target":[]}')),
+        lambda context: context["environment"].update(python_version=3),
+        lambda context: context["environment"].update(relevant=[]),
     ):
         mutant = json.loads(json.dumps(bundle))
         mutate(mutant["execution_context"])
@@ -8995,6 +9024,18 @@ def test_conditional_incremental_replay_compares_payload_membership_and_empty_st
             with pytest.raises(ValueError):
                 cp.incremental_rows(output, bad_plan)
     receipt = output["cases"][0]["receipts"]["before"]
+    for case in output["cases"]:
+        for batch in ("before", "fresh", "delta"):
+            for field in ("semantic_delete_calls", "semantic_delete_commits",
+                          "membership_delete_calls", "membership_delete_commits"):
+                for difference in (-1, 1):
+                    if case["receipts"][batch]["stages"][field] + difference < 0:
+                        continue
+                    mutant = json.loads(json.dumps(output))
+                    changed = next(item for item in mutant["cases"] if item["case_id"] == case["case_id"])
+                    changed["receipts"][batch]["stages"][field] += difference
+                    with pytest.raises(ValueError, match="delete counts"):
+                        cp.incremental_rows(mutant, plan)
     for field, value in (("windows", 0), ("windows", 2), ("semantic_append_calls", 0),
                          ("semantic_append_calls", 2), ("membership_append_calls", 1)):
         mutant = json.loads(json.dumps(output))

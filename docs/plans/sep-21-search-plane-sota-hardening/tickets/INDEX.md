@@ -28,7 +28,7 @@ aggregate and handoff consumers; duplicate keys and non-finite values are
 refused before schemas. Locked owner regression passed 163 cases and one
 fixture manifest publication passed; neither is final-source qualification.
 Bounded portable-proof execution and producer cleanup are now repaired with
-69 locked owner cases and 87 caller cases. The follow-up direct-exit protocol
+70 locked owner cases and 87 caller cases. The follow-up direct-exit protocol
 keeps group identity unreaped until cleanup, including closed-output background
 descendants; earlier 47/60 counts are historical. Actual toolchain execution
 identity binding and per-owner semantic delete batching remain open in the

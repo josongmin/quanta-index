@@ -75,9 +75,15 @@ def decode(value: object) -> bytes:
     return payload
 
 
+def finite_number(value: object, bound: float = 1.7976931348623157e308) -> bool:
+    # Bound arbitrary JSON integers before math.isfinite converts them to
+    # f64; otherwise malformed evidence can raise an uncaught OverflowError.
+    return type(value) in (int, float) and abs(value) <= bound and math.isfinite(value)
+
+
 def vector(value: object, where: str) -> list[float]:
     if not isinstance(value, list) or len(value) != 256 or any(
-        type(item) not in (int, float) or not math.isfinite(item) or abs(item) > 2
+        not finite_number(item, 2)
         for item in value
     ):
         raise ValueError(f"{where} must contain all 256 finite components")
@@ -118,12 +124,12 @@ def model_rows(observed: object, baseline: object, inputs: object) -> tuple[list
     triangle = baseline["pairwise_cosine_upper"]
     if not isinstance(triangle, list) or len(triangle) != len(inputs) or any(
         not isinstance(row, list) or len(row) != len(inputs) - index - 1
-        or any(type(value) not in (int, float) or not math.isfinite(value) for value in row)
+        or any(not finite_number(value) for value in row)
         for index, row in enumerate(triangle)
     ):
         raise ValueError("reference pairwise metadata must be a complete finite numeric triangle")
     if not isinstance(baseline["norms"], list) or len(baseline["norms"]) != len(norms) \
-        or any(type(actual) not in (int, float) or not math.isfinite(actual) or abs(actual - expected) > 1e-6
+        or any(not finite_number(actual) or abs(actual - expected) > 1e-6
                for actual, expected in zip(baseline["norms"], norms, strict=True)) \
         or baseline["pairwise_cosine_upper"] != [[reference.cosine(left, right) for right in normalized[i+1:]]
                                                 for i, left in enumerate(normalized)]:
@@ -167,7 +173,7 @@ def table(value: object, name: str) -> dict:
             elif key != "vector" and not (isinstance(cell, str) or key in optional_fields and cell is None):
                 raise ValueError("logical text cell is not canonical")
         if name == "semantic" and (not isinstance(row["vector"], list) or not row["vector"] or any(
-            type(value) not in (int, float) or not math.isfinite(value) for value in row["vector"]
+            not finite_number(value, 3.4028234663852886e38) for value in row["vector"]
         )):
             raise ValueError("raw semantic row lacks finite full vector")
     # The Rust exporter sorts using serde_json's canonical ASCII map order.
@@ -196,7 +202,7 @@ def model_contract(value: object) -> dict:
 
 def contract_vector(vector: object, contract: dict) -> list[float]:
     if not isinstance(vector, list) or len(vector) != contract["dimension"] or any(
-            type(value) not in (int, float) or not math.isfinite(value) or abs(value) > 3.4028234663852886e38
+            not finite_number(value, 3.4028234663852886e38)
             for value in vector
         ):
         raise ValueError("incremental vector differs from model dimension or finite f32 encoding")
@@ -306,6 +312,8 @@ def incremental_rows(observed: object, plan: object) -> tuple[list[dict], int]:
             raise ValueError("incremental case substitution")
         delta = case["delta"]
         fresh, before = case["fresh"], case["before"]
+        if any(not isinstance(batch, dict) for batch in (fresh, before, delta)):
+            raise ValueError("incremental batches must be objects")
         if any(type(batch.get("generation")) is not int or not 0 <= batch["generation"] < 2**64
                for batch in (fresh, before, delta)) \
             or type(delta.get("base_generation")) is not int or not 0 <= delta["base_generation"] < 2**64:
@@ -355,6 +363,18 @@ def incremental_rows(observed: object, plan: object) -> tuple[list[dict], int]:
                 or stages["semantic_append_calls"] != windows \
                 or not membership_scopes <= stages["membership_append_calls"] <= membership_groups:
                 raise ValueError("ingest stage execution counts cannot produce the bound batch")
+            mutations = len(batch["clear_surfaces"]) + len(batch["tombstone_scopes"])
+            cluster_groups = sum(len({owner(row) for row in scope["embeddings"]
+                                      if row["corpus_kind"] == "ClusterCard"})
+                                 for scope in batch["replace_scopes"])
+            cluster_mutations = len(batch["clear_surfaces"]) + sum(
+                scope["semantic_scope"]["corpus_kind"] == "ClusterCard"
+                for scope in batch["tombstone_scopes"])
+            if stages["semantic_delete_calls"] != scopes + mutations \
+                or stages["membership_delete_calls"] != scopes + mutations \
+                or stages["semantic_delete_commits"] != owner_groups + mutations \
+                or stages["membership_delete_commits"] != cluster_groups + cluster_mutations:
+                raise ValueError("ingest delete counts differ from bound owner/mutation execution")
             durations = exact(stages["durations"], {"total", "prepare", "promotion", "clear_surfaces", "stream", "semantic_delete",
                 "membership_delete", "semantic_append", "membership_append", "tombstones", "seal", "embedding"}, "ingest stage durations")
             if durations["embedding"] is not None or any(type(value) is not int or not 0 <= value < 2**64
@@ -421,6 +441,13 @@ def validate_results(value: object, kind: str, *, verify_source: bool = False) -
         or sha(decode(context["semble_lockfile"])) != identity["dependency_sha256"]:
         raise ValueError("conditional corpus/dependency identity substitution")
     records = load(decode(context["records"]))
+    if not isinstance(records, list) or not records or any(
+        not isinstance(record, dict) or not isinstance(record.get("captures"), dict) or not record["captures"]
+        or any(not isinstance(capture, dict) or any(not isinstance(capture.get(key), str) or not capture[key]
+               for key in ("system", "model", "model_revision")) for capture in record["captures"].values())
+        for record in records
+    ):
+        raise ValueError("conditional frozen records lack typed capture/model identities")
     model_identities = sorted(set((capture["system"], capture["model"], capture["model_revision"])
         for record in records for capture in record["captures"].values()))
     if not model_identities or sha(canonical(model_identities)) != identity["model_sha256"]:
@@ -436,6 +463,10 @@ def validate_results(value: object, kind: str, *, verify_source: bool = False) -
         or type(build["exit_code"]) is not int or build["exit_code"] != 0:
         raise ValueError("conditional build recipe differs")
     build_events = [load(line) for line in decode(build["stdout"]).splitlines() if line.strip()]
+    if any(not isinstance(event, dict) or not isinstance(event.get("reason"), str)
+           or event["reason"] == "compiler-artifact" and not isinstance(event.get("target"), dict)
+           for event in build_events):
+        raise ValueError("conditional build events must be typed objects")
     decode(build["stderr"])
     executables = [event["executable"] for event in build_events if event.get("reason") == "compiler-artifact"
                    and event.get("target", {}).get("name") == binary and event.get("executable")]
@@ -451,7 +482,11 @@ def validate_results(value: object, kind: str, *, verify_source: bool = False) -
     if decode(run["stdout"]) != decode(context["observed"]):
         raise ValueError("conditional raw output differs from execution transcript")
     decode(run["stderr"])
-    if not isinstance(context["environment"], dict) or context["environment"].get("python_version", "").split(".")[:2] != ["3", "13"]:
+    environment = context["environment"]
+    if not isinstance(environment, dict) or not isinstance(environment.get("python_version"), str) \
+        or environment["python_version"].split(".")[:2] != ["3", "13"] \
+        or not isinstance(environment.get("relevant"), dict) \
+        or any(not isinstance(key, str) or not isinstance(value, str) for key, value in environment["relevant"].items()):
         raise ValueError("conditional producer requires standard Python 3.13")
     source_root = Path(build["argv"][0]).parent.parent
     command_identity(build, context, source_root)

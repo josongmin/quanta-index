@@ -97,6 +97,8 @@ also terminated on normal, nonzero and signalled child exit. Missing/malformed
 records or an unproved guard termination cannot establish completion.
 External/ignored SIGCHLD handlers are refused before spawning: the executor
 must own direct-child reaping and keep the group leader's PID pinned.
+Both pipe watchers use the OS default selector rather than a fixed-fd-range
+`select()` implementation, including high-numbered descriptors.
 Pipe-drain/reap failure remains an explicit
 `incomplete cleanup`, never completed evidence. This is not sandbox containment
 of an arbitrary subprocess that deliberately escapes its owned group.
