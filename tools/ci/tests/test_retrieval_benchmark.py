@@ -3291,6 +3291,42 @@ def _parity_results(command, status="pass", failed=0):
     }
 
 
+def _bound_conditional_results(command, kind, *, matches=True):
+    identity = {
+        "source_revision": "a" * 40,
+        "repository_commit": "b" * 40,
+        "model_sha256": "c" * 64,
+        "dependency_sha256": "d" * 64,
+    }
+    if kind == "model_vectors":
+        raw = {"kind": kind, "rows": [{
+            "case_id": "case-1", "reference_vector": [0.5, -0.25],
+            "observed_vector": [0.5, -0.25] if matches else [0.5, -0.2],
+        }]}
+    else:
+        raw = {"kind": kind, "rows": [{
+            "case_id": "case-1", "fresh_row_ids": ["row-1"],
+            "incremental_row_ids": ["row-1"] if matches else ["row-2"],
+        }]}
+    return {
+        "schema_version": 1,
+        "command": command,
+        "status": "pass" if matches else "fail",
+        "selected": 1, "executed": 1,
+        "passed": int(matches), "failed": int(not matches),
+        "identity": identity,
+        "raw_proof": raw,
+        "execution_receipt": {
+            "schema_version": 1,
+            "command": command,
+            "exit_code": 0,
+            **identity,
+            "runner_binary_sha256": "e" * 64,
+            "raw_sha256": ev.digest(ev.canonical(raw)),
+        },
+    }
+
+
 def _full_receipts(commit, binary_digest):
     py_cmd = "python3 -m pytest tools/ci/tests/test_retrieval_benchmark.py -q"
     rs_cmd = (
@@ -5216,12 +5252,53 @@ def test_verdict_t15_t16_conditionals(tmp_path):
     verdict = _stage_verdict(st)
     assert "T15" in verdict["missing_t_ids"]
     assert verdict["failure_class"] == "model"
-    parity = {"model_parity_results": _parity_results("parity-cmd")}
+    with pytest.raises(pairrun.RunError, match="must hold exactly"):
+        _pair_stage(
+            tmp_path / "summary-only", claims={"same_model": True},
+            receipts={"model_parity_results": _parity_results("parity-cmd")},
+        )
+    parity_record = _bound_conditional_results("parity-cmd", "model_vectors")
+    assert pairrun._validate_parity_results_shape(
+        parity_record, "model parity", "model_vectors"
+    ) == parity_record
+    pairrun._require_conditional_identity(parity_record, **parity_record["identity"])
+    for key, forged_value in (
+        ("source_revision", "0" * 40),
+        ("repository_commit", "0" * 40),
+        ("model_sha256", "0" * 64),
+        ("dependency_sha256", "0" * 64),
+    ):
+        expected = dict(parity_record["identity"], **{key: forged_value})
+        with pytest.raises(pairrun.RunError, match="frozen source/model/dependency"):
+            pairrun._require_conditional_identity(parity_record, **expected)
+    for mutate, match in (
+        (lambda row: row.pop("raw_proof"), "must hold exactly"),
+        (lambda row: row["execution_receipt"].update(raw_sha256="0" * 64), "receipt does not bind"),
+        (lambda row: row["identity"].update(model_sha256="0" * 64), "receipt does not bind"),
+        (lambda row: row.update(passed=0), "summary differs from raw"),
+    ):
+        forged = json.loads(json.dumps(parity_record))
+        mutate(forged)
+        with pytest.raises(pairrun.RunError, match=match):
+            pairrun._validate_parity_results_shape(forged, "model parity", "model_vectors")
+    parity = {"model_parity_results": parity_record}
     st = _pair_stage(tmp_path / "parity", claims={"same_model": True}, receipts=parity)
     verdict = _stage_verdict(st)
     assert "T15" in verdict["missing_t_ids"]
     assert verdict["failure_class"] == "model"
-    bad = {"incremental_results": _parity_results("incr-cmd", status="fail", failed=4)}
+    incremental_record = _bound_conditional_results(
+        "incr-cmd", "incremental_rows", matches=False
+    )
+    assert pairrun._validate_parity_results_shape(
+        incremental_record, "incremental", "incremental_rows"
+    ) == incremental_record
+    duplicate_rows = json.loads(json.dumps(incremental_record))
+    duplicate_rows["raw_proof"]["rows"][0]["fresh_row_ids"] = ["row-1", "row-1"]
+    with pytest.raises(pairrun.RunError, match="sorted unique row IDs"):
+        pairrun._validate_parity_results_shape(
+            duplicate_rows, "incremental", "incremental_rows"
+        )
+    bad = {"incremental_results": incremental_record}
     st = _pair_stage(tmp_path / "incr", claims={"incremental": True}, receipts=bad)
     verdict = _stage_verdict(st)
     assert "T16" in verdict["missing_t_ids"]

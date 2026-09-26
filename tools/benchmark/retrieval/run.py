@@ -6877,9 +6877,30 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             ref = f"{key}_results"
             if ref not in resolved:
                 raise RunError("no artifact")
-            _validate_parity_results_shape(read_json(resolved[ref]), f"{key} results")
+            conditional = _validate_parity_results_shape(
+                read_json(resolved[ref]), f"{key} results",
+                "model_vectors" if key == "model_parity" else "incremental_rows",
+            )
             if sha_file(resolved[ref]) != evidence[key]["test_result_digest"]:
                 raise RunError("manifest digest mismatch")
+            model_rows = [
+                (entry["system"], capture.get("model"), capture.get("model_revision"))
+                for entry in validated.values()
+                for capture in entry["run"].get("captures", {}).values()
+            ]
+            if not model_rows or any(
+                not isinstance(value, str) or not value
+                for row in model_rows for value in row
+            ):
+                raise RunError(f"{tid} lacks frozen model identity")
+            suite_identity = read_json(resolved["suite"])
+            _require_conditional_identity(
+                conditional,
+                source_revision=provenance_claims["quanta"]["source_sha"],
+                repository_commit=suite_identity["repository_commit"],
+                model_sha256=digest(canonical(sorted(set(model_rows)))),
+                dependency_sha256=sha_file(resolved["semble_lockfile"]),
+            )
             # A self-reported status/count tuple and its digest are not
             # independent evidence for model equality or incremental state.
             # Until raw vectors/row-sets plus execution-context binding are
@@ -7945,10 +7966,31 @@ def _validate_sdk_results_shape(payload: object, where: str) -> dict:
     return results
 
 
-def _validate_parity_results_shape(payload: object, where: str) -> dict:
+def _require_conditional_identity(
+    results: dict, *, source_revision: str, repository_commit: str,
+    model_sha256: str, dependency_sha256: str,
+) -> None:
+    identity = results["identity"]
+    if identity != {
+        "source_revision": source_revision,
+        "repository_commit": repository_commit,
+        "model_sha256": model_sha256,
+        "dependency_sha256": dependency_sha256,
+    }:
+        raise RunError("conditional raw proof identity differs from frozen source/model/dependency")
+
+
+def _validate_parity_results_shape(payload: object, where: str, raw_kind: str) -> dict:
     results = _exact_keys(
-        payload, {"command", "status", "selected", "executed", "passed", "failed"}, where
+        payload,
+        {
+            "schema_version", "command", "status", "selected", "executed", "passed",
+            "failed", "identity", "raw_proof", "execution_receipt",
+        },
+        where,
     )
+    if type(results["schema_version"]) is not int or results["schema_version"] != 1:
+        raise RunError(f"{where}.schema_version must be 1")
     if not isinstance(results["command"], str) or not results["command"]:
         raise RunError(f"{where}.command must be a nonempty string")
     if results["status"] not in ("pass", "fail"):
@@ -7957,6 +7999,82 @@ def _validate_parity_results_shape(payload: object, where: str) -> dict:
         value = results[key]
         if type(value) is not int or isinstance(value, bool) or value < 0:
             raise RunError(f"{where}.{key} must be an integer >= 0")
+    identity = _exact_keys(
+        results["identity"],
+        {"source_revision", "repository_commit", "model_sha256", "dependency_sha256"},
+        f"{where}.identity",
+    )
+    for key, length in (("source_revision", 40), ("repository_commit", 40),
+                        ("model_sha256", 64), ("dependency_sha256", 64)):
+        if not _is_hex(identity[key], length):
+            raise RunError(f"{where}.identity.{key} has invalid digest")
+    raw = _exact_keys(results["raw_proof"], {"kind", "rows"}, f"{where}.raw_proof")
+    if raw["kind"] != raw_kind or not isinstance(raw["rows"], list) or not raw["rows"]:
+        raise RunError(f"{where} lacks raw {raw_kind} rows")
+    cases = []
+    passed = 0
+    for index, value in enumerate(raw["rows"]):
+        row_where = f"{where}.raw_proof.rows[{index}]"
+        if raw_kind == "model_vectors":
+            row = _exact_keys(
+                value, {"case_id", "reference_vector", "observed_vector"}, row_where
+            )
+            reference = row["reference_vector"]
+            observed = row["observed_vector"]
+            if (
+                not isinstance(reference, list) or not reference or len(reference) > 4096
+                or not isinstance(observed, list) or len(reference) != len(observed)
+                or any(type(component) not in (int, float)
+                       or abs(component) > 1_000_000 or not math.isfinite(component)
+                       for vector in (reference, observed) for component in vector)
+            ):
+                raise RunError(f"{row_where} has invalid raw vectors")
+            passed += reference == observed
+        elif raw_kind == "incremental_rows":
+            row = _exact_keys(
+                value, {"case_id", "fresh_row_ids", "incremental_row_ids"}, row_where
+            )
+            for key in ("fresh_row_ids", "incremental_row_ids"):
+                ids = row[key]
+                if (
+                    not isinstance(ids, list) or not ids
+                    or any(not isinstance(item, str) or not item for item in ids)
+                    or ids != sorted(set(ids))
+                ):
+                    raise RunError(f"{row_where}.{key} must be sorted unique row IDs")
+            passed += row["fresh_row_ids"] == row["incremental_row_ids"]
+        else:
+            raise RunError(f"{where} has unknown raw proof kind")
+        case_id = row["case_id"]
+        if not isinstance(case_id, str) or not case_id:
+            raise RunError(f"{row_where}.case_id must be nonempty")
+        cases.append(case_id)
+    if cases != sorted(set(cases)):
+        raise RunError(f"{where} raw case IDs must be sorted and unique")
+    if (
+        results["selected"] != len(cases) or results["executed"] != len(cases)
+        or results["passed"] != passed or results["failed"] != len(cases) - passed
+        or (results["status"] == "pass") != (results["failed"] == 0)
+    ):
+        raise RunError(f"{where} summary differs from raw {raw_kind} rows")
+    receipt = _exact_keys(
+        results["execution_receipt"],
+        {
+            "schema_version", "command", "exit_code", "source_revision",
+            "repository_commit", "model_sha256", "dependency_sha256",
+            "runner_binary_sha256", "raw_sha256",
+        },
+        f"{where}.execution_receipt",
+    )
+    if (
+        type(receipt["schema_version"]) is not int or receipt["schema_version"] != 1
+        or receipt["command"] != results["command"]
+        or type(receipt["exit_code"]) is not int or receipt["exit_code"] != 0
+        or any(receipt[key] != identity[key] for key in identity)
+        or not _is_hex(receipt["runner_binary_sha256"], 64)
+        or receipt["raw_sha256"] != digest(canonical(raw))
+    ):
+        raise RunError(f"{where} execution receipt does not bind raw proof and identity")
     return results
 
 
@@ -8359,14 +8477,16 @@ def build_run_manifest(
         }
     if "model_parity_results" in frozen:
         _validate_parity_results_shape(
-            read_json(Path(frozen["model_parity_results"])), "model parity results"
+            read_json(Path(frozen["model_parity_results"])),
+            "model parity results", "model_vectors",
         )
         evidence["model_parity"] = {
             "test_result_digest": sha_file(Path(frozen["model_parity_results"]))
         }
     if "incremental_results" in frozen:
         _validate_parity_results_shape(
-            read_json(Path(frozen["incremental_results"])), "incremental results"
+            read_json(Path(frozen["incremental_results"])),
+            "incremental results", "incremental_rows",
         )
         evidence["incremental"] = {
             "test_result_digest": sha_file(Path(frozen["incremental_results"]))

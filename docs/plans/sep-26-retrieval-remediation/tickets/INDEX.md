@@ -56,6 +56,7 @@ Rust-heavy 검증과 성능 측정은 경쟁 writer/build가 없는 구간에 �
 | RBR-00 | `VERIFIED` — A2 portable SDK proof fixture를 runner v5 span accounting 형태로 정렬; `test_portable_proof.py` 11/11 (공유 dirty local) | `NOT_RUN` — 고정 소스 portable receipt와 repository contract proof |
 | RBR-04 | `VERIFIED` — A1 Go 직접 type 분류, 중첩 함수·제네릭, cursor 경계, producer defect 전파; A3 unsupported 파일별 path/SHA/reason 수집·phase metrics 기록, supported parse 실패 중단; retrieval-bench lib 83/83 및 phase validator 집중 테스트 1/1 (공유 dirty local) | `NOT_RUN` — 고정 소스 전체 inventory·SDK·clean receipt와 외부 coverage admission |
 | RBR-06 | `VERIFIED` — A4 후보별 indexed/SDK/scored span bytes·expansion ratio, rank-only Hit@1·exact-index-span Recall@10와 context bytes/tokens 진단; 손계산 fixture에서 10바이트 exact와 확장 context의 rank score 동일·비용 차이 확인 (공유 dirty local) | `NOT_RUN` — 고정 소스 SDK/merge receipt와 외부 fixed chunking matrix |
+| RBR-12 | `VERIFIED` — A5 development/holdout cross-suite file·definition·query-family 누수 거부 및 T15/T16 raw vector·row-set·실행 receipt·source/model/dependency identity 검증; summary-only 조건부 claim 거부 (공유 dirty local) | `NOT_RUN` — 독립 T15/T16 양성 실행 proof, clean-source receipt, 최종 admitted pair·quality·performance |
 
 ### 2026-09-26 2차 라운드 상태 (역사적 기록; 현 상태 아님)
 
