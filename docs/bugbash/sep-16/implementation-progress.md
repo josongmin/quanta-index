@@ -1,5 +1,8 @@
 # 구조 개선 구현 ledger
 
+> Archive classification: historical Sep 16 record. Current authority is defined by [SEP-27-001](../../adr/SEP-27-001-documentation-authority-and-historical-record-custody.md) and indexed in [the documentation archive](../../ARCHIVE-INDEX.md).
+
+
 > Historical execution ledger for the frozen 2026-09-16 base. Counts, source
 > state, and status below are not current proof; use the
 > [SEP-21 evidence index](../../plans/sep-21-search-plane-sota-hardening/tickets/EXECUTION-PROGRESS.md).

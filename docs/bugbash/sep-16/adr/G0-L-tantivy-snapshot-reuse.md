@@ -1,5 +1,8 @@
 # G0-L — Tantivy snapshot reuse
 
+> Archive classification: historical campaign-local gate decision. It is preserved as source-bound evidence under [SEP-27-001](../../../adr/SEP-27-001-documentation-authority-and-historical-record-custody.md) and [the documentation archive](../../../ARCHIVE-INDEX.md).
+
+
 **Status: PASS.** Lexical generations may be materialized by hard-linking a base
 generation's files instead of byte-copying the directory.
 

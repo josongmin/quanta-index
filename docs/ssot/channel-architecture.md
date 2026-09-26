@@ -1,5 +1,8 @@
 # quanta-index Channel Architecture — Historical Pre-De-channelize SSOT
 
+> Archive classification: historical pre-cutover SSOT. Current authority and custody are defined by [SEP-27-001](../adr/SEP-27-001-documentation-authority-and-historical-record-custody.md) and [the documentation archive](../ARCHIVE-INDEX.md).
+
+
 Status: `Historical design doc. Not current-tree authority after the 2026-05-27 de-channelize cutover.`
 
 Current tree truth:

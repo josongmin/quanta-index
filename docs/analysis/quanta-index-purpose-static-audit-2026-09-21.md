@@ -1,5 +1,8 @@
 # quanta-index 목적 적합성 정적 감사
 
+> Archive classification: historical static audit at the source recorded below. See [SEP-27-001](../adr/SEP-27-001-documentation-authority-and-historical-record-custody.md) and [the documentation archive](../ARCHIVE-INDEX.md). Revalidate every finding against current source.
+
+
 - 감사일: 2026-09-21
 - 감사 방식: 정적 소스/계약/레시피/문서/기존 아티팩트 감사만 수행
 - 기준 체크리스트: `docs/analysis/quanta-index-purpose-validation-checklist.md`

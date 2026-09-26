@@ -27,6 +27,10 @@ SEP-26 retrieval accepted set:
 - [Evidence custody and qualification boundaries](SEP-26-003-retrieval-evidence-custody-and-qualification.md)
 - [Decision registry](SEP-26-DECISION-REGISTRY.md)
 
+Documentation governance:
+
+- [Documentation authority and historical record custody](SEP-27-001-documentation-authority-and-historical-record-custody.md)
+
 May–Jun 2026 accepted set:
 
 - [SDK ingress and public surface boundary](MAY-27-002-sdk-ingress-and-public-surface-boundary.md)
@@ -37,4 +41,6 @@ May–Jun 2026 accepted set:
 - [Decision registry](MAY-JUN-2026-DECISION-REGISTRY.md)
 
 Historical implementation packets absorbed by these ADRs are indexed in
-[the completed-plan archive](../plans/ARCHIVE-INDEX.md).
+[the completed-plan archive](../plans/ARCHIVE-INDEX.md). Historical audits,
+bugbash records, old SSOTs, and receipts outside plan packets are indexed in
+[the documentation archive](../ARCHIVE-INDEX.md).

@@ -1,5 +1,10 @@
 # SEP-21 Search Plane SOTA Hardening — Final Static Audit
 
+> Archive classification: historical pre-implementation audit. Current status
+> is owned by [INDEX.md](INDEX.md) and
+> [CURRENT-RESIDUAL-2026-09-26.md](CURRENT-RESIDUAL-2026-09-26.md); custody
+> follows [SEP-27-001](../../../adr/SEP-27-001-documentation-authority-and-historical-record-custody.md).
+
 Audit date: 2026-09-21
 
 Audit type: static source and plan review only

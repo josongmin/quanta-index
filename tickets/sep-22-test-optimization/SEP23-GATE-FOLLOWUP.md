@@ -1,5 +1,8 @@
 # Sep 23 gate follow-up — shared checkout
 
+> Archive classification: historical Sep 23 receipt. Current status is owned by [SEP25-CURRENT-CLOSEOUT.md](SEP25-CURRENT-CLOSEOUT.md); custody follows [SEP-27-001](../../docs/adr/SEP-27-001-documentation-authority-and-historical-record-custody.md) and [the documentation archive](../../docs/ARCHIVE-INDEX.md).
+
+
 Status: `historical log — latest complete code receipt b0e147a4; current state in SEP25-CURRENT-CLOSEOUT.md`
 
 Current source/evidence boundary: [SEP25-CURRENT-CLOSEOUT.md](SEP25-CURRENT-CLOSEOUT.md).

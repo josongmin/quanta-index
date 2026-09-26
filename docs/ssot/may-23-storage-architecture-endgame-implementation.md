@@ -1,6 +1,6 @@
 # quanta-index Search Plane Implementation Plan
 
-Status: `Canonical implementation plan for this repo (partially superseded — see SPA-00 note)`
+Status: `Maintained mixed-state implementation map; accepted ADRs and current source are authoritative (see SPA-00 note)`
 
 > **SPA-00 owner-model freeze note (jul-7).** Two things below are no longer
 > current-tree truth: (1) the standalone `quanta-index-control` (SQLite) crate

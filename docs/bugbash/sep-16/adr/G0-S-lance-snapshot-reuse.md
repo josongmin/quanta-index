@@ -1,5 +1,8 @@
 # G0-S — LanceDB snapshot reuse
 
+> Archive classification: historical campaign-local gate decision. It is preserved as source-bound evidence under [SEP-27-001](../../../adr/SEP-27-001-documentation-authority-and-historical-record-custody.md) and [the documentation archive](../../../ARCHIVE-INDEX.md).
+
+
 **Status: PASS**, with one alternative empirically closed off.
 
 - Decided: 2026-09-16

@@ -9,6 +9,9 @@ Completed and superseded implementation packets remain at stable paths for sourc
 architecture lives in `docs/adr`. Current capability and verification status must come from live code, checked
 inventories and fresh receipts.
 
+Historical audits, bugbash records, old SSOTs, and receipts outside completed
+plan packets are indexed in the [documentation archive](../ARCHIVE-INDEX.md).
+
 | Packet | Archived files | Final packet state | Canonical decision |
 |---|---:|---|---|
 | [May-26 indexing residue](may-26-indexing-residue-tasks/README.md) | 7 | shipped | [JUN-02-001](../adr/JUN-02-001-search-dsl-authority-and-runtime-contract.md) |
@@ -40,11 +43,11 @@ is excluded from the completed-packet total above.
 | Active packet | Historical records | Current authority |
 |---|---:|---|
 | `may-25-search-owned-semantic-derivation` | 1 landed provider ticket | [MAY-31-001](../adr/MAY-31-001-lancedb-semantic-generation-authority.md), [SEP-21-003](../adr/SEP-21-003-read-view-continuation-and-provider-policy.md), active parent packet |
-| `sep-21-search-plane-sota-hardening` | 9 historical design tickets (`S21-01..04`, `S21-06..10`) | [SEP-21 decision registry](../adr/SEP-21-DECISION-REGISTRY.md), current residual ledger |
+| `sep-21-search-plane-sota-hardening` | 11 historical records: 9 design tickets (`S21-01..04`, `S21-06..10`), final static audit, P10 source-bound follow-up | [SEP-21 decision registry](../adr/SEP-21-DECISION-REGISTRY.md), current residual ledger |
 | `sep-23-search-config-profiles` | 1 superseded SDK proposal | [SEP-21-003](../adr/SEP-21-003-read-view-continuation-and-provider-policy.md), active [Sep-24 SDK DSL draft](sep-24-sdk-dsl-rfc.md) |
-| `sep-26-bench-migration` | 1 superseded closeout receipt | [JUN-08-001](../adr/JUN-08-001-verification-hellgate-and-benchmark-separation.md), packet `CURRENT-AUDIT.md` |
+| `sep-26-bench-migration` | 2 historical records: plan audit and superseded closeout receipt | [JUN-08-001](../adr/JUN-08-001-verification-hellgate-and-benchmark-separation.md), packet `CURRENT-AUDIT.md` |
 
-Total: 12 individually archived records inside four still-active packets.
+Total: 15 individually archived records inside four still-active packets.
 
 ## Deliberately not archived
 

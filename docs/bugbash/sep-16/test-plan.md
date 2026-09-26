@@ -1,5 +1,8 @@
 # 구조 개선 테스트 계획 — owner-local / integration
 
+> Archive classification: historical Sep 16 record. Current authority is defined by [SEP-27-001](../../adr/SEP-27-001-documentation-authority-and-historical-record-custody.md) and indexed in [the documentation archive](../../ARCHIVE-INDEX.md).
+
+
 > Historical test plan for the 2026-09-16 audit source. Select current tests
 > from `tools/ci/test-authority.toml` and `Justfile`; use the
 > [SEP-21 evidence index](../../plans/sep-21-search-plane-sota-hardening/tickets/EXECUTION-PROGRESS.md)

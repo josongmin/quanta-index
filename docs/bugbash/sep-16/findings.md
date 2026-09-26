@@ -1,5 +1,8 @@
 # quanta-index 최종 bugbash findings — 2026-09-16 (4차 확정본)
 
+> Archive classification: historical Sep 16 record. Current authority is defined by [SEP-27-001](../../adr/SEP-27-001-documentation-authority-and-historical-record-custody.md) and indexed in [the documentation archive](../../ARCHIVE-INDEX.md).
+
+
 > Historical audit at the recorded source SHA. These findings are not a
 > current defect inventory. Recheck each case against current source and
 > [SEP-21 residual work](../../plans/sep-21-search-plane-sota-hardening/tickets/FINAL-RESIDUAL-EXECUTION-PLAN.md)

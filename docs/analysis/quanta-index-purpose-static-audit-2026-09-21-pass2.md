@@ -1,5 +1,8 @@
 # quanta-index 목적 적합성 2차 정적 감사
 
+> Archive classification: historical static audit at the source recorded below. See [SEP-27-001](../adr/SEP-27-001-documentation-authority-and-historical-record-custody.md) and [the documentation archive](../ARCHIVE-INDEX.md). Revalidate every finding against current source.
+
+
 - 감사일: 2026-09-21
 - 방식: 소스, 계약, 문서, CI recipe, 기존 artifact만 정적으로 검토
 - 실행하지 않은 것: 테스트, 빌드, lint, benchmark, daemon, provider 호출

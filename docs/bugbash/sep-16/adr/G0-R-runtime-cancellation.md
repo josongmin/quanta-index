@@ -1,5 +1,8 @@
 # G0-R — runtime cancellation and scheduling baseline
 
+> Archive classification: historical campaign-local gate decision. It is preserved as source-bound evidence under [SEP-27-001](../../../adr/SEP-27-001-documentation-authority-and-historical-record-custody.md) and [the documentation archive](../../../ARCHIVE-INDEX.md).
+
+
 **Status: BASELINE PINNED — hard cancellation is not available and is not
 claimed.** W5 starts from a serial, uncancellable transport; the plan's
 "cooperative deadline / flight-owned cancellation" work is confirmed as net-new

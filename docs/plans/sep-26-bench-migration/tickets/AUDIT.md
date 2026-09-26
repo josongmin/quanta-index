@@ -1,5 +1,9 @@
 # 2026-09-26 benchmark-migration plan audit
 
+> Archive classification: historical plan audit. Current implementation gaps
+> and corrections are owned by [CURRENT-AUDIT.md](CURRENT-AUDIT.md); custody
+> follows [SEP-27-001](../../../adr/SEP-27-001-documentation-authority-and-historical-record-custody.md).
+
 Audit state: **inspected clean control-plane structure VERIFIED; implementation and benchmark qualification NOT_RUN**. Source HEAD at recheck: `8d23137cad89f2118377743824b8c841899593b1`, dirty shared checkout. `Cargo.toml`, `Justfile`, `tools/benchmark/{manifest.json,manifest.py,benchctl.py}`, `crates/quanta-index-searchd-harness/{Cargo.toml,src/artifact.rs}`, `.github/workflows/correctness.yml`, `tools/ci/source_closure.py`, `tools/benchmark/retrieval/sourcegraph.py` and `tools/benchmark/agent_outcome/__main__.py` were clean tracked files at recheck. Retrieval evaluator/runner/schema files were dirty; their final semantics and proof are **not** verified here. The packet was first written at `f16bad934ec6b5b902eaf2d8633d734a0c34d37c`; `git diff --name-only f16bad93..8d23137 -- Cargo.toml Justfile tools/benchmark benchmarks .github/workflows tools/ci/source_closure.py` returned no committed path change in the audited benchmark control plane. This is a code-and-plan audit, not a completed migration or a new benchmark result.
 
 ## Findings and disposition

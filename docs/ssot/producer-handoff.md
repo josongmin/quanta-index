@@ -1,5 +1,8 @@
 # Producer Handoff — Historical Pre-De-channelize Wire Shapes
 
+> Archive classification: historical pre-cutover SSOT. Current authority and custody are defined by [SEP-27-001](../adr/SEP-27-001-documentation-authority-and-historical-record-custody.md) and [the documentation archive](../ARCHIVE-INDEX.md).
+
+
 > Status: `Historical archive. Not current-tree authority after the 2026-05-27 de-channelize cutover.`
 > Owners: producer-side lead (`semantica-codegraph-v2`), search-side lead (this repo).
 > Parent SSOT: [channel-architecture.md](channel-architecture.md) (historical parent; this doc extends its archived channel op catalogue).

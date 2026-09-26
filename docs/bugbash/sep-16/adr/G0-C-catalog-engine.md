@@ -1,5 +1,8 @@
 # G0-C — catalog storage engine
 
+> Archive classification: historical campaign-local gate decision. It is preserved as source-bound evidence under [SEP-27-001](../../../adr/SEP-27-001-documentation-authority-and-historical-record-custody.md) and [the documentation archive](../../../ARCHIVE-INDEX.md).
+
+
 **Status: PASS — `SQLite` (via `rusqlite`, bundled) is admitted for the W2
 catalog, under four conditions the evidence imposes. `redb` is rejected on
 evidence, not on preference.**

@@ -1,5 +1,8 @@
 # Duplication Audit — retained actions only (2026-09-22)
 
+> Archive classification: historical Sep 22 audit input. Use the active [TOPT ledger](../../../tickets/sep-22-test-optimization/INDEX.md), [current closeout](../../../tickets/sep-22-test-optimization/SEP25-CURRENT-CLOSEOUT.md), and [SEP-27-001](../../adr/SEP-27-001-documentation-authority-and-historical-record-custody.md).
+
+
 Audited snapshot: `23bd3d7fa7af1122f904e59f1f514935bd5ffe7e`.
 
 Scope: Rust tests under `crates/`, with source bodies and owning APIs opened at

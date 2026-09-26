@@ -1,5 +1,8 @@
 # quanta-index 구조 개선 최종안 — 2026-09-16
 
+> Archive classification: historical Sep 16 record. Current authority is defined by [SEP-27-001](../../adr/SEP-27-001-documentation-authority-and-historical-record-custody.md) and indexed in [the documentation archive](../../ARCHIVE-INDEX.md).
+
+
 > Historical design at HEAD `4914156f4191daa3e12998bdb38f2b821a057fdd`.
 > It is not the current execution plan. Use the
 > [SEP-21 residual plan](../../plans/sep-21-search-plane-sota-hardening/tickets/FINAL-RESIDUAL-EXECUTION-PLAN.md)

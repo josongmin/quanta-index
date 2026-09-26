@@ -1,5 +1,11 @@
 # P10 adversarial follow-up — 2026-09-26
 
+> Archive classification: historical source-bound owner audit. Current P10
+> status is owned by
+> [CURRENT-RESIDUAL-2026-09-26.md](CURRENT-RESIDUAL-2026-09-26.md) and
+> [EXECUTION-PROGRESS.md](EXECUTION-PROGRESS.md); custody follows
+> [SEP-27-001](../../../adr/SEP-27-001-documentation-authority-and-historical-record-custody.md).
+
 Scope: offline manifest admission, source custody, inventory and verification.
 Base: `604149ed3f6033e24a834ebaa86a596f7b8ed82d` on local `main`.
 This is a local code/test closeout, not a P10 release or operational receipt.

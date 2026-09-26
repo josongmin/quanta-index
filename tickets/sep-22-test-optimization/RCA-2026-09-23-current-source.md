@@ -1,5 +1,8 @@
 # SEP-23 current-source RCA and partial verification
 
+> Archive classification: historical Sep 23 receipt. Current status is owned by [SEP25-CURRENT-CLOSEOUT.md](SEP25-CURRENT-CLOSEOUT.md); custody follows [SEP-27-001](../../docs/adr/SEP-27-001-documentation-authority-and-historical-record-custody.md) and [the documentation archive](../../docs/ARCHIVE-INDEX.md).
+
+
 This is a **dirty-worktree, owner-local** repair record, not TOPT-00 admission,
 TOPT-08 qualification, or performance evidence. `HEAD` observed while
 recording this note was `2b54b72d2fd20c2ee24cc28124d70899892186e2`;
