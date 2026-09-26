@@ -68,6 +68,7 @@ impl SqliteCatalog {
         initialization
             .execute_batch(crate::idempotency::SCHEMA)
             .map_err(|error| engine_error("create idempotency schema", &path, &error))?;
+        crate::idempotency::verify_installed_schema(&initialization, &path)?;
         initialization
             .execute_batch(crate::sequence::SCHEMA)
             .map_err(|error| engine_error("create sequence schema", &path, &error))?;
@@ -75,6 +76,7 @@ impl SqliteCatalog {
         initialization
             .execute_batch(crate::auxiliary::SCHEMA)
             .map_err(|error| engine_error("create auxiliary schema", &path, &error))?;
+        crate::auxiliary::verify_installed_schema(&initialization, &path)?;
         initialization
             .execute_batch(crate::candidate::SCHEMA)
             .map_err(|error| engine_error("create repomap candidate schema", &path, &error))?;
@@ -140,6 +142,92 @@ mod tests {
         )?;
         if created_journal != 0 {
             return Err("failed open must roll back current journal creation".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_auxiliary_table_or_index_must_refuse_open() -> Result<(), Box<dyn Error>> {
+        for mutation in ["rows", "tracks", "index"] {
+            let root = tempfile::tempdir()?;
+            let catalog = SqliteCatalog::open(root.path(), Duration::from_millis(100))?;
+            drop(catalog);
+            let path = catalog_dir(root.path()).join(CATALOG_FILE_NAME);
+            let connection = rusqlite::Connection::open(path)?;
+            let mutation_sql = match mutation {
+                "rows" => {
+                    "DROP TABLE auxiliary_rows_v1;
+                     CREATE TABLE auxiliary_rows_v1 (
+                       domain TEXT NOT NULL, repo_id TEXT NOT NULL,
+                       revision_id TEXT NOT NULL, generation INTEGER NOT NULL,
+                       family TEXT NOT NULL, row_key BLOB NOT NULL,
+                       value BLOB NOT NULL, row_sha256 BLOB NOT NULL);"
+                }
+                "tracks" => {
+                    "DROP TABLE auxiliary_tracks_v1;
+                     CREATE TABLE auxiliary_tracks_v1 (
+                       repo_id TEXT NOT NULL, revision_id TEXT NOT NULL,
+                       track TEXT NOT NULL, value BLOB NOT NULL,
+                       row_sha256 BLOB NOT NULL);"
+                }
+                "index" => {
+                    "DROP INDEX auxiliary_rows_v1_by_generation;
+                     CREATE INDEX auxiliary_rows_v1_by_generation
+                       ON auxiliary_rows_v1 (domain);"
+                }
+                _ => return Err("unknown auxiliary fixture".into()),
+            };
+            connection.execute_batch(mutation_sql)?;
+            drop(connection);
+            if !matches!(
+                SqliteCatalog::open(root.path(), Duration::from_millis(100)),
+                Err(CoreError::Storage(message)) if message.contains("unsupported auxiliary")
+            ) {
+                return Err(format!("malformed auxiliary {mutation} schema was accepted").into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_journal_or_sequence_schema_must_refuse_open() -> Result<(), Box<dyn Error>> {
+        for (mutation, mutation_sql) in [
+            (
+                "lease",
+                "DROP TABLE mutation_lease_v1;
+                 CREATE TABLE mutation_lease_v1 (
+                   scope TEXT NOT NULL, owner TEXT NOT NULL,
+                   fence_token INTEGER NOT NULL, deadline_ms INTEGER NOT NULL,
+                   row_sha256 BLOB NOT NULL CHECK (length(row_sha256) = 32));",
+            ),
+            (
+                "sequence allocator",
+                "DROP TABLE catalog_sequence_v2;
+                 CREATE TABLE catalog_sequence_v2 (
+                   id INTEGER PRIMARY KEY CHECK (id = 1), next INTEGER,
+                   exhausted INTEGER NOT NULL,
+                   row_sha256 BLOB NOT NULL CHECK (length(row_sha256) = 32));",
+            ),
+            (
+                "event index",
+                "DROP INDEX catalog_sequence_event_v2_identity_sequence;
+                 CREATE INDEX catalog_sequence_event_v2_identity_sequence
+                   ON catalog_sequence_event_v2 (identity_digest);",
+            ),
+        ] {
+            let root = tempfile::tempdir()?;
+            let catalog = SqliteCatalog::open(root.path(), Duration::from_millis(100))?;
+            drop(catalog);
+            let path = catalog_dir(root.path()).join(CATALOG_FILE_NAME);
+            let connection = rusqlite::Connection::open(path)?;
+            connection.execute_batch(mutation_sql)?;
+            drop(connection);
+            if !matches!(
+                SqliteCatalog::open(root.path(), Duration::from_millis(100)),
+                Err(CoreError::Storage(message)) if message.contains("unsupported")
+            ) {
+                return Err(format!("malformed {mutation} schema was accepted").into());
+            }
         }
         Ok(())
     }

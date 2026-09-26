@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use quanta_index_contract::ManifestGeneration;
 use quanta_index_core::CoreError;
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, params};
 
 /// Unix-millisecond clock for catalog lease decisions (TOPT-01 / PO-3).
 ///
@@ -86,6 +86,61 @@ pub(crate) fn engine_error(action: &str, path: &Path, error: &rusqlite::Error) -
         };
     }
     storage(action, path, error)
+}
+
+/// Require installed `SQLite` objects to match this build's canonical DDL.
+///
+/// `CREATE IF NOT EXISTS` alone would silently accept an older or weakened
+/// table/index definition and change the meaning of catalog writes.
+pub(crate) fn verify_installed_schema_objects(
+    connection: &Connection,
+    path: &Path,
+    schema: &str,
+    objects: &[(&str, &str, &str)],
+) -> Result<(), CoreError> {
+    let compact = |sql: &str| sql.split_whitespace().collect::<String>();
+    for &(kind, name, label) in objects {
+        let keyword = match kind {
+            "table" => "TABLE",
+            "index" => "INDEX",
+            _ => {
+                return Err(CoreError::Storage(format!(
+                    "catalog: unsupported schema object kind {kind} for {label}"
+                )));
+            }
+        };
+        let prefix = format!("CREATE {keyword} IF NOT EXISTS {name}");
+        let expected = schema
+            .split(';')
+            .find(|statement| statement.trim_start().starts_with(&prefix))
+            .ok_or_else(|| {
+                CoreError::Storage(format!(
+                    "catalog: canonical {label} schema has no {kind} definition"
+                ))
+            })?
+            .trim()
+            .replacen(
+                &format!("CREATE {keyword} IF NOT EXISTS"),
+                &format!("CREATE {keyword}"),
+                1,
+            );
+        let installed: String = connection
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = ?1 AND name = ?2",
+                params![kind, name],
+                |row| row.get(0),
+            )
+            .map_err(|error| {
+                engine_error(&format!("read installed {label} schema"), path, &error)
+            })?;
+        if compact(&installed) != compact(&expected) {
+            return Err(CoreError::Storage(format!(
+                "catalog: {} has an unsupported {label} schema; this build has no migration reader",
+                path.display()
+            )));
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn generation_i64(generation: ManifestGeneration) -> Result<i64, CoreError> {

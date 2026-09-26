@@ -54,6 +54,29 @@ pub(crate) const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS auxiliary_rows_v1 (
          PRIMARY KEY (repo_id, revision_id, track)
      ) WITHOUT ROWID;";
 
+/// Refuse installed auxiliary tables or indexes with different key semantics.
+/// They are durable authority rows; `CREATE IF NOT EXISTS` does not upgrade a
+/// pre-existing definition.
+pub(crate) fn verify_installed_schema(
+    connection: &Connection,
+    path: &Path,
+) -> Result<(), CoreError> {
+    crate::connection::verify_installed_schema_objects(
+        connection,
+        path,
+        SCHEMA,
+        &[
+            ("table", "auxiliary_rows_v1", "auxiliary rows"),
+            (
+                "index",
+                "auxiliary_rows_v1_by_generation",
+                "auxiliary generation index",
+            ),
+            ("table", "auxiliary_tracks_v1", "auxiliary tracks"),
+        ],
+    )
+}
+
 /// The digest every row commits to: its full address and its value.
 fn row_digest(key: &AuxiliaryRowKeyV1, value: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();

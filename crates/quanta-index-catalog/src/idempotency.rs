@@ -93,6 +93,29 @@ pub(crate) const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS idempotency_v2 (
                      row_sha256 BLOB NOT NULL CHECK (length(row_sha256) = 32)
                   ) WITHOUT ROWID;";
 
+/// Refuse installed journal, lease or fence definitions with weaker key or
+/// column constraints before any startup recovery mutates their rows.
+pub(crate) fn verify_installed_schema(
+    connection: &Connection,
+    path: &Path,
+) -> Result<(), CoreError> {
+    crate::connection::verify_installed_schema_objects(
+        connection,
+        path,
+        SCHEMA,
+        &[
+            ("table", "idempotency_v2", "operation journal"),
+            (
+                "index",
+                "idempotency_v2_by_generation",
+                "journal generation index",
+            ),
+            ("table", "mutation_lease_v1", "mutation lease"),
+            ("table", "catalog_fence_v1", "fence allocator"),
+        ],
+    )
+}
+
 /// One stored journal row, as read back and verified.
 struct StoredRow {
     body_sha256: [u8; 32],
@@ -739,27 +762,6 @@ pub(crate) fn seed_fence_allocator(
     path: &Path,
     fresh_root: bool,
 ) -> Result<(), CoreError> {
-    let schema: String = connection
-        .query_row(
-            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'catalog_fence_v1'",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|error| engine_error("read installed fence schema", path, &error))?;
-    let compact = schema.split_whitespace().collect::<String>();
-    for required in [
-        "idINTEGERPRIMARYKEYCHECK(id=1)",
-        "last_fenceINTEGERNOTNULLCHECK(last_fenceBETWEEN0AND9223372036854775807)",
-        "row_sha256BLOBNOTNULLCHECK(length(row_sha256)=32)",
-        "WITHOUTROWID",
-    ] {
-        if !compact.contains(required) {
-            return Err(CoreError::Storage(format!(
-                "catalog: {} has an unsupported fence allocator schema",
-                path.display()
-            )));
-        }
-    }
     if fresh_root {
         let _seeded = connection
             .execute(

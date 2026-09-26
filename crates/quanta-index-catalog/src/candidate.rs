@@ -131,35 +131,16 @@ pub(crate) fn verify_installed_schema(
     connection: &Connection,
     path: &std::path::Path,
 ) -> Result<(), CoreError> {
-    let compact = |schema: &str| schema.split_whitespace().collect::<String>();
-    for (table, label) in [
-        ("repomap_candidate_v1", "repomap candidate"),
-        ("repomap_activation_v1", "repomap activation"),
-        ("repomap_quarantine_event_v1", "repomap quarantine"),
-    ] {
-        let expected = SCHEMA
-            .split(';')
-            .find(|statement| statement.contains(&format!("CREATE TABLE IF NOT EXISTS {table}")))
-            .ok_or_else(|| corrupt(&format!("{label} schema has no table definition")))?
-            .trim()
-            .replacen("CREATE TABLE IF NOT EXISTS", "CREATE TABLE", 1);
-        let installed: String = connection
-            .query_row(
-                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?1",
-                params![table],
-                |row| row.get(0),
-            )
-            .map_err(|error| {
-                engine_error(&format!("read installed {label} schema"), path, &error)
-            })?;
-        if compact(&installed) != compact(&expected) {
-            return Err(CoreError::Storage(format!(
-                "catalog: {} has an unsupported {label} schema; this build has no migration reader",
-                path.display()
-            )));
-        }
-    }
-    Ok(())
+    crate::connection::verify_installed_schema_objects(
+        connection,
+        path,
+        SCHEMA,
+        &[
+            ("table", "repomap_candidate_v1", "repomap candidate"),
+            ("table", "repomap_activation_v1", "repomap activation"),
+            ("table", "repomap_quarantine_event_v1", "repomap quarantine"),
+        ],
+    )
 }
 
 /// The closed candidate state set (SEP-21 S21-02 target state machine).

@@ -166,10 +166,11 @@ impl SequenceEventKindV1 {
     }
 }
 
-/// Refuse incompatible event-kind schemas before recovery.
+/// Refuse incompatible sequence schemas before recovery.
 ///
-/// The filename and table name are not migration selectors; only the exact
-/// installed event-kind schema is current.
+/// The filename and table name are not migration selectors; only this
+/// build's exact installed allocator, event, index and floor definitions
+/// are current.
 pub(crate) fn verify_installed_schema(
     connection: &Connection,
     path: &std::path::Path,
@@ -178,43 +179,21 @@ pub(crate) fn verify_installed_schema(
     if !SCHEMA.contains(&expected) {
         return Err(corrupt("sequence schema and event-kind enum disagree"));
     }
-    let installed: String = connection
-        .query_row(
-            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'catalog_sequence_event_v2'",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|error| engine_error("read installed sequence schema", path, &error))?;
-    let compact = |text: &str| text.split_whitespace().collect::<String>();
-    if !compact(&installed).contains(&compact(&expected)) {
-        return Err(CoreError::Storage(format!(
-            "catalog: {} has an unsupported event-kind schema; this build has no migration reader",
-            path.display()
-        )));
-    }
-    let floor_sql: String = connection
-        .query_row(
-            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'operation_gc_floor_v1'",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|error| engine_error("read installed GC floor schema", path, &error))?;
-    let floor_sql = compact(&floor_sql);
-    for required in [
-        "identity_digestBLOBPRIMARYKEYCHECK(length(identity_digest)=32)",
-        "invalidation_sequenceINTEGERNOTNULLUNIQUECHECK(invalidation_sequence>0)",
-        "target_commitmentBLOBNOTNULLCHECK(length(target_commitment)=32)",
-        "row_sha256BLOBNOTNULLCHECK(length(row_sha256)=32)",
-        "WITHOUTROWID",
-    ] {
-        if !floor_sql.contains(required) {
-            return Err(CoreError::Storage(format!(
-                "catalog: {} has an unsupported operation-GC-floor schema; this build has no migration reader",
-                path.display()
-            )));
-        }
-    }
-    Ok(())
+    crate::connection::verify_installed_schema_objects(
+        connection,
+        path,
+        SCHEMA,
+        &[
+            ("table", "catalog_sequence_v2", "sequence allocator"),
+            ("table", "catalog_sequence_event_v2", "event-kind"),
+            (
+                "index",
+                "catalog_sequence_event_v2_identity_sequence",
+                "sequence identity index",
+            ),
+            ("table", "operation_gc_floor_v1", "operation-GC-floor"),
+        ],
+    )
 }
 
 fn corrupt(message: &str) -> CoreError {
