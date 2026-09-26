@@ -613,7 +613,7 @@ fn source_file(path: &str, text: &str) -> SourceFile {
     let mut line_starts = vec![0];
     for (offset, byte) in bytes.iter().enumerate() {
         if *byte == b'\n' {
-            line_starts.push(offset + 1);
+            line_starts.push(offset.checked_add(1).expect("line offset overflow"));
         }
     }
     SourceFile {
@@ -647,11 +647,14 @@ fn strict_window_hand_calculated_spans_cut_mid_line() {
         vec![(0, 30, 1, 1), (30, 52, 1, 2)]
     );
     for chunk in &chunks {
-        assert!(text.is_char_boundary(chunk.start_byte as usize));
-        assert!(text.is_char_boundary(chunk.end_byte as usize));
+        let start = usize::try_from(chunk.start_byte).expect("start byte fits usize");
+        let end = usize::try_from(chunk.end_byte).expect("end byte fits usize");
+        assert!(text.is_char_boundary(start));
+        assert!(text.is_char_boundary(end));
         assert_eq!(
             chunk.text,
-            &text[chunk.start_byte as usize..chunk.end_byte as usize]
+            text.get(start..end)
+                .expect("chunk span is within UTF-8 source boundaries")
         );
     }
 }
@@ -668,7 +671,8 @@ fn strict_window_snaps_end_back_to_utf8_boundary() {
     let first = &chunks[0];
     assert_eq!(first.start_byte, 0);
     assert_eq!(first.end_byte, 35, "end snaps back to the UTF-8 boundary");
-    assert!(text.is_char_boundary(first.end_byte as usize));
+    let first_end = usize::try_from(first.end_byte).expect("end byte fits usize");
+    assert!(text.is_char_boundary(first_end));
     assert_eq!(first.end_line, 2, "byte 34 sits on line 2");
 }
 
@@ -715,17 +719,25 @@ fn strict_and_line_aligned_diverge_with_the_same_parameters() {
         .expect("aligned");
     assert!(strict.len() >= aligned.len());
     for chunk in &aligned {
-        let end = chunk.end_byte as usize;
+        let end = usize::try_from(chunk.end_byte).expect("end byte fits usize");
+        let ends_with_newline = end
+            .checked_sub(1)
+            .and_then(|index| text.as_bytes().get(index))
+            .is_some_and(|byte| *byte == b'\n');
         assert!(
-            end == text.len() || text.as_bytes()[end - 1] == b'\n',
+            end == text.len() || ends_with_newline,
             "line-aligned ends on a line boundary"
         );
     }
     let strict_mid_line = strict
         .iter()
         .filter(|chunk| {
-            let end = chunk.end_byte as usize;
-            end < text.len() && text.as_bytes()[end - 1] != b'\n'
+            let end = usize::try_from(chunk.end_byte).expect("end byte fits usize");
+            let ends_with_newline = end
+                .checked_sub(1)
+                .and_then(|index| text.as_bytes().get(index))
+                .is_some_and(|byte| *byte == b'\n');
+            end < text.len() && !ends_with_newline
         })
         .count();
     assert!(
@@ -758,10 +770,14 @@ fn strict_window_overlap_union_is_exact_by_hand() {
     let mut overlap = 0;
     for (start, end) in &spans {
         for index in *start..*end {
-            if covered[index as usize] {
+            let index = usize::try_from(index).expect("coverage index fits usize");
+            let slot = covered
+                .get_mut(index)
+                .expect("coverage index stays within source bytes");
+            if *slot {
                 overlap += 1;
             } else {
-                covered[index as usize] = true;
+                *slot = true;
             }
         }
     }

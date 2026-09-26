@@ -639,12 +639,12 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         ("--diagnostics-out", diagnostics_out.as_ref()),
         ("--refusal-out", Some(&refusal_out)),
     ] {
-        if let Some(path) = path {
-            if !output_paths.insert(path) {
-                return Err(BenchError::Config(format!(
-                    "{label} must differ from every other output path"
-                )));
-            }
+        if let Some(path) = path
+            && !output_paths.insert(path)
+        {
+            return Err(BenchError::Config(format!(
+                "{label} must differ from every other output path"
+            )));
         }
     }
     // The query plan is a preflight contract. No corpus chunking, daemon
@@ -860,7 +860,8 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             });
             let latency = match &outcome {
                 QueryOutcome::ReturnedWindow { latency, .. } => *latency,
-                failed => {
+                failed @ (QueryOutcome::RejectedResponse { .. }
+                | QueryOutcome::SdkFailure { .. }) => {
                     let classification = failed.classification().map_err(|message| {
                         BenchError::Protocol(format!("invalid cold outcome: {message}"))
                     })?;
@@ -938,7 +939,8 @@ fn run_capture(args: &Args) -> BenchResult<()> {
                     });
                     let latency = match &outcome {
                         QueryOutcome::ReturnedWindow { latency, .. } => *latency,
-                        failed => {
+                        failed @ (QueryOutcome::RejectedResponse { .. }
+                        | QueryOutcome::SdkFailure { .. }) => {
                             let classification = failed.classification().map_err(|message| {
                                 BenchError::Protocol(format!(
                                     "invalid measurement outcome: {message}"
@@ -1392,12 +1394,30 @@ mod tests {
         let artifact: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&refusal).expect("refusal bytes"))
                 .expect("refusal JSON");
-        assert_eq!(artifact["schema_version"], 1);
-        assert_eq!(artifact["phase"], "query_plan");
-        assert_eq!(artifact["task_id"], "T01");
-        assert_eq!(artifact["error"]["code"], "RBR_QUERY_NO_INDEXABLE_TOKENS");
-        assert_eq!(artifact["original_query_sha256"], sha256_hex(b"---"));
-        assert!(artifact["execution_profile_sha256"].as_str().is_some());
+        let artifact = artifact.as_object().expect("refusal artifact is an object");
+        assert_eq!(artifact.get("schema_version").expect("schema version"), 1);
+        assert_eq!(artifact.get("phase").expect("phase"), "query_plan");
+        assert_eq!(artifact.get("task_id").expect("task id"), "T01");
+        let error = artifact
+            .get("error")
+            .and_then(serde_json::Value::as_object)
+            .expect("typed refusal error");
+        assert_eq!(
+            error.get("code").expect("error code"),
+            "RBR_QUERY_NO_INDEXABLE_TOKENS"
+        );
+        assert_eq!(
+            artifact
+                .get("original_query_sha256")
+                .expect("original query digest"),
+            &sha256_hex(b"---")
+        );
+        assert!(
+            artifact
+                .get("execution_profile_sha256")
+                .and_then(serde_json::Value::as_str)
+                .is_some()
+        );
 
         assert!(plan_query_pack(&args, &pack, &refusal).is_err());
     }

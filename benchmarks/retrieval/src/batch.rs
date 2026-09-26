@@ -186,10 +186,12 @@ fn semantic_scope(chunk: &Chunk) -> BenchResult<SemanticSourceReplaceScopeV1> {
     })
 }
 
-/// Assemble the publishable batch. Every file with content is published in
-/// exactly one combined replacement carrying its chunks **and** its symbols
-/// (RBR-04); a file with neither chunks nor symbols is reported in
-/// `skipped_empty`, and a symbol-only file still gets its scope.
+/// Assemble the publishable batch.
+///
+/// Every file with content is published in exactly one combined replacement
+/// carrying its chunks **and** its symbols (RBR-04); a file with neither
+/// chunks nor symbols is reported in `skipped_empty`, and a symbol-only file
+/// still gets its scope.
 pub fn assemble_batch(
     identity: &BatchIdentity,
     chunks: &BTreeMap<String, Vec<Chunk>>,
@@ -205,8 +207,8 @@ pub fn assemble_batch(
     let mut paths: BTreeSet<&String> = chunks.keys().collect();
     paths.extend(symbols.keys());
     for path in paths {
-        let file_chunks = chunks.get(path).map(Vec::as_slice).unwrap_or(&[]);
-        let file_symbols = symbols.get(path).map(Vec::as_slice).unwrap_or(&[]);
+        let file_chunks: &[Chunk] = chunks.get(path).map_or(&[], Vec::as_slice);
+        let file_symbols: &[SymbolRecord] = symbols.get(path).map_or(&[], Vec::as_slice);
         if file_chunks.is_empty() && file_symbols.is_empty() {
             report.skipped_empty.push(path.clone());
             continue;
@@ -357,8 +359,9 @@ mod tests {
         assert!(report.symbol_only_scopes.is_empty());
         let scopes = batch.replace_scopes();
         assert_eq!(scopes.len(), 1, "one combined replacement per file");
-        assert_eq!(scopes[0].chunks.len(), 1);
-        assert_eq!(scopes[0].symbols.len(), 2);
+        let scope = scopes.first().expect("combined replacement");
+        assert_eq!(scope.chunks.len(), 1);
+        assert_eq!(scope.symbols.len(), 2);
     }
 
     #[test]
@@ -380,16 +383,25 @@ mod tests {
         let (base, _) = assemble_batch(&identity, &chunks, &symbols).expect("batch");
         let (edited, _) = assemble_batch(&identity, &chunks, &edited_symbols).expect("batch");
         // Identical chunk bytes, changed symbol payload: different digest.
-        assert_ne!(
-            base.replace_scopes()[0].scope_digest,
-            edited.replace_scopes()[0].scope_digest
-        );
+        let base_digest = &base
+            .replace_scopes()
+            .first()
+            .expect("base scope")
+            .scope_digest;
+        let edited_digest = &edited
+            .replace_scopes()
+            .first()
+            .expect("edited scope")
+            .scope_digest;
+        assert_ne!(base_digest, edited_digest);
         // Order-independence: same inputs rebuild the same digest.
         let (again, _) = assemble_batch(&identity, &chunks, &symbols).expect("batch");
-        assert_eq!(
-            base.replace_scopes()[0].scope_digest,
-            again.replace_scopes()[0].scope_digest
-        );
+        let again_digest = &again
+            .replace_scopes()
+            .first()
+            .expect("rebuilt scope")
+            .scope_digest;
+        assert_eq!(base_digest, again_digest);
     }
 
     #[test]
@@ -407,7 +419,7 @@ mod tests {
         assert_eq!(report.symbols, 1);
         assert_eq!(report.symbol_only_scopes, vec!["src/boot.ts".to_string()]);
         assert_eq!(report.skipped_empty, vec!["docs/empty.md".to_string()]);
-        let scope = &batch.replace_scopes()[0];
+        let scope = batch.replace_scopes().first().expect("symbol-only scope");
         assert_eq!(scope.scope.repo_relative_path.as_str(), "src/boot.ts");
         assert!(scope.chunks.is_empty());
         assert_eq!(scope.symbols.len(), 1);
@@ -454,10 +466,17 @@ mod tests {
         }
         let (shuffled, _) =
             assemble_batch(&identity, &shuffled_chunks, &shuffled_symbols).expect("batch");
-        assert_eq!(
-            base.replace_scopes()[0].scope_digest,
-            shuffled.replace_scopes()[0].scope_digest
-        );
+        let base_digest = &base
+            .replace_scopes()
+            .first()
+            .expect("base scope")
+            .scope_digest;
+        let shuffled_digest = &shuffled
+            .replace_scopes()
+            .first()
+            .expect("shuffled scope")
+            .scope_digest;
+        assert_eq!(base_digest, shuffled_digest);
     }
 
     #[test]
@@ -469,7 +488,8 @@ mod tests {
         )]);
         let mut records = extract_symbols("src/lib.rs", RUST_SOURCE).expect("symbols");
         // Forge a collision: symbol id equal to the chunk id string.
-        records[0].symbol_id = quanta_index_contract::SymbolId::new("chunk-src/lib.rs-0");
+        records.first_mut().expect("at least one symbol").symbol_id =
+            quanta_index_contract::SymbolId::new("chunk-src/lib.rs-0");
         let symbols = BTreeMap::from([("src/lib.rs".to_string(), records)]);
         let error = assemble_batch(&identity, &chunks, &symbols).unwrap_err();
         assert!(error.to_string().contains("collides with a chunk id"));

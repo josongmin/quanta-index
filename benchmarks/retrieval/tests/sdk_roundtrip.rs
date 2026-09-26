@@ -345,7 +345,9 @@ fn unavailable_provider_is_typed_and_never_returns_hits() {
             assert_eq!(status, "unavailable");
             assert_eq!(code, "SEM_PROVIDER_UNAVAILABLE");
         }
-        other => panic!("unavailable provider must be an SDK failure: {other:?}"),
+        other @ (QueryOutcome::ReturnedWindow { .. } | QueryOutcome::RejectedResponse { .. }) => {
+            panic!("unavailable provider must be an SDK failure: {other:?}")
+        }
     }
     session.stop().expect("bounded shutdown");
 }
@@ -378,7 +380,9 @@ fn terminated_daemon_is_typed_and_never_returns_hits() {
         QueryOutcome::SdkFailure { status, .. } => {
             assert!(matches!(status, "error" | "timeout" | "unavailable"));
         }
-        other => panic!("terminated daemon must be an SDK failure: {other:?}"),
+        other @ (QueryOutcome::ReturnedWindow { .. } | QueryOutcome::RejectedResponse { .. }) => {
+            panic!("terminated daemon must be an SDK failure: {other:?}")
+        }
     }
     session.stop().expect("idempotent bounded shutdown");
 }
@@ -469,7 +473,7 @@ fn real_daemon_roundtrip_publishes_and_queries() {
             );
             assert_ne!(expected_pin, observed_pin);
         }
-        _ => {
+        QueryOutcome::ReturnedWindow { .. } | QueryOutcome::SdkFailure { .. } => {
             panic!("stale generation must fail, got {stale_result:?}")
         }
     }
@@ -501,7 +505,7 @@ fn real_daemon_roundtrip_publishes_and_queries() {
                 assert!(hit.start_line >= 1 && hit.start_line <= hit.end_line);
             }
         }
-        other => {
+        other @ (QueryOutcome::RejectedResponse { .. } | QueryOutcome::SdkFailure { .. }) => {
             panic!("lexical query failed: {other:?}");
         }
     }
@@ -539,7 +543,7 @@ fn real_daemon_roundtrip_publishes_and_queries() {
         let _previous = outcomes.insert(("T1".to_string(), route.to_string()), outcome.clone());
         match &outcome {
             QueryOutcome::ReturnedWindow { .. } => {}
-            other => {
+            other @ (QueryOutcome::RejectedResponse { .. } | QueryOutcome::SdkFailure { .. }) => {
                 panic!("{route} query failed: {other:?}");
             }
         }
@@ -589,7 +593,9 @@ fn real_daemon_roundtrip_publishes_and_queries() {
         top_k: 10,
     }) {
         QueryOutcome::SdkFailure { code, .. } => assert_eq!(code, "unknown_route"),
-        other => panic!("unknown route must not hit: {other:?}"),
+        other @ (QueryOutcome::ReturnedWindow { .. } | QueryOutcome::RejectedResponse { .. }) => {
+            panic!("unknown route must not hit: {other:?}")
+        }
     }
 
     assert!(receipt.semantic_content.is_some());
@@ -1091,7 +1097,7 @@ fn symbol_route_answers_from_published_units_and_proves_spans() {
     session.stop().expect("bounded shutdown");
     let hits = match outcome {
         QueryOutcome::ReturnedWindow { hits, .. } => hits,
-        other => {
+        other @ (QueryOutcome::RejectedResponse { .. } | QueryOutcome::SdkFailure { .. }) => {
             panic!("symbol route failed: {other:?}")
         }
     };
@@ -1191,7 +1197,7 @@ fn symbol_route_no_answer_is_typed_never_fake_success() {
             let record = result_value(
                 "T1",
                 "symbol",
-                &outcome,
+                outcome,
                 &plan_query(
                     QueryInputPolicy::Native,
                     "zzz_no_such_symbol_zzz",

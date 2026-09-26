@@ -126,7 +126,7 @@ impl SymbolLanguage {
     fn separator(self) -> &'static str {
         match self {
             Self::Rust => "::",
-            _ => ".",
+            Self::Go | Self::Python | Self::JavaScript | Self::TypeScript { .. } => ".",
         }
     }
 
@@ -143,23 +143,26 @@ impl SymbolLanguage {
     /// Map a matched definition node kind onto a canonical symbol kind.
     fn kind_for(self, node_kind: &str, container_is_type: bool) -> Option<&'static str> {
         match (self, node_kind) {
-            (_, "function_declaration")
-            | (_, "generator_function_declaration")
-            | (_, "function_item")
-            | (_, "function_definition") => Some(if container_is_type {
+            (
+                _,
+                "function_declaration"
+                | "generator_function_declaration"
+                | "function_item"
+                | "function_definition",
+            ) => Some(if container_is_type {
                 "method"
             } else {
                 "function"
             }),
-            (_, "method_declaration") | (_, "method_definition") => Some("method"),
-            (_, "class_declaration")
-            | (_, "abstract_class_declaration")
-            | (_, "class_definition") => Some("class"),
+            (_, "method_declaration" | "method_definition") => Some("method"),
+            (_, "class_declaration" | "abstract_class_declaration" | "class_definition") => {
+                Some("class")
+            }
             (_, "struct_item") => Some("struct"),
             (_, "enum_item") => Some("enum"),
             (_, "trait_item") => Some("trait"),
             (_, "interface_declaration") => Some("interface"),
-            (_, "type_item") | (_, "type_alias_declaration") => Some("type_alias"),
+            (_, "type_item" | "type_alias_declaration") => Some("type_alias"),
             (_, "mod_item") => Some("module"),
             _ => None,
         }
@@ -207,26 +210,62 @@ impl SymbolLanguage {
     }
 
     /// The name text of a container node, if it has one.
-    fn container_name<'tree>(self, node: Node<'tree>, source: &str) -> Option<String> {
+    fn container_name(self, node: Node<'_>, source: &str) -> Result<String, SymbolExtractError> {
         if self == Self::Rust && node.kind() == "impl_item" {
             // impl blocks name their container through the `type` field.
             // Generic argument lists (`Foo<T>`) are stripped so the same
             // logical type yields one qualified-name spelling.
-            let ty = node.child_by_field_name("type")?;
-            let text = ty.utf8_text(source.as_bytes()).ok()?;
+            let ty = required_child(node, "type", "Rust impl container")?;
+            let text = node_text(ty, source, "Rust impl type")?;
             let Some(open) = text.find('<') else {
-                return Some(text.to_string());
+                return Ok(text.to_string());
             };
             if !text.ends_with('>') || text.bytes().filter(|b| *b == b'<').count() != 1 {
                 // Malformed or operator-heavy generics: keep the raw text
                 // rather than mangling it.
-                return Some(text.to_string());
+                return Ok(text.to_string());
             }
-            return Some(text[..open].to_string());
+            let Some(base) = text.get(..open) else {
+                return Err(SymbolExtractError::ProducerDefect {
+                    detail: format!("Rust impl generic boundary {open} is not valid UTF-8"),
+                });
+            };
+            return Ok(base.to_string());
         }
-        let name = node.child_by_field_name("name")?;
-        Some(name.utf8_text(source.as_bytes()).ok()?.to_string())
+        let name = required_child(node, "name", "named container")?;
+        Ok(node_text(name, source, "container name")?.to_string())
     }
+}
+
+fn required_child<'tree>(
+    node: Node<'tree>,
+    field: &str,
+    context: &str,
+) -> Result<Node<'tree>, SymbolExtractError> {
+    node.child_by_field_name(field)
+        .ok_or_else(|| SymbolExtractError::ProducerDefect {
+            detail: format!(
+                "{context} node {} at {}..{} has no `{field}` field",
+                node.kind(),
+                node.start_byte(),
+                node.end_byte()
+            ),
+        })
+}
+
+fn node_text<'source>(
+    node: Node<'_>,
+    source: &'source str,
+    context: &str,
+) -> Result<&'source str, SymbolExtractError> {
+    node.utf8_text(source.as_bytes())
+        .map_err(|error| SymbolExtractError::ProducerDefect {
+            detail: format!(
+                "{context} span {}..{} is not valid UTF-8: {error}",
+                node.start_byte(),
+                node.end_byte()
+            ),
+        })
 }
 
 /// Depth-first search for the first descendant of `node` whose kind
@@ -258,43 +297,48 @@ fn find_descendant_kind<'tree>(node: Node<'tree>, kind: &str) -> Option<Node<'tr
 /// Go methods qualify through their receiver type: the first
 /// `type_identifier` inside the receiver parameter list (value or pointer
 /// receiver alike).
-fn go_receiver_type<'tree>(def_node: Node<'tree>, source: &str) -> Option<String> {
-    let receiver = def_node.child_by_field_name("receiver")?;
-    let type_node = find_descendant_kind(receiver, "type_identifier")?;
-    type_node
-        .utf8_text(source.as_bytes())
-        .ok()
-        .map(str::to_string)
+fn go_receiver_type(def_node: Node<'_>, source: &str) -> Result<String, SymbolExtractError> {
+    let receiver = required_child(def_node, "receiver", "Go method")?;
+    let type_node = find_descendant_kind(receiver, "type_identifier").ok_or_else(|| {
+        SymbolExtractError::ProducerDefect {
+            detail: format!(
+                "Go method receiver at {}..{} has no type_identifier",
+                receiver.start_byte(),
+                receiver.end_byte()
+            ),
+        }
+    })?;
+    Ok(node_text(type_node, source, "Go receiver type")?.to_string())
 }
 
-const RUST_QUERY: &str = r#"
+const RUST_QUERY: &str = r"
 (function_item name: (identifier) @name) @def
 (struct_item name: (type_identifier) @name) @def
 (enum_item name: (type_identifier) @name) @def
 (trait_item name: (type_identifier) @name) @def
 (type_item name: (type_identifier) @name) @def
 (mod_item name: (identifier) @name) @def
-"#;
+";
 
-const GO_QUERY: &str = r#"
+const GO_QUERY: &str = r"
 (function_declaration name: (identifier) @name) @def
 (method_declaration name: (field_identifier) @name) @def
 (type_spec name: (type_identifier) @name) @def
-"#;
+";
 
-const PYTHON_QUERY: &str = r#"
+const PYTHON_QUERY: &str = r"
 (function_definition name: (identifier) @name) @def
 (class_definition name: (identifier) @name) @def
-"#;
+";
 
-const JAVASCRIPT_QUERY: &str = r#"
+const JAVASCRIPT_QUERY: &str = r"
 (function_declaration name: (identifier) @name) @def
 (generator_function_declaration name: (identifier) @name) @def
 (class_declaration name: (identifier) @name) @def
 (method_definition name: (property_identifier) @name) @def
-"#;
+";
 
-const TYPESCRIPT_QUERY: &str = r#"
+const TYPESCRIPT_QUERY: &str = r"
 (function_declaration name: (identifier) @name) @def
 (generator_function_declaration name: (identifier) @name) @def
 (class_declaration name: (type_identifier) @name) @def
@@ -302,7 +346,7 @@ const TYPESCRIPT_QUERY: &str = r#"
 (method_definition name: [(property_identifier) (private_property_identifier)] @name) @def
 (interface_declaration name: (type_identifier) @name) @def
 (type_alias_declaration name: (type_identifier) @name) @def
-"#;
+";
 
 struct LineIndex {
     starts: Vec<usize>,
@@ -319,9 +363,9 @@ impl LineIndex {
         }
     }
 
-    fn line(&self, byte_offset: usize) -> u32 {
+    fn line(&self, byte_offset: usize) -> Result<u32, std::num::TryFromIntError> {
         let line = self.starts.partition_point(|start| *start <= byte_offset);
-        u32::try_from(line.max(1)).unwrap_or(1)
+        u32::try_from(line.max(1))
     }
 }
 
@@ -341,11 +385,11 @@ fn parse(
 ) -> Result<tree_sitter::Tree, SymbolExtractError> {
     let mut parser = Parser::new();
     let grammar = language.grammar();
-    if parser.set_language(&grammar).is_err() {
-        return Err(SymbolExtractError::ParseFailure {
-            path: path.to_string(),
-        });
-    }
+    parser
+        .set_language(&grammar)
+        .map_err(|error| SymbolExtractError::ProducerDefect {
+            detail: format!("failed to install pinned grammar for {path}: {error}"),
+        })?;
     let tree = parser
         .parse(source, None)
         .ok_or_else(|| SymbolExtractError::ParseFailure {
@@ -379,21 +423,35 @@ fn query_definitions(
         let mut def_node: Option<Node<'_>> = None;
         let mut name_node: Option<Node<'_>> = None;
         for capture in matched.captures {
-            match query.capture_names()[capture.index as usize] {
+            let capture_index = usize::try_from(capture.index).map_err(|error| {
+                SymbolExtractError::ProducerDefect {
+                    detail: format!(
+                        "capture index {} does not fit usize: {error}",
+                        capture.index
+                    ),
+                }
+            })?;
+            let capture_name = query.capture_names().get(capture_index).ok_or_else(|| {
+                SymbolExtractError::ProducerDefect {
+                    detail: format!(
+                        "capture index {capture_index} exceeds capture-name count {}",
+                        query.capture_names().len()
+                    ),
+                }
+            })?;
+            match *capture_name {
                 "def" => def_node = Some(capture.node),
                 "name" => name_node = Some(capture.node),
                 _ => {}
             }
         }
-        let (Some(def_node), Some(name_node)) = (def_node, name_node) else {
-            // Anonymous definition (e.g. an unnamed impl or expression):
-            // no invented public name.
-            continue;
-        };
-        let local_name = match name_node.utf8_text(source.as_bytes()) {
-            Ok(text) => text,
-            Err(_) => continue,
-        };
+        let def_node = def_node.ok_or_else(|| SymbolExtractError::ProducerDefect {
+            detail: "definition query matched without its required @def capture".to_string(),
+        })?;
+        let name_node = name_node.ok_or_else(|| SymbolExtractError::ProducerDefect {
+            detail: "definition query matched without its required @name capture".to_string(),
+        })?;
+        let local_name = node_text(name_node, source, "definition name")?;
         let mut containers: Vec<String> = Vec::new();
         // The method/function decision uses the NEAREST container
         // ancestor's kind: a fn whose innermost enclosing container is a
@@ -405,23 +463,21 @@ fn query_definitions(
         let mut parent = def_node.parent();
         while let Some(node) = parent {
             if language.is_container(node.kind()) {
-                if let Some(name) = language.container_name(node, source) {
-                    if !seen_container {
-                        seen_container = true;
-                        nearest_type_container = language.is_type_container(node.kind());
-                    }
-                    containers.push(name);
+                let name = language.container_name(node, source)?;
+                if !seen_container {
+                    seen_container = true;
+                    nearest_type_container = language.is_type_container(node.kind());
                 }
+                containers.push(name);
             }
             parent = node.parent();
         }
         if language == SymbolLanguage::Go && def_node.kind() == "method_declaration" {
             // Go methods carry their container (the receiver type) on the
             // node itself rather than through an ancestor.
-            if let Some(receiver_type) = go_receiver_type(def_node, source) {
-                nearest_type_container = true;
-                containers.push(receiver_type);
-            }
+            let receiver_type = go_receiver_type(def_node, source)?;
+            nearest_type_container = true;
+            containers.push(receiver_type);
         }
         containers.reverse();
         let mut kind = language.kind_for(def_node.kind(), nearest_type_container);
@@ -436,9 +492,12 @@ fn query_definitions(
                 kind = Some("type_alias");
             }
         }
-        let Some(kind) = kind else {
-            continue;
-        };
+        let kind = kind.ok_or_else(|| SymbolExtractError::ProducerDefect {
+            detail: format!(
+                "definition query emitted unclassified node kind `{}`",
+                def_node.kind()
+            ),
+        })?;
         definitions.push(RawDefinition {
             kind,
             local_name: local_name.to_string(),
@@ -545,32 +604,45 @@ pub fn extract_symbols(path: &str, source: &str) -> Result<Vec<SymbolRecord>, Sy
             visibility: None,
             definition_span: SymbolSpan {
                 path: path.to_string().into_boxed_str(),
-                byte_start: u32::try_from(definition.byte_start).map_err(|_| {
-                    SymbolExtractError::ParseFailure {
-                        path: path.to_string(),
+                byte_start: u32::try_from(definition.byte_start).map_err(|error| {
+                    SymbolExtractError::ProducerDefect {
+                        detail: format!(
+                            "definition byte_start {} exceeds u32 for {path}: {error}",
+                            definition.byte_start
+                        ),
                     }
                 })?,
-                byte_end: u32::try_from(definition.byte_end).map_err(|_| {
-                    SymbolExtractError::ParseFailure {
-                        path: path.to_string(),
+                byte_end: u32::try_from(definition.byte_end).map_err(|error| {
+                    SymbolExtractError::ProducerDefect {
+                        detail: format!(
+                            "definition byte_end {} exceeds u32 for {path}: {error}",
+                            definition.byte_end
+                        ),
                     }
                 })?,
-                line_start: line_index.line(definition.byte_start),
-                line_end: line_index.line(definition.byte_end.saturating_sub(1)),
+                line_start: line_index.line(definition.byte_start).map_err(|error| {
+                    SymbolExtractError::ProducerDefect {
+                        detail: format!("line_start exceeds u32 for {path}: {error}"),
+                    }
+                })?,
+                line_end: line_index
+                    .line(definition.byte_end.saturating_sub(1))
+                    .map_err(|error| SymbolExtractError::ProducerDefect {
+                        detail: format!("line_end exceeds u32 for {path}: {error}"),
+                    })?,
             },
-            container_qualified_name: container_qualified_name
-                .map(|name| name.into_boxed_str())
-                .map(Box::from),
+            container_qualified_name: container_qualified_name.map(String::into_boxed_str),
             relationship: SymbolRelationship::Def,
         });
     }
     Ok(records)
 }
 
-/// Extract symbols for a whole admitted corpus. Files whose language has
-/// no pinned grammar are counted as unsupported (no symbols, not a
-/// failure); parse failures in supported languages are explicit coverage
-/// failures that abort the run (RBR-04).
+/// Extract symbols for a whole admitted corpus.
+///
+/// Files whose language has no pinned grammar are counted as unsupported
+/// (no symbols, not a failure); parse failures in supported languages are
+/// explicit coverage failures that abort the run (RBR-04).
 pub struct CorpusSymbolExtraction {
     pub symbols: std::collections::BTreeMap<String, Vec<SymbolRecord>>,
     pub unsupported_files: Vec<String>,
@@ -646,7 +718,10 @@ mod tests {
                 .iter()
                 .all(|record| record.definition_span.byte_start <= record.definition_span.byte_end)
         );
-        assert_eq!(records[0].local_name.as_ref(), "Engine");
+        assert_eq!(
+            records.first().expect("first symbol").local_name.as_ref(),
+            "Engine"
+        );
     }
 
     #[test]
@@ -688,7 +763,8 @@ mod tests {
         let decorated = find(&records, "build");
         let def_offset = source.find("def build").expect("def offset");
         assert_eq!(
-            decorated.definition_span.byte_start as usize, def_offset,
+            usize::try_from(decorated.definition_span.byte_start).expect("byte offset fits usize"),
+            def_offset,
             "decorator is not part of the definition span"
         );
         let free = find(&records, "standalone");
@@ -728,7 +804,10 @@ mod tests {
                       }\n";
         let records = extract_symbols("ui/card.tsx", source).expect("tsx parses with jsx");
         assert_eq!(find(&records, "Card").symbol_kind.as_str(), "function");
-        assert_eq!(records[0].language.as_str(), "typescript");
+        assert_eq!(
+            records.first().expect("Card symbol").language.as_str(),
+            "typescript"
+        );
     }
 
     #[test]
@@ -776,7 +855,7 @@ mod tests {
         assert_eq!(ids, ids_again);
         assert_eq!(first.len(), ids.len());
         assert_eq!(
-            BTreeSet::<&str>::from_iter(ids.iter().copied()).len(),
+            ids.iter().copied().collect::<BTreeSet<&str>>().len(),
             ids.len()
         );
 
@@ -803,9 +882,11 @@ mod tests {
         let records = extract_symbols("src/cr.rs", source).expect("parses");
         let b = find(&records, "b");
         let starts = crate::corpus::split_line_starts(source).0;
-        let line = starts.partition_point(|start| *start <= b.definition_span.byte_start as usize);
+        let byte_start =
+            usize::try_from(b.definition_span.byte_start).expect("byte offset fits usize");
+        let line = starts.partition_point(|start| *start <= byte_start);
         assert_eq!(
-            b.definition_span.line_start as usize,
+            usize::try_from(b.definition_span.line_start).expect("line number fits usize"),
             line.max(1),
             "symbol line must match the corpus model"
         );
@@ -876,7 +957,8 @@ mod tests {
         let tagged = find(&records, "Tagged");
         let struct_offset = rs.find("struct Tagged").expect("offset");
         assert_eq!(
-            tagged.definition_span.byte_start as usize, struct_offset,
+            usize::try_from(tagged.definition_span.byte_start).expect("byte offset fits usize"),
+            struct_offset,
             "Rust attribute lines are not part of the definition span"
         );
     }
@@ -885,10 +967,20 @@ mod tests {
     fn jsx_and_versioned_ts_extensions_map() {
         let jsx = "export function Card() { return null; }\n";
         let records = extract_symbols("ui/card.jsx", jsx).expect("jsx parses");
-        assert_eq!(records[0].language.as_str(), "javascript");
+        assert_eq!(
+            records.first().expect("JS symbol").language.as_str(),
+            "javascript"
+        );
         let mts = "export const x: number = 1;\nexport function go(): void {}\n";
         let records = extract_symbols("m/a.mts", mts).expect("mts parses");
-        assert_eq!(records[0].language.as_str(), "typescript");
+        assert_eq!(
+            records
+                .first()
+                .expect("TypeScript symbol")
+                .language
+                .as_str(),
+            "typescript"
+        );
     }
     #[test]
     fn homonymous_definitions_keep_distinct_ids() {
@@ -901,7 +993,10 @@ mod tests {
             .map(|record| record.symbol_id.as_str())
             .collect();
         assert_eq!(ids.len(), 2);
-        assert_ne!(ids[0], ids[1]);
+        assert_ne!(
+            ids.first().expect("first homonymous symbol"),
+            ids.get(1).expect("second homonymous symbol")
+        );
         let qualifieds: Vec<&str> = records
             .iter()
             .filter(|record| &*record.local_name == "step")
