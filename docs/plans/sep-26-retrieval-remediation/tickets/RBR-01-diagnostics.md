@@ -1,6 +1,6 @@
 # RBR-01 — SDK 응답과 단계별 실행 정보 보존
 
-## 현행 판정 — 2026-09-26, `af640562` + dirty overlay
+## 현행 판정 — 2026-09-26, `6a142add` + sep-23 계약 문서 dirty
 
 - 구현: `sdk.rs`/`diagnostics.rs`의 response·window·executed/contributed 분리와 `run.py` diagnostic v3 검증은 확인. runner-level phase wall time은 서버 내부 query/ingest stage 비용이 아니다.
 - 검증: 이 감사의 current-source SDK roundtrip, stage timing 및 diagnostic on/off overhead는 `NOT_RUN`. 과거 local contract 숫자는 현 bytes의 proof가 아니다.

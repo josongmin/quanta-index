@@ -31,9 +31,9 @@
 //! Open/restore reconciliation reads the generic ledger only: empty →
 //! `(next = 1, exhausted = 0)`; `max < i64::MAX` → `(next = max + 1,
 //! exhausted = 0)`; `max == i64::MAX` → `(next = NULL, exhausted = 1)`.
-//! A separate integrity pass verifies every operation-kind event has its
-//! exact domain terminal row; domain maxima are never used to repair the
-//! allocator.
+//! A separate integrity pass rejects gaps in the append-only ledger and
+//! verifies each event's domain pair; domain maxima are never used to repair
+//! the allocator.
 
 use rusqlite::{Connection, OptionalExtension as _, Transaction, params};
 use sha2::{Digest, Sha256};
@@ -440,6 +440,54 @@ pub(crate) fn reconcile(
     verify_integrity(connection, path)
 }
 
+/// Verify a domain row's reverse reference to the exact self-digested event.
+/// The forward ledger pass alone cannot detect a forged domain row borrowing
+/// an existing sequence from a different event kind.
+pub(crate) fn verify_event_reference(
+    connection: &Connection,
+    path: &std::path::Path,
+    expected_kind: SequenceEventKindV1,
+    sequence: i64,
+    expected_identity: &[u8; 32],
+    expected_payload: &[u8; 32],
+) -> Result<(), CoreError> {
+    let event = connection
+        .query_row(
+            "SELECT kind, identity_digest, payload_digest, event_commitment, row_sha256
+             FROM catalog_sequence_event_v2 WHERE sequence = ?1",
+            params![sequence],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, Vec<u8>>(3)?,
+                    row.get::<_, Vec<u8>>(4)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| engine_error("read referenced sequence event", path, &error))?
+        .ok_or_else(|| corrupt(&format!("domain row references missing event {sequence}")))?;
+    let (kind_code, identity, payload, commitment, row_digest) = event;
+    let kind = SequenceEventKindV1::from_code(kind_code)?;
+    let identity = blob32("referenced event identity digest", &identity)?;
+    let payload = blob32("referenced event payload digest", &payload)?;
+    let commitment = blob32("referenced event commitment", &commitment)?;
+    let row_digest = blob32("referenced event row digest", &row_digest)?;
+    if kind != expected_kind
+        || identity != *expected_identity
+        || payload != *expected_payload
+        || event_commitment(sequence, kind, &identity, &payload) != commitment
+        || event_row_digest(sequence, kind, &identity, &payload, &commitment) != row_digest
+    {
+        return Err(corrupt(&format!(
+            "domain row disagrees with referenced event {sequence}"
+        )));
+    }
+    Ok(())
+}
+
 /// The integrity pass.
 ///
 /// Every event row matches its own commitment and digest. Operation-kind
@@ -453,7 +501,7 @@ pub(crate) fn verify_integrity(
     connection: &Connection,
     path: &std::path::Path,
 ) -> Result<(), CoreError> {
-    crate::candidate::verify_activation_head_integrity(connection, path)?;
+    crate::candidate::verify_repomap_domain_integrity(connection, path)?;
     let mut statement = connection
         .prepare(
             "SELECT sequence, kind, identity_digest, payload_digest, event_commitment, row_sha256
@@ -472,9 +520,16 @@ pub(crate) fn verify_integrity(
             ))
         })
         .map_err(|error| engine_error("read events for integrity pass", path, &error))?;
+    let mut expected_sequence = Some(1_i64);
     for row in rows {
         let (sequence, kind_code, identity, payload, commitment, row_digest) =
             row.map_err(|error| engine_error("read event row", path, &error))?;
+        if expected_sequence != Some(sequence) {
+            return Err(corrupt(&format!(
+                "sequence event {sequence} is not the expected contiguous ledger event {expected_sequence:?}"
+            )));
+        }
+        expected_sequence = sequence.checked_add(1);
         let kind = SequenceEventKindV1::from_code(kind_code)?;
         let identity = blob32("event identity digest", &identity)?;
         let payload = blob32("event payload digest", &payload)?;
@@ -705,6 +760,60 @@ mod tests {
             })
         ) {
             return Err("orphan candidate quarantine must refuse reopen".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn missing_middle_activation_event_refuses_reopen() -> TestResult {
+        let root = tempfile::tempdir()?;
+        let catalog = SqliteCatalog::open(root.path(), Duration::from_millis(100))?;
+        let _first = catalog.seal_repomap_candidate(
+            "repo",
+            "revision",
+            1,
+            &[1_u8; 32],
+            &[2_u8; 32],
+            &[3_u8; 32],
+            4,
+            "{}",
+        )?;
+        let activation =
+            catalog.activate_repomap_candidate("repo", "revision", 1, &[1_u8; 32], None)?;
+        let later = catalog.seal_repomap_candidate(
+            "repo",
+            "revision",
+            2,
+            &[4_u8; 32],
+            &[5_u8; 32],
+            &[6_u8; 32],
+            7,
+            "{}",
+        )?;
+        if later.terminal_sequence <= activation.terminal_sequence {
+            return Err("fixture needs a later ledger event".into());
+        }
+        {
+            let connection = catalog.lock()?;
+            let deleted = connection.execute(
+                "DELETE FROM catalog_sequence_event_v2 WHERE sequence = ?1",
+                rusqlite::params![activation.terminal_sequence],
+            )?;
+            if deleted != 1 {
+                return Err("fixture must delete exactly one activation event".into());
+            }
+            drop(connection);
+        }
+        drop(catalog);
+        let reopened = SqliteCatalog::open(root.path(), Duration::from_millis(100));
+        if !matches!(
+            reopened,
+            Err(quanta_index_core::CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+                ..
+            })
+        ) {
+            return Err("missing middle activation event must refuse reopen".into());
         }
         Ok(())
     }

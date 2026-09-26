@@ -1,6 +1,6 @@
 # RBR-10 — Semantic owner delete 비용과 replacement 안전성
 
-## 현행 판정 — 2026-09-26, `af640562` + dirty overlay
+## 현행 판정 — 2026-09-26, `6a142add` + sep-23 계약 문서 dirty
 
 - 구현: `build.rs::build_stream_reported`가 내부 delete/append 등 stage report를 만들지만 기본 `build_stream`은 보고값을 폐기하고 공개 SDK/runner까지 전달하지 않는다. delete 최적화나 제품 기본값 변경은 아직 없다.
 - 검증: 현 frozen-source semantic integration, 공개 stage identity, fresh/delta raw 측정, row-set/fault/restart oracle은 `NOT_RUN`.

@@ -1,8 +1,18 @@
 # RBR-00~12 현재 코드 감사 및 잔여 게이트 — 2026-09-26
 
-이 파일이 이 패킷의 **현재 상태표**다. 각 RBR 티켓 본문은 변경하지 않은 합격 계약이며, [INDEX](INDEX.md)의 '2차 라운드' 표와 [GAP-REGISTER](GAP-REGISTER.md)의 과거 `OPEN` 행은 시점 기록이다. 코드 존재, focused test, clean-source proof, 실제 비교 자격을 혼동하지 않는다.
+이 파일이 이 패킷의 **현재 상태표**다. 각 RBR 티켓의 합격 계약은 유지하고, [INDEX](INDEX.md)의 '2차 라운드' 표는 역사적 기록이며 [GAP-REGISTER](GAP-REGISTER.md)는 현행 잔여 작업만 기록한다. 코드 존재, focused test, clean-source proof, 실제 비교 자격을 혼동하지 않는다.
 
-## 감사 입력과 증거 한계
+## 최신 코드 재감사 — `6a142add69b4ff73b716de5ec2c0514f3710f0bd`
+
+- 감사 시작 시 `main`은 `origin/main`보다 2커밋 앞서며, 기존 dirty는 `docs/plans/sep-23-retrieval-bench/tickets/CODE-SEARCH-COMPARATORS-2026-09.md` 1개였다. 이 sep-23 경로는 `tools/ci/source_closure.py` retrieval profile에 포함된다. `8b612c8d..6a142add` diff는 RBR 구현 코드가 아닌 sep-21 진행 문서만 바꿨다. 이번 갱신으로 sep-26 티켓도 dirty source-closure 입력이 되었으므로 clean-source receipt를 만들었다고 주장하지 않는다.
+- 재감사 중 다른 writer가 sep-23 비교 문서를 `da3e5d912a54e57cd3ced4fa884ec2bbe4a3e332`로 커밋하고 catalog 파일을 새로 dirty 편집했다. `6a142add..da3e5d91`에는 RBR 구현 변경이 없지만 retrieval source-closure 문서 bytes와 HEAD가 바뀌었다. 아래 `6a142add` 집중 결과는 새 HEAD의 clean-source receipt가 아니다. catalog dirty는 이 감사에서 수정하지 않는다.
+- 현 코드에서 RBR-04 unsupported admitted 파일은 `symbols.rs::extract_corpus_symbols`가 skip하고 `main.rs` phase metrics는 수량만 지속 기록한다. RBR-06 `record.rs::prove_hit`은 published indexed byte span 대신 `line_span_bytes` projected span을 scorer record에 출력한다. RBR-12 `suite.schema.json`은 train/eval만, `evaluator.py::_check_split_leakage`는 한 suite의 겹친 gold span만 검사한다. `run.py` T15/T16은 `pass` 요약·카운트·digest로 조건부 claim을 승인한다. RBR-01/10 내부 stage report의 공개 caller는 없고 RBR-09 fetch floor는 100이다. 이들은 이전 목록의 관성적 `OPEN`이 아니라 현 source에서 다시 확인한 공백이다.
+- `uv run --frozen --extra dev python -c '...collect_pytest()...'`: exit 0, Python collected/required **272/272**, missing/extra/duplicate 0, 순서 일치. `uv run --frozen --extra dev python -m pytest tools/ci/tests/test_retrieval_benchmark.py -q -p no:cacheprovider -k 'verdict_t15_t16_conditionals or process_tree_sampler or process_tree_invalid_snapshot or split_leakage'`: exit 0, **11 passed, 261 deselected**. 별도 단일-suite split/near-duplicate/allowlist rail: exit 0, **4 passed, 268 deselected**. T15 fixture는 합성 `pass` JSON을 받아들이는 현 동작을 확인할 뿐 독립 모델 parity proof가 아니다.
+- `prepare_lexical_pair.py`와 `lexical_file_comparison.py`는 bare-symbol Quanta native 대 Semble lexical-only **file recall diagnostic**을 별도 profile로 다룬다. `uv run --frozen --extra dev python -m pytest tools/ci/tests/test_lexical_file_comparison.py -q -p no:cacheprovider`: exit 0, **4 passed**. 도구 자체가 `diagnostic_unqualified`와 독립 gold·native rank equivalence·qualified latency 제외를 기록한다. 이는 RBR-03의 개발용 pure-lane 관측을 넓히지만 RBR-08 exact-name symbol rank 진입 probe나 RBR-12 qualified pair를 닫지 않는다. sep-23 비교 문서의 새 bare-symbol 실행 기록은 dirty 문서 진술이므로 raw artifact를 이 감사에서 재검증한 결과로 승격하지 않는다.
+- 코드 입력 SHA-256: `run.py` `4ba42141d78bb8f4fcb8019cd1c5ea09368cb56e3adce9a78861398151f29e06`, `evaluator.py` `d7a34c27c475754dae42667f13fbf120e56bacaa7d630f4b56a27aa684e1cde0`, `symbols.rs` `6c60b9038d14596dd7f1dfcbba779e083cb845d381edf52226197d5545da145d`, `record.rs` `34c750e874db340c398c3858acab5b96687f4a4318bbc335ee2d0fb143e2187a`, Python test `cc23de38ccae650ff56b4eb53b36b6434c7ac2ba962089cda07427337ecadf5c`, authority `176017913c8d043986c75f7f515ff102e1eac32ad62446ba91697ca8ee513312`.
+- 범위 제외: 현 HEAD 전체 Python/Rust/SDK contract, live daemon/storage/semantic, pinned Semble 외부 캡처, clean-source receipt 및 admitted quiet-host pair는 이 재감사에서 `NOT_RUN`. 과거 dirty 272 passed/32 subtests와 과거 exploratory `PAIR_VALID=pass`를 현 HEAD 자격으로 승격하지 않는다.
+
+## 이전 감사 기록 — 당시 HEAD·dirty에만 유효
 
 - 감사 시작 HEAD: `8d9b9f3779355ca91e5d838df8539c2f2cb0c0ef` (`main`). 시작 dirty: `crates/quanta-index-catalog/src/candidate.rs`; 감사 중 다른 writer가 `tools/benchmark/retrieval/sdk_proof.py`, `tools/ci/tests/test_retrieval_benchmark.py`, `tools/ci/tests/test_retrieval_sdk_proof.py`도 편집하고 HEAD를 `c6f0405aa72ed97f91078e8d6efb097b0142c64f`로 전진시켰다. 그 커밋에는 이 감사가 수정한 Just 레시피와 회귀 assertion도 포함되었다. 동시 writer의 다른 변경을 본 감사가 소유하거나 clean proof로 사용하지 않는다.
 - 현행 티켓 재감사의 관측 기준 HEAD는 `af6405629ec09219e02c0a2bdb36a4cfe29ac4ba`와 dirty overlay다. RBR-11 소유 코드 변경은 `run.py`, `test_retrieval_benchmark.py`, `proof-required-tests.json`; catalog/sequence/README와 sep-23 문서의 동시 dirty 변경은 타인 소유로 보존한다. Python 전체 suite 실행 중 별도 writer가 `benchmarks/retrieval/src/{symbols,batch,main}.rs` 및 Rust 테스트도 수정했으므로 이 결과를 전체 source의 frozen proof로 사용하지 않는다. 이 파일 자체도 untracked source-closure 입력이어서 commit/clean receipt 전에는 qualified 증거가 아니다.
@@ -15,16 +25,16 @@
 - 추가 source audit: `run.py::_validate_parity_results_shape`(7737행 부근)는 T15/T16의 `command/status/selected/executed/passed/failed` 모양만 검사하고, `freeze_receipts`는 spec이 지정한 JSON을 복사해 digest를 만든다. verdict의 T15/T16 분기(6655행 부근)는 `status=pass`, `failed=0`, 카운트 정합성만 확인한다. `test_verdict_t15_t16_conditionals`도 합성 `_parity_results("parity-cmd")`로 T15를 충족시킨다. 따라서 현재 verdict는 독립 raw 벡터/증분 row-set·실행 context·source/model binding 없이 조건부 claim을 승인할 수 있다. 이는 **T15/T16 proof-integrity FAILED**이며 일반 `PAIR_VALID`와 qualified quality/speed의 현재 `NOT_RUN`을 혼동하지 않는다.
 - RBR-04 추가 source audit: `symbols.rs::extract_corpus_symbols`(634행 부근)는 unsupported admitted 파일을 `unsupported_files`에 넣고 계속하며, `main.rs` phase metrics는 그 **수량만** 기록한다. 티켓 작업 3은 unsupported grammar를 명시적 coverage failure로 요구한다. 지원 언어의 parse failure는 typed abort지만 unsupported 파일별 path+SHA/원인 및 partial-capability admission은 현재 코드에서 확인되지 않는다. 이를 full symbol coverage 성공으로 표시할 수 없으며 **RBR-04 코드/계약 불일치**로 남긴다.
 
-## 티켓별 판정
+## 최신 티켓별 판정
 
 표에서 '코드'는 현 HEAD/관측 dirty bytes에서 구현 경로가 보인다는 뜻이지 `VERIFIED`가 아니다. '현행 proof'는 이 감사에서 다시 발급한 증거만 표시한다.
 
 | 티켓 | 현 코드/계약 관측 | 현행 proof | 남은 합격 조건 |
 | --- | --- | --- | --- |
-| RBR-00 | Python inventory 272/272 일치; sep-26 source closure와 profile 계약 등록 | 최종 Python 입력 272 passed/32 subtests, dirty diagnostic; Rust/SDK exact inventory와 clean receipt `NOT_RUN` | frozen source의 Python/Rust/SDK exact inventory, clean-source contract receipt; RBR-07/12의 T15/T16 raw proof binding은 별도 `FAILED` |
+| RBR-00 | 현 HEAD Python inventory 272/272 일치; sep-26 source closure와 profile 계약 등록 | 현 HEAD 선택 Python 11+4 passed; 전체·Rust/SDK exact inventory와 clean receipt `NOT_RUN` | frozen source의 Python/Rust/SDK exact inventory, clean-source contract receipt; RBR-07/12의 T15/T16 raw proof binding은 별도 `FAILED` |
 | RBR-01 | response/explanation/window 및 executed/contributed 분리, diagnostic v3; runner-level wall timings | 현재 SDK roundtrip `NOT_RUN` | query/ingest 내부 stage timing의 공개·source binding, diagnostic on/off overhead, current-source daemon/receipt. 현재 runner wall time을 내부 비용으로 오인 금지 |
 | RBR-02 | `query_plan.rs`의 native/literal/NL, v4+ query identity와 distractor fixture | local contract 통과 관측; SDK proof `NOT_RUN` | frozen source의 정책/identity 부정 테스트 및 live SDK·contract proof |
-| RBR-03 | 네 Semble profile과 phase execution event 검증 코드; 과거 pinned 0.6.0 개발 캡처 기록 | local contract 통과 관측; 현 소스 pair/receipt `NOT_RUN` | frozen source adapter/fixture, pinned capture 재발급; W0-B/adjudicated gold/host 없이는 qualified pair 금지 |
+| RBR-03 | 네 Semble profile과 phase execution event 검증 코드; bare-symbol lexical-only 진단 도구 및 과거 pinned 개발 캡처 기록 | 현 HEAD lexical 도구 4 tests passed; 현 소스 pinned pair/receipt `NOT_RUN` | frozen source adapter/fixture, pinned capture 재발급; W0-B/adjudicated gold/host 없이는 qualified pair 금지 |
 | RBR-04 | 다언어 `symbols.rs`, 파일당 combined `replace_scope`, digest 경로; unsupported admitted 파일은 count만 남기고 skip하므로 coverage 계약 불일치 | 현 소스 storage/SDK proof `NOT_RUN` | 지원 범위·파일별 path+SHA/skip reason과 partial/full capability admission을 명시해 validator가 재도출; 5언어 손계산 + 실제 daemon + nextest inventory/receipt를 같은 revision에서 재실행 |
 | RBR-05 | typed `published_units.rs`, symbol route·`prove_hit`, 동명이인/no-answer fixture | 현 소스 SDK proof `NOT_RUN` | forged/stale/timeout과 live route의 current-source proof; RBR-06 span 회계 연동 |
 | RBR-06 | 청커 손계산/overlap fixture는 있음 | dirty local chunking contract 25 passed; clean-source rail `NOT_RUN` | **미구현** indexed vs SDK vs scored span/expansion, rank-only Hit@1, exact-index-span Recall@10, context bytes/tokens, 고정 matrix 원본. 현 `mrr_at_k`는 projected candidate span에 `covers` 적용하므로 exact-index-span 지표로 표시 금지 |
@@ -32,8 +42,8 @@
 | RBR-08 | 현 `symbol` route는 있으나 exact-name 정책 진입 probe·ranker 변경 증거 없음 | `NOT_RUN` | source-bound 오순위 사례를 먼저 확인. 없으면 근거 있는 **유지** 결정; 있으면 한 후보와 pagination/schema/reopen 회귀, 최종 holdout |
 | RBR-09 | hybrid fetch floor 100 그대로; 변경된 matrix/profile 코드 확인 안 됨 | `NOT_RUN` | RBR-01 stage 계측 후 floor 100/25/50 × k·filter matrix, ANN quality guard, quiet-host p95; 근거 없으면 기본값 유지 |
 | RBR-10 | semantic `build_stream_reported`의 내부 stage duration·delete call/commit 집계는 있음; 기본 `build_stream`은 보고값 폐기 | 현 소스 semantic integration `NOT_RUN` | 공개 caller 연결, embedding/activate 포함 end-to-end 계측, fresh/delta 원본, row-set·fault/restart 검증. delete 최적화는 아직 선택 안 함 |
-| RBR-11 | zero-RSS 연결 노드 보존; malformed/duplicate PID·미관측 root 거부와 불완전 artifact 기록으로 추가 보완 | 최종 dirty Python 272 passed/32 subtests; current-source platform/clean receipt `NOT_RUN` | 지원 플랫폼 owner proof·clean contract/resource replay/receipt 발급. `ps` PID 시작시각 미결합은 legacy sampler 한계; 과거 RSS 보정 불가 |
-| RBR-12 | 기존 단일-suite train/eval `query_family_id`·겹친 gold span 검사는 있음. `split-leakage-mutants.json`의 같은 파일 disjoint train/eval은 현재 허용된다 | 서로 다른 development/holdout suite 간 custody 검증 `NOT_RUN`; T15/T16 조건부 verdict raw binding `FAILED`; final `PAIR_VALID`, `QUALITY_DELTA`, `PERF_QUALIFIED` 모두 **NOT_RUN** | 외부 experiment manifest에 task-family·file/definition split key와 dev/holdout digest를 고정하고 두 suite를 함께 검증; T15/T16 raw/receipt binding; 독립 gold/admission, 한 최종 조합, fresh receipts, quiet-host pair/replay |
+| RBR-11 | zero-RSS 연결 노드 보존; malformed/duplicate PID·미관측 root 거부와 불완전 artifact 기록으로 추가 보완 | 현 HEAD 선택 Python rail에 포함되어 통과; 전체/platform/clean receipt `NOT_RUN` | 지원 플랫폼 owner proof·clean contract/resource replay/receipt 발급. `ps` PID 시작시각 미결합은 legacy sampler 한계; 과거 RSS 보정 불가 |
+| RBR-12 | 기존 단일-suite train/eval `query_family_id`·겹친 gold span 검사는 있음. 같은 파일 disjoint train/eval은 허용. bare-symbol file recall 도구는 `diagnostic_unqualified` | 현 HEAD 단일-suite 4 tests + lexical 도구 4 tests passed; cross-suite custody `NOT_RUN`; T15/T16 verdict raw binding `FAILED`; final `PAIR_VALID`, `QUALITY_DELTA`, `PERF_QUALIFIED` 모두 **NOT_RUN** | 외부 experiment manifest에 task-family·file/definition split key와 dev/holdout digest를 고정하고 두 suite를 함께 검증; T15/T16 raw/receipt binding; 독립 gold/admission, 한 최종 조합, fresh receipts, quiet-host pair/replay |
 
 ## 우선순위와 종결 순서
 
@@ -46,4 +56,4 @@
 
 ## 종결 금지선
 
-`just retrieval-contract-local`과 최종 Python 전체 suite는 local diagnostic으로 exit 0이지만 clean-source proof가 아니다. `benchmark-prep-local`, clean-source contract/SDK receipts, live pair 및 성능 검증은 이 감사에서 `VERIFIED`가 아니다. 특히 현재 dirty 작업 트리를 clean으로 꾸미거나, 과거 HEAD의 receipt를 재활용하거나, test count·PASS 문자열만으로 qualified를 선언하지 않는다.
+과거 `just retrieval-contract-local`과 Python 전체 suite는 당시 local diagnostic으로 exit 0이었지만 현 HEAD clean-source proof가 아니다. `benchmark-prep-local`, clean-source contract/SDK receipts, live pair 및 성능 검증은 이번 재감사에서 `VERIFIED`가 아니다. 특히 현재 dirty 작업 트리를 clean으로 꾸미거나, 과거 HEAD의 receipt를 재활용하거나, test count·PASS 문자열만으로 qualified를 선언하지 않는다.

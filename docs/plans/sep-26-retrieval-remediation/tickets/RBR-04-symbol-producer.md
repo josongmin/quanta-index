@@ -1,6 +1,6 @@
 # RBR-04 — 소스 기반 심볼 생성과 파일 단위 combined publication
 
-## 현행 판정 — 2026-09-26, `af640562` + dirty overlay
+## 현행 판정 — 2026-09-26, `6a142add` + sep-23 계약 문서 dirty
 
 - 구현: `symbols.rs`의 다언어 definition producer, `batch.rs::assemble_batch`의 파일당 combined `replace_scope`, symbol payload/producer identity가 포함된 digest를 코드에서 확인. 단, `extract_corpus_symbols`는 **지원하지 않는 admitted 파일을 skip하고 경로 목록은 count만** phase metrics에 남긴다. 아래 작업 3의 `unsupported grammar ... explicit coverage failure` 계약과 다르다.
 - 검증: 이전 5언어/SDK 수행 기록은 현 source의 storage·daemon proof가 아니다. 현 frozen-source 수작업 span, replace/reopen, source/grammar mutation, exact nextest receipt는 `NOT_RUN`.

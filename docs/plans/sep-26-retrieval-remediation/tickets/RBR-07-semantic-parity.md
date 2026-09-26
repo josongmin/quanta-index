@@ -1,6 +1,6 @@
 # RBR-07 — Full-vector parity와 exact/ANN 원인 분리
 
-## 현행 판정 — 2026-09-26, `af640562` + dirty overlay
+## 현행 판정 — 2026-09-26, `6a142add` + sep-23 계약 문서 dirty
 
 - 구현: pinned Python full-vector reference와 Rust parity test, `crates/quanta-index-semantic/tests/exact_ann_decomposition.rs`의 경계 oracle은 코드에서 확인. 과거 실모델 통과는 현 source proof가 아니다.
 - 검증: 이 감사의 pinned asset/digest, ignored parity rail, owning Rust/semantic integration 및 외부 per-query exact-vs-served delta는 `NOT_RUN`. `run.py`의 조건부 same-model T15 verdict는 임의 `pass` 요약만으로 통과할 수 있어 proof-integrity `FAILED`.

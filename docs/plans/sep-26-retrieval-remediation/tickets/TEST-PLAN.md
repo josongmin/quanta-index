@@ -1,6 +1,6 @@
 # RBR 공통 검증·완료 계약
 
-상태: 공통 완료 계약. 티켓별 구현·검증의 **현재 판정**은 [CURRENT-AUDIT.md](CURRENT-AUDIT.md)에 있다. 현 소스의 전체 proof와 qualified pair는 아직 검증되지 않았다. 기존 [RB TEST-PLAN](../../sep-23-retrieval-bench/tickets/TEST-PLAN.md)의 입력 격리·replay·성능 자격을 약화하지 않는다.
+상태: 공통 완료 계약. 티켓별 구현·검증의 **현재 판정**은 [CURRENT-AUDIT.md](CURRENT-AUDIT.md)의 HEAD `6a142add` 코드 재감사를 따른다. 현 소스의 전체 proof와 qualified pair는 아직 검증되지 않았다. sep-23 비교 문서 dirty는 retrieval source closure에 포함되어 있다. 기존 [RB TEST-PLAN](../../sep-23-retrieval-bench/tickets/TEST-PLAN.md)의 입력 격리·replay·성능 자격을 약화하지 않는다.
 
 ## 1. 공통 oracle와 부정 테스트
 
