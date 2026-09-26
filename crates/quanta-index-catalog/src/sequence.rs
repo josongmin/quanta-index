@@ -544,29 +544,15 @@ pub(crate) fn verify_integrity(
             SequenceEventKindV1::CandidateSeal => crate::candidate::verify_candidate_event_pair(
                 connection, path, kind, sequence, &identity, &payload,
             )?,
-            SequenceEventKindV1::Activation => {
-                pair_exists(
-                    connection,
-                    path,
-                    "SELECT 1 FROM repomap_activation_v1 WHERE activation_sequence = ?1",
-                    sequence,
-                    "activation",
+            SequenceEventKindV1::Activation | SequenceEventKindV1::RepoMapInvalidation => {
+                crate::candidate::verify_activation_event_pair(
+                    connection, path, kind, sequence, &identity, &payload,
                 )?;
             }
             // OperationInvalidation is itself the idempotency lane's terminal
             // record: GC removes its row, and an uncertain supersession may
             // have no earlier terminal event. Rollback has no current owner.
             SequenceEventKindV1::Rollback | SequenceEventKindV1::OperationInvalidation => {}
-            SequenceEventKindV1::RepoMapInvalidation => {
-                pair_exists(
-                    connection,
-                    path,
-                    "SELECT 1 FROM repomap_activation_v1
-                     WHERE terminal_sequence = ?1 AND active = 0",
-                    sequence,
-                    "repomap activation invalidation",
-                )?;
-            }
             SequenceEventKindV1::RepoMapCandidateQuarantine => {
                 crate::candidate::verify_candidate_event_pair(
                     connection, path, kind, sequence, &identity, &payload,
@@ -630,27 +616,6 @@ pub(crate) fn is_invalidated(
         .optional()
         .map_err(|error| engine_error("read invalidation", path, &error))?;
     Ok(found.is_some())
-}
-
-/// The integrity pass's domain-pairing lookup: the named row must exist.
-fn pair_exists(
-    connection: &Connection,
-    path: &std::path::Path,
-    sql: &str,
-    sequence: i64,
-    label: &str,
-) -> Result<(), CoreError> {
-    let found: Option<i64> = connection
-        .query_row(sql, params![sequence], |row| row.get(0))
-        .optional()
-        .map_err(|error| engine_error("pair integrity lookup", path, &error))?;
-    if found.is_none() {
-        return Err(CoreError::Typed {
-            code: quanta_index_contract::SearchPlaneErrorCodeV2::CatalogRowCorrupt,
-            message: format!("catalog: {label} event {sequence} has no exact domain pair"),
-        });
-    }
-    Ok(())
 }
 
 impl SqliteCatalog {
