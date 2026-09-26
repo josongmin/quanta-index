@@ -1,10 +1,15 @@
 # RBR-01 — SDK 응답과 단계별 실행 정보 보존
 
-## 현행 판정 — 2026-09-26, 관측 HEAD `7cefac4a` + 공유 dirty
+## 현행 판정 — 2026-09-26, 관측 HEAD `f9c3b4dc` + 공유 dirty
 
 - 최신 코드 보완: 세 query route에 startup-bound `QueryStageObservationPolicy::{Enabled,Disabled}`를 구현했다. 기본값은 Enabled이고 `SearchdConfig`의 `QUANTA_INDEX_QUERY_STAGE_OBSERVATION=enabled|disabled`만 canonical selector로 허용한다. Disabled는 per-stage `Instant`를 읽지 않고 stage vector를 할당하지 않으며 `stage_timings=None`을 반환한다. 기존 operational metric/deadline clocks는 계속 작동하므로 **stage-only overhead** 측정이다. runner sidecar 출력 전환과 별개다.
-- lexical pagination의 observation-authority 누수도 제거했다. CBOR page budget은 실제 timing slot 길이를 제외하고 on/off 동일 1024-byte reserve를 더한다. worst-case 네 stage shape가 reserve보다 작은지 검증한다. 이 변경은 byte-cap 근처 page를 이전보다 보수적으로 자를 수 있으므로 enabled의 예전 경계 row count까지 동일하다고 주장하지 않는다. ranking/window/cursor/cancellation의 on/off 동등성은 유지해야 한다.
+- lexical pagination의 observation-authority 누수도 제거했다. CBOR page budget은 실제 timing slot 길이를 제외하고 on/off 동일 512-byte reserve를 더한다. worst-case 네 stage shape가 reserve보다 작은지 검증한다. 첫 1024-byte 시안은 기존 2900-byte first-row/cursor guard를 실제 실패시켰으므로 해당 guard를 지우거나 완화하지 않고 reserve를 줄여 복원했다. 이 변경은 byte-cap 근처 page를 이전보다 보수적으로 자를 수 있으므로 enabled의 예전 모든 경계 row count까지 동일하다고 주장하지 않는다. ranking/window/cursor/cancellation의 on/off 동등성은 유지해야 한다.
 - 잔여 통합/측정: daemon selector와 config/binary identity를 capture/replay에 바인딩하고 stage None/present 및 selector 위조/불일치 거부를 검증한다. 동일 query/corpus에서 서버 stage 계측 비용과 sidecar 직렬화 비용을 **별도** 측정한다. 실제 overhead·fresh SDK/clean-source receipt는 `NOT_RUN`; ingest transient observation은 RBR-10 소유다. 현재 source/lane 검증 receipt는 아래 최신 보완 기록으로 구분한다.
+- 측정 경계: client wall-time on/off는 stage clock/storage뿐 아니라 Some-vs-None stage DTO의 IPC 직렬화·전송 차이도 포함한다. 이를 clock-only 또는 전체 observability 비용이라고 부르지 않는다. 기존 operational metric/deadline 비용은 양쪽 공통이고 runner sidecar 직렬화는 별도 축이다.
+- 결과 동등성 fixture는 충분한/unbounded budget과 고정 cursor clock을 사용한다. Deadline/cancellation 검사는 off에서도 그대로 유지하지만 계측 비용이 매우 촉박한 absolute deadline을 넘기는 경우까지 성공/timeout 동등하다고 주장하지 않는다. 실제 비교에서 timeout/partial이 발생하면 정상 pair로 정규화하거나 누락하지 말고 판정을 거부한다.
+- 최신 local 검증: `./scripts/cargow test -p quanta-index-searchd --lib --locked app::config::tests:: -- --nocapture`에서 **38 passed, 54 filtered**, exit 0. canonical selector/invalid values와 양 deployment entry-point의 env family wiring fence를 포함한다. raw `/private/tmp/qi-query-observation.3RQXR5/daemon-config-tests.log`; 당시 9개 query/config source digest는 before/after 동일했다. `./scripts/cargow test -p quanta-index-search-plane --lib --locked`의 512-byte reserve 재실행은 **425 passed, 0 failed**, exit 0 (`search-plane-lib-reserve512.log`). 9개 신설 observation tests와 기존 2900-byte first-row guard·모든 lexical pagination 회귀를 포함한다. cursor A/B는 test-only 고정 clock으로 issuance/expiry input도 동일하게 바인딩한다. final-source cached 재실행/Clippy는 별도 closeout log로 갱신한다. 이 결과를 SDK/live/clean qualification으로 확대하지 않는다.
+- final collector 재검증: `StageTimings::record_elapsed`로 정리한 최종 bytes에서 같은 full-lib 명령 **425 passed, 0 failed**, exit 0, tests 5.30s (`search-plane-lib-collector.log`). 10개 owned query/config source digest before/after가 동일하다(`query-source-collector-{before,after}.sha256`), binary digest는 `search-plane-test-binary-final.sha256`. final all-target Clippy는 별도 결과로 갱신하며 source-stable owner-local proof를 clean-source/live qualification으로 승격하지 않는다.
+- 최종 query all-target Clippy: `./scripts/cargow clippy -p quanta-index-search-plane --all-targets --locked -- -D warnings` exit 0 (`search-plane-clippy-final.log`); source digest는 final after까지 동일하다. 반면 searchd를 포함한 확대 명령은 별도 committed/shared daemon의 state_migration collapsible-if 2건, supervisor indexing 2건, request_events test indexing 3건으로 `FAILED`였다(`query-clippy-metadata-stable.log`). 이 7건은 query 정책 변경의 산물이 아니며 중앙 통합 소유자가 처리한다. query 성공을 daemon/all-workspace lint 성공으로 확대하지 않는다.
 - 아래 실행 수치·artifact는 각 과거 dirty snapshot의 local 기록이다. 최신 inventory/검증은 [CURRENT-AUDIT](CURRENT-AUDIT.md)를 따르며 현재 live SDK/clean receipt와 실제 on/off overhead는 `NOT_RUN`이다.
 
 - 구현: `SearchExplanation.stage_timings`의 typed server-monotonic elapsed/calls/returned-candidate DTO를 lexical/semantic/hybrid의 실제 prepare/read-view/search/embed/admission/fusion/project 경계에 추가했다. lexical `TextQueryResponse`도 공통 explanation을 실어 SDK→diagnostic v4로 전달한다. diagnostic replay는 route별 필수·순서·중복·count·request ID를 검증한다. dense fetch는 refill의 중복 출력 누계이고 dense admission에 중첩되므로 합산 총시간이 아니다. ingest publish stage는 아직 공개 경로가 없다.
@@ -24,7 +29,12 @@
 - [main.rs](../../../../benchmarks/retrieval/src/main.rs): capture/phase metrics와 diagnostic 호출.
 - [run.py](../../../../tools/benchmark/retrieval/run.py): `validate_retrieval_diagnostic`, frozen sidecar/replay.
 - [semantic_query.rs](../../../../crates/quanta-index-search-plane/src/query_dispatcher/semantic_query.rs): `build_hybrid_response_explanation`.
-- 단계 trace가 필요할 때만 `query_dispatcher/routes/{hybrid,semantic}.rs`, `semantic_derive.rs`, semantic `build.rs`를 확장한다.
+- [stage_timing.rs](../../../../crates/quanta-index-search-plane/src/query_dispatcher/stage_timing.rs): canonical policy/`start`, guarded stateful `record_elapsed`, disabled no-storage collector, maximum CBOR reserve guard.
+- [dispatcher.rs](../../../../crates/quanta-index-search-plane/src/query_dispatcher/dispatcher.rs): startup-bound `with_query_stage_observation`/getter; lexical/semantic/hybrid routes consume it without changing execution authority.
+- [response_budget.rs](../../../../crates/quanta-index-search-plane/src/query_dispatcher/response_budget.rs): observation-independent byte accounting and `LEXICAL_STAGE_RESERVE_BYTES=512`.
+- [config.rs](../../../../crates/quanta-index-searchd/src/app/config.rs), [runtime.rs](../../../../crates/quanta-index-searchd/src/app/runtime.rs): strict env family, both entry-point fence and dispatcher wiring.
+- [stage_observation.rs](../../../../crates/quanta-index-search-plane/src/query_dispatcher/tests/stage_observation.rs): on/off full-outcome/cursor/correlation/cancellation/budget fixtures. `continuation.rs::with_clock_for_tests` is test-only input pinning, not a production clock change.
+- Publish trace는 RBR-10 소유의 `semantic_derive.rs`/semantic `build.rs`와 별도 transient DTO/SDK 연결을 따른다.
 
 ## 작업
 

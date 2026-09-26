@@ -453,10 +453,8 @@ rust-bench-dsl-warm:
     env QUANTA_INDEX_BUILD_LANE=bench-lane QUANTA_INDEX_BENCH_DISABLE_QUERY_OBS=1 bash -lc 'source scripts/quanta-index-env.sh && BIN="$CARGO_TARGET_DIR/release/dsl_warm_matrix" && test -x "$BIN" && "$BIN" --out "$(pwd)/artifacts/dsl-bench/warm-matrix.json"'
 
 # Exploratory criterion view for warm scenarios. Not gate authority.
-rust-bench-dsl-warm-criterion:
-    mkdir -p artifacts/dsl-bench
-    env DSL_BENCH_WARM_OUT="$(pwd)/artifacts/dsl-bench/warm-matrix.criterion.json" \
-      {{cargo}} --lane bench-lane bench -p quanta-index-searchd-runtime --bench dsl_query_matrix --all-features --locked
+rust-bench-dsl-warm-criterion $evidence_root:
+    python3 tools/benchmark/benchctl.py run dsl-diagnostic --evidence-root "$evidence_root"
 
 rust-bench-dsl-cold samples="20":
     mkdir -p artifacts/dsl-bench
@@ -590,12 +588,13 @@ rust-verify-quality-ann:
 # no timeouts; latency advisory on this host.
 # Proves: the concurrency module's tally/row invariants, then serves one sealed
 # generation of the seeded medium corpus and runs 1/8/32 clients over the mixed
-# lexical/semantic/hybrid/count route set with a slow page-maximum client mixed
+# lexical/semantic/hybrid/symbol/count route set with a slow page-maximum client mixed
 # in above one client, writing one provenanced BenchArtifactV1 per client count
 # (p50/p95/p99, QPS, error/timeout counts, head-of-line ratio). Small on this
-# host by default (`requests` per client); the Linux perf runner raises it.
+# host by default (at least `requests` per client). Each route and the slow
+# client require 16 samples; fast clients continue until the slow floor is met.
 # Artifacts: artifacts/search-quality/concurrency/latest/summary-c{1,8,32}.json
-rust-verify-quality-concurrency requests="16":
+rust-verify-quality-concurrency requests="80":
     python3 tools/ci/timing/check_host_contention.py
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-harness --lib concurrency:: --all-features --locked -- --nocapture
     mkdir -p artifacts/search-quality/concurrency/latest

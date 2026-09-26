@@ -96,7 +96,7 @@ impl SqliteCatalog {
         // process and is aborted before the catalog answers anything.
         let _recovered = crate::idempotency::recover_unfinished_rows(&initialization, &path)?;
         let _leases = crate::idempotency::release_stale_mutation_leases(&initialization, &path)?;
-        crate::sequence::verify_integrity(&initialization, &path)?;
+        crate::integrity::verify_integrity(&initialization, &path)?;
         initialization
             .commit()
             .map_err(|error| engine_error("commit catalog initialization", &path, &error))?;

@@ -1284,7 +1284,8 @@ pub(crate) struct IngestCallBinding {
     /// `None` where the route's receipt carries no batch echo to check.
     commitment: Option<(ManifestGeneration, String)>,
     repo_map_v2: Option<RepoMapPublishBundleRequestV2>,
-    search_corpus: Option<quanta_index_contract::SearchCorpusIngestBatch>,
+    /// Identity only: retaining the batch would clone all corpus source text.
+    search_corpus: Option<(quanta_index_contract::GenerationPin, String, bool)>,
 }
 
 impl IngestCallBinding {
@@ -1359,7 +1360,15 @@ impl IngestCallBinding {
             commitment,
             repo_map_v2,
             search_corpus: match request {
-                SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch) => Some(batch.clone()),
+                SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch) => Some((
+                    quanta_index_contract::GenerationPin::new(
+                        batch.repo_id.clone(),
+                        batch.revision_id.clone(),
+                        batch.generation,
+                    ),
+                    batch.batch_digest.clone(),
+                    batch.seal,
+                )),
                 SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(_)
                 | SearchPlaneIngestIpcRequest::PublishHistoryBatch(_)
                 | SearchPlaneIngestIpcRequest::PublishRepoCommitRecencyBatch(_)
@@ -1383,10 +1392,11 @@ impl IngestCallBinding {
         if let SearchPlaneIngestIpcResponse::SearchCorpusReceipt(outcome) = response
             && let Some(observation) = &outcome.observation
         {
-            let batch = self.search_corpus.as_ref().ok_or_else(|| {
+            let (pin, digest, sealed) = self.search_corpus.as_ref().ok_or_else(|| {
                 SdkError::Protocol("unexpected search corpus observation".to_string())
             })?;
-            observation.validate_for(request_id, batch, &outcome.receipt)
+            observation
+                .validate_identity(request_id, pin, digest, *sealed, &outcome.receipt)
                 .map_err(SdkError::Protocol)?;
         }
         Ok(())

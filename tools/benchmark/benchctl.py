@@ -155,7 +155,7 @@ def parse_args(
     ):
         child = subparsers.add_parser(command, help=help_text)
         child.add_argument("profile", choices=sorted(profiles))
-        if command in {"run", "validate"}:
+        if command in {"run", "validate", "summarize"}:
             child.add_argument(
                 "--evidence-root",
                 type=Path,
@@ -165,6 +165,16 @@ def parse_args(
                 ),
             )
         if command == "run":
+            child.add_argument("--agent-recording", type=Path)
+            child.add_argument("--scan-recording", type=Path)
+            child.add_argument("--recorded-authenticity", default=None,
+                               choices=["recorded_unauthenticated", "authenticated"])
+        if command == "run":
+            child.add_argument("--criterion-samples", type=int)
+            child.add_argument("--criterion-warmup", type=float)
+            child.add_argument("--criterion-measurement", type=float)
+            child.add_argument("--criterion-resamples", type=int)
+            child.add_argument("--producer-timeout", type=int)
             child.add_argument(
                 "--cold-samples",
                 type=int,
@@ -714,7 +724,7 @@ def replay_command(repo_root: Path, reference: str, evidence_root: Path | None) 
         run_dir = store.run_dir(run_id)
     try:
         evidence = store.load(run_id)
-    except EvidenceError as exc:
+    except (ValueError, OSError) as exc:
         print(f"ERROR: replay refused: {exc}", file=sys.stderr)
         return 2
     registry_path = repo_root / "tools" / "benchmark" / "registry.toml"
@@ -725,7 +735,29 @@ def replay_command(repo_root: Path, reference: str, evidence_root: Path | None) 
         return 2
     native_families = load_manifest(registry_path, repo_root=repo_root)["families"]
     artifact_oracle = "not_applicable"
-    if evidence["family"] in native_families:
+    if evidence["profile"] == "recorded":
+        from recorded_capture import replay_run as replay_recorded
+
+        try:
+            replay_recorded(store, evidence)
+        except (ValueError, OSError, UnicodeError) as exc:
+            print(f"ERROR: recorded replay refused: {exc}", file=sys.stderr)
+            return 2
+        artifact_oracle = "pass"
+    if registry["families"][evidence["family"]]["native_schema"] == "criterion:raw":
+        from criterion_capture import replay_run
+
+        try:
+            replay_run(
+                store,
+                evidence,
+                registry["producers"][registry["families"][evidence["family"]]["producer"]],
+            )
+        except (ValueError, OSError, UnicodeError) as exc:
+            print(f"ERROR: Criterion replay refused: {exc}", file=sys.stderr)
+            return 2
+        artifact_oracle = "pass"
+    if evidence["family"] in native_families and evidence["profile"] != "recorded":
         checker = _load_lint_module(repo_root)
         family = native_families[evidence["family"]]
         artifacts = []
@@ -745,6 +777,7 @@ def replay_command(repo_root: Path, reference: str, evidence_root: Path | None) 
                 head=evidence["source"]["revision"],
                 require=True,
                 manifest={"families": native_families},
+                artifact_path=native,
             )
             if refusals:
                 print(
@@ -783,6 +816,8 @@ def replay_command(repo_root: Path, reference: str, evidence_root: Path | None) 
         "verdict": evidence["verdict"],
         "replay": "contract_only" if artifact_oracle == "not_applicable" else "re_derived",
     }
+    if evidence["profile"] == "recorded":
+        receipt["authenticity"] = "recorded_unauthenticated"
     print(json.dumps(receipt, sort_keys=True, indent=2))
     return 0
 
@@ -846,7 +881,12 @@ def _capture_native_family(
             checker = _load_lint_module(repo_root)
         artifact = checker.parse_artifact_bytes(raw)
         refusals = checker.check_artifact(
-            artifact, dimension=family, head=initial_head, require=True, manifest=manifest
+            artifact,
+            dimension=family,
+            head=initial_head,
+            require=True,
+            manifest=manifest,
+            artifact_path=path,
         )
         if refusals:
             raise EvidenceError(f"native artifact refused: {'; '.join(refusals)}")
@@ -1271,6 +1311,159 @@ def main(argv: list[str] | None = None) -> int:
         return replay_command(repo_root, reference, args.evidence_root)
 
     profile = profiles[args.profile]
+    if args.command == "run" and args.profile != "recorded" and any(
+        getattr(args, key) is not None
+        for key in ("agent_recording", "scan_recording", "recorded_authenticity")
+    ):
+        print("ERROR: recorded input controls apply only to recorded; no producer was executed", file=sys.stderr)
+        return 2
+    if args.profile == "recorded" and args.command == "compare":
+        print("ERROR: recorded imports have no qualified baseline/comparator", file=sys.stderr)
+        return 2
+    if args.profile == "recorded" and args.command in {"run", "validate"}:
+        from recorded_capture import capture as import_recorded
+        from recorded_capture import validate as validate_recorded
+
+        root = resolve_evidence_root(args.evidence_root)
+        if root is None:
+            print("ERROR: recorded import/validation requires --evidence-root; no producer was executed", file=sys.stderr)
+            return 2
+        registry = load_registry(repo_root / "tools/benchmark/registry.toml", repo_root=repo_root)
+        try:
+            if args.command == "run":
+                if any(getattr(args, key) is not None for key in (
+                    "criterion_samples", "criterion_warmup", "criterion_measurement",
+                    "criterion_resamples", "producer_timeout", "cold_samples")) or args.admit_baseline:
+                    raise EvidenceError("recorded imports do not execute timing producers")
+                if args.agent_recording is None or args.scan_recording is None:
+                    raise EvidenceError("recorded import requires --agent-recording and --scan-recording")
+                document = import_recorded(repo_root, root, registry, args.agent_recording,
+                                           args.scan_recording,
+                                           args.recorded_authenticity or "recorded_unauthenticated")
+            else:
+                document = validate_recorded(repo_root, root, registry)
+        except (ValueError, OSError, UnicodeError) as exc:
+            print(f"ERROR: recorded profile refused: {exc}", file=sys.stderr)
+            return 2
+        print(json.dumps(document, sort_keys=True, indent=2))
+        return 0
+    if args.profile in {"micro", "dsl-diagnostic"} and args.command == "compare":
+        print(
+            "ERROR: Criterion profiles are diagnostic-only and have no registered baseline/comparator",
+            file=sys.stderr,
+        )
+        return 2
+    if args.command == "run" and args.profile not in {"micro", "dsl-diagnostic"}:
+        if any(
+            getattr(args, key) is not None
+            for key in (
+                "criterion_samples",
+                "criterion_warmup",
+                "criterion_measurement",
+                "criterion_resamples",
+                "producer_timeout",
+            )
+        ):
+            print(
+                "ERROR: Criterion sampling/timeout controls apply only to micro/dsl-diagnostic; no producer was executed",
+                file=sys.stderr,
+            )
+            return 2
+    if args.profile == "recorded" and args.command == "summarize":
+        root = resolve_evidence_root(args.evidence_root)
+        if root is not None:
+            from profile_capture import load_capture
+
+            registry = load_registry(repo_root / "tools/benchmark/registry.toml", repo_root=repo_root)
+            try:
+                document = load_capture(root, profile="recorded", registry_digest=registry_digest(registry))
+                if document["expected_cases"] != {family: [None] for family in profile["families"]}:
+                    raise EvidenceError("recorded capture inventory differs from registry")
+            except (ValueError, OSError) as exc:
+                print(f"ERROR: cannot summarize recorded capture: {exc}", file=sys.stderr)
+                return 2
+            print(json.dumps({"profile": "recorded", "capture_id": document["capture_id"],
+                              "status": "capture_present_unvalidated", "source": document["source"],
+                              "measurement_count": len(document["runs"]), "authenticity": "unverified",
+                              "qualification": "not_run"}, sort_keys=True, indent=2))
+            return 0
+    if args.profile in {"micro", "dsl-diagnostic"} and args.command == "summarize":
+        root = resolve_evidence_root(args.evidence_root)
+        if root is not None:
+            from criterion_capture import require_case_inventory
+            from profile_capture import load_capture
+
+            registry = load_registry(
+                repo_root / "tools/benchmark/registry.toml", repo_root=repo_root
+            )
+            try:
+                document = load_capture(
+                    root, profile=args.profile, registry_digest=registry_digest(registry)
+                )
+                if set(document["expected_cases"]) != set(profile["families"]):
+                    raise EvidenceError("capture has an incomplete profile inventory")
+                for family, cases in document["expected_cases"].items():
+                    require_case_inventory(family, cases)
+            except (ValueError, OSError) as exc:
+                print(f"ERROR: cannot summarize Criterion capture: {exc}", file=sys.stderr)
+                return 2
+            print(
+                json.dumps(
+                    {
+                        "profile": args.profile,
+                        "capture_id": document["capture_id"],
+                        "status": "capture_present_unvalidated",
+                        "measurement_count": len(document["runs"]),
+                        "source": document["source"],
+                        "cases": document["expected_cases"],
+                        "qualification": "not_run",
+                    },
+                    sort_keys=True,
+                    indent=2,
+                )
+            )
+            return 0
+    if args.profile in {"micro", "dsl-diagnostic"} and args.command in {"run", "validate"}:
+        from criterion_capture import capture
+        from criterion_capture import validate as validate_criterion
+
+        root = resolve_evidence_root(args.evidence_root)
+        if root is None:
+            print(
+                "ERROR: Criterion capture/validation requires --evidence-root; no producer was executed",
+                file=sys.stderr,
+            )
+            return 2
+        registry = load_registry(repo_root / "tools/benchmark/registry.toml", repo_root=repo_root)
+        try:
+            if args.command == "run":
+                if args.admit_baseline or args.cold_samples is not None:
+                    raise EvidenceError(
+                        "Criterion capture does not admit DSL baselines or cold samples"
+                    )
+                document = capture(
+                    repo_root,
+                    root,
+                    args.profile,
+                    registry,
+                    samples=100 if args.criterion_samples is None else args.criterion_samples,
+                    warmup=3.0 if args.criterion_warmup is None else args.criterion_warmup,
+                    measurement=5.0
+                    if args.criterion_measurement is None
+                    else args.criterion_measurement,
+                    resamples=100000
+                    if args.criterion_resamples is None
+                    else args.criterion_resamples,
+                    timeout=3600 if args.producer_timeout is None else args.producer_timeout,
+                )
+            else:
+                require_clean_worktree(repo_root)
+                document = validate_criterion(repo_root, root, args.profile, registry)
+        except (ValueError, RuntimeError, OSError) as exc:
+            print(f"ERROR: Criterion profile refused: {exc}", file=sys.stderr)
+            return 2
+        print(json.dumps(document, sort_keys=True, indent=2))
+        return 0
     artifact_profile = args.profile
     manifest = load_manifest(repo_root / "tools" / "benchmark" / "registry.toml")
     native_profile = manifest["profiles"].get(args.profile)

@@ -2267,6 +2267,7 @@ SPEC_OPTIONAL = (
     "quanta_model_dir",
     "query_repetitions_per_root",
     "query_warmup_passes",
+    "query_stage_observation",
     "baseline_route",
     "candidate_route",
     "host_profile",
@@ -2611,6 +2612,7 @@ def load_spec(path: Path) -> dict:
     if "semble" in profiles:
         _validate_semble_profile(profiles["semble"], "spec.execution_profiles.semble")
     _spec_int(spec, "top_k", 1)
+    server_observation_configuration(spec.get("query_stage_observation", "enabled"))
     if not _is_hex(spec["searchd_expected_sha256"], 64):
         raise RunError("spec.searchd_expected_sha256 must be a lowercase sha256")
     strategies = spec["strategies"]
@@ -3279,7 +3281,7 @@ def _validate_ingest_diagnostic(payload: object, record: dict) -> dict:
     }, "ingest observation")
     identity = _validate_ingest_request_identity({key: observation[key] for key in ("repo_id", "revision_id", "generation")})
     expected_pin = {"repo_id": identity["repo_id"], "revision_id": identity["revision_id"], "manifest_generation": identity["generation"], "manifest_digest": receipt["manifest_digest"]}
-    if (pins[0] != {**expected_pin, "track": "lexical"} or pins[1] != {**expected_pin, "track": "semantic"}
+    if (pins[0] != {**expected_pin, "track": "Lexical"} or pins[1] != {**expected_pin, "track": "Semantic"}
         or type(receipt["generation"]) is not int or receipt["generation"] != identity["generation"]
         or capture.get("generation") != identity["generation"]
         or observation["batch_digest"] != receipt["batch_digest"] or not _is_hex(receipt["batch_digest"], 64)
@@ -3292,6 +3294,9 @@ def _validate_ingest_diagnostic(payload: object, record: dict) -> dict:
             raise RunError(f"{where} must be an unsigned integer")
         return value
     u64(observation["request_id"], "ingest request_id", True)
+    for pin in pins:
+        u64(pin["manifest_generation"], "ingest activation pin generation", True)
+    u64(capture.get("generation"), "ingest capture generation", True)
     token = _exact_keys(active["activation_token"], {"root_incarnation", "activation_sequence"}, "ingest activation token")
     incarnation = token["root_incarnation"]
     if (not isinstance(incarnation, list) or len(incarnation) != 16
@@ -3299,6 +3304,8 @@ def _validate_ingest_diagnostic(payload: object, record: dict) -> dict:
         or not any(incarnation)):
         raise RunError("ingest activation root incarnation is invalid")
     u64(token["activation_sequence"], "ingest activation sequence", True)
+    if token["activation_sequence"] != 1:
+        raise RunError("fresh ingest activation sequence must be one")
     roots = _exact_keys(receipt["semantic_content"], {"row_root_digest", "membership_root_digest"}, "ingest semantic content roots")
     if any(not isinstance(value, str) or not value.startswith("sha256:") or not _is_hex(value[7:], 64) for value in roots.values()):
         raise RunError("ingest semantic content roots are not canonical")
@@ -5658,7 +5665,9 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         system_orders = protocol_payload["system_orders"]
         root_digests = protocol_payload["query_protocol_sha256s"]
         protocol_shape_valid = protocol_shape_valid and (
-            protocol_payload["lock_version"] in (2, 3)
+            type(protocol_payload["lock_version"]) is int
+            and protocol_payload["lock_version"] in (2, 3)
+            and type(protocol_payload["retrieval_diagnostic_version"]) is int
             and
             all(
                 _is_hex(protocol_payload[key], 64)
@@ -7081,12 +7090,20 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 model_sha256=digest(canonical(sorted(set(model_rows)))),
                 dependency_sha256=sha_file(resolved["semble_lockfile"]),
             )
-            # A self-reported status/count tuple and its digest are not
-            # independent evidence for model equality or incremental state.
-            # Until raw vectors/row-sets plus execution-context binding are
-            # replayable here, a claimed conditional gate must fail closed.
-            raise RunError(f"{tid} raw proof protocol is not implemented")
-        except (RunError, ValueError, OSError):
+            from tools.benchmark.retrieval import conditional_proof
+            kind = "model_vectors" if key == "model_parity" else "incremental_rows"
+            conditional_proof.validate_results(conditional, kind, verify_source=True)
+            context = conditional["execution_context"]
+            if context["suite"]["sha256"] != sha_file(resolved["suite"]) \
+                or context["corpus"]["sha256"] != sha_file(resolved["corpus_manifest"]) \
+                or conditional_proof.load(conditional_proof.decode(context["records"])) != sorted(
+                    [read_json(Path(path)) for path in validated],
+                    key=lambda record: conditional_proof.sha(conditional_proof.canonical(record)),
+                ):
+                raise RunError("conditional execution inputs differ from frozen pair")
+            if conditional["status"] != "pass" or conditional["failed"] != 0:
+                raise RunError("conditional raw replay reports failure")
+        except (RunError, ValueError, OSError, KeyError, TypeError, IndexError):
             missing.append(tid)
             classes.append(fail_class)
 
@@ -8163,6 +8180,12 @@ def _require_conditional_identity(
 
 
 def _validate_parity_results_shape(payload: object, where: str, raw_kind: str) -> dict:
+    if isinstance(payload, dict) and payload.get("schema_version") == 2:
+        from tools.benchmark.retrieval import conditional_proof
+        try:
+            return conditional_proof.validate_results(payload, raw_kind)
+        except (ValueError, KeyError, TypeError, IndexError) as error:
+            raise RunError(f"{where}: {error}") from error
     results = _exact_keys(
         payload,
         {

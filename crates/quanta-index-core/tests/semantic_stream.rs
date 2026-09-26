@@ -457,7 +457,13 @@ impl SemanticScopeStreamBuildPort for DrainingPort {
         &self,
         header: &SemanticIngestHeaderV1,
         scopes: &mut dyn SemanticScopeSource,
-) -> Result<(SemanticStreamTallyV1, quanta_index_contract::IngestStageReport), CoreError> {
+    ) -> Result<
+        (
+            SemanticStreamTallyV1,
+            quanta_index_contract::IngestStageReport,
+        ),
+        CoreError,
+    > {
         if header.dimension()? != DIMENSION {
             return Err(CoreError::InvalidContract("header dimension".to_string()));
         }

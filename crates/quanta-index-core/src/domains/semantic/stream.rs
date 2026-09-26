@@ -504,14 +504,20 @@ pub trait SemanticScopeSource {
 ///
 /// The only build entry of the semantic track: every window the source
 /// issues is admitted against the port's window policy, appended, and
-/// dropped before the next is requested; the returned tally is what the
-/// port appended, counted on its side.
+/// dropped before the next is requested. The returned tally is what the
+/// port appended, counted on its side; the report observes only this build.
 pub trait SemanticScopeStreamBuildPort: Send + Sync {
     fn build_stream(
         &self,
         header: &SemanticIngestHeaderV1,
         scopes: &mut dyn SemanticScopeSource,
-    ) -> Result<(SemanticStreamTallyV1, quanta_index_contract::IngestStageReport), CoreError>;
+    ) -> Result<
+        (
+            SemanticStreamTallyV1,
+            quanta_index_contract::IngestStageReport,
+        ),
+        CoreError,
+    >;
 }
 
 /// A semantic ingest batch without its replace scopes: what the build knows

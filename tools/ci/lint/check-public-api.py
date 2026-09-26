@@ -90,6 +90,9 @@ def render_public_api(package: str) -> str:
     # Normalize trailing whitespace + force trailing newline so diffs stay
     # stable across editors.
     body = "\n".join(line.rstrip() for line in result.stdout.splitlines())
+    expected_root = f"pub mod {package.replace(chr(45), chr(95))}"
+    if next((line for line in body.splitlines() if line.strip()), None) != expected_root:
+        raise RuntimeError(f"cargo public-api returned missing or wrong crate root for {package}")
     return body + "\n"
 
 
@@ -100,7 +103,7 @@ def baseline_path(package: str) -> Path:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--update-baseline", action="store_true")
-    parser.add_argument("--packages", nargs="*", default=GUARDED_CRATES)
+    parser.add_argument("--packages", nargs="+", default=GUARDED_CRATES)
     return parser.parse_args()
 
 

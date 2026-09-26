@@ -35,7 +35,7 @@ use quanta_index_searchd::app::state_migration::{
     CatalogFreezeV1, CatalogSnapshotPort, CatalogSnapshotV1, OfflineSourceSessionV1,
     OfflineStateCommandV1, OfflineStateOperationV1, OfflineStateVerificationV1,
     SourceFreezeReceiptV1, StateRootDeepOpenPort, StateRootDeepOpenReceiptV1,
-    run_offline_backup_v1, run_offline_verify_v1,
+    run_offline_backup_v1, run_offline_restore_v1, run_offline_verify_v1,
 };
 use quanta_index_searchd_harness::E2eRuntime;
 use quanta_index_searchd_runtime::state_migration::{
@@ -942,6 +942,269 @@ fn production_boot_refuses_auxiliary_snapshot_before_creating_catalog_or_lease()
 // ---------------------------------------------------------------------------
 // Backup and restore: one freeze boundary, verified
 // ---------------------------------------------------------------------------
+
+#[test]
+fn restore_refuses_backup_inventory_changed_before_custody() -> TestResult {
+    for mutation in [
+        "added-file",
+        "changed-file",
+        "missing-file",
+        "added-directory",
+        "missing-directory",
+    ] {
+        let source = private_root()?;
+        let backup_parent = private_root()?;
+        let restore_parent = private_root()?;
+        build_live_root(source.path())?;
+        fs::write(
+            source.path().join("retained-note"),
+            b"original backup bytes",
+        )?;
+        fs::create_dir(source.path().join("retained-empty"))?;
+        let backup = backup_parent.path().join("backup-root");
+        make_backup(source.path(), &backup)?;
+        match mutation {
+            "added-file" => fs::write(backup.join("unadvertised-note"), b"extra")?,
+            "changed-file" => fs::write(backup.join("retained-note"), b"changed backup bytes")?,
+            "missing-file" => fs::remove_file(backup.join("retained-note"))?,
+            "added-directory" => fs::create_dir(backup.join("unadvertised-empty"))?,
+            "missing-directory" => fs::remove_dir(backup.join("retained-empty"))?,
+            _ => return Err("invalid closed mutation fixture".into()),
+        }
+        let restored = restore_parent.path().join("restored-root");
+        let command = OfflineStateCommandV1 {
+            operation: OfflineStateOperationV1::Restore,
+            source_root: backup,
+            destination_root: Some(restored.clone()),
+        };
+        let error = run_offline_state_command_with_v1(&command, &NoStateMigrationFaultsV1)
+            .expect_err(
+                "restore must refuse inventory that disagrees with the original backup manifest",
+            );
+        assert!(
+            matches!(
+                command_code(&error),
+                Some(
+                    SearchPlaneErrorCodeV2::NotFound
+                        | SearchPlaneErrorCodeV2::SearchTrackManifestDigestMismatch
+                )
+            ),
+            "{mutation}: {error}"
+        );
+        assert!(
+            !restored.exists(),
+            "{mutation}: refusal must not publish a destination"
+        );
+        assert!(
+            !staging_directory_for_v1(&restored).exists(),
+            "{mutation}: source admission must precede staging creation"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn restore_refuses_self_signed_wrong_catalog_rows_before_staging() -> TestResult {
+    let source = private_root()?;
+    let backup_parent = private_root()?;
+    let restore_parent = private_root()?;
+    build_live_root(source.path())?;
+    let backup = backup_parent.path().join("backup-root");
+    make_backup(source.path(), &backup)?;
+    let path = backup.join("state-backup-manifest-v1.txt");
+    let mut manifest = read_root_manifest_v1(&path)?;
+    manifest.catalog_rows += 1;
+    fs::write(&path, manifest.encode())?;
+    let restored = restore_parent.path().join("restored");
+    let command = OfflineStateCommandV1 {
+        operation: OfflineStateOperationV1::Restore,
+        source_root: backup,
+        destination_root: Some(restored.clone()),
+    };
+    let error = run_offline_state_command_with_v1(&command, &NoStateMigrationFaultsV1)
+        .expect_err("a valid self-digest cannot replace the independent catalog row count");
+    assert_eq!(
+        command_code(&error),
+        Some(SearchPlaneErrorCodeV2::CatalogRowCorrupt)
+    );
+    assert!(!restored.exists());
+    assert!(!staging_directory_for_v1(&restored).exists());
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn ambiguous_dangling_or_directory_authority_refuses_verify_and_restore() -> TestResult {
+    for mutation in ["dangling", "directory"] {
+        let source = private_root()?;
+        let backup_parent = private_root()?;
+        let restore_parent = private_root()?;
+        build_live_root(source.path())?;
+        let backup = backup_parent.path().join("backup-root");
+        make_backup(source.path(), &backup)?;
+        let alternate = backup.join(STATE_ROOT_MANIFEST_FILE_NAME);
+        match mutation {
+            "dangling" => std::os::unix::fs::symlink("absent-authority", &alternate)?,
+            "directory" => fs::create_dir(&alternate)?,
+            _ => return Err("invalid closed mutation fixture".into()),
+        }
+        for operation in [
+            OfflineStateOperationV1::Verify,
+            OfflineStateOperationV1::Restore,
+        ] {
+            let destination = restore_parent.path().join("restored");
+            let command = OfflineStateCommandV1 {
+                operation,
+                source_root: backup.clone(),
+                destination_root: (operation == OfflineStateOperationV1::Restore)
+                    .then_some(destination.clone()),
+            };
+            let error = run_offline_state_command_with_v1(&command, &NoStateMigrationFaultsV1)
+                .expect_err("a second reserved authority entry cannot be interpreted as absent");
+            assert_eq!(
+                command_code(&error),
+                Some(SearchPlaneErrorCodeV2::InvalidRequest)
+            );
+            assert!(!destination.exists());
+            assert!(!staging_directory_for_v1(&destination).exists());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn backup_manifest_replacement_after_custody_refuses_verify_and_restore() -> TestResult {
+    let source = private_root()?;
+    let backup_parent = private_root()?;
+    let restore_parent = private_root()?;
+    build_live_root(source.path())?;
+    let backup = backup_parent.path().join("backup-root");
+    make_backup(source.path(), &backup)?;
+    let session = backup_session(&backup)?;
+    let path = backup.join("state-backup-manifest-v1.txt");
+    let mut manifest = read_root_manifest_v1(&path)?;
+    manifest.catalog_rows += 1;
+    fs::write(&path, manifest.encode())?;
+    let error = run_offline_verify_v1(&session, &CatalogVerifierV1)
+        .expect_err("verification must consume the authority pinned at session open");
+    assert_eq!(
+        typed_code(&error),
+        Some(SearchPlaneErrorCodeV2::StateRootInsecure)
+    );
+    let restored = restore_parent.path().join("restored");
+    let error = run_offline_restore_v1(
+        &session,
+        &restored,
+        &CatalogVerifierV1,
+        &UnreachedDeepOpenV1,
+        &NoStateMigrationFaultsV1,
+    )
+    .expect_err("restore cannot re-admit a replacement authority");
+    assert_eq!(
+        typed_code(&error),
+        Some(SearchPlaneErrorCodeV2::StateRootInsecure)
+    );
+    assert!(!restored.exists());
+    assert!(!staging_directory_for_v1(&restored).exists());
+    Ok(())
+}
+
+struct ChangeBackupAuthorityV1 {
+    path: PathBuf,
+    bytes: Option<Vec<u8>>,
+}
+
+struct CatalogReadSidecarV1;
+
+impl CatalogSnapshotPort for CatalogReadSidecarV1 {
+    fn snapshot_into(
+        &self,
+        live_root: &Path,
+        destination_file: &Path,
+    ) -> Result<CatalogFreezeV1, CoreError> {
+        CatalogVerifierV1.snapshot_into(live_root, destination_file)
+    }
+
+    fn verify_snapshot_at(&self, snapshot_file: &Path) -> Result<CatalogSnapshotV1, CoreError> {
+        let receipt = CatalogVerifierV1.verify_snapshot_at(snapshot_file)?;
+        // A read-only WAL inspection may create/remove this disposable file.
+        // Force the catalog-directory metadata change without altering payload.
+        let sidecar = snapshot_file.with_extension("sqlite-shm");
+        fs::write(&sidecar, b"disposable read-only sidecar")
+            .map_err(|error| CoreError::Storage(error.to_string()))?;
+        fs::remove_file(&sidecar).map_err(|error| CoreError::Storage(error.to_string()))?;
+        Ok(receipt)
+    }
+}
+
+#[test]
+fn restore_admits_catalog_directory_change_from_read_only_sidecars() -> TestResult {
+    let source = private_root()?;
+    let backup_parent = private_root()?;
+    let restore_parent = private_root()?;
+    build_live_root(source.path())?;
+    let backup = backup_parent.path().join("backup-root");
+    make_backup(source.path(), &backup)?;
+    let session = backup_session(&backup)?;
+    let restored = restore_parent.path().join("restored");
+    let _outcome = run_offline_restore_v1(
+        &session,
+        &restored,
+        &CatalogReadSidecarV1,
+        &StubDeepOpenV1,
+        &NoStateMigrationFaultsV1,
+    )?;
+    assert!(restored.exists());
+    let _verified = verify_current(&restored)?;
+    Ok(())
+}
+
+impl StateMigrationFaultPort for ChangeBackupAuthorityV1 {
+    fn reach(&self, point: StateMigrationFaultPointV1) -> Result<(), CoreError> {
+        if point == StateMigrationFaultPointV1::AfterDataSync {
+            let result = match &self.bytes {
+                Some(bytes) => fs::write(&self.path, bytes),
+                None => fs::remove_file(&self.path),
+            };
+            result.map_err(|error| CoreError::Storage(error.to_string()))?;
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn mid_restore_backup_authority_change_discards_sealed_staging() -> TestResult {
+    for mutation in ["replace", "malformed", "remove"] {
+        let source = private_root()?;
+        let backup_parent = private_root()?;
+        let restore_parent = private_root()?;
+        build_live_root(source.path())?;
+        let backup = backup_parent.path().join("backup-root");
+        make_backup(source.path(), &backup)?;
+        let path = backup.join("state-backup-manifest-v1.txt");
+        let mut manifest = read_root_manifest_v1(&path)?;
+        manifest.catalog_rows += 1;
+        let bytes = match mutation {
+            "replace" => Some(manifest.encode().into_bytes()),
+            "malformed" => Some(b"malformed authority".to_vec()),
+            "remove" => None,
+            _ => return Err("invalid closed mutation fixture".into()),
+        };
+        let restored = restore_parent.path().join("restored");
+        let command = OfflineStateCommandV1 {
+            operation: OfflineStateOperationV1::Restore,
+            source_root: backup,
+            destination_root: Some(restored.clone()),
+        };
+        let error =
+            run_offline_state_command_with_v1(&command, &ChangeBackupAuthorityV1 { path, bytes })
+                .expect_err("authority loss after copy cannot publish a restored root");
+        assert!(command_code(&error).is_some(), "{mutation}: {error}");
+        assert!(!restored.exists(), "{mutation}");
+        assert!(!staging_directory_for_v1(&restored).exists(), "{mutation}");
+    }
+    Ok(())
+}
 
 #[test]
 fn backup_then_restore_reseals_manifest_with_activation_incarnation() -> TestResult {

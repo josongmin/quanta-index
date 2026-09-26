@@ -23,6 +23,7 @@ import hashlib
 import importlib.metadata
 import json
 import math
+import sys
 from pathlib import Path
 
 SCHEMA_VERSION = 2
@@ -79,10 +80,17 @@ def cosine(left: list[float], right: list[float]) -> float:
 
 
 def main() -> int:
+    if sys.version_info[:2] != (3, 13):
+        raise ValueError("reference execution requires Python 3.13")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model-dir", required=True, type=Path)
     parser.add_argument("--out", required=True, type=Path)
+    parser.add_argument("--inputs-json", type=Path)
+    parser.add_argument("--model-id", choices=[MODEL_ID], default=MODEL_ID)
     args = parser.parse_args()
+    inputs = INPUTS if args.inputs_json is None else json.loads(args.inputs_json.read_bytes())
+    if not isinstance(inputs, list) or not 0 < len(inputs) <= 4096 or any(not isinstance(text, str) for text in inputs):
+        raise ValueError("reference inputs must be 1..4096 strings")
 
     asset_digests = verify_reference_inputs(args.model_dir)
     from model2vec import StaticModel
@@ -93,9 +101,9 @@ def main() -> int:
     # the Rust decoder's unbounded pooling. model2vec 0.9.0 encode applies
     # internal L2 normalization, so the pinned reference output IS the
     # unit layer; the Rust rail compares its L2-normalized output here.
-    vectors = model.encode(INPUTS, max_length=None).tolist()
-    permuted = model.encode(list(reversed(INPUTS)), max_length=None).tolist()
-    if len(vectors) != len(INPUTS) or len(permuted) != len(INPUTS):
+    vectors = model.encode(inputs, max_length=None).tolist()
+    permuted = model.encode(list(reversed(inputs)), max_length=None).tolist()
+    if len(vectors) != len(inputs) or len(permuted) != len(inputs):
         raise ValueError("reference encoder returned an incomplete batch")
     for index, vector in enumerate(reversed(permuted)):
         if vector != vectors[index]:
@@ -107,8 +115,8 @@ def main() -> int:
     # are explicitly L2-normalized before the dot product.
     unit = [l2_normalize(vector) for vector in vectors]
     pairwise = [
-        [cosine(unit[i], unit[j]) for j in range(i + 1, len(INPUTS))]
-        for i in range(len(INPUTS))
+        [cosine(unit[i], unit[j]) for j in range(i + 1, len(inputs))]
+        for i in range(len(inputs))
     ]
 
     payload = {
@@ -124,7 +132,7 @@ def main() -> int:
             "config_sha256": asset_digests["config.json"],
         },
         "policy": {"max_length": None, "normalization": "approx-unit-fp16 (rail L2-normalizes both sides)"},
-        "inputs": INPUTS,
+        "inputs": inputs,
         "vectors": vectors,
         "norms": norms,
         "pairwise_cosine_upper": pairwise,
@@ -134,7 +142,7 @@ def main() -> int:
     args.out.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n")
     print(
         f"parity reference written: {args.out} "
-        f"({len(INPUTS)} inputs x {payload['dimension']} dims)"
+        f"({len(inputs)} inputs x {payload['dimension']} dims)"
     )
     return 0
 

@@ -415,3 +415,36 @@ def test_published_wire_schema_accepts_the_golden_and_refuses_malformed_document
         "samples": 1,
     }
     assert list(validator.iter_errors(broken)), "schema accepted an unregistered unit"
+
+
+def test_proof_counts_are_not_relevance_or_performance():
+    module = _load_evidence_module()
+    record = module.sample_evidence()
+    record["verdict"]["scope"] = "contract"
+    record["payload"] = {
+        "kind": "proof",
+        "rail": "retrieval-contract",
+        "selected": 8,
+        "executed": 8,
+        "passed": 8,
+        "failed": 0,
+        "source_digest": record["source"]["closure_digest"],
+        "execution_context_digest": record["source"]["closure_digest"],
+    }
+    sealed = module.seal(record)
+    assert module.open_evidence(module.to_canonical_json(sealed)) == sealed
+    record["verdict"]["scope"] = "quality"
+    with pytest.raises(ValueError):
+        module.seal(record)
+    record["verdict"]["scope"] = "contract"
+    record["payload"]["executed"] = 7
+    with pytest.raises(ValueError):
+        module.seal(record)
+    record["payload"].update(executed=8, passed=7, failed=1)
+    with pytest.raises(ValueError):
+        module.seal(record)
+    record["verdict"].update(status="fail", reason="one failed test")
+    assert module.seal(record)
+    record["payload"].update(passed=2**64 - 1, failed=1)
+    with pytest.raises(ValueError):
+        module.seal(record)

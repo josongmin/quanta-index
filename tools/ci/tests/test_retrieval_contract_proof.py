@@ -80,6 +80,13 @@ def test_retrieval_local_runs_both_rust_targets_once() -> None:
     assert "--lib --test chunking_contract" in commands
 
 
+def test_retrieval_source_closure_binds_the_shared_junit_owner() -> None:
+    roots = source_closure._python_import_roots(
+        ROOT, ["tools/benchmark/retrieval/contract_proof.py"]
+    )
+    assert "tools/ci/junit_events.py" in roots
+
+
 def test_capture_rejects_dirty_source_before_creating_output(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -179,6 +186,44 @@ def test_pytest_summary_rejects_failed_evidence(tmp_path: Path) -> None:
     )
     with pytest.raises(SystemExit, match="reports failures"):
         MODULE.pytest_summary(junit)
+
+
+@pytest.mark.parametrize(
+    "placement",
+    [
+        '<error message="collection failed"/>',
+        '<properties><property name="status"><failure/></property></properties>',
+        "<unknown><error/></unknown>",
+        '<testcase name="unaccounted"/>',
+    ],
+)
+def test_pytest_summary_refuses_hidden_outcomes_and_cases(tmp_path: Path, placement: str) -> None:
+    junit = tmp_path / "pytest.xml"
+    inventory = tmp_path / "inventory.json"
+    inventory.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "kind": "pytest",
+                "selector": "tools/ci/tests/test_retrieval_benchmark.py",
+                "tests": ["tools.ci.tests.test_retrieval_benchmark.test_ok"],
+            }
+        )
+    )
+    junit.write_text(
+        '<testsuite tests="1" failures="0" errors="0" skipped="0">'
+        '<testcase classname="tools.ci.tests.test_retrieval_benchmark" name="test_ok">'
+        + (
+            "<system-out>" + placement + "</system-out>"
+            if placement.startswith("<testcase")
+            else ""
+        )
+        + "</testcase>"
+        + (placement if not placement.startswith("<testcase") else "")
+        + "</testsuite>"
+    )
+    with pytest.raises(SystemExit):
+        MODULE.pytest_summary(junit, inventory)
 
 
 @pytest.mark.parametrize(
@@ -334,7 +379,7 @@ def test_pytest_inventory_requires_every_collected_test_to_pass(tmp_path: Path) 
         + "</testsuite>",
         encoding="utf-8",
     )
-    with pytest.raises(SystemExit, match="differs from collected"):
+    with pytest.raises(SystemExit, match="did not pass.*skipped"):
         MODULE.pytest_summary(junit, inventory)
 
 

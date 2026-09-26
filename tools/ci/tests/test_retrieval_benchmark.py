@@ -19,9 +19,11 @@ from pathlib import Path
 import jsonschema
 import pytest
 
+from tools.benchmark.retrieval import conditional_proof as cp
 from tools.benchmark.retrieval import evaluator as ev
 from tools.benchmark.retrieval import parity_reference, portable_proof
 from tools.benchmark.retrieval import query_plan as qp
+from tools.benchmark.retrieval import query_timing_overhead as overhead
 from tools.benchmark.retrieval import run as pairrun
 from tools.benchmark.retrieval import semble as semble_adapter
 from tools.ci import source_closure
@@ -101,7 +103,7 @@ def _diagnostic_ingest_fixture(record):
     }
     scope = {"repo_id": "bench-repo", "revision_id": "bench-rev", "manifest_generation": 7, "manifest_digest": receipt["manifest_digest"]}
     ack = {"active": {"generation": {
-        "lexical": {**scope, "track": "lexical"}, "semantic": {**scope, "track": "semantic"},
+        "lexical": {**scope, "track": "Lexical"}, "semantic": {**scope, "track": "Semantic"},
         "semantic_content": roots,
     }, "activation_token": {"root_incarnation": [1] * 16, "activation_sequence": 1}}, "previous_sealed_active": None}
     report = {key: 0 for key in (
@@ -134,6 +136,7 @@ def test_retrieval_diagnostic_v5_ingest_rejects_unbound_partial_replayed_or_forg
         lambda x: x["observation"].update(repo_id="other"),
         lambda x: x["observation"].update(revision_id="other"),
         lambda x: x["observation"].update(generation=8),
+        lambda x: x["observation"].update(generation=True),
         lambda x: x["observation"].update(batch_digest="f" * 64),
         lambda x: x["observation"].update(status="replayed"),
         lambda x: x["observation"].update(status="partial_recovery"),
@@ -155,6 +158,21 @@ def test_retrieval_diagnostic_v5_ingest_rejects_unbound_partial_replayed_or_forg
         mutate(forged)
         with pytest.raises(pairrun.RunError):
             pairrun._validate_ingest_diagnostic(forged, record)
+    forged = json.loads(json.dumps(raw))
+    forged["activation_ack"]["active"]["activation_token"]["activation_sequence"] = 2
+    rebound = json.loads(json.dumps(record))
+    rebound["captures"]["capture"]["activation_digest"] = pairrun.digest(pairrun.canonical_bytes(forged["activation_ack"]["active"]))
+    with pytest.raises(pairrun.RunError, match="sequence must be one"):
+        pairrun._validate_ingest_diagnostic(forged, rebound)
+    for lane in ("lexical", "semantic"):
+        forged = json.loads(json.dumps(raw))
+        forged["activation_ack"]["active"]["generation"][lane]["track"] = lane
+        rebound = json.loads(json.dumps(record))
+        rebound["captures"]["capture"]["activation_digest"] = pairrun.digest(
+            pairrun.canonical_bytes(forged["activation_ack"]["active"])
+        )
+        with pytest.raises(pairrun.RunError, match="identity/fresh receipt/activation"):
+            pairrun._validate_ingest_diagnostic(forged, rebound)
 
 
 def test_query_plan_oracle_uses_nfc_and_rejects_unindexable_runs():
@@ -2539,12 +2557,49 @@ def test_quanta_driver_freezes_typed_failure_without_record(tmp_path, monkeypatc
 
 
 @pytest.mark.skipif(sys.platform == "linux", reason="legacy ps sampler is not Linux owner evidence")
-def test_process_tree_resource_sampler_counts_children_and_kills_timeout(tmp_path):
-    child_code = (
-        "import subprocess,sys,time; "
-        "subprocess.Popen([sys.executable,'-c',"
-        "'import time; x=bytearray(b\"x\"*8_000_000); time.sleep(5)']); "
-        "time.sleep(5)"
+def test_process_tree_resource_sampler_counts_children_and_kills_timeout(tmp_path, monkeypatch):
+    # Reap the child before the root exits. An orphaned zombie can retain its
+    # process group on macOS and make killpg(0) return EPERM; that is correctly
+    # incomplete evidence, not the successful cleanup exercised here.
+    child_code = "\n".join([
+        "import signal, subprocess, sys, time",
+        "child = subprocess.Popen([sys.executable, '-c', "
+        "'import time; x=bytearray(b\"x\"*8_000_000); time.sleep(60)'])",
+        "def terminate(_signal, _frame):",
+        "    child.wait(timeout=5)",
+        "    sys.exit(143)",
+        "signal.signal(signal.SIGTERM, terminate)",
+        "print(child.pid, flush=True)",
+        "time.sleep(60)",
+    ])
+    # Start the timeout exercise after one actual positive-RSS child sample.
+    # Cold interpreter scheduling is not the timeout oracle. Keep a real 30s
+    # readiness bound so missing child evidence still fails instead of hanging.
+    real_clock = pairrun.time
+    readiness_started = real_clock.monotonic()
+    deadline_started = None
+    sample = pairrun._process_tree_sample
+
+    def sample_ready_tree(root_pid):
+        nonlocal deadline_started
+        rows = sample(root_pid)
+        if deadline_started is None and any(
+            row["pid"] != root_pid and row["rss_bytes"] > 8_000_000 for row in rows
+        ):
+            deadline_started = real_clock.monotonic()
+        return rows
+
+    def ready_clock():
+        now = real_clock.monotonic()
+        if deadline_started is not None:
+            return now - deadline_started
+        return 0.0 if now - readiness_started < 30 else 31.0
+
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(pairrun, "_process_tree_sample", sample_ready_tree)
+    monkeypatch.setattr(
+        pairrun, "time", SimpleNamespace(monotonic=ready_clock, sleep=real_clock.sleep)
     )
     metrics = pairrun.run_monitored_process(
         [sys.executable, "-c", child_code],
@@ -2558,7 +2613,12 @@ def test_process_tree_resource_sampler_counts_children_and_kills_timeout(tmp_pat
     assert metrics["exit_code"] != 0
     assert metrics["complete"] is True
     assert metrics["samples"] > 0
+    assert deadline_started is not None, "actual child readiness was never observed"
     assert metrics["peak_rss_bytes"] > 8_000_000
+    child_pid = int((tmp_path / "stdout.log").read_text().strip())
+    owned = {row["pid"]: row for row in metrics["processes"]}
+    assert metrics["root_pid"] in owned
+    assert owned[child_pid]["peak_rss_bytes"] > 8_000_000
     assert metrics["cleanup_complete"] is True
     assert metrics["cleanup_error"] is None
     assert (
@@ -3698,6 +3758,8 @@ def _pair_stage(
     embedder="potion-code",
     cache_regime="true_process_cold",
     alternate_system_order=True,
+    diagnostic_version=4,
+    query_observation="enabled",
 ):
     """Build a complete valid pair stage through the real driver functions."""
     work = tmp_path / "work"
@@ -3873,6 +3935,7 @@ def _pair_stage(
         qdir.mkdir(parents=True)
         sdir.mkdir(parents=True)
         qrec = record(lex_rows, lex_sha, "quanta", f"q-r{rep}", f"run-q-r{rep}")
+        ingest = _diagnostic_ingest_fixture(qrec) if diagnostic_version == 5 else None
         srec = record(sem_rows, sem_sha, "semble", f"s-r{rep}", f"run-s-r{rep}")
         qpath = qdir / "record.json"
         spath = sdir / "record.json"
@@ -4254,10 +4317,14 @@ def _pair_stage(
                 }
             )
         diagnostic_path = qdir / "retrieval-diagnostic.json"
+        if diagnostic_version == 5 and query_observation == "disabled":
+            for row in diagnostic_rows:
+                row["response"]["explanation"]["stage_timings"] = None
         diagnostic_path.write_text(
             json.dumps(
                 {
-                    "schema_version": 4,
+                    "schema_version": diagnostic_version,
+                    **({"server_observation": pairrun.server_observation_configuration(query_observation), "ingest": ingest} if diagnostic_version == 5 else {}),
                     "kind": "quanta_returned_window_diagnostic",
                     "record_sha256": ev.digest(qpath.read_bytes()),
                     "query_pack_sha256": qrec["query_pack_sha256"],
@@ -4518,8 +4585,9 @@ def _pair_stage(
     (stage / "protocol-lock.json").write_text(
         json.dumps(
             {
-                "lock_version": 2,
-                "retrieval_diagnostic_version": 4,
+                "lock_version": 3 if diagnostic_version == 5 else 2,
+                "retrieval_diagnostic_version": diagnostic_version,
+                **({"server_observation": pairrun.server_observation_configuration(query_observation), "ingest_request_identity": pairrun.ingest_request_identity({})} if diagnostic_version == 5 else {}),
                 "rank_metric_k_policy": "declared_top_k_v1",
                 "suite_digest": ev.digest(suite_path.read_bytes()),
                 "query_pack_digest": ev.digest(pack_path.read_bytes()),
@@ -4779,6 +4847,30 @@ def test_model_cache_identity_is_bound_on_every_semble_repetition(tmp_path):
     assert "model cache asset digest differs from adapter" in (
         verdict["state_evidence"]["PAIR_VALID"]["reason"]
     )
+
+
+def test_observation_protocol_v3_replays_and_refuses_policy_or_batch_scope_drift(tmp_path):
+    st = _pair_stage(tmp_path, diagnostic_version=5, query_observation="disabled")
+    assert _stage_verdict(st)["states"]["PAIR_VALID"] == "pass"
+    lock_path = st["stage"] / "protocol-lock.json"
+    lock = json.loads(lock_path.read_text())
+    for key, value in (("server_observation", pairrun.server_observation_configuration("enabled")),
+                       ("ingest_request_identity", {**lock["ingest_request_identity"], "repo_id": "another-repo"})):
+        changed = json.loads(json.dumps(lock))
+        changed[key] = value
+        lock_path.write_text(json.dumps(changed))
+        result = _stage_verdict(st)
+        assert result["states"]["PAIR_VALID"] == "fail"
+        assert "retrieval_diagnostic_invalid" in result["state_evidence"]["PAIR_VALID"]["reason"]
+    lock_path.write_text(json.dumps(lock))
+    assert _stage_verdict(st)["states"]["PAIR_VALID"] == "pass"
+    for field in ("lock_version", "retrieval_diagnostic_version"):
+        changed = json.loads(json.dumps(lock))
+        changed[field] = float(changed[field])
+        lock_path.write_text(json.dumps(changed))
+        result = _stage_verdict(st)
+        assert result["states"]["PAIR_VALID"] == "fail"
+        assert result["state_evidence"]["PAIR_VALID"]["reason"] == "protocol_lock_malformed"
 
 
 def test_new_protocol_requires_bound_retrieval_diagnostic_on_replay(tmp_path):
@@ -7733,6 +7825,21 @@ def test_v3_spec_accepts_lockfile_path(tmp_path):
     spec_path.write_text(json.dumps(_g0_spec()), encoding="utf-8")
     loaded = pairrun.load_spec(spec_path)
     assert loaded["semble_lockfile"] == "/tmp/semble-lock.txt"
+    assert pairrun.server_observation_configuration(
+        loaded.get("query_stage_observation", "enabled")
+    )["query_stages"] == "enabled"
+    for policy in ("enabled", "disabled"):
+        observed = {**_g0_spec(), "query_stage_observation": policy}
+        jsonschema.validate(observed, _load_schema("pair-spec.schema.json"))
+        spec_path.write_text(json.dumps(observed), encoding="utf-8")
+        assert pairrun.load_spec(spec_path)["query_stage_observation"] == policy
+    for policy in (None, False, 0, [], {}, "off", "Disabled", "disabled ", ""):
+        observed = {**_g0_spec(), "query_stage_observation": policy}
+        spec_path.write_text(json.dumps(observed), encoding="utf-8")
+        with pytest.raises(pairrun.RunError, match="exactly enabled or disabled"):
+            pairrun.load_spec(spec_path)
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(observed, _load_schema("pair-spec.schema.json"))
     spec_with_timeout = _g0_spec()
     spec_with_timeout["io_timeout_secs"] = 600
     spec_path.write_text(json.dumps(spec_with_timeout), encoding="utf-8")
@@ -8429,3 +8536,407 @@ def test_fixture_split_leakage_mutants():
         else:
             with pytest.raises(ev.EvidenceError, match="leakage across train/eval split"):
                 ev._check_split_leakage(labels, allowlist)
+
+def test_conditional_vector_replay_checks_full_vector_and_batch_permutation():
+    # Independent unit oracle: equal unit basis vectors have cosine one.
+    inputs = ["first", "second"]
+    basis = [1.0] + [0.0] * 255
+    observed = {
+        "schema_version": 1, "model_id": "model2vec:minishlab/potion-code-16M-v2",
+        "model_revision": "e9d2a44ca6a05ac6685f3b23709ea57eb7352d5b:model2vec-rs-0.3.0:fancy-regex:full-length-v1",
+        "dimension": 256, "normalization": "l2_unit", "max_length": None,
+        "inputs": inputs, "vectors": [basis[:], basis[:]],
+        "reversed_vectors": [basis[:], basis[:]],
+    }
+    baseline = {
+        "schema_version": parity_reference.SCHEMA_VERSION, "profile": parity_reference.REFERENCE_PROFILE,
+        "library": {"model2vec": "0.9.0"},
+        "model": {"id": "minishlab/potion-code-16M-v2", "revision": parity_reference.MODEL_REVISION, "dir_name": "pinned",
+            "safetensors_sha256": parity_reference.PINNED_ASSET_SHA256["model.safetensors"],
+            "tokenizer_sha256": parity_reference.PINNED_ASSET_SHA256["tokenizer.json"],
+            "config_sha256": parity_reference.PINNED_ASSET_SHA256["config.json"]},
+        "policy": {"max_length": None, "normalization": "approx-unit-fp16 (rail L2-normalizes both sides)"},
+        "inputs": inputs, "vectors": [basis[:], basis[:]], "norms": [1.0, 1.0],
+        "pairwise_cosine_upper": [[1.0], []], "dimension": 256,
+    }
+    assert cp.model_rows(observed, baseline, inputs)[1] == 2
+    for bad in (True, float("nan"), float("inf"), 1.1):
+        mutant = json.loads(json.dumps(baseline))
+        mutant["pairwise_cosine_upper"][0][0] = bad
+        with pytest.raises(ValueError):
+            cp.model_rows(observed, mutant, inputs)
+    for bad in (256.0, True):
+        for source in ("observed", "reference"):
+            actual, expected = json.loads(json.dumps(observed)), json.loads(json.dumps(baseline))
+            (actual if source == "observed" else expected)["dimension"] = bad
+            with pytest.raises(ValueError):
+                cp.model_rows(actual, expected, inputs)
+
+    bundle = _conditional_vector_context_unit_bundle(observed, baseline)
+    assert cp.validate_results(bundle, "model_vectors") == bundle
+    mutant = json.loads(json.dumps(bundle))
+    mutant["raw_proof"]["rows"][0]["observed_vector"][0] = True
+    with pytest.raises(ValueError, match="summary"):
+        cp.validate_results(mutant, "model_vectors")
+    for mutate in (
+        lambda context: context["reference_run"].update(argv=[]),
+        lambda context: context["reference_run"]["argv"].__setitem__(3, "/wrong/model"),
+        lambda context: context["reference_run"]["argv"].__setitem__(7, "/wrong/inputs.json"),
+        lambda context: context["reference_run"].update(script_sha256="d" * 64),
+        lambda context: context["reference_run"].update(output_sha256="d" * 64),
+        lambda context: context["reference_run"].update(environment={}),
+    ):
+        mutant = json.loads(json.dumps(bundle))
+        mutate(mutant["execution_context"])
+        mutant["execution_receipt"]["context_sha256"] = cp.sha(cp.canonical(mutant["execution_context"]))
+        with pytest.raises(ValueError):
+            cp.validate_results(mutant, "model_vectors")
+    mutant = json.loads(json.dumps(observed))
+    mutant["vectors"][0][255] = 0.01
+    assert cp.model_rows(mutant, baseline, inputs)[1] < 2
+    mutant = json.loads(json.dumps(observed))
+    mutant["reversed_vectors"][0][255] = 0.0001
+    assert cp.model_rows(mutant, baseline, inputs)[1] == 1
+    for mutate in (
+        lambda value: value["vectors"][0].pop(),
+        lambda value: value.update(inputs=["other", "second"]),
+        lambda value: value.update(max_length=512),
+        lambda value: value.update(model_revision="wrong"),
+    ):
+        mutant = json.loads(json.dumps(observed))
+        mutate(mutant)
+        with pytest.raises(ValueError):
+            cp.model_rows(mutant, baseline, inputs)
+    encoded = cp.artifact(cp.canonical(observed))
+    assert cp.load(cp.decode(encoded)) == observed
+    encoded["sha256"] = "0" * 64
+    with pytest.raises(ValueError, match="digest"):
+        cp.decode(encoded)
+    with pytest.raises(ValueError, match="duplicate"):
+        cp.load(b'{"status":"pass","status":"pass"}')
+
+
+def _conditional_incremental_unit_oracle():
+    target = {key: "fixed" for key in cp.SEMANTIC_COLUMNS}
+    target.update(embedding_id="target", record_id="record-target", owner_id="target-owner",
+        owner_kind="Chunk", corpus_kind="RawCodeFallback", vector=[1., 0.], generated=False,
+        card_schema_version=0, start_line=1, end_line=1, parent_owner_id=None,
+        package=None, symbol_kind=None, visibility=None, snippet="golden payload")
+    sentinel = {**target, "embedding_id": "sentinel", "record_id": "record-sentinel",
+        "owner_id": "unaffected-owner", "owner_kind": "Module", "corpus_kind": "ModuleCard"}
+    def scope(records, members=None):
+        return {"embeddings": records, "cluster_memberships": [] if members is None else [{
+            "cluster_record_id": "record-target", "authority_digest": "fixed", "members": members}]}
+    def batch(generation, scopes, mode="ReplaceGeneration"):
+        return {"generation": generation, "batch_digest": str(generation), "manifest_digest": str(generation),
+            "repo_id": "repo", "revision_id": "rev", "model_contract": {"model_id": "fixed", "model_version": "1"},
+            "seal": True, "mode": mode, "base_generation": 1 if mode == "Delta" else None,
+            "replace_scopes": scopes, "tombstone_scopes": [], "clear_surfaces": []}
+    def golden_state(item):
+        rows = [dict(row) for scope in item["replace_scopes"] for row in scope["embeddings"]]
+        members = []
+        for current in item["replace_scopes"]:
+            for replacement in current["cluster_memberships"]:
+                member = replacement["members"][0]
+                members.append({"cluster_record_id": "record-target", "authority_digest": "fixed",
+                    "owner_kind": "Module", "owner_id": "target-owner", "member_symbol_id": member,
+                    "ordinal": 0, "member_count": 1, "membership_content_digest": DIGESTS[member]})
+        return {"semantic": {"count": len(rows), "rows": sorted(rows, key=cp.canonical)},
+                "membership": {"count": len(members), "rows": members}}
+    DIGESTS = {'old-member': 'sha256:aae3fb26226d55e06db18f86f80f816819147f0d38931bb199e529dc80fc9c49', 'new-member': 'sha256:fb585be42421ca046d3ddaddab8a902818db2469bb9cfc9d1352a140b1990383'}
+    cases, outputs = [], []
+    for kind in sorted(cp.REQUIRED_INCREMENTAL_CASES):
+        current = dict(target)
+        if kind == "membership_replace":
+            current.update(owner_kind="Module", corpus_kind="ClusterCard")
+        before = batch(1, [scope([current, sentinel], ["old-member"] if kind == "membership_replace" else None)])
+        delta = batch(2, [], "Delta")
+        if kind == "append":
+            new = {**current, "embedding_id": "new", "record_id": "record-new", "owner_id": "new-owner"}
+            delta["replace_scopes"] = [scope([new])]
+            fresh = batch(3, [scope([current, new, sentinel])])
+        elif kind == "replace":
+            changed = {**current, "snippet": "replaced payload", "vector": [0., 1.]}
+            delta["replace_scopes"] = [scope([changed])]
+            fresh = batch(3, [scope([changed, sentinel])])
+        elif kind == "membership_replace":
+            delta["replace_scopes"] = [scope([current], ["new-member"])]
+            fresh = batch(3, [scope([current, sentinel], ["new-member"])])
+        else:
+            fresh = batch(3, [scope([sentinel])])
+            if kind == "clear_surface":
+                delta["clear_surfaces"] = ["Chunk"]
+            else:
+                delta["tombstone_scopes"] = [{"semantic_scope": {"corpus_kind": current["corpus_kind"],
+                    "owner_kind": current["owner_kind"], "owner_id": current["owner_id"]}}]
+        case = {"case_id": kind, "before": before, "fresh": fresh, "delta": delta}
+        cases.append(case)
+        receipts = {}
+        for key in ("fresh", "before", "delta"):
+            item = case[key]
+            receipts[key] = {field: item[field] for field in ("generation", "batch_digest", "manifest_digest")}
+            count = len(item["replace_scopes"])
+            receipts[key].update(windows=count, replace_scopes=count,
+                rows=sum(len(scope["embeddings"]) for scope in item["replace_scopes"]), stages={
+                    "owner_scopes": count, "windows": count,
+                    **dict.fromkeys(["semantic_delete_calls", "semantic_delete_commits", "membership_delete_calls",
+                        "membership_delete_commits", "semantic_append_calls", "membership_append_calls"], 0),
+                    "durations": {**dict.fromkeys(["total", "prepare", "promotion", "clear_surfaces", "stream", "semantic_delete",
+                        "membership_delete", "semantic_append", "membership_append", "tombstones", "seal"], 0), "embedding": None}})
+        outputs.append({"case_id": kind, "fresh": golden_state(fresh), "before": golden_state(before),
+            "incremental": golden_state(fresh), "receipts": receipts})
+    return {"schema_version": 1, "cases": cases}, {"schema_version": 1, "cases": outputs}
+
+
+def _conditional_context_unit_bundle(plan, observed):
+    # This fixture checks replay and substitution refusal only. It is not
+    # execution evidence and intentionally fails current-source verification.
+    revision, repository = "a" * 40, "b" * 40
+    files = [{"path": path, "sha256": cp.sha(path.encode())} for path in ("Cargo.lock", "uv.lock")]
+    closure = {"schema_version": source_closure.SCHEMA_VERSION, "profile": "retrieval",
+        "revision": revision, "roots": ["crates"], "files": files}
+    closure["digest"] = source_closure._digest(closure)
+    records = [{"captures": {"raw": {"system": "quanta", "model": "fixed", "model_revision": "1"}}}]
+    identity = {"source_revision": revision, "repository_commit": repository,
+        "model_sha256": cp.sha(cp.canonical([("quanta", "fixed", "1")])),
+        "dependency_sha256": cp.sha(b"lock")}
+    custody = {"cwd": str(cp.ROOT), "inherited_environment": {},
+        "environment": {"CARGO_NET_OFFLINE": "true"},
+        "environment_sha256": portable_proof._environment_digest({"CARGO_NET_OFFLINE": "true"})}
+    binary = str(cp.ROOT / "target/proof-binary")
+    events = [{"reason": "compiler-artifact", "target": {"name": "quanta-index-incremental-proof"}, "executable": binary},
+        {"reason": "build-finished", "success": True}]
+    context = {"source_closure": closure, "cargo_lock_sha256": files[0]["sha256"], "uv_lock_sha256": files[1]["sha256"],
+        "suite": cp.artifact(cp.canonical({"repository_commit": repository})),
+        "corpus": cp.artifact(cp.canonical({"repository_commit": repository})),
+        "records": cp.artifact(cp.canonical(records)), "semble_lockfile": cp.artifact(b"lock"),
+        "inputs": cp.artifact(cp.canonical(plan)), "reference": None, "observed": cp.artifact(cp.canonical(observed)),
+        "build": {**custody, "argv": [str(cp.ROOT / "scripts/cargow"), "--lane", "test-daemon-lane", "build", "-p",
+            "quanta-index-semantic", "--bin", "quanta-index-incremental-proof", "--features", "proof", "--locked", "--message-format=json"],
+            "exit_code": 0, "stdout": cp.artifact(b"\n".join(cp.canonical(event) for event in events)), "stderr": cp.artifact(b"")},
+        "run": {**custody, "argv": [binary, "/tmp/proof/inputs.json", "/tmp/proof/fresh-state"], "exit_code": 0,
+            "stdout": cp.artifact(cp.canonical(observed)), "stderr": cp.artifact(b""), "executable_sha256": "c" * 64},
+        "reference_run": None, "binary_sha256": "c" * 64, "environment": {"python_version": "3.13.9", "relevant": {}}}
+    raw, passed = cp.rederive("incremental_rows", context)
+    command = "retrieval-conditional-proof-v2:incremental_rows"
+    return {"schema_version": 2, "command": command, "status": "pass", "selected": 5, "executed": 5,
+        "passed": passed, "failed": 5-passed, "identity": identity, "raw_proof": raw, "execution_context": context,
+        "execution_receipt": {"schema_version": 2, "command": command, "exit_code": 0, **identity,
+            "runner_binary_sha256": "c" * 64, "raw_sha256": cp.sha(cp.canonical(raw)), "context_sha256": cp.sha(cp.canonical(context))}}
+
+
+
+def _conditional_vector_context_unit_bundle(observed, baseline):
+    plan, incremental = _conditional_incremental_unit_oracle()
+    bundle = _conditional_context_unit_bundle(plan, incremental)
+    context = bundle["execution_context"]
+    texts = parity_reference.INPUTS + ["frozen query"]
+    actual = json.loads(json.dumps(observed))
+    reference = json.loads(json.dumps(baseline))
+    for value in (actual, reference):
+        value["inputs"] = texts
+        value["vectors"] = [value["vectors"][0]] * len(texts)
+    actual["reversed_vectors"] = actual["vectors"]
+    reference["norms"] = [1.0] * len(texts)
+    reference["pairwise_cosine_upper"] = [[1.0] * (len(texts)-i-1) for i in range(len(texts))]
+    context["suite"] = cp.artifact(cp.canonical({"repository_commit": bundle["identity"]["repository_commit"],
+        "tasks": [{"query": "frozen query"}]}))
+    models = [("quanta", actual["model_id"], actual["model_revision"]),
+        ("semble", parity_reference.MODEL_ID, parity_reference.MODEL_REVISION)]
+    records = [{"captures": {system: {"system": system, "model": model, "model_revision": revision}
+        for system, model, revision in models}}]
+    context["records"] = cp.artifact(cp.canonical(records))
+    bundle["identity"]["model_sha256"] = cp.sha(cp.canonical(models))
+    context["inputs"], context["observed"], context["reference"] = [cp.artifact(cp.canonical(value))
+        for value in (texts, actual, reference)]
+    context["build"]["argv"] = [str(cp.ROOT / "scripts/cargow"), "--lane", "test-daemon-lane", "build", "-p",
+        "quanta-index-embed", "--bin", "quanta-index-vector-proof", "--locked", "--message-format=json"]
+    binary = context["run"]["argv"][0]
+    context["build"]["stdout"] = cp.artifact(b"\n".join(cp.canonical(event) for event in [
+        {"reason": "compiler-artifact", "target": {"name": "quanta-index-vector-proof"}, "executable": binary},
+        {"reason": "build-finished", "success": True}]))
+    context["run"].update(argv=[binary, "/tmp/model", "/tmp/proof/inputs.json"], stdout=context["observed"])
+    script = "tools/benchmark/retrieval/parity_reference.py"
+    closure = context["source_closure"]
+    closure["files"].append({"path": script, "sha256": cp.sha(script.encode())})
+    closure["files"].sort(key=lambda row: row["path"])
+    closure["digest"] = source_closure._digest({key: value for key, value in closure.items() if key != "digest"})
+    context["reference_run"] = {key: context["run"][key] for key in cp.COMMAND_IDENTITY}
+    context["reference_run"].update(argv=["/tmp/python", str(cp.ROOT / script), "--model-dir", "/tmp/model",
+        "--out", "/tmp/proof/reference.json", "--inputs-json", "/tmp/proof/inputs.json", "--model-id", parity_reference.MODEL_ID],
+        exit_code=0, stdout=cp.artifact(b""), stderr=cp.artifact(b""), output_sha256=context["reference"]["sha256"],
+        interpreter_sha256="c" * 64, script_sha256=cp.sha(script.encode()))
+    raw, passed = cp.rederive("model_vectors", context)
+    command = "retrieval-conditional-proof-v2:model_vectors"
+    bundle.update(command=command, selected=len(texts), executed=len(texts), passed=passed, failed=len(texts)-passed, raw_proof=raw)
+    bundle["execution_receipt"] = {"schema_version": 2, "command": command, "exit_code": 0, **bundle["identity"],
+        "runner_binary_sha256": context["binary_sha256"], "raw_sha256": cp.sha(cp.canonical(raw)),
+        "context_sha256": cp.sha(cp.canonical(context))}
+    return bundle
+
+
+def test_conditional_incremental_replay_compares_payload_membership_and_empty_state(monkeypatch):
+    plan, output = _conditional_incremental_unit_oracle()
+    assert [case["before"]["semantic"]["count"] for case in output["cases"]] == [2, 2, 2, 2, 2]
+    assert [case["fresh"]["semantic"]["count"] for case in output["cases"]] == [3, 1, 2, 2, 1]
+    assert cp.incremental_rows(output, plan)[1] == 5
+    bundle = _conditional_context_unit_bundle(plan, output)
+    assert cp.validate_results(bundle, "incremental_rows") == bundle
+    for field, value in (("schema_version", 2.0), ("exit_code", False), ("exit_code", 0.0)):
+        mutant = json.loads(json.dumps(bundle))
+        mutant["execution_receipt"][field] = value
+        with pytest.raises(ValueError):
+            cp.validate_results(mutant, "incremental_rows")
+    original_events = cp.decode(bundle["execution_context"]["build"]["stdout"]).splitlines()
+    for events in (
+        original_events + [cp.canonical({"reason": "build-finished", "success": False})],
+        original_events + [original_events[-1]],
+        original_events + [cp.canonical({"reason": "compiler-message"})],
+    ):
+        mutant = json.loads(json.dumps(bundle))
+        mutant["execution_context"]["build"]["stdout"] = cp.artifact(b"\n".join(events))
+        mutant["execution_receipt"]["context_sha256"] = cp.sha(cp.canonical(mutant["execution_context"]))
+        with pytest.raises(ValueError):
+            cp.validate_results(mutant, "incremental_rows")
+    for case in plan["cases"]:
+        vacuous = json.loads(json.dumps(case))
+        vacuous["before"]["replace_scopes"] = vacuous["fresh"]["replace_scopes"]
+        with pytest.raises(ValueError, match="vacuous"):
+            cp.operation_oracle(vacuous)
+        removed_sentinel = json.loads(json.dumps(case))
+        for scope in removed_sentinel["fresh"]["replace_scopes"]:
+            scope["embeddings"] = [row for row in scope["embeddings"] if row["owner_id"] != "unaffected-owner"]
+        with pytest.raises(ValueError, match="unaffected-owner"):
+            cp.operation_oracle(removed_sentinel)
+
+    def reject_fixture_source(repo, closure):
+        assert repo == cp.ROOT
+        assert closure == bundle["execution_context"]["source_closure"]
+        raise source_closure.ClosureError("synthetic fixture is not source evidence")
+    with monkeypatch.context() as patch:
+        patch.setattr(source_closure, "verify_manifest", reject_fixture_source)
+        with pytest.raises(ValueError, match="not source evidence"):
+            cp.validate_results(bundle, "incremental_rows", verify_source=True)
+    for mutate in (
+        lambda context: context["build"].update(argv=[]),
+        lambda context: context["run"].update(argv=[]),
+        lambda context: context["run"].update(cwd="/tmp/wrong-source"),
+        lambda context: context["run"].update(environment={"CARGO_NET_OFFLINE": "false"}),
+        lambda context: context["run"].update(stdout=cp.artifact(b"{}")),
+        lambda context: context["build"].update(stdout=cp.artifact(b"{}")),
+        lambda context: context.update(binary_sha256="d" * 64),
+        lambda context: context.update(uv_lock_sha256="d" * 64),
+        lambda context: context.update(inputs=cp.artifact(b"{}")),
+        lambda context: context.update(records=cp.artifact(cp.canonical([]))),
+    ):
+        mutant = json.loads(json.dumps(bundle))
+        mutate(mutant["execution_context"])
+        mutant["execution_receipt"]["context_sha256"] = cp.sha(cp.canonical(mutant["execution_context"]))
+        with pytest.raises((ValueError, KeyError)):
+            cp.validate_results(mutant, "incremental_rows")
+    for field, value in (("start_line", True), ("start_line", 1.0), ("generated", 0)):
+        mutant = json.loads(json.dumps(output))
+        mutant["cases"][0]["incremental"]["semantic"]["rows"][0][field] = value
+        with pytest.raises(ValueError):
+            cp.incremental_rows(mutant, plan)
+    for field, value in (("ordinal", False), ("member_count", 1.0)):
+        mutant = json.loads(json.dumps(output))
+        mutant["cases"][2]["incremental"]["membership"]["rows"][0][field] = value
+        with pytest.raises(ValueError):
+            cp.incremental_rows(mutant, plan)
+    for value in (1.0, True, -1, 2**64):
+        mutant = json.loads(json.dumps(output))
+        mutant["cases"][0]["receipts"]["before"]["generation"] = value
+        with pytest.raises(ValueError):
+            cp.incremental_rows(mutant, plan)
+        for batch, field in (("before", "generation"), ("delta", "base_generation")):
+            bad_plan = json.loads(json.dumps(plan))
+            bad_plan["cases"][0][batch][field] = value
+            with pytest.raises(ValueError):
+                cp.incremental_rows(output, bad_plan)
+    receipt = output["cases"][0]["receipts"]["before"]
+    for path in (("windows",), ("replace_scopes",), ("rows",),
+                 *(("stages", key) for key in receipt["stages"] if key != "durations"),
+                 *(("stages", "durations", key) for key in receipt["stages"]["durations"] if key != "embedding")):
+        for value in (False, 0.0, -1, 2**64):
+            mutant = json.loads(json.dumps(output))
+            target = mutant["cases"][0]["receipts"]["before"]
+            for key in path[:-1]:
+                target = target[key]
+            target[path[-1]] = value
+            with pytest.raises(ValueError):
+                cp.incremental_rows(mutant, plan)
+    for field, value in (("snippet", "changed payload"), ("vector", [0.0, 1.0])):
+        mutant = json.loads(json.dumps(output))
+        mutant["cases"][0]["incremental"]["semantic"]["rows"][0][field] = value
+        assert cp.incremental_rows(mutant, plan)[1] == 4
+    mutant = json.loads(json.dumps(output))
+    mutant["cases"][2]["incremental"]["membership"]["rows"][0]["member_symbol_id"] = "wrong-symbol"
+    assert cp.incremental_rows(mutant, plan)[1] == 4
+    for mutate in (
+        lambda value: value["cases"].pop(),
+        lambda value: value["cases"][0]["incremental"]["semantic"].update(count=2),
+        lambda value: value["cases"][0]["incremental"]["semantic"]["rows"][0].pop("vector"),
+        lambda value: value["cases"][0]["receipts"]["delta"].update(batch_digest="wrong"),
+        lambda value: value["cases"][0]["fresh"]["semantic"]["rows"][0].update(snippet="forged oracle"),
+    ):
+        mutant = json.loads(json.dumps(output))
+        mutate(mutant)
+        with pytest.raises(ValueError):
+            cp.incremental_rows(mutant, plan)
+    # v1's self-consistent IDs/counts still cannot become v2 execution custody.
+    with pytest.raises(ValueError, match="missing or unexpected"):
+        cp.validate_results(_bound_conditional_results("incr-cmd", "incremental_rows"), "incremental_rows")
+
+
+def test_query_clock_overhead_replay_requires_identical_answers_and_coverage(tmp_path):
+    stage = _pair_stage(tmp_path)
+    path = next(stage["stage"].glob("rep-00/quanta/strategy-*/retrieval-diagnostic.json"))
+    record = json.loads(path.with_name("record.json").read_text())
+    record["span_accounting_version"] = 1
+    suite = json.loads(stage["suite_path"].read_text())
+    pack = json.loads((stage["stage"] / "query-pack.json").read_text())
+    pack, _ = pairrun.project_pack_and_suite(pack, suite, sorted(record["route_provenance"]))
+    diagnostic = json.loads(path.read_text())
+    diagnostic["schema_version"] = 5
+    diagnostic["server_observation"] = pairrun.server_observation_configuration("enabled")
+    diagnostic["ingest"] = _diagnostic_ingest_fixture(record)
+    diagnostic["record_sha256"] = cp.sha(cp.canonical(record))
+    off = json.loads(json.dumps(diagnostic))
+    off["server_observation"] = pairrun.server_observation_configuration("disabled")
+    for row in off["results"]:
+        row["response"]["explanation"]["stage_timings"] = None
+    phases = json.loads(path.with_name("phase-metrics.json").read_text())
+    phases["record_sha256"] = diagnostic["record_sha256"]
+    phases["measurement_repetitions"] = 2
+    phases["query_protocol"] = pairrun.build_query_protocol(phases["query_schedule"], 0, 1, 2)
+    phases["warm_latencies_ms"] = {}
+    for row in record["results"]:
+        phases["warm_latencies_ms"].setdefault(row["route"], {})[row["task_id"]] = [4., 6.]
+    off_phases = json.loads(json.dumps(phases))
+    for tasks in off_phases["warm_latencies_ms"].values():
+        for task in tasks:
+            tasks[task] = [2., 3.]
+    for value in (phases, off_phases):
+        value["phases_ms"]["warm_query"] = sum(sum(samples) for tasks in value["warm_latencies_ms"].values() for samples in tasks.values())
+        value["total_ms"] = sum(value["phases_ms"].values())
+    result = overhead.compare(record, record, phases, off_phases, diagnostic, off, pack)
+    assert result["status"] == "diagnostic_unqualified"
+    assert all(row["on_median_ms"] == 5. and row["off_median_ms"] == 2.5
+        and row["delta_ms"] == 2.5 and row["relative_delta"] == 1. for row in result["rows"])
+    for mutate in (
+        lambda value: value.update(query_schedule="wrong"),
+        lambda value: value.update(measurement_repetitions=3),
+        lambda value: next(iter(value["warm_latencies_ms"].values())).pop(next(iter(next(iter(value["warm_latencies_ms"].values()))))),
+        lambda value: next(iter(value["warm_latencies_ms"].values())).__setitem__(record["results"][0]["task_id"], [float("nan"), 2.]),
+    ):
+        mutant = json.loads(json.dumps(off_phases))
+        mutate(mutant)
+        with pytest.raises((ValueError, pairrun.RunError)):
+            overhead.compare(record, record, phases, mutant, diagnostic, off, pack)
+    with pytest.raises(ValueError, match="observation policy"):
+        overhead.compare(record, record, phases, off_phases, diagnostic, diagnostic, pack)
+    mutant = json.loads(json.dumps(record))
+    mutant["results"][0]["candidates"] = []
+    with pytest.raises((ValueError, pairrun.RunError)):
+        overhead.compare(record, mutant, phases, off_phases, diagnostic, off, pack)

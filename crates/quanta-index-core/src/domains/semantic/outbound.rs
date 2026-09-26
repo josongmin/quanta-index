@@ -16,13 +16,20 @@ use crate::request_budget::RequestBudgetV1;
 ///
 /// `header` is everything of the batch but its replace scopes; `scopes`
 /// issues those, embedded, in windows the port's build policy bounds. The
-/// receipt acknowledges what the build appended.
+/// receipt acknowledges what the build appended, independently from the
+/// transient report returned alongside it.
 pub trait SemanticIngestPort: Send + Sync {
     fn publish_stream(
         &self,
         header: &SemanticIngestHeaderV1,
         scopes: &mut dyn SemanticScopeSource,
-    ) -> Result<(BatchPublishReceipt, quanta_index_contract::IngestStageReport), CoreError>;
+    ) -> Result<
+        (
+            BatchPublishReceipt,
+            quanta_index_contract::IngestStageReport,
+        ),
+        CoreError,
+    >;
 }
 
 /// The checkpoint every budget-observing embedder names when the budget

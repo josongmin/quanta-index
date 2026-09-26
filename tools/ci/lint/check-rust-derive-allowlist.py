@@ -21,7 +21,14 @@ from pathlib import Path
 LINT_DIR = str(Path(__file__).resolve().parent)
 if LINT_DIR not in sys.path:
     sys.path.insert(0, LINT_DIR)
-from rust_attribute_policy import attribute_metas  # noqa: E402
+from rust_attribute_policy import (  # noqa: E402
+    attribute_metas,
+    derive_names,
+    macro_attribute_metas,
+)
+from rust_attribute_policy import (  # noqa: E402
+    rust_source_files as inventory_sources,
+)
 
 ROOT = Path(__file__).resolve().parents[3]
 RUST_SOURCE_ROOTS = (ROOT / "crates", ROOT / "benchmarks")
@@ -76,15 +83,17 @@ def derives_in(text: str) -> list[tuple[int, list[str]]]:
         raise ValueError("invalid derive syntax; derive policy cannot certify it")
 
     def visit(node: object) -> None:
+        if node.type in {"macro_invocation", "macro_definition"}:
+            for line, metas in macro_attribute_metas(node):
+                for name, arguments, _ in metas:
+                    if name == "derive":
+                        sites.append((line, derive_names(arguments)))
+            return
         if node.type in {"attribute_item", "inner_attribute_item"}:
             for name, arguments, _ in attribute_metas(node):
                 if name != "derive":
                     continue
-                if len(arguments) != 1 or arguments[0].type != "token_tree":
-                    raise ValueError("derive attribute has no argument list")
-                body = arguments[0].text.decode("utf-8")[1:-1]
-                names = [name.strip() for name in body.split(",") if name.strip()]
-                sites.append((node.start_point.row + 1, names))
+                sites.append((node.start_point.row + 1, derive_names(arguments)))
             return
         for child in node.children:
             visit(child)
@@ -117,12 +126,7 @@ def audit_file(path: Path) -> list[str]:
 
 def rust_source_files(roots: tuple[Path, ...] = RUST_SOURCE_ROOTS) -> list[Path]:
     """Return every owned Rust source under the guarded roots."""
-    return sorted(
-        path
-        for source_root in roots
-        for path in source_root.rglob("*.rs")
-        if "/target/" not in path.as_posix()
-    )
+    return inventory_sources(roots)
 
 
 def main() -> int:
@@ -132,8 +136,12 @@ def main() -> int:
         return 2
 
     findings: list[str] = []
-    for rs in rust_source_files():
-        findings.extend(audit_file(rs))
+    try:
+        for rs in rust_source_files():
+            findings.extend(audit_file(rs))
+    except (OSError, RuntimeError, ValueError) as error:
+        print(f"Rust derive scan failed: {error}", file=sys.stderr)
+        return 2
 
     if findings:
         for line in findings:

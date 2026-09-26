@@ -9,6 +9,50 @@ use std::error::Error;
 use quanta_index_bench_protocol::sample::{sample_evidence, sample_raw_bytes, sample_sealed};
 use quanta_index_bench_protocol::{BenchmarkEvidenceV1, ProtocolError, RunStore};
 
+#[test]
+fn proof_counts_are_not_relevance_or_performance() -> Result<(), Box<dyn Error>> {
+    use quanta_index_bench_protocol::{Payload, ProofPayload};
+
+    let mut record = sample_evidence()?;
+    record.verdict.scope = "contract".to_owned();
+    record.payload = Payload::Proof(ProofPayload {
+        rail: "retrieval-contract".to_owned(),
+        selected: 8,
+        executed: 8,
+        passed: 8,
+        failed: 0,
+        source_digest: record.source.closure_digest.clone(),
+        execution_context_digest: record.source.closure_digest.clone(),
+    });
+    let sealed = record.clone().seal()?;
+    assert_eq!(
+        BenchmarkEvidenceV1::open(&sealed.to_canonical_json()?)?,
+        sealed
+    );
+    record.verdict.scope = "quality".to_owned();
+    assert!(record.validate().is_err());
+    record.verdict.scope = "contract".to_owned();
+    if let Payload::Proof(proof) = &mut record.payload {
+        proof.executed = 7;
+    }
+    assert!(record.validate().is_err());
+    if let Payload::Proof(proof) = &mut record.payload {
+        proof.executed = 8;
+        proof.passed = 7;
+        proof.failed = 1;
+    }
+    assert!(record.validate().is_err());
+    record.verdict.status = "fail".to_owned();
+    record.verdict.reason = Some("one failed test".to_owned());
+    assert!(record.validate().is_ok());
+    if let Payload::Proof(proof) = &mut record.payload {
+        proof.passed = u64::MAX;
+        proof.failed = 1;
+    }
+    assert!(record.validate().is_err());
+    Ok(())
+}
+
 const RUN_ID: &str = "run-20260926T120000Z-a1b2c3d4";
 
 #[test]

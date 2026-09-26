@@ -33,7 +33,7 @@ profile = "retrieval"
 description = "Rust SDK retrieval producer and its Python scorer/test authority."
 
 [closures.micro]
-profile = "benchmark-control-plane"
+profile = "benchmark-micro"
 description = "Crate-local Criterion benches measured from the product workspace."
 
 # --------------------------------------------------------------------------
@@ -71,11 +71,6 @@ outputs = ["artifacts/dsl-bench/warm-matrix.json"]
 kind = "just-recipe"
 recipe = "rust-bench-dsl-cold"
 outputs = ["artifacts/dsl-bench/cold-matrix.json"]
-
-[producers.rust-bench-dsl-warm-criterion]
-kind = "just-recipe"
-recipe = "rust-bench-dsl-warm-criterion"
-outputs = ["artifacts/dsl-bench/warm-matrix.criterion.json"]
 
 [producers.rust-verify-quality-relevance]
 kind = "just-recipe"
@@ -269,22 +264,6 @@ gate_tier = "authority"
 sample_floor = 20
 baseline = "tools/benchmark/baselines/cold-matrix.json"
 native_schema = "BenchArtifactV1:2"
-authority = "registry"
-
-[families.dsl-warm-criterion]
-title = "Exploratory Criterion view of warm DSL scenarios"
-purpose = "dsl-latency"
-payload = "micro"
-result_unit = "ns"
-producer = "rust-bench-dsl-warm-criterion"
-validator = "bench-artifacts"
-scorer = "none"
-closure = "benchmark-control-plane"
-host_policy = "local-diagnostic"
-gate_tier = "diagnostic"
-sample_floor = 0
-baseline = "none"
-native_schema = "criterion:raw"
 authority = "registry"
 
 [families.relevance]
@@ -514,24 +493,24 @@ authority = "registry"
 [families.retrieval-sdk]
 title = "Quanta SDK retrieval runner proof"
 purpose = "retrieval"
-payload = "retrieval"
-result_unit = "ratio"
+payload = "proof"
+result_unit = "count"
 producer = "retrieval-sdk-proof"
 validator = "retrieval-sdk"
-scorer = "retrieval-relevance"
+scorer = "none"
 closure = "retrieval"
 host_policy = "any"
 gate_tier = "contract"
 sample_floor = 0
 baseline = "none"
-native_schema = "retrieval-run-manifest:v5"
+native_schema = "retrieval-execution-context:v1"
 authority = "registry"
 
 [families.retrieval-contract]
 title = "Quanta retrieval contract proof (context-bound receipts)"
 purpose = "retrieval"
-payload = "retrieval"
-result_unit = "ratio"
+payload = "proof"
+result_unit = "count"
 producer = "retrieval-contract-proof"
 validator = "retrieval-contract"
 scorer = "none"
@@ -540,7 +519,7 @@ host_policy = "any"
 gate_tier = "contract"
 sample_floor = 0
 baseline = "none"
-native_schema = "retrieval-run-manifest:v5"
+native_schema = "retrieval-execution-context:v1"
 authority = "registry"
 
 [families.retrieval-pair]
@@ -617,7 +596,7 @@ families = ["dsl-warm", "dsl-cold"]
 
 [profiles.dsl-diagnostic]
 description = "DSL producer smoke on a non-canonical host; never a speed claim"
-families = ["dsl-warm-criterion"]
+families = ["micro-searchd-runtime-dsl-query-matrix"]
 
 [profiles.quality-core]
 description = "Core search quality, scale and latency-tail evidence"

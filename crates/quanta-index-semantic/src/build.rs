@@ -36,10 +36,10 @@ use futures::TryStreamExt as _;
 use lancedb::connect;
 use lancedb::query::{ExecutableQuery as _, QueryBase as _};
 use quanta_index_contract::{
-    IngestStageReport,
-    EmbeddingDistanceMetric, EmbeddingNormalization, EmbeddingRecord, OwnerDocKind,
-    SearchScopeSurface, SemanticCorpusKindV1, SemanticReplaceScope, SemanticTombstoneScope,
-    canonical_order::first_canonical_order_break_v1, cluster_membership_content_digest_v1,
+    EmbeddingDistanceMetric, EmbeddingNormalization, EmbeddingRecord, IngestStageReport,
+    OwnerDocKind, SearchScopeSurface, SemanticCorpusKindV1, SemanticReplaceScope,
+    SemanticTombstoneScope, canonical_order::first_canonical_order_break_v1,
+    cluster_membership_content_digest_v1,
 };
 use quanta_index_core::domains::semantic::SemanticPolicy;
 use quanta_index_core::{
@@ -276,7 +276,6 @@ fn monotonic_nanos_since(started: Instant) -> u64 {
         Err(_) => u64::MAX,
     }
 }
-
 
 async fn open_connection(dataset_dir: &Path) -> Result<lancedb::Connection, CoreError> {
     let uri = layout::dataset_dir_to_uri(dataset_dir)?;

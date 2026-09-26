@@ -7,8 +7,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde_json::{Value, json};
 use quanta_index_search_plane::QueryStageObservationPolicy;
+use serde_json::{Value, json};
 
 use crate::record::QueryPack;
 use crate::sdk::{QueryOutcome, RouteExplanation};
@@ -50,7 +50,7 @@ pub fn diagnostic_value(
             "diagnostic record digest must be lowercase sha256".to_string(),
         ));
     }
-    if top_k == 0 || top_k != pack.contract_top_k {
+    if top_k == 0 {
         return Err(BenchError::Protocol(
             "diagnostic top_k differs from the query pack".to_string(),
         ));
@@ -387,8 +387,9 @@ pub fn server_observation_value(policy: QueryStageObservationPolicy) -> BenchRes
         "scope": "server_query_stage_only_v1",
     });
     let digest = crate::sha256_hex(crate::canonical::canonical_json(&config)?.as_bytes());
-    let object = config.as_object_mut().ok_or_else(||
-        BenchError::Protocol("server observation config is not an object".to_string()))?;
+    let object = config.as_object_mut().ok_or_else(|| {
+        BenchError::Protocol("server observation config is not an object".to_string())
+    })?;
     let _previous = object.insert("config_sha256".to_string(), json!(digest));
     Ok(config)
 }

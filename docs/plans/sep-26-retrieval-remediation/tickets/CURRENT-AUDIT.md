@@ -2,9 +2,24 @@
 
 이 파일이 이 패킷의 **현재 상태표**다. 각 RBR 티켓의 합격 계약은 유지하고, [INDEX](INDEX.md)의 '2차 라운드' 표는 역사적 기록이며 [GAP-REGISTER](GAP-REGISTER.md)는 현행 잔여 작업만 기록한다. 코드 존재, focused test, clean-source proof, 실제 비교 자격을 혼동하지 않는다.
 
-## 최신 코드 재감사 — 2026-09-26, `604149ed` + 공유 dirty
+## 현재 구현 통합 — 2026-09-26, `f9c3b4dc` + 공유 dirty
 
-이 절과 [GAP-REGISTER](GAP-REGISTER.md)가 현행 판정이다. 아래 이전 수행 기록의 `현재`/`FAILED`/`NOT_RUN`은 **각 당시 입력**을 가리키며 최신 상태로 읽지 않는다. 이번 요청 범위는 retrieval RBR-00~12의 source audit·기존 티켓 갱신이다. 제품 코드는 변경하지 않았고 타 writer의 searchd/state-migration/CI/benchmark dirty를 보존했다. 저장소 전체 감사나 전체 자격을 수행한 것은 아니다.
+현재 요청은 잔여의 병렬 **구현**이다. [IMPLEMENTATION-WAVE](IMPLEMENTATION-WAVE.md)의 소유 경계에서 RBR-07 strict schema2 validator·실제 model 음성 거부, RBR-01 server query observation on/off·페이지 예산 동등성, RBR-10 canonical transient IPC/SDK outcome을 구현했다. 아래 `604149ed` 재감사는 수정 전 RCA이며 현 결함 상태로 읽지 않는다.
+
+- RBR-07: strict fixture를 manual typed serde로 구현해 derive 정책 위반도 제거했다. 최종 선택 소스 전후 동일한 asset-free6·actual pinned 정상1·invalid8+schema1의 exit101 거부 및 Clippy/fmt를 회수했다. `/private/tmp/qi-rbr07-manual-deserialize.xE4bW9/receipt.json`, SHA-256 `ee0572805ab6d41179038e3094f252510f3e9fcb60d8ad56c8781c263822fc4b`. Native capture는 T15 양성 qualification을 대신하지 않는다.
+- RBR-01/09: `enabled|disabled` exact startup policy, disabled stage `None`, 두 모드 동일512-byte stage reserve. request/deadline/운영 metric clock은 공통 유지한다. search-plane425·config38 및 소유 Clippy local 통과. 실제 SDK 17건의 첫 실행에 lexical/semantic/hybrid on/off 결과 동등성이 포함됐으나 transitive source drift가 있어 최종 manual-serde binary 재캡처는 별도다. floor100을 바꾸지 않았다. roomy deadline에서 결과 동등성을 검사하며 tight deadline·성능 우위를 주장하지 않는다.
+- RBR-10: producer→core/adapter→materializer→versioned wire→SDK→runner sidecar 경로가 연결됐다. durable receipt/journal은 elapsed와 분리했다. request/repo/revision/batch/generation binding; replay는 새 request ID와 explicit unmeasured stages. prepare/promotion fsync/전체 build·nested embedding 범위를 명시했다. 요청 태그 `PublishSearchCorpusBatchV2`는 old wire 요청을 dispatch 전에 거부한다. activation은 별도 control request여서 ingest server 시간 `None`이다.
+- RBR-10: DTO5 및 old-request test fixture를 manual serde로 교체했다. required-null/unknown/duplicate/strict numeric·wire order/status를 유지하고 allowlist를 완화하지 않았다. contract146+SDK110 및 all-target Clippy 최종 local 통과. `/private/tmp/qi-rbr10-observation.sW0yqY/manual-serde-contract-sdk.log`, SHA-256 `eb9a4487c7c4d2cd5ddbb7af7dbb665d1b3252d3ad810f2df2bad37b4cb2fb84`. installed SDK/daemon 재실행과 clean proof는 별도다.
+- 통합: diagnostic v5/protocol lock3에 server config SHA·ingest 원본 receipt/activation/observation·expected repo/revision/generation을 묶었다. 실제 Rust runner의 record/pack/sidecar를 Python으로 재생해 정상3 route 및 변조5종 거부를 회수했다. 이 과정에서 canonical TrackId `Lexical/Semantic`와 검증기의 소문자 alias 불일치를 수정했다. float protocol version·fresh activation sequence·cross-route hash drift도 거부한다. 첫 SDK17/17은 local 통과 관측이지만 소스 변경 중 결과여서 최종 source 자격으로 쓰지 않는다. Python283 exact collection은 회수했고 최종 strict-cell bytes의 전체 terminal은 진행 중이다. raw `/private/tmp/qi-rbr-integrate.Fg8v62/`.
+- RBR-12: raw vector/full-row exporters와 schema2 consumer를 연결했다. 독립 재감사에서 정상T16 5개 통과, no-op5·잘못된 terminal3·float dimension2·typed receipt3 거부, 무관 owner 삭제의 fresh5 거부·raw5 각각 실패 판정을 확인했다. strict row bool/u32와 typed operation oracle를 적용했다. `/private/tmp/qi-rbr-conditional-final.JNYc3M/raw.json`, SHA-256 `11555e3f546c6429b4f46ecb735d2ec4f47f81f93dc4199630dc0eb96cfcfb3a`. 실제 exporter terminal은 진행 중이며 local self-reported binary/build custody는 서명된 외부 attestation이 아니다.
+- 정적 escalation: 현재 API final gate exit0·source-stable; fallback/wire/no-allow gate local exit0. module/daemon/fuzz 최종-source 경계는 개별 receipt를 따른다. 확장 searchd Clippy의 state-migration/supervisor/request-events 7개 진단은 별도 소유와 조율하며 성공으로 숨기지 않는다.
+- 추가 구조 gate: 실제 `rust-module-cycles`에서 ingest→ingest_observation→ingest 역의존성을 발견했다. `BatchPublishReceipt` leaf 분리와 batch-bound validation의 ingest측 이동으로 보완 중이다. public export/wire/manual serde를 유지하고 cycle allowlist를 확대하지 않는다. catalog의 별도 cycle은 외부 owner가 수정한다. 이전 API/unit/module-tree 통과를 cycle gate 성공으로 대체하지 않는다.
+- 독립 scalar 재감사: 실제 T16 owner raw+plan baseline5/5, 모든 receipt/plan generation·counter·duration 부정 입력1900개 거부. 별도 synthetic triangle7·raw-summary alias2도 거부. `/private/tmp/qi-rbr-scalar-final.teJiks/raw.json`, SHA-256 `b30803e403b44eb683e2a5964f26bf43fa997220e100475341e554f5d25eb96a`. actual8D fixture/pure synthetic metadata/local execution custody의 범위를 구분하며 Potion pair·clean/source/binary qualification은 제외한다.
+- 공유 peer commit으로 시작 HEAD `7cefac4a`→`8eac12c5`→`f9c3b4dc487a1b54a260e4ab2d3dd199310d3a5e` 이동. source 전후 hash가 바뀐 실행은 qualification에 쓰지 않는다. 모든 결과는 source/환경/명령별 local diagnostic이며 clean-source proof·quiet-host perf·final pair는 `NOT_RUN`이다.
+
+## 수정 전 코드 재감사 — 2026-09-26, `604149ed` + 공유 dirty
+
+이 절은 수정 전 RCA다. 현행 판정은 위 현재 구현 통합 절과 [GAP-REGISTER](GAP-REGISTER.md)다. 아래 이전 수행 기록의 `현재`/`FAILED`/`NOT_RUN`은 **각 당시 입력**을 가리키며 최신 상태로 읽지 않는다. 당시 요청 범위는 retrieval RBR-00~12의 source audit·기존 티켓 갱신이었다. 당시 제품 코드는 변경하지 않았고 타 writer의 searchd/state-migration/CI/benchmark dirty를 보존했다. 저장소 전체 감사나 전체 자격을 수행한 것은 아니다.
 
 ### 실제 잔여 코드 — 구현 위치와 종료 조건
 

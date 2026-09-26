@@ -128,9 +128,6 @@ crate quanta_index_contract
 │   │   ├── enum BatchIngestMode: pub
 │   │   ├── struct BatchIngestModeVisitor: pub(self)
 │   │   │   └── type Value: pub(self)
-│   │   ├── struct BatchPublishReceipt: pub
-│   │   ├── struct BatchPublishReceiptVisitor: pub(self)
-│   │   │   └── type Value: pub(self)
 │   │   ├── struct DirtyDelete: pub
 │   │   ├── struct DirtyDeleteVisitor: pub(self)
 │   │   │   └── type Value: pub(self)
@@ -271,6 +268,12 @@ crate quanta_index_contract
 │   │   ├── struct StructuralTreeRecord: pub
 │   │   └── struct StructuralTreeRecordVisitor: pub(self)
 │   │       └── type Value: pub(self)
+│   ├── mod ingest_observation: pub(self)
+│   │   ├── enum IngestObservationStatus: pub
+│   │   ├── struct IngestStageDurations: pub
+│   │   ├── struct IngestStageReport: pub
+│   │   ├── struct SearchCorpusIngestObservation: pub
+│   │   └── struct SearchCorpusPublishOutcome: pub
 │   ├── mod metrics: pub(self)
 │   │   ├── struct MetricBucketV1: pub
 │   │   ├── struct MetricBucketVisitor: pub(self)
@@ -292,6 +295,10 @@ crate quanta_index_contract
 │   │   │   └── type Value: pub(self)
 │   │   ├── struct MetricsSnapshotV1: pub
 │   │   └── struct MetricsSnapshotVisitor: pub(self)
+│   │       └── type Value: pub(self)
+│   ├── mod publish_receipt: pub(self)
+│   │   ├── struct BatchPublishReceipt: pub
+│   │   └── struct BatchPublishReceiptVisitor: pub(self)
 │   │       └── type Value: pub(self)
 │   ├── mod quarantine: pub(self)
 │   │   ├── struct QuarantineDiscardAck: pub

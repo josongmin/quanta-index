@@ -7,7 +7,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from rust_attribute_policy import attribute_metas
+from rust_attribute_policy import attribute_metas, macro_attribute_metas, rust_source_files
 from tree_sitter_language_pack import get_parser
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -18,6 +18,11 @@ def allow_sites(text: str) -> list[int]:
     sites: list[int] = []
 
     def visit(node: object) -> None:
+        if node.type in {"macro_invocation", "macro_definition"}:
+            for line, metas in macro_attribute_metas(node):
+                if any(name == "allow" for name, _, _ in metas):
+                    sites.append(line)
+            return
         if node.type in {"attribute_item", "inner_attribute_item"}:
             if any(name == "allow" for name, _, _ in attribute_metas(node)):
                 sites.append(node.start_point.row + 1)
@@ -41,12 +46,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     findings: list[str] = []
     try:
-        for path in sorted(
-            file
-            for base in roots
-            for file in base.rglob("*.rs")
-            if "/target/" not in file.as_posix()
-        ):
+        for path in rust_source_files(roots):
             for line in allow_sites(path.read_text(encoding="utf-8")):
                 findings.append(f"{path}:{line}: allow attribute is banned; use an owned expect")
     except (OSError, ValueError) as exc:

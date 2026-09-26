@@ -2,14 +2,13 @@
 //! This validates completeness and internal consistency, not producer custody (T15).
 
 use serde::Deserialize;
+use serde::de::{Error as _, MapAccess, Visitor};
 
 use super::{CONFIG_SHA256, MODEL_SHA256, POTION_CODE_DIMENSION, TOKENIZER_SHA256};
 
 const CONSISTENCY_TOLERANCE: f64 = 1e-12;
 const NORMALIZATION: &str = "approx-unit-fp16 (rail L2-normalizes both sides)";
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(super) struct ParityFixture {
     schema_version: u32,
     profile: String,
@@ -23,14 +22,10 @@ pub(super) struct ParityFixture {
     dimension: usize,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct Library {
     model2vec: String,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct Model {
     id: String,
     revision: String,
@@ -40,13 +35,203 @@ struct Model {
     config_sha256: String,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct Policy {
     // Unlike Option<T>, Value is a required field: explicit null is accepted,
     // a missing key is a deserialization error.
     max_length: serde_json::Value,
     normalization: String,
+}
+
+fn take_field<'de, M: MapAccess<'de>, T: Deserialize<'de>>(
+    slot: &mut Option<T>,
+    map: &mut M,
+    name: &'static str,
+) -> Result<(), M::Error> {
+    if slot.is_some() {
+        return Err(M::Error::duplicate_field(name));
+    }
+    *slot = Some(map.next_value()?);
+    Ok(())
+}
+
+impl<'de> Deserialize<'de> for Library {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct LibraryVisitor;
+        impl<'de> Visitor<'de> for LibraryVisitor {
+            type Value = Library;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("complete reference library metadata")
+            }
+            fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Library, M::Error> {
+                let mut model2vec = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "model2vec" => take_field(&mut model2vec, &mut map, "model2vec")?,
+                        _ => return Err(M::Error::unknown_field(&key, &["model2vec"])),
+                    }
+                }
+                Ok(Library {
+                    model2vec: model2vec.ok_or_else(|| M::Error::missing_field("model2vec"))?,
+                })
+            }
+        }
+        deserializer.deserialize_map(LibraryVisitor)
+    }
+}
+
+impl<'de> Deserialize<'de> for Model {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct ModelVisitor;
+        impl<'de> Visitor<'de> for ModelVisitor {
+            type Value = Model;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("complete pinned reference model metadata")
+            }
+            fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Model, M::Error> {
+                const FIELDS: &[&str] = &[
+                    "id",
+                    "revision",
+                    "dir_name",
+                    "safetensors_sha256",
+                    "tokenizer_sha256",
+                    "config_sha256",
+                ];
+                let (mut id, mut revision, mut dir_name) = (None, None, None);
+                let (mut safetensors_sha256, mut tokenizer_sha256, mut config_sha256) =
+                    (None, None, None);
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "id" => take_field(&mut id, &mut map, "id")?,
+                        "revision" => take_field(&mut revision, &mut map, "revision")?,
+                        "dir_name" => take_field(&mut dir_name, &mut map, "dir_name")?,
+                        "safetensors_sha256" => {
+                            take_field(&mut safetensors_sha256, &mut map, "safetensors_sha256")?;
+                        }
+                        "tokenizer_sha256" => {
+                            take_field(&mut tokenizer_sha256, &mut map, "tokenizer_sha256")?;
+                        }
+                        "config_sha256" => {
+                            take_field(&mut config_sha256, &mut map, "config_sha256")?;
+                        }
+                        _ => return Err(M::Error::unknown_field(&key, FIELDS)),
+                    }
+                }
+                Ok(Model {
+                    id: id.ok_or_else(|| M::Error::missing_field("id"))?,
+                    revision: revision.ok_or_else(|| M::Error::missing_field("revision"))?,
+                    dir_name: dir_name.ok_or_else(|| M::Error::missing_field("dir_name"))?,
+                    safetensors_sha256: safetensors_sha256
+                        .ok_or_else(|| M::Error::missing_field("safetensors_sha256"))?,
+                    tokenizer_sha256: tokenizer_sha256
+                        .ok_or_else(|| M::Error::missing_field("tokenizer_sha256"))?,
+                    config_sha256: config_sha256
+                        .ok_or_else(|| M::Error::missing_field("config_sha256"))?,
+                })
+            }
+        }
+        deserializer.deserialize_map(ModelVisitor)
+    }
+}
+
+impl<'de> Deserialize<'de> for Policy {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct PolicyVisitor;
+        impl<'de> Visitor<'de> for PolicyVisitor {
+            type Value = Policy;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("complete explicit-null reference policy")
+            }
+            fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Policy, M::Error> {
+                let (mut max_length, mut normalization) = (None, None);
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "max_length" => take_field(&mut max_length, &mut map, "max_length")?,
+                        "normalization" => {
+                            take_field(&mut normalization, &mut map, "normalization")?;
+                        }
+                        _ => {
+                            return Err(M::Error::unknown_field(
+                                &key,
+                                &["max_length", "normalization"],
+                            ));
+                        }
+                    }
+                }
+                Ok(Policy {
+                    max_length: max_length.ok_or_else(|| M::Error::missing_field("max_length"))?,
+                    normalization: normalization
+                        .ok_or_else(|| M::Error::missing_field("normalization"))?,
+                })
+            }
+        }
+        deserializer.deserialize_map(PolicyVisitor)
+    }
+}
+
+impl<'de> Deserialize<'de> for ParityFixture {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct FixtureVisitor;
+        impl<'de> Visitor<'de> for FixtureVisitor {
+            type Value = ParityFixture;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a complete parity reference fixture")
+            }
+            fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<ParityFixture, M::Error> {
+                const FIELDS: &[&str] = &[
+                    "schema_version",
+                    "profile",
+                    "library",
+                    "model",
+                    "policy",
+                    "inputs",
+                    "vectors",
+                    "norms",
+                    "pairwise_cosine_upper",
+                    "dimension",
+                ];
+                let (mut schema_version, mut profile, mut library, mut model, mut policy) =
+                    (None, None, None, None, None);
+                let (mut inputs, mut vectors, mut norms, mut pairwise_cosine_upper, mut dimension) =
+                    (None, None, None, None, None);
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "schema_version" => {
+                            take_field(&mut schema_version, &mut map, "schema_version")?;
+                        }
+                        "profile" => take_field(&mut profile, &mut map, "profile")?,
+                        "library" => take_field(&mut library, &mut map, "library")?,
+                        "model" => take_field(&mut model, &mut map, "model")?,
+                        "policy" => take_field(&mut policy, &mut map, "policy")?,
+                        "inputs" => take_field(&mut inputs, &mut map, "inputs")?,
+                        "vectors" => take_field(&mut vectors, &mut map, "vectors")?,
+                        "norms" => take_field(&mut norms, &mut map, "norms")?,
+                        "pairwise_cosine_upper" => take_field(
+                            &mut pairwise_cosine_upper,
+                            &mut map,
+                            "pairwise_cosine_upper",
+                        )?,
+                        "dimension" => take_field(&mut dimension, &mut map, "dimension")?,
+                        _ => return Err(M::Error::unknown_field(&key, FIELDS)),
+                    }
+                }
+                Ok(ParityFixture {
+                    schema_version: schema_version
+                        .ok_or_else(|| M::Error::missing_field("schema_version"))?,
+                    profile: profile.ok_or_else(|| M::Error::missing_field("profile"))?,
+                    library: library.ok_or_else(|| M::Error::missing_field("library"))?,
+                    model: model.ok_or_else(|| M::Error::missing_field("model"))?,
+                    policy: policy.ok_or_else(|| M::Error::missing_field("policy"))?,
+                    inputs: inputs.ok_or_else(|| M::Error::missing_field("inputs"))?,
+                    vectors: vectors.ok_or_else(|| M::Error::missing_field("vectors"))?,
+                    norms: norms.ok_or_else(|| M::Error::missing_field("norms"))?,
+                    pairwise_cosine_upper: pairwise_cosine_upper
+                        .ok_or_else(|| M::Error::missing_field("pairwise_cosine_upper"))?,
+                    dimension: dimension.ok_or_else(|| M::Error::missing_field("dimension"))?,
+                })
+            }
+        }
+        deserializer.deserialize_map(FixtureVisitor)
+    }
 }
 
 fn canonical_inputs() -> Vec<String> {
@@ -114,12 +299,16 @@ impl ParityFixture {
             }
         }
         for (index, row) in self.pairwise_cosine_upper.iter().enumerate() {
-            if row.len() != count - index - 1 {
+            let first_right = index.checked_add(1).ok_or("pairwise index overflow")?;
+            let width = count
+                .checked_sub(first_right)
+                .ok_or("pairwise index exceeds row count")?;
+            if row.len() != width {
                 return Err("reference pairwise triangle width mismatch".into());
             }
             let left = self.vectors.get(index).ok_or("missing left vector")?;
             let left_norm = norm(left);
-            for (right, declared) in self.vectors.iter().skip(index + 1).zip(row) {
+            for (right, declared) in self.vectors.iter().skip(first_right).zip(row) {
                 let right_norm = norm(right);
                 let computed: f64 = left
                     .iter()
@@ -165,7 +354,7 @@ mod tests {
             "inputs": canonical_inputs(),
             "vectors": vectors,
             "norms": vec![1.0; 9],
-            "pairwise_cosine_upper": (0..9).map(|i| vec![1.0; 8-i]).collect::<Vec<_>>(),
+            "pairwise_cosine_upper": (0..9).map(|i| vec![1.0; 8_usize.checked_sub(i).expect("bounded triangular oracle")]).collect::<Vec<_>>(),
             "dimension": POTION_CODE_DIMENSION
         })
     }

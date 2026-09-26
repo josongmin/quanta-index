@@ -23,7 +23,7 @@ use serde::Serialize;
 pub const RESPONSE_ENVELOPE_RESERVE_BYTES: u64 = 4_096;
 
 /// Same page overhead allowance under enabled and disabled stage observation.
-pub(super) const LEXICAL_STAGE_RESERVE_BYTES: u64 = 1024;
+pub(super) const LEXICAL_STAGE_RESERVE_BYTES: u64 = 512;
 
 /// How many encoded bytes one ranked page may take.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -192,7 +192,7 @@ impl RankedPage for TextQueryResponse {
 
     fn budget_encoded_len(&self) -> Result<u64, CoreError> {
         // At most four lexical stages, each with bounded kind, u64 timing and
-        // candidate count, and u32 calls. 1024 bytes dominates the CBOR shape
+        // candidate count, and u32 calls. 512 bytes dominates the CBOR shape
         // even at every scalar maximum (covered by the reserve test).
         let whole = encoded_len(self, "ranked page")?;
         let measured_slot = encoded_len(&self.explanation.stage_timings, "lexical stage slot")?;

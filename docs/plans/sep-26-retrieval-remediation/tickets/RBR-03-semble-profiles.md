@@ -1,13 +1,13 @@
 # RBR-03 — Semble native-default와 통제 실험 분리
 
-## 현행 판정 — 2026-09-26, [중앙 코드 감사](CURRENT-AUDIT.md) 기준
+## 현행 판정 — 2026-09-26, `f9c3b4dc` + 공유 dirty
 
-- 구현: `604149ed`에서 네 profile dispatch와 phase execution event 검증 경로를 재확인했다. 아래 99파일·20질의 Semble 0.6.0 캡처와 exploratory pair는 **과거 개발 관측**이다. profile 재구현이 아닌 실제 pinned output/phase capture 재발급이 잔여다.
+- 구현 관측: `semble.py`의 네 profile·공통 cold/warmup/measured dispatch·lane/phase event와 `run.py`의 frozen profile 검증이 현재 owning 소스에 있다. 아래 99파일·20질의 Semble 0.6.0 캡처와 exploratory pair는 **과거 개발 관측**이다. profile 재구현이 아닌 실제 pinned output/phase capture 재발급이 잔여다.
 - 검증: 과거 bare-symbol lexical-only 도구 5 tests와 GIN/ripgrep v4 exploratory verdict는 역사적 개발 진단이다. 당시 file Recall@10/latency·artifact digest는 [비교 기록](../../sep-23-retrieval-bench/tickets/CODE-SEARCH-COMPARATORS-2026-09.md)을 따른다. 이번 감사에서 새 Semble 실행 또는 해당 전체 과거 artifact의 재검증은 하지 않았다. 현 source의 pinned capture/contract/SDK receipt·admitted qualified final pair·quality/performance는 `NOT_RUN`이다.
-- 잔여: 같은 frozen source/spec에서 실제 pinned reference output·lane 호출·phase event를 재대조한다. 독립 gold/admission/quiet-host가 없는 개발 캡처를 qualified pair로 승격하지 않는다. [현재 전수 판정](CURRENT-AUDIT.md).
+- 잔여: 같은 frozen source/spec에서 네 profile의 pinned reference output·lane 호출·phase event·raw hash를 재발급하고 최종 validator collection/terminal에 바인딩한다. Python authority 283개는 실행 성공이 아니며 과거 276/280 결과를 현재 증거로 재사용하지 않는다. 독립 admission 없는 개발 캡처를 qualified pair로 승격하지 않는다. [중앙 코드 감사](CURRENT-AUDIT.md), [잔여 작업](GAP-REGISTER.md).
 
-- 우선순위: P0. 과거 pinned 개발 캡처와 exploratory pair는 역사적 증거; local 계약은 이후 통과, clean-source receipt와 qualified pair는 `NOT_RUN`. [현재 전수 판정](CURRENT-AUDIT.md). 선행: RBR-00.
-- 성격: 비교 모드 표기/실행 계약 공백. 설치된 Semble 0.6.0을 기준으로 한다.
+- 우선순위: P0. profile/phase 계약 구현 관측; 과거 개발 캡처는 역사적 증거이며 최종 clean-source receipt와 qualified pair는 `NOT_RUN`. [현재 전수 판정](CURRENT-AUDIT.md). 선행: RBR-00.
+- 성격: 비교 모드 표기/실행 계약. Semble 0.6.0 과거 캡처와 새 실행의 실제 pinned dependency/source identity를 구분한다.
 
 ## 파일·함수
 

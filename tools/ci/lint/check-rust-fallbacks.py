@@ -12,6 +12,11 @@ import sys
 from pathlib import Path
 from typing import Any
 
+LINT_DIR = str(Path(__file__).resolve().parent)
+if LINT_DIR not in sys.path:
+    sys.path.insert(0, LINT_DIR)
+from rust_attribute_policy import rust_source_files  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[3]
 RULE_OR_ELSE = "rust-no-silent-or-else-ok"
 RULE_IS_OK = "rust-no-is-ok-as-branch"
@@ -491,7 +496,7 @@ def main() -> int:
         findings = []
         scoped = 0
         candidates = 0
-        for source_path in sorted((*ROOT.glob("crates/**/*.rs"), *ROOT.glob("benchmarks/**/*.rs"))):
+        for source_path in rust_source_files((ROOT / "crates", ROOT / "benchmarks")):
             relative = source_path.relative_to(ROOT)
             if in_scope(relative):
                 scoped += 1

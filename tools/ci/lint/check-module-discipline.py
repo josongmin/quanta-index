@@ -34,6 +34,7 @@ helpers or factories.
 
 from __future__ import annotations
 
+import argparse
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -59,7 +60,28 @@ class Violation:
 
 def workspace_members() -> list[Path]:
     data = tomllib.loads(WORKSPACE_TOML.read_text(encoding="utf-8"))
-    return [ROOT / m for m in data.get("workspace", {}).get("members", [])]
+    members = data.get("workspace", {}).get("members")
+    if not isinstance(members, list) or not members or any(
+        not isinstance(member, str) or not member for member in members
+    ):
+        raise ValueError("workspace.members must be a nonempty list of paths")
+    directories: list[Path] = []
+    seen: set[Path] = set()
+    for member in members:
+        matches = sorted(ROOT.glob(member))
+        if not matches:
+            raise ValueError(f"workspace member has no matching path: {member}")
+        for directory in matches:
+            resolved = directory.resolve()
+            if resolved in seen:
+                raise ValueError(f"duplicate workspace member: {member}")
+            if not (directory / "Cargo.toml").is_file() or not (directory / "src").is_dir():
+                raise ValueError(f"workspace member is missing manifest or Rust source: {member}")
+            if not any((directory / "src").rglob("*.rs")):
+                raise ValueError(f"workspace member has empty Rust source inventory: {member}")
+            seen.add(resolved)
+            directories.append(directory)
+    return directories
 
 
 def collect_facade_files() -> list[Path]:
@@ -67,10 +89,10 @@ def collect_facade_files() -> list[Path]:
     files: list[Path] = []
     for member in workspace_members():
         src = member / "src"
-        if src.is_dir():
-            files.extend(sorted(src.rglob("mod.rs")))
-    if CONTRACT_LIB_RS.exists():
-        files.append(CONTRACT_LIB_RS)
+        files.extend(sorted(src.rglob("mod.rs")))
+    if not CONTRACT_LIB_RS.is_file():
+        raise ValueError(f"missing protected contract facade: {CONTRACT_LIB_RS}")
+    files.append(CONTRACT_LIB_RS)
     return files
 
 
@@ -99,8 +121,14 @@ def audit_facade(path: Path) -> list[Violation]:
 
 
 def main() -> int:
+    argparse.ArgumentParser().parse_args()
+    try:
+        files = collect_facade_files()
+    except (OSError, ValueError) as error:
+        print(f"invalid facade source inventory: {error}", file=sys.stderr)
+        return 2
     violations: list[Violation] = []
-    for path in collect_facade_files():
+    for path in files:
         violations.extend(audit_facade(path))
 
     if violations:
@@ -119,7 +147,7 @@ def main() -> int:
         )
         return 1
 
-    print(f"All {len(collect_facade_files())} facade files pass module discipline.")
+    print(f"All {len(files)} facade files pass module discipline.")
     return 0
 
 

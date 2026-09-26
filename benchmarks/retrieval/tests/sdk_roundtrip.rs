@@ -103,7 +103,11 @@ fn boot_session(state_root: &Path, identity: &BatchIdentity) -> DaemonSession {
     boot_session_with_policy(state_root, identity, QueryStageObservationPolicy::Enabled)
 }
 
-fn boot_session_with_policy(state_root: &Path, identity: &BatchIdentity, policy: QueryStageObservationPolicy) -> DaemonSession {
+fn boot_session_with_policy(
+    state_root: &Path,
+    identity: &BatchIdentity,
+    policy: QueryStageObservationPolicy,
+) -> DaemonSession {
     let config = DaemonConfig {
         state_root,
         searchd_binary: None,
@@ -154,6 +158,82 @@ fn sdk_frontdoor_static_guard() {
             );
         }
     }
+}
+
+#[test]
+fn real_daemon_query_observation_off_preserves_results_and_marks_unmeasured() {
+    let repo = tempfile::tempdir().expect("repo");
+    write_tiny_repo(repo.path());
+    let manifest = load_manifest(&repo.path().join("manifest.json")).expect("manifest");
+    let files = load_corpus(repo.path(), &manifest, &CorpusLimits::default()).expect("corpus");
+    let (chunks, _coverage) = chunk_corpus(&WholeFileChunker, &files).expect("chunks");
+    let identity = BatchIdentity::new(
+        "bench-repo",
+        "bench-rev",
+        7,
+        "manifest:observation".to_string(),
+    )
+    .expect("identity");
+    let (batch, _assembly) =
+        assemble_batch(&identity, &chunks, &symbols_for(&files)).expect("batch");
+    let state = tempfile::tempdir().expect("state");
+    let mut observations = Vec::new();
+    for (name, policy) in [
+        ("enabled", QueryStageObservationPolicy::Enabled),
+        ("disabled", QueryStageObservationPolicy::Disabled),
+    ] {
+        let session = boot_session_with_policy(&state.path().join(name), &identity, policy);
+        let (_receipt, _ack, _ingest) =
+            publish_and_activate(&session, &batch, &identity, None).expect("publish");
+        let mut routes = BTreeMap::new();
+        for route in ["lexical", "semantic", "hybrid"] {
+            let outcome = query_route(&RouteQuery {
+                client: session.client(),
+                route,
+                lexical_request: "sphinx quartz vaults",
+                semantic_text: "sphinx quartz vaults",
+                repo_id: &identity.repo_id,
+                revision_id: &identity.revision_id,
+                generation: identity.generation,
+                top_k: 10,
+            });
+            let QueryOutcome::ReturnedWindow {
+                hits,
+                window,
+                explanation,
+                ..
+            } = outcome
+            else {
+                panic!("observation policy changed success: {outcome:?}");
+            };
+            assert!(!hits.is_empty(), "fixture must exercise nonempty results");
+            let mut explanation = explanation.expect("transport explanation");
+            assert!(explanation.request_id.is_some_and(|id| id > 0));
+            match policy {
+                QueryStageObservationPolicy::Enabled => assert!(
+                    explanation
+                        .stage_timings
+                        .take()
+                        .is_some_and(|stages| !stages.is_empty())
+                ),
+                QueryStageObservationPolicy::Disabled => {
+                    assert!(explanation.stage_timings.is_none());
+                }
+            }
+            let rows: Vec<_> = hits.into_iter().map(|hit| serde_json::json!({
+                "id": hit.candidate_id, "path": hit.path, "start": hit.start_line,
+                "end": hit.end_line, "snippet": hit.snippet, "score": hit.score,
+                "contributions": hit.contributions.iter().map(|part| serde_json::json!({"lane": part.lane, "rank": part.rank, "score": part.raw_score})).collect::<Vec<_>>(),
+            })).collect();
+            let _old = routes.insert(route, (rows, window, explanation));
+        }
+        observations.push(routes);
+        session.stop().expect("stop");
+    }
+    assert_eq!(
+        observations[0], observations[1],
+        "only stage observations may differ"
+    );
 }
 
 fn collect_sources(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -459,16 +539,37 @@ fn real_daemon_roundtrip_publishes_and_queries() {
     assert_eq!(observation.generation, receipt.generation);
     assert_eq!(observation.batch_digest, receipt.batch_digest);
     assert!(observation.request_id > 0);
-    assert_eq!(observation.status, quanta_index_contract::IngestObservationStatus::Executed);
-    assert!(observation.semantic.as_ref().expect("semantic measured").durations.seal.is_some());
+    assert_eq!(
+        observation.status,
+        quanta_index_contract::IngestObservationStatus::Executed
+    );
+    assert!(
+        observation
+            .semantic
+            .as_ref()
+            .expect("semantic measured")
+            .durations
+            .seal
+            .is_some()
+    );
     assert!(observation.lexical_build_ns.is_some());
     assert!(observation.finalize_ns.is_some());
-    assert!(observation.activation_ns.is_none(), "separate activation is not a server ingest stage");
-    let replay = session.client().producer().publish_search_corpus_observed(&batch).expect("observed replay");
-    assert_eq!(replay.receipt, receipt.replayed());
+    assert!(
+        observation.activation_ns.is_none(),
+        "separate activation is not a server ingest stage"
+    );
+    let replay = session
+        .client()
+        .producer()
+        .publish_search_corpus_observed(&batch)
+        .expect("observed replay");
+    assert_eq!(replay.receipt, receipt.clone().replayed());
     let replayed = replay.observation.expect("explicit replay observation");
     assert_ne!(replayed.request_id, observation.request_id);
-    assert_eq!(replayed.status, quanta_index_contract::IngestObservationStatus::Replayed);
+    assert_eq!(
+        replayed.status,
+        quanta_index_contract::IngestObservationStatus::Replayed
+    );
     assert!(replayed.semantic.is_none());
     assert!(replayed.lexical_build_ns.is_none());
     assert!(replayed.finalize_ns.is_none());
@@ -1070,7 +1171,42 @@ fn actual_runner_binary_emits_receipt_bound_v5_record() {
     let diagnostic: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&diagnostic_out).expect("diagnostic bytes"))
             .expect("diagnostic JSON");
-    assert_eq!(diagnostic["schema_version"], 4);
+    assert_eq!(diagnostic["schema_version"], 5);
+    assert_eq!(
+        diagnostic["server_observation"],
+        quanta_index_retrieval_bench::diagnostics::server_observation_value(
+            QueryStageObservationPolicy::Enabled
+        )
+        .expect("canonical config")
+    );
+    let raw_ingest = &diagnostic["ingest"];
+    let raw_receipt: quanta_index_sdk::BatchReceipt =
+        serde_json::from_value(raw_ingest["receipt"].clone()).expect("strict durable receipt");
+    let raw_ack: quanta_index_contract::SearchPlaneSearchCorpusActivationCasAck =
+        serde_json::from_value(raw_ingest["activation_ack"].clone()).expect("strict activation");
+    let observation: quanta_index_contract::SearchCorpusIngestObservation =
+        serde_json::from_value(raw_ingest["observation"].clone())
+            .expect("strict transient observation");
+    assert_eq!(observation.repo_id.as_str(), "runner-binary-repo");
+    assert_eq!(observation.revision_id.as_str(), commit);
+    assert_eq!(observation.generation.get(), 1);
+    assert_eq!(observation.batch_digest, raw_receipt.batch_digest);
+    assert_eq!(
+        observation.status,
+        quanta_index_contract::IngestObservationStatus::Executed
+    );
+    assert!(observation.activation_ns.is_none());
+    assert!(observation.request_id > 0);
+    for capture in captures.values() {
+        assert_eq!(
+            capture["receipt_digest"],
+            receipt_digest(&raw_receipt).expect("receipt hash")
+        );
+        assert_eq!(
+            capture["activation_digest"],
+            activation_digest(&raw_ack).expect("activation hash")
+        );
+    }
     assert_eq!(
         diagnostic["record_sha256"],
         sha256_hex(&std::fs::read(&out).expect("record bytes"))

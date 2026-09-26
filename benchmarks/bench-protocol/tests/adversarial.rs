@@ -13,6 +13,17 @@ use quanta_index_bench_protocol::{BenchmarkEvidenceV1, Payload, ProtocolError, R
 
 const RUN_ID: &str = "run-20260926T120000Z-a1b2c3d4";
 
+#[test]
+fn profile_custody_refuses_rust_gc_without_deleting_runs() -> Result<(), Box<dyn Error>> {
+    let root = tempfile::tempdir()?;
+    fs::create_dir_all(root.path().join("captures"))?;
+    fs::create_dir_all(root.path().join("runs/pinned"))?;
+    let store = RunStore::new(root.path());
+    assert!(store.collect(&[]).is_err());
+    assert!(root.path().join("runs/pinned").is_dir());
+    Ok(())
+}
+
 fn refusal(
     result: Result<BenchmarkEvidenceV1, ProtocolError>,
 ) -> Result<ProtocolError, Box<dyn Error>> {

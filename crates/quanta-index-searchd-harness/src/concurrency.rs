@@ -54,6 +54,19 @@ pub const DIMENSION: &str = "concurrency";
 /// The client counts the finding names.
 pub const CLIENT_COUNTS: [u32; 3] = [1, 8, 32];
 
+/// Minimum answered latency samples in every authoritative artifact row.
+pub const MINIMUM_ROW_SAMPLES: u32 = 16;
+
+/// Five mixed routes must each reach the row floor at one fast client.
+pub const DEFAULT_REQUESTS_PER_CLIENT: u32 = 80;
+
+/// Hard resource bound, including additional fast requests during slow sampling.
+const MAX_SAMPLES_PER_WORKER: u32 = 100_000;
+
+/// New requests stop at this shared deadline; an in-flight request can take
+/// at most `REQUEST_TIMEOUT` longer. Exhaustion is an error, never a partial rail.
+const MEASUREMENT_TIMEOUT: Duration = Duration::from_secs(600);
+
 /// Repo id of the seeded corpus.
 const CONCURRENCY_REPO: &str = "repo-concurrency";
 
@@ -204,10 +217,78 @@ fn result_count_of(response: &SearchPlaneQueryIpcResponse) -> Option<u64> {
     Some(saturating_u64(rows))
 }
 
+fn classify_response(
+    request_id: u64,
+    route: Option<MixedRoute>,
+    expected_generation: &GenerationPin,
+    response: &SearchPlaneQueryIpcResponseEnvelope,
+) -> AnyResult<RequestOutcome> {
+    if response.request_id != request_id {
+        return Err(anyhow::anyhow!(
+            "concurrency: response request_id {} differs from request {request_id}",
+            response.request_id
+        ));
+    }
+    if let SearchPlaneQueryIpcResponse::Error(error) = &response.payload {
+        return Ok(RequestOutcome::TypedError { code: error.code });
+    }
+    let matches_route = matches!(
+        (route, &response.payload),
+        (
+            None | Some(MixedRoute::Lexical | MixedRoute::LexicalCount),
+            SearchPlaneQueryIpcResponse::Text(_)
+        ) | (
+            Some(MixedRoute::Symbol),
+            SearchPlaneQueryIpcResponse::Symbol(_)
+        ) | (
+            Some(MixedRoute::Semantic),
+            SearchPlaneQueryIpcResponse::Semantic(_)
+        ) | (
+            Some(MixedRoute::Hybrid),
+            SearchPlaneQueryIpcResponse::Hybrid(_)
+        )
+    );
+    if !matches_route {
+        return Err(anyhow::anyhow!(
+            "concurrency: response kind differs from requested route {route:?}"
+        ));
+    }
+    let generation = match &response.payload {
+        SearchPlaneQueryIpcResponse::Text(page) => &page.generation,
+        SearchPlaneQueryIpcResponse::Symbol(page) => &page.generation,
+        SearchPlaneQueryIpcResponse::Semantic(page) => &page.generation,
+        SearchPlaneQueryIpcResponse::Hybrid(page) => &page.generation,
+        SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+        | SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_)
+        | SearchPlaneQueryIpcResponse::HybridSeed(_)
+        | SearchPlaneQueryIpcResponse::History(_)
+        | SearchPlaneQueryIpcResponse::Structural(_)
+        | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+        | SearchPlaneQueryIpcResponse::Explain(_)
+        | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
+        | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
+        | SearchPlaneQueryIpcResponse::Error(_) => {
+            return Err(anyhow::anyhow!(
+                "concurrency: unexpected response without query generation"
+            ));
+        }
+    };
+    if generation != expected_generation {
+        return Err(anyhow::anyhow!(
+            "concurrency: response generation differs from pinned fixture generation"
+        ));
+    }
+    Ok(RequestOutcome::Served {
+        result_count: result_count_of(&response.payload)
+            .ok_or_else(|| anyhow::anyhow!("concurrency: a served answer of an unexpected kind"))?,
+    })
+}
+
 /// Issue one request and classify its outcome; a transport failure that is
 /// neither an answer nor a timeout is the caller's error.
 fn timed_request(
     socket: &Path,
+    expected_generation: &GenerationPin,
     request_id: u64,
     payload: SearchPlaneQueryIpcRequest,
     route: Option<MixedRoute>,
@@ -221,17 +302,7 @@ fn timed_request(
     let answer = send_request::<_, SearchPlaneQueryIpcResponseEnvelope>(socket, &envelope, policy);
     let wall_ms = started.elapsed().as_secs_f64() * 1000.0;
     let outcome = match answer {
-        Ok(response) => {
-            if let SearchPlaneQueryIpcResponse::Error(error) = &response.payload {
-                RequestOutcome::TypedError { code: error.code }
-            } else {
-                RequestOutcome::Served {
-                    result_count: result_count_of(&response.payload).ok_or_else(|| {
-                        anyhow::anyhow!("concurrency: a served answer of an unexpected kind")
-                    })?,
-                }
-            }
-        }
+        Ok(response) => classify_response(request_id, route, expected_generation, &response)?,
         Err(IpcError::Timeout { .. } | IpcError::ClientIoDeadlineElapsed) => {
             RequestOutcome::Timeout
         }
@@ -330,7 +401,118 @@ pub struct ConcurrencyMeasurement {
     pub slow: Option<GroupSummary>,
 }
 
+fn validate_requests_per_client(requests: u32) -> AnyResult<()> {
+    let routes = u32::try_from(MixedRoute::ALL.len())?;
+    let minimum = MINIMUM_ROW_SAMPLES
+        .checked_mul(routes)
+        .ok_or_else(|| anyhow::anyhow!("concurrency: request floor overflow"))?;
+    if requests > MAX_SAMPLES_PER_WORKER {
+        return Err(anyhow::anyhow!(
+            "concurrency: requests_per_client exceeds bounded sample budget {MAX_SAMPLES_PER_WORKER}"
+        ));
+    }
+    if requests < minimum {
+        return Err(anyhow::anyhow!(
+            "concurrency: requests_per_client must be at least {minimum} ({MINIMUM_ROW_SAMPLES} samples per mixed route)"
+        ));
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+struct SamplingBudget {
+    started: Instant,
+    timeout: Duration,
+    max_samples: u32,
+}
+
+impl SamplingBudget {
+    fn new() -> Self {
+        Self {
+            started: Instant::now(),
+            timeout: MEASUREMENT_TIMEOUT,
+            max_samples: MAX_SAMPLES_PER_WORKER,
+        }
+    }
+
+    fn check(self, index: u64) -> AnyResult<()> {
+        if index >= u64::from(self.max_samples) {
+            return Err(anyhow::anyhow!(
+                "concurrency: sampling exceeded bounded sample budget {}",
+                self.max_samples
+            ));
+        }
+        if self.started.elapsed() >= self.timeout {
+            return Err(anyhow::anyhow!(
+                "concurrency: sampling exceeded measurement deadline"
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Release fast workers if the slow worker fails or unwinds before its floor.
+/// The error is still propagated when the worker is joined.
+struct ReleaseFastWorkers<'a>(&'a AtomicBool);
+
+impl Drop for ReleaseFastWorkers<'_> {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+
+fn collect_slow_samples(
+    stop: &AtomicBool,
+    slow_ready: &AtomicBool,
+    budget: SamplingBudget,
+    mut request: impl FnMut(u64) -> AnyResult<RequestSample>,
+) -> AnyResult<Vec<RequestSample>> {
+    let _release = ReleaseFastWorkers(slow_ready);
+    let mut samples = Vec::new();
+    let mut index = 0_u64;
+    while !stop.load(Ordering::Acquire) || index < u64::from(MINIMUM_ROW_SAMPLES) {
+        budget.check(index)?;
+        samples.push(request(index)?);
+        index = index
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("concurrency: slow request index overflow"))?;
+        if index >= u64::from(MINIMUM_ROW_SAMPLES) {
+            slow_ready.store(true, Ordering::Release);
+        }
+    }
+    Ok(samples)
+}
+
+fn collect_fast_samples(
+    requests_per_client: u32,
+    slow_ready: &AtomicBool,
+    budget: SamplingBudget,
+    mut request: impl FnMut(u64, MixedRoute) -> AnyResult<RequestSample>,
+) -> AnyResult<Vec<RequestSample>> {
+    let mut samples = Vec::with_capacity(usize::try_from(requests_per_client)?);
+    let mut index = 0_u64;
+    while index < u64::from(requests_per_client) || !slow_ready.load(Ordering::Acquire) {
+        budget.check(index)?;
+        let route = MixedRoute::ALL
+            .get(
+                usize::try_from(index)?
+                    .checked_rem(MixedRoute::ALL.len())
+                    .ok_or_else(|| anyhow::anyhow!("concurrency: the route set is empty"))?,
+            )
+            .copied()
+            .ok_or_else(|| anyhow::anyhow!("concurrency: the route set is empty"))?;
+        samples.push(request(index, route)?);
+        index = index
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("concurrency: fast request index overflow"))?;
+    }
+    Ok(samples)
+}
+
 /// Run one client count against the served generation.
+///
+/// Fast workers remain active until the slow worker reaches the sample floor.
+/// The extra slow samples remain part of the contention window.
 fn measure_clients(
     socket: &Path,
     pin: &GenerationPin,
@@ -338,62 +520,61 @@ fn measure_clients(
     requests_per_client: u32,
 ) -> AnyResult<ConcurrencyMeasurement> {
     let stop = Arc::new(AtomicBool::new(false));
+    let slow_ready = Arc::new(AtomicBool::new(clients == 1));
     let window_started = Instant::now();
+    let budget = SamplingBudget::new();
     let mut fast_handles = Vec::with_capacity(usize::try_from(clients)?);
     for client in 0..clients {
         let socket = socket.to_path_buf();
         let pin = pin.clone();
+        let slow_ready = Arc::clone(&slow_ready);
         fast_handles.push(thread::spawn(move || -> AnyResult<Vec<RequestSample>> {
-            let mut samples = Vec::with_capacity(usize::try_from(requests_per_client)?);
-            for index in 0..requests_per_client {
-                let route = MixedRoute::ALL
-                    .get(
-                        usize::try_from(index)?
-                            .checked_rem(MixedRoute::ALL.len())
-                            .ok_or_else(|| {
-                                anyhow::anyhow!("concurrency: the route set is empty")
-                            })?,
-                    )
-                    .copied()
-                    .ok_or_else(|| anyhow::anyhow!("concurrency: the route set is empty"))?;
+            collect_fast_samples(requests_per_client, &slow_ready, budget, |index, route| {
                 let request_id = u64::from(client)
                     .saturating_mul(1_000_000)
-                    .saturating_add(u64::from(index));
-                samples.push(timed_request(
+                    .saturating_add(index);
+                timed_request(
                     &socket,
+                    &pin,
                     request_id,
                     fast_request(route, &pin),
                     Some(route),
-                )?);
-            }
-            Ok(samples)
+                )
+            })
         }));
     }
     let slow_handle = (clients > 1).then(|| {
         let socket = socket.to_path_buf();
         let pin = pin.clone();
         let stop = Arc::clone(&stop);
+        let slow_ready = Arc::clone(&slow_ready);
         thread::spawn(move || -> AnyResult<Vec<RequestSample>> {
-            let mut samples = Vec::new();
-            let mut index = 0_u64;
-            while !stop.load(Ordering::Acquire) {
-                samples.push(timed_request(
+            collect_slow_samples(&stop, &slow_ready, budget, |index| {
+                timed_request(
                     &socket,
+                    &pin,
                     u64::MAX.saturating_sub(index),
                     slow_request(&pin),
                     None,
-                )?);
-                index = index.saturating_add(1);
-            }
-            Ok(samples)
+                )
+            })
         })
     });
     let mut fast_samples = Vec::new();
+    let mut fast_error = None;
     for handle in fast_handles {
-        let samples = handle
+        let result = handle
             .join()
-            .map_err(|panic| anyhow::anyhow!("concurrency: a fast client panicked: {panic:?}"))??;
-        fast_samples.extend(samples);
+            .map_err(|panic| anyhow::anyhow!("concurrency: a fast client panicked: {panic:?}"))
+            .and_then(std::convert::identity);
+        match result {
+            Ok(samples) => fast_samples.extend(samples),
+            Err(error) => {
+                if fast_error.is_none() {
+                    fast_error = Some(error);
+                }
+            }
+        }
     }
     stop.store(true, Ordering::Release);
     let slow_samples = match slow_handle {
@@ -402,6 +583,9 @@ fn measure_clients(
         })??),
         None => None,
     };
+    if let Some(error) = fast_error {
+        return Err(error);
+    }
     let window_secs = window_started.elapsed().as_secs_f64();
     let routes = MixedRoute::ALL
         .iter()
@@ -445,11 +629,7 @@ pub struct ConcurrencyReport {
 
 /// Seed the medium corpus, serve it, and measure every client count.
 pub fn run_concurrency_report(seed: u64, requests_per_client: u32) -> AnyResult<ConcurrencyReport> {
-    if requests_per_client == 0 {
-        return Err(anyhow::anyhow!(
-            "concurrency: requests_per_client must be at least 1"
-        ));
-    }
+    validate_requests_per_client(requests_per_client)?;
     let tier = ScaleTier::Medium;
     let corpus = generate_corpus(tier, seed);
     let mut rt = E2eRuntime::boot()?;
@@ -589,6 +769,10 @@ pub fn detail_json(report: &ConcurrencyReport) -> Value {
             "mixed_in_for_client_counts_above": 1,
         },
         "mixed_routes": MixedRoute::ALL.iter().map(|route| route.as_str()).collect::<Vec<_>>(),
+        "minimum_row_samples": MINIMUM_ROW_SAMPLES,
+        "maximum_samples_per_worker": MAX_SAMPLES_PER_WORKER,
+        "measurement_timeout_secs": MEASUREMENT_TIMEOUT.as_secs(),
+        "sampling_policy": "fast clients run at least requests_per_client and remain active until the slow client reaches minimum_row_samples; slow client runs through the fast window",
         "head_of_line_ratio_p50": head_of_line_ratio_p50(report),
         "dispatch_policy": "ServerAdmissionPolicy::DEFAULT (4 dispatch slots, 2s queue wait)",
         "measurements": report.measurements.iter().map(measurement_json).collect::<Vec<_>>(),
@@ -672,6 +856,16 @@ pub fn artifacts(
                                 ),
                                 ("fast_top_k", FAST_TOP_K.to_string()),
                                 ("slow_top_k", SLOW_TOP_K.to_string()),
+                                ("minimum_row_samples", MINIMUM_ROW_SAMPLES.to_string()),
+                                ("sampling_policy", "fast-until-slow-floor".to_string()),
+                                (
+                                    "maximum_samples_per_worker",
+                                    MAX_SAMPLES_PER_WORKER.to_string(),
+                                ),
+                                (
+                                    "measurement_timeout_secs",
+                                    MEASUREMENT_TIMEOUT.as_secs().to_string(),
+                                ),
                                 (
                                     "request_timeout_secs",
                                     REQUEST_TIMEOUT.as_secs().to_string(),
@@ -736,6 +930,248 @@ mod tests {
         assert_eq!(MixedRoute::Semantic.route_family(), RouteFamily::Semantic);
         assert_eq!(MixedRoute::Hybrid.route_family(), RouteFamily::Hybrid);
         assert_eq!(MixedRoute::Symbol.route_family(), RouteFamily::Symbol);
+    }
+
+    #[test]
+    fn authoritative_request_budget_rejects_every_underfilled_route() {
+        for requests in [0, 1, 16, DEFAULT_REQUESTS_PER_CLIENT - 1] {
+            assert!(validate_requests_per_client(requests).is_err());
+        }
+        validate_requests_per_client(DEFAULT_REQUESTS_PER_CLIENT).expect("default meets the floor");
+        let samples = collect_fast_samples(
+            DEFAULT_REQUESTS_PER_CLIENT,
+            &AtomicBool::new(true),
+            SamplingBudget::new(),
+            |_, route| {
+                Ok(sample(
+                    Some(route),
+                    1.0,
+                    RequestOutcome::Served { result_count: 1 },
+                ))
+            },
+        )
+        .expect("requests served");
+        for route in MixedRoute::ALL {
+            let count = samples
+                .iter()
+                .filter(|sample| sample.route == Some(route))
+                .count();
+            assert_eq!(
+                count, 16,
+                "the public gate requires 16 samples for every route"
+            );
+        }
+    }
+
+    #[test]
+    fn fast_workers_remain_active_until_slow_floor_and_then_stop() {
+        let ready = AtomicBool::new(false);
+        let samples = collect_fast_samples(
+            DEFAULT_REQUESTS_PER_CLIENT,
+            &ready,
+            SamplingBudget::new(),
+            |index, route| {
+                if index == 84 {
+                    ready.store(true, Ordering::Release);
+                }
+                Ok(sample(
+                    Some(route),
+                    1.0,
+                    RequestOutcome::Served { result_count: 1 },
+                ))
+            },
+        )
+        .expect("requests served");
+        assert_eq!(samples.len(), 85, "five more requests during slow sampling");
+    }
+
+    #[test]
+    fn slow_sampling_reaches_floor_before_release_and_stops_with_fast_window() {
+        let stop = AtomicBool::new(false);
+        let ready = AtomicBool::new(false);
+        let samples = collect_slow_samples(&stop, &ready, SamplingBudget::new(), |index| {
+            assert_eq!(ready.load(Ordering::Acquire), index >= 16);
+            if index == 19 {
+                stop.store(true, Ordering::Release);
+            }
+            Ok(sample(
+                None,
+                1.0,
+                RequestOutcome::Served { result_count: 1 },
+            ))
+        })
+        .expect("requests served");
+        assert_eq!(samples.len(), 20);
+        assert!(ready.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn slow_sampling_cannot_be_empty_when_fast_workers_stop_early() {
+        let ready = AtomicBool::new(false);
+        let samples = collect_slow_samples(
+            &AtomicBool::new(true),
+            &ready,
+            SamplingBudget::new(),
+            |_| {
+                Ok(sample(
+                    None,
+                    1.0,
+                    RequestOutcome::Served { result_count: 1 },
+                ))
+            },
+        )
+        .expect("floor served");
+        assert_eq!(samples.len(), 16);
+        assert!(ready.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn slow_failure_releases_fast_workers_and_preserves_failure() {
+        let ready = AtomicBool::new(false);
+        let result = collect_slow_samples(
+            &AtomicBool::new(false),
+            &ready,
+            SamplingBudget::new(),
+            |_| Err(anyhow::anyhow!("transport refused")),
+        );
+        assert!(result.is_err());
+        assert!(ready.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn slow_panic_releases_fast_workers_and_remains_a_panic() {
+        let ready = AtomicBool::new(false);
+        let result = std::panic::catch_unwind(|| {
+            collect_slow_samples(
+                &AtomicBool::new(false),
+                &ready,
+                SamplingBudget::new(),
+                |_| panic!("slow worker panicked"),
+            )
+        });
+        assert!(result.is_err());
+        assert!(ready.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn sampling_budget_exhaustion_is_an_error_and_releases_fast_workers() {
+        let ready = AtomicBool::new(false);
+        let budget = SamplingBudget {
+            started: Instant::now(),
+            timeout: MEASUREMENT_TIMEOUT,
+            max_samples: 2,
+        };
+        let result =
+            collect_fast_samples(DEFAULT_REQUESTS_PER_CLIENT, &ready, budget, |_, route| {
+                Ok(sample(
+                    Some(route),
+                    1.0,
+                    RequestOutcome::Served { result_count: 1 },
+                ))
+            });
+        assert!(
+            result
+                .expect_err("never return a partial fast rail")
+                .to_string()
+                .contains("sample budget")
+        );
+        let result = collect_slow_samples(&AtomicBool::new(false), &ready, budget, |_| {
+            Ok(sample(
+                None,
+                1.0,
+                RequestOutcome::Served { result_count: 1 },
+            ))
+        });
+        assert!(
+            result
+                .expect_err("never return a partial slow rail")
+                .to_string()
+                .contains("sample budget")
+        );
+        assert!(ready.load(Ordering::Acquire));
+        assert!(validate_requests_per_client(MAX_SAMPLES_PER_WORKER + 1).is_err());
+    }
+
+    #[test]
+    fn elapsed_measurement_deadline_prevents_another_request() {
+        let budget = SamplingBudget {
+            started: Instant::now(),
+            timeout: Duration::ZERO,
+            max_samples: MAX_SAMPLES_PER_WORKER,
+        };
+        let result = collect_fast_samples(
+            DEFAULT_REQUESTS_PER_CLIENT,
+            &AtomicBool::new(true),
+            budget,
+            |_, _| panic!("must not issue a request after the deadline"),
+        );
+        assert!(
+            result
+                .expect_err("elapsed deadline must fail")
+                .to_string()
+                .contains("deadline")
+        );
+        let ready = AtomicBool::new(false);
+        let result = collect_slow_samples(&AtomicBool::new(false), &ready, budget, |_| {
+            panic!("must not issue a slow request after the deadline")
+        });
+        assert!(result.is_err());
+        assert!(ready.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn answered_queries_must_match_request_id_and_requested_route() {
+        let pin = GenerationPin::new(
+            RepoId::new("repo-concurrency").expect("fixture repo"),
+            RevisionId::new("rev-concurrency").expect("fixture revision"),
+            ManifestGeneration::new(1),
+        );
+        let mut response = SearchPlaneQueryIpcResponseEnvelope {
+            request_id: 7,
+            payload: SearchPlaneQueryIpcResponse::Symbol(
+                quanta_index_contract::SymbolQueryResponse {
+                    generation: pin.clone(),
+                    results: Vec::new(),
+                    window: quanta_index_contract::QueryResultWindowV2::exact_probe(0),
+                    next_cursor: None,
+                },
+            ),
+        };
+        assert_eq!(
+            classify_response(7, Some(MixedRoute::Symbol), &pin, &response)
+                .expect("matching symbol answer"),
+            RequestOutcome::Served { result_count: 0 }
+        );
+        for route in [
+            None,
+            Some(MixedRoute::Lexical),
+            Some(MixedRoute::LexicalCount),
+            Some(MixedRoute::Semantic),
+            Some(MixedRoute::Hybrid),
+        ] {
+            assert!(
+                classify_response(7, route, &pin, &response).is_err(),
+                "symbol answer must not satisfy {route:?}"
+            );
+        }
+        let wrong_generation = GenerationPin::new(
+            RepoId::new("repo-concurrency").expect("fixture repo"),
+            RevisionId::new("wrong-revision").expect("other revision"),
+            ManifestGeneration::new(1),
+        );
+        assert!(
+            classify_response(7, Some(MixedRoute::Symbol), &wrong_generation, &response)
+                .expect_err("wrong source generation")
+                .to_string()
+                .contains("generation")
+        );
+        response.request_id = 8;
+        assert!(
+            classify_response(7, Some(MixedRoute::Symbol), &pin, &response)
+                .expect_err("wrong request identity")
+                .to_string()
+                .contains("request_id")
+        );
     }
 
     #[test]

@@ -34,6 +34,7 @@ from evidence import (  # noqa: E402
     seal,
     validate_payload,
 )
+from native_contracts import validate_concurrency  # noqa: E402
 
 ROOT = SCRIPT_DIR.parents[1]
 ARTIFACT_SCHEMA_VERSION = 2
@@ -83,6 +84,9 @@ def source_identity(
             *manifest["roots"],
         )  # noqa: SLF001
     )
+    closure_digest = manifest.get("digest")
+    if not isinstance(closure_digest, str) or re.fullmatch(r"[0-9a-f]{64}", closure_digest) is None:
+        raise EvidenceError("source closure engine returned a malformed bare SHA-256 digest")
     return {
         "revision": manifest["revision"],
         "dirty": dirty,
@@ -101,7 +105,7 @@ def source_identity(
             else None
         ),
         "closure_profile": closure_profile,
-        "closure_digest": manifest["digest"],
+        "closure_digest": f"sha256:{closure_digest}",
     }
 
 
@@ -333,6 +337,9 @@ def native_payload_from_artifacts(artifacts: list[dict[str, Any]], kind: str) ->
                             }
                         )
                 else:
+                    refusals = validate_concurrency(artifact)
+                    if refusals:
+                        raise EvidenceError("concurrency native contract refused: " + "; ".join(refusals))
                     client = concurrency_clients_from_artifact(artifact)
                     if client in clients:
                         raise EvidenceError("duplicate concurrency artifact")

@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPT_PATH = REPO_ROOT / "tools" / "ci" / "lint" / "check-changed-line-coverage.py"
@@ -111,3 +114,33 @@ def test_duplicate_lcov_line_and_partial_record_are_refused(tmp_path: Path):
     lcov.write_text(f"SF:{source}\nDA:1,1\n", encoding="utf-8")
     with pytest.raises(ValueError, match="lacks end_of_record"):
         module.parse_lcov(tmp_path, lcov)
+
+
+@pytest.mark.parametrize("filename", ["lib.rs", "한글.rs", "tab\tfile.rs", 'quote"file.rs'])
+def test_actual_git_diff_preserves_every_changed_production_path(tmp_path: Path, filename: str):
+    module = _load_module()
+
+    def git(*args):
+        return subprocess.run(
+            ["git", *args], cwd=tmp_path, check=True, capture_output=True, text=True
+        ).stdout.strip()
+
+    git("init", "-q")
+    git("config", "user.name", "Coverage oracle")
+    git("config", "user.email", "coverage@example.invalid")
+    git("config", "diff.noprefix", "true")
+    path = tmp_path / "crates/demo/src" / filename
+    path.parent.mkdir(parents=True)
+    path.write_text("pub fn demo() {}\n")
+    git("add", ".")
+    git("commit", "-qm", "base")
+    base = git("rev-parse", "HEAD")
+    path.write_text('pub fn demo() { panic!("new uncovered behavior"); }\n')
+    git("add", ".")
+    git("commit", "-qm", "candidate")
+    changed = module.changed_production_lines(tmp_path, base)
+    assert changed == {(path.relative_to(tmp_path).as_posix(), 1)}
+    lcov = _write_lcov(tmp_path / "coverage.lcov", path, {1: 0})
+    verdict = module.audit_changed_coverage(tmp_path, lcov, changed, 90.0)
+    assert verdict.total_lines == 1
+    assert verdict.violations

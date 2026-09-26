@@ -351,6 +351,13 @@ impl RunStore {
 
     /// Remove every run that is neither explicitly kept nor baseline-referenced.
     pub fn collect(&self, keep: &[String]) -> Result<Vec<String>, ProtocolError> {
+        // Profile captures are orchestration-owned custody roots. Refuse GC
+        // rather than deleting runs pinned by an unknown profile record.
+        if fs::symlink_metadata(self.root.join("captures")).is_ok() {
+            return Err(ProtocolError::semantic(
+                "profile-capture custody requires orchestrator garbage collection",
+            ));
+        }
         let mut retained: Vec<String> = keep.to_vec();
         let baselines = self.baselines_dir();
         if baselines.is_dir() {

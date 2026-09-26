@@ -347,7 +347,8 @@ impl<'a> SearchCorpusNamespace<'a> {
         batch: &SearchCorpusBatch,
         expected_active: Option<SearchCorpusActiveHeadV1>,
     ) -> Result<(BatchReceipt, SearchPlaneSearchCorpusActivationCasAck), SdkError> {
-        let (outcome, activation) = self.publish_and_activate_outcome(batch, expected_active, false)?;
+        let (outcome, activation) =
+            self.publish_and_activate_outcome(batch, expected_active, false)?;
         Ok((outcome.receipt, activation))
     }
 
@@ -357,7 +358,13 @@ impl<'a> SearchCorpusNamespace<'a> {
         &self,
         batch: &SearchCorpusBatch,
         expected_active: Option<SearchCorpusActiveHeadV1>,
-    ) -> Result<(quanta_index_contract::SearchCorpusPublishOutcome, SearchPlaneSearchCorpusActivationCasAck), SdkError> {
+    ) -> Result<
+        (
+            quanta_index_contract::SearchCorpusPublishOutcome,
+            SearchPlaneSearchCorpusActivationCasAck,
+        ),
+        SdkError,
+    > {
         self.publish_and_activate_outcome(batch, expected_active, true)
     }
 
@@ -366,7 +373,13 @@ impl<'a> SearchCorpusNamespace<'a> {
         batch: &SearchCorpusBatch,
         expected_active: Option<SearchCorpusActiveHeadV1>,
         observation_required: bool,
-    ) -> Result<(quanta_index_contract::SearchCorpusPublishOutcome, SearchPlaneSearchCorpusActivationCasAck), SdkError> {
+    ) -> Result<
+        (
+            quanta_index_contract::SearchCorpusPublishOutcome,
+            SearchPlaneSearchCorpusActivationCasAck,
+        ),
+        SdkError,
+    > {
         // An expectation that could never be met — invalid, another pair,
         // or not advanced by this batch — is refused before any byte is
         // published, by the contract's own rule.
@@ -379,7 +392,9 @@ impl<'a> SearchCorpusNamespace<'a> {
         })?;
         let outcome = dispatch_search_corpus_publish_outcome_v1(self.client, batch)?;
         if observation_required && outcome.observation.is_none() {
-            return Err(SdkError::Protocol("search corpus observation is missing".to_string()));
+            return Err(SdkError::Protocol(
+                "search corpus observation is missing".to_string(),
+            ));
         }
         let request = SearchPlaneActivateSearchCorpusGenerationCasRequest {
             candidate: search_corpus_identity_from_sealed_receipt_v1(batch, &outcome.receipt)?,
@@ -500,7 +515,9 @@ pub(crate) fn dispatch_search_corpus_publish_observed_v1<const SEALED: bool>(
 ) -> Result<quanta_index_contract::SearchCorpusPublishOutcome, SdkError> {
     let outcome = dispatch_search_corpus_publish_outcome_v1(client, batch)?;
     if outcome.observation.is_none() {
-        return Err(SdkError::Protocol("search corpus observation is missing".to_string()));
+        return Err(SdkError::Protocol(
+            "search corpus observation is missing".to_string(),
+        ));
     }
     Ok(outcome)
 }

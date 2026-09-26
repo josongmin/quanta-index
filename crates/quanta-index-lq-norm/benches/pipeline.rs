@@ -1,146 +1,52 @@
-//! Pipeline-stage benches: tokenize / parse / normalize / hash.
-//!
-//! Three deterministic input sizes (1 KiB / 4 KiB / 16 KiB) per stage.
-//! The 16 KiB size sits at the parser's maximum input cap; the smaller
-//! sizes track sub-millisecond regression budgets.
+//! All four successful pipeline stages at exactly 1/4/16 KiB.
+//! Invalid fixtures fail before Criterion registers or measures any case.
 
-use criterion::{Criterion, criterion_group, criterion_main};
-
+use criterion::{BenchmarkId, Criterion, black_box};
+use quanta_index_lq_norm::errors::LqParseError;
 use quanta_index_lq_norm::hasher::canonical_hash;
 use quanta_index_lq_norm::normalizer::normalize;
 use quanta_index_lq_norm::parser::parse;
 use quanta_index_lq_norm::tokenizer::tokenize;
 
-/// Build a deterministic query of approximately `target_len` bytes.
-///
-/// Repeats a short keyword + filter pattern; the resulting input is still
-/// valid LQ within the parser's caps. We pick a pattern whose AST fans
-/// out within the per-node 64-child cap.
-fn build_query(target_len: usize) -> String {
-    let unit = "alpha OR beta lang:rust ";
-    let mut out = String::with_capacity(target_len);
-    loop {
-        let Some(after) = out.len().checked_add(unit.len()) else {
-            break;
-        };
-        if after > target_len {
-            break;
+/// Sixteen distinct terms keep AST fan-out bounded independently of byte size.
+fn build_query(size: usize) -> String {
+    let bytes = size.saturating_sub(15_usize.saturating_mul(" OR ".len()));
+    let mut terms = Vec::with_capacity(16);
+    for index in 0..16 {
+        let width = bytes
+            .div_euclid(16)
+            .saturating_add(usize::from(index < bytes.rem_euclid(16)));
+        let mut term = format!("term{index:02}");
+        term.extend(core::iter::repeat_n('x', width.saturating_sub(term.len())));
+        terms.push(term);
+    }
+    terms.join(" OR ")
+}
+
+fn main() -> Result<(), LqParseError> {
+    let mut fixtures = Vec::new();
+    for size in [1_024_usize, 4_096, 16_384] {
+        let input = build_query(size);
+        let tokens = tokenize(&input)?;
+        let parsed = parse(&tokens, &input)?;
+        let normalized = normalize(parsed.clone())?;
+        fixtures.push((size, input, tokens, parsed, normalized));
+    }
+    let mut criterion = Criterion::default().configure_from_args();
+    for stage in ["tokenize", "parse", "normalize", "hash"] {
+        let mut group = criterion.benchmark_group(stage);
+        for (size, input, tokens, parsed, normalized) in &fixtures {
+            let _registered =
+                group.bench_function(BenchmarkId::from_parameter(size), |b| match stage {
+                    "tokenize" => b.iter(|| black_box(tokenize(black_box(input.as_str())))),
+                    "parse" => b.iter(|| black_box(parse(black_box(tokens), black_box(input)))),
+                    "normalize" => b.iter(|| black_box(normalize(black_box(parsed.clone())))),
+                    _ => b.iter(|| black_box(canonical_hash(black_box(normalized)))),
+                });
         }
-        out.push_str(unit);
+        group.finish();
     }
-    // Trailing keyword so we never end on a dangling boolean operator.
-    out.push_str("zeta");
-    out
+    criterion.final_summary();
+    drop(criterion);
+    Ok(())
 }
-
-fn bench_tokenize(c: &mut Criterion) {
-    let mut g = c.benchmark_group("tokenize");
-    for &size in &[1_024_usize, 4_096, 16_384] {
-        let input = build_query(size);
-        let _registered: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime> = g
-            .bench_with_input(
-                criterion::BenchmarkId::from_parameter(size),
-                &input,
-                |b, s| {
-                    b.iter(|| {
-                        let res = tokenize(criterion::black_box(s.as_str()));
-                        let _kept = criterion::black_box(&res);
-                    });
-                },
-            );
-    }
-    g.finish();
-}
-
-fn bench_parse(c: &mut Criterion) {
-    let mut g = c.benchmark_group("parse");
-    for &size in &[1_024_usize, 4_096, 16_384] {
-        let input = build_query(size);
-        let tokens = match tokenize(&input) {
-            Ok(t) => t,
-            Err(_e) => continue,
-        };
-        let _registered: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime> = g
-            .bench_with_input(
-                criterion::BenchmarkId::from_parameter(size),
-                &input,
-                |b, s| {
-                    b.iter(|| {
-                        let res = parse(
-                            criterion::black_box(&tokens),
-                            criterion::black_box(s.as_str()),
-                        );
-                        let _kept = criterion::black_box(&res);
-                    });
-                },
-            );
-    }
-    g.finish();
-}
-
-fn bench_normalize(c: &mut Criterion) {
-    let mut g = c.benchmark_group("normalize");
-    for &size in &[1_024_usize, 4_096, 16_384] {
-        let input = build_query(size);
-        let tokens = match tokenize(&input) {
-            Ok(t) => t,
-            Err(_e) => continue,
-        };
-        let parsed = match parse(&tokens, &input) {
-            Ok(q) => q,
-            Err(_e) => continue,
-        };
-        let _registered: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime> = g
-            .bench_with_input(
-                criterion::BenchmarkId::from_parameter(size),
-                &parsed,
-                |b, q| {
-                    b.iter(|| {
-                        let res = normalize(criterion::black_box(q.clone()));
-                        let _kept = criterion::black_box(&res);
-                    });
-                },
-            );
-    }
-    g.finish();
-}
-
-fn bench_hash(c: &mut Criterion) {
-    let mut g = c.benchmark_group("hash");
-    for &size in &[1_024_usize, 4_096, 16_384] {
-        let input = build_query(size);
-        let tokens = match tokenize(&input) {
-            Ok(t) => t,
-            Err(_e) => continue,
-        };
-        let parsed = match parse(&tokens, &input) {
-            Ok(q) => q,
-            Err(_e) => continue,
-        };
-        let normalized = match normalize(parsed) {
-            Ok(q) => q,
-            Err(_e) => continue,
-        };
-        let _registered: &mut criterion::BenchmarkGroup<'_, criterion::measurement::WallTime> = g
-            .bench_with_input(
-                criterion::BenchmarkId::from_parameter(size),
-                &normalized,
-                |b, q| {
-                    b.iter(|| {
-                        let res = canonical_hash(criterion::black_box(q));
-                        let _kept = criterion::black_box(&res);
-                    });
-                },
-            );
-    }
-    g.finish();
-}
-
-criterion_group!(
-    benches,
-    bench_tokenize,
-    bench_parse,
-    bench_normalize,
-    bench_hash
-);
-criterion_main!(benches);

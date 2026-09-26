@@ -45,7 +45,16 @@ HOST_POLICIES = frozenset({"any", "local-diagnostic", "canonical-linux"})
 SCOPES = frozenset({"diagnostic", "contract", "quality", "performance"})
 STATUSES = frozenset({"pass", "fail", "unsupported", "not_run"})
 PAYLOAD_KINDS = frozenset(
-    {"micro", "latency", "load", "freshness", "retrieval", "agent_outcome", "recorded_experiment"}
+    {
+        "micro",
+        "latency",
+        "load",
+        "freshness",
+        "retrieval",
+        "agent_outcome",
+        "recorded_experiment",
+        "proof",
+    }
 )
 UNITS = frozenset({"ms", "ratio", "count", "ns", "instructions", "qps", "bytes"})
 
@@ -273,12 +282,14 @@ def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 def parse_json(text: str) -> Any:
     """Strict JSON for native captures and orchestration records."""
+
     def reject_constant(value: str) -> None:
         raise EvidenceError(f"non-finite JSON constant: {value}")
 
     try:
-        return json.loads(text, object_pairs_hook=_reject_duplicate_keys,
-                          parse_constant=reject_constant)
+        return json.loads(
+            text, object_pairs_hook=_reject_duplicate_keys, parse_constant=reject_constant
+        )
     except (ValueError, RecursionError) as exc:
         raise EvidenceError(f"invalid JSON: {exc}") from exc
 
@@ -584,6 +595,31 @@ def _validate_recorded_experiment(payload: dict[str, Any]) -> None:
         _number(point["value"], f"{where}.value")
 
 
+def _validate_proof(payload: dict[str, Any]) -> None:
+    table = _exact_keys(
+        payload,
+        {
+            "kind",
+            "rail",
+            "selected",
+            "executed",
+            "passed",
+            "failed",
+            "source_digest",
+            "execution_context_digest",
+        },
+        "payload",
+    )
+    _string(table["rail"], "proof.rail")
+    selected, executed, passed, failed = (
+        _uint(table[key], f"proof.{key}") for key in ("selected", "executed", "passed", "failed")
+    )
+    if selected == 0 or selected != executed or passed + failed != executed:
+        _fail("proof requires complete consistent terminal counts")
+    require_digest("proof.source_digest", table["source_digest"])
+    require_digest("proof.execution_context_digest", table["execution_context_digest"])
+
+
 _PAYLOAD_VALIDATORS = {
     "micro": _validate_micro,
     "latency": _validate_latency,
@@ -592,6 +628,7 @@ _PAYLOAD_VALIDATORS = {
     "retrieval": _validate_retrieval,
     "agent_outcome": _validate_agent_outcome,
     "recorded_experiment": _validate_recorded_experiment,
+    "proof": _validate_proof,
 }
 
 
@@ -741,6 +778,11 @@ def validate(evidence: object) -> dict[str, Any]:
     status = _string(verdict["status"], "verdict.status")
     if status not in STATUSES:
         _fail(f"verdict.status {status!r} is not registered")
+    if kind == "proof":
+        if scope != "contract" or payload["source_digest"] != source["closure_digest"]:
+            _fail("proof requires contract scope and the bound source closure")
+        if status == "pass" and payload["failed"] != 0:
+            _fail("failed proof tests cannot carry a pass verdict")
     if status != "pass" and not (isinstance(verdict["reason"], str) and verdict["reason"].strip()):
         _fail("a non-pass verdict must state a reason")
     if verdict["reason"] is not None:
@@ -779,10 +821,7 @@ def verify_digest(evidence: dict[str, Any]) -> str:
 
 def open_evidence(text: str) -> dict[str, Any]:
     """Parse, digest-verify and validate a sealed evidence document."""
-    try:
-        record = json.loads(text, object_pairs_hook=_reject_duplicate_keys)
-    except json.JSONDecodeError as exc:
-        raise EvidenceError(f"malformed evidence JSON: {exc}") from exc
+    record = parse_json(text)
     validate(record)
     verify_digest(record)
     return record
@@ -815,15 +854,20 @@ def _read_regular_file(path: Path) -> bytes:
 
 
 def _write_atomic(path: Path, data: bytes) -> None:
+    import tempfile
+
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp-write")
-    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644)
-    with os.fdopen(descriptor, "wb") as handle:
-        handle.write(data)
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.replace(temporary, path)
-    _sync_dir(path.parent)
+    descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        _sync_dir(path.parent)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _sync_dir(path: Path) -> None:
@@ -953,7 +997,36 @@ class RunStore:
         return payload
 
     def collect(self, keep: list[str]) -> list[str]:
+        from custody import custody
+
+        with custody(self.root):
+            return self._collect(keep)
+
+    def _collect(self, keep: list[str]) -> list[str]:
         retained = set(keep)
+        # Captures are immutable custody records, including historical ones.
+        # Resolve every reference before deleting anything; corruption refuses GC.
+        from profile_capture import load_capture
+
+        captures = self.root / "captures"
+        if captures.is_symlink():
+            raise EvidenceError("capture directory is a symlink")
+        if captures.exists():
+            if not captures.is_dir():
+                raise EvidenceError("capture path is not a directory")
+            for path in sorted(captures.iterdir()):
+                document = parse_json(_read_regular_file(path).decode())
+                if not isinstance(document, dict):
+                    raise EvidenceError("capture record is malformed")
+                capture = load_capture(
+                    self.root,
+                    profile=document.get("profile"),
+                    registry_digest=document.get("registry_digest"),
+                    capture_id=document.get("capture_id"),
+                )
+                if path.name != f"{capture['capture_id']}.json":
+                    raise EvidenceError("capture filename does not match identity")
+                retained.update(record["run_id"] for record in capture["runs"])
         if self.baselines_dir.is_dir():
             for path in sorted(self.baselines_dir.glob("*.json")):
                 record = json.loads(_read_regular_file(path).decode("utf-8"))

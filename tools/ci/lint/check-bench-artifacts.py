@@ -50,6 +50,7 @@ from manifest import (  # noqa: E402
     load_manifest,
     profile_families,
 )
+from native_contracts import validate_concurrency  # noqa: E402
 
 #: The schema every benchmark artifact must carry, mirroring
 #: ``BENCH_ARTIFACT_SCHEMA_VERSION`` in ``artifact.rs``.
@@ -423,12 +424,15 @@ def check_artifact(
     head: str | None,
     require: bool,
     manifest: dict[str, object] = MANIFEST,
+    artifact_path: Path | None = None,
 ) -> list[str]:
     """One family policy for scanning, promotion and captured-raw replay."""
     family = manifest["families"][dimension]
     reasons = check_envelope(
         payload, dimension=dimension, head=head, host_policy=family["host_policy"]
     )
+    if isinstance(payload, dict) and dimension == "concurrency":
+        reasons.extend(validate_concurrency(payload, family["minimum_samples"], artifact_path))
     if not require or not isinstance(payload, dict):
         return reasons
     rows = payload.get("rows")
@@ -511,7 +515,12 @@ def check_families(
                 refusals.append(Refusal(path, f"unreadable: {exc}"))
                 continue
             for reason in check_artifact(
-                payload, dimension=dimension, head=head, require=require, manifest=manifest
+                payload,
+                dimension=dimension,
+                head=head,
+                require=require,
+                manifest=manifest,
+                artifact_path=path,
             ):
                 refusals.append(Refusal(path, reason))
     return refusals, checked, absent

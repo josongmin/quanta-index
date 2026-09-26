@@ -25,11 +25,27 @@ New benchmark-only packages stay in the **root Cargo workspace** and share its t
 
 ## Current source anchors and observed gaps
 
-- `tools/benchmark/{manifest.json,manifest.py,benchctl.py}` registers search-quality/system families, but its comparator enum is DSL-only. Retrieval and `agent_outcome` have separate entrypoints; crate-local Criterion benches are not registered as evidence families.
-- `crates/quanta-index-searchd-harness/src/artifact.rs` owns a latency-row-oriented envelope. It is not a correct common payload for qrels, agent outcomes, or file-only product captures; the writer currently writes directly to its requested path.
-- `.github/workflows/correctness.yml` runs DSL producers and comparators directly, while `Justfile` also exposes `benchctl run dsl-authority`. CI and local execution must converge on one declared path.
-- `Cargo.toml` currently includes `benchmarks/retrieval` and `crates/quanta-index-searchd-harness` in the root workspace but has no `default-members`. `crates/quanta-index-lq-norm/benches/pipeline.rs` and `crates/quanta-index-searchd-runtime/benches/dsl_query_matrix.rs` are crate-local Criterion targets.
-- `tools/ci/source_closure.py` currently includes the Sep-23/Sep-26 retrieval packets, not this new packet. BM-00 owns adding the new contract to the relevant proof closure with mutation tests.
+- `tools/benchmark/registry.toml` is the sole registration authority;
+  `manifest.py` is a read-only native projection, not a second manifest.
+  `benchctl.py` remains the selected current orchestrator; the Rust CLI was not
+  adopted. `manifest.json` is removed.
+- `benchmarks/bench-protocol` owns the typed purpose-specific envelope.
+  Python promotion uses the same canonical evidence representation. Complete
+  profile records and custody/GC checks are shared, not fabricated latency rows.
+- Both crate-local Criterion targets are registered and have an execution,
+  capture and raw-replay adapter. The complete runtime/LQ measurement sequence
+  is still in progress; registration/focused tests are not that receipt.
+- `recorded_capture.py` imports external inputs with explicit unauthenticated
+  scope. Clean snapshot `9e0f9371` passed 272 focused tests and real CLI
+  import/validate/two-family fresh-process replay on fixed fixtures. This is
+  contract proof, not authenticated real-agent or performance qualification.
+- Retrieval scorers/producers remain their existing owners. The common CLI's
+  retrieval input/capture adapter is still missing. Native binary inventory,
+  monitored host-lease admission and hosted CI remain separate open proof/code
+  boundaries, detailed in [CURRENT-AUDIT.md](CURRENT-AUDIT.md).
+- `tools/ci/source_closure.py` binds the benchmark control plane and owning
+  micro crates. Planning history is intentionally excluded from that closure;
+  documentation edits must not invalidate unchanged normative code evidence.
 
 ## Tickets
 

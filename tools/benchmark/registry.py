@@ -39,6 +39,7 @@ PAYLOAD_KINDS = frozenset(
         "retrieval",
         "agent_outcome",
         "recorded_experiment",
+        "proof",
     }
 )
 PURPOSES = frozenset(

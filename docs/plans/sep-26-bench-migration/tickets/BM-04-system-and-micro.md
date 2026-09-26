@@ -4,6 +4,12 @@ Status: `PLAN / NOT_RUN`. Priority: P1. Depends on: BM-01/BM-03. Common gates: [
 
 Implementation/verification/qualification verdicts for this ticket are recorded in [CLOSEOUT.md](CLOSEOUT.md) and, where relevant, [BM-00-INVENTORY.md](BM-00-INVENTORY.md), [BM-03-DECISION.md](BM-03-DECISION.md) and [BM-07-MIGRATION-MATRIX.md](BM-07-MIGRATION-MATRIX.md). The original `PLAN / NOT_RUN` status above is the plan-time state, not the closeout state.
 
+Current correction: [CURRENT-AUDIT.md](CURRENT-AUDIT.md) is authoritative over
+the historical closeout. Criterion capture/validation/replay and complete-case
+custody are implemented; LQ's skipped-stage fixture defect is repaired. Full
+clean-source micro integration and native binary/monitored-host qualification
+remain separate requirements. A focused test or registration is not BM-04 closure.
+
 ## Purpose
 
 Register existing DSL/search-quality/system producers and crate-local Rust microbenchmarks without changing the behavior they measure. Separate human-facing micro diagnostics from product-performance authority.

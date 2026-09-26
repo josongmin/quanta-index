@@ -65,6 +65,7 @@ fn print_help() -> BenchResult<()> {
          brace_heuristic: --max-item-bytes N (default 32768)\n\
          run adds: --query-pack PATH --routes a,b --top-k N --state-root PATH\n\
          [--query-protocol PATH] [--query-input-policy native|literal|natural_language]\n\
+         [--query-stage-observation enabled|disabled] (default enabled; server query stages only)\n\
          --repo-id ID --revision-id ID --generation N\n\
          --runner-name NAME --runner-revision REV --run-id ID\n\
          --blinding attested|isolated --isolation-method TEXT --access-block-log TEXT\n\
@@ -741,7 +742,9 @@ fn run_capture(args: &Args) -> BenchResult<()> {
     let profile = EmbedderProfile::resolve(args.flags.get("embedder").map(String::as_str))?;
     let model_dir = args.flags.get("model-dir").map(PathBuf::from);
     let query_stage_observation = QueryStageObservationPolicy::parse(
-        args.flags.get("query-stage-observation").map_or("enabled", String::as_str),
+        args.flags
+            .get("query-stage-observation")
+            .map_or("enabled", String::as_str),
     )
     .map_err(|message| BenchError::Config(message.to_string()))?;
     if model_dir.as_ref().is_some_and(|path| !path.is_dir()) {
@@ -789,7 +792,8 @@ fn run_capture(args: &Args) -> BenchResult<()> {
     let boot_elapsed = boot_start.elapsed();
 
     let publish_start = Instant::now();
-    let (receipt, ack, ingest_observation) = publish_and_activate(&session, &batch, &identity, None)?;
+    let (receipt, ack, ingest_observation) =
+        publish_and_activate(&session, &batch, &identity, None)?;
     let publish_elapsed = publish_start.elapsed();
     let accepted_scopes = usize::try_from(receipt.accepted_replace_scopes).map_err(|err| {
         BenchError::Protocol(format!("receipt scope count cannot fit usize: {err}"))
@@ -1078,9 +1082,14 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         })?;
     let record_digest = sha256_hex(format!("{rendered_record}\n").as_bytes());
     let diagnostics = if diagnostics_out.is_some() {
-        let mut value =
-            diagnostic_value(&record_digest, &record, &pack, &routes, &outcomes,
-                query_stage_observation)?;
+        let mut value = diagnostic_value(
+            &record_digest,
+            &record,
+            &pack,
+            &routes,
+            &outcomes,
+            query_stage_observation,
+        )?;
         let detail = serde_json::json!({
             "clock": "runner_monotonic_wall_v1",
             "daemon_boot_and_readiness": boot_elapsed.as_secs_f64() * 1000.0,
@@ -1092,11 +1101,14 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         let object = value.as_object_mut().ok_or_else(|| {
             BenchError::Protocol("diagnostic value must be an object".to_string())
         })?;
-        let _previous = object.insert("ingest".to_string(), serde_json::json!({
-            "receipt": receipt,
-            "activation_ack": ack,
-            "observation": ingest_observation,
-        }));
+        let _previous = object.insert(
+            "ingest".to_string(),
+            serde_json::json!({
+                "receipt": receipt,
+                "activation_ack": ack,
+                "observation": ingest_observation,
+            }),
+        );
         if object
             .insert("runner_timing_detail_ms".to_string(), detail)
             .is_some()

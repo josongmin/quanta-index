@@ -123,9 +123,11 @@ def test_scoped_repository_lints_skip_unrelated_docs_and_cover_their_inputs() ->
             "crates/quanta-index-core/fuzz/fuzz_targets/silent.rs",
             "benchmarks/retrieval/src/lib.rs",
             "tools/ci/lint/check-rust-fallbacks.py",
+            "tools/ci/lint/rust_attribute_policy.py",
         ),
         "rust-fallback-tests": (
             "tools/ci/lint/check-rust-fallbacks.py",
+            "tools/ci/lint/rust_attribute_policy.py",
             "tools/ci/tests/test_check_rust_fallbacks.py",
         ),
         "precommit-scope-tests": (

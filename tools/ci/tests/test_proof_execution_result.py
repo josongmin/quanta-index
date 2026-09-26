@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 from pathlib import Path
@@ -9,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from tools.ci import proof_execution_result as MODULE
+from tools.ci.nextest_events import NextestEvidenceError, parse_nextest_inventory_bytes
 from tools.ci.proof_execution_result import (
     ExecutionResultError,
     collect_pytest_inventory,
@@ -146,7 +148,13 @@ def _nextest_fixture(root: Path) -> tuple[dict, list[dict[str, str]], Path]:
         {"source_path": "raw/events.jsonl", "path": "raw/events.jsonl"},
         {"source_path": "raw/inventory.json", "path": "raw/inventory.json"},
     ]
+    _bind_artifact_digests(root, artifacts)
     return result, artifacts, events
+
+
+def _bind_artifact_digests(root: Path, artifacts: list[dict[str, str]]) -> None:
+    for artifact in artifacts:
+        artifact["sha256"] = hashlib.sha256((root / artifact["path"]).read_bytes()).hexdigest()
 
 
 def test_nextest_result_is_derived_from_complete_inventory(tmp_path: Path) -> None:
@@ -155,6 +163,150 @@ def test_nextest_result_is_derived_from_complete_inventory(tmp_path: Path) -> No
         {"selected": 1, "executed": 1, "passed": 1, "failed": 0, "ignored": 0},
         {("nextest-jsonl", "quanta-index-core::journal_owner$passes")},
     )
+
+
+@pytest.mark.parametrize(
+    "filter_match",
+    [
+        None,
+        False,
+        [],
+        {},
+        {"status": "unknown"},
+        {"status": "mismatch"},
+        {"status": "mismatch", "reason": "unknown"},
+    ],
+)
+def test_nextest_inventory_refuses_malformed_exclusion(
+    tmp_path: Path, filter_match: object
+) -> None:
+    _nextest_fixture(tmp_path)
+    inventory = json.loads((tmp_path / "raw/inventory.json").read_bytes())
+    inventory["test-count"] = 2
+    suite = next(iter(inventory["rust-suites"].values()))
+    suite["testcases"]["omitted"] = {"ignored": False, "filter-match": filter_match}
+    with pytest.raises(NextestEvidenceError, match="filter"):
+        parse_nextest_inventory_bytes(json.dumps(inventory).encode())
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "not-benchmark",
+        "ignored",
+        "string",
+        "expression",
+        "partition",
+        "rerun-already-passed",
+        "default-filter",
+    ],
+)
+def test_nextest_inventory_admits_explicit_exclusion(tmp_path: Path, reason: str) -> None:
+    _nextest_fixture(tmp_path)
+    inventory = json.loads((tmp_path / "raw/inventory.json").read_bytes())
+    inventory["test-count"] = 2
+    suite = next(iter(inventory["rust-suites"].values()))
+    suite["testcases"]["excluded"] = {
+        "ignored": reason == "ignored",
+        "filter-match": {"status": "mismatch", "reason": reason},
+    }
+    expected = parse_nextest_inventory_bytes(json.dumps(inventory).encode())
+    assert set(expected) == {"quanta-index-core::journal_owner$passes"}
+
+
+@pytest.mark.parametrize("artifact_index", [0, 1])
+def test_execution_result_refuses_archive_digest_substitution(
+    tmp_path: Path, artifact_index: int
+) -> None:
+    result, artifacts, _ = _nextest_fixture(tmp_path)
+    artifact = artifacts[artifact_index]
+    path = tmp_path / artifact["path"]
+    # Whitespace preserves the successful result but changes its authority bytes.
+    path.write_bytes(b" " + path.read_bytes())
+    with pytest.raises(ExecutionResultError, match="digest"):
+        derive_test_result(tmp_path, result, artifacts)
+
+
+@pytest.mark.parametrize("artifact_index", [0, 1])
+def test_execution_result_refuses_symlinked_archive(tmp_path: Path, artifact_index: int) -> None:
+    result, artifacts, _ = _nextest_fixture(tmp_path)
+    path = tmp_path / artifacts[artifact_index]["path"]
+    replacement = tmp_path / "replacement"
+    replacement.write_bytes(path.read_bytes())
+    path.unlink()
+    path.symlink_to(replacement)
+    with pytest.raises(ExecutionResultError):
+        derive_test_result(tmp_path, result, artifacts)
+
+
+def test_execution_result_parses_captured_bytes_without_path_reopen(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result, artifacts, _ = _nextest_fixture(tmp_path)
+    read = MODULE._read_repo_regular_bytes
+    captured = []
+
+    def capture(root: Path, path: str, *, label: str) -> bytes:
+        raw = read(root, path, label=label)
+        captured.append(path)
+        # Replacement after descriptor capture must not influence parsing.
+        (root / path).write_bytes(b"untrusted replacement")
+        return raw
+
+    monkeypatch.setattr(MODULE, "_read_repo_regular_bytes", capture)
+    counts, names = derive_test_result(tmp_path, result, artifacts)
+    assert counts == {"selected": 1, "executed": 1, "passed": 1, "failed": 0, "ignored": 0}
+    assert names == {("nextest-jsonl", "quanta-index-core::journal_owner$passes")}
+    assert captured == ["raw/events.jsonl", "raw/inventory.json"]
+
+
+def test_pytest_execution_custody_binds_digest_and_captured_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events = tmp_path / "events.xml"
+    inventory = tmp_path / "inventory.json"
+    events.write_bytes(
+        b'<testsuite tests="1" failures="0" errors="0" skipped="0">'
+        b'<testcase classname="tools.ci.tests.test_example" name="test_ok"/>'
+        b"</testsuite>"
+    )
+    inventory.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "kind": "pytest",
+                "selector": "tools/ci/tests/test_example.py",
+                "tests": ["tools.ci.tests.test_example.test_ok"],
+            }
+        )
+    )
+    result = {
+        "schema_version": 1,
+        "runs": [
+            {
+                "format": "pytest-junit",
+                "events": "events.xml",
+                "inventory": "inventory.json",
+            }
+        ],
+    }
+    artifacts = [{"source_path": path.name, "path": path.name} for path in (events, inventory)]
+    _bind_artifact_digests(tmp_path, artifacts)
+    events.write_bytes(b" " + events.read_bytes())
+    with pytest.raises(ExecutionResultError, match="digest"):
+        derive_test_result(tmp_path, result, artifacts)
+    events.write_bytes(events.read_bytes()[1:])
+    read = MODULE._read_repo_regular_bytes
+
+    def capture(root: Path, path: str, *, label: str) -> bytes:
+        raw = read(root, path, label=label)
+        (root / path).write_bytes(b"untrusted replacement")
+        return raw
+
+    monkeypatch.setattr(MODULE, "_read_repo_regular_bytes", capture)
+    counts, names = derive_test_result(tmp_path, result, artifacts)
+    assert counts["passed"] == 1
+    assert names == {("pytest-junit", "tools.ci.tests.test_example.test_ok")}
 
 
 @pytest.mark.parametrize("mutation", ["missing", "duplicate", "wrong-test", "arbitrary-log"])
@@ -172,6 +324,7 @@ def test_nextest_result_rejects_false_evidence(tmp_path: Path, mutation: str) ->
         events.write_text("proof passed\n", encoding="utf-8")
     if mutation != "arbitrary-log":
         events.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    _bind_artifact_digests(tmp_path, artifacts)
     with pytest.raises(ExecutionResultError):
         derive_test_result(tmp_path, result, artifacts)
 
@@ -223,6 +376,7 @@ def test_pytest_result_rejects_skipped_case(tmp_path: Path) -> None:
         {"source_path": "raw/junit.xml", "path": "raw/junit.xml"},
         {"source_path": "raw/inventory.json", "path": "raw/inventory.json"},
     ]
+    _bind_artifact_digests(tmp_path, artifacts)
     with pytest.raises(ExecutionResultError, match="did not pass"):
         derive_test_result(tmp_path, result, artifacts)
     junit.write_text(
@@ -231,6 +385,7 @@ def test_pytest_result_rejects_skipped_case(tmp_path: Path) -> None:
         "</testsuite>",
         encoding="utf-8",
     )
+    _bind_artifact_digests(tmp_path, artifacts)
     assert derive_test_result(tmp_path, result, artifacts)[0]["passed"] == 1
 
 

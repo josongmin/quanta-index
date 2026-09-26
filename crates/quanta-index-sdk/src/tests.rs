@@ -2547,20 +2547,23 @@ fn reader_client_routes_lexical_query_surface() {
 #[test]
 fn producer_client_publish_search_corpus_accepts_unsealed_batches() {
     let ingest = Arc::new(StubIngestTransport::new(
-        SearchPlaneIngestIpcResponse::SearchCorpusReceipt(BatchPublishReceipt {
-            generation: ManifestGeneration::new(2),
-            manifest_digest: Some("manifest:unsealed".to_string()),
-            batch_digest: String::new(),
-            applied: true,
-            durable_sequence: 7,
-            semantic_content: None,
-            accepted_clear_surfaces: 0,
-            accepted_replace_scopes: 0,
-            accepted_tombstone_scopes: 0,
-            accepted_semantic_replace_scopes: 0,
-            accepted_semantic_tombstone_scopes: 0,
-            sealed: false,
-        }.into()),
+        SearchPlaneIngestIpcResponse::SearchCorpusReceipt(
+            BatchPublishReceipt {
+                generation: ManifestGeneration::new(2),
+                manifest_digest: Some("manifest:unsealed".to_string()),
+                batch_digest: String::new(),
+                applied: true,
+                durable_sequence: 7,
+                semantic_content: None,
+                accepted_clear_surfaces: 0,
+                accepted_replace_scopes: 0,
+                accepted_tombstone_scopes: 0,
+                accepted_semantic_replace_scopes: 0,
+                accepted_semantic_tombstone_scopes: 0,
+                sealed: false,
+            }
+            .into(),
+        ),
     ));
     let client = QuantaIndex::from_transports(unused_query(), unused_control(), ingest.clone());
     let batch = SearchCorpusBatch::replace_generation(
@@ -2594,12 +2597,24 @@ struct ObservedIngestTransport {
 }
 
 impl IngestTransport for ObservedIngestTransport {
-    fn send(&self, request: SearchPlaneIngestIpcRequestEnvelope) -> Result<SearchPlaneIngestIpcResponseEnvelope, crate::SdkError> {
-        use quanta_index_contract::{IngestObservationStatus, IngestStageReport, SearchCorpusIngestObservation, SearchCorpusPublishOutcome};
-        let SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch) = request.payload else {
-            return Err(crate::SdkError::Protocol("expected corpus publish".to_string()));
+    fn send(
+        &self,
+        request: SearchPlaneIngestIpcRequestEnvelope,
+    ) -> Result<SearchPlaneIngestIpcResponseEnvelope, crate::SdkError> {
+        use quanta_index_contract::{
+            IngestObservationStatus, IngestStageReport, SearchCorpusIngestObservation,
+            SearchCorpusPublishOutcome,
         };
-        let receipt = BatchPublishReceipt::empty_for(batch.generation, Some(batch.manifest_digest.clone()), batch.batch_digest.clone());
+        let SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch) = request.payload else {
+            return Err(crate::SdkError::Protocol(
+                "expected corpus publish".to_string(),
+            ));
+        };
+        let receipt = BatchPublishReceipt::empty_for(
+            batch.generation,
+            Some(batch.manifest_digest.clone()),
+            batch.batch_digest.clone(),
+        );
         let mut observation = SearchCorpusIngestObservation {
             request_id: request.request_id,
             repo_id: batch.repo_id,
@@ -2613,38 +2628,88 @@ impl IngestTransport for ObservedIngestTransport {
             activation_ns: None,
         };
         match self.mutation {
-            Some("request") => observation.request_id += 1,
-            Some("repo") => observation.repo_id = RepoId::new("other-repo").map_err(|error| crate::SdkError::Protocol(error.to_string()))?,
-            Some("revision") => observation.revision_id = RevisionId::new("other-revision").map_err(|error| crate::SdkError::Protocol(error.to_string()))?,
+            Some("request") => {
+                observation.request_id =
+                    observation.request_id.checked_add(1).ok_or_else(|| {
+                        crate::SdkError::Protocol("fixture request id overflow".to_string())
+                    })?;
+            }
+            Some("repo") => {
+                observation.repo_id = RepoId::new("other-repo")
+                    .map_err(|error| crate::SdkError::Protocol(error.to_string()))?;
+            }
+            Some("revision") => {
+                observation.revision_id = RevisionId::new("other-revision")
+                    .map_err(|error| crate::SdkError::Protocol(error.to_string()))?;
+            }
             Some("generation") => observation.generation = ManifestGeneration::new(99),
             Some("batch") => observation.batch_digest = "other-batch".to_string(),
             Some("replay") => observation.status = IngestObservationStatus::Replayed,
             Some("activation") => observation.activation_ns = Some(1),
-            Some("missing") | None => {},
-            Some(other) => return Err(crate::SdkError::Protocol(format!("unknown mutant {other}"))),
+            Some("missing") | None => {}
+            Some(other) => {
+                return Err(crate::SdkError::Protocol(format!("unknown mutant {other}")));
+            }
         }
         Ok(SearchPlaneIngestIpcResponseEnvelope {
             request_id: request.request_id,
-            payload: SearchPlaneIngestIpcResponse::SearchCorpusReceipt(SearchCorpusPublishOutcome {
-                receipt,
-                observation: if self.mutation == Some("missing") { None } else { Some(observation) },
-            }),
+            payload: SearchPlaneIngestIpcResponse::SearchCorpusReceipt(
+                SearchCorpusPublishOutcome {
+                    receipt,
+                    observation: if self.mutation == Some("missing") {
+                        None
+                    } else {
+                        Some(observation)
+                    },
+                },
+            ),
         })
     }
 }
 
 #[test]
 fn observed_corpus_publish_propagates_typed_stages_and_rejects_identity_and_replay_forgery() {
-    let batch = SearchCorpusBatch::replace_generation(repo_id(), revision_id(), ManifestGeneration::new(2), "manifest:observed").without_seal();
-    let client = QuantaIndex::from_transports(unused_query(), unused_control(), Arc::new(ObservedIngestTransport { mutation: None }));
+    let batch = SearchCorpusBatch::replace_generation(
+        repo_id(),
+        revision_id(),
+        ManifestGeneration::new(2),
+        "manifest:observed",
+    )
+    .without_seal();
+    let client = QuantaIndex::from_transports(
+        unused_query(),
+        unused_control(),
+        Arc::new(ObservedIngestTransport { mutation: None }),
+    );
     let outcome = ok_or_fail!(client.producer().publish_search_corpus_observed(&batch));
     let observation = outcome.observation.expect("fixture has observed stages");
     assert_eq!(observation.lexical_build_ns, Some(17));
     assert_eq!(observation.finalize_ns, Some(23));
     assert_eq!(observation.activation_ns, None);
-    for mutation in ["request", "repo", "revision", "generation", "batch", "replay", "activation", "missing"] {
-        let client = QuantaIndex::from_transports(unused_query(), unused_control(), Arc::new(ObservedIngestTransport { mutation: Some(mutation) }));
-        assert!(client.producer().publish_search_corpus_observed(&batch).is_err(), "accepted invalid observation {mutation}");
+    for mutation in [
+        "request",
+        "repo",
+        "revision",
+        "generation",
+        "batch",
+        "replay",
+        "activation",
+        "missing",
+    ] {
+        let client = QuantaIndex::from_transports(
+            unused_query(),
+            unused_control(),
+            Arc::new(ObservedIngestTransport {
+                mutation: Some(mutation),
+            }),
+        );
+        assert!(
+            client
+                .producer()
+                .publish_search_corpus_observed(&batch)
+                .is_err(),
+            "accepted invalid observation {mutation}"
+        );
     }
 }
 
@@ -2789,20 +2854,23 @@ fn producer_client_rejects_activation_ack_identity_mismatches_v1() {
             quanta_index_contract::SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(ack),
         ));
         let ingest = Arc::new(StubIngestTransport::new(
-            SearchPlaneIngestIpcResponse::SearchCorpusReceipt(BatchPublishReceipt {
-                generation: ManifestGeneration::new(7),
-                manifest_digest: Some("manifest:activate".to_string()),
-                batch_digest: String::new(),
-                applied: true,
-                durable_sequence: 7,
-                semantic_content: Some(semantic_roots(7)),
-                accepted_clear_surfaces: 0,
-                accepted_replace_scopes: 0,
-                accepted_tombstone_scopes: 0,
-                accepted_semantic_replace_scopes: 0,
-                accepted_semantic_tombstone_scopes: 0,
-                sealed: true,
-            }.into()),
+            SearchPlaneIngestIpcResponse::SearchCorpusReceipt(
+                BatchPublishReceipt {
+                    generation: ManifestGeneration::new(7),
+                    manifest_digest: Some("manifest:activate".to_string()),
+                    batch_digest: String::new(),
+                    applied: true,
+                    durable_sequence: 7,
+                    semantic_content: Some(semantic_roots(7)),
+                    accepted_clear_surfaces: 0,
+                    accepted_replace_scopes: 0,
+                    accepted_tombstone_scopes: 0,
+                    accepted_semantic_replace_scopes: 0,
+                    accepted_semantic_tombstone_scopes: 0,
+                    sealed: true,
+                }
+                .into(),
+            ),
         ));
         let client = QuantaIndex::from_transports(unused_query(), control, ingest);
         let batch = SearchCorpusBatch::replace_generation(
@@ -4362,20 +4430,23 @@ fn control_request_id_mismatch_is_rejected_for_activation_and_rollback_v1() {
         1,
     ));
     let ingest = Arc::new(StubIngestTransport::new(
-        SearchPlaneIngestIpcResponse::SearchCorpusReceipt(BatchPublishReceipt {
-            generation: ManifestGeneration::new(7),
-            manifest_digest: Some("manifest:request-id".to_string()),
-            batch_digest: String::new(),
-            applied: true,
-            durable_sequence: 7,
-            semantic_content: Some(semantic_roots(7)),
-            accepted_clear_surfaces: 0,
-            accepted_replace_scopes: 0,
-            accepted_tombstone_scopes: 0,
-            accepted_semantic_replace_scopes: 0,
-            accepted_semantic_tombstone_scopes: 0,
-            sealed: true,
-        }.into()),
+        SearchPlaneIngestIpcResponse::SearchCorpusReceipt(
+            BatchPublishReceipt {
+                generation: ManifestGeneration::new(7),
+                manifest_digest: Some("manifest:request-id".to_string()),
+                batch_digest: String::new(),
+                applied: true,
+                durable_sequence: 7,
+                semantic_content: Some(semantic_roots(7)),
+                accepted_clear_surfaces: 0,
+                accepted_replace_scopes: 0,
+                accepted_tombstone_scopes: 0,
+                accepted_semantic_replace_scopes: 0,
+                accepted_semantic_tombstone_scopes: 0,
+                sealed: true,
+            }
+            .into(),
+        ),
     ));
     let client = QuantaIndex::from_transports(unused_query(), activation_control.clone(), ingest);
     let batch = SearchCorpusBatch::replace_generation(

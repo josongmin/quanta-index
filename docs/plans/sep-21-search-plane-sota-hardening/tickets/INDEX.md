@@ -11,6 +11,11 @@ resolved Cargo roots and pytest evidence admission were repaired; release and
 operational qualification remain separate. Use its status table over dated
 "owner must land" notes.
 
+Follow-up custody repairs are recorded in that residual index: original backup
+manifest admission, strict Nextest exclusions, digest-bound execution parsing,
+and private paired-daemon pinning. Do not treat implementation as owner or
+release qualification; inspect the progress ledger's current terminal results.
+
 P10 update (2026-09-24): the prerelease breaking decision retires
 `migrate-state` and any old-root success path. Historical migration tickets
 and prompts below are not executable current instructions. Current-format

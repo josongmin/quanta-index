@@ -2,6 +2,16 @@
 
 ## 현행 판정 — 2026-09-26, [중앙 코드 감사](CURRENT-AUDIT.md) 기준
 
+현재 `f9c3b4dc` + 공유 dirty 통합: native vector capture에 더해 `quanta-index-vector-proof`, `quanta-index-incremental-proof`, `semantic::proof` full-row export, `conditional_proof.py` schema2 replay가 main에 들어왔다. `run.py` T15/T16이 이 원본 validator를 사용한다. 아래 `604149ed`의 “양성 protocol 미구현”은 수정 전 기록이다. 독립 재감사에서 정상T16 5개 통과 및 no-op5·terminal3·dimension2·receipt3 거부, 무관 owner 삭제 fresh5 거부/raw5 실패를 회수했다. `/private/tmp/qi-rbr-conditional-final.JNYc3M/receipt.md`. **실제 exporter 양성 terminal·최종 frozen source custody는 아직 `NOT_RUN`**이다. claim=false는 `NOT_APPLICABLE`이다. query overhead replay 도구 구현과 실제 비용/quiet-host 자격은 별도다.
+
+- 최신 전체 authority: Python 283개. 실제 collection/terminal 결과는 [CURRENT-AUDIT](CURRENT-AUDIT.md)를 따른다. 과거 276/276을 현재 증거로 재사용하지 않는다.
+- T15는 component 0.002/cosine 0.005의 고정 tolerance, 정확한 inputs/정책/model2vec 0.9.0/assets와 native raw vectors를 검증한다. Semble native `max_length=512`와 controlled `None`를 동일 정책으로 취급하지 않는다.
+- T16은 fresh와 delta의 같은 owner scope/실제 full rows 및 fault/restart 경계를 raw oracle로 검증해야 한다. summary/count만 같은 것은 row-set equivalence가 아니다. exporter와 source/model/dependency/config/binary/environment/명령/terminal custody의 결합 검증이 종료 조건이다.
+- T16의 before→typed operation→fresh oracle를 독립 재도출하고 의미 없는 append/replace/tombstone/clear/membership을 거부한다. 무관 owner sentinel을 보존한다. terminal은 단 하나의 마지막 successful build event여야 하며 뒤 이벤트·모순/중복 event를 거부한다. dimension/receipt/exit 및 full-row u32/bool은 정확한 타입을 요구한다. 재감사 중 발견한 table 변수 shadow 회귀도 수정 후 정상 재생을 확인했다.
+- 증거 경계: local binary/build hash self-report와 raw bytes 대조는 local custody다. OS 서명·원격 attestation·clean-source qualification으로 승격하지 않는다.
+
+### 수정 전 판정 — `604149ed`
+
 2026-09-26 `604149ed` 코드 재감사: admission v2가 development suite와 experiment-custody manifest의 raw/canonical digest를 묶고, capture/verdict 양쪽에서 source revision, repository commit, gold-bearing file(서로 다른 span 포함), exact gold block, query family, normalized/near-duplicate query를 거부한다. indexed corpus 공유는 허용한다. cross-suite validator 미구현 판정은 철회한다. T15/T16은 `pass`/count/digest만으로 승인하던 false positive를 차단했으나 raw 양성 proof 프로토콜은 **미구현**이다. 최종 holdout pair·quality/performance qualification은 `NOT_RUN`. [현재 감사](CURRENT-AUDIT.md)를 우선한다.
 
 - 구현: 단일 suite train/eval 검사에 더해 admission v2의 development/holdout custody가 gold-bearing file·exact block·query family·near-duplicate query를 검사한다. 동일 indexed corpus는 허용한다.

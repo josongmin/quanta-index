@@ -3,6 +3,15 @@
 Status: owner code exists; current-source owner receipt and Linux release
 qualification must be checked separately.
 
+2026-09-26 follow-up: the original backup manifest is pinned in read-only
+custody. Restore admits it through the same inventory/catalog verification as
+`verify-state` before staging, verifies copied bytes before incarnation rotation,
+and refuses changed/missing/malformed authority before publication with staging
+cleanup. Catalog row counts are checked as well as digest. This implementation
+update is not a completed owner/release receipt; see
+[current residual status](CURRENT-RESIDUAL-2026-09-26.md) and
+[execution progress](EXECUTION-PROGRESS.md).
+
 ## Current contract
 
 The prerelease breaking cutover retired the legacy `migrate-state` importer.

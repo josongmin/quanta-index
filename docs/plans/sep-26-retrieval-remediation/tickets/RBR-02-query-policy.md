@@ -1,17 +1,17 @@
 # RBR-02 — 자연어·literal·native DSL 입력 계약 분리
 
-## 현행 판정 — 2026-09-26, [중앙 코드 감사](CURRENT-AUDIT.md) 기준
+## 현행 판정 — 2026-09-26, `f9c3b4dc` + 공유 dirty
 
-- 구현: `604149ed`에서 `query_plan.rs`의 native/literal/NL 분기, effective/original identity, Python 재도출 oracle 및 distractor fixture 경로를 재확인했다. 벤치 opt-in 정책이지 제품 기본값 변경이 아니다. 재구현 항목은 없으며 owning rail·live SDK proof가 잔여다.
-- 검증: 과거 dirty local contract 결과는 기록되어 있으나 현 frozen-source 정책/identity 부정 테스트와 live daemon SDK proof는 `NOT_RUN`.
-- 잔여: 최종 source에서 query-plan·v4/v5 record/replay tamper fixture, 실제 daemon 문장/식별자 distractor 및 exact inventory/receipt를 함께 재실행한다. [현재 전수 판정](CURRENT-AUDIT.md).
+- 구현 관측: `query_plan.rs`의 native/literal/NL 분기·original/effective identity, Python 독립 재도출 및 distractor/tamper fixture가 현재 owning 소스에 있다. 벤치 opt-in 정책이며 제품 native AND 기본값은 유지한다. 동일 정책 재구현은 잔여 작업이 아니다.
+- 검증 경계: 과거 dirty local 계약 결과는 현재 frozen-source receipt가 아니다. Python authority 283개와 실제 SDK 17개 전체의 최종 collection/terminal은 미발급이며 새 SDK observation-off 단일 성공은 query-policy 전체 증명을 대체하지 않는다. 최종 정책/identity 부정 테스트·clean-source proof는 `NOT_RUN`.
+- 잔여: 최종 source/config에서 query-plan·현행 record/replay identity/tamper fixture, 실제 daemon 문장/식별자 distractor를 owning rail로 재실행하고 exact inventory·terminal·receipt를 연결한다. [중앙 코드 감사](CURRENT-AUDIT.md), [잔여 작업](GAP-REGISTER.md).
 
-- 우선순위: P0. 정책·identity 구현 관측; local 계약 통과, clean-source proof 미발급. [현재 전수 판정](CURRENT-AUDIT.md). 선행: RBR-00.
+- 우선순위: P0. 정책·identity 구현 관측; 최종 source-bound proof 미발급. [현재 전수 판정](CURRENT-AUDIT.md). 선행: RBR-00.
 - 성격: 벤치 호출 계약 불일치. 기존 native AND는 결함이 아니다.
 
 ## 파일·함수
 
-- 신설 `benchmarks/retrieval/src/query_plan.rs`, 등록 `lib.rs`.
+- 기존 [query_plan.rs](../../../../benchmarks/retrieval/src/query_plan.rs), `lib.rs` 등록.
 - [sdk.rs](../../../../benchmarks/retrieval/src/sdk.rs): `RouteQuery`, `query_route`.
 - [main.rs](../../../../benchmarks/retrieval/src/main.rs): cold/warmup/measured request 구성.
 - [record.rs](../../../../benchmarks/retrieval/src/record.rs), [run.py](../../../../tools/benchmark/retrieval/run.py): query/config identity, frozen protocol/replay.

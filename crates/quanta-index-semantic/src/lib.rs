@@ -41,6 +41,8 @@ mod integrity;
 mod layout;
 mod manifest;
 mod membership_integrity;
+#[cfg(feature = "proof")]
+pub mod proof;
 mod sealed_manifest;
 mod search;
 mod semantic_ingest_fixtures_v1;
@@ -212,7 +214,13 @@ impl SemanticScopeStreamBuildPort for SemanticAdapter {
         &self,
         header: &SemanticIngestHeaderV1,
         scopes: &mut dyn SemanticScopeSource,
-    ) -> Result<(SemanticStreamTallyV1, quanta_index_contract::IngestStageReport), CoreError> {
+    ) -> Result<
+        (
+            SemanticStreamTallyV1,
+            quanta_index_contract::IngestStageReport,
+        ),
+        CoreError,
+    > {
         build::build_stream_reported(
             &self.runtime,
             &self.state_root,

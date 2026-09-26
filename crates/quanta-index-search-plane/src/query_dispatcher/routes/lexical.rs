@@ -21,7 +21,7 @@ use crate::query_dispatcher::planning::{
 use crate::query_dispatcher::read_view::ReadViewRequestV1;
 use crate::query_dispatcher::response_budget::fit_ranked_page;
 use crate::query_dispatcher::selection::resolve_optional_selection;
-use crate::query_dispatcher::stage_timing::{StageTimings, elapsed};
+use crate::query_dispatcher::stage_timing::StageTimings;
 use crate::query_dispatcher::window::{
     finalize_probe_window_v1, lexical_fetch_limit_v1, lexical_page_window_v1, pageable_window_v2,
     probe_top_k_v1,
@@ -102,22 +102,17 @@ impl SearchPlaneDispatcher {
                 .require_context(opened, &cursor_context, Vec::new())?;
         }
         let mut stage_timings = StageTimings::new(self.query_stage_observation, 4);
-        stage_timings.push(elapsed(
-            QueryStageKindV1::LexicalPrepare,
-            prepare_started,
-            1,
-            None,
-        ));
+        stage_timings.record_elapsed(QueryStageKindV1::LexicalPrepare, prepare_started, 1, None);
         let wants_file_owner_projection = query_selects_file_owner_projection(&planned.query);
         if planned.force_empty {
             let project_started = self.query_stage_observation.start();
             let window = pageable_window_v2(QueryResultWindowV1::exact(0), "lexical")?;
-            stage_timings.push(elapsed(
+            stage_timings.record_elapsed(
                 QueryStageKindV1::LexicalProject,
                 project_started,
                 1,
                 Some(0),
-            ));
+            );
             let summary = execution.summary();
             return Ok((
                 TextQueryResponse {
@@ -136,12 +131,7 @@ impl SearchPlaneDispatcher {
             &ReadViewRequestV1::new("lexical", &planned.pin, planned.domains),
             budget,
         )?;
-        stage_timings.push(elapsed(
-            QueryStageKindV1::LexicalReadView,
-            view_started,
-            1,
-            None,
-        ));
+        stage_timings.record_elapsed(QueryStageKindV1::LexicalReadView, view_started, 1, None);
         let searcher = view.lexical()?;
         let fetch_top_k = lexical_fetch_limit_v1(&planned.query, request.top_k)?;
         budget.checkpoint("lexical:search")?;
@@ -156,12 +146,12 @@ impl SearchPlaneDispatcher {
             },
             budget,
         )?;
-        stage_timings.push(elapsed(
+        stage_timings.record_elapsed(
             QueryStageKindV1::LexicalSearch,
             search_started,
             1,
             Some(page.candidates.len()),
-        ));
+        );
         budget.checkpoint("lexical:project")?;
         let project_started = self.query_stage_observation.start();
         let window = lexical_page_window_v1(&mut page, request.top_k, fetch_top_k)?;
@@ -183,12 +173,12 @@ impl SearchPlaneDispatcher {
             .as_ref()
             .map(|boundary| self.cursors()?.mint(boundary, &cursor_context, Vec::new()))
             .transpose()?;
-        stage_timings.push(elapsed(
+        stage_timings.record_elapsed(
             QueryStageKindV1::LexicalProject,
             project_started,
             1,
             Some(results.len()),
-        ));
+        );
         let mut explanation =
             lexical_explanation(budget, &execution.summary(), stage_timings.finish());
         if !results.is_empty() {

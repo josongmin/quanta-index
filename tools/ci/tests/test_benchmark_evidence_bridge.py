@@ -232,30 +232,9 @@ def system_artifacts(family: str) -> list[dict]:
             }
         ]
         return [native]
-    measurements = []
-    for clients in (1, 8, 32):
-        group = {
-            "label": "fast",
-            "requests": clients * 16,
-            "served": clients * 16,
-            "error_count": 0,
-            "timeout_count": 0,
-            "qps": clients * 10.0,
-        }
-        slow = (
-            None
-            if clients == 1
-            else {**group, "label": "slow", "requests": 16, "served": 16, "qps": 1.0}
-        )
-        measurements.append({"clients": clients, "fast": group, "slow": slow})
-    artifacts = []
-    for clients in (1, 8, 32):
-        native = artifact(family)
-        native["concurrency"] = clients + int(clients != 1)
-        native["rows"][0]["scenario_id"] = f"concurrency.c{clients}.fast"
+    artifacts = [artifact(family, clients=clients) for clients in (1, 8, 32)]
+    for clients, native in zip((1, 8, 32), artifacts, strict=True):
         native["provenance"]["config_digest"] = "sha256:" + f"{clients:064x}"
-        native["detail"]["measurements"] = measurements
-        artifacts.append(native)
     return artifacts
 
 
@@ -331,7 +310,13 @@ def test_system_runs_replay_native_payload_in_fresh_process(
     template = sample_evidence()
     template["source"]["revision"] = artifacts[0]["provenance"]["git_head"]
     captures = [
-        (Path(f"summary-c{a['concurrency']}.json"), json.dumps(a).encode()) for a in artifacts
+        (
+            Path(f"summary-c{bridge.concurrency_clients_from_artifact(a)}.json")
+            if family == "concurrency"
+            else Path("summary.json"),
+            json.dumps(a).encode(),
+        )
+        for a in artifacts
     ]
     promotion = bridge.promote_native_run(
         evidence_root=tmp_path / "evidence",
@@ -591,3 +576,53 @@ def test_promoted_real_artifact_fixture_replays_through_the_artifact_oracle(
     )
     assert tampered.returncode == 2
     assert "digest mismatch" in tampered.stderr
+
+
+def test_concurrency_bridge_refuses_partial_rows_even_with_good_detail() -> None:
+    bridge = _bridge()
+    artifacts = system_artifacts("concurrency")
+    artifacts[1]["rows"] = [artifacts[1]["rows"][5]]
+    with pytest.raises(bridge.EvidenceError, match="row inventory mismatch"):
+        bridge.native_payload_from_artifacts(artifacts, "load")
+
+
+def test_concurrency_bridge_refuses_detail_row_disagreement() -> None:
+    bridge = _bridge()
+    artifacts = system_artifacts("concurrency")
+    artifacts[1]["rows"][0]["qps"] += 1
+    with pytest.raises(bridge.EvidenceError, match="qps disagrees"):
+        bridge.native_payload_from_artifacts(artifacts, "load")
+
+
+def test_concurrency_bridge_refuses_explicit_failed_verdict() -> None:
+    bridge = _bridge()
+    artifacts = system_artifacts("concurrency")
+    artifacts[1]["detail"]["passed"] = False
+    with pytest.raises(bridge.EvidenceError, match="passed verdict is not true"):
+        bridge.native_payload_from_artifacts(artifacts, "load")
+
+
+def test_real_closure_digest_crosses_typed_evidence_boundary(tmp_path, monkeypatch):
+    import subprocess
+
+    bridge = _bridge()
+    engine = bridge.source_closure_module()
+    engine.PROFILES["bridge-synthetic"] = {"cargo_packages": (), "paths": ("normative.txt",)}
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "normative.txt").write_text("fixed source\n")
+    for argv in (("init", "-q"), ("config", "user.name", "Bridge Test"),
+                 ("config", "user.email", "bridge@example.invalid"),
+                 ("add", "normative.txt"), ("commit", "-qm", "fixture")):
+        subprocess.run(["git", "-C", str(repo), *argv], check=True, capture_output=True)
+    monkeypatch.setattr(bridge, "source_closure_module", lambda: engine)
+    manifest = engine.build_manifest(repo, "bridge-synthetic")
+    source = bridge.source_identity(repo, "bridge-synthetic")
+    assert source["closure_digest"] == "sha256:" + manifest["digest"]
+    assert source["dirty"] is False
+    evidence = bridge.source_closure_module()  # Same real engine remains the authority.
+    evidence.validate_manifest_shape(manifest)
+    from evidence import sample_evidence, seal, validate
+    record = sample_evidence()
+    record["source"] = source
+    validate(seal(record))

@@ -24,7 +24,7 @@ use crate::query_dispatcher::semantic_query::{
     HybridFilterTraceV1, HybridFusion, HybridLaneTallyV1, build_hybrid_response_explanation,
     resolve_hybrid_request_selection,
 };
-use crate::query_dispatcher::stage_timing::{StageTimings, elapsed, measured};
+use crate::query_dispatcher::stage_timing::{StageTimings, measured};
 use crate::query_dispatcher::window::{fused_window_v2, hybrid_probe_top_k_v1, lane_count_u64};
 
 /// Lane traces for the fused window.
@@ -94,12 +94,7 @@ impl SearchPlaneDispatcher {
         let filter_plan = HybridFilterPlanV1::plan(&lexical_query)?;
         let prepared_language = prepare_language_query_v1(lexical_query, &text_query.constraints)?;
         LexicalPolicy::validate_query(&prepared_language.query)?;
-        stage_timings.push(elapsed(
-            QueryStageKindV1::HybridPrepare,
-            prepare_started,
-            1,
-            None,
-        ));
+        stage_timings.record_elapsed(QueryStageKindV1::HybridPrepare, prepare_started, 1, None);
         let view_started = self.query_stage_observation.start();
         let view = self.acquire_read_view(
             &ReadViewRequestV1::declare(
@@ -111,12 +106,7 @@ impl SearchPlaneDispatcher {
             .with_semantic_manifest_digest(selection.expected_manifest_digest.as_deref()),
             budget,
         )?;
-        stage_timings.push(elapsed(
-            QueryStageKindV1::HybridReadView,
-            view_started,
-            1,
-            None,
-        ));
+        stage_timings.record_elapsed(QueryStageKindV1::HybridReadView, view_started, 1, None);
         let lex_searcher = view.lexical()?;
         let sem_searcher = view.semantic()?;
         let internal_top_k = hybrid_probe_top_k_v1(top_k)?;
@@ -139,24 +129,19 @@ impl SearchPlaneDispatcher {
                 .candidates
         };
         if !prepared_language.force_empty {
-            stage_timings.push(elapsed(
+            stage_timings.record_elapsed(
                 QueryStageKindV1::HybridLexicalSearch,
                 lexical_started,
                 1,
                 Some(lex_results.len()),
-            ));
+            );
         }
         stabilize_ranked_candidates(&mut lex_results);
         budget.checkpoint("hybrid:embed")?;
         let embed_started = self.query_stage_observation.start();
         let query_vector =
             self.embed_and_gate_query(semantic_query_text, sem_searcher.as_ref(), plane, budget)?;
-        stage_timings.push(elapsed(
-            QueryStageKindV1::HybridEmbedding,
-            embed_started,
-            1,
-            None,
-        ));
+        stage_timings.record_elapsed(QueryStageKindV1::HybridEmbedding, embed_started, 1, None);
         // Independent dense lane under the same constraints and, per
         // candidate, the same exact filters; never scoped to the lexical
         // hits.
@@ -204,12 +189,12 @@ impl SearchPlaneDispatcher {
                 Some(dense_fetched_rows),
             )));
         }
-        stage_timings.push(elapsed(
+        stage_timings.record_elapsed(
             QueryStageKindV1::HybridDenseAdmission,
             admission_started,
             1,
             Some(dense.rows.len()),
-        ));
+        );
         let filter_trace = HybridFilterTraceV1 {
             filters: format!("hybrid.filters={filter_plan}"),
             admission: vec![dense.trace_detail("hybrid.dense_admission")],
@@ -241,12 +226,12 @@ impl SearchPlaneDispatcher {
             .len();
         let fused =
             HybridOrchestratorPolicy::fuse_rrf_candidates(&lex_results, &sem_results, top_k)?;
-        stage_timings.push(elapsed(
+        stage_timings.record_elapsed(
             QueryStageKindV1::HybridFusion,
             fuse_started,
             1,
             Some(fused.len()),
-        ));
+        );
         let early_stop_reason = if fused_universe_size > fused.len() {
             Some(EarlyStopReason::CountReached)
         } else {

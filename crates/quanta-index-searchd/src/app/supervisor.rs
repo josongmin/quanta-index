@@ -790,11 +790,13 @@ impl<G: Send + 'static> SearchdSupervisor<G> {
         self.pending.extend(self.exits.try_iter());
         let mut first = self.take_pending_exits();
         for index in 0..self.children.len() {
-            if !self.children[index]
-                .join
-                .as_ref()
-                .is_some_and(JoinHandle::is_finished)
-            {
+            let Some(child) = self.children.get(index) else {
+                return first.or(Some(ChildExit {
+                    name: "supervisor-child-registry",
+                    kind: ChildExitKind::Failed,
+                }));
+            };
+            if !child.join.as_ref().is_some_and(JoinHandle::is_finished) {
                 continue;
             }
             self.pending.extend(self.exits.try_iter());
@@ -802,7 +804,14 @@ impl<G: Send + 'static> SearchdSupervisor<G> {
             if first.is_none() {
                 first = queued;
             }
-            let child = &mut self.children[index];
+            // Pending reports update kinds, never registry shape. Preserve a
+            // typed loss rather than treating a broken index invariant as success.
+            let Some(child) = self.children.get_mut(index) else {
+                return first.or(Some(ChildExit {
+                    name: "supervisor-child-registry",
+                    kind: ChildExitKind::Failed,
+                }));
+            };
             let kind = Self::join_finished_child(child);
             if first.is_none() || first.is_some_and(|exit| exit.name == child.name) {
                 first = Some(ChildExit {

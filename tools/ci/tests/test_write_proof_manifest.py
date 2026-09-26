@@ -64,9 +64,11 @@ def test_cross_repo_hellgate_selects_live_repomap_terminal_target() -> None:
     assert source.count("./scripts/quanta-build-cli cargo") == 5
     assert source.count("-- --exact --nocapture") == 2
     build = source.index("just rust-build-release-daemon-fresh")
-    compare = source.index('cmp -s -- "$built_binary" "$provided_binary"')
+    compare = source.index('binary_digest="$(python3')
     assert source.index('require_frozen_source "$quanta_root"') < build
     assert build < compare < source.index(target)
+    assert 'QUANTA_INDEX_SEARCHD_BIN="$custody_binary"' in source
+    assert source.count("require_binary_custody\n") == 6
 
 
 @dataclass(frozen=True)

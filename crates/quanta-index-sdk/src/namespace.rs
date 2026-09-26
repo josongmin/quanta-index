@@ -319,7 +319,8 @@ mod tests {
             let ingest = Arc::new(StubIngestTransport {
                 requests: Mutex::new(Vec::new()),
                 response: Mutex::new(Some(SearchPlaneIngestIpcResponse::SearchCorpusReceipt(
-                    fixture_receipt()?.into()))),
+                    fixture_receipt()?.into(),
+                ))),
             });
             let client = make_client(Arc::clone(&ingest));
             let batch = fixture_batch()?;
@@ -349,7 +350,8 @@ mod tests {
             let sugar_ingest = Arc::new(StubIngestTransport {
                 requests: Mutex::new(Vec::new()),
                 response: Mutex::new(Some(SearchPlaneIngestIpcResponse::SearchCorpusReceipt(
-                    fixture_receipt()?.into()))),
+                    fixture_receipt()?.into(),
+                ))),
             });
             let sugar_client = make_client(Arc::clone(&sugar_ingest));
             let _sugar_receipt = sugar_client
@@ -360,7 +362,8 @@ mod tests {
             let ns_ingest = Arc::new(StubIngestTransport {
                 requests: Mutex::new(Vec::new()),
                 response: Mutex::new(Some(SearchPlaneIngestIpcResponse::SearchCorpusReceipt(
-                    fixture_receipt()?.into()))),
+                    fixture_receipt()?.into(),
+                ))),
             });
             let ns_client = make_client(Arc::clone(&ns_ingest));
             let _ns_receipt = ns_client

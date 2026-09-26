@@ -5,6 +5,9 @@ quanta_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 semantica_root="${1:?Semantica checkout path is required}"
 semantica_root="$(cd -- "$semantica_root" && pwd -P)"
 provided_binary="${QUANTA_INDEX_SEARCHD_BIN:?QUANTA_INDEX_SEARCHD_BIN is required}"
+if [[ "$provided_binary" != /* ]]; then
+  provided_binary="$(pwd -P)/$provided_binary"
+fi
 
 require_frozen_source() {
   local root="$1"
@@ -53,21 +56,36 @@ if [[ ! -x "$built_binary" || ! -x "$provided_binary" ]]; then
   printf 'fresh release daemon and QUANTA_INDEX_SEARCHD_BIN must both be executable\n' >&2
   exit 1
 fi
-if ! cmp -s -- "$built_binary" "$provided_binary"; then
-  printf 'QUANTA_INDEX_SEARCHD_BIN differs from the fresh release daemon\n' >&2
-  exit 1
-fi
+custody_directory="$(mktemp -d)"
+custody_directory="$(cd -- "$custody_directory" && pwd -P)"
+custody_binary="$custody_directory/quanta-index-searchd"
+cleanup_custody() {
+  rm -f -- "$custody_binary"
+  rmdir -- "$custody_directory"
+}
+trap cleanup_custody EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM HUP
+binary_digest="$(python3 "$quanta_root/tools/ci/binary_custody.py" pin \
+  "$built_binary" "$provided_binary" "$custody_binary")"
+export QUANTA_INDEX_SEARCHD_BIN="$custody_binary"
+require_binary_custody() {
+  python3 "$quanta_root/tools/ci/binary_custody.py" verify "$binary_digest" \
+    "$built_binary" "$provided_binary" "$custody_binary"
+}
 require_frozen_source "$quanta_root" "$quanta_head"
 require_frozen_source "$semantica_root" "$semantica_head"
 
 cd -- "$semantica_root"
+require_binary_custody
 CODEGRAPH_PERSONA=agent ./scripts/quanta-build-cli cargo --lane local -- test \
   --locked \
   --manifest-path packages/analysis/quanta-v2/Cargo.toml -p quanta-runtime \
   --no-default-features --features index-sdk-ingress \
   --test index_sdk_ingress_publish_contract_test -- --list \
   | rg '^index_sdk_ingress_live_repomap_roundtrip_survives_runtime_restart_v1: test$'
-QUANTA_INDEX_SEARCHD_BIN="$built_binary" CODEGRAPH_PERSONA=agent \
+require_binary_custody
+CODEGRAPH_PERSONA=agent \
   ./scripts/quanta-build-cli cargo --lane local -- test \
   --locked \
   --manifest-path packages/analysis/quanta-v2/Cargo.toml -p quanta-runtime \
@@ -76,12 +94,14 @@ QUANTA_INDEX_SEARCHD_BIN="$built_binary" CODEGRAPH_PERSONA=agent \
   index_sdk_ingress_live_repomap_roundtrip_survives_runtime_restart_v1 \
   -- --exact --nocapture
 
+require_binary_custody
 CODEGRAPH_PERSONA=agent ./scripts/quanta-build-cli cargo --lane local -- test \
   --locked \
   --manifest-path packages/analysis/quanta-v2/Cargo.toml \
   -p quanta-runtime-retrieval-kernel --no-default-features \
   --features index-sdk-ingress-surface --lib -- --list \
   | rg '^index_sdk_ingress::terminal_receipt_v1::tests::repomap_v2_receipts_require_exact_full_bundle_and_transition_v2: test$'
+require_binary_custody
 CODEGRAPH_PERSONA=agent ./scripts/quanta-build-cli cargo --lane local -- test \
   --locked \
   --manifest-path packages/analysis/quanta-v2/Cargo.toml \
@@ -92,10 +112,7 @@ CODEGRAPH_PERSONA=agent ./scripts/quanta-build-cli cargo --lane local -- test \
 
 require_frozen_source "$quanta_root" "$quanta_head"
 require_frozen_source "$semantica_root" "$semantica_head"
-if ! cmp -s -- "$built_binary" "$provided_binary"; then
-  printf 'release daemon bytes changed during cross-repo proof\n' >&2
-  exit 1
-fi
+require_binary_custody
 runtime_resolution_after="$(resolved_pair quanta-runtime index-sdk-ingress)"
 kernel_resolution_after="$(resolved_pair quanta-runtime-retrieval-kernel index-sdk-ingress-surface)"
 if [[ "$runtime_resolution_after" != "$runtime_resolution" || "$kernel_resolution_after" != "$kernel_resolution" ]]; then
@@ -104,5 +121,7 @@ if [[ "$runtime_resolution_after" != "$runtime_resolution" || "$kernel_resolutio
 fi
 require_frozen_source "$quanta_root" "$quanta_head"
 require_frozen_source "$semantica_root" "$semantica_head"
+require_binary_custody
+printf 'paired-daemon-sha256: %s\n' "$binary_digest"
 printf 'paired-cargo-resolution-runtime: %s\n' "$runtime_resolution"
 printf 'paired-cargo-resolution-kernel: %s\n' "$kernel_resolution"

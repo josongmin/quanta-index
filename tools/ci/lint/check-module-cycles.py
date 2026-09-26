@@ -30,6 +30,7 @@ so the list only ever changes by a reviewed edit (`--update-baseline`).
 
 from __future__ import annotations
 
+import argparse
 import re
 import sys
 from dataclasses import dataclass, field
@@ -213,7 +214,7 @@ def expand_use_tree(prefix: list[str], tree: str) -> list[list[str]]:
     return leaves
 
 
-PATH_START_RE = re.compile(r"(?<![A-Za-z0-9_:])(crate|super|self)::")
+PATH_START_RE = re.compile(r"(?<![A-Za-z0-9_:])(crate|super|self)\s*::\s*")
 
 
 def referenced_paths(code: str) -> list[list[str]]:
@@ -222,10 +223,10 @@ def referenced_paths(code: str) -> list[list[str]]:
     for m in PATH_START_RE.finditer(code):
         k = m.end()
         # read `ident::ident::...` and an optional `{ ... }` group
-        seg = re.match(r"((?:" + IDENT + r"::)*)(" + IDENT + r"|\{)?", code[k:])
+        seg = re.match(r"((?:" + IDENT + r"\s*::\s*)*)(" + IDENT + r"|\{)?", code[k:])
         if not seg:
             continue
-        head = [p for p in seg.group(1).split("::") if p]
+        head = [p.strip() for p in seg.group(1).split("::") if p.strip()]
         tail = seg.group(2)
         if tail == "{":
             open_at = k + seg.end() - 1
@@ -259,13 +260,18 @@ def module_path_of(src: Path, file: Path) -> str | None:
 
 def load_crate(crate_dir: Path) -> Crate:
     src = crate_dir / "src"
+    if not src.is_dir() or not any(src.rglob("*.rs")):
+        raise ValueError(f"missing Rust source inventory for {crate_dir}")
     crate = Crate(crate_dir.name)
     raw: dict[str, str] = {}
     for file in sorted(src.rglob("*.rs")):
         path = module_path_of(src, file)
         if path is None:
             continue
-        raw[path] = blank_non_code(file.read_text(encoding="utf-8"))
+        if path and path in raw:
+            raise ValueError(f"duplicate Rust module source for {crate_dir.name}::{path}")
+        code = blank_non_code(file.read_text(encoding="utf-8"))
+        raw[path] = raw.get(path, "") + "\n" + code
     # modules declared under #[cfg(test)] are test code, with their subtree
     test_modules: set[str] = set()
     for path, code in raw.items():
@@ -285,6 +291,15 @@ def load_crate(crate_dir: Path) -> Crate:
         crate.definitions[path] = set(DEFINITION_RE.findall(production)) | set(
             MACRO_RE.findall(production)
         )
+    # A deleted declared module must not disappear from the measured graph.
+    for module, code in crate.modules.items():
+        for declaration in MOD_DECL_RE.finditer(code):
+            prefix = code[:declaration.start()]
+            if prefix.count("{") != prefix.count("}"):
+                continue
+            child = f"{module}::{declaration.group(1)}" if module else declaration.group(1)
+            if child not in crate.modules:
+                raise ValueError(f"declared Rust module has no source: {crate.name}::{child}")
     for module, names in crate.definitions.items():
         for name in names:
             crate.owners.setdefault(name, []).append(module)
@@ -379,8 +394,24 @@ def cycles(edges: dict[str, set[str]]) -> list[list[str]]:
 
 def workspace_crates() -> list[Path]:
     data = tomllib.loads(WORKSPACE_TOML.read_text(encoding="utf-8"))
-    members = data.get("workspace", {}).get("members", [])
-    return [ROOT / m for m in members if (ROOT / m / "src").is_dir()]
+    members = data.get("workspace", {}).get("members")
+    if not isinstance(members, list) or not members or any(
+        not isinstance(member, str) or not member for member in members
+    ):
+        raise ValueError("workspace.members must be a nonempty list of paths")
+    crate_dirs: list[Path] = []
+    for member in members:
+        matches = sorted(ROOT.glob(member))
+        if not matches:
+            raise ValueError(f"workspace member has no matching path: {member}")
+        for directory in matches:
+            if not (directory / "Cargo.toml").is_file() or not (directory / "src").is_dir():
+                raise ValueError(f"workspace member is missing manifest or Rust source: {member}")
+            if directory.resolve() in {path.resolve() for path in crate_dirs}:
+                raise ValueError(f"duplicate workspace member: {member}")
+            crate_dirs.append(directory)
+    return crate_dirs
+
 
 
 @dataclass(frozen=True)
@@ -409,17 +440,25 @@ def find_cycles(crate_dirs: list[Path]) -> list[Cycle]:
 
 
 def read_baseline(path: Path) -> set[str]:
-    if not path.exists():
-        return set()
-    return {
+    if not path.is_file():
+        raise ValueError(f"missing module-cycle baseline: {path}")
+    lines = [
         line.strip()
         for line in path.read_text(encoding="utf-8").splitlines()
         if line.strip() and not line.lstrip().startswith("#")
-    }
+    ]
+    if len(lines) != len(set(lines)):
+        raise ValueError("duplicate module-cycle baseline line")
+    for line in lines:
+        if not re.fullmatch(r"[A-Za-z0-9_-]+: [A-Za-z0-9_:]+(?:, [A-Za-z0-9_:]+)+", line):
+            raise ValueError(f"malformed module-cycle baseline line: {line}")
+    return set(lines)
 
 
 def check(crate_dirs: list[Path], baseline: Path) -> list[str]:
     """Every cycle the baseline does not list, and every stale baseline line."""
+    if not crate_dirs:
+        raise ValueError("empty crate inventory cannot qualify module cycles")
     found = find_cycles(crate_dirs)
     tolerated = read_baseline(baseline)
     problems = [
@@ -450,7 +489,10 @@ def update_baseline(crate_dirs: list[Path], baseline: Path) -> None:
 
 
 def main() -> int:
-    if "--update-baseline" in sys.argv[1:]:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--update-baseline", action="store_true")
+    args = parser.parse_args()
+    if args.update_baseline:
         update_baseline(workspace_crates(), BASELINE)
         print(f"baseline updated: {BASELINE}")
         return 0

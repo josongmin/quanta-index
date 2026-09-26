@@ -183,6 +183,173 @@ def test_valid_manifest_binds_files_and_counts(tmp_path: Path) -> None:
     )
 
 
+def _dependency_diamond(tmp_path: Path, depth: int = 1):
+    proofs = {}
+    payloads = {}
+    plan = [("leaf", [])]
+    dependencies = ["leaf"]
+    for level in range(depth):
+        names = ["left", "right"] if level == 0 else [f"left-{level}", f"right-{level}"]
+        plan.extend((name, dependencies) for name in names)
+        dependencies = names
+    plan.append(("root", dependencies))
+    for name, dependencies in plan:
+        proof = {
+            **_proof(tmp_path),
+            "id": name,
+            "dependencies": dependencies,
+            "binary_binding": "release-daemon",
+        }
+        payload = _manifest(tmp_path, proof)
+        payload["dependency_receipts"] = [
+            {
+                "proof_id": dependency,
+                "path": payloads[dependency][1],
+                "sha256": payloads[dependency][2],
+            }
+            for dependency in dependencies
+        ]
+        raw = json.dumps(payload).encode()
+        digest = hashlib.sha256(raw).hexdigest()
+        path = MODULE.proof_archive_relative_path(payload, digest)
+        target = tmp_path / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(raw)
+        proofs[name] = proof
+        payloads[name] = (payload, path, digest)
+    return proofs, payloads
+
+
+@pytest.mark.parametrize("depth", [1, 3, 6])
+def test_dependency_diamond_parses_each_content_once(
+    tmp_path: Path, monkeypatch, depth: int
+) -> None:
+    schema = json.loads(SCHEMA_PATH.read_text())
+    proofs, payloads = _dependency_diamond(tmp_path, depth)
+    observed = []
+    original = MODULE.jsonschema.Draft202012Validator
+
+    class CountingValidator:
+        def __init__(self, *args, **kwargs):
+            self.validator = original(*args, **kwargs)
+
+        def iter_errors(self, payload):
+            observed.append(payload["proof_id"])
+            return self.validator.iter_errors(payload)
+
+    monkeypatch.setattr(MODULE.jsonschema, "Draft202012Validator", CountingValidator)
+    assert (
+        MODULE.check_manifest(
+            payloads["root"][0],
+            manifest_path=tmp_path / payloads["root"][1],
+            proof=proofs["root"],
+            schema=schema,
+            root=tmp_path,
+            bind_source=False,
+            proof_by_id=proofs,
+        )
+        == []
+    )
+    assert len(observed) == 2 * depth + 2
+    assert set(observed) == set(proofs)
+
+
+@pytest.mark.parametrize("mutation", ["artifact", "binary", "archive", "symlink", "authority"])
+def test_dependency_cache_rechecks_live_inputs(tmp_path: Path, monkeypatch, mutation: str) -> None:
+    schema = json.loads(SCHEMA_PATH.read_text())
+    proofs, payloads = _dependency_diamond(tmp_path)
+    leaf, leaf_path, _ = payloads["leaf"]
+    original = MODULE._payload_bytes
+    reads = 0
+
+    def read(root, value, *, label):
+        nonlocal reads
+        raw = original(root, value, label=label)
+        if value == leaf_path:
+            reads += 1
+            if reads == 2:
+                if mutation == "authority":
+                    proofs["leaf"]["command"] = "wrong command"
+                elif mutation == "archive":
+                    (tmp_path / leaf_path).write_bytes(raw + b"\n")
+                else:
+                    binding = (
+                        leaf["daemon_binary"] if mutation == "binary" else leaf["artifacts"][0]
+                    )
+                    target = tmp_path / binding["path"]
+                    if mutation == "symlink":
+                        saved = tmp_path / "substituted-evidence"
+                        saved.write_bytes(target.read_bytes())
+                        target.unlink()
+                        target.symlink_to(saved)
+                    else:
+                        target.write_bytes(target.read_bytes() + b"corruption")
+        return raw
+
+    monkeypatch.setattr(MODULE, "_payload_bytes", read)
+    messages = _messages(
+        MODULE.check_manifest(
+            payloads["root"][0],
+            manifest_path=tmp_path / payloads["root"][1],
+            proof=proofs["root"],
+            schema=schema,
+            root=tmp_path,
+            bind_source=False,
+            proof_by_id=proofs,
+        )
+    )
+    assert reads == 2
+    assert messages
+    if mutation == "authority":
+        assert "invocation.command differs from proof authority" in messages
+    elif mutation == "symlink":
+        assert any("regular archive" in message or "unreadable" in message for message in messages)
+    else:
+        assert any("digest mismatch" in message for message in messages)
+
+
+def test_dependency_cache_does_not_survive_an_invocation(tmp_path: Path) -> None:
+    schema = json.loads(SCHEMA_PATH.read_text())
+    proofs, payloads = _dependency_diamond(tmp_path)
+    kwargs = dict(
+        manifest_path=tmp_path / payloads["root"][1],
+        proof=proofs["root"],
+        schema=schema,
+        root=tmp_path,
+        bind_source=False,
+        proof_by_id=proofs,
+    )
+    assert MODULE.check_manifest(payloads["root"][0], **kwargs) == []
+    (tmp_path / payloads["leaf"][1]).unlink()
+    assert MODULE.check_manifest(payloads["root"][0], **kwargs)
+
+
+def test_dependency_cache_keeps_live_source_binding(tmp_path: Path) -> None:
+    schema = json.loads(SCHEMA_PATH.read_text())
+    proofs, payloads = _dependency_diamond(tmp_path)
+    payload = payloads["root"][0]
+    kwargs = dict(
+        manifest_path=tmp_path / payloads["root"][1],
+        proof=proofs["root"],
+        schema=schema,
+        root=tmp_path,
+        bind_source=True,
+        proof_by_id=proofs,
+    )
+    assert MODULE.check_manifest(payload, bound_source=payload["source"], **kwargs) == []
+    current_source = {**payload["source"], "head": "b" * 40}
+    messages = _messages(MODULE.check_manifest(payload, bound_source=current_source, **kwargs))
+    assert "source.head is not current HEAD" in messages
+
+
+def test_registry_cycle_cannot_become_a_cache_hit() -> None:
+    registry = copy.deepcopy(MODULE._read_toml(REGISTRY_PATH))
+    registry["proofs"][0]["dependencies"] = [registry["proofs"][-1]["id"]]
+    registry["proofs"][-1]["dependencies"] = [registry["proofs"][0]["id"]]
+    messages = _messages(MODULE.check_registry(registry, root=REPO_ROOT, path=REGISTRY_PATH))
+    assert any("dependency cycle" in message for message in messages)
+
+
 def test_manifest_v0_is_refused(tmp_path: Path) -> None:
     (tmp_path / "owner.md").write_text("owner\n", encoding="utf-8")
     proof = _proof(tmp_path)

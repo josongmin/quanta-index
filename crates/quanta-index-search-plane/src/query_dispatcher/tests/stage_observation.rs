@@ -7,12 +7,20 @@ use quanta_index_contract::{
     HybridQueryRequest, QueryConstraintSetV1, SearchPlaneQueryIpcRequest, SemanticQueryRequest,
     TextQueryRequest, TextQuerySyntax,
 };
-use quanta_index_core::{RequestBudgetV1, RequestCorrelationV1};
+use quanta_index_core::{CoreError, RequestBudgetV1, RequestCorrelationV1};
 
 use super::support::common::{TestResult, candidate, dispatcher_with_obs, ready_pin};
 use super::support::lexical::StubLexicalOpener;
 use super::support::semantic::{RecordingSemanticOpener, RecordingSemanticState};
 use crate::observability::BoundedQueryObsStore;
+use crate::query_dispatcher::continuation::{CursorAuthorityV2, CursorClockV2};
+
+struct FixedCursorClock;
+impl CursorClockV2 for FixedCursorClock {
+    fn now_unix(&self) -> Result<u64, CoreError> {
+        Ok(1_000_000_000)
+    }
+}
 use crate::{QueryStageObservationPolicy, ResponsePayloadBudget};
 
 fn request_text() -> TextQueryRequest {
@@ -59,6 +67,14 @@ fn compare_policy_with_rows(
         Arc::new(BoundedQueryObsStore::default()),
     )?
     .with_response_budget(payload_budget);
+    // Cursor issue/expiry time is a correctness-relevant input. Pin it so
+    // A/B equality cannot fail or pass by crossing a wall-clock second.
+    let authority =
+        CursorAuthorityV2::process_local()?.with_clock_for_tests(Arc::new(FixedCursorClock));
+    dispatcher
+        .cursor_authority
+        .set(authority)
+        .map_err(|_uninstalled_authority| "fixture cursor authority was already initialized")?;
     let correlation = RequestCorrelationV1::from_raw(77).ok_or("77 must be nonzero")?;
     let budget = RequestBudgetV1::unbounded().with_correlation(correlation);
     if cancelled {
@@ -103,7 +119,7 @@ fn compare_policy_with_rows(
         let stages = explanation
             .get_mut("stage_timings")
             .ok_or("missing stage field")?;
-        if !stages.as_array().is_some_and(|stages| !stages.is_empty()) {
+        if stages.as_array().is_none_or(Vec::is_empty) {
             return Err("enabled query did not observe stages".into());
         }
         *stages = serde_json::Value::Null;

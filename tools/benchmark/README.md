@@ -43,9 +43,9 @@ families; the current end-to-end native capture path is narrower:
 | Profiles | Current execution/evidence path |
 | --- | --- |
 | `dsl-authority`, `quality-core`, `quality-full`, `systems`, `semantic-ab` | Native Just producers, artifact checks, baseline comparison where declared, immutable promotion and raw-derived replay. Requires clean source and the declared host/inputs. |
-| `micro`, `dsl-diagnostic` | Registered Criterion owners; automatic Criterion capture/promotion adapter is not implemented. `run` refuses before executing anything. |
+| `micro`, `dsl-diagnostic` | Registered Criterion owners execute with an explicit external evidence root. Fresh output directories, binary listing + correctness smoke, exact sample/estimate retention, per-case immutable runs and complete-profile publication. Diagnostic wall time only; no performance qualification. |
 | `retrieval-contract`, `retrieval-diagnostic` | Existing retrieval owners remain authoritative. Registered plans exist; CLI capture parameters and native-to-common evidence adapters are not implemented. |
-| `recorded` | Agent outcomes and scan experiments remain separate owner workflows. No complete profile capture/import adapter. |
+| `recorded` | Explicit external A/B/C JSONL and scan-native JSON imports; existing agent evaluator, per-family immutable runs, complete profile publication and raw-derived replay. Submitted recordings remain unauthenticated diagnostics; authenticated claims are refused. |
 
 Unsupported profiles do not execute a supported subset and then claim a full
 capture. `summarize` reports `registered_not_captured` with an unknown (null)
@@ -63,7 +63,36 @@ artifact verbatim into an immutable run:
 <external-root>/runs/<run-id>/{evidence.json,raw/<native artifact>}
 <external-root>/latest                 # advisory pointer, never a baseline
 <external-root>/baselines/<family>.json
+<external-root>/captures/<capture-id>.json  # immutable complete case inventory
+<external-root>/profiles/<profile>.json    # complete-capture commit pointer
 ```
+
+Criterion example (defaults: 100 samples, 3 s warmup, 5 s measurement per case):
+
+```sh
+python3 tools/benchmark/benchctl.py run micro --evidence-root /external/bench
+python3 tools/benchmark/benchctl.py validate micro --evidence-root /external/bench
+python3 tools/benchmark/benchctl.py summarize micro --evidence-root /external/bench
+```
+
+`--criterion-samples`, `--criterion-warmup`, `--criterion-measurement`,
+`--criterion-resamples` and `--producer-timeout` configure explicit diagnostic
+captures. Fewer than ten samples, non-finite durations, missing/duplicate cases,
+interrupted producers, estimates disagreeing with raw samples and changed
+source/binaries are refused. LQ requires all twelve stage/size cases. Runtime
+DSL uses the executable's complete `--list` inventory. Each run retains native
+metadata, samples, estimates, listing, Cargo messages, rustc identity and actual
+execution arguments. Replay recomputes the native mean; validation also requires
+the complete profile and current source/registry/lockfile identities.
+
+Only the complete capture pointer publishes a profile. Individually promoted
+runs left by an I/O failure are not a complete profile. Python store GC pins
+all immutable captures (including history); malformed custody refuses deletion.
+Publication and Python GC share a POSIX process/thread custody lock; the current
+capture rail supports Linux/macOS. Unsupported hosts refuse before production.
+Rust store GC refuses orchestration-owned capture roots instead of deleting
+their referenced runs. These diagnostic captures do not prove quiet-host
+latency, peak RSS, capacity, instruction cost or repository-wide qualification.
 
 - The run id is immutable; promoting it twice is refused. A crash before
   promotion leaves only a `.staging/` directory, which is never admissible.
@@ -158,6 +187,34 @@ The recorded retrieval and agent-outcome evaluators have separate CLIs and
 strict input contracts in [retrieval/README.md](retrieval/README.md) and
 [agent_outcome/README.md](agent_outcome/README.md); they do not invent runner
 results when recordings are absent.
+
+### Recorded import
+
+```sh
+uv run --frozen --extra dev python tools/benchmark/benchctl.py run recorded \
+  --evidence-root /external/bench \
+  --agent-recording /external/recordings/agent.jsonl \
+  --scan-recording /external/recordings/scan.json \
+  --recorded-authenticity recorded_unauthenticated
+uv run --frozen --extra dev python tools/benchmark/benchctl.py validate recorded \
+  --evidence-root /external/bench
+```
+
+`scan.json` contains exactly `{"artifacts": [<native BenchArtifactV1>, ...]}`.
+Each scale must be distinct and measured, with the same native source revision;
+every row's p50/p95/p99 and error/timeout counters are retained. The raw native
+documents are preserved verbatim. They contain index-query measurements, not
+`rg`/`grep` timing samples; no scan timing is reconstructed from Markdown.
+
+The recorded envelope binds the **importer** source, locked Python dependency
+identity and importer host. The original producer source/host remain in the raw
+input; import does not authenticate them or infer current-product performance.
+A/B/C denominators and conditional first-useful-evidence timing are recomputed
+by the existing evaluator. Missing useful evidence has coverage zero and no
+conditional timing value, not a zero-ms event. No coding agents or arbitrary
+shell commands are launched. Missing/partial input cannot publish a complete
+profile. `--recorded-authenticity authenticated` is refused until an underlying
+receipt authenticator exists; it never silently downgrades the request.
 
 The sections below document the DSL Layer-3 latency gate.
 
@@ -334,7 +391,7 @@ just rust-verify-hellgate-fast  # fast correctness hellgate (bench truth + text 
 just rust-verify-hellgate-broad # broad daemon lifecycle sweep
 just rust-verify-hellgate-all   # fast + broad + warm/cold compare
 just rust-bench-dsl-warm        # dedicated warm authority runner -> warm-matrix.json
-just rust-bench-dsl-warm-criterion  # exploratory criterion view -> warm-matrix.criterion.json
+just rust-bench-dsl-warm-criterion /external/bench  # common diagnostic Criterion capture
 just rust-bench-dsl-cold 20     # cold matrix (20 samples/scenario) -> cold-matrix.json
 just rust-bench-dsl-refresh 20  # warm -> cold -> compare, serialized authority run
 just rust-bench-dsl-compare     # gate both matrices against tools/benchmark/baselines/

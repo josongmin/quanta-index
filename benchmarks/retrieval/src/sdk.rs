@@ -15,8 +15,8 @@ use std::time::{Duration, Instant};
 use quanta_index_contract::ipc::GenerationStatusReport;
 use quanta_index_contract::{
     GenerationPin, HybridCandidateV1, LexicalCandidate, ManifestGeneration, QueryResultWindowV2,
-    RepoId, RevisionId, SearchCorpusActiveHeadV1, SearchExplanation, SearchPlaneErrorCodeV2,
-    SearchPlaneSearchCorpusActivationCasAck, SearchCorpusIngestObservation,
+    RepoId, RevisionId, SearchCorpusActiveHeadV1, SearchCorpusIngestObservation, SearchExplanation,
+    SearchPlaneErrorCodeV2, SearchPlaneSearchCorpusActivationCasAck,
 };
 use quanta_index_sdk::{BatchReceipt, ConnectOptions, QuantaIndex, SdkError, SearchCorpusBatch};
 use quanta_index_search_plane::QueryStageObservationPolicy;
@@ -325,7 +325,10 @@ impl DaemonSession {
             .env(EMBEDDER_ENV, config.embedder)
             // Explicit even for the default: inherited workstation settings
             // cannot silently alter a source-bound benchmark capture.
-            .env(QUERY_STAGE_OBSERVATION_ENV, config.query_stage_observation.as_str())
+            .env(
+                QUERY_STAGE_OBSERVATION_ENV,
+                config.query_stage_observation.as_str(),
+            )
             .env(
                 "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_GENERATIONS",
                 config.history_max_generations.to_string(),
@@ -793,7 +796,11 @@ pub fn publish_and_activate(
     batch: &SearchCorpusBatch,
     expected: &BatchIdentity,
     expected_active: Option<&SearchCorpusActiveHeadV1>,
-) -> BenchResult<(BatchReceipt, SearchPlaneSearchCorpusActivationCasAck, SearchCorpusIngestObservation)> {
+) -> BenchResult<(
+    BatchReceipt,
+    SearchPlaneSearchCorpusActivationCasAck,
+    SearchCorpusIngestObservation,
+)> {
     let digest = batch
         .batch_digest()
         .map_err(|err| BenchError::Sdk(format!("failed to compute batch digest: {err}")))?;
@@ -802,8 +809,9 @@ pub fn publish_and_activate(
         .search_corpus()
         .publish_and_activate_observed(batch, expected_active.cloned())
         .map_err(|err| BenchError::Sdk(format!("publish_and_activate failed: {err}")))?;
-    let observation = outcome.observation.ok_or_else(|| BenchError::Protocol(
-        "observed publish returned no transient observation".to_string()))?;
+    let observation = outcome.observation.ok_or_else(|| {
+        BenchError::Protocol("observed publish returned no transient observation".to_string())
+    })?;
     let receipt = outcome.receipt;
     verify_sealed_receipt(&receipt, &digest, expected)?;
     verify_activation_ack(&ack, expected, expected_active)?;

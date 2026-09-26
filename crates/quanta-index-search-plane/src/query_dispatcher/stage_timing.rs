@@ -57,6 +57,23 @@ impl StageTimings {
         }
     }
 
+    pub(super) fn record_elapsed(
+        &mut self,
+        stage: QueryStageKindV1,
+        started: Option<Instant>,
+        calls: u32,
+        returned_candidates: Option<usize>,
+    ) {
+        if let (Some(stages), Some(started)) = (&mut self.0, started) {
+            stages.push(measured(
+                stage,
+                started.elapsed(),
+                calls,
+                returned_candidates,
+            ));
+        }
+    }
+
     pub(super) fn finish(self) -> Option<Vec<QueryStageTimingV1>> {
         self.0
     }
@@ -68,15 +85,6 @@ fn nanos(duration: Duration) -> u64 {
 
 fn count(value: usize) -> u64 {
     u64::try_from(value).map_or(u64::MAX, |value| value)
-}
-
-pub(super) fn elapsed(
-    stage: QueryStageKindV1,
-    started: Option<Instant>,
-    calls: u32,
-    returned_candidates: Option<usize>,
-) -> Option<QueryStageTimingV1> {
-    started.map(|started| measured(stage, started.elapsed(), calls, returned_candidates))
 }
 
 pub(super) fn measured(
@@ -95,7 +103,7 @@ pub(super) fn measured(
 
 #[cfg(test)]
 mod tests {
-    use super::{QueryStageObservationPolicy, StageTimings, elapsed};
+    use super::{QueryStageObservationPolicy, StageTimings};
     use quanta_index_contract::QueryStageKindV1;
 
     #[test]
@@ -116,7 +124,7 @@ mod tests {
         });
         let bytes =
             quanta_index_ipc::cbor_payload_len(&Some(stages)).expect("bounded stage shape encodes");
-        assert_eq!(LEXICAL_STAGE_RESERVE_BYTES, 1024);
+        assert_eq!(LEXICAL_STAGE_RESERVE_BYTES, 512);
         assert!(
             bytes < LEXICAL_STAGE_RESERVE_BYTES,
             "lexical stage bytes exceed fixed reserve: {bytes}"
@@ -128,12 +136,7 @@ mod tests {
         let policy = QueryStageObservationPolicy::Disabled;
         assert_eq!(policy.start(), None);
         let mut stages = StageTimings::new(policy, 7);
-        stages.push(elapsed(
-            QueryStageKindV1::HybridPrepare,
-            policy.start(),
-            1,
-            None,
-        ));
+        stages.record_elapsed(QueryStageKindV1::HybridPrepare, policy.start(), 1, None);
         assert!(stages.finish().is_none());
         assert_eq!(policy.as_str(), "disabled");
     }
@@ -144,12 +147,12 @@ mod tests {
         let started = policy.start();
         assert!(started.is_some());
         let mut stages = StageTimings::new(policy, 4);
-        stages.push(elapsed(QueryStageKindV1::LexicalPrepare, started, 1, None));
+        stages.record_elapsed(QueryStageKindV1::LexicalPrepare, started, 1, None);
         let stages = stages
             .finish()
             .expect("enabled observations allocate storage");
         assert_eq!(stages.len(), 1);
-        assert_eq!(stages[0].calls, 1);
+        assert_eq!(stages.first().map(|stage| stage.calls), Some(1));
         assert_eq!(policy.as_str(), "enabled");
     }
 }

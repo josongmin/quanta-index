@@ -23,3 +23,27 @@ def test_public_api_runner_uses_the_baseline_nightly(monkeypatch, tmp_path: Path
 
     assert env["RUSTUP_TOOLCHAIN"] == "nightly-2026-08-01"
     assert env["CARGO_TARGET_DIR"].startswith(str(tmp_path / "target"))
+
+
+def test_empty_package_selection_is_refused(monkeypatch) -> None:
+    import pytest
+
+    monkeypatch.setattr(sys, "argv", [str(SCRIPT), "--packages"])
+    with pytest.raises(SystemExit) as error:
+        MODULE.parse_args()
+    assert error.value.code == 2
+
+
+def test_public_api_empty_or_wrong_tool_output_is_refused(monkeypatch) -> None:
+    import subprocess
+
+    import pytest
+
+    for body in ("", "pub mod different_crate\n"):
+        monkeypatch.setattr(
+            MODULE.subprocess,
+            "run",
+            lambda *args, body=body, **kwargs: subprocess.CompletedProcess([], 0, body, ""),
+        )
+        with pytest.raises(RuntimeError, match="missing or wrong crate root"):
+            MODULE.render_public_api("quanta-index-contract")

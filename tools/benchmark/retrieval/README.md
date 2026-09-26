@@ -83,11 +83,11 @@ answerability bit or train tasks. `freeze` is the only query-pack producer.
 
 ## Current artifact contract
 
-Only `schema_version: 3` suite, blind query pack, and runner records are
-accepted. The stamp identifies the exact stored JSON shape; it does not select
-an internal IR or a compatibility reader. Older and unknown stamps fail before
-scoring. Re-capture old benchmark outputs from the pinned source rather than
-converting them in the evaluator.
+Current producers emit suite/blind-pack schema 3 and runner-record schema 5
+(span-accounting version 1). The evaluator retains explicit runner-record
+schema 3/4 readers for immutable historical replay, not current qualification.
+Unknown stamps fail before scoring. Re-capture current evidence from pinned
+source; do not relabel historical bytes as the current schema.
 
 The suite requires a `comparison_contract` with `top_k`, `tokenizer`,
 `tokenizer_budget_version`, `output_unit_policy`, and the byte-span unit.
@@ -177,15 +177,22 @@ per-system records (`merge`), re-scores immutable records into the TEST-PLAN
 §8 verdict artifact (`verdict`), records the host check (`host-probe`), and
 freezes a canonical machine/power fingerprint (`host-profile`).
 
-The current Quanta runner emits returned-window diagnostic v4. Lexical,
+The current Quanta runner emits returned-window diagnostic v5. Lexical,
 semantic, and hybrid responses carry measured server-side `stage_timings` (monotonic ns,
 backend call count, and stage output count) through the typed SDK response.
 Replay rejects missing, duplicate, reordered, malformed, or request-ID-mixed
 stages and final counts that differ from the returned window. Dense fetch can
 refill and repeat rows; its output count is cumulative, while admission is
 the final admitted set. The two timings overlap and must not be added.
-Ingest stages are still opaque; runner wall time cannot be split into those
-costs. These diagnostics do not qualify speed or relevance. A lexical
+The V2 publish outcome separately carries transient server ingest stages and
+the unchanged durable receipt. Diagnostic v5 binds the original outcome,
+activation ACK and every route capture's receipt/active hashes to the expected
+request, repository, revision and generation. Preparation/promotion, streaming,
+embedding, delete/append, tombstones and sealing have explicit nesting;
+activation is a separate control call and stays null in the server ingest
+observation. Runner publish-plus-activate wall time remains opaque and cannot
+be distributed among server stages. Replayed/partial/finalize-only observations
+are not fresh ingestion samples. These diagnostics do not qualify speed or relevance. A lexical
 force-empty plan records prepare/project but no read-view/backend search.
 `lexical.project` time stops before response-budget fitting; its candidate
 count is reconciled to the final fitted page, so the count is not a wall-time
@@ -210,6 +217,7 @@ keys: `repo`, `manifest`, `suite`, `query_pack`, `top_k`, `output_root`,
 | `strategies` | required for `quanta`/`pair` | e.g. `[{"name":"whole_file"},{"name":"brace_heuristic"}]` |
 | `searchd_binary` | required | explicit daemon pin; unpinned capture is refused |
 | `embedder` | `potion-code` | Rust runner embedder profile (`hash-dev` is an explicit diagnostic control) |
+| `query_stage_observation` | `enabled` | Exact `enabled`/`disabled` server query-stage policy; optional in the spec, explicit in daemon env and protocol3/diagnostic5 config SHA |
 | `repo_id`/`revision_id`/`generation` | `bench-repo`/`bench-rev`/`7` | batch identity |
 | `runner_name`/`run_id` | `quanta-sdk-runner`/`run` | runner identity; `runner_revision` is derived from the binary SHA-256 |
 | `blinding` | `attested` | `isolated` requires the enforced Seatbelt (macOS) or Landlock (Linux) path; unsupported or unavailable backends fail closed |
@@ -433,3 +441,60 @@ relocated verdict replay, but used self-authored gold and carried no
 qualification claim (see the ticket [index](../../../docs/plans/sep-23-retrieval-bench/tickets/INDEX.md)).
 No tracked real-pair `run-manifest.json` or `verdict.json` is a qualified
 benchmark result here; external W0-B evidence is required before a quality claim.
+
+
+## Conditional T15/T16 owner proof
+
+`PYTHONPATH=. uv run --frozen --extra dev python -m tools.benchmark.retrieval.conditional_proof`
+produces schema 2 bundles in a new external output directory. Common arguments:
+`--kind model_vectors|incremental_rows --suite SUITE --corpus CORPUS --records RECORD... --semble-lockfile LOCK --out NEW_DIRECTORY`.
+The producer requires a clean retrieval source closure and builds the owner binary
+through `./scripts/cargow --lane test-daemon-lane ... --locked`.
+
+- T15 also requires `--model-dir PINNED_MODEL --reference-python PYTHON_313`.
+  The separate reference environment must contain model2vec 0.9.0. All 256
+  components, reversed batch order, norms and pairwise cosines are replayed
+  against the pinned reference for the adversarial inputs and frozen suite queries.
+- T16 requires `--plan PLAN`. Schema 1 plans have sorted `cases`, each with
+  `case_id`, `fresh`, `before`, and `delta` canonical `SemanticIngestBatch` objects.
+  Required cases are append, clear_surface, membership_replace, replace, tombstone.
+  Fresh/before are sealed ReplaceGeneration batches; delta is sealed Delta with
+  its before generation as base. Repo, revision and model contracts must agree.
+  The owner exports every semantic and membership column from the sealed tables.
+  Replay checks the independent fresh input oracle, mutation coverage, receipts,
+  complete row sets, payload/vector changes and membership order/content digest.
+
+The bundle includes source/dependency/model identities, frozen input bytes,
+build and execution streams, binary hashes, working directory and environment.
+The verdict independently replays these fields and binds them to its frozen pair.
+Legacy summary-only bundles cannot satisfy a claimed T15/T16 gate. A local bundle
+is execution custody, not OS attestation or final holdout qualification.
+
+## Query stage clock cost diagnostic
+
+Capture identical frozen inputs with `--query-stage-observation enabled` and
+`disabled`, separate fresh state roots, identical query protocols, and at least
+two measured repetitions. Replay with:
+
+```sh
+PYTHONPATH=. uv run --frozen --extra dev python -m tools.benchmark.retrieval.query_timing_overhead \
+  --on-record ON_RECORD --off-record OFF_RECORD \
+  --on-phases ON_PHASES --off-phases OFF_PHASES \
+  --on-diagnostic ON_DIAGNOSTIC --off-diagnostic OFF_DIAGNOSTIC \
+  --pack PROJECTED_QUERY_PACK --out NEW_RESULT
+```
+
+Replay validates schema 5 server observation declarations and actual timing
+presence/absence, ingest bindings, byte digests, frozen binaries/model/input
+identities, identical answers/ranking, and exact sample coverage. It reports
+median latency delta and relative delta per route/task. Output remains
+`diagnostic_unqualified`; quiet-host measurements, interleaving and a final
+qualified performance claim require their separate evidence rails.
+
+
+Conditional custody limitations: command transcripts and their binary hashes
+are recorded by the local producer. Replay validates their internal consistency
+and current source closure; it is not a signed build attestation. A party able
+to forge and rebind all local transcripts is outside this custody guarantee.
+These diagnostics do not independently attest the executable's build origin,
+a remote host execution, clean-source integration, or final qualification.

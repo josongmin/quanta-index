@@ -136,7 +136,9 @@ impl SemanticIngestPort for DirectSemanticMaterializer {
                 "direct semantic materialize: the build appended {appended:?} but the source issued {issued:?}"
             )));
         }
-        if report.windows != appended.windows || report.owner_scopes != appended.replace_scopes {
+        let windows_match = report.windows == appended.windows;
+        let scopes_match = report.owner_scopes == appended.replace_scopes;
+        if !windows_match || !scopes_match {
             return Err(CoreError::InvalidContract(format!(
                 "direct semantic materialize: stage report coverage {}/{} differs from appended windows/scopes {}/{}",
                 report.windows, report.owner_scopes, appended.windows, appended.replace_scopes,

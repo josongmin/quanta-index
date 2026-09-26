@@ -50,7 +50,7 @@ step = "Produce P00 authority proof from the static gate"
 
 [rails.correctness-fuzz-ipc-request]
 tier = "correctness"
-command = "cargo +nightly fuzz run ipc_request_decode"
+command = "cargo +nightly fuzz run ipc_request_decode -- -max_total_time=60"
 target_kind = "fuzz"
 workflow = ".github/workflows/correctness.yml"
 job = "rust-fuzz-smoke"
@@ -58,7 +58,7 @@ step = "Smoke-run ipc_request_decode (60s)"
 
 [rails.correctness-fuzz-ipc-response]
 tier = "correctness"
-command = "cargo +nightly fuzz run ipc_response_decode"
+command = "cargo +nightly fuzz run ipc_response_decode -- -max_total_time=60"
 target_kind = "fuzz"
 workflow = ".github/workflows/correctness.yml"
 job = "rust-fuzz-smoke"
@@ -66,7 +66,7 @@ step = "Smoke-run ipc_response_decode (60s)"
 
 [rails.correctness-fuzz-search-corpus]
 tier = "correctness"
-command = "cargo +nightly fuzz run search_corpus_ingest_decode"
+command = "cargo +nightly fuzz run search_corpus_ingest_decode -- -dict=dictionaries/search_corpus_ingest.dict -max_total_time=60"
 target_kind = "fuzz"
 workflow = ".github/workflows/correctness.yml"
 job = "rust-fuzz-smoke"
@@ -74,7 +74,7 @@ step = "Smoke-run search_corpus_ingest_decode (60s)"
 
 [rails.correctness-fuzz-lq-parse]
 tier = "correctness"
-command = "cargo +nightly fuzz run lq_parse_pipeline"
+command = "cargo +nightly fuzz run lq_parse_pipeline -- -max_total_time=60"
 target_kind = "fuzz"
 workflow = ".github/workflows/correctness.yml"
 job = "rust-fuzz-smoke"

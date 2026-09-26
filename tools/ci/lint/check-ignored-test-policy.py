@@ -19,7 +19,12 @@ DEFAULT_POLICY = ROOT / "tools" / "ci" / "ignored-test-policy.toml"
 LINT_DIR = str(Path(__file__).resolve().parent)
 if LINT_DIR not in sys.path:
     sys.path.insert(0, LINT_DIR)
-from rust_attribute_policy import attribute_metas, string_value  # noqa: E402
+from rust_attribute_policy import (  # noqa: E402
+    attribute_metas,
+    macro_attribute_metas,
+    rust_source_files,
+    string_value,
+)
 
 
 def _ignored_tests(root: Path) -> set[tuple[str, str, str]]:
@@ -27,10 +32,18 @@ def _ignored_tests(root: Path) -> set[tuple[str, str, str]]:
 
     found: set[tuple[str, str, str]] = set()
     parser = get_parser("rust")
-    for source in (*root.glob("crates/**/*.rs"), *root.glob("benchmarks/**/*.rs")):
+    for source in rust_source_files((root / "crates", root / "benchmarks")):
         tree = parser.parse(source.read_bytes())
+        targets: dict[str, int] = {}
 
-        def visit(node: object, source: Path = source) -> None:
+        def visit(node: object, source: Path = source, targets: dict[str, int] = targets) -> None:
+            if node.type in {"macro_invocation", "macro_definition"}:
+                for line, metas in macro_attribute_metas(node):
+                    if any(name == "ignore" for name, _, _ in metas):
+                        raise ValueError(
+                            f"cannot identify ignored test in opaque Rust macro: {source}:{line}"
+                        )
+                return
             children = node.children
             for index, child in enumerate(children):
                 if child.type == "attribute_item":
@@ -54,6 +67,12 @@ def _ignored_tests(root: Path) -> set[tuple[str, str, str]]:
                             raise ValueError(
                                 f"cannot identify ignored test function: {source}:{child.start_point.row + 1}"
                             )
+                        test_name = name.text.decode("utf-8").removeprefix("r#")
+                        if test_name in targets and targets[test_name] != target.start_byte:
+                            raise ValueError(
+                                f"ambiguous ignored-test function identity: {source}::{test_name}"
+                            )
+                        targets[test_name] = target.start_byte
                         for arguments, conditional in ignores:
                             if not arguments:
                                 reason = "<conditional ignore>" if conditional else ""
@@ -64,7 +83,7 @@ def _ignored_tests(root: Path) -> set[tuple[str, str, str]]:
                             found.add(
                                 (
                                     source.relative_to(root).as_posix(),
-                                    name.text.decode("utf-8"),
+                                    test_name,
                                     reason,
                                 )
                             )

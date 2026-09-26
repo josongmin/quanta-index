@@ -542,7 +542,7 @@ just rust-verify-quality-ops
 just rust-verify-quality-scale
 just rust-verify-quality-tail
 just rust-verify-quality-ann
-just rust-verify-quality-concurrency 16
+just rust-verify-quality-concurrency
 just rust-bench-dsl-refresh 20
 ```
 
@@ -660,7 +660,7 @@ just rust-verify-quality-snippet
 just rust-verify-quality-scale
 just rust-verify-quality-tail
 just rust-verify-quality-ann
-just rust-verify-quality-concurrency 16
+just rust-verify-quality-concurrency
 just rust-verify-quality-ops
 just rust-verify-quality-ui
 just rust-verify-quality-all

@@ -9,8 +9,9 @@
 
 use anyhow::Result as AnyResult;
 use quanta_index_contract::{
-    EarlyStopReason, EngineTouched, HistoryIngestBatch, HistoryRefDelete, HistoryRefMutation,
-    SearchExplanation, SearchPlaneTrackKind, TextQuerySyntax,
+    EarlyStopReason, EngineTouched, ExplanationRow, HistoryIngestBatch, HistoryRefDelete,
+    HistoryRefMutation, PlannerTraceEntry, QueryStageKindV1, SearchExplanation,
+    SearchPlaneTrackKind, TextQuerySyntax,
 };
 
 use crate::e2e_harness::{
@@ -60,14 +61,82 @@ fn require_stamped(explanation: &SearchExplanation, context: &str) -> AnyResult<
     Ok(())
 }
 
-/// Strip transport correlation before comparing query determinism across
-///
-/// requests (S21-10): `request_id` identifies the transport request, so
-/// two identical queries issued as distinct requests legitimately carry
-/// distinct ids.
-fn without_request_id(mut explanation: SearchExplanation) -> SearchExplanation {
-    explanation.request_id = 0;
-    explanation
+#[derive(Debug, PartialEq)]
+struct StageSemantics {
+    stage: QueryStageKindV1,
+    calls: u32,
+    returned_candidates: Option<u64>,
+}
+
+/// Only request correlation and observed elapsed time are nondeterministic.
+/// Preserve timing availability, order, kinds, calls, counts and every other
+/// explanation field. Exhaustive destructuring forces review of new fields.
+#[derive(Debug, PartialEq)]
+struct DeterministicExplanation<'a> {
+    planner_trace: &'a [PlannerTraceEntry],
+    engines_touched: &'a [EngineTouched],
+    engines_executed: &'a [EngineTouched],
+    stage_timings: Option<Vec<StageSemantics>>,
+    early_stop_reason: &'a Option<EarlyStopReason>,
+    contributions: &'a [ExplanationRow],
+    ranker_weights_hash: &'a [u8; 32],
+    strategy: &'a str,
+    summary: &'a str,
+}
+
+fn deterministic_explanation(
+    explanation: &SearchExplanation,
+) -> AnyResult<DeterministicExplanation<'_>> {
+    require_stamped(explanation, "determinism projection")?;
+    let SearchExplanation {
+        planner_trace,
+        engines_touched,
+        engines_executed,
+        request_id: _,
+        stage_timings,
+        early_stop_reason,
+        contributions,
+        ranker_weights_hash,
+        strategy,
+        summary,
+    } = explanation;
+    let stage_timings = stage_timings.as_ref().map(|stages| {
+        stages
+            .iter()
+            .map(|stage| {
+                let quanta_index_contract::QueryStageTimingV1 {
+                    stage,
+                    elapsed_ns: _,
+                    calls,
+                    returned_candidates,
+                } = stage;
+                StageSemantics {
+                    stage: *stage,
+                    calls: *calls,
+                    returned_candidates: *returned_candidates,
+                }
+            })
+            .collect::<Vec<_>>()
+    });
+    if stage_timings
+        .as_ref()
+        .is_some_and(|stages| stages.is_empty() || stages.iter().any(|stage| stage.calls == 0))
+    {
+        return Err(anyhow::anyhow!(
+            "invalid measured stage availability or call count"
+        ));
+    }
+    Ok(DeterministicExplanation {
+        planner_trace,
+        engines_touched,
+        engines_executed,
+        stage_timings,
+        early_stop_reason,
+        contributions,
+        ranker_weights_hash,
+        strategy,
+        summary,
+    })
 }
 
 fn query_ids_and_explanation(rt: &mut E2eRuntime) -> AnyResult<(Vec<String>, SearchExplanation)> {
@@ -113,7 +182,113 @@ fn query_semantic_scope_ids_and_explanation(
     let explanation = result
         .explanation
         .ok_or_else(|| anyhow::anyhow!("query_semantic returned no explanation"))?;
+    let expected = [
+        (QueryStageKindV1::SemanticPrepare, None),
+        (QueryStageKindV1::SemanticReadView, None),
+        (QueryStageKindV1::SemanticLexicalScope, Some(3)),
+        (QueryStageKindV1::SemanticEmbedding, None),
+        (QueryStageKindV1::SemanticDenseSearch, Some(3)),
+        (QueryStageKindV1::SemanticProject, Some(2)),
+    ]
+    .map(|(stage, returned_candidates)| StageSemantics {
+        stage,
+        calls: 1,
+        returned_candidates,
+    });
+    let projection = deterministic_explanation(&explanation)?;
+    if projection.stage_timings.as_deref() != Some(expected.as_slice()) {
+        return Err(anyhow::anyhow!(
+            "semantic fixture lost measured stage truth: {:?}",
+            projection.stage_timings
+        ));
+    }
     Ok((result.candidate_ids, explanation))
+}
+
+#[test]
+fn explanation_projection_excludes_only_request_id_and_elapsed_time() -> AnyResult<()> {
+    use quanta_index_contract::QueryStageTimingV1;
+    let mut before = SearchExplanation::empty();
+    before.request_id = 1;
+    before.stage_timings = Some(vec![
+        QueryStageTimingV1 {
+            stage: QueryStageKindV1::SemanticPrepare,
+            elapsed_ns: 7,
+            calls: 1,
+            returned_candidates: None,
+        },
+        QueryStageTimingV1 {
+            stage: QueryStageKindV1::SemanticProject,
+            elapsed_ns: 9,
+            calls: 1,
+            returned_candidates: Some(2),
+        },
+    ]);
+    let mut after = before.clone();
+    after.request_id = 2;
+    if let Some(stages) = &mut after.stage_timings {
+        for stage in stages {
+            stage.elapsed_ns = 99;
+        }
+    }
+    if deterministic_explanation(&before)? != deterministic_explanation(&after)? {
+        return Err(anyhow::anyhow!(
+            "request/elapsed-only differences must be excluded"
+        ));
+    }
+    let mutations: [fn(&mut SearchExplanation); 11] = [
+        |value| value.request_id = 0,
+        |value| value.stage_timings = None,
+        |value| value.stage_timings = Some(Vec::new()),
+        |value| {
+            if let Some(stages) = &mut value.stage_timings {
+                stages.reverse();
+            }
+        },
+        |value| {
+            if let Some(stage) = value
+                .stage_timings
+                .as_mut()
+                .and_then(|stages| stages.first_mut())
+            {
+                stage.stage = QueryStageKindV1::LexicalPrepare;
+            }
+        },
+        |value| {
+            if let Some(stage) = value
+                .stage_timings
+                .as_mut()
+                .and_then(|stages| stages.first_mut())
+            {
+                stage.calls = 2;
+            }
+        },
+        |value| {
+            if let Some(stage) = value
+                .stage_timings
+                .as_mut()
+                .and_then(|stages| stages.first_mut())
+            {
+                stage.returned_candidates = Some(8);
+            }
+        },
+        |value| value.engines_executed.push(EngineTouched::Semantic),
+        |value| value.summary = "changed".to_string(),
+        |value| value.strategy = "changed".to_string(),
+        |value| value.ranker_weights_hash = [1; 32],
+    ];
+    for (index, mutate) in mutations.into_iter().enumerate() {
+        let mut mutant = after.clone();
+        mutate(&mut mutant);
+        if let Ok(projection) = deterministic_explanation(&mutant)
+            && projection == deterministic_explanation(&before)?
+        {
+            return Err(anyhow::anyhow!(
+                "projection hid deterministic mutation {index}"
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn ingest_structural_fixture(rt: &mut E2eRuntime) -> AnyResult<()> {
@@ -351,8 +526,8 @@ fn reopen_preserves_lexical_ids_and_explanation() -> AnyResult<()> {
     }
     require_stamped(&before_explanation, "reopen before")?;
     require_stamped(&after_explanation, "reopen after")?;
-    if without_request_id(before_explanation.clone())
-        != without_request_id(after_explanation.clone())
+    if deterministic_explanation(&before_explanation)?
+        != deterministic_explanation(&after_explanation)?
     {
         return Err(anyhow::anyhow!(
             "reopen changed explanation: before={before_explanation:?} after={after_explanation:?}"
@@ -383,9 +558,9 @@ fn fresh_reingest_replays_equivalent_lexical_ids_and_explanation() -> AnyResult<
 
     require_stamped(&baseline.1, "fresh re-ingest baseline")?;
     require_stamped(&replay.1, "fresh re-ingest replay")?;
-    let baseline = (baseline.0, without_request_id(baseline.1));
-    let replay = (replay.0, without_request_id(replay.1));
-    if baseline != replay {
+    if baseline.0 != replay.0
+        || deterministic_explanation(&baseline.1)? != deterministic_explanation(&replay.1)?
+    {
         return Err(anyhow::anyhow!(
             "fresh re-ingest diverged from baseline: baseline={baseline:?} replay={replay:?}"
         ));
@@ -411,8 +586,8 @@ fn reopen_preserves_semantic_scope_ids_and_explanation() -> AnyResult<()> {
     }
     require_stamped(&before_explanation, "semantic reopen before")?;
     require_stamped(&after_explanation, "semantic reopen after")?;
-    if without_request_id(before_explanation.clone())
-        != without_request_id(after_explanation.clone())
+    if deterministic_explanation(&before_explanation)?
+        != deterministic_explanation(&after_explanation)?
     {
         return Err(anyhow::anyhow!(
             "reopen changed semantic scoped explanation: before={before_explanation:?} after={after_explanation:?}"

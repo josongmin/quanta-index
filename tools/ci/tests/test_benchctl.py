@@ -42,6 +42,32 @@ def install_control_plane(repo_root: Path) -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "flag,value",
+    [
+        ("--criterion-samples", "10"),
+        ("--producer-timeout", "1"),
+        ("--criterion-measurement", "0.01"),
+    ],
+)
+def test_criterion_controls_are_not_silently_ignored_on_native_profile(
+    monkeypatch, capsys, flag, value
+):
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("native producer ran with irrelevant Criterion controls")
+
+    monkeypatch.setattr(MODULE, "require_clean_worktree", forbidden)
+    assert MODULE.main(["run", "systems", flag, value]) == 2
+    assert "apply only to micro/dsl-diagnostic" in capsys.readouterr().err
+
+
+def test_criterion_compare_does_not_claim_a_missing_capture_adapter(capsys):
+    assert MODULE.main(["compare", "micro"]) == 2
+    error = capsys.readouterr().err
+    assert "no registered baseline/comparator" in error
+    assert "capture adapter" not in error
+
+
 def test_manifest_maps_profiles_to_explicit_recipes_and_validator_profiles() -> None:
     profiles = MODULE.load_profiles()
     assert profiles["dsl-authority"]["recipes"] == ["rust-bench-dsl-warm", "rust-bench-dsl-cold"]
@@ -1338,7 +1364,7 @@ def test_promotion_refuses_missing_preflight_and_partial_multi_artifact_claim(
     "profile_name",
     ["micro", "dsl-diagnostic", "recorded", "retrieval-contract", "retrieval-diagnostic"],
 )
-def test_non_native_profiles_refuse_before_producer_execution(
+def test_non_native_profiles_require_adapter_or_explicit_root_before_execution(
     monkeypatch, capsys, profile_name: str
 ) -> None:
     def forbidden(*_args, **_kwargs):
@@ -1346,7 +1372,12 @@ def test_non_native_profiles_refuse_before_producer_execution(
 
     monkeypatch.setattr(MODULE, "require_clean_worktree", forbidden)
     assert MODULE.main(["run", profile_name]) == 2
-    assert "No producer was executed" in capsys.readouterr().err
+    error = capsys.readouterr().err
+    assert "no producer was executed" in error.lower()
+    if profile_name in {"micro", "dsl-diagnostic", "recorded"}:
+        assert "requires --evidence-root" in error
+    else:
+        assert "needs a non-native capture adapter" in error
 
 
 def test_native_fanout_rejects_mixed_inputs_and_incomplete_inventory() -> None:

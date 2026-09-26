@@ -260,6 +260,7 @@ pub struct ReadOnlyRootLeaseV1 {
     inode: u64,
     mode: u32,
     owner: u32,
+    manifest: StateRootManifestV1,
 }
 
 impl ReadOnlyRootLeaseV1 {
@@ -318,8 +319,12 @@ impl OfflineSourceSessionV1 {
     pub fn open_produced_backup(root: &Path) -> Result<Self, CoreError> {
         let lease = pin_read_only_source_v1(root)?;
         let canonical_root = lease.canonical_root().to_path_buf();
-        let _manifest =
-            read_root_manifest_v1(&canonical_root.join(STATE_BACKUP_MANIFEST_FILE_NAME))?;
+        if peek_verify_manifest_v1(&canonical_root)? != VerifyManifestKindV1::BackupRoot {
+            return Err(typed(
+                SearchPlaneErrorCodeV2::InvalidRequest,
+                "produced-backup custody requires exactly one backup manifest".to_string(),
+            ));
+        }
         refuse_legacy_state_root_v1(&canonical_root)?;
         let before = freeze_source_root_v1(&canonical_root, &PRODUCED_ROOT_EXCLUSIONS)?;
         Ok(Self {
@@ -409,12 +414,14 @@ fn pin_read_only_source_v1(root: &Path) -> Result<ReadOnlyRootLeaseV1, CoreError
     let canonical_root = fs::canonicalize(&admitted)
         .map_err(|error| storage("resolve source identity", &admitted, &error))?;
     let (device, inode, mode, owner) = root_identity_v1(&canonical_root)?;
+    let manifest = read_root_manifest_v1(&canonical_root.join(STATE_BACKUP_MANIFEST_FILE_NAME))?;
     Ok(ReadOnlyRootLeaseV1 {
         canonical_root,
         device,
         inode,
         mode,
         owner,
+        manifest,
     })
 }
 
@@ -702,17 +709,20 @@ fn refuse_source_drift_v1(
     operation: OfflineStateOperationV1,
     staging: &Path,
 ) -> Result<(), CoreError> {
-    if source_matches_freeze_v1(session)? {
-        return Ok(());
-    }
-    let drift = typed(
-        SearchPlaneErrorCodeV2::StateRootInsecure,
-        format!(
-            "offline {} source {} changed during the operation; the frozen inventory no longer matches, so the staged root is discarded and nothing is published",
-            operation.command_name(),
-            session.canonical_root().display()
+    let drift = match source_matches_freeze_v1(session) {
+        Ok(true) => return Ok(()),
+        Ok(false) => typed(
+            SearchPlaneErrorCodeV2::StateRootInsecure,
+            format!(
+                "offline {} source {} changed during the operation; the frozen inventory no longer matches, so the staged root is discarded and nothing is published",
+                operation.command_name(),
+                session.canonical_root().display()
+            ),
         ),
-    );
+        // A missing, malformed or unreadable source authority is drift too:
+        // preserve its original error, but do not leave a sealed staging root.
+        Err(error) => error,
+    };
     match remove_directory_tree_v1(staging) {
         Ok(()) => Err(drift),
         Err(cleanup) => Err(CoreError::Storage(format!(
@@ -723,8 +733,26 @@ fn refuse_source_drift_v1(
 }
 
 fn source_matches_freeze_v1(session: &OfflineSourceSessionV1) -> Result<bool, CoreError> {
+    if let OfflineSourceCustodyV1::ProducedBackup(lease) = session.custody()
+        && (peek_verify_manifest_v1(session.canonical_root())? != VerifyManifestKindV1::BackupRoot
+            || read_root_manifest_v1(
+                &session
+                    .canonical_root()
+                    .join(STATE_BACKUP_MANIFEST_FILE_NAME),
+            )? != lease.manifest)
+    {
+        return Ok(false);
+    }
     let observed = freeze_source_root_v1(session.canonical_root(), session_exclusions_v1(session))?;
-    Ok(observed == *session.before())
+    Ok(match session.custody() {
+        // Restore now verifies the read-only SQLite snapshot before copying.
+        // Reuse verification's exact, bounded sidecar-directory exception;
+        // every advertised file and non-catalog directory remains exact.
+        OfflineSourceCustodyV1::ProducedBackup(_) => {
+            same_verification_freeze(session.before(), &observed)
+        }
+        OfflineSourceCustodyV1::Current(_) => observed == *session.before(),
+    })
 }
 
 fn same_frozen_root_identity(
@@ -1028,31 +1056,34 @@ pub fn run_offline_restore_v1(
     fault: &dyn StateMigrationFaultPort,
 ) -> Result<OfflineStateOutcomeV1, CoreError> {
     const OPERATION: OfflineStateOperationV1 = OfflineStateOperationV1::Restore;
-    let _lease = session.require_backup_lease(OPERATION)?;
+    let lease = session.require_backup_lease(OPERATION)?;
     let source = session.canonical_root();
     let destination = plan_offline_destination_v1(session, OPERATION, destination_root)?;
-    let backup_manifest_path = source.join(STATE_BACKUP_MANIFEST_FILE_NAME);
-    let backup_manifest = read_root_manifest_v1(&backup_manifest_path)?;
-    let objects = inventory_state_root_v1(source, &PRODUCED_ROOT_EXCLUSIONS)?;
-    let directories = inventory_state_directories_v1(source, &PRODUCED_ROOT_EXCLUSIONS)?;
+    // Admit the original authority before creating staging, using the same
+    // inventory, catalog and custody contract as operator verification.
+    let _verified = run_offline_verify_v1(session, catalog)?;
+    let backup_manifest = &lease.manifest;
     let staging = prepare_staging_v1(&destination)?;
-    copy_data_objects_v1(source, &staging, &directories, &objects)?;
+    copy_data_objects_v1(
+        source,
+        &staging,
+        &backup_manifest.directories,
+        &backup_manifest.objects,
+    )?;
+    // Prove the copied bytes against the admitted authority before applying
+    // the one intentional restore mutation (activation incarnation rotation).
+    verify_root_against_manifest_v1(
+        &staging,
+        STATE_BACKUP_MANIFEST_FILE_NAME,
+        backup_manifest,
+        &PRODUCED_ROOT_EXCLUSIONS,
+    )?;
     ActivationCatalog::rotate_root_incarnation_for_restore_v1(&staging.join("activations"))?;
     let staged_catalog = staging
         .join(STATE_CATALOG_DIRECTORY)
         .join(STATE_BACKUP_CATALOG_FILE_NAME);
     let receipt = catalog.verify_snapshot_at(&staged_catalog)?;
-    if receipt.content_digest_hex != backup_manifest.catalog_digest_hex {
-        return Err(typed(
-            SearchPlaneErrorCodeV2::CatalogRowCorrupt,
-            format!(
-                "restored catalog digests to {} but the backup manifest {} records {}",
-                receipt.content_digest_hex,
-                backup_manifest_path.display(),
-                backup_manifest.catalog_digest_hex
-            ),
-        ));
-    }
+    verify_manifest_catalog_v1(&staging, backup_manifest, &receipt)?;
     let deep = deep_open.deep_open(&staging)?;
     let _staged_manifest =
         publish_staging_manifest_v1(&staging, STATE_ROOT_MANIFEST_FILE_NAME, &receipt, fault)?;
@@ -1083,7 +1114,15 @@ pub enum VerifyManifestKindV1 {
 pub fn peek_verify_manifest_v1(root: &Path) -> Result<VerifyManifestKindV1, CoreError> {
     let root_manifest = root.join(STATE_ROOT_MANIFEST_FILE_NAME);
     let backup_manifest = root.join(STATE_BACKUP_MANIFEST_FILE_NAME);
-    match (root_manifest.is_file(), backup_manifest.is_file()) {
+    // Reserved authority entries are present even when dangling or non-regular.
+    // `is_file` follows links and collapses unreadable/unsafe authority to absent.
+    // Decode the selected authority later through the canonical no-follow reader.
+    let advertised = |path: &Path| match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(storage("inspect advertised manifest", path, &error)),
+    };
+    match (advertised(&root_manifest)?, advertised(&backup_manifest)?) {
         (true, true) => Err(typed(
             SearchPlaneErrorCodeV2::InvalidRequest,
             format!(
@@ -1133,6 +1172,14 @@ pub fn run_offline_verify_v1(
         ),
     };
     let manifest = read_root_manifest_v1(&manifest_path)?;
+    if let OfflineSourceCustodyV1::ProducedBackup(lease) = session.custody()
+        && (manifest_kind != VerifyManifestKindV1::BackupRoot || manifest != lease.manifest)
+    {
+        return Err(typed(
+            SearchPlaneErrorCodeV2::StateRootInsecure,
+            "backup manifest changed after custody opened".to_string(),
+        ));
+    }
     if manifest.root_format != (StateRootFormatV1::CurrentV1 { manifest: true }) {
         return Err(typed(
             SearchPlaneErrorCodeV2::StateRootFormatUnsupported,
@@ -1194,28 +1241,7 @@ pub fn run_offline_verify_v1(
         .join(STATE_CATALOG_DIRECTORY)
         .join(STATE_BACKUP_CATALOG_FILE_NAME);
     let receipt = catalog.verify_snapshot_at(&snapshot_path)?;
-    if receipt.content_digest_hex != manifest.catalog_digest_hex {
-        return Err(typed(
-            SearchPlaneErrorCodeV2::CatalogRowCorrupt,
-            format!(
-                "root {} catalog digests to {} but its manifest records {}",
-                root.display(),
-                receipt.content_digest_hex,
-                manifest.catalog_digest_hex
-            ),
-        ));
-    }
-    let expected_rows = manifest.catalog_rows;
-    let observed_rows = receipt.total_rows();
-    if expected_rows != observed_rows {
-        return Err(typed(
-            SearchPlaneErrorCodeV2::CatalogRowCorrupt,
-            format!(
-                "root {} catalog holds {observed_rows} rows but its manifest records {expected_rows}",
-                root.display()
-            ),
-        ));
-    }
+    verify_manifest_catalog_v1(&root, &manifest, &receipt)?;
     // A produced backup has read-only custody, not an exclusive lock. A
     // catalog verifier (or another local writer) may change the source after
     // the object walk; neither a previous object digest nor the session's
@@ -1258,6 +1284,36 @@ pub fn run_offline_verify_v1(
         catalog_digest_hex: manifest.catalog_digest_hex.clone(),
         catalog_rows: manifest.catalog_rows,
     })
+}
+
+fn verify_manifest_catalog_v1(
+    root: &Path,
+    manifest: &StateRootManifestV1,
+    receipt: &CatalogSnapshotV1,
+) -> Result<(), CoreError> {
+    if receipt.content_digest_hex != manifest.catalog_digest_hex {
+        return Err(typed(
+            SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+            format!(
+                "root {} catalog digests to {} but its manifest records {}",
+                root.display(),
+                receipt.content_digest_hex,
+                manifest.catalog_digest_hex
+            ),
+        ));
+    }
+    let expected_rows = manifest.catalog_rows;
+    let observed_rows = receipt.total_rows();
+    if expected_rows != observed_rows {
+        return Err(typed(
+            SearchPlaneErrorCodeV2::CatalogRowCorrupt,
+            format!(
+                "root {} catalog holds {observed_rows} rows but its manifest records {expected_rows}",
+                root.display()
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// The staging suffix, re-exported so an operator-facing message and the
