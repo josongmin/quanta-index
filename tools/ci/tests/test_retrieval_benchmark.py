@@ -3840,9 +3840,24 @@ def _pair_stage(
                     "file_count": 2,
                     "chunk_count": 2,
                     "symbol_count": 0,
-                    "symbol_producer_identity": "source-bound-symbols-v1",
-                    "symbol_grammars": "tree-sitter@0.25;none@fixture",
+                    "symbol_producer_identity": pairrun.QUANTA_SYMBOL_PRODUCER_IDENTITY,
+                    "symbol_grammars": pairrun.QUANTA_SYMBOL_GRAMMARS,
+                    "symbol_coverage": [
+                        {
+                            "path": "src/a.rs",
+                            "source_sha256": _fake_sha("symbol-source-a"),
+                            "language": "rust",
+                            "definition_count": 0,
+                        },
+                        {
+                            "path": "src/b.rs",
+                            "source_sha256": _fake_sha("symbol-source-b"),
+                            "language": "rust",
+                            "definition_count": 0,
+                        },
+                    ],
                     "symbol_unsupported_files": 0,
+                    "symbol_unsupported_details": [],
                     "symbol_only_scopes": 0,
                     "query_schedule": [task["task_id"] for task in pack["tasks"]],
                     "warmup_passes": 1,
@@ -5719,8 +5734,8 @@ def test_protocol_phase_metrics_bind_raw_warm_counts_and_cold_separately():
         {
             "schema_version": 2,
             "symbol_count": 3,
-            "symbol_producer_identity": "source-bound-symbols-v1",
-            "symbol_grammars": "tree-sitter@0.25;rust@0.24",
+            "symbol_producer_identity": pairrun.QUANTA_SYMBOL_PRODUCER_IDENTITY,
+            "symbol_grammars": pairrun.QUANTA_SYMBOL_GRAMMARS,
             "symbol_unsupported_files": 0,
             "symbol_unsupported_details": [],
             "symbol_only_scopes": 0,
@@ -5731,6 +5746,19 @@ def test_protocol_phase_metrics_bind_raw_warm_counts_and_cold_separately():
         }
     )
     assert pairrun._validate_phase_metrics(current, "phase") == current
+    stale_producer = json.loads(json.dumps(current))
+    stale_producer["symbol_producer_identity"] = "source-bound-symbols-v1"
+    with pytest.raises(pairrun.RunError, match="symbol producer evidence"):
+        pairrun._validate_phase_metrics(stale_producer, "phase")
+    for required_key in ("symbol_coverage", "symbol_unsupported_details"):
+        missing = json.loads(json.dumps(current))
+        del missing[required_key]
+        with pytest.raises(pairrun.RunError, match="must hold exactly"):
+            pairrun._validate_phase_metrics(missing, "phase")
+    forged_grammars = json.loads(json.dumps(current))
+    forged_grammars["symbol_grammars"] = "tree-sitter@0.25;forged@9.9"
+    with pytest.raises(pairrun.RunError, match="symbol producer evidence"):
+        pairrun._validate_phase_metrics(forged_grammars, "phase")
     incomplete = json.loads(json.dumps(current))
     incomplete["symbol_unsupported_files"] = 1
     incomplete["symbol_unsupported_details"] = [{

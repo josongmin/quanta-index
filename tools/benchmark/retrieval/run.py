@@ -96,6 +96,11 @@ SEMBLE_PROFILES = (
     "lexical-only",
     "semantic-only",
 )
+QUANTA_SYMBOL_PRODUCER_IDENTITY = "source-bound-symbols-v2"
+QUANTA_SYMBOL_GRAMMARS = (
+    "tree-sitter@0.25;rust@0.24;go@0.25;javascript@0.25;"
+    "python@0.25;typescript@0.23"
+)
 
 
 def _validate_semble_profile(value: object, where: str) -> dict:
@@ -4294,14 +4299,12 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
                 "symbol_count",
                 "symbol_producer_identity",
                 "symbol_grammars",
+                "symbol_coverage",
                 "symbol_unsupported_files",
+                "symbol_unsupported_details",
                 "symbol_only_scopes",
             }
         )
-        if "symbol_coverage" in payload:
-            metric_keys.add("symbol_coverage")
-        if "symbol_unsupported_details" in payload:
-            metric_keys.add("symbol_unsupported_details")
     if protocol_mode:
         metric_keys.update({"query_protocol", "warm_latencies_ms", "cold_latencies_ms"})
     metrics = _exact_keys(
@@ -4396,9 +4399,8 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
         if (
             type(metrics["symbol_count"]) is not int
             or metrics["symbol_count"] < 0
-            or metrics["symbol_producer_identity"] != "source-bound-symbols-v1"
-            or not isinstance(metrics["symbol_grammars"], str)
-            or not metrics["symbol_grammars"]
+            or metrics["symbol_producer_identity"] != QUANTA_SYMBOL_PRODUCER_IDENTITY
+            or metrics["symbol_grammars"] != QUANTA_SYMBOL_GRAMMARS
         ):
             raise RunError(f"{where} has invalid symbol producer evidence")
         for key in ("symbol_unsupported_files", "symbol_only_scopes"):
@@ -4431,44 +4433,43 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
             raise RunError(f"{where} unsupported symbol paths are duplicate or reordered")
         if metrics["symbol_unsupported_files"] != 0:
             raise RunError(f"{where} has incomplete symbol coverage")
-        if "symbol_coverage" in metrics:
-            coverage = metrics["symbol_coverage"]
-            if not isinstance(coverage, list) or len(coverage) != metrics["file_count"]:
-                raise RunError(f"{where} symbol coverage does not enumerate every file")
-            language_by_extension = {
-                "rs": "rust", "go": "go", "py": "python",
-                "js": "javascript", "mjs": "javascript", "cjs": "javascript", "jsx": "javascript",
-                "ts": "typescript", "mts": "typescript", "cts": "typescript", "tsx": "typescript_tsx",
-            }
-            covered_paths = []
-            definition_sum = 0
-            for index, raw in enumerate(coverage):
-                row = _exact_keys(
-                    raw, {"path", "source_sha256", "language", "definition_count"},
-                    f"{where}.symbol_coverage[{index}]",
-                )
-                path = row["path"]
-                if (
-                    not isinstance(path, str)
-                    or not path
-                    or path.startswith("/")
-                    or "\\" in path
-                    or "\x00" in path
-                    or any(part in ("", ".", "..") for part in path.split("/"))
-                    or "." not in path
-                ):
-                    raise RunError(f"{where} symbol coverage path is invalid")
-                expected_language = language_by_extension.get(path.rsplit(".", 1)[-1])
-                if expected_language is None or row["language"] != expected_language:
-                    raise RunError(f"{where} symbol coverage grammar mismatch: {path}")
-                if not _is_hex(row["source_sha256"], 64):
-                    raise RunError(f"{where} symbol coverage source hash is invalid: {path}")
-                if type(row["definition_count"]) is not int or row["definition_count"] < 0:
-                    raise RunError(f"{where} symbol coverage definition count is invalid: {path}")
-                covered_paths.append(path)
-                definition_sum += row["definition_count"]
-            if covered_paths != sorted(set(covered_paths)) or definition_sum != metrics["symbol_count"]:
-                raise RunError(f"{where} symbol coverage is duplicate, reordered, or incomplete")
+        coverage = metrics["symbol_coverage"]
+        if not isinstance(coverage, list) or len(coverage) != metrics["file_count"]:
+            raise RunError(f"{where} symbol coverage does not enumerate every file")
+        language_by_extension = {
+            "rs": "rust", "go": "go", "py": "python",
+            "js": "javascript", "mjs": "javascript", "cjs": "javascript", "jsx": "javascript",
+            "ts": "typescript", "mts": "typescript", "cts": "typescript", "tsx": "typescript_tsx",
+        }
+        covered_paths = []
+        definition_sum = 0
+        for index, raw in enumerate(coverage):
+            row = _exact_keys(
+                raw, {"path", "source_sha256", "language", "definition_count"},
+                f"{where}.symbol_coverage[{index}]",
+            )
+            path = row["path"]
+            if (
+                not isinstance(path, str)
+                or not path
+                or path.startswith("/")
+                or "\\" in path
+                or "\x00" in path
+                or any(part in ("", ".", "..") for part in path.split("/"))
+                or "." not in path
+            ):
+                raise RunError(f"{where} symbol coverage path is invalid")
+            expected_language = language_by_extension.get(path.rsplit(".", 1)[-1])
+            if expected_language is None or row["language"] != expected_language:
+                raise RunError(f"{where} symbol coverage grammar mismatch: {path}")
+            if not _is_hex(row["source_sha256"], 64):
+                raise RunError(f"{where} symbol coverage source hash is invalid: {path}")
+            if type(row["definition_count"]) is not int or row["definition_count"] < 0:
+                raise RunError(f"{where} symbol coverage definition count is invalid: {path}")
+            covered_paths.append(path)
+            definition_sum += row["definition_count"]
+        if covered_paths != sorted(set(covered_paths)) or definition_sum != metrics["symbol_count"]:
+            raise RunError(f"{where} symbol coverage is duplicate, reordered, or incomplete")
     expected_layer = (
         "runner_monotonic_wall_v1" if system == "quanta" else "worker_monotonic_wall_v1"
     )

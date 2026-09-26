@@ -1041,7 +1041,7 @@ def _validate_run(
                 require(span_protocol == 1, f"span evidence lacks record protocol: {key}")
                 accounting = candidate["span_accounting"]
                 expected_producer = (
-                    "source-bound-symbols-v1"
+                    "source-bound-symbols-v2"
                     if accounting["unit_kind"] == "symbol"
                     else capture["chunk_strategy"]
                 )

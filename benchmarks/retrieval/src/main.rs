@@ -43,6 +43,7 @@ use quanta_index_retrieval_bench::sdk::{
 };
 use quanta_index_retrieval_bench::symbols::extract_corpus_symbols;
 use quanta_index_retrieval_bench::{BenchError, BenchResult, sha256_hex};
+use quanta_index_search_plane::QueryStageObservationPolicy;
 
 const KNOWN_ROUTES: [&str; 4] = ["lexical", "semantic", "hybrid", "symbol"];
 
@@ -555,6 +556,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             "access-block-log",
             "metrics-out",
             "diagnostics-out",
+            "query-stage-observation",
             "out",
             "io-timeout-secs",
             "ready-timeout-secs",
@@ -706,9 +708,6 @@ fn run_capture(args: &Args) -> BenchResult<()> {
     let symbol_extraction = extract_corpus_symbols(&by_path)?;
     let symbol_coverage = by_path
         .iter()
-        .filter(|(path, _)| {
-            quanta_index_retrieval_bench::symbols::SymbolLanguage::from_path(path).is_some()
-        })
         .map(|(path, file)| {
             let language = quanta_index_retrieval_bench::symbols::SymbolLanguage::from_path(path)
                 .ok_or_else(|| {
@@ -727,17 +726,6 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             }))
         })
         .collect::<BenchResult<Vec<_>>>()?;
-    let symbol_unsupported_details = symbol_extraction
-        .unsupported_files
-        .iter()
-        .map(|file| {
-            serde_json::json!({
-                "path": file.path,
-                "file_sha256": file.file_sha256,
-                "reason": file.reason,
-            })
-        })
-        .collect::<Vec<_>>();
     let (batch, assembly) =
         assemble_batch(&identity, &selection.chunks, &symbol_extraction.symbols)?;
     let published_units = PublishedUnitRegistry::from_chunks_and_symbols(
@@ -752,6 +740,10 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         verify_searchd_digest(&searchd_bin, &required(args, "searchd-expected-sha256")?)?;
     let profile = EmbedderProfile::resolve(args.flags.get("embedder").map(String::as_str))?;
     let model_dir = args.flags.get("model-dir").map(PathBuf::from);
+    let query_stage_observation = QueryStageObservationPolicy::parse(
+        args.flags.get("query-stage-observation").map_or("enabled", String::as_str),
+    )
+    .map_err(|message| BenchError::Config(message.to_string()))?;
     if model_dir.as_ref().is_some_and(|path| !path.is_dir()) {
         return Err(BenchError::Config(
             "--model-dir must name an existing directory".to_string(),
@@ -783,6 +775,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         state_root: &state_root,
         searchd_binary: Some(searchd_bin.as_path()),
         embedder: profile.selector,
+        query_stage_observation,
         model_dir: model_dir.as_deref(),
         repo_id: &identity.repo_id,
         revision_id: &identity.revision_id,
@@ -1086,7 +1079,8 @@ fn run_capture(args: &Args) -> BenchResult<()> {
     let record_digest = sha256_hex(format!("{rendered_record}\n").as_bytes());
     let diagnostics = if diagnostics_out.is_some() {
         let mut value =
-            diagnostic_value(&record_digest, &record, &pack, &routes, &outcomes, top_k)?;
+            diagnostic_value(&record_digest, &record, &pack, &routes, &outcomes, top_k,
+                query_stage_observation)?;
         let detail = serde_json::json!({
             "clock": "runner_monotonic_wall_v1",
             "daemon_boot_and_readiness": boot_elapsed.as_secs_f64() * 1000.0,
@@ -1125,8 +1119,8 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         "symbol_producer_identity": quanta_index_retrieval_bench::symbols::SYMBOL_PRODUCER_IDENTITY,
         "symbol_grammars": quanta_index_retrieval_bench::symbols::SYMBOL_PRODUCER_GRAMMARS,
         "symbol_coverage": symbol_coverage,
-        "symbol_unsupported_files": symbol_extraction.unsupported_files.len(),
-        "symbol_unsupported_details": symbol_unsupported_details,
+        "symbol_unsupported_files": 0,
+        "symbol_unsupported_details": [],
         "symbol_only_scopes": assembly.symbol_only_scopes.len(),
         "query_schedule": pack.tasks.iter().map(|task| task.task_id.as_str()).collect::<Vec<_>>(),
         "warmup_passes": query_protocol.as_ref().map_or(0, |value| value.warmup_schedules.len()),
