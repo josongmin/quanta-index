@@ -531,6 +531,9 @@ mod tests {
         clippy::panic_in_result_fn,
         reason = "Result-returning control tests use assertions as test-failure reporting"
     )]
+    use std::collections::BTreeSet;
+    use std::os::unix::fs::{PermissionsExt as _, chown};
+    use std::os::unix::net::UnixStream;
     use std::sync::{Arc, Mutex, RwLock};
 
     use super::{
@@ -832,6 +835,120 @@ mod tests {
                 sequence_exhausted: false,
             })
         }
+    }
+
+    struct ObserverPeerSource(quanta_index_ipc::PeerCredentials);
+
+    impl quanta_index_ipc::PeerCredentialsSource for ObserverPeerSource {
+        fn peer_credentials(
+            &self,
+            _stream: &UnixStream,
+        ) -> std::io::Result<quanta_index_ipc::PeerCredentials> {
+            Ok(self.0)
+        }
+    }
+
+    struct AuthorizedControl(Arc<SearchPlaneControlDispatcher>);
+
+    impl
+        quanta_index_ipc::IpcDispatcher<SearchPlaneControlIpcRequest, SearchPlaneControlIpcResponse>
+        for AuthorizedControl
+    {
+        fn dispatch(
+            &self,
+            context: &quanta_index_ipc::DispatchContextV1,
+            request: SearchPlaneControlIpcRequest,
+            budget: &RequestBudgetV1,
+        ) -> SearchPlaneControlIpcResponse {
+            self.0.dispatch_authorized(context, request, budget)
+        }
+    }
+
+    #[test]
+    fn shared_socket_observer_gets_typed_denial_before_event_ring_read() -> TestResult {
+        let owner_uid = rustix::process::geteuid().as_raw();
+        let owner_gid = rustix::process::getegid().as_raw();
+        let observer_uid = if owner_uid == u32::MAX {
+            owner_uid - 1
+        } else {
+            owner_uid + 1
+        };
+        let directory = tempfile::Builder::new()
+            .prefix("qi-control-events-")
+            .tempdir_in("/tmp")?;
+        chown(directory.path(), None, Some(owner_gid))?;
+        std::fs::set_permissions(
+            directory.path(),
+            std::fs::Permissions::from_mode(quanta_index_ipc::GROUP_DIRECTORY_MODE),
+        )?;
+        let socket = directory.path().join("control.sock");
+        let access = quanta_index_ipc::SocketAccessPolicy::Shared(
+            quanta_index_ipc::SharedSocketAccess::new(Some(owner_gid), BTreeSet::new()),
+        );
+        let counters = Arc::new(
+            quanta_index_ipc::IpcServerCounters::for_plane_with_instance(
+                "control",
+                std::num::NonZeroU128::new(41).expect("fixture process instance"),
+            ),
+        );
+        let server = Arc::new(quanta_index_ipc::UdsServer::bind_with_peer_source(
+            &socket,
+            quanta_index_ipc::ServerAdmissionPolicy::DEFAULT,
+            access.clone(),
+            &access,
+            counters,
+            Arc::new(ObserverPeerSource(quanta_index_ipc::PeerCredentials {
+                uid: observer_uid,
+                gid: owner_gid,
+                pid: None,
+            })),
+        )?);
+
+        let catalog_directory = tempfile::tempdir()?;
+        let catalog = Arc::new(ActivationCatalog::open(catalog_directory.path())?);
+        let (mut parts, _snapshots) = control_parts(catalog, Arc::new(RwLock::new(Ledger::new())));
+        let port = Arc::new(CountingRequestEvents(AtomicUsize::new(0), false));
+        parts.request_events = Some(port.clone());
+        let adapter = Arc::new(AuthorizedControl(Arc::new(
+            SearchPlaneControlDispatcher::new(parts),
+        )));
+        let runner = Arc::clone(&server);
+        let join = std::thread::spawn(move || {
+            runner.run::<
+                quanta_index_contract::SearchPlaneControlIpcRequestEnvelope,
+                SearchPlaneControlIpcRequest,
+                quanta_index_contract::SearchPlaneControlIpcResponseEnvelope,
+                SearchPlaneControlIpcResponse,
+                AuthorizedControl,
+            >(&adapter, quanta_index_ipc::IpcPlane::Control, std::time::Duration::from_millis(1))
+        });
+        let outcome = (|| -> TestResult {
+            let response: quanta_index_contract::SearchPlaneControlIpcResponseEnvelope =
+                quanta_index_ipc::send_request(
+                    &socket,
+                    &quanta_index_contract::SearchPlaneControlIpcRequestEnvelope {
+                        request_id: 22,
+                        payload: SearchPlaneControlIpcRequest::ProcessRequestEventsV1(
+                            quanta_index_contract::ProcessRequestEventsRequestV1 {
+                                plane: quanta_index_contract::ProcessRequestEventPlaneV1::Query,
+                                limit: 1,
+                            },
+                        ),
+                    },
+                    quanta_index_ipc::ClientIoPolicy::default(),
+                )?;
+            assert_eq!(response.request_id, 22);
+            assert_eq!(
+                error_code(response.payload),
+                quanta_index_contract::SearchPlaneErrorCodeV2::ControlAuthorizationDenied
+            );
+            assert_eq!(port.0.load(Ordering::Relaxed), 0);
+            Ok(())
+        })();
+        server.shutdown_handle().trigger();
+        let served = join.join().expect("control server thread")?;
+        let _terminated = served;
+        outcome
     }
 
     #[test]

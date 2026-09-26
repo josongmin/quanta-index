@@ -16,13 +16,17 @@ daemon-process test used explicit lexical and semantic wire request IDs and
 observed the same IDs across queue admission, backend start/outcome/return,
 provider ticket start/return (semantic), and response completion on the real
 sockets. Runtime projection unit tests covered ring wrap/drop and process
-instance restart. The `quanta-index-ipc --tests --no-run` compilation caught
+instance restart. A real shared UDS with scripted peer credentials confirmed
+that an admitted non-owner receives a typed Admin denial and invokes the
+ring-read port zero times; actual different-UID kernel credential behavior is
+outside this local test. The `quanta-index-ipc --tests --no-run` compilation caught
 one forgotten exhaustive test-stub request arm; `6a56488f` closed it and the
 same compile rail passed. The 5-second fuzz smoke was interrupted after over
 five minutes of cold compilation of its first target; treat it as `NOT_RUN`,
-not a pass. Remaining DoD: socket-level observer zero-disclosure, supervised
-child and maintenance loss, final-source frozen qualification, and Linux
-release-daemon evidence. Do not mark P09 closed from this paragraph.
+not a pass. Remaining DoD: supervised child and maintenance loss,
+independent different-UID kernel/socket qualification where available,
+final-source frozen qualification, and Linux release-daemon evidence. Do not
+mark P09 closed from this paragraph.
 
 2026-09-24 adversarial plan correction: the current exhaustive dispatcher
 capability enum is only `Observe`/`Admin`; `Admin` is restricted to the owner
