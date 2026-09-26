@@ -1,7 +1,7 @@
 //! Parser compatibility regressions for CS-PROD-01.
 //!
-//! The valid fixtures contain exactly one named definition: the handwritten
-//! sentinel. Calls and namespace re-exports must not invent symbol definitions.
+//! Handwritten sentinels and inventories define the expected source facts.
+//! Calls and namespace re-exports must not invent symbol definitions.
 //! These tests deliberately require a clean parse, never recovered-tree output.
 
 #![expect(
@@ -277,12 +277,14 @@ fn named_expressions_keep_their_names_without_naming_anonymous_bindings() {
 
 #[test]
 fn typescript_callable_declarations_keep_owners_and_overload_spans() {
-    let source = "interface Reader { read(): string; }\nabstract class Base { abstract read(): string; }\ndeclare function load(): string;\nfunction pick(x: string): string;\nfunction pick(x: number): number;\nfunction pick(x: any): any { return x; }\nclass Impl { read(x: string): string; read(x: any): any { return x; } }\n";
+    let source = "type Alias = { read(): string };\ninterface Reader { read(): string; }\nabstract class Base { abstract read(): string; }\ndeclare function load(): string;\nfunction pick(x: string): string;\nfunction pick(x: number): number;\nfunction pick(x: any): any { return x; }\nclass Impl { read(x: string): string; read(x: any): any { return x; } }\n";
     for path in ["decl.ts", "decl.tsx"] {
         assert_definition_inventory(
             path,
             source,
             &[
+                ("Alias", "type_alias", "type Alias = { read(): string };"),
+                ("Alias.read", "method", "read(): string"),
                 (
                     "Reader",
                     "interface",

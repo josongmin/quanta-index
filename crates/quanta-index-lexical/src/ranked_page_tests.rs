@@ -617,6 +617,136 @@ fn l3_terminal_cancellation_precedes_harvest_and_merge_resources() -> TestResult
     Ok(())
 }
 
+struct CancelBeforeMerge<C> {
+    inner: C,
+    cancel: quanta_index_core::CancelHandleV1,
+}
+
+impl<C: Collector> Collector for CancelBeforeMerge<C> {
+    type Fruit = C::Fruit;
+    type Child = C::Child;
+
+    fn for_segment(
+        &self,
+        segment: tantivy::SegmentOrdinal,
+        reader: &SegmentReader,
+    ) -> tantivy::Result<Self::Child> {
+        self.inner.for_segment(segment, reader)
+    }
+
+    fn requires_scoring(&self) -> bool {
+        self.inner.requires_scoring()
+    }
+
+    fn collect_segment(
+        &self,
+        weight: &dyn Weight,
+        segment: tantivy::SegmentOrdinal,
+        reader: &SegmentReader,
+    ) -> tantivy::Result<<Self::Child as tantivy::collector::SegmentCollector>::Fruit> {
+        self.inner.collect_segment(weight, segment, reader)
+    }
+
+    fn merge_fruits(
+        &self,
+        fruits: Vec<<Self::Child as tantivy::collector::SegmentCollector>::Fruit>,
+    ) -> tantivy::Result<Self::Fruit> {
+        self.cancel.cancel();
+        self.inner.merge_fruits(fruits)
+    }
+}
+
+#[test]
+fn l3_merge_cancellation_precedes_resource_admission() -> TestResult {
+    let index = index_with(&[&["a.rs"]])?;
+    let searcher = index.reader()?.searcher();
+    for grouped in [false, true] {
+        let expected_work = if grouped { 3 } else { 2 };
+        for work in [expected_work, 100] {
+            let request = RequestBudgetV1::unbounded();
+            let query = MeasuredQuery::default();
+            let resources = LexicalCollectionBudget::new(work, 1_000_000)?;
+            let ledger =
+                CollectionBudget::new(LexicalExecutionBudgetV1::new(10)?, resources.clone());
+            let result = if grouped {
+                budgeted_collection(
+                    &searcher,
+                    &query,
+                    &CancelBeforeMerge {
+                        inner: GroupedPageCollector::new(
+                            ProjectionGroup::Path,
+                            1.0,
+                            ledger.clone(),
+                        ),
+                        cancel: request.cancel_handle(),
+                    },
+                    &request,
+                    ledger,
+                    "test:merge-cancel",
+                )
+                .map(|fruit| fruit.matched)
+            } else {
+                budgeted_collection(
+                    &searcher,
+                    &query,
+                    &CancelBeforeMerge {
+                        inner: RankedPageCollector::new(1, None, 1.0, true)
+                            .with_resource_budget(ledger.clone()),
+                        cancel: request.cancel_handle(),
+                    },
+                    &request,
+                    ledger,
+                    "test:merge-cancel",
+                )
+                .map(|fruit| fruit.matched)
+            };
+            assert!(
+                matches!(result, Err(CoreError::Typed { code, .. }) if code == REQUEST_CANCELLED_CODE),
+                "grouped={grouped} work={work}: {result:?}"
+            );
+            assert_eq!(resources.used_work(), expected_work);
+            assert_eq!(resources.resident_bytes(), 0);
+            assert!(resources.failure().is_none());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn l3_collection_cannot_rebind_to_a_different_search_request() -> TestResult {
+    let index = index_with(&[&["a.rs"]])?;
+    let searcher = index.reader()?.searcher();
+    let ledger = collection(10, 1)?;
+    let query = MeasuredQuery::default();
+    let collector = GroupedPageCollector::new(ProjectionGroup::Path, 1.0, ledger.clone());
+    let fruit = budgeted_collection(
+        &searcher,
+        &query,
+        &collector,
+        &RequestBudgetV1::unbounded(),
+        ledger.clone(),
+        "test:first-request",
+    )?;
+    assert_eq!(fruit.matched, 1);
+    drop(fruit);
+    let second = budgeted_collection(
+        &searcher,
+        &query,
+        &collector,
+        &RequestBudgetV1::unbounded(),
+        ledger.clone(),
+        "test:second-request",
+    );
+    assert!(
+        matches!(second, Err(CoreError::InvalidContract(ref message)) if message.contains("one search")),
+        "{second:?}"
+    );
+    assert_eq!(query.prepared.load(Ordering::Relaxed), 1);
+    assert_eq!(query.opened.load(Ordering::Relaxed), 1);
+    assert_eq!(ledger.resources.resident_bytes(), 0);
+    Ok(())
+}
+
 #[test]
 fn l3_failed_admission_never_builds_group_output() -> TestResult {
     let index = index_with(&[&["a", "b"]])?;

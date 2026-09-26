@@ -265,6 +265,7 @@ impl SymbolLanguage {
                     | "class"
                     | "abstract_class_declaration"
                     | "interface_declaration"
+                    | "type_alias_declaration"
                     | "function_declaration"
                     | "generator_function_declaration"
                     | "function_expression"
@@ -417,8 +418,7 @@ const TYPESCRIPT_QUERY: &str = r"
 (class_declaration name: (type_identifier) @name) @def
 (abstract_class_declaration name: (type_identifier) @name) @def
 (method_definition name: [(property_identifier) (private_property_identifier)] @name) @def
-(interface_declaration body: (interface_body (method_signature name: (property_identifier) @name) @def))
-(class_body (method_signature name: [(property_identifier) (private_property_identifier)] @name) @def)
+(method_signature name: [(property_identifier) (private_property_identifier)] @name) @def
 (abstract_method_signature name: (property_identifier) @name) @def
 (interface_declaration name: (type_identifier) @name) @def
 (type_alias_declaration name: (type_identifier) @name) @def

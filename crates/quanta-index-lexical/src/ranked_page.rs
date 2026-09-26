@@ -443,6 +443,9 @@ impl RankedPageSegment {
         for latest in self.heap {
             rows.push(latest.0)?;
         }
+        if let Some(collection) = &self.collection {
+            collection.checkpoint()?;
+        }
         rows.sort_by(|left, right| left.key.order(&right.key))?;
         Ok(RankedPageFruit {
             rows,
@@ -505,6 +508,9 @@ impl Collector for RankedPageCollector {
                 TantivyError::InvalidArgument("ranked merge size overflow".to_string())
             })
         })?;
+        if let Some(collection) = &self.collection {
+            collection.checkpoint()?;
+        }
         let mut rows = RankedRows::with_capacity(
             capacity,
             self.collection
@@ -523,6 +529,9 @@ impl Collector for RankedPageCollector {
             for row in fruit.rows {
                 rows.push(row)?;
             }
+        }
+        if let Some(collection) = &self.collection {
+            collection.checkpoint()?;
         }
         rows.sort_by(|left, right| left.key.order(&right.key))?;
         rows.truncate(self.limit);
@@ -771,6 +780,7 @@ impl Collector for GroupedPageCollector {
         if let Some(failed) = segment_fruits.iter().position(Result::is_err) {
             return segment_fruits.swap_remove(failed);
         }
+        self.collection.checkpoint()?;
         let mut map_memory = CollectionMemory::new(self.collection.resources.clone());
         let mut groups: BTreeMap<(String, String), RankedRow> = BTreeMap::new();
         let mut matched = 0_u64;
@@ -814,11 +824,13 @@ impl Collector for GroupedPageCollector {
                 }
             }
         }
+        self.collection.checkpoint()?;
         let mut representatives =
             RankedRows::with_capacity(groups.len(), Some(self.collection.resources.clone()))?;
         for row in groups.into_values() {
             representatives.push(row)?;
         }
+        self.collection.checkpoint()?;
         representatives.sort_by(|left, right| left.key.order(&right.key))?;
         Ok(GroupedPageFruit {
             representatives,

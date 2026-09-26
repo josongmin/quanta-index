@@ -2120,6 +2120,7 @@ def _native_tail(args, argv, repo_root, profile, manifest, artifact_profile):
         if result:
             return result
         try:
+            capture_phase("post_commit_source")
             require_frozen_source(repo_root, initial_head)
         except RuntimeError as exc:
             capture_error(exc)

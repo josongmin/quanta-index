@@ -354,6 +354,11 @@ def test_domain_replay_failure_cannot_replace_profile(tmp_path):
         == prior
     )
     assert store.collect([]) == ["r2", "r3"]
+    failure = json.loads((tmp_path / "failures/capture2.json").read_text())
+    assert failure["phase"] == "domain_replay"
+    assert failure["observations"]["run_id"] == "r3"
+    assert failure["commit_state"] == "not_started"
+    assert failure["error"]["message"] == "independent domain replay failed"
 
 
 @pytest.mark.parametrize(

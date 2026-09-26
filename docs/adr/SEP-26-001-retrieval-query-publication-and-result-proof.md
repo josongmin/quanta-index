@@ -43,7 +43,8 @@ anchor or word boundary must not be rejected by the indexed grammar.
 Symbol result endpoints reject text projections with `INVALID_REQUEST` before
 acquiring a search view. Bounded `count:N` limits rows, not the match universe:
 producer count evidence and continuation survive both the count cap and response
-clipping. A valid language contradiction carries logical-empty proof and no
+clipping. A continuation page counts the remaining matches after its cursor
+boundary. A valid language contradiction carries logical-empty proof and no
 executed search lane. Changed cursor context returns `CURSOR_CONTEXT_MISMATCH`.
 
 ### Publication authority

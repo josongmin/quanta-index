@@ -16,8 +16,8 @@
 //! because their public pruning callback does not guarantee early termination.
 //! This sacrifices Boolean `TermUnion` block skipping; performance is unqualified.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use quanta_index_core::{
     CoreError, LexicalCollectionBudget, LexicalExecutionBudgetV1, LexicalMemoryReservation,
@@ -45,6 +45,9 @@ pub(crate) struct CollectionBudget {
     admitted: Arc<AtomicUsize>,
     exceeded: Arc<AtomicBool>,
     aborted: Arc<AtomicBool>,
+    // The stored probe never owns a collection, avoiding a reference cycle.
+    // Its interruption state is shared with the native walk's outer probe.
+    request_probe: Arc<OnceLock<BudgetProbe>>,
 }
 
 impl CollectionBudget {
@@ -58,7 +61,18 @@ impl CollectionBudget {
             admitted: Arc::new(AtomicUsize::new(0)),
             exceeded: Arc::new(AtomicBool::new(false)),
             aborted: Arc::new(AtomicBool::new(false)),
+            request_probe: Arc::new(OnceLock::new()),
         }
+    }
+
+    fn bind_request(&self, budget: &RequestBudgetV1) -> Result<BudgetProbe, CoreError> {
+        let probe = BudgetProbe::new(budget);
+        self.request_probe.set(probe.clone()).map_err(|_| {
+            CoreError::InvalidContract(
+                "lexical: a collection budget belongs to exactly one search".into(),
+            )
+        })?;
+        Ok(probe)
     }
 
     pub(crate) fn admit(&self) -> bool {
@@ -83,6 +97,7 @@ impl CollectionBudget {
         self.exceeded.load(Ordering::Acquire)
             || self.aborted.load(Ordering::Acquire)
             || self.resources.failure().is_some()
+            || self.request_probe.get().is_some_and(BudgetProbe::observe)
     }
 
     /// Stop walking after a collector integrity error; preserve that error in
@@ -96,15 +111,36 @@ impl CollectionBudget {
             .load(Ordering::Acquire)
             .then(|| self.policy.exceeded(surface))
             .or_else(|| self.resources.failure())
+            .or_else(|| {
+                self.request_probe
+                    .get()
+                    .and_then(|probe| probe.interruption_error(surface))
+            })
+    }
+
+    /// Observe the shared request before harvest/merge work or allocation.
+    /// An earlier integrity/resource stop remains authoritative.
+    pub(crate) fn checkpoint(&self) -> tantivy::Result<()> {
+        if !self.stopped() {
+            return Ok(());
+        }
+        Err(tantivy::TantivyError::InvalidArgument(
+            self.error("lexical:collection").map_or_else(
+                || "lexical collection was aborted".to_string(),
+                |error| error.to_string(),
+            ),
+        ))
     }
 
     pub(crate) fn charge_work(&self, units: u64) -> tantivy::Result<()> {
+        self.checkpoint()?;
         self.resources
             .charge_work(units)
             .map_err(|error| tantivy::TantivyError::InvalidArgument(error.to_string()))
     }
 
     pub(crate) fn reserve_bytes(&self, bytes: usize) -> tantivy::Result<LexicalMemoryReservation> {
+        self.checkpoint()?;
         let bytes = u64::try_from(bytes).map_err(|error| {
             tantivy::TantivyError::InvalidArgument(format!(
                 "collection byte size overflow: {error}"
@@ -282,7 +318,7 @@ pub(crate) fn budgeted_collection<C: Collector>(
 where
     C::Child: SegmentCollector<Fruit = tantivy::Result<C::Fruit>>,
 {
-    let mut probe = BudgetProbe::new(budget);
+    let mut probe = collection.bind_request(budget)?;
     probe.collection = Some(collection);
     search_with_probe(
         searcher,
@@ -538,6 +574,51 @@ mod tests {
     use super::{BudgetProbe, TICK_INTERVAL, budgeted_search};
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    #[test]
+    fn collection_request_checkpoints_precede_work_and_byte_refusal() -> TestResult {
+        use quanta_index_core::{LexicalCollectionBudget, LexicalExecutionBudgetV1};
+        use std::time::{Duration, Instant};
+
+        let cancelled = RequestBudgetV1::unbounded();
+        cancelled.cancel_handle().cancel();
+        let expired = Instant::now()
+            .checked_sub(Duration::from_secs(1))
+            .ok_or("clock underflow")?;
+        for (request, code) in [
+            (cancelled, REQUEST_CANCELLED_CODE),
+            (
+                RequestBudgetV1::until(expired),
+                REQUEST_DEADLINE_EXCEEDED_CODE,
+            ),
+        ] {
+            let resources = LexicalCollectionBudget::new(1, 1)?;
+            let collection =
+                super::CollectionBudget::new(LexicalExecutionBudgetV1::new(1)?, resources.clone());
+            let binding = Arc::downgrade(&collection.request_probe);
+            let mut probe = collection.bind_request(&request)?;
+            probe.collection = Some(collection.clone());
+            assert!(collection.reserve_bytes(2).is_err());
+            assert!(collection.charge_work(2).is_err());
+            assert!(!collection.admit());
+            assert!(
+                matches!(probe.interruption_error("test:bound-collection"), Some(CoreError::Typed { code: actual, .. }) if actual == code)
+            );
+            assert!(
+                matches!(collection.error("test:bound-collection"), Some(CoreError::Typed { code: actual, .. }) if actual == code)
+            );
+            assert_eq!(resources.used_work(), 0);
+            assert_eq!(resources.peak_bytes(), 0);
+            assert!(resources.failure().is_none());
+            drop(probe);
+            drop(collection);
+            assert!(
+                binding.upgrade().is_none(),
+                "request binding must not form a cycle"
+            );
+        }
+        Ok(())
+    }
 
     /// A small index of `docs` documents in one segment.
     fn index_with(docs: u32) -> Result<Index, Box<dyn std::error::Error>> {

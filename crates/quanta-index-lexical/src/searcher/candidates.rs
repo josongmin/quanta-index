@@ -298,7 +298,8 @@ impl TantivySearcher {
                 doc,
                 &self.fields,
                 &candidate.candidate_id,
-            )?;
+            )
+            .map_err(|error| integrity(&format!("invalid selected text authority id: {error}")))?;
             let authoritative = authority
                 .doc(id)
                 .ok_or_else(|| integrity("selected text authority member missing"))?;

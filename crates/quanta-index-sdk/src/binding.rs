@@ -1469,12 +1469,12 @@ pub(crate) fn bind_ingest_response(
         outcome
             .publication
             .validate_receipt(requested, *sealed, &outcome.receipt)
-            .map_err(|_| {
+            .map_err(|error| {
                 binding_error(
                     route,
                     ResponseBindingAxis::BatchCommitment,
                     "the requested source event and its original publication",
-                    "an inconsistent source publication receipt",
+                    &format!("an inconsistent source publication receipt: {error}"),
                 )
             })?;
     }

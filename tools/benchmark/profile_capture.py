@@ -270,7 +270,7 @@ def publish_capture(
     for run in prepared:
         epoch.step("publication_source", run_id=run["run_id"])
         verify_source()
-        epoch.step("promotion", source=run["source"], inputs=run.get("inputs"), command=run.get("command"))
+        epoch.step("promotion", source=run["source"], inputs=run.get("inputs"), prepared_command=run.get("command"))
         result = promote_native_run(evidence_root=root, **run)
         epoch.step("promoted_load", run_id=result["run_id"])
         record = store.load(result["run_id"])

@@ -1,6 +1,9 @@
 # CS-ENG-01 — Query domain and result contract
 
-Status: **PROPOSED**. Implementation and new regression execution: **NOT_RUN**.
+Status: **IMPLEMENTED** for the repaired L1 query/domain/window boundary.
+Owner regressions and changed real-daemon SDK paths: **VERIFIED** in
+[L1 adversarial RCA evidence](../handoffs/L1_ADVERSARIAL_AUDIT.md).
+Repository qualification and the remaining preventive matrix are not implied.
 Category: engine correctness. Findings: F01; preventive coverage for related plans.
 Baseline and reproduced requests: [evidence](../evidence.md).
 
@@ -162,6 +165,15 @@ matrix cells remain preventive coverage, not alleged failures.
   execution; route observations match instrumented invocation counts.
 - [ ] Source-bound real-daemon SDK receipt covers the changed public path.
 - [ ] Affected ADR/API documentation reflects the accepted behavior.
+
+Current proof coverage: native L1 domain/window matrix, dispatcher routes and
+actual daemon/SDK projection errors, count continuation, cursor mismatch,
+primitive refusal and valid logical emptiness are recorded in the linked audit.
+The SDK process test is explicitly opt-in and executed with `--ignored`; its final
+run executed one test with zero ignored. This follow-up does not claim the entire
+preventive stored-row corruption/property matrix, so the original aggregate DoD
+checklist is not promoted wholesale. Accepted API behavior is documented in
+[SEP-26-001](../../../adr/SEP-26-001-retrieval-query-publication-and-result-proof.md).
 
 ## Dependencies and alternatives
 

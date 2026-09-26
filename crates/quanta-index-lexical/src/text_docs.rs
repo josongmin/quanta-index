@@ -23,19 +23,36 @@ use tantivy::{Index, IndexReader, ReloadPolicy, Term};
 /// which the sealed-manifest format refuses. It is an error here too, so
 /// an unsealed such generation cannot be continued into an authority
 /// that cannot name what it retires.
+/// Multiple values, malformed values and IDs outside the writer's domain are
+/// corrupt routing authority; choosing the first value is not a valid fallback.
 pub(crate) fn stored_text_authority_doc_id(
     doc: &TantivyDocument,
     fields: &SchemaFields,
     candidate_id: &str,
 ) -> Result<u64, CoreError> {
-    doc.get_first(fields.text_authority_doc_id)
-        .and_then(|value| Value::as_u64(&value))
-        .ok_or_else(|| CoreError::Typed {
+    let mut values = doc.get_all(fields.text_authority_doc_id);
+    let value = values.next().ok_or_else(|| CoreError::Typed {
             code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationTextAuthorityFormatUnsupported,
             message: format!(
                 "lexical: text document {candidate_id} stores no text-authority doc id; the generation predates the sharded text authority and must be rebuilt"
             ),
-        })
+        })?;
+    if values.next().is_some() {
+        return Err(CoreError::Storage(format!(
+            "lexical: text document {candidate_id} stores multiple text-authority doc ids"
+        )));
+    }
+    let doc_id = Value::as_u64(value).ok_or_else(|| {
+        CoreError::Storage(format!(
+            "lexical: text document {candidate_id} stores a malformed text-authority doc id"
+        ))
+    })?;
+    if !(1..=crate::text_authority::MAX_DOC_ID).contains(&doc_id) {
+        return Err(CoreError::Storage(format!(
+            "lexical: text document {candidate_id} stores text-authority doc id {doc_id} outside the allocated domain"
+        )));
+    }
+    Ok(doc_id)
 }
 
 /// A text-authority doc id as a restriction member.
@@ -189,4 +206,74 @@ pub(crate) fn collect_text_authority_docs(
     }
     docs.sort_by_key(|doc| doc.doc_id);
     Ok(docs)
+}
+
+#[cfg(test)]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "source-authority regressions assert fixed decoding invariants"
+)]
+mod l4_authority_id_regressions {
+    use super::{SchemaFields, collect_text_authority_docs, stored_text_authority_doc_id};
+    use tantivy::Index;
+    use tantivy::schema::TantivyDocument;
+
+    #[test]
+    fn stored_authority_id_rejects_ambiguity_and_invalid_domain() {
+        let fields = SchemaFields::build();
+        for ids in [vec![1, 2], vec![2, 1], vec![1, 1], vec![0], vec![u64::MAX]] {
+            let mut doc = TantivyDocument::new();
+            for id in &ids {
+                doc.add_u64(fields.text_authority_doc_id, *id);
+            }
+            assert!(
+                stored_text_authority_doc_id(&doc, &fields, "candidate").is_err(),
+                "accepted ambiguous or invalid authority IDs: {ids:?}"
+            );
+        }
+        let mut malformed = TantivyDocument::new();
+        malformed.add_u64(fields.text_authority_doc_id, 1);
+        malformed.add_text(fields.text_authority_doc_id, "not-an-id");
+        assert!(stored_text_authority_doc_id(&malformed, &fields, "candidate").is_err());
+        assert!(
+            stored_text_authority_doc_id(&TantivyDocument::new(), &fields, "candidate").is_err()
+        );
+    }
+
+    #[test]
+    fn stored_authority_id_accepts_single_valid_boundary_values()
+    -> Result<(), quanta_index_core::CoreError> {
+        let fields = SchemaFields::build();
+        for id in [1, u64::from(u32::MAX)] {
+            let mut doc = TantivyDocument::new();
+            doc.add_u64(fields.text_authority_doc_id, id);
+            assert_eq!(
+                stored_text_authority_doc_id(&doc, &fields, "candidate")?,
+                id
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn authority_rebuild_refuses_duplicate_ids_from_stored_index()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fields = SchemaFields::build();
+        let index = Index::create_in_ram(fields.schema.clone());
+        crate::analyzer::register_analyzers(&index);
+        let mut writer = index.writer_with_num_threads(1, 15_000_000)?;
+        let mut doc = TantivyDocument::new();
+        doc.add_text(fields.doc_kind, crate::TEXT_DOC_KIND);
+        doc.add_text(fields.candidate_id, "candidate");
+        doc.add_text(fields.chunk_text, "needle");
+        doc.add_u64(fields.text_authority_doc_id, 1);
+        doc.add_u64(fields.text_authority_doc_id, 2);
+        let _operation = writer.add_document(doc)?;
+        let _commit = writer.commit()?;
+        assert!(
+            collect_text_authority_docs(&index, &fields).is_err(),
+            "stored decoding and authority rebuild silently chose the first ID"
+        );
+        Ok(())
+    }
 }

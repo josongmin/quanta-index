@@ -1364,6 +1364,54 @@ def test_promotion_is_scoped_to_the_profile_families(monkeypatch, tmp_path, prof
     assert {run["family"] for run in runs} == set(selected)
     assert len(runs) == 2
     assert (root / "profiles" / f"{profile_name}.json").is_file()
+
+
+def test_native_capture_keeps_real_failed_producer_logs_and_prior_pointer(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    args = _native_profile_fixture(monkeypatch, tmp_path, "systems")
+    repo, root = args["repo_root"], args["evidence_root"]
+    assert MODULE.promote_profile_runs(**args) == 0
+    pointer = root / "profiles/systems.json"
+    prior = pointer.read_bytes()
+    tools = tmp_path / "fixture-tools"
+    tools.mkdir()
+    just = tools / "just"
+    just.write_text("#!/bin/sh\nprintf native-failure-oracle\nexit 7\n")
+    just.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tools) + os.pathsep + os.environ["PATH"])
+    monkeypatch.setattr(MODULE, "require_declared_baselines", lambda *_: None)
+    monkeypatch.setattr(MODULE, "require_clean_worktree", lambda *_: None)
+    monkeypatch.setattr(MODULE, "resolve_checkout_head", lambda *_: args["initial_head"])
+    monkeypatch.setattr(MODULE, "require_frozen_source", lambda *_: None)
+    raw_receipt = args["receipt"].read_bytes()
+
+    def preflight(_repo, _profile, receipt, _manifest):
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        receipt.write_bytes(raw_receipt)
+        return 0
+
+    monkeypatch.setattr(MODULE, "preflight", preflight)
+    cli = SimpleNamespace(command="run", profile="systems", evidence_root=root,
+                          admit_baseline=False, cold_samples=None)
+    result = MODULE._capture_native_run(
+        repo, root, "systems", args=cli, argv=["run", "systems"],
+        profile={"recipes": ["fixture-producer"]}, manifest=args["manifest"], artifact_profile="systems",
+    )
+    assert result == 2
+    assert pointer.read_bytes() == prior
+    failures = list((root / "failures").glob("*.json"))
+    assert len(failures) == 1
+    failure = json.loads(failures[0].read_text())
+    assert failure["phase"] == "execution"
+    assert "exit 7" in failure["error"]["message"]
+    observed = failure["observations"]["execution"]
+    log_dir = Path(observed["log_dir"])
+    assert log_dir.is_relative_to(Path(failure["work_root"]))
+    assert (log_dir / "stdout").read_bytes() == b"native-failure-oracle"
+    terminal = json.loads((log_dir / "execution.json").read_text())
+    assert terminal["command"]["exit_code"] == 7
+    assert observed["record"]["sha256"] == "sha256:" + hashlib.sha256((log_dir / "execution.json").read_bytes()).hexdigest()
     assert MODULE.RunStore(root).collect([]) == []
     for run in runs:
         replay = subprocess.run(
