@@ -160,12 +160,7 @@ impl HistoryTextIndexParts {
         epoch: AuxEpochV1,
     ) -> Result<Option<HistoryTextDiscardOutcomeV1>, CoreError> {
         match self.handles.retire(generation, epoch)? {
-            // The history-text registry defers rather than fences: an
-            // open in flight answers `StillReferenced`, so `OpenFenced`
-            // cannot arise here and reads as "nothing resident".
-            SnapshotRetireOutcome::NotResident
-            | SnapshotRetireOutcome::Released
-            | SnapshotRetireOutcome::OpenFenced => {
+            SnapshotRetireOutcome::NotResident | SnapshotRetireOutcome::Released => {
                 Ok(Some(self.port.discard_epoch(generation, epoch)?))
             }
             SnapshotRetireOutcome::StillReferenced { .. } => Ok(None),
@@ -316,7 +311,9 @@ impl HistoryTextHandles {
                 epoch,
                 flight,
             } => {
-                let opened = open(&generation, epoch).map(Arc::<dyn HistoryTextSearcher>::from);
+                let (opened, opener_panic) = crate::single_flight::catch_open(|| {
+                    open(&generation, epoch).map(Arc::<dyn HistoryTextSearcher>::from)
+                });
                 // Settle the flight even if the registry lock is poisoned:
                 // a waiter must never be left blocked on an outcome that
                 // will not arrive.
@@ -339,7 +336,11 @@ impl HistoryTextHandles {
                     }
                 });
                 let outcome = recorded.and(opened);
-                flight.settle(outcome.clone())?;
+                let settled = flight.settle(outcome.clone());
+                if let Some(payload) = opener_panic {
+                    std::panic::resume_unwind(payload);
+                }
+                settled?;
                 outcome
             }
         }
@@ -522,6 +523,37 @@ mod tests {
             | HistoryTextClaim::Open { .. }
             | HistoryTextClaim::Await(_) => Err("the landed handle is resident".into()),
         }
+    }
+
+    #[test]
+    fn panicked_epoch_opener_releases_the_slot_for_a_later_claim() -> TestResult {
+        let index = index_with(&[1])?;
+        let handles = HistoryTextHandles::default();
+        let budget = RequestBudgetV1::for_duration(std::time::Duration::from_millis(50));
+        let first = handles.claim(&generation(), EPOCH)?;
+        let waiting = handles.claim(&generation(), EPOCH)?;
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _opened = handles.land(first, &budget, |_generation, _epoch| {
+                panic!("injected history epoch open panic");
+            });
+        }));
+        if panicked.is_ok() {
+            return Err("the injected history opener panic must propagate".into());
+        }
+        if !matches!(
+            handles.land(waiting, &budget, never_opened),
+            Err(CoreError::Storage(message)) if message.contains("opener panicked")
+        ) {
+            return Err("the panicked opener did not settle its existing waiter".into());
+        }
+        let next = handles.claim(&generation(), EPOCH)?;
+        if !matches!(next, HistoryTextClaim::Open { .. }) {
+            return Err("a panicked history open left its slot reserved".into());
+        }
+        let _opened = handles.land(next, &budget, |generation, epoch| {
+            index.open_epoch(generation, epoch)
+        })?;
+        Ok(())
     }
 
     /// An epoch retired while a claim's open is in flight is not

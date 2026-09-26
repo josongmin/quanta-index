@@ -7,6 +7,8 @@
 //! request budget, so a wait on someone else's cold open ends with the
 //! reader's interruption while the open lands for whoever still waits.
 
+use std::any::Any;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
@@ -33,6 +35,24 @@ pub(crate) enum AwaitFlightFailure {
     Interrupted(CoreError),
 }
 
+/// Capture an opener panic until its owner releases the reserved key.
+///
+/// The owner settles every waiter and resumes unwinding after settlement,
+/// so supervision still observes the panic rather than a fabricated success.
+pub(crate) fn catch_open<T>(
+    open: impl FnOnce() -> Result<T, CoreError>,
+) -> (Result<T, CoreError>, Option<Box<dyn Any + Send>>) {
+    match catch_unwind(AssertUnwindSafe(open)) {
+        Ok(outcome) => (outcome, None),
+        Err(payload) => (
+            Err(CoreError::Storage(
+                "single-flight opener panicked".to_string(),
+            )),
+            Some(payload),
+        ),
+    }
+}
+
 impl<H: ?Sized> Flight<H> {
     pub(crate) fn new() -> Self {
         Self {
@@ -50,31 +70,30 @@ impl<H: ?Sized> Flight<H> {
 
     /// Deliver the opener's outcome to every waiter.
     pub(crate) fn settle(&self, outcome: Result<Arc<H>, CoreError>) -> Result<(), CoreError> {
-        *self.lock_outcome()? = Some(outcome);
+        let mut held = match self.outcome.lock() {
+            Ok(held) => held,
+            Err(poisoned) => {
+                let _held = poisoned.into_inner();
+                self.ready.notify_all();
+                return Err(CoreError::Storage(
+                    "single-flight outcome poisoned during settlement".to_string(),
+                ));
+            }
+        };
+        *held = Some(outcome);
         self.ready.notify_all();
+        drop(held);
         Ok(())
     }
 
     /// Mark the flight's key retired while the open runs.
-    pub(crate) fn fence(&self) {
-        self.fenced.store(true, Ordering::Release);
+    /// True only for the first retirement of this flight.
+    pub(crate) fn fence(&self) -> bool {
+        !self.fenced.swap(true, Ordering::AcqRel)
     }
 
     pub(crate) fn is_fenced(&self) -> bool {
         self.fenced.load(Ordering::Acquire)
-    }
-
-    /// Block until the flight settles, with no budget: for a retirement,
-    /// whose wait is bounded by the one open already running.
-    pub(crate) fn wait_settled(&self) -> Result<(), CoreError> {
-        let mut outcome = self.lock_outcome()?;
-        while outcome.is_none() {
-            outcome = self.ready.wait(outcome).map_err(|err| {
-                CoreError::Storage(format!("single-flight outcome poisoned: {err}"))
-            })?;
-        }
-        drop(outcome);
-        Ok(())
     }
 
     /// Wake one waiter parked in [`Flight::await_outcome`]: the budget's
@@ -85,9 +104,14 @@ impl<H: ?Sized> Flight<H> {
     /// either the waiter still holds the lock (and the wake lands after it
     /// sleeps) or it already sleeps (and the wake lands at once).
     fn wake_waiter(flight: &Arc<Self>) {
-        if let Ok(_outcome) = flight.outcome.lock() {
-            flight.ready.notify_all();
-        }
+        // Poison is a flight failure for the waiter, but it must not suppress
+        // the cancellation wake. Recover the guard only to preserve the
+        // lock-before-notify ordering; the waiter still observes poisoning.
+        let _outcome = match flight.outcome.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        flight.ready.notify_all();
     }
 
     /// Wait for the flight under `budget`: the condvar wakes the waiter
@@ -133,6 +157,7 @@ impl<H: ?Sized> Flight<H> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::mpsc;
     use std::sync::{Arc, Barrier};
     use std::time::Duration;
 
@@ -310,5 +335,45 @@ mod tests {
             Err(AwaitFlightFailure::Flight(_)) => {}
             other => panic!("a poisoned flight errors, got {}", describe(&other)),
         }
+    }
+
+    #[test]
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the waiter must signal readiness while holding the outcome lock before entering the condvar wait"
+    )]
+    fn cancellation_wake_is_not_lost_after_outcome_poisoning() {
+        let flight = Arc::new(Flight::<Dummy>::new());
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let waiter = {
+            let flight = Arc::clone(&flight);
+            std::thread::spawn(move || {
+                let guard = flight.lock_outcome().expect("waiter holds outcome");
+                ready_tx.send(()).expect("signal waiter ready");
+                let waited = flight.ready.wait_timeout(guard, Duration::from_secs(5));
+                done_tx
+                    .send(waited.is_err())
+                    .expect("report poisoned wait outcome");
+            })
+        };
+        ready_rx.recv().expect("waiter is ready");
+        let poisoned = {
+            let flight = Arc::clone(&flight);
+            std::thread::spawn(move || {
+                let _held = flight.lock_outcome().expect("poisoner holds outcome");
+                panic!("poison the outcome mutex after waiter parked");
+            })
+            .join()
+        };
+        assert!(poisoned.is_err(), "poisoning thread must panic");
+        Flight::wake_waiter(&flight);
+        let prompt = done_rx.recv_timeout(Duration::from_millis(500));
+        if prompt.is_err() {
+            // Release the fixture waiter before reporting the missed wake.
+            flight.ready.notify_all();
+        }
+        waiter.join().expect("waiter thread");
+        assert!(matches!(prompt, Ok(true)), "poisoned wake was lost");
     }
 }

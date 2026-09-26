@@ -25,17 +25,14 @@
 //!   resident-bytes estimate; eviction is least-recently-used and runs until
 //!   both limits hold. A handle larger than the whole budget is served but
 //!   not retained — it must not evict everything else to fit.
-//! - **Pins survive eviction.** Handles are `Arc`s. Evicting or retiring
-//!   an entry drops the registry's reference only; a query mid-flight keeps
-//!   its handle alive and the native files it maps. Physical deletion of a
-//!   generation's bytes (GC) must therefore consult [`SnapshotRegistry::retire`],
-//!   which reports whether anything still references the handle.
+//! - **Pins survive eviction.** Handles are `Arc`s. Weak tracking remains
+//!   after eviction or oversize refusal, so retirement sees live handles
+//!   without retaining their bytes. GC must consult [`SnapshotRegistry::retire`]
+//!   before deleting a generation.
 //! - **Retirement fences flights.** A generation retired while an open for
 //!   it is in flight is not admitted when that open lands: `retire` marks
-//!   the flight, waits for it to settle, and the landing handle is dropped
-//!   with the opener and its waiters refused `UNKNOWN_GENERATION`. GC never
-//!   deletes under an opener, and an opener never serves a reaped
-//!   generation.
+//!   the flight and defers physical deletion without blocking. The landing
+//!   handle is dropped and the opener and waiters see `UNKNOWN_GENERATION`.
 //!
 //! A resident handle is never invalidated by ingest: a sealed generation is
 //! immutable (every publish that names one is refused `GENERATION_IMMUTABLE`
@@ -47,7 +44,7 @@
 //! hit, not a second full open.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Instant;
 
 use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId};
@@ -201,11 +198,8 @@ pub enum SnapshotRetireOutcome {
     NotResident,
     /// The registry held the last reference; the handle is now dropped.
     Released,
-    /// An open was in flight; it was fenced, has landed, and its handle was
-    /// refused and dropped. Nothing is resident and nothing holds it.
-    OpenFenced,
-    /// The registry dropped its reference but other holders remain; their
-    /// count is reported so the caller can wait or refuse to delete.
+    /// The registry dropped its reference but live holders or an opening
+    /// flight remain; their count is reported so deletion can be deferred.
     StillReferenced { holders: usize },
 }
 
@@ -218,11 +212,32 @@ struct Entry<H: ?Sized> {
 struct RegistryState<H: ?Sized> {
     resident: BTreeMap<SnapshotKey, Entry<H>>,
     in_flight: BTreeMap<SnapshotKey, Arc<Flight<H>>>,
+    // Weak references cover handles that outlive eviction or were too large
+    // to cache. Retirement must account for them before deleting disk bytes.
+    tracked: BTreeMap<SnapshotKey, Vec<Weak<H>>>,
+    tracks_since_sweep: u8,
     tick: u64,
     stats: SnapshotRegistryStats,
 }
 
 impl<H: ?Sized> RegistryState<H> {
+    fn track(&mut self, key: &SnapshotKey, handle: &Arc<H>) {
+        let weak = Arc::downgrade(handle);
+        let handles = self.tracked.entry(key.clone()).or_default();
+        handles.retain(|prior| prior.strong_count() > 0);
+        if !handles.iter().any(|prior| prior.ptr_eq(&weak)) {
+            handles.push(weak);
+        }
+        self.tracks_since_sweep = self.tracks_since_sweep.saturating_add(1);
+        if self.tracks_since_sweep >= 64 {
+            self.tracked.retain(|_, handles| {
+                handles.retain(|prior| prior.strong_count() > 0);
+                !handles.is_empty()
+            });
+            self.tracks_since_sweep = 0;
+        }
+    }
+
     fn touch(&mut self, key: &SnapshotKey) -> Option<Arc<H>> {
         self.tick = self.tick.saturating_add(1);
         let tick = self.tick;
@@ -264,6 +279,7 @@ impl<H: ?Sized> RegistryState<H> {
         key: SnapshotKey,
         opened: &OpenedSnapshot<H>,
     ) -> SnapshotPromoteOutcome {
+        self.track(&key, &opened.handle);
         if opened.resident_bytes > policy.max_resident_bytes {
             self.stats.oversize_uncached = self.stats.oversize_uncached.saturating_add(1);
             return SnapshotPromoteOutcome::Oversize;
@@ -305,6 +321,31 @@ impl<H: ?Sized> RegistryState<H> {
         self.stats.retirements = self.stats.retirements.saturating_add(1);
         Some(removed.handle)
     }
+
+    fn external_holders(&mut self, key: &SnapshotKey, removed: Option<&Arc<H>>) -> usize {
+        let Some(handles) = self.tracked.get_mut(key) else {
+            return 0;
+        };
+        let mut holders = 0usize;
+        handles.retain(|weak| {
+            let Some(handle) = weak.upgrade() else {
+                return false;
+            };
+            let registry_reference =
+                usize::from(removed.is_some_and(|resident| Arc::ptr_eq(resident, &handle)));
+            // This upgrade and the removed registry reference are not
+            // readers; every other strong reference prevents deletion.
+            holders = holders.saturating_add(
+                Arc::strong_count(&handle)
+                    .saturating_sub(1usize.saturating_add(registry_reference)),
+            );
+            true
+        });
+        if handles.is_empty() {
+            let _empty = self.tracked.remove(key);
+        }
+        holders
+    }
 }
 
 /// Registry of opened sealed generations for one track.
@@ -321,6 +362,8 @@ impl<H: ?Sized + Send + Sync + 'static> SnapshotRegistry<H> {
             state: Mutex::new(RegistryState {
                 resident: BTreeMap::new(),
                 in_flight: BTreeMap::new(),
+                tracked: BTreeMap::new(),
+                tracks_since_sweep: 0,
                 tick: 0,
                 stats: SnapshotRegistryStats {
                     hits: 0,
@@ -399,7 +442,7 @@ impl<H: ?Sized + Send + Sync + 'static> SnapshotRegistry<H> {
         };
 
         let started = Instant::now();
-        let opened = open();
+        let (opened, opener_panic) = crate::single_flight::catch_open(open);
         let elapsed = started.elapsed().as_nanos();
 
         // Settle the flight even if the registry lock is poisoned: a waiter
@@ -423,7 +466,11 @@ impl<H: ?Sized + Send + Sync + 'static> SnapshotRegistry<H> {
             Err(poisoned) => Err(poisoned),
         };
 
-        flight.settle(result.clone())?;
+        let settled = flight.settle(result.clone());
+        if let Some(payload) = opener_panic {
+            std::panic::resume_unwind(payload);
+        }
+        settled?;
         result.map(|handle| SnapshotAcquired {
             handle,
             outcome: SnapshotAcquireOutcome::Miss {
@@ -457,48 +504,30 @@ impl<H: ?Sized + Send + Sync + 'static> SnapshotRegistry<H> {
     /// Drop the registry's reference to `key`, fence any open in flight for
     /// it, and report whether anything else still holds the handle.
     ///
-    /// A fenced flight is waited for: the wait is bounded by the one open
-    /// already running, and when it lands its handle is refused and dropped
-    /// rather than admitted, so a generation being retired is never served
-    /// from an open that started before the retirement. Callers that intend
-    /// to delete the generation's bytes must not proceed on
-    /// `StillReferenced`.
+    /// A fenced flight defers deletion without waiting for its opener. When
+    /// it lands its handle is refused and dropped rather than admitted.
+    /// Live handles remain visible even after eviction or oversize refusal.
+    /// Callers intending to delete bytes must not proceed on `StillReferenced`.
     pub fn retire(&self, key: &SnapshotKey) -> Result<SnapshotRetireOutcome, CoreError> {
-        let (removed, fenced) = self.remove_and_fence(key)?;
-        if let Some(flight) = &fenced {
-            flight.wait_settled()?;
-        }
-        let holders = removed.map(|handle| {
-            // Our own `handle` binding is one of the counted references.
-            Arc::strong_count(&handle).saturating_sub(1)
-        });
-        Ok(match (holders, fenced.is_some()) {
-            (Some(holders), _) if holders > 0 => SnapshotRetireOutcome::StillReferenced { holders },
-            (Some(_), _) => SnapshotRetireOutcome::Released,
-            (None, true) => SnapshotRetireOutcome::OpenFenced,
-            (None, false) => SnapshotRetireOutcome::NotResident,
-        })
-    }
-
-    /// Drop the resident entry for `key` and mark any flight for it fenced,
-    /// under one lock acquisition.
-    #[expect(
-        clippy::type_complexity,
-        reason = "the pair is consumed by `retire` alone; a named struct would outlive its one use"
-    )]
-    fn remove_and_fence(
-        &self,
-        key: &SnapshotKey,
-    ) -> Result<(Option<Arc<H>>, Option<Arc<Flight<H>>>), CoreError> {
         let mut state = self.lock()?;
         let removed = state.remove(key);
-        let fenced = state.in_flight.get(key).map(Arc::clone);
+        let fenced = state.in_flight.get(key).cloned();
         if let Some(flight) = &fenced {
-            flight.fence();
-            state.stats.fenced_in_flight = state.stats.fenced_in_flight.saturating_add(1);
+            if flight.fence() {
+                state.stats.fenced_in_flight = state.stats.fenced_in_flight.saturating_add(1);
+            }
         }
+        let holders = state
+            .external_holders(key, removed.as_ref())
+            .saturating_add(usize::from(fenced.is_some()));
         drop(state);
-        Ok((removed, fenced))
+        Ok(if holders > 0 {
+            SnapshotRetireOutcome::StillReferenced { holders }
+        } else if removed.is_some() {
+            SnapshotRetireOutcome::Released
+        } else {
+            SnapshotRetireOutcome::NotResident
+        })
     }
 
     pub fn stats(&self) -> Result<SnapshotRegistryStats, CoreError> {
@@ -576,6 +605,7 @@ impl MetricSourcePort for SnapshotRegistries {
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::mpsc;
     use std::sync::{Arc, Barrier};
     use std::thread;
     use std::time::{Duration, Instant};
@@ -855,11 +885,10 @@ mod tests {
         Ok(())
     }
 
-    /// Retiring a key whose open is in flight fences the flight: GC waits
-    /// for the open to land, the landing handle is refused typed and never
-    /// admitted, and the opener sees `UNKNOWN_GENERATION`.
+    /// Retiring an opening key defers deletion without waiting for a stuck
+    /// opener; the eventual landing is refused `UNKNOWN_GENERATION`.
     #[test]
-    fn retire_fences_an_open_in_flight_and_waits_for_it() -> TestResult {
+    fn retire_fences_an_open_in_flight_without_waiting_for_it() -> TestResult {
         let registry = Arc::new(SnapshotRegistry::new(policy(4, 1_000)));
         let entered = Arc::new(Barrier::new(2));
         let release = Arc::new(Barrier::new(2));
@@ -879,12 +908,16 @@ mod tests {
             })
         };
         let _arrived = entered.wait();
+        let (retired_tx, retired_rx) = mpsc::channel();
         let retirer = {
             let registry = Arc::clone(&registry);
-            thread::spawn(move || registry.retire(&key(9)))
+            thread::spawn(move || {
+                let outcome = registry.retire(&key(9));
+                let _sent = retired_tx.send(outcome);
+            })
         };
-        // `retire` fences the flight, then blocks until it lands; the
-        // opener is held at `release` until the fence is observable.
+        // The opener remains held at `release`; retirement must finish
+        // without waiting for that potentially non-returning callback.
         if !wait_until(Duration::from_secs(5), || {
             registry
                 .stats()
@@ -892,10 +925,21 @@ mod tests {
         }) {
             return Err("retire did not fence the open in flight".into());
         }
+        let promptly_retired = retired_rx.recv_timeout(Duration::from_millis(500));
+        let repeated = if promptly_retired.is_ok() {
+            Some(registry.retire(&key(9))?)
+        } else {
+            None
+        };
         let _released = release.wait();
-        let retire_outcome = retirer.join().map_err(|_panic| "retirer panicked")??;
+        retirer.join().map_err(|_panic| "retirer panicked")?;
+        let retire_outcome = promptly_retired
+            .map_err(|_timeout| "retire waited for the opener instead of deferring deletion")??;
+        if repeated != Some(SnapshotRetireOutcome::StillReferenced { holders: 1 }) {
+            return Err("a second retire did not defer the same pending flight".into());
+        }
         let opener_outcome = opener.join().map_err(|_panic| "opener panicked")?;
-        if retire_outcome != SnapshotRetireOutcome::OpenFenced {
+        if retire_outcome != (SnapshotRetireOutcome::StillReferenced { holders: 1 }) {
             return Err(format!("retire must report the fenced flight: {retire_outcome:?}").into());
         }
         match opener_outcome {
@@ -908,6 +952,9 @@ mod tests {
         if stats.entries != 0 || stats.fenced_in_flight != 1 || opens.load(Ordering::SeqCst) != 1 {
             return Err(format!("a fenced flight must admit nothing: {stats:?}").into());
         }
+        if registry.retire(&key(9))? != SnapshotRetireOutcome::NotResident {
+            return Err("settled fenced flight did not clear its deferred retirement".into());
+        }
         // Nothing is resident and nothing is fenced any more: the next
         // acquire opens afresh.
         let reopened = get(&registry, &key(9), || {
@@ -916,6 +963,34 @@ mod tests {
         })?;
         if reopened.key != key(9) || opens.load(Ordering::SeqCst) != 2 {
             return Err("the key must open afresh after the fence lifted".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "the cold-open callback must panic to exercise flight cleanup during unwinding"
+    )]
+    fn panicked_opener_releases_the_flight_for_a_later_acquire() -> TestResult {
+        let registry = SnapshotRegistry::new(policy(4, 1_000));
+        let key = key(10);
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _opened = get(&registry, &key, || panic!("injected cold-open panic"));
+        }));
+        if panicked.is_ok() {
+            return Err("the injected cold-open panic must propagate".into());
+        }
+        if registry.retire(&key)? != SnapshotRetireOutcome::NotResident {
+            return Err("a panicked open must not leave a flight for retirement to wait on".into());
+        }
+        let acquired = registry.acquire(
+            &key,
+            &RequestBudgetV1::for_duration(Duration::from_millis(50)),
+            || Ok(opened(&key, 1)),
+        )?;
+        if acquired.handle.key != key {
+            return Err("a fresh cold open did not replace the panicked flight".into());
         }
         Ok(())
     }
@@ -972,7 +1047,7 @@ mod tests {
             return Err(format!("entry-limit eviction drifted: {stats:?}").into());
         }
         if registry.retire(&key(2))? != SnapshotRetireOutcome::NotResident {
-            return Err("key 2 should already have been evicted".into());
+            return Err("evicted key without a live handle was not retired".into());
         }
         // Byte limit: a 60-byte entry needs 90 + 60 <= 100 -> evicts until it fits.
         let _big = get(&registry, &key(5), || Ok(opened(&key(5), 60)))?;
@@ -998,6 +1073,57 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn retirement_defers_for_uncached_oversize_handle() -> TestResult {
+        let registry = SnapshotRegistry::new(policy(1, 100));
+        let held = get(&registry, &key(6), || Ok(opened(&key(6), 101)))?;
+        if registry.retire(&key(6))? != (SnapshotRetireOutcome::StillReferenced { holders: 1 }) {
+            return Err("retirement treated a live oversize handle as absent".into());
+        }
+        drop(held);
+        if registry.retire(&key(6))? != SnapshotRetireOutcome::NotResident {
+            return Err("retirement retained an already dropped oversize handle".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn retirement_counts_both_live_incarnations_after_eviction() -> TestResult {
+        let registry = SnapshotRegistry::new(policy(1, 100));
+        let old = get(&registry, &key(6), || Ok(opened(&key(6), 1)))?;
+        let evicting = get(&registry, &key(7), || Ok(opened(&key(7), 1)))?;
+        drop(evicting);
+        let new = get(&registry, &key(6), || Ok(opened(&key(6), 1)))?;
+        if registry.retire(&key(6))? != (SnapshotRetireOutcome::StillReferenced { holders: 2 }) {
+            return Err("retirement missed the evicted incarnation of the same key".into());
+        }
+        drop(old);
+        if registry.retire(&key(6))? != (SnapshotRetireOutcome::StillReferenced { holders: 1 }) {
+            return Err("retirement lost the newer live incarnation".into());
+        }
+        drop(new);
+        if registry.retire(&key(6))? != SnapshotRetireOutcome::NotResident {
+            return Err("retirement retained dead incarnations".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn weak_tracking_does_not_grow_with_historical_misses() -> TestResult {
+        let registry = SnapshotRegistry::new(policy(1, 100));
+        for generation in 1..=128 {
+            let held = get(&registry, &key(generation), || {
+                Ok(opened(&key(generation), 1))
+            })?;
+            drop(held);
+        }
+        let tracked = registry.lock()?.tracked.len();
+        if tracked > 64 {
+            return Err(format!("dead weak tracking grew with all old misses: {tracked}").into());
+        }
+        Ok(())
+    }
+
     /// An evicted or invalidated handle stays usable by whoever holds it,
     /// and `retire` reports those holders instead of pretending the bytes
     /// are free.
@@ -1011,12 +1137,16 @@ mod tests {
             return Err("evicted handle became unusable".into());
         }
         match registry.retire(&key(1))? {
-            SnapshotRetireOutcome::NotResident => {}
+            SnapshotRetireOutcome::StillReferenced { holders: 1 } => {}
             reported @ (SnapshotRetireOutcome::Released
-            | SnapshotRetireOutcome::OpenFenced
+            | SnapshotRetireOutcome::NotResident
             | SnapshotRetireOutcome::StillReferenced { .. }) => {
                 return Err(format!("evicted key reported {reported:?}").into());
             }
+        }
+        drop(held);
+        if registry.retire(&key(1))? != SnapshotRetireOutcome::NotResident {
+            return Err("dropped evicted handle still blocked retirement".into());
         }
         let held_two = get(&registry, &key(2), || {
             Err(CoreError::Storage("must hit".into()))
@@ -1025,7 +1155,6 @@ mod tests {
             SnapshotRetireOutcome::StillReferenced { holders: 2 } => {}
             reported @ (SnapshotRetireOutcome::NotResident
             | SnapshotRetireOutcome::Released
-            | SnapshotRetireOutcome::OpenFenced
             | SnapshotRetireOutcome::StillReferenced { .. }) => {
                 return Err(format!("held key reported {reported:?}").into());
             }
@@ -1037,7 +1166,6 @@ mod tests {
             SnapshotRetireOutcome::StillReferenced { holders: 1 } => {}
             reported @ (SnapshotRetireOutcome::NotResident
             | SnapshotRetireOutcome::Released
-            | SnapshotRetireOutcome::OpenFenced
             | SnapshotRetireOutcome::StillReferenced { .. }) => {
                 return Err(format!("reopened key reported {reported:?}").into());
             }
@@ -1048,7 +1176,6 @@ mod tests {
         match registry.retire(&key(3))? {
             SnapshotRetireOutcome::Released => Ok(()),
             reported @ (SnapshotRetireOutcome::NotResident
-            | SnapshotRetireOutcome::OpenFenced
             | SnapshotRetireOutcome::StillReferenced { .. }) => {
                 Err(format!("unreferenced key reported {reported:?}").into())
             }
