@@ -385,12 +385,12 @@ mod tests {
                     cancel.cancel();
                 })
             };
-            // Every interleaving ends in exactly one terminal per waiter:
-            // the shared handle, the opener's failure, or the interruption.
-            // The match is exhaustive, so a fourth outcome fails to compile.
+            // The settler only publishes success. Cancellation may interrupt
+            // the waiter, but a flight failure is never a valid outcome.
             match waiter.join().expect("waiter thread") {
                 Ok(handle) => assert_eq!(handle.0, 1),
-                Err(AwaitFlightFailure::Flight(_) | AwaitFlightFailure::Interrupted(_)) => {}
+                Err(AwaitFlightFailure::Interrupted(_)) => {}
+                other => panic!("successful settle returned {}", describe(&other)),
             }
             settler.join().expect("settler thread").expect("settle ok");
             canceller.join().expect("canceller thread");

@@ -1,0 +1,77 @@
+name: potion-code-parity
+
+on:
+  schedule:
+    - cron: "41 4 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pinned-model-parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.92.0
+
+      - name: Install Python and uv
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install just
+        uses: taiki-e/install-action@just
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Fetch and verify the pinned model bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          model_dir="$PWD/artifacts/potion-code/model"
+          mkdir -p "$model_dir"
+          base=https://huggingface.co/minishlab/potion-code-16M-v2/resolve/e9d2a44ca6a05ac6685f3b23709ea57eb7352d5b
+          for name in tokenizer.json model.safetensors config.json; do
+            curl --fail --location --retry 3 --silent --show-error "$base/$name" -o "$model_dir/$name"
+          done
+          cd "$model_dir"
+          printf '%s\n' \
+            '107bbdcbad4bff1d299b7a4c3a2fb17c52890688b7dd0e4c9deab79d3c4f3d45  tokenizer.json' \
+            '75cf7a6c2171b230ad19b1e7d8e0b1aee86da5a02af8e7cacedd9921d227623c  model.safetensors' \
+            '148e5691a6fcc553437156859701fba017a1ba5d340b170f17e0f3668fb861a7  config.json' \
+            | sha256sum --check
+
+      - name: Run independent full-vector and query/corpus parity tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rev-parse HEAD > artifacts/potion-code/source-head.txt
+          just proof-potion-code-parity \
+            "$PWD/artifacts/potion-code/model" \
+            "$PWD/artifacts/potion-code/reference.json" \
+            2>&1 | tee artifacts/potion-code/test.log
+          sha256sum \
+            artifacts/potion-code/reference.json \
+            artifacts/potion-code/model/tokenizer.json \
+            artifacts/potion-code/model/model.safetensors \
+            artifacts/potion-code/model/config.json \
+            > artifacts/potion-code/sha256.txt
+
+      - name: Upload parity evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: potion-code-parity-${{ github.sha }}-${{ github.run_id }}
+          path: |
+            artifacts/potion-code/source-head.txt
+            artifacts/potion-code/reference.json
+            artifacts/potion-code/test.log
+            artifacts/potion-code/sha256.txt
+          if-no-files-found: warn

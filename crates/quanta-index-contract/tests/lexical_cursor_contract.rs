@@ -93,11 +93,20 @@ fn round_trip_text(response: &TextQueryResponse) -> Result<TextQueryResponse, Bo
     Ok(ciborium::from_reader(bytes.as_slice())?)
 }
 
-fn refused_text(response: &TextQueryResponse, why: &str) -> TestResult {
+fn refused_text(response: &TextQueryResponse, why: &str, expected_reason: &str) -> TestResult {
     let mut bytes = Vec::new();
     ciborium::into_writer(response, &mut bytes)?;
     ciborium::from_reader::<TextQueryResponse, _>(bytes.as_slice()).map_or_else(
-        |_refused| Ok(()),
+        |refused| {
+            if refused.to_string().contains(expected_reason) {
+                Ok(())
+            } else {
+                Err(format!(
+                    "{why}: expected refusal containing {expected_reason:?}, got {refused}"
+                )
+                .into())
+            }
+        },
         |decoded| Err(format!("{why}: decoded {decoded:?}").into()),
     )
 }
@@ -126,19 +135,35 @@ fn a_continued_page_and_a_final_page_round_trip() -> TestResult {
 fn the_decoder_refuses_every_page_that_would_skip_or_repeat() -> TestResult {
     let mut no_cursor = continued(rows())?;
     no_cursor.next_cursor = None;
-    refused_text(&no_cursor, "more rows without a cursor")?;
+    refused_text(
+        &no_cursor,
+        "more rows without a cursor",
+        "ranked page outcome and next_cursor disagree",
+    )?;
 
     let mut stray_cursor = continued(rows())?;
     stray_cursor.window = QueryResultWindowV2::exact_probe(3);
-    refused_text(&stray_cursor, "a cursor on the last page")?;
+    refused_text(
+        &stray_cursor,
+        "a cursor on the last page",
+        "ranked page outcome and next_cursor disagree",
+    )?;
 
     let mut shuffled = rows();
     shuffled.swap(0, 1);
-    refused_text(&continued(shuffled)?, "rows out of page order")?;
+    refused_text(
+        &continued(shuffled)?,
+        "rows out of page order",
+        "ranked rows are not in page order",
+    )?;
 
     let mut duplicated = rows();
     duplicated.push(row("c", 1.0, "src/b.rs", 1));
-    refused_text(&continued(duplicated)?, "a repeated row")?;
+    refused_text(
+        &continued(duplicated)?,
+        "a repeated row",
+        "ranked rows are not in page order",
+    )?;
 
     let mut owners = continued(rows())?;
     owners.file_owner_rows = Some(vec![FileOwnerProjectionRow {

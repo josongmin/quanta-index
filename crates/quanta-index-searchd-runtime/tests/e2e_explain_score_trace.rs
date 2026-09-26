@@ -87,6 +87,33 @@ fn verify_page_candidate_scores(rt: &mut E2eRuntime) -> TestResult {
     if candidates.len() != 3 {
         return Err(format!("three documents carry the needle: {candidates:?}").into());
     }
+    // The rank/trace equality below is self-referential. This fixed input
+    // ordering is an independent oracle for the one-term BM25 page.
+    let score_for = |path: &str| {
+        candidates
+            .iter()
+            .find(|candidate| candidate.repo_relative_path.as_str() == path)
+            .map(|candidate| candidate.score)
+    };
+    let (Some(dense), Some(twice), Some(sparse)) = (
+        score_for("src/dense.rs"),
+        score_for("src/twice.rs"),
+        score_for("src/sparse.rs"),
+    ) else {
+        return Err(format!("fixture paths missing from page: {candidates:?}").into());
+    };
+    if !(dense.is_finite()
+        && twice.is_finite()
+        && sparse.is_finite()
+        && dense > twice
+        && twice > sparse
+        && sparse > 0.0)
+    {
+        return Err(format!(
+            "BM25 fixture order must be dense > twice > sparse > 0: {dense}, {twice}, {sparse}"
+        )
+        .into());
+    }
     let mut hashes = Vec::new();
     let mut previous_score: Option<f32> = None;
     for candidate in candidates {

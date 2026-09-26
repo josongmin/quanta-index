@@ -1007,25 +1007,20 @@ fn a_repomap_v2_publish_journals_once_and_replays_without_the_store() -> TestRes
     if forged.source_bundle_digest == request.source_bundle_digest {
         return Err("the forged digest fixture must differ".into());
     }
-    match dispatcher.dispatch(
+    let refused = dispatcher.dispatch(
         SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(forged),
         &budget,
+    );
+    if !matches!(
+        &refused,
+        SearchPlaneIngestIpcResponse::Error(error)
+            if error.code == quanta_index_contract::SearchPlaneErrorCodeV2::InvalidRequest
+                && error.message.contains("source bundle digest mismatch")
     ) {
-        SearchPlaneIngestIpcResponse::Error(_) => {}
-        other @ (SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
-        | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
-        | SearchPlaneIngestIpcResponse::RepoCommitRecencyReceipt(_)
-        | SearchPlaneIngestIpcResponse::RepoTopicReceipt(_)
-        | SearchPlaneIngestIpcResponse::FileOwnershipReceipt(_)
-        | SearchPlaneIngestIpcResponse::FileContributorReceipt(_)
-        | SearchPlaneIngestIpcResponse::DirtyReceipt(_)
-        | SearchPlaneIngestIpcResponse::RuntimeCatalogReceipt(_)
-        | SearchPlaneIngestIpcResponse::StructuralReceipt(_)
-        | SearchPlaneIngestIpcResponse::RepoMapTerminalReceiptV2(_)
-        | SearchPlaneIngestIpcResponse::RepoMetaReceipt(_)
-        | SearchPlaneIngestIpcResponse::RepoDescriptionReceipt(_)) => {
-            return Err(format!("a forged bundle digest must be refused, got {other:?}").into());
-        }
+        return Err(format!(
+            "a forged bundle digest must be refused as a mismatch, got {refused:?}"
+        )
+        .into());
     }
     if repomap.calls.load(Ordering::SeqCst) != 1 {
         return Err("a forged digest must not reach the store".into());

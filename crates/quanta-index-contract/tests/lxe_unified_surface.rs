@@ -869,3 +869,123 @@ fn planner_trace_entry_round_trips_typed_stage() -> TestRes {
     }
     Ok(())
 }
+
+fn assert_wire_enum<T>(variant: &T, expected_wire: &str) -> TestRes
+where
+    T: serde::Serialize + serde::de::DeserializeOwned + Eq + std::fmt::Debug,
+{
+    let encoded: String = decode(&encode(variant)?)?;
+    if encoded != expected_wire {
+        return Err(format!(
+            "wire spelling for {variant:?}: expected {expected_wire}, got {encoded}"
+        )
+        .into());
+    }
+    let decoded: T = decode(&encode(&expected_wire)?)?;
+    if &decoded != variant {
+        return Err(format!(
+            "wire meaning for {expected_wire}: expected {variant:?}, got {decoded:?}"
+        )
+        .into());
+    }
+    Ok(())
+}
+
+#[test]
+fn explanation_enum_wire_spellings_are_independent_goldens() -> TestRes {
+    for stage in [
+        PlannerStage::Parse,
+        PlannerStage::Normalize,
+        PlannerStage::Plan,
+        PlannerStage::ExecFanout,
+        PlannerStage::Merge,
+        PlannerStage::Rerank,
+        PlannerStage::Bridge,
+        PlannerStage::Filter,
+        PlannerStage::LeafRegex,
+        PlannerStage::LeafPhrase,
+    ] {
+        let wire = match stage {
+            PlannerStage::Parse => "parse",
+            PlannerStage::Normalize => "normalize",
+            PlannerStage::Plan => "plan",
+            PlannerStage::ExecFanout => "exec.fanout",
+            PlannerStage::Merge => "merge",
+            PlannerStage::Rerank => "rerank",
+            PlannerStage::Bridge => "bridge",
+            PlannerStage::Filter => "filter",
+            PlannerStage::LeafRegex => "leaf.regex",
+            PlannerStage::LeafPhrase => "leaf.phrase",
+        };
+        assert_wire_enum(&stage, wire)?;
+    }
+    for engine in [
+        EngineTouched::Lexical,
+        EngineTouched::Semantic,
+        EngineTouched::Structural,
+        EngineTouched::History,
+        EngineTouched::Bridge,
+    ] {
+        let wire = match engine {
+            EngineTouched::Lexical => "lexical",
+            EngineTouched::Semantic => "semantic",
+            EngineTouched::Structural => "structural",
+            EngineTouched::History => "history",
+            EngineTouched::Bridge => "bridge",
+        };
+        assert_wire_enum(&engine, wire)?;
+    }
+    for reason in [
+        EarlyStopReason::CountReached,
+        EarlyStopReason::NotReady,
+        EarlyStopReason::Unsupported,
+    ] {
+        let wire = match reason {
+            EarlyStopReason::CountReached => "count_reached",
+            EarlyStopReason::NotReady => "not_ready",
+            EarlyStopReason::Unsupported => "unsupported",
+        };
+        assert_wire_enum(&reason, wire)?;
+    }
+    for stage in [
+        QueryStageKindV1::LexicalPrepare,
+        QueryStageKindV1::LexicalReadView,
+        QueryStageKindV1::LexicalSearch,
+        QueryStageKindV1::LexicalProject,
+        QueryStageKindV1::SemanticPrepare,
+        QueryStageKindV1::SemanticReadView,
+        QueryStageKindV1::SemanticLexicalScope,
+        QueryStageKindV1::SemanticEmbedding,
+        QueryStageKindV1::SemanticDenseSearch,
+        QueryStageKindV1::SemanticProject,
+        QueryStageKindV1::HybridPrepare,
+        QueryStageKindV1::HybridReadView,
+        QueryStageKindV1::HybridLexicalSearch,
+        QueryStageKindV1::HybridEmbedding,
+        QueryStageKindV1::HybridDenseFetch,
+        QueryStageKindV1::HybridDenseAdmission,
+        QueryStageKindV1::HybridFusion,
+    ] {
+        let wire = match stage {
+            QueryStageKindV1::LexicalPrepare => "lexical.prepare",
+            QueryStageKindV1::LexicalReadView => "lexical.read_view",
+            QueryStageKindV1::LexicalSearch => "lexical.search",
+            QueryStageKindV1::LexicalProject => "lexical.project",
+            QueryStageKindV1::SemanticPrepare => "semantic.prepare",
+            QueryStageKindV1::SemanticReadView => "semantic.read_view",
+            QueryStageKindV1::SemanticLexicalScope => "semantic.lexical_scope",
+            QueryStageKindV1::SemanticEmbedding => "semantic.embedding",
+            QueryStageKindV1::SemanticDenseSearch => "semantic.dense_search",
+            QueryStageKindV1::SemanticProject => "semantic.project",
+            QueryStageKindV1::HybridPrepare => "hybrid.prepare",
+            QueryStageKindV1::HybridReadView => "hybrid.read_view",
+            QueryStageKindV1::HybridLexicalSearch => "hybrid.lexical_search",
+            QueryStageKindV1::HybridEmbedding => "hybrid.embedding",
+            QueryStageKindV1::HybridDenseFetch => "hybrid.dense_fetch",
+            QueryStageKindV1::HybridDenseAdmission => "hybrid.dense_admission",
+            QueryStageKindV1::HybridFusion => "hybrid.fusion",
+        };
+        assert_wire_enum(&stage, wire)?;
+    }
+    Ok(())
+}

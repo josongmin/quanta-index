@@ -9,6 +9,8 @@ type TestRes = Result<(), Box<dyn std::error::Error>>;
 
 const HISTORICAL_SEARCH_PLANE_IPC_ERROR_V1: &str =
     include_str!("fixtures/search_plane_ipc_error_v1.cbor.hex");
+const RETIRED_CODE_IN_COMPLETE_V2_SHAPE: &str =
+    include_str!("fixtures/search_plane_ipc_error_retired_code_v2_shape.cbor.hex");
 
 fn hex_nibble(byte: u8) -> Option<u8> {
     match byte {
@@ -23,12 +25,12 @@ fn hex_nibble(byte: u8) -> Option<u8> {
     }
 }
 
-fn historical_frame_v1() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+fn frame_from_hex_fixture(fixture: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let mut frame = Vec::new();
     let mut high_nibble = None;
     let mut in_comment = false;
 
-    for byte in HISTORICAL_SEARCH_PLANE_IPC_ERROR_V1.bytes() {
+    for byte in fixture.bytes() {
         if byte == b'#' {
             in_comment = true;
             continue;
@@ -56,13 +58,21 @@ fn historical_frame_v1() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     Ok(frame)
 }
 
+fn historical_frame_v1() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    frame_from_hex_fixture(HISTORICAL_SEARCH_PLANE_IPC_ERROR_V1)
+}
+
 #[test]
 fn historical_v1_bad_request_code_is_rejected_by_the_closed_v2_decoder() -> TestRes {
-    let historical = historical_frame_v1()?;
+    // The legacy fixture also omits the V2-required repair field. Use a
+    // complete V2-shaped frame so only the retired code can cause refusal.
+    let historical = frame_from_hex_fixture(RETIRED_CODE_IN_COMPLETE_V2_SHAPE)?;
     let decoded: Result<SearchPlaneIpcError, IpcError> =
         decode_response(&mut Cursor::new(&historical));
-    if !matches!(decoded, Err(IpcError::Decode(_))) {
-        return Err(format!("retired BAD_REQUEST code was not rejected: {decoded:?}").into());
+    if !matches!(&decoded, Err(IpcError::Decode(message)) if message.contains("BAD_REQUEST")) {
+        return Err(
+            format!("retired BAD_REQUEST code was not rejected for its code: {decoded:?}").into(),
+        );
     }
     Ok(())
 }

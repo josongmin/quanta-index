@@ -214,10 +214,15 @@ mod tests {
         // Identity binding: the fixture must describe exactly the pinned
         // model bytes this crate refuses to load anything else for.
         assert_eq!(fixture["profile"], "model2vec-static-potion-code-16M-v2");
+        assert_eq!(fixture["schema_version"], 1);
         assert_eq!(
-            fixture["policy"]["max_length"],
-            serde_json::Value::Null,
+            fixture["policy"].get("max_length"),
+            Some(&serde_json::Value::Null),
             "reference must encode unbounded, matching the Rust decoder"
+        );
+        assert_eq!(
+            fixture["policy"]["normalization"],
+            "approx-unit-fp16 (rail L2-normalizes both sides)"
         );
         assert_eq!(
             fixture["model"]["safetensors_sha256"], MODEL_SHA256,
@@ -245,6 +250,22 @@ mod tests {
             .iter()
             .map(|value| value.as_str().expect("input string"))
             .collect();
+        let long_input = "a".repeat(5000);
+        assert_eq!(
+            inputs,
+            [
+                "refresh access token",
+                "parse_and_expression",
+                "quanta_index_retrieval_bench::sdk::query_route",
+                "fn main() { println!(\"{}\", x); }",
+                "한글 검색 αβγ 🚀",
+                "",
+                "   ",
+                long_input.as_str(),
+                "refresh access token",
+            ],
+            "parity input inventory drifted"
+        );
         // The pinned reference output is the internally-L2-normalized
         // layer (model2vec 0.9.0), compared against the Rust
         // L2Unit-normalized output below.
@@ -291,6 +312,18 @@ mod tests {
         let unit = normalized
             .embed_batch(&inputs)
             .expect("normalized inference");
+        assert_eq!(unit.len(), inputs.len());
+        for vector in &unit {
+            assert_eq!(vector.len(), POTION_CODE_DIMENSION);
+            assert!(vector.iter().all(|value| value.is_finite()));
+        }
+        let reference_norms = fixture["norms"].as_array().expect("reference norms");
+        assert_eq!(reference_norms.len(), inputs.len());
+        for (vector, reference_norm) in vectors_reference.iter().zip(reference_norms) {
+            let expected = reference_norm.as_f64().expect("reference norm");
+            let actual = vector.iter().map(|value| value * value).sum::<f64>().sqrt();
+            assert!((actual - expected).abs() < 1e-4, "reference norm mismatch");
+        }
         // Audit finding: 0.005 was ~100x the fp16 quantization step for
         // the observed component magnitudes. Empirical floor: the
         // tokenless (empty-pool) vector deviates up to ~1.3e-3 through
@@ -316,7 +349,9 @@ mod tests {
                     .collect()
             })
             .collect();
+        assert_eq!(pairwise_reference.len(), inputs.len());
         for (i, row) in pairwise_reference.iter().enumerate() {
+            assert_eq!(row.len(), inputs.len() - i - 1);
             for (offset, expected) in row.iter().enumerate() {
                 let j = i + offset + 1;
                 let actual: f32 = unit[i].iter().zip(&unit[j]).map(|(a, b)| a * b).sum();
@@ -332,7 +367,9 @@ mod tests {
         let permuted = normalized
             .embed_batch(&reversed)
             .expect("permuted inference");
+        assert_eq!(permuted.len(), inputs.len());
         for (index, vector) in permuted.iter().rev().enumerate() {
+            assert_eq!(vector.len(), POTION_CODE_DIMENSION);
             for (a, e) in vector.iter().zip(&unit[index]) {
                 assert!(
                     (f64::from(*a) - f64::from(*e)).abs() < NORM_TOLERANCE,

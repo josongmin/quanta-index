@@ -1736,7 +1736,7 @@ fn semantic_hybrid_seed_and_symbol_setters_preserve_both_constraint_axes_v1() {
     let quanta_index_contract::SearchPlaneQueryIpcRequest::Semantic(semantic_request) =
         &semantic_request.payload
     else {
-        return;
+        panic!("semantic builder dispatched a non-semantic request");
     };
     assert_eq!(
         semantic_request
@@ -1785,7 +1785,7 @@ fn semantic_hybrid_seed_and_symbol_setters_preserve_both_constraint_axes_v1() {
     let quanta_index_contract::SearchPlaneQueryIpcRequest::HybridSeed(hybrid_request) =
         &hybrid_request.payload
     else {
-        return;
+        panic!("hybrid seed builder dispatched a different request variant");
     };
     assert_eq!(
         hybrid_request
@@ -1825,7 +1825,7 @@ fn semantic_hybrid_seed_and_symbol_setters_preserve_both_constraint_axes_v1() {
     let quanta_index_contract::SearchPlaneQueryIpcRequest::Symbol(symbol_request) =
         &symbol_request.payload
     else {
-        return;
+        panic!("symbol builder dispatched a non-symbol request");
     };
     assert_eq!(
         symbol_request.constraints.repo_relative_path_exact.as_ref(),

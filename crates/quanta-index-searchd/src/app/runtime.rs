@@ -2372,6 +2372,12 @@ mod tests {
         let query_vector = query_embedder
             .embed_query(query_text, &RequestBudgetV1::unbounded())
             .map_err(|err| format!("hash query embed must derive a real vector: {err:?}"))?;
+        if query_vector != *corpus_vector {
+            return Err(
+                "hash query and corpus embedders must derive the same vector for identical text"
+                    .into(),
+            );
+        }
 
         if corpus_vector.len() != SEARCH_OWNED_SEMANTIC_DIMENSION
             || query_vector.len() != SEARCH_OWNED_SEMANTIC_DIMENSION

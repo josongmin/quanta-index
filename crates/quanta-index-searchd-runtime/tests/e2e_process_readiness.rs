@@ -212,9 +212,12 @@ fn binary_daemon_exposes_one_correlated_query_without_payload() -> TestResult {
             &request_id,
             "query response request ID",
         )?;
-        let text = match response.payload {
-            SearchPlaneQueryIpcResponse::Text(text) => text,
-            other => return Err(format!("binary query returned wrong response: {other:?}").into()),
+        let SearchPlaneQueryIpcResponse::Text(text) = response.payload else {
+            return Err(format!(
+                "binary query returned wrong response: {:?}",
+                response.payload
+            )
+            .into());
         };
         if text.results.is_empty() {
             return Err("binary query returned no fixture result".into());
@@ -276,10 +279,13 @@ fn binary_daemon_exposes_one_correlated_query_without_payload() -> TestResult {
             &semantic_id,
             "semantic response request ID",
         )?;
-        match semantic_response.payload {
-            SearchPlaneQueryIpcResponse::Semantic(_) => {}
-            other => return Err(format!("binary semantic query refused: {other:?}").into()),
-        }
+        let SearchPlaneQueryIpcResponse::Semantic(_) = semantic_response.payload else {
+            return Err(format!(
+                "binary semantic query refused: {:?}",
+                semantic_response.payload
+            )
+            .into());
+        };
         let semantic_after = client
             .observability()
             .request_events(ProcessRequestEventPlaneV1::Query, 1024)?;

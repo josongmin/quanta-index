@@ -1847,7 +1847,7 @@ mod tests {
     fn openai_real_semantic_relatedness_synonym_beats_unrelated_v1() {
         let api_key = match std::env::var("OPENAI_API_KEY") {
             Ok(key) if !key.trim().is_empty() => key,
-            _ => return,
+            _ => panic!("OPENAI_API_KEY is required when this ignored test is selected"),
         };
         let provider = OpenAiEmbeddingProvider::with_reqwest(OpenAiProviderConfig::new(
             api_key,

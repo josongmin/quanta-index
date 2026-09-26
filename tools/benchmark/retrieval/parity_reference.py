@@ -23,6 +23,7 @@ import hashlib
 import importlib.metadata
 import json
 import math
+import platform
 from pathlib import Path
 
 SCHEMA_VERSION = 1
@@ -83,6 +84,8 @@ def main() -> int:
     asset_digests = verify_reference_inputs(args.model_dir)
     from model2vec import StaticModel
 
+    installed_version = importlib.metadata.version("model2vec")
+
     model = StaticModel.from_pretrained(str(args.model_dir))
     model_id = getattr(model, "model_name", None) or str(args.model_dir)
 
@@ -108,7 +111,13 @@ def main() -> int:
     payload = {
         "schema_version": SCHEMA_VERSION,
         "profile": REFERENCE_PROFILE,
-        "library": {"model2vec": MODEL2VEC_VERSION},
+        "library": {
+            "model2vec": installed_version,
+            "numpy": importlib.metadata.version("numpy"),
+            "tokenizers": importlib.metadata.version("tokenizers"),
+            "huggingface_hub": importlib.metadata.version("huggingface_hub"),
+        },
+        "python": platform.python_version(),
         "model": {
             "id": model_id,
             "dir_name": args.model_dir.name,

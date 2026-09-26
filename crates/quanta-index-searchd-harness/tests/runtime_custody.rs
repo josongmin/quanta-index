@@ -26,6 +26,7 @@ fn drop_without_stop_still_removes_the_owned_tempdir() -> AnyResult<()> {
     let mut runtime = E2eRuntime::boot()?;
     runtime.start()?;
     let root = runtime.state_root().to_path_buf();
+    ensure!(root.is_dir(), "boot serves its owned tempdir");
     drop(runtime);
     ensure!(!root.exists(), "drop removes the owned tempdir");
     Ok(())

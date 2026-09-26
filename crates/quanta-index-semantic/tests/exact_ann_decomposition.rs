@@ -136,9 +136,11 @@ fn open_generation(
     Ok(adapter.open(&repo()?, &revision()?, generation)?)
 }
 
-/// The exhaustive cosine oracle: ranks `records` (restricted to `allowed`
-/// when given) by true f64 cosine against `query`, nearest first, with the
-/// embedding-id string as the stable tie-break, and keeps the first `k`.
+/// Rank fixture records by exhaustive cosine, independently of the query path.
+///
+/// Restrict to `allowed` when given; rank by true f64 cosine against `query`,
+/// nearest first, with the embedding-id string as the stable tie-break,
+/// and keep the first `k`.
 ///
 /// This is computed independently of lancedb: raw dot products and norms
 /// over the fixture vectors, no query-path code involved.
@@ -272,10 +274,12 @@ fn the_255_256_row_boundary_serves_the_exhaustive_oracle_through_both_lanes() ->
 
     for query_seed in 0..QUERIES {
         let query = unit_vector(QUERY_SEED_BASE.saturating_add(query_seed));
-        let expected_exact = exhaustive_cosine_oracle(&query, &exact_records, None, TOP_K as usize);
-        let expected_ann = exhaustive_cosine_oracle(&query, &ann_records, None, TOP_K as usize);
-        assert_eq!(expected_exact.len(), TOP_K as usize);
-        assert_eq!(expected_ann.len(), TOP_K as usize);
+        let expected_exact =
+            exhaustive_cosine_oracle(&query, &exact_records, None, usize::try_from(TOP_K)?);
+        let expected_ann =
+            exhaustive_cosine_oracle(&query, &ann_records, None, usize::try_from(TOP_K)?);
+        assert_eq!(expected_exact.len(), usize::try_from(TOP_K)?);
+        assert_eq!(expected_ann.len(), usize::try_from(TOP_K)?);
 
         let exact_hits = exact_searcher.search(&query, TOP_K, &RequestBudgetV1::unbounded())?;
         assert_eq!(
@@ -324,7 +328,7 @@ fn the_255_256_row_boundary_serves_the_exhaustive_oracle_through_both_lanes() ->
 /// width exceeds the row count and the walk reaches every row: a page at
 /// `top_k = 10_000` over 256 rows comes back all 256 rows long, and the
 /// completion rail stays at zero (asserted below via the counters). The
-/// incident shape itself — `top_k = 10_000` over 10_001 rows — is pinned
+/// incident shape itself — `top_k = 10_000` over `10_001` rows — is pinned
 /// separately in `a_page_query_at_the_incident_scale_is_not_short`.
 #[test]
 #[expect(
@@ -421,13 +425,13 @@ fn approximate_top_k_recall_against_the_exhaustive_oracle_is_pinned_at_the_measu
             &query,
             &records,
             None,
-            TOP_K as usize,
+            usize::try_from(TOP_K)?,
         ))
         .into_iter()
         .collect();
         let hits = searcher.search(&query, TOP_K, &RequestBudgetV1::unbounded())?;
         assert_eq!(
-            usize::try_from(hits.len())?,
+            hits.len(),
             usize::try_from(TOP_K)?,
             "query {query_seed}: a full-length pass must come back"
         );
@@ -502,8 +506,12 @@ fn scoped_search_matches_the_exhaustive_oracle_over_the_allowed_subset() -> Test
         let scoped =
             searcher.search_scoped(&query, &allowed, scope_top_k, &RequestBudgetV1::unbounded())?;
         let after = lane_counters(&adapter)?;
-        let expected =
-            exhaustive_cosine_oracle(&query, records, Some(&allowed), scope_top_k as usize);
+        let expected = exhaustive_cosine_oracle(
+            &query,
+            records,
+            Some(&allowed),
+            usize::try_from(scope_top_k)?,
+        );
         assert_eq!(
             hit_ids(&scoped),
             oracle_ids(&expected),
@@ -523,15 +531,12 @@ fn scoped_search_matches_the_exhaustive_oracle_over_the_allowed_subset() -> Test
             after.2, before.2,
             "{label} lane: no exact completion may run"
         );
-        match label {
-            "exact" => {
-                assert_eq!(after.0, before.0.saturating_add(1));
-                assert_eq!(after.1, before.1);
-            }
-            _ => {
-                assert_eq!(after.0, before.0);
-                assert_eq!(after.1, before.1.saturating_add(1));
-            }
+        if label == "exact" {
+            assert_eq!(after.0, before.0.saturating_add(1));
+            assert_eq!(after.1, before.1);
+        } else {
+            assert_eq!(after.0, before.0);
+            assert_eq!(after.1, before.1.saturating_add(1));
         }
     }
 
@@ -547,22 +552,22 @@ fn scoped_search_matches_the_exhaustive_oracle_over_the_allowed_subset() -> Test
     Ok(())
 }
 
-/// Ticket item (b), the incident shape: a page at `top_k = 10_000` over
-/// 10_001 rows — the QI-BB-025 short-pass scenario the exact-completion
-/// rail was built for (a pass then came back 9_695 rows long and was read
-/// as the whole scope).
+/// Pin the QI-BB-025 incident shape: `top_k = 10_000` over `10_001` rows.
+///
+/// The exact-completion rail was built for a short pass that came back
+/// `9_695` rows long and was read as the whole scope.
 ///
 /// RBR-07 finding: under the sealed effort the short pass no longer
-/// reproduces. `ef = max(64, 4 * top_k)` = 80_000 exceeds the 10_001-row
+/// reproduces. `ef = max(64, 4 * top_k)` = `80_000` exceeds the `10_001`-row
 /// graph, the walk reaches every row, and the pass comes back the full
-/// 10_000 rows — the completion counter stays at zero and the exact lane
+/// `10_000` rows — the completion counter stays at zero and the exact lane
 /// is never consulted (counters asserted). The served page is set-equal
-/// to the exhaustive oracle's top-10_000 (all 10_000 ids overlap) but is
+/// to the exhaustive oracle's top-10_000 (all `10_000` ids overlap) but is
 /// *not* ordered exactly like it — the pass's own ordering survives in
 /// the deep tail, which is precisely why the rail exists and why its
 /// non-activation is pinned here rather than assumed.
 ///
-/// This seal trains the graph over 10_001 rows and is the slowest test in
+/// This seal trains the graph over `10_001` rows and is the slowest test in
 /// this file (minutes in the debug lane profile); it is the only scale at
 /// which the incident could reproduce, so it carries its cost.
 #[test]
@@ -605,7 +610,8 @@ fn a_page_query_at_the_incident_scale_is_not_short_under_the_sealed_effort() -> 
     );
 
     // The served page against the exhaustive oracle over all 10_001 rows.
-    let expected = exhaustive_cosine_oracle(&query, &records, None, INCIDENT_TOP_K as usize);
+    let expected =
+        exhaustive_cosine_oracle(&query, &records, None, usize::try_from(INCIDENT_TOP_K)?);
     assert_eq!(expected.len(), usize::try_from(INCIDENT_TOP_K)?);
     let expected_set: BTreeSet<&str> = expected.iter().map(|(id, _)| id.as_str()).collect();
     let served = hit_ids(&page);

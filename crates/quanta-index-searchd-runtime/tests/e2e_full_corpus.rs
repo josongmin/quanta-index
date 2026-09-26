@@ -28,10 +28,11 @@ use quanta_index_contract::{
 };
 use quanta_index_contract::{LqVisibility, SearchExplanation, TextQuerySyntax};
 use quanta_index_corpus_smoke::{
-    CorpusRow, ExpectedShape, ExpectedStructuralBinding, Gate, RowClassification, RuntimeRoute,
-    RuntimeSyntax, load_corpus,
+    Corpus, CorpusRow, ExpectedShape, ExpectedStructuralBinding, Gate, RowClassification,
+    RuntimeRoute, RuntimeSyntax, load_corpus,
 };
 use serde::ser::{Serialize, SerializeStruct, Serializer};
+use sha2::{Digest as _, Sha256};
 use toml::Value;
 
 use crate::e2e_harness::{
@@ -2262,9 +2263,39 @@ fn assess_runtime_row(
     }
 }
 
+// This independent, reviewed literal binds the fixture inventory. Updating
+// the corpus requires an explicit companion change to this oracle.
+const RUNTIME_ROW_COUNT: usize = 242;
+const RUNTIME_ROW_IDS_SHA256: &str =
+    "46bbb4517f77f6954cdf7720e76872f6b082c5a249f60cd091efda3f922477e4";
+
+fn assert_runtime_row_inventory(corpus: &Corpus) -> AnyResult<()> {
+    anyhow::ensure!(
+        corpus.rows.len() == RUNTIME_ROW_COUNT,
+        "runtime corpus row count changed: expected {RUNTIME_ROW_COUNT}, got {}",
+        corpus.rows.len()
+    );
+    let mut ids: Vec<&str> = corpus.rows.iter().map(|row| row.id.as_str()).collect();
+    ids.sort_unstable();
+    let mut input = ids.join("\n");
+    input.push('\n');
+    let digest = format!("{:x}", Sha256::digest(input.as_bytes()));
+    anyhow::ensure!(
+        digest == RUNTIME_ROW_IDS_SHA256,
+        "runtime corpus row IDs changed: expected {RUNTIME_ROW_IDS_SHA256}, got {digest}"
+    );
+    Ok(())
+}
+
+#[test]
+fn runtime_corpus_row_inventory_is_pinned() -> AnyResult<()> {
+    assert_runtime_row_inventory(&load_corpus(&runtime_rows_path())?)
+}
+
 #[test]
 fn full_corpus_runtime_fixture_executes_real_rows_only() -> AnyResult<()> {
     let corpus = load_corpus(&runtime_rows_path())?;
+    assert_runtime_row_inventory(&corpus)?;
     let mut fixtures = BTreeMap::new();
     let mut current_fixture_name: Option<String> = None;
     let mut current_fixture_state: Option<FixtureRuntimeState> = None;

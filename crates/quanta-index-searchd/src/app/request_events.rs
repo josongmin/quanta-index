@@ -262,8 +262,9 @@ mod tests {
             "00000000000000000000000000000029"
         );
         assert_eq!(response.events.len(), 1);
-        assert_eq!(response.events[0].request_id.get(), 7);
-        assert_eq!(response.events[0].route.as_deref(), Some("query.text"));
+        let event = response.events.first().expect("one query event");
+        assert_eq!(event.request_id.get(), 7);
+        assert_eq!(event.route.as_deref(), Some("query.text"));
     }
 
     #[test]
@@ -297,7 +298,10 @@ mod tests {
         wrapped.validate_encoded_size_v1().expect("bounded tail");
         assert_eq!(wrapped.events.len(), 2);
         assert_eq!(wrapped.oldest_retained_sequence, Some(3));
-        assert_eq!(wrapped.events[0].sequence, 1025);
+        assert_eq!(
+            wrapped.events.first().expect("wrapped tail event").sequence,
+            1025
+        );
         assert_eq!(wrapped.next_sequence, 1027);
         assert_eq!(wrapped.dropped_before, 2);
         assert_eq!(wrapped.dropped_after, 2);

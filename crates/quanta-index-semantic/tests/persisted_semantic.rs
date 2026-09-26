@@ -455,9 +455,15 @@ fn constrained_vector_search_matches_exhaustive_oracle_and_top_k_prefix_v1() -> 
             top_k,
             &RequestBudgetV1::unbounded(),
         )?;
+        let expected_len = usize::try_from(top_k)?.min(expected.len());
+        assert_eq!(
+            actual.len(),
+            expected_len,
+            "top_k={top_k} must return every eligible oracle row up to the requested limit"
+        );
         let expected_prefix = expected
-            .get(..actual.len())
-            .ok_or("oracle produced fewer rows than the adapter returned")?;
+            .get(..expected_len)
+            .ok_or("oracle prefix must fit the expected row set")?;
         assert_eq!(
             actual
                 .iter()

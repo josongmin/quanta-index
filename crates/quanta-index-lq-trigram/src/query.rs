@@ -116,16 +116,12 @@ pub fn query_raw_substring<S: TrigramPostingSource + ?Sized>(
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::wildcard_enum_match_arm,
-    reason = "test fixtures assert one happy variant only"
-)]
 mod tests {
     use super::{DocResolver, query_raw_substring};
     use crate::builder::TrigramIndexBuilder;
     use crate::errors::{LimitDimension, TrigramErrorCode};
     use crate::index::TrigramIndex;
-    use crate::types::DocId;
+    use crate::types::{DocId, MAX_TRIGRAMS_PER_QUERY, Trigram, trigrams_of};
     use std::collections::BTreeMap;
 
     fn fatal(msg: &str) -> ! {
@@ -284,26 +280,41 @@ mod tests {
     }
 
     #[test]
-    fn intersect_cap_surfaces_dimension_trigrams() {
-        // Just sanity-check that the trigram-set cap path is hit when
-        // the needle would produce >MAX_TRIGRAMS_PER_QUERY distinct
-        // trigrams. We can't easily build such a needle inline, so we
-        // assert via intersect_trigrams directly in index.rs tests; here
-        // we exercise the wiring via a moderately long random needle and
-        // confirm the OK path is taken.
+    fn repeated_needle_below_distinct_trigram_cap_is_not_refused() {
         let (idx, m) = build_fixture();
-        let needle = vec![b'a'; 4_100]; // > 4096 distinct trigrams? all 'a' → 1 trigram only
-        let _v = match query_raw_substring(&idx, &needle, &m) {
-            Ok(v) => v,
-            Err(e) => match e.code {
-                TrigramErrorCode::PlanLimitExceeded => {
-                    assert_eq!(e.dimension, Some(LimitDimension::Trigrams));
-                    return;
-                }
-                _ => fatal(&format!("{e}")),
-            },
+        let needle = vec![b'a'; 4_100];
+        let result = match query_raw_substring(&idx, &needle, &m) {
+            Ok(result) => result,
+            Err(error) => fatal(&format!(
+                "one distinct trigram must not be refused: {error}"
+            )),
         };
-        // For an all-'a' needle there is exactly 1 distinct trigram, so
-        // the cap is NOT exceeded; the OK path is taken.
+        assert_eq!(result, Vec::<DocId>::new());
+    }
+
+    #[test]
+    fn raw_substring_refuses_more_than_the_distinct_trigram_cap() {
+        let (idx, m) = build_fixture();
+        let mut needle = Vec::new();
+        for value in 0..=MAX_TRIGRAMS_PER_QUERY {
+            let value = match u32::try_from(value) {
+                Ok(value) => value,
+                Err(error) => fatal(&format!("cap must fit u32: {error}")),
+            };
+            let [_, high, middle, low] = value.to_be_bytes();
+            needle.extend_from_slice(&[high, middle, low]);
+        }
+        let mut distinct: Vec<Trigram> = trigrams_of(&needle).collect();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert!(distinct.len() > MAX_TRIGRAMS_PER_QUERY);
+        let error = match query_raw_substring(&idx, &needle, &m) {
+            Err(error) => error,
+            Ok(result) => fatal(&format!(
+                "more than the distinct trigram cap was accepted: {result:?}"
+            )),
+        };
+        assert_eq!(error.code, TrigramErrorCode::PlanLimitExceeded);
+        assert_eq!(error.dimension, Some(LimitDimension::Trigrams));
     }
 }

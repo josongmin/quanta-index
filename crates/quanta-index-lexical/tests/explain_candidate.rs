@@ -169,6 +169,31 @@ fn every_ranked_candidate_explains_to_exactly_its_emitted_score_in_rank_order() 
     if page.candidates.len() != 3 {
         return Err(format!("three documents contain the needle: {:?}", page.candidates).into());
     }
+    // Fixed corpus oracle independent of the emitted rank/trace: both
+    // shorter, higher-frequency documents must beat the long one-hit row.
+    let score_for = |id: &str| {
+        page.candidates
+            .iter()
+            .find(|candidate| candidate.candidate_id == id)
+            .map(|candidate| candidate.score)
+    };
+    let (Some(dense), Some(twice), Some(sparse)) =
+        (score_for("dense"), score_for("twice"), score_for("sparse"))
+    else {
+        return Err(format!("fixture IDs missing from page: {:?}", page.candidates).into());
+    };
+    if !(dense.is_finite()
+        && twice.is_finite()
+        && sparse.is_finite()
+        && dense > twice
+        && twice > sparse
+        && sparse > 0.0)
+    {
+        return Err(format!(
+            "BM25 fixture order must be dense > twice > sparse > 0: {dense}, {twice}, {sparse}"
+        )
+        .into());
+    }
     let mut previous: Option<f32> = None;
     for candidate in &page.candidates {
         let trace = matched(searcher.explain_candidate(

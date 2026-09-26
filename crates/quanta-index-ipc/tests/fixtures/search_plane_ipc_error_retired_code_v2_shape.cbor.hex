@@ -1,0 +1,7 @@
+# Complete V2-shaped SearchPlaneIpcError with only its code retired.
+# CBOR body: {"code":"BAD_REQUEST","message":"bad request","repair":null}
+# Little-endian u32 length 46, then an independently pinned CBOR map.
+2e 00 00 00
+a3 64 63 6f 64 65 6b 42 41 44 5f 52 45 51 55 45 53 54
+67 6d 65 73 73 61 67 65 6b 62 61 64 20 72 65 71 75 65 73 74
+66 72 65 70 61 69 72 f6

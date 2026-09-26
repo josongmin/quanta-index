@@ -48,3 +48,19 @@ quality-closure receipt. The canonical artifact validator refuses hash-dev or
 an incomplete paraphrase set at `relevance/latest`.
 Matching the model alone does not match Semble's chunker, BM25, fusion, reranker,
 or published quality numbers.
+
+The asset-dependent full-vector and query/corpus identity tests are ignored by
+the ordinary Rust suite. Run their explicit owner rail with the pinned assets:
+
+```sh
+just proof-potion-code-parity \
+  "$(./scripts/quanta-index-env.sh)/models/potion-code-16M-v2-e9d2a44" \
+  "$PWD/artifacts/potion-code/reference.json"
+```
+
+This rail generates the Python 3.12 / `model2vec==0.9.0` reference for all nine fixed
+inputs, then runs both ignored Rust tests. The weekly and manually dispatched
+`potion-code-parity` workflow fetches the exact upstream revision, verifies all
+three model file digests, and uploads the reference, command log, and SHA-256
+manifest. A scheduled workflow definition alone is not evidence that a run
+passed for a given source revision.

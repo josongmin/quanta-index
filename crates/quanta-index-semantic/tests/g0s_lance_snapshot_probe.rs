@@ -488,7 +488,8 @@ fn pruned_version_fails_closed_instead_of_serving_a_different_row_set() -> Probe
     runtime()?.block_on(async {
         let table = create_base_table(&dataset).await?;
         let base_version = table.version().await?;
-        let base_row_count = live_row_ids(&table).await?.len();
+        let base_ids = live_row_ids(&table).await?;
+        let base_row_count = base_ids.len();
 
         let _deleted = table.delete(delete_row_predicate(7).as_str()).await?;
         let stats = table
@@ -521,10 +522,9 @@ fn pruned_version_fails_closed_instead_of_serving_a_different_row_set() -> Probe
         // Either the pinned version survived pruning intact, or the checkout
         // failed. Serving a *different* row set under the same version number
         // is the one outcome that would be a silent-correctness violation.
-        if checkout_attempt.is_ok() && post_prune_ids.len() != base_row_count {
+        if checkout_attempt.is_ok() && post_prune_ids != base_ids {
             return Err(format!(
-                "pruned dataset served version {base_version} with {} rows instead of {base_row_count}",
-                post_prune_ids.len()
+                "pruned dataset served version {base_version} with different rows: expected {base_ids:?}, got {post_prune_ids:?}"
             )
             .into());
         }
