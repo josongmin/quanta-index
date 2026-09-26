@@ -12,6 +12,7 @@ import argparse
 import hashlib
 import json
 import math
+import stat
 import statistics
 from pathlib import Path
 
@@ -19,6 +20,17 @@ from tools.benchmark.retrieval.evaluator import canonical, digest
 from tools.benchmark.retrieval.query_plan import execution_profile
 
 PRODUCTS = ("sourcegraph", "opengrok", "cs")
+INPUT_ROLES = (
+    "suite",
+    "query_pack",
+    "pair_report",
+    "pair_lock",
+    "semble_native",
+    "pair_verdict",
+    "sourcegraph_rows",
+    "opengrok_rows",
+    "cs_rows",
+)
 TIMING_LAYERS = {
     "sourcegraph": "loopback_stream_http_request_wall",
     "opengrok": "loopback_rest_http_request_wall",
@@ -46,15 +58,48 @@ def latency_summary(values: list[object], expected_count: int, layer: str) -> di
     }
 
 
-def _read(path: Path) -> dict:
-    value = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(value, dict):
-        raise ValueError(f"expected object: {path}")
+def _bytes(path: Path) -> bytes:
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode):
+        raise ValueError(f"lexical input is not a regular file: {path}")
+    data = path.read_bytes()
+    after = path.lstat()
+
+    def identity(value):
+        return (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+
+    if identity(before) != identity(after):
+        raise ValueError(f"lexical input changed while reading: {path}")
+    return data
+
+
+def _unique_object(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError(f"duplicate JSON key: {key}")
+        value[key] = item
     return value
 
 
+def _json(data: bytes) -> dict:
+    def invalid_constant(value):
+        raise ValueError(f"non-finite JSON constant: {value}")
+
+    value = json.loads(
+        data.decode("utf-8"), object_pairs_hook=_unique_object, parse_constant=invalid_constant
+    )
+    if not isinstance(value, dict):
+        raise ValueError("lexical input must be a JSON object")
+    return value
+
+
+def _read(path: Path) -> dict:
+    return _json(_bytes(path))
+
+
 def _sha(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    return hashlib.sha256(_bytes(path)).hexdigest()
 
 
 def _tasks(suite: dict, pack: dict) -> dict[str, tuple[str, list[str]]]:
@@ -99,7 +144,16 @@ def _tasks(suite: dict, pack: dict) -> dict[str, tuple[str, list[str]]]:
         ):
             raise ValueError("suite and blinded query tasks differ")
         gold = task.get("gold")
-        if not isinstance(gold, list) or not gold:
+        if (
+            not isinstance(gold, list)
+            or not gold
+            or any(
+                not isinstance(label, dict)
+                or not isinstance(label.get("path"), str)
+                or not label["path"]
+                for label in gold
+            )
+        ):
             raise ValueError("this diagnostic requires answerable file labels")
         paths = sorted({label["path"] for label in gold})
         expected[task_id] = task["query"], paths
@@ -107,44 +161,79 @@ def _tasks(suite: dict, pack: dict) -> dict[str, tuple[str, list[str]]]:
 
 
 def product_result(product: str, path: Path, expected: dict[str, tuple[str, list[str]]]) -> dict:
-    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+    if product not in PRODUCTS:
+        raise ValueError(f"unknown lexical product: {product}")
+
+    if not expected or any(
+        not isinstance(gold, list)
+        or not gold
+        or any(not isinstance(value, str) or not value for value in gold)
+        or len(gold) != len(set(gold))
+        for _, gold in expected.values()
+    ):
+        raise ValueError(f"{product}: empty or duplicate golden file inventory")
+    raw = _bytes(path)
+    rows = [_json(line) for line in raw.splitlines() if line]
+    if any(not isinstance(row, dict) for row in rows):
+        raise ValueError(f"{product}: malformed raw observation")
     selected = [row for row in rows if row.get("lane") == "symbol_only"]
     if len(selected) != len(expected):
         raise ValueError(f"{product}: incomplete symbol-only lane")
     seen: set[str] = set()
     hits = 0
     elapsed: list[object] = []
+    per_query = []
     for row in selected:
         task_id = row.get("task_id")
-        if task_id not in expected or task_id in seen:
+        if not isinstance(task_id, str) or task_id not in expected or task_id in seen:
             raise ValueError(f"{product}: missing or duplicate task")
         seen.add(task_id)
         query, gold = expected[task_id]
         if row.get("submitted_query") != query or row.get("gold_paths") != gold:
             raise ValueError(f"{product}: {task_id} query or gold differs")
         if product == "cs":
-            if row.get("exit_code") != 0:
+            if type(row.get("exit_code")) is not int or row["exit_code"] != 0:
                 raise ValueError(f"{product}: {task_id} failed process")
             paths = row.get("paths")
         else:
-            if row.get("http_status") != 200 or row.get("error") is not None:
+            if (
+                type(row.get("http_status")) is not int
+                or row["http_status"] != 200
+                or row.get("error") is not None
+            ):
                 raise ValueError(f"{product}: {task_id} failed request")
             if product == "opengrok" and row.get("field") != "full":
                 raise ValueError(f"{product}: {task_id} used a non-full field")
             paths = row.get("file_paths_top_10")
-        if not isinstance(paths, list) or len(paths) > 10 or len(paths) != len(set(paths)):
+        if (
+            not isinstance(paths, list)
+            or len(paths) > 10
+            or any(not isinstance(value, str) or not value for value in paths)
+            or len(paths) != len(set(paths))
+        ):
             raise ValueError(f"{product}: {task_id} malformed result paths")
         hit = bool(set(paths) & set(gold))
         if row.get("file_hit_at_10") is not hit:
             raise ValueError(f"{product}: {task_id} hit flag differs from paths")
         hits += hit
         elapsed.append(row.get("elapsed_ms"))
+        per_query.append(
+            {
+                "task_id": task_id,
+                "file_hit_at_10": hit,
+                "file_recall_at_10": len(set(paths) & set(gold)) / len(gold),
+                "query_latency_ms": row.get("elapsed_ms"),
+            }
+        )
     return {
         "hits": hits,
         "tasks": len(expected),
-        "file_recall_at_10": hits / len(expected),
+        "file_hit_rate_at_10": hits / len(expected),
+        "file_recall_at_10": math.fsum(row["file_recall_at_10"] for row in per_query)
+        / len(expected),
+        "per_query": sorted(per_query, key=lambda row: row["task_id"]),
         "latency_ms": latency_summary(elapsed, len(expected), TIMING_LAYERS[product]),
-        "raw_sha256": _sha(path),
+        "raw_sha256": hashlib.sha256(raw).hexdigest(),
     }
 
 
@@ -157,17 +246,23 @@ def pair_result(
     suite: dict,
     task_count: int,
 ) -> dict:
-    report = _read(path)
-    lock, native, verdict = _read(lock_path), _read(native_path), _read(verdict_path)
-    if verdict.get("states", {}).get("PAIR_VALID") != "pass":
+    raw = [_bytes(value) for value in (path, lock_path, native_path, verdict_path)]
+    report, lock, native, verdict = [_json(value) for value in raw]
+    states = verdict.get("states")
+    if not isinstance(states, dict) or states.get("PAIR_VALID") != "pass":
         raise ValueError("pair verdict is not valid")
     profiles = lock.get("execution_profiles", {})
-    if profiles.get("quanta") != execution_profile("native") or profiles.get("semble") != {
-        "profile_id": "semble-lexical-only-v1",
-        "mode": "lexical-only",
-        "alpha": None,
-        "rerank": "not_applicable",
-    }:
+    if (
+        not isinstance(profiles, dict)
+        or profiles.get("quanta") != execution_profile("native")
+        or profiles.get("semble")
+        != {
+            "profile_id": "semble-lexical-only-v1",
+            "mode": "lexical-only",
+            "alpha": None,
+            "rerank": "not_applicable",
+        }
+    ):
         raise ValueError("pair execution profiles are not pure lexical")
     counts = native.get("lane_call_counts", {})
     events = native.get("execution_events")
@@ -177,9 +272,15 @@ def pair_result(
         or not isinstance(events, list)
         or not events
         or counts != {"bm25": len(events), "semantic": 0, "encode": 0}
+        or any(type(value) is not int for value in counts.values())
     ):
         raise ValueError("Semble native capture did not execute lexical-only")
-    if any(event.get("lane_entry_counts") != {"bm25": 1, "semantic": 0} for event in events):
+    if any(
+        not isinstance(event, dict)
+        or event.get("lane_entry_counts") != {"bm25": 1, "semantic": 0}
+        or any(type(value) is not int for value in event["lane_entry_counts"].values())
+        for event in events
+    ):
         raise ValueError("Semble event entered a non-lexical lane")
     if (
         report.get("query_pack_sha256") != digest(canonical(pack))
@@ -189,28 +290,51 @@ def pair_result(
         raise ValueError("pair report does not bind the lexical pack and corpus")
     if report.get("sample_count") != task_count:
         raise ValueError("pair report task count differs")
-    routes = report.get("rank_metrics", {}).get("routes", {})
+    metrics = report.get("rank_metrics")
+    if not isinstance(metrics, dict) or not isinstance(metrics.get("routes"), dict):
+        raise ValueError("pair report has malformed rank metric routes")
+    routes = metrics["routes"]
     per_query = report.get("per_query")
-    if not isinstance(per_query, list) or len(per_query) != 2 * task_count:
+    if (
+        not isinstance(per_query, list)
+        or len(per_query) != 2 * task_count
+        or any(
+            not isinstance(row, dict)
+            or not isinstance(row.get("task_id"), str)
+            or not isinstance(row.get("route"), str)
+            for row in per_query
+        )
+    ):
         raise ValueError("pair report has incomplete per-query observations")
     result = {}
     for route, label in (("lexical", "quanta_lexical"), ("semble-hybrid", "semble_lexical_only")):
         data = routes.get(route)
         if not isinstance(data, dict) or data.get("sample_count") != task_count:
             raise ValueError(f"pair report {route} is incomplete")
-        recall = data.get("chunk", {}).get("file_recall_at_10")
+        chunk = data.get("chunk")
+        if not isinstance(chunk, dict):
+            raise ValueError(f"pair report {route} has malformed chunk metrics")
+        recall = chunk.get("file_recall_at_10")
         if type(recall) not in (int, float) or not 0 <= recall <= 1:
             raise ValueError(f"pair report {route} file recall is invalid")
-        hits = round(recall * task_count)
-        if abs(hits / task_count - recall) > 1e-10:
-            raise ValueError(
-                f"pair report {route} file recall does not have task-count granularity"
-            )
         route_rows = [row for row in per_query if row.get("route") == route]
         if len(route_rows) != task_count or {row.get("task_id") for row in route_rows} != {
             task["task_id"] for task in pack["tasks"]
         }:
             raise ValueError(f"pair report {route} per-query tasks differ")
+        recalls = [row.get("file_recall_at_10") for row in route_rows]
+        flags = [row.get("file_hit_at_10") for row in route_rows]
+        if (
+            any(
+                type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 1
+                for value in recalls
+            )
+            or any(type(value) is not bool for value in flags)
+            or any(flag != (value > 0) for flag, value in zip(flags, recalls, strict=True))
+            or abs(math.fsum(recalls) / task_count - recall) > 1e-10
+        ):
+            raise ValueError(f"pair report {route} recall/hit observations differ from aggregate")
+        hits = sum(flags)
         latency = latency_summary(
             [row.get("query_latency_ms") for row in route_rows],
             task_count,
@@ -227,31 +351,47 @@ def pair_result(
             "hits": hits,
             "tasks": task_count,
             "file_recall_at_10": recall,
+            "file_hit_rate_at_10": hits / task_count,
+            "per_query": sorted(route_rows, key=lambda row: row["task_id"]),
             "latency_ms": latency,
         }
     return {
         "routes": result,
-        "report_sha256": _sha(path),
-        "protocol_lock_sha256": _sha(lock_path),
-        "semble_native_sha256": _sha(native_path),
-        "verdict_sha256": _sha(verdict_path),
+        **dict(
+            zip(
+                ("report_sha256", "protocol_lock_sha256", "semble_native_sha256", "verdict_sha256"),
+                (hashlib.sha256(value).hexdigest() for value in raw),
+                strict=True,
+            )
+        ),
         "semble_lane_calls": counts,
     }
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--suite", type=Path, required=True)
-    parser.add_argument("--query-pack", type=Path, required=True)
-    parser.add_argument("--pair-report", type=Path, required=True)
-    parser.add_argument("--pair-lock", type=Path, required=True)
-    parser.add_argument("--semble-native", type=Path, required=True)
-    parser.add_argument("--pair-verdict", type=Path, required=True)
-    for name in PRODUCTS:
-        parser.add_argument(f"--{name}-rows", type=Path, required=True)
-    parser.add_argument("--out", type=Path, required=True)
-    args = parser.parse_args()
-    suite, pack = _read(args.suite), _read(args.query_pack)
+def read_spec(path: Path) -> dict[str, Path]:
+    spec = _read(path)
+    if (
+        set(spec) != {"schema_version", *INPUT_ROLES}
+        or type(spec["schema_version"]) is not int
+        or spec["schema_version"] != 1
+    ):
+        raise ValueError("lexical spec requires schema_version 1 and the exact input roles")
+    if any(
+        not isinstance(spec[role], str)
+        or not Path(spec[role]).is_absolute()
+        or ".." in Path(spec[role]).parts
+        for role in INPUT_ROLES
+    ):
+        raise ValueError("lexical spec inputs must be explicit absolute canonical paths")
+    return {role: Path(spec[role]) for role in INPUT_ROLES}
+
+
+def evaluate_capture(paths: dict[str, Path]) -> dict:
+    """One scorer authority for the owner CLI and common capture/replay."""
+    if set(paths) != set(INPUT_ROLES) or any(not isinstance(path, Path) for path in paths.values()):
+        raise ValueError("lexical capture requires the exact input role inventory")
+    suite_raw, pack_raw = _bytes(paths["suite"]), _bytes(paths["query_pack"])
+    suite, pack = _json(suite_raw), _json(pack_raw)
     expected = _tasks(suite, pack)
     result = {
         "status": "diagnostic_unqualified",
@@ -260,20 +400,20 @@ def main() -> None:
         "latency_interpretation": "descriptive_only_not_cross_product_comparable",
         "repository_commit": suite["repository_commit"],
         "file_universe_digest": suite["file_universe_digest"],
-        "suite_sha256": _sha(args.suite),
-        "query_pack_sha256": _sha(args.query_pack),
+        "suite_sha256": hashlib.sha256(suite_raw).hexdigest(),
+        "query_pack_sha256": hashlib.sha256(pack_raw).hexdigest(),
         "validator_sha256": _sha(Path(__file__)),
         "pair": pair_result(
-            args.pair_report,
-            args.pair_lock,
-            args.semble_native,
-            args.pair_verdict,
+            paths["pair_report"],
+            paths["pair_lock"],
+            paths["semble_native"],
+            paths["pair_verdict"],
             pack,
             suite,
             len(expected),
         ),
         "products": {
-            name: product_result(name, getattr(args, f"{name}_rows"), expected) for name in PRODUCTS
+            name: product_result(name, paths[f"{name}_rows"], expected) for name in PRODUCTS
         },
         "exclusions": [
             "independent_gold",
@@ -282,10 +422,34 @@ def main() -> None:
             "backend_indexed_universe_attestation",
         ],
     }
-    if args.out.exists():
-        raise ValueError("output already exists")
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return result
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--spec", type=Path)
+    for role in INPUT_ROLES:
+        parser.add_argument("--" + role.replace("_", "-"), type=Path)
+    parser.add_argument("--out", type=Path, required=True)
+    args = parser.parse_args()
+    explicit = {role: getattr(args, role) for role in INPUT_ROLES}
+    try:
+        if args.spec is not None:
+            if any(path is not None for path in explicit.values()):
+                parser.error("--spec refuses mixed explicit input controls")
+            paths = read_spec(args.spec)
+        else:
+            if any(path is None for path in explicit.values()):
+                parser.error("provide --spec or every explicit input role")
+            paths = explicit
+        if args.out.exists() or args.out.is_symlink():
+            raise ValueError("output already exists")
+        result = evaluate_capture(paths)
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        with args.out.open("x", encoding="utf-8") as output:
+            output.write(json.dumps(result, indent=2, sort_keys=True) + "\n")
+    except (ValueError, OSError) as exc:
+        parser.error(str(exc))
 
 
 if __name__ == "__main__":

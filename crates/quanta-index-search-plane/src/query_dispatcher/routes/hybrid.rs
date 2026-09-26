@@ -109,7 +109,7 @@ impl SearchPlaneDispatcher {
         stage_timings.record_elapsed(QueryStageKindV1::HybridReadView, view_started, 1, None);
         let lex_searcher = view.lexical()?;
         let sem_searcher = view.semantic()?;
-        let internal_top_k = hybrid_probe_top_k_v1(top_k)?;
+        let internal_top_k = hybrid_probe_top_k_v1(top_k, self.hybrid_fetch_floor)?;
         // Invocation truth (W10-R1): only backend calls record. A
         // `force_empty` plan invokes nothing and records nothing.
         let execution = LaneExecutionRecorderV1::new();

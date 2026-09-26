@@ -166,7 +166,7 @@ impl SearchPlaneDispatcher {
                             .to_string(),
                     ));
                 };
-                let lanes = HybridLanePlanV1::prepare(&pinned_query)?;
+                let lanes = HybridLanePlanV1::prepare(&pinned_query, self.hybrid_fetch_floor)?;
                 let view = self.acquire_read_view(
                     &ReadViewRequestV1::declare(
                         "explain",
@@ -253,10 +253,14 @@ struct HybridLanePlanV1 {
     query: quanta_index_contract::LqQuery,
     constraints: quanta_index_contract::QueryConstraintSetV1,
     force_empty: bool,
+    fetch_floor: quanta_index_core::HybridFetchFloorPolicy,
 }
 
 impl HybridLanePlanV1 {
-    fn prepare(text_query: &TextQueryRequest) -> Result<Self, CoreError> {
+    fn prepare(
+        text_query: &TextQueryRequest,
+        fetch_floor: quanta_index_core::HybridFetchFloorPolicy,
+    ) -> Result<Self, CoreError> {
         let lexical_query = lower_lexical_text_query(text_query)?;
         let filter_plan = HybridFilterPlanV1::plan(&lexical_query)?;
         let prepared = prepare_language_query_v1(lexical_query, &text_query.constraints)?;
@@ -266,6 +270,7 @@ impl HybridLanePlanV1 {
             query: prepared.query,
             constraints: prepared.constraints,
             force_empty: prepared.force_empty,
+            fetch_floor,
         })
     }
 }
@@ -372,7 +377,7 @@ fn rederive_hybrid_lanes(
             fused_page_position: None,
         });
     }
-    let internal_top_k = hybrid_probe_top_k_v1(top_k)?;
+    let internal_top_k = hybrid_probe_top_k_v1(top_k, lanes.fetch_floor)?;
     budget.checkpoint("explain:lexical-lane")?;
     execution.record_lexical_invocation();
     let mut lex_rows = lex_searcher

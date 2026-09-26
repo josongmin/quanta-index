@@ -63,7 +63,7 @@ impl SearchPlaneDispatcher {
         let manifest_digest = view.semantic_manifest_digest()?.to_string();
         let lex_searcher = view.lexical()?;
         let sem_searcher = view.semantic()?;
-        let internal_top_k = hybrid_probe_top_k_v1(request.top_k)?;
+        let internal_top_k = hybrid_probe_top_k_v1(request.top_k, self.hybrid_fetch_floor)?;
         // Invocation truth (W10-R1): only backend calls record. A
         // `force_empty` plan invokes nothing and records nothing.
         let execution = LaneExecutionRecorderV1::new();

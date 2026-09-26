@@ -16,6 +16,27 @@ manifest admission, strict Nextest exclusions, digest-bound execution parsing,
 and private paired-daemon pinning. Do not treat implementation as owner or
 release qualification; inspect the progress ledger's current terminal results.
 
+R0 follow-up now includes one JUnit outcome owner, invocation-local
+content/authority-bound DAG reuse and one literal Bash-word decoder for rail
+names/argv. The final locked shell/JUnit sibling rail has 237 passing cases; Sourcegraph's independently
+collected producer methods have 27 passing pytest9.1.1 cases and exact JUnit
+admission. Retrieval duplicate collection/inventory integration, reverse
+consumers and the failed daemon gate remain distinct closeout obligations.
+
+Latest R0 repair unifies strict proof JSON admission across terminal, archive,
+aggregate and handoff consumers; duplicate keys and non-finite values are
+refused before schemas. Locked owner regression passed 163 cases and one
+fixture manifest publication passed; neither is final-source qualification.
+Bounded portable-proof execution and producer cleanup are now repaired with
+69 locked owner cases and 87 caller cases. The follow-up direct-exit protocol
+keeps group identity unreaped until cleanup, including closed-output background
+descendants; earlier 47/60 counts are historical. Actual toolchain execution
+identity binding and per-owner semantic delete batching remain open in the
+current residual table. The original
+mandatory daemon gate ended FAILED (203 passed, one ingest timeout, one skipped);
+RCA remains open. Consult the current residual table and progress ledger rather
+than historical counts.
+
 P10 update (2026-09-24): the prerelease breaking decision retires
 `migrate-state` and any old-root success path. Historical migration tickets
 and prompts below are not executable current instructions. Current-format

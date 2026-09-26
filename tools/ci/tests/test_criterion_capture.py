@@ -245,6 +245,382 @@ def test_timeout_kills_owned_process_group(tmp_path):
     assert signal.getsignal(signal.SIGTERM) == previous
 
 
+def test_failure_cleanup_has_a_finite_pipe_drain_deadline(tmp_path, monkeypatch):
+    import subprocess
+
+    import producer_execution as execution
+
+    class Process:
+        pid = 123
+        returncode = -9
+
+        def __init__(self):
+            self.calls = []
+
+        def communicate(self, *, timeout=None):
+            self.calls.append(timeout)
+            assert type(timeout) in (int, float) and 0 < timeout <= 10
+            return b"", b""
+
+    process = Process()
+    monkeypatch.setattr(execution.subprocess, "Popen", lambda *args, **kwargs: process)
+    monkeypatch.setattr(execution.os, "killpg", lambda *args: None)
+
+    def terminal_timeout(*args):
+        raise subprocess.TimeoutExpired("fixture", args[-1])
+
+    monkeypatch.setattr(execution, "_wait_for_terminal", terminal_timeout)
+    with pytest.raises(ValueError, match="timed out"):
+        execution.execute(["fixture"], cwd=tmp_path, env={}, timeout=1)
+    assert len(process.calls) == 1
+
+
+def test_failed_pipe_drain_and_reap_preserve_primary_failure(tmp_path, monkeypatch):
+    import io
+    import signal
+    import subprocess
+
+    import producer_execution as execution
+
+    class Process:
+        pid = 123
+        stdout = io.BytesIO()
+        stderr = io.BytesIO()
+
+        def communicate(self, *, timeout):
+            assert 0 <= timeout <= 10
+            raise subprocess.TimeoutExpired("fixture", timeout)
+
+        def wait(self, *, timeout):
+            assert 0 <= timeout <= 10
+            raise subprocess.TimeoutExpired("fixture", timeout)
+
+    process = Process()
+    handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT)}
+    monkeypatch.setattr(execution.subprocess, "Popen", lambda *args, **kwargs: process)
+    monkeypatch.setattr(execution.os, "killpg", lambda *args: None)
+
+    def terminal_timeout(*args):
+        raise subprocess.TimeoutExpired("fixture", args[-1])
+
+    monkeypatch.setattr(execution, "_wait_for_terminal", terminal_timeout)
+    with pytest.raises(
+        execution.ProducerExecutionError, match="timed out.*incomplete cleanup.*pipe drain.*reap"
+    ):
+        execution.execute(["fixture"], cwd=tmp_path, env={}, timeout=1)
+    assert process.stdout.closed and process.stderr.closed
+    assert {sig: signal.getsignal(sig) for sig in handlers} == handlers
+
+
+@pytest.mark.parametrize("direct_child_exits", [False, True])
+def test_escaped_session_held_pipe_returns_bounded_failure(tmp_path, direct_child_exits):
+    import os
+    import signal
+    import subprocess
+
+    pid_file = tmp_path / "escaped.pid"
+    escaped = "import time; time.sleep(60)"
+    child = (
+        "import subprocess,sys,time; from pathlib import Path; "
+        f"p=subprocess.Popen([sys.executable,'-c',{escaped!r}],start_new_session=True); "
+        f"f=Path({str(pid_file)!r}); staged=f.with_suffix('.tmp'); staged.write_text(str(p.pid)); staged.replace(f); "
+        + ("pass" if direct_child_exits else "time.sleep(60)")
+    )
+    runner = (
+        "import os,sys; from pathlib import Path; "
+        f"sys.path.insert(0,{str(Path(capture.__file__).parent)!r}); "
+        "import producer_execution as execution; execution.CLEANUP_TIMEOUT_SECONDS=1; "
+        f"execution.execute([sys.executable,'-c',{child!r}],cwd=Path({str(tmp_path)!r}),env=dict(os.environ),timeout=5)"
+    )
+    process = subprocess.Popen(
+        [sys.executable, "-c", runner], stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    )
+    try:
+        _, errors = process.communicate(timeout=20)
+        assert process.returncode != 0
+        assert b"timed out" in errors and b"incomplete cleanup" in errors
+        assert b"pipe drain deadline exceeded" in errors
+        assert pid_file.is_file(), "escaped child was not exercised"
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.communicate(timeout=5)
+        if pid_file.exists():
+            # Exact PID created by this fixture; no broad process-name cleanup.
+            try:
+                os.kill(int(pid_file.read_text()), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
+def test_nested_owned_session_dies_when_outer_owner_is_killed(tmp_path):
+    import os
+    import signal
+    import subprocess
+    import time
+
+    pid_file = tmp_path / "nested.pid"
+    command = f"import os,time; from pathlib import Path; f=Path({str(pid_file)!r}); staged=f.with_suffix('.tmp'); staged.write_text(str(os.getpid())); staged.replace(f); time.sleep(60)"
+    bootstrap = f"import os,sys; from pathlib import Path; sys.path.insert(0,{str(Path(capture.__file__).parent)!r}); from producer_execution import execute; "
+    nested = (
+        bootstrap
+        + f"execute([sys.executable,'-c',{command!r}],cwd=Path({str(tmp_path)!r}),env=dict(os.environ),timeout=60)"
+    )
+    outer = (
+        bootstrap
+        + f"execute([sys.executable,'-c',{nested!r}],cwd=Path({str(tmp_path)!r}),env=dict(os.environ),timeout=60)"
+    )
+    process = subprocess.Popen(
+        [sys.executable, "-c", outer], stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    )
+    pid = None
+    try:
+        deadline = time.monotonic() + 10
+        while not pid_file.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert pid_file.exists(), "nested owned session was not exercised"
+        pid = int(pid_file.read_text())
+        process.kill()  # SIGKILL cannot run Python finally/cleanup handlers.
+        process.communicate(timeout=5)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            state = subprocess.run(
+                ["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True, timeout=2
+            )
+            if not state.stdout.strip() or state.stdout.strip().startswith("Z"):
+                break
+            time.sleep(0.01)
+        else:
+            pytest.fail("nested owned command survived controlling owner death")
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.communicate(timeout=5)
+        if pid is not None:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
+@pytest.mark.parametrize("exit_code", [0, 7, -15])
+@pytest.mark.parametrize("kill_guard_after_report", [False, True])
+def test_direct_child_exit_terminates_same_group_background_descendant(
+    tmp_path, monkeypatch, exit_code, kill_guard_after_report
+):
+    import os
+    import signal
+    import subprocess
+    import time
+
+    import producer_execution as execution
+
+    if kill_guard_after_report:
+        wait_for_terminal = execution._wait_for_terminal
+
+        def kill_reported_guard(process, terminal, timeout):
+            record = wait_for_terminal(process, terminal, timeout)
+            os.kill(process.pid, signal.SIGKILL)
+            return record
+
+        monkeypatch.setattr(execution, "_wait_for_terminal", kill_reported_guard)
+
+    pid_file = tmp_path / "background.pid"
+    background = (
+        "import os,time; from pathlib import Path; "
+        f"f=Path({str(pid_file)!r}); staged=f.with_suffix('.tmp'); "
+        "staged.write_text(str(os.getpid())); staged.replace(f); time.sleep(60)"
+    )
+    command = (
+        "import os,signal,subprocess,sys,time; from pathlib import Path; "
+        f"subprocess.Popen([sys.executable,'-c',{background!r}],"
+        "stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL); "
+        f"f=Path({str(pid_file)!r}); deadline=time.monotonic()+10\n"
+        "while not f.exists() and time.monotonic()<deadline: time.sleep(0.01)\n"
+        "assert f.exists(), 'background child was not exercised'\n"
+        + (f"sys.exit({exit_code})" if exit_code >= 0 else "os.kill(os.getpid(),signal.SIGTERM)")
+    )
+    try:
+        if exit_code == 0:
+            _, _, result = capture.execute(
+                [sys.executable, "-c", command], cwd=tmp_path, env=dict(os.environ), timeout=20
+            )
+            assert result["status"] == "completed" and result["exit_code"] == 0
+        else:
+            with pytest.raises(ValueError, match=f"exit {exit_code}"):
+                capture.execute(
+                    [sys.executable, "-c", command], cwd=tmp_path, env=dict(os.environ), timeout=20
+                )
+        assert pid_file.is_file(), "background descendant was not exercised"
+        pid = int(pid_file.read_text())
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            state = subprocess.run(
+                ["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True, timeout=2
+            ).stdout.strip()
+            if not state or state.startswith("Z"):
+                break
+            time.sleep(0.01)
+        else:
+            pytest.fail("same-group descendant survived direct child exit")
+    finally:
+        if pid_file.exists():
+            try:
+                os.kill(int(pid_file.read_text()), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
+@pytest.mark.parametrize(
+    "returncode,raw",
+    [
+        (-9, b""),
+        (-9, b"\0"),
+        (-9, b"\0" * 3),
+        (-9, b"\0" * 5),
+        (0, b"\0" * 4),
+        (1, b"\0" * 4),
+        (-15, b"\0" * 4),
+        (-9, b"\0\0\x01\0"),
+        (-9, b"\xff\xff\xff\0"),
+    ],
+)
+def test_unproven_guard_terminal_record_cannot_establish_completion(returncode, raw):
+    import producer_execution as execution
+
+    with pytest.raises(execution.ProducerExecutionError, match="terminal record|exit code"):
+        execution._terminal_result(returncode, raw)
+
+
+def test_guard_killed_without_terminal_record_is_not_success(tmp_path):
+    import os
+
+    with pytest.raises(ValueError, match="without a valid terminal record"):
+        capture.execute(
+            [sys.executable, "-c", "import os,signal; os.kill(os.getppid(),signal.SIGKILL)"],
+            cwd=tmp_path,
+            env=dict(os.environ),
+            timeout=10,
+        )
+
+
+def test_spawn_failure_closes_all_control_pipe_descriptors(tmp_path, monkeypatch):
+    import os
+    import signal
+
+    import producer_execution as execution
+
+    pipe = os.pipe
+    descriptors = []
+
+    def tracked_pipe():
+        pair = pipe()
+        if len(descriptors) < 4:
+            descriptors.extend(pair)
+        return pair
+
+    previous = signal.getsignal(signal.SIGTERM)
+    monkeypatch.setattr(execution.os, "pipe", tracked_pipe)
+    with pytest.raises(ValueError, match="without a valid terminal record"):
+        execution.execute([str(tmp_path / "missing")], cwd=tmp_path, env={}, timeout=10)
+    assert signal.getsignal(signal.SIGTERM) == previous
+    assert len(descriptors) == 4
+    for fd in descriptors:
+        with pytest.raises(OSError):
+            os.fstat(fd)
+
+
+def test_terminal_wait_drains_both_outputs_before_child_can_report(tmp_path):
+    import os
+
+    stdout, stderr = b"o" * 262144, b"e" * 262144
+    actual_out, actual_err, result = capture.execute(
+        [
+            sys.executable,
+            "-c",
+            "import sys; sys.stdout.buffer.write(b'o'*262144); sys.stdout.flush(); "
+            "sys.stderr.buffer.write(b'e'*262144); sys.stderr.flush()",
+        ],
+        cwd=tmp_path,
+        env=dict(os.environ),
+        timeout=20,
+    )
+    assert actual_out == stdout and actual_err == stderr
+    assert result["status"] == "completed"
+
+
+def test_cleanup_never_signals_an_already_reaped_group_identity(monkeypatch):
+    import producer_execution as execution
+
+    class Process:
+        pid = 123
+        returncode = -9
+
+        def communicate(self, *, timeout):
+            assert 0 < timeout <= 10
+            return b"", b""
+
+    def forbidden_kill(*args):
+        pytest.fail("an already reaped group identity cannot be signalled")
+
+    monkeypatch.setattr(execution.os, "killpg", forbidden_kill)
+    assert execution._cleanup(Process()) is None
+
+
+@pytest.mark.parametrize("ignored", [False, True])
+def test_execution_refuses_external_sigchld_reaping_before_spawning(tmp_path, ignored):
+    import os
+    import signal
+
+    marker = tmp_path / "must-not-run"
+    previous = signal.signal(signal.SIGCHLD, signal.SIG_IGN if ignored else lambda *_: None)
+    try:
+        with pytest.raises(ValueError, match="SIGCHLD"):
+            capture.execute(
+                [sys.executable, "-c", f"from pathlib import Path; Path({str(marker)!r}).touch()"],
+                cwd=tmp_path,
+                env=dict(os.environ),
+                timeout=10,
+            )
+        assert not marker.exists(), "an unowned reaping environment cannot launch work"
+    finally:
+        signal.signal(signal.SIGCHLD, previous)
+
+
+def test_execution_monitors_high_numbered_pipe_descriptors(tmp_path, monkeypatch):
+    import fcntl
+    import os
+    import resource
+
+    if resource.getrlimit(resource.RLIMIT_NOFILE)[0] <= 2064:
+        pytest.skip("host descriptor limit cannot exercise high-numbered pipes")
+    pipe = os.pipe
+
+    def high_pipe():
+        original = pipe()
+        duplicated = []
+        try:
+            for fd in original:
+                duplicated.append(fcntl.fcntl(fd, fcntl.F_DUPFD, 2048))
+        except BaseException:
+            for fd in duplicated:
+                os.close(fd)
+            raise
+        finally:
+            for fd in original:
+                os.close(fd)
+        return tuple(duplicated)
+
+    monkeypatch.setattr(os, "pipe", high_pipe)
+    stdout, _, result = capture.execute(
+        [sys.executable, "-c", "print('high-fd')"],
+        cwd=tmp_path,
+        env=dict(os.environ),
+        timeout=20,
+    )
+    assert stdout == b"high-fd\n" and result["status"] == "completed"
+
+
 @pytest.mark.parametrize("missing", [False, True])
 def test_complete_profile_transaction_with_synthetic_native_owner(tmp_path, monkeypatch, missing):
     """Exercise orchestration; synthetic timing is never product evidence."""

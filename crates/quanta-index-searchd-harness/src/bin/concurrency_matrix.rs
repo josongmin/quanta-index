@@ -18,7 +18,7 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use anyhow::Result as AnyResult;
+use anyhow::{Context, Result as AnyResult};
 use quanta_index_searchd_harness::artifact::{GitHeadV1, HostV1};
 use quanta_index_searchd_harness::concurrency::{
     ConcurrencyReport, DEFAULT_REQUESTS_PER_CLIENT, run_concurrency_report, write_artifacts,
@@ -75,10 +75,12 @@ fn parse_args() -> AnyResult<CliArgs> {
 
 fn run(cli: &CliArgs) -> AnyResult<ConcurrencyReport> {
     // Provenance first: a run that cannot be attributed is not started.
-    let git_head = GitHeadV1::resolve(Path::new("."))?;
-    let host = HostV1::observe()?;
+    let git_head = GitHeadV1::resolve(Path::new("."))
+        .context("concurrency provenance: resolve clean Git source")?;
+    let host = HostV1::observe().context("concurrency provenance: observe host")?;
     let report = run_concurrency_report(cli.seed, cli.requests_per_client)?;
-    write_artifacts(&report, &cli.out_dir, &git_head, &host)?;
+    write_artifacts(&report, &cli.out_dir, &git_head, &host)
+        .context("concurrency publication: write complete matrix artifacts")?;
     Ok(report)
 }
 

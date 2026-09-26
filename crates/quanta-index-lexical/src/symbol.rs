@@ -16,7 +16,90 @@
 
 use core::fmt;
 
-use quanta_index_contract::{LqFilter, LqSelect, LqType};
+use quanta_index_contract::{
+    LqExpr, LqFilter, LqLeaf, LqOptions, LqPatternType, LqPredicateArg, LqQuery, LqSelect, LqType,
+};
+
+/// Symbol names have keyword postings, not the chunk content authority.
+pub(crate) fn symbol_name_keyword(args: &[LqPredicateArg]) -> Option<&str> {
+    match args {
+        [LqPredicateArg::Keyword(value)] => Some(value),
+        _ => None,
+    }
+}
+
+/// Refuse unsupported symbol text before predicate materialization can return empty.
+///
+/// Content predicates own their chunk domain; do not reinterpret their arguments.
+pub(crate) fn unsupported_symbol_query_text(
+    query: &LqQuery,
+    expr: &LqExpr,
+    symbol_domain: bool,
+) -> bool {
+    unsupported_symbol_text(expr, &query.options, symbol_domain)
+        || query.filters.iter().any(|filter| match filter {
+            LqFilter::Content { leaf } => {
+                unsupported_symbol_leaf(leaf, &query.options, symbol_domain)
+            }
+            LqFilter::Repo { .. }
+            | LqFilter::File { .. }
+            | LqFilter::Lang { .. }
+            | LqFilter::Rev { .. }
+            | LqFilter::Author { .. }
+            | LqFilter::Committer { .. }
+            | LqFilter::Message { .. }
+            | LqFilter::Before { .. }
+            | LqFilter::After { .. }
+            | LqFilter::Since { .. }
+            | LqFilter::Until { .. }
+            | LqFilter::DiffAdded { .. }
+            | LqFilter::DiffRemoved { .. }
+            | LqFilter::DiffTouched { .. }
+            | LqFilter::Type { .. }
+            | LqFilter::Select { .. }
+            | LqFilter::Dirty { .. }
+            | LqFilter::Changed { .. }
+            | LqFilter::Stale { .. }
+            | LqFilter::Snapshot { .. }
+            | LqFilter::MetaOwner { .. }
+            | LqFilter::MetaService { .. }
+            | LqFilter::MetaLayer { .. }
+            | LqFilter::MetaSurface { .. }
+            | LqFilter::Affected { .. }
+            | LqFilter::InvalidatedBy { .. }
+            | LqFilter::Fork { .. }
+            | LqFilter::Archived { .. }
+            | LqFilter::Visibility { .. }
+            | LqFilter::Context { .. } => false,
+        })
+}
+
+fn unsupported_symbol_text(expr: &LqExpr, options: &LqOptions, symbol_domain: bool) -> bool {
+    match expr {
+        LqExpr::Empty => false,
+        LqExpr::Not(inner) => unsupported_symbol_text(inner, options, symbol_domain),
+        LqExpr::All(children) | LqExpr::Any(children) => children
+            .iter()
+            .any(|child| unsupported_symbol_text(child, options, symbol_domain)),
+        LqExpr::Leaf(leaf) => unsupported_symbol_leaf(leaf, options, symbol_domain),
+    }
+}
+
+fn unsupported_symbol_leaf(leaf: &LqLeaf, options: &LqOptions, symbol_domain: bool) -> bool {
+    match leaf {
+        LqLeaf::Predicate { name, args }
+            if name == quanta_index_core::LexicalPredicateV1::SymbolHasName.name() =>
+        {
+            matches!(
+                args.as_slice(),
+                [LqPredicateArg::Phrase(_) | LqPredicateArg::RawString(_)]
+            ) || options.pattern_type == LqPatternType::Regexp
+        }
+        LqLeaf::Phrase(_) | LqLeaf::RawString(_) | LqLeaf::Regex(_) => symbol_domain,
+        LqLeaf::Keyword(_) => symbol_domain && options.pattern_type == LqPatternType::Regexp,
+        LqLeaf::StructuralBlock(_) | LqLeaf::Predicate { .. } => false,
+    }
+}
 
 /// Closed set of v1 symbol kinds accepted as a `kind_filter`.
 ///

@@ -4,7 +4,7 @@
 Complements `check-public-api.py`:
 
   * `cargo public-api` answers "what items are reachable from lib.rs"
-  * `cargo modules structure` answers "what is the internal mod tree"
+  * `cargo modules structure --lib` answers "what is the internal library mod tree"
 
 The pair locks both the *external* shape and the *internal* organization so
 that silent module renames, deletions, or relocations always appear as a
@@ -86,7 +86,7 @@ def workspace_member_names() -> set[str]:
 
 
 def render_module_tree(package: str) -> str:
-    cmd = ["cargo", "modules", "structure", "--package", package, "--no-fns"]
+    cmd = ["cargo", "modules", "structure", "--lib", "--package", package, "--no-fns"]
     # The snapshot is compared byte-for-byte against a plain-text baseline, so
     # the tool must never colour its output. cargo-modules honours NO_COLOR; a
     # shell that exports CLICOLOR_FORCE (or a tool version that colours when

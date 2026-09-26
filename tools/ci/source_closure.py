@@ -37,9 +37,11 @@ PROFILES = {
             "tools/ci/lint/rust_attribute_policy.py",
             "tools/ci/lint/check-test-authority.py",
             "tools/ci/nextest_events.py",
+            "tools/ci/junit_events.py",
             "tools/ci/source_closure.py",
             "tools/ci/timing/rust_profile_history.py",
             "tools/ci/tests/test_portable_proof.py",
+            "tools/ci/tests/test_lexical_file_comparison.py",
             "tools/ci/tests/test_retrieval_benchmark.py",
             "tools/ci/tests/test_retrieval_contract_proof.py",
             "tools/ci/tests/test_retrieval_sdk_proof.py",
@@ -56,6 +58,7 @@ PROFILES = {
         # deliberately excluded: a status edit is not a contract change.
         "cargo_packages": ("quanta-index-bench-protocol",),
         "paths": (
+            ".github/workflows/ci.yml",
             ".cargo/config.toml",
             "Cargo.lock",
             "Cargo.toml",
@@ -78,6 +81,7 @@ PROFILES = {
             "tools/benchmark/criterion_capture.py",
             "tools/benchmark/producer_execution.py",
             "tools/benchmark/retrieval_capture.py",
+            "tools/benchmark/lexical_capture.py",
             "tools/benchmark/recorded_capture.py",
             "tools/benchmark/agent_outcome",
             "tools/benchmark/benchctl.py",
@@ -85,6 +89,7 @@ PROFILES = {
             "tools/benchmark/quality_integration_summary.py",
             "tools/ci/lint/check-bench-artifacts.py",
             "tools/ci/lint/check-benchmark-policy.py",
+            "tools/ci/test-authority.toml",
             "tools/ci/source_closure.py",
             "tools/ci/timing/check_host_contention.py",
             "tools/ci/tests/test_bench_protocol_conformance.py",
@@ -94,6 +99,8 @@ PROFILES = {
             "tools/ci/tests/test_benchmark_profile_capture.py",
             "tools/ci/tests/test_criterion_capture.py",
             "tools/ci/tests/test_recorded_capture.py",
+            "tools/ci/tests/test_retrieval_capture.py",
+            "tools/ci/tests/test_lexical_capture.py",
             "tools/ci/tests/test_agent_outcome_benchmark.py",
             "tools/ci/tests/test_benchmark_manifest.py",
             "tools/ci/tests/test_benchmark_policy.py",
@@ -110,6 +117,20 @@ PROFILES["benchmark-micro"] = {
         "quanta-index-searchd-runtime",
     ),
     "paths": PROFILES["benchmark-control-plane"]["paths"],
+}
+
+PROFILES["benchmark-retrieval"] = {
+    "cargo_packages": tuple(
+        sorted(
+            set(PROFILES["retrieval"]["cargo_packages"])
+            | set(PROFILES["benchmark-control-plane"]["cargo_packages"])
+        )
+    ),
+    "paths": tuple(
+        sorted(
+            set(PROFILES["retrieval"]["paths"]) | set(PROFILES["benchmark-control-plane"]["paths"])
+        )
+    ),
 }
 
 
@@ -158,12 +179,16 @@ class _SourceFrame:
                 data = path.read_bytes()
                 after = self._state(path)
             except OSError as error:
-                raise ClosureError(f"cannot read committed source dependency {relative}: {error}") from error
+                raise ClosureError(
+                    f"cannot read committed source dependency {relative}: {error}"
+                ) from error
             if before != after:
                 raise ClosureError(f"source changed while reading: {relative}")
             header = b"blob " + str(len(data)).encode() + b"\0"
             if hashlib.sha1(header + data).hexdigest() != expected:
-                raise ClosureError(f"dirty relevant source: differs from committed HEAD: {relative}")
+                raise ClosureError(
+                    f"refusing dirty relevant source: differs from committed HEAD: {relative}"
+                )
             self.bytes[relative] = data
             self.observations[relative] = after
         return self.bytes[relative]
@@ -178,7 +203,9 @@ class _SourceFrame:
             try:
                 current = self._state(self.repo / relative)
             except OSError as error:
-                raise ClosureError(f"cannot recheck source dependency {relative}: {error}") from error
+                raise ClosureError(
+                    f"cannot recheck source dependency {relative}: {error}"
+                ) from error
             if current != observed:
                 raise ClosureError(f"source changed during closure operation: {relative}")
 
@@ -235,11 +262,30 @@ def _cargo_roots(repo: Path, package_names: tuple[str, ...]) -> set[str]:
         return set()
     metadata = _metadata(repo)
     packages = metadata.get("packages")
-    nodes = (metadata.get("resolve") or {}).get("nodes")
+    resolve = metadata.get("resolve")
+    nodes = resolve.get("nodes") if isinstance(resolve, dict) else None
     if not isinstance(packages, list) or not isinstance(nodes, list):
         raise ClosureError("cargo metadata omitted packages or resolve nodes")
-    by_id = {package.get("id"): package for package in packages if isinstance(package, dict)}
-    node_by_id = {node.get("id"): node for node in nodes if isinstance(node, dict)}
+
+    def unique_records(records: list, label: str) -> dict[str, dict]:
+        indexed = {}
+        for record in records:
+            if (
+                not isinstance(record, dict)
+                or not isinstance(record.get("id"), str)
+                or not record["id"]
+            ):
+                raise ClosureError(f"cargo metadata has invalid {label} id")
+            identity = record["id"]
+            if identity in indexed:
+                raise ClosureError(f"cargo metadata has duplicate {label} id: {identity}")
+            indexed[identity] = record
+        return indexed
+
+    by_id = unique_records(packages, "package")
+    node_by_id = unique_records(nodes, "resolve node")
+    if any(not isinstance(package.get("name"), str) or not package["name"] for package in packages):
+        raise ClosureError("cargo metadata has invalid package name")
     wanted = {
         package["id"]
         for package in packages
@@ -259,8 +305,12 @@ def _cargo_roots(repo: Path, package_names: tuple[str, ...]) -> set[str]:
             continue
         package = by_id.get(package_id)
         node = node_by_id.get(package_id)
-        if not package or package.get("source") is not None or not node:
+        if package is None:
+            raise ClosureError(f"cargo dependency package missing from metadata: {package_id}")
+        if package.get("source") is not None:
             continue
+        if node is None:
+            raise ClosureError(f"cargo resolve node missing for local package: {package_id}")
         closure.add(package_id)
         dependencies = node.get("dependencies")
         if not isinstance(dependencies, list):
@@ -269,7 +319,10 @@ def _cargo_roots(repo: Path, package_names: tuple[str, ...]) -> set[str]:
 
     roots: set[str] = set()
     for package_id in closure:
-        manifest = Path(by_id[package_id]["manifest_path"]).resolve()
+        manifest_path = Path(by_id[package_id]["manifest_path"])
+        manifest = manifest_path.resolve()
+        if manifest_path != manifest:
+            raise ClosureError(f"source closure refuses aliased cargo manifest: {manifest_path}")
         try:
             relative = manifest.parent.relative_to(repo).as_posix()
         except ValueError as error:
@@ -279,17 +332,43 @@ def _cargo_roots(repo: Path, package_names: tuple[str, ...]) -> set[str]:
 
 
 def resolve_roots(
-    repo: Path, profile: str, extra_paths: tuple[str, ...] = (), *, frame: _SourceFrame | None = None
+    repo: Path,
+    profile: str,
+    extra_paths: tuple[str, ...] = (),
+    *,
+    frame: _SourceFrame | None = None,
 ) -> list[str]:
     if profile not in PROFILES:
         raise ClosureError(f"unknown source closure profile: {profile}")
     config = PROFILES[profile]
     roots = set(config["paths"])
-    roots.update(_cargo_roots(repo, config["cargo_packages"]))
     roots.update(extra_paths)
     normalized: set[str] = set()
     for value in roots:
-        candidate = (repo / value).resolve()
+        lexical = repo / value
+        candidate = lexical.resolve()
+        if lexical != candidate:
+            raise ClosureError(f"source closure refuses aliased source root: {value}")
+        try:
+            relative = candidate.relative_to(repo).as_posix()
+        except ValueError as error:
+            raise ClosureError(f"source root escaped repository: {value}") from error
+        if not candidate.exists() and not candidate.is_symlink():
+            raise ClosureError(f"source root does not exist: {relative}")
+        normalized.add(relative)
+        if frame is not None and candidate.is_file():
+            frame.read(candidate)
+    if frame is not None and config["cargo_packages"]:
+        # Cargo metadata reads workspace manifests before choosing the local
+        # dependency graph. Freeze those inputs before invoking the resolver.
+        for path in frame.blobs:
+            if path == "Cargo.toml" or path.endswith("/Cargo.toml"):
+                frame.read(repo / path)
+    for value in _cargo_roots(repo, config["cargo_packages"]):
+        lexical = repo / value
+        candidate = lexical.resolve()
+        if lexical != candidate:
+            raise ClosureError(f"source closure refuses aliased source root: {value}")
         try:
             relative = candidate.relative_to(repo).as_posix()
         except ValueError as error:

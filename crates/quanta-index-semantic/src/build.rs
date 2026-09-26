@@ -482,6 +482,33 @@ fn validate_replace_scope(
     Ok(())
 }
 
+/// Proof-only, storage-free admission of all resident windows before creating
+/// an external diagnostic state directory. Uses the production validators.
+#[cfg(feature = "proof")]
+pub(crate) fn proof_validate_resident_batch_v1(
+    batch: &quanta_index_contract::SemanticIngestBatch,
+    policy: SemanticStreamWindowPolicy,
+) -> Result<(), CoreError> {
+    let header = SemanticIngestHeaderV1::of_batch(batch);
+    GenerationContract::validate_batch_shape(&header.contract)?;
+    if header.contract.model_contract.distance_metric != EmbeddingDistanceMetric::Cosine {
+        return Err(CoreError::InvalidContract(
+            "proof requires cosine backend".to_owned(),
+        ));
+    }
+    let dimension = header.dimension()?;
+    let mut authority = StreamScopeAuthorityV1::new(&header)?;
+    let mut source = quanta_index_core::ResidentScopeSource::new(&batch.replace_scopes, policy)?;
+    while let Some(window) = source.next_window()? {
+        let _fill = policy.admit(&window)?;
+        for scope in window.scopes() {
+            validate_replace_scope(scope, dimension, batch.model_contract.normalization)?;
+            authority.admit_replace_scope(scope)?;
+        }
+    }
+    Ok(())
+}
+
 fn semantic_scope_key_v1(corpus_kind: &str, owner_kind: &str, owner_id: &str) -> String {
     format!("{corpus_kind}\u{1f}{owner_kind}\u{1f}{owner_id}")
 }

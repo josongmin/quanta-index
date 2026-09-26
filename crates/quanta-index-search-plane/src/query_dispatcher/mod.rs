@@ -52,6 +52,7 @@ mod window;
 
 pub use dispatcher::{SearchPlaneDispatcher, SearchPlaneQueryDispatcher, SearchPlaneQueryService};
 pub use errors::repair_for_code;
+pub use quanta_index_core::HybridFetchFloorPolicy;
 pub use response_budget::{RESPONSE_ENVELOPE_RESERVE_BYTES, ResponsePayloadBudget};
 pub use selection::make_pin;
 pub use stage_timing::QueryStageObservationPolicy;

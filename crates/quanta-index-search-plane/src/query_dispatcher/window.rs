@@ -7,8 +7,8 @@ use quanta_index_contract::{
     continuation_fetch_size,
 };
 use quanta_index_core::{
-    CoreError, DenseAdmissionOutcomeV1, DenseLaneContractV1, HybridOrchestratorPolicy,
-    LexicalSearchPageV1, validate_query_top_k,
+    CoreError, DenseAdmissionOutcomeV1, DenseLaneContractV1, HybridFetchFloorPolicy,
+    HybridOrchestratorPolicy, LexicalSearchPageV1, validate_query_top_k,
 };
 
 use super::execution_trace::LaneExecutionSummaryV1;
@@ -94,8 +94,14 @@ pub(super) fn lexical_page_window_v1(
     }
 }
 
-pub(super) fn hybrid_probe_top_k_v1(top_k: u32) -> Result<u32, CoreError> {
-    Ok(HybridOrchestratorPolicy::over_fetch_top_k(top_k).max(probe_top_k_v1(top_k)?))
+pub(super) fn hybrid_probe_top_k_v1(
+    top_k: u32,
+    floor: HybridFetchFloorPolicy,
+) -> Result<u32, CoreError> {
+    Ok(
+        HybridOrchestratorPolicy::over_fetch_top_k_with_floor(top_k, floor)
+            .max(probe_top_k_v1(top_k)?),
+    )
 }
 
 pub(super) fn finalize_probe_window_v1<T>(

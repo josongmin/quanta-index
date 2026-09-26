@@ -60,6 +60,43 @@ def test_live_control_plane_satisfies_policy() -> None:
     assert module.check(REPO_ROOT, metadata=_metadata_for(module)) == []
 
 
+def test_capture_contracts_have_one_local_and_ci_entrypoint() -> None:
+    import shlex
+
+    import yaml
+
+    recipes = (REPO_ROOT / "Justfile").read_text(encoding="utf-8")
+    body = recipes.split("\nbenchmark-control-contract-local:\n", 1)[1].split("\n\n", 1)[0]
+    command = shlex.split(body.strip())
+    assert command[:8] == ["uv", "run", "--frozen", "--extra", "dev", "python", "-m", "pytest"]
+    from tools.ci.source_closure import PROFILES
+
+    required = {
+        path
+        for path in PROFILES["benchmark-control-plane"]["paths"]
+        if path.startswith("tools/ci/tests/")
+    }
+    assert required <= set(command[8:]), sorted(required - set(command[8:]))
+    for filename in (
+        "test_benchmark_profile_capture.py",
+        "test_criterion_capture.py",
+        "test_recorded_capture.py",
+        "test_retrieval_capture.py",
+        "test_lexical_capture.py",
+        "test_lexical_file_comparison.py",
+        "test_portable_proof.py",
+    ):
+        assert f"tools/ci/tests/{filename}" in command
+    assert len(command[8:]) == len(set(command[8:]))
+    prep = recipes.split("\nbenchmark-prep-local:\n", 1)[1].split("\n\n", 1)[0]
+    invocation = "uv run --frozen --extra dev just benchmark-control-contract-local"
+    assert invocation in prep
+    assert "pytest" not in prep
+    workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/ci.yml").read_text())
+    steps = workflow["jobs"]["rust-policy"]["steps"]
+    assert sum(step.get("run") == invocation for step in steps) == 1
+
+
 def test_inline_benchctl_comment_cannot_hide_direct_producer(tmp_path: Path) -> None:
     module = _policy_module()
     workflow = tmp_path / ".github" / "workflows" / "benchmark.yml"

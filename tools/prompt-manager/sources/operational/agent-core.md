@@ -5,12 +5,14 @@ Read this file for implementation or verification work.
 ## Execution Defaults
 
 - Inspect current source, revision, and dirty state before relying on plans or reports.
+- Preserve unrelated dirty work; establish owned paths before editing.
 - Use the narrowest decisive probe first; escalate verification by affected surface.
 - Never infer build or test state. Run the exact command and report its scope.
 - Treat required missing input as `blocked`, not as a value to guess or synthesize.
 - Propagate errors with context. Do not replace them with defaults or quiet partial success.
 - Prefer an explicit typed failure or `NotImplemented` over an unproved fallback.
 - Do not promote a focused green rail to repository-wide qualification.
+- Examples: owner tests passed, full suite unrun -> `NOT_RUN` for full suite; compilation passed, tests unrun -> `NOT_RUN` for tests.
 
 ## Design Defaults
 

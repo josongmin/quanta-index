@@ -1444,6 +1444,9 @@ def _validate_local_scopes(
 
 
 def _python_command_selects_path(root: Path, command: str, path: str) -> bool:
+    # Only the exact locked dependency wrapper is transparent. Do not infer
+    # execution from arbitrary uv flags, environment assignments or scripts.
+    command = command.removeprefix("uv run --frozen --extra dev ")
     if command.startswith("just "):
         recipe = command.removeprefix("just ")
         lines = (root / "Justfile").read_text(encoding="utf-8").splitlines()
@@ -1468,6 +1471,11 @@ def _python_command_selects_path(root: Path, command: str, path: str) -> bool:
         tokens = _literal_shell_argv(line)
         if tokens is None:
             continue
+        locked = tokens[:6] == ["uv", "run", "--frozen", "--extra", "dev", "python"]
+        if locked:
+            tokens = ["python3", *tokens[6:]]
+        elif tokens[:6] == ["uv", "run", "--frozen", "--extra", "dev", "python3"]:
+            tokens = tokens[5:]
         if tokens[:3] != ["python3", "-m", "pytest"]:
             continue
         selectors = tokens[3:]

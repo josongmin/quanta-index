@@ -23,6 +23,10 @@ except ModuleNotFoundError:  # pragma: no cover - Python 3.10 compatibility
 
 
 ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from tools.ci.proof_json import parse_proof_json  # noqa: E402
+
 CHECKER_PATH = ROOT / "tools/ci/lint/check-proof-authority.py"
 REGISTRY_PATH = ROOT / "tools/ci/proof-authority.toml"
 
@@ -65,7 +69,7 @@ def _manifest_status(
     try:
         manifest_bytes = checker._payload_bytes(root, proof["artifact"], label="proof manifest")
         digest = hashlib.sha256(manifest_bytes).hexdigest()
-        payload = json.loads(manifest_bytes)
+        payload = parse_proof_json(manifest_bytes)
         schema = checker._payload_json(root, proof["artifact_schema"], label="proof schema")
     except (OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
         return "FAILED", None, None
@@ -379,7 +383,7 @@ def _publish_aggregate_locked(
                         "published aggregate bytes differ from validated payload"
                     )
                 _require_parent_identity(root, output_relative, parent_fd, checker=checker)
-                installed_payload = json.loads(installed_bytes)
+                installed_payload = parse_proof_json(installed_bytes)
                 published_findings = checker.check_aggregate_receipt(
                     installed_payload,
                     receipt_path=output_path,

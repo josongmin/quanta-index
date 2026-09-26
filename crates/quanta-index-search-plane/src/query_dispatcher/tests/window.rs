@@ -3,8 +3,37 @@ use quanta_index_core::{CoreError, LexicalSearchPageV1};
 
 use crate::query_dispatcher::tests::support::common::{build_probe_query, candidate};
 use crate::query_dispatcher::window::{
-    finalize_probe_window_v1, lexical_fetch_limit_v1, lexical_page_window_v1, probe_top_k_v1,
+    finalize_probe_window_v1, hybrid_probe_top_k_v1, lexical_fetch_limit_v1,
+    lexical_page_window_v1, probe_top_k_v1,
 };
+
+#[test]
+fn hybrid_fetch_floor_changes_only_the_bounded_floor_not_the_continuation_probe() {
+    use crate::HybridFetchFloorPolicy;
+    for (floor, expected) in [
+        (HybridFetchFloorPolicy::Floor25, 25),
+        (HybridFetchFloorPolicy::Floor50, 50),
+        (HybridFetchFloorPolicy::Floor100, 100),
+    ] {
+        for top_k in [1, 10] {
+            assert_eq!(
+                hybrid_probe_top_k_v1(top_k, floor).expect("small valid k"),
+                expected
+            );
+        }
+        assert_eq!(
+            hybrid_probe_top_k_v1(100, floor).expect("k+1 preserved"),
+            101
+        );
+        assert_eq!(
+            hybrid_probe_top_k_v1(PUBLIC_TOP_K_MAX, floor).expect("public max preserved"),
+            INTERNAL_FETCH_CEILING
+        );
+        for invalid in [0, PUBLIC_TOP_K_MAX + 1, u32::MAX] {
+            assert!(hybrid_probe_top_k_v1(invalid, floor).is_err());
+        }
+    }
+}
 
 #[test]
 fn query_window_uses_one_continuation_row_and_never_requires_full_count_v1() {

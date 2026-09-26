@@ -3,6 +3,10 @@
 Classify every requested claim as `VERIFIED`, `FAILED`, `BLOCKED`, `NOT_RUN`, or
 `NOT_APPLICABLE`.
 
+`FAILED`: executed check failed. `BLOCKED`: required input/evidence absent or
+invalid, including stale source. `NOT_RUN`: required action not executed.
+Classify the requested scope.
+
 `VERIFIED` requires all of the following:
 
 - exact source revision and dirty state

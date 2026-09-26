@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import copy
 import hashlib
 import importlib.util
@@ -29,6 +30,52 @@ def _load_module():
 
 
 MODULE = _load_module()
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        b'{"status":"failed","status":"passed"}',
+        b'{"counts":{"failed":1,"failed":0}}',
+        b'{"value":NaN}',
+        b'{"value":Infinity}',
+        b'{"value":1e9999}',
+    ],
+)
+def test_proof_json_archive_reader_refuses_ambiguous_bytes(tmp_path: Path, raw: bytes) -> None:
+    (tmp_path / "proof.json").write_bytes(raw)
+    with pytest.raises(ValueError, match="invalid proof JSON"):
+        MODULE._payload_json(tmp_path, "proof.json", label="proof manifest")
+
+
+def test_proof_json_consumers_use_one_decoder() -> None:
+    # Envelope/schema readers only: Nextest's event grammar remains domain-owned.
+    consumers = (
+        "tools/ci/write-proof-manifest.py",
+        "tools/ci/write-proof-aggregate.py",
+        "tools/ci/lint/check-proof-authority.py",
+        "tools/ci/lint/handoff_validation.py",
+        "tools/ci/lint/check-lane-handoff.py",
+        "tools/ci/write-error-authority-inventory.py",
+        "tools/ci/write-verification-receipt.py",
+        "tools/ci/proof_execution_result.py",
+    )
+    for relative in consumers:
+        tree = ast.parse((REPO_ROOT / relative).read_bytes())
+        assert any(
+            isinstance(node, ast.ImportFrom)
+            and node.module in {"tools.ci.proof_json", "proof_json"}
+            and any(alias.name == "parse_proof_json" for alias in node.names)
+            for node in ast.walk(tree)
+        ), relative
+        assert not any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "json"
+            and node.func.attr in {"load", "loads"}
+            for node in ast.walk(tree)
+        ), relative
 
 
 def _sha(path: Path) -> str:
@@ -218,6 +265,31 @@ def _dependency_diamond(tmp_path: Path, depth: int = 1):
         proofs[name] = proof
         payloads[name] = (payload, path, digest)
     return proofs, payloads
+
+
+def test_dependency_archive_refuses_duplicate_status_even_with_correct_digest(
+    tmp_path: Path,
+) -> None:
+    proofs, payloads = _dependency_diamond(tmp_path)
+    leaf = payloads["leaf"][0]
+    raw = b'{"status":"failed",' + json.dumps(leaf).encode()[1:]
+    digest = hashlib.sha256(raw).hexdigest()
+    archive = MODULE.proof_archive_relative_path(leaf, digest)
+    path = tmp_path / archive
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(raw)
+    parent = payloads["left"][0]
+    parent["dependency_receipts"] = [{"proof_id": "leaf", "path": archive, "sha256": digest}]
+    findings = MODULE.check_manifest(
+        parent,
+        manifest_path=tmp_path / payloads["left"][1],
+        proof=proofs["left"],
+        schema=json.loads(SCHEMA_PATH.read_text()),
+        root=tmp_path,
+        bind_source=False,
+        proof_by_id=proofs,
+    )
+    assert any("duplicate proof JSON key: status" in finding.message for finding in findings)
 
 
 @pytest.mark.parametrize("depth", [1, 3, 6])

@@ -674,6 +674,53 @@ fn strict_window_snaps_end_back_to_utf8_boundary() {
     let first_end = usize::try_from(first.end_byte).expect("end byte fits usize");
     assert!(text.is_char_boundary(first_end));
     assert_eq!(first.end_line, 2, "byte 34 sits on line 2");
+
+    // Independent original-byte union oracle: both cap and step can land
+    // inside a code point. Checking only the first snapped end misses a
+    // dropped character between otherwise valid adjacent spans.
+    for (window, overlap, prefix, tail) in [
+        (36, 0, 35, "ββ\r\nz"),
+        (1024, 0, 1023, "βz"),
+        (1024, 0, 1023, "😀z"),
+        (1024, 1, 1022, "😀\r\nz"),
+        (1024, 2, 1021, "😀βz"),
+        (1024, 3, 1020, "😀"),
+        (4, 0, 0, "😀β\r\nz"),
+        (2, 0, 0, "ββ"),
+        (1, 0, 0, "a\r\nz"),
+    ] {
+        let text = format!("{}{tail}", "a".repeat(prefix));
+        let file = source_file("hand/utf8-union.rs", &text);
+        let chunker = StrictWindowChunker::new(window, overlap);
+        let chunks = chunker.chunk(&file).expect("valid strict byte budget");
+        validate_chunks(&chunks, &file).expect("independent boundary oracle");
+        let mut covered = vec![false; file.bytes.len()];
+        let mut previous_start = None;
+        for chunk in &chunks {
+            let start = usize::try_from(chunk.start_byte).expect("start fits usize");
+            let end = usize::try_from(chunk.end_byte).expect("end fits usize");
+            assert!(
+                end.checked_sub(start).expect("ordered span") <= window,
+                "strict byte cap preserved"
+            );
+            if let Some(previous) = previous_start {
+                assert!(start > previous, "strict forward progress");
+            }
+            previous_start = Some(start);
+            assert_eq!(chunk.text.as_bytes(), &file.bytes[start..end]);
+            covered[start..end].fill(true);
+        }
+        assert!(covered.iter().all(|seen| *seen), "no original byte omitted");
+        let (_, coverage) = chunk_corpus(&chunker, &[file]).expect("corpus chunking");
+        assert_eq!(coverage.uncovered_bytes, 0);
+    }
+    for (window, text) in [(1, "β"), (1, "aβ"), (2, "😀"), (3, "😀")] {
+        let file = source_file("hand/impossible-budget.rs", text);
+        assert!(matches!(
+            StrictWindowChunker::new(window, 0).chunk(&file),
+            Err(quanta_index_retrieval_bench::BenchError::Chunk { .. })
+        ));
+    }
 }
 
 #[test]

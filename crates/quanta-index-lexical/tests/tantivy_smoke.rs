@@ -1152,6 +1152,225 @@ fn tantivy_regex_sidecar_verifies_authoritative_text() -> TestResult {
 }
 
 #[test]
+fn symbol_content_authority_shapes_fail_closed_on_both_ingest_paths() -> TestResult {
+    use quanta_index_contract::{
+        ReplaceLexicalScope, SearchCorpusReplaceScope, SearchPlaneErrorCodeV2, SearchScopeKey,
+    };
+    for scoped in [false, true] {
+        let dir = tempfile::tempdir()?;
+        let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+        let mut ops = vec![upsert_with_metadata(
+            "chunk",
+            "src/lib.rs",
+            "rust",
+            1,
+            1,
+            "content gate witness",
+        )?];
+        if scoped {
+            let bytes =
+                encode_symbol_payload("sym", "src/symbol.rs", "rust", "needle_symbol", 2, 2)?;
+            let symbol: SymbolRecord = ciborium::from_reader(bytes.as_slice())?;
+            let scope = SearchCorpusReplaceScope {
+                scope: SearchScopeKey {
+                    doc_surface: SearchScopeSurface::File,
+                    repo_relative_path: RepoRelativePath::new("src/symbol.rs"),
+                },
+                scope_digest: "symbol-scope".to_string(),
+                chunks: Vec::new(),
+                symbols: vec![symbol],
+            };
+            let mut payload = Vec::new();
+            ciborium::into_writer(
+                &(
+                    BatchIngestMode::ReplaceGeneration,
+                    None::<ManifestGeneration>,
+                    scope,
+                ),
+                &mut payload,
+            )?;
+            ops.push(LexicalChannelOp::ReplaceLexicalScope(ReplaceLexicalScope {
+                repo_id: repo(),
+                revision_id: revision(),
+                generation: generation(),
+                payload,
+            }));
+        } else {
+            ops.push(upsert_symbol(
+                "sym",
+                "src/symbol.rs",
+                "rust",
+                "needle_symbol",
+                2,
+                2,
+            )?);
+        }
+        adapter.build(&repo(), &revision(), generation(), &ops)?;
+        let searcher = adapter.open(&repo(), &revision(), generation())?;
+        let budget = RequestBudgetV1::unbounded();
+        let keyword = make_query(LqExpr::Leaf(LqLeaf::Keyword("needle_symbol".to_string())));
+        let mut content_keyword = keyword.clone();
+        content_keyword.filters.push(LqFilter::Content {
+            leaf: LqLeaf::Keyword("needle_symbol".to_string()),
+        });
+        for rows in [
+            searcher.search_symbols(&content_keyword, 10, &budget)?,
+            searcher.search_symbols_all(&content_keyword, &budget)?,
+        ] {
+            if rows.len() != 1 || rows.first().is_none_or(|row| row.candidate_id != "sym") {
+                return Err(format!(
+                    "scoped={scoped}: symbol keyword content filter missing: {rows:?}"
+                )
+                .into());
+            }
+        }
+        for filter in [
+            LqFilter::Type {
+                kind: LqType::Symbol,
+            },
+            LqFilter::Select {
+                dim: LqSelect::Symbol,
+            },
+        ] {
+            let mut routed = content_keyword.clone();
+            routed.filters.push(filter);
+            let rows = searcher.search(&routed, 10, &budget)?;
+            if rows.len() != 1 || rows.first().is_none_or(|row| row.candidate_id != "sym") {
+                return Err(format!(
+                    "scoped={scoped}: routed symbol keyword content filter missing: {rows:?}"
+                )
+                .into());
+            }
+        }
+        for rows in [
+            searcher.search_symbols(&keyword, 10, &budget)?,
+            searcher.search_symbols_all(&keyword, &budget)?,
+        ] {
+            if rows.len() != 1 || rows.first().is_none_or(|row| row.candidate_id != "sym") {
+                return Err(format!("scoped={scoped}: keyword symbol missing: {rows:?}").into());
+            }
+        }
+        let mut unsupported = Vec::new();
+        for leaf in [
+            LqLeaf::Phrase("needle_symbol".to_string()),
+            LqLeaf::RawString("needle_symbol".to_string()),
+            LqLeaf::Regex("needle_symbol".to_string()),
+        ] {
+            let expr = LqExpr::Leaf(leaf);
+            unsupported.extend([
+                make_query(expr.clone()),
+                make_query(LqExpr::Not(Box::new(expr.clone()))),
+                make_query(LqExpr::Any(vec![keyword.expr.clone(), expr.clone()])),
+                make_query(LqExpr::All(vec![keyword.expr.clone(), expr])),
+            ]);
+        }
+        for arg in [
+            LqPredicateArg::Phrase("needle_symbol".to_string()),
+            LqPredicateArg::RawString("needle_symbol".to_string()),
+        ] {
+            let expr = LqExpr::Leaf(LqLeaf::Predicate {
+                name: "symbol.has.name".to_string(),
+                args: vec![arg],
+            });
+            unsupported.extend([
+                make_query(expr.clone()),
+                make_query(LqExpr::All(vec![keyword.expr.clone(), expr])),
+            ]);
+        }
+        let mut regexp = keyword.clone();
+        regexp.options.pattern_type = LqPatternType::Regexp;
+        unsupported.push(regexp);
+        for leaf in [
+            LqLeaf::Phrase("needle_symbol".to_string()),
+            LqLeaf::RawString("needle_symbol".to_string()),
+            LqLeaf::Regex("needle_symbol".to_string()),
+        ] {
+            let mut filtered = keyword.clone();
+            filtered.filters.push(LqFilter::Content { leaf });
+            unsupported.push(filtered.clone());
+            filtered.expr = LqExpr::All(vec![
+                keyword.expr.clone(),
+                LqExpr::Leaf(LqLeaf::Predicate {
+                    name: "repo.has.content".to_string(),
+                    args: vec![LqPredicateArg::Keyword("absent_content_gate".to_string())],
+                }),
+            ]);
+            unsupported.push(filtered);
+        }
+        unsupported.push(make_query(LqExpr::All(vec![
+            LqExpr::Leaf(LqLeaf::Phrase("needle_symbol".to_string())),
+            LqExpr::Leaf(LqLeaf::Predicate {
+                name: "repo.has.content".to_string(),
+                args: vec![LqPredicateArg::Keyword("absent_content_gate".to_string())],
+            }),
+        ])));
+        for query in unsupported {
+            let refusal = |error: CoreError| -> TestResult {
+                if !matches!(
+                    error,
+                    CoreError::Typed {
+                        code: SearchPlaneErrorCodeV2::LexPlannerUnsupportedFilterCombo,
+                        ..
+                    }
+                ) {
+                    return Err(format!("scoped={scoped}: wrong refusal {error:?}").into());
+                }
+                Ok(())
+            };
+            refusal(
+                searcher
+                    .search_symbols(&query, 10, &budget)
+                    .err()
+                    .ok_or("symbol paged query falsely succeeded")?,
+            )?;
+            refusal(
+                searcher
+                    .search_symbols_all(&query, &budget)
+                    .err()
+                    .ok_or("symbol all query falsely succeeded")?,
+            )?;
+            for filter in [
+                LqFilter::Type {
+                    kind: LqType::Symbol,
+                },
+                LqFilter::Select {
+                    dim: LqSelect::Symbol,
+                },
+            ] {
+                let mut routed = query.clone();
+                routed.filters.push(filter);
+                refusal(
+                    searcher
+                        .search(&routed, 10, &budget)
+                        .err()
+                        .ok_or("symbol-routed text query falsely succeeded")?,
+                )?;
+            }
+        }
+        // These predicates explicitly search chunks even when the result domain is symbols.
+        for name in ["repo.has.content", "file.contains"] {
+            let query = make_query(LqExpr::All(vec![
+                keyword.expr.clone(),
+                LqExpr::Leaf(LqLeaf::Predicate {
+                    name: name.to_string(),
+                    args: vec![LqPredicateArg::Phrase("content gate".to_string())],
+                }),
+            ]));
+            let rows = searcher.search_symbols(&query, 10, &budget)?;
+            if name == "repo.has.content"
+                && (rows.len() != 1 || rows.first().is_none_or(|row| row.candidate_id != "sym"))
+            {
+                return Err(format!(
+                    "scoped={scoped}: chunk content repo gate lost symbol keyword: {rows:?}"
+                )
+                .into());
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn tantivy_executes_supported_type_and_select_filters() -> TestResult {
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());

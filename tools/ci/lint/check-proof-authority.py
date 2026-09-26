@@ -30,6 +30,10 @@ except ModuleNotFoundError:  # pragma: no cover - Python 3.10 compatibility
 
 
 ROOT = Path(__file__).resolve().parents[3]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from tools.ci.proof_json import parse_proof_json  # noqa: E402
+
 REGISTRY_PATH = ROOT / "tools/ci/proof-authority.toml"
 SCHEMA_PATH = ROOT / "tools/ci/proof-manifest.schema.json"
 HANDOFF_VALIDATION_PATH = ROOT / "tools/ci/lint/handoff_validation.py"
@@ -152,7 +156,7 @@ def _read_toml(path: Path) -> dict[str, Any]:
 
 
 def _read_json(path: Path) -> Any:
-    return json.loads(path.read_text(encoding="utf-8"))
+    return parse_proof_json(path.read_text(encoding="utf-8"))
 
 
 def _python_target_has_passed_case(path: str, passed_cases: set[tuple[str, str]]) -> bool:
@@ -844,7 +848,7 @@ def _payload_sha256(root: Path, value: str, *, label: str) -> str:
 
 
 def _payload_json(root: Path, value: str, *, label: str) -> Any:
-    return json.loads(_payload_bytes(root, value, label=label))
+    return parse_proof_json(_payload_bytes(root, value, label=label))
 
 
 def _check_p00_current_inventory(root: Path, artifacts: list[dict[str, Any]]) -> None:
@@ -1755,9 +1759,9 @@ def _check_manifest_local(
                 continue
             try:
                 if dependency["sha256"] not in _decoded:
-                    _decoded[dependency["sha256"]] = json.loads(dependency_bytes)
+                    _decoded[dependency["sha256"]] = parse_proof_json(dependency_bytes)
                 dependency_payload = _decoded[dependency["sha256"]]
-            except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            except ValueError as error:
                 findings.append(
                     Finding(manifest_path, f"dependency receipt is unreadable: {error}")
                 )
@@ -2230,7 +2234,7 @@ def check_aggregate_receipt(
                     root, proof["artifact"], label="aggregate dependency"
                 )
                 expected_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
-                manifest = json.loads(manifest_bytes)
+                manifest = parse_proof_json(manifest_bytes)
                 proof_repository = proof.get("paired_repository")
                 manifest_checkout = (
                     (paired_checkouts or {}).get(proof_repository)
@@ -2474,7 +2478,7 @@ def _main_locked(argv: list[str] | None = None) -> int:
         registry = tomllib.loads(
             _explicit_file_bytes(registry_path, label="proof registry").decode("utf-8")
         )
-        schema = json.loads(_explicit_file_bytes(schema_path, label="proof manifest schema"))
+        schema = parse_proof_json(_explicit_file_bytes(schema_path, label="proof manifest schema"))
     except (OSError, ValueError, json.JSONDecodeError, tomllib.TOMLDecodeError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 2
@@ -2571,7 +2575,7 @@ def _main_locked(argv: list[str] | None = None) -> int:
             findings.append(Finding(manifest_path, "required proof manifest is missing"))
             continue
         try:
-            payload = json.loads(_explicit_file_bytes(manifest_path, label="proof manifest"))
+            payload = parse_proof_json(_explicit_file_bytes(manifest_path, label="proof manifest"))
         except (OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
             findings.append(Finding(manifest_path, f"unreadable proof manifest: {error}"))
             continue

@@ -4,19 +4,36 @@ from __future__ import annotations
 
 import math
 import re
+import sys
 from pathlib import Path
 
 CONCURRENCY_COUNTS = (1, 8, 32)
 
+# Public serializer tags and scalar widths in searchd-harness/src/artifact.rs.
+ROUTE_FAMILIES = (
+    "lexical", "semantic", "hybrid", "symbol", "repomap", "history",
+    "runtime_catalog", "structural", "adversarial",
+)
+BENCH_SYNTAXES = ("native", "sourcegraph")
+RESULT_SHAPES = ("candidates", "commits", "diff_paths", "typed_error", "empty")
 
-def _non_negative_number(value: object) -> bool:
+
+def is_unsigned_integer(value: object, bits: int, *, minimum: int = 0) -> bool:
+    """A Python bool or an arbitrarily large int cannot represent a Rust uint."""
+    return type(value) is int and minimum <= value <= (1 << bits) - 1
+
+
+def is_non_negative_f64(value: object) -> bool:
+    """Reject non-finite or oversized numbers before any f64 conversion."""
     return (
         isinstance(value, (int, float))
         and not isinstance(value, bool)
-        and value >= 0
-        and value != float("inf")
-        and value == value
+        and 0 <= value <= sys.float_info.max
     )
+
+
+def _non_negative_number(value: object) -> bool:
+    return is_non_negative_f64(value)
 
 
 def _qps_matches(qps: float, served: int, window: float) -> bool:
@@ -168,11 +185,11 @@ def validate_concurrency(
             if (
                 not isinstance(latency, dict)
                 or type(latency.get("samples")) is not int
-                or latency["samples"] < minimum
+                or not is_unsigned_integer(latency["samples"], 32, minimum=minimum)
             ):
                 reasons.append(f"{name} needs at least {minimum} samples")
             last = group.get("last_result_count")
-            if last is not None and (type(last) is not int or last < 0):
+            if last is not None and not is_unsigned_integer(last, 64):
                 reasons.append(f"{name} malformed last_result_count")
             codes = group.get("error_codes")
             if (

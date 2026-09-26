@@ -48,6 +48,14 @@ workflow = ".github/workflows/ci.yml"
 job = "proof-authority-current-gate"
 step = "Produce P00 authority proof from the static gate"
 
+[rails.pr-benchmark-control-python]
+tier = "pr"
+command = "uv run --frozen --extra dev just benchmark-control-contract-local"
+target_kind = "python"
+workflow = ".github/workflows/ci.yml"
+job = "rust-policy"
+step = "Benchmark capture and custody contracts"
+
 [rails.correctness-fuzz-ipc-request]
 tier = "correctness"
 command = "cargo +nightly fuzz run ipc_request_decode -- -max_total_time=60"
@@ -338,6 +346,17 @@ targets = [
   "proof-local-scope-runner-python-owner",
 ]
 
+[python_scopes.benchmark-control-capture]
+targets = [
+  "benchmark-profile-capture-python-owner",
+  "benchmark-criterion-capture-python-owner",
+  "benchmark-recorded-capture-python-owner",
+  "benchmark-retrieval-capture-python-owner",
+  "benchmark-lexical-capture-python-owner",
+  "benchmark-lexical-scorer-python-owner",
+  "benchmark-portable-proof-python-owner",
+]
+
 [[python_targets]]
 id = "proof-aggregate-python-owner"
 path = "tools/ci/tests/test_write_proof_aggregate.py"
@@ -385,6 +404,48 @@ id = "proof-local-scope-runner-python-owner"
 path = "tools/ci/tests/test_run_local_test_scope.py"
 owner = "tools/ci/run-local-test-scope.py"
 rail = "pr-proof-authority-python"
+
+[[python_targets]]
+id = "benchmark-profile-capture-python-owner"
+path = "tools/ci/tests/test_benchmark_profile_capture.py"
+owner = "tools/benchmark/profile_capture.py"
+rail = "pr-benchmark-control-python"
+
+[[python_targets]]
+id = "benchmark-criterion-capture-python-owner"
+path = "tools/ci/tests/test_criterion_capture.py"
+owner = "tools/benchmark/criterion_capture.py"
+rail = "pr-benchmark-control-python"
+
+[[python_targets]]
+id = "benchmark-recorded-capture-python-owner"
+path = "tools/ci/tests/test_recorded_capture.py"
+owner = "tools/benchmark/recorded_capture.py"
+rail = "pr-benchmark-control-python"
+
+[[python_targets]]
+id = "benchmark-retrieval-capture-python-owner"
+path = "tools/ci/tests/test_retrieval_capture.py"
+owner = "tools/benchmark/retrieval_capture.py"
+rail = "pr-benchmark-control-python"
+
+[[python_targets]]
+id = "benchmark-lexical-capture-python-owner"
+path = "tools/ci/tests/test_lexical_capture.py"
+owner = "tools/benchmark/lexical_capture.py"
+rail = "pr-benchmark-control-python"
+
+[[python_targets]]
+id = "benchmark-lexical-scorer-python-owner"
+path = "tools/ci/tests/test_lexical_file_comparison.py"
+owner = "tools/benchmark/retrieval/lexical_file_comparison.py"
+rail = "pr-benchmark-control-python"
+
+[[python_targets]]
+id = "benchmark-portable-proof-python-owner"
+path = "tools/ci/tests/test_portable_proof.py"
+owner = "tools/benchmark/retrieval/portable_proof.py"
+rail = "pr-benchmark-control-python"
 
 [[integration_targets]]
 id = "contract-hybrid-candidate"

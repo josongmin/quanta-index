@@ -242,6 +242,15 @@ jobs:
       - name: Benchmark control-plane policy (registry, dependency direction, no direct bypass)
         run: python3 tools/ci/lint/check-benchmark-policy.py
 
+      - name: Install benchmark contract tooling
+        uses: astral-sh/setup-uv@v6
+
+      - name: Install just for benchmark contracts
+        uses: taiki-e/install-action@just
+
+      - name: Benchmark capture and custody contracts
+        run: uv run --frozen --extra dev just benchmark-control-contract-local
+
       - name: Digest fallibility (pub fn -> [u8; N] must be Result or doc'd infallible)
         run: python3 tools/ci/lint/check-digest-fallibility.py
 

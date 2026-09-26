@@ -11,6 +11,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 HANDOFF_CHECKER_PATH = REPO_ROOT / "tools/ci/lint/check-lane-handoff.py"
 PROOF_CHECKER_PATH = REPO_ROOT / "tools/ci/lint/check-proof-authority.py"
@@ -31,6 +33,21 @@ PROOF = _load("check_lane_handoff_proof", PROOF_CHECKER_PATH)
 INVENTORY_WRITER = _load("check_lane_handoff_inventory", INVENTORY_WRITER_PATH)
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [
+        b'{"status":"FAILED","status":"OWNER_PROOF_GREEN"}',
+        b'{"proofs":[{"failed":1,"failed":0}]}',
+        b'{"value":1e9999}',
+    ],
+)
+def test_handoff_json_reader_refuses_ambiguous_bytes(tmp_path: Path, raw: bytes) -> None:
+    path = tmp_path / "handoff.json"
+    path.write_bytes(raw)
+    with pytest.raises(ValueError, match="invalid proof JSON"):
+        HANDOFF._read_handoff_json(path, root=tmp_path)
+
+
 def _run(root: Path, *args: str) -> str:
     return subprocess.run(
         [*args], cwd=root, check=True, capture_output=True, text=True
@@ -44,6 +61,7 @@ def _fixture(tmp_path: Path) -> tuple[Path, dict, Path]:
         "Justfile",
         "tools/ci/lint/check-proof-authority.py",
         "tools/ci/lint/handoff_validation.py",
+        "tools/ci/proof_json.py",
         "tools/ci/proof-authority.toml",
         "tools/ci/proof-manifest.schema.json",
         "tools/ci/proof-aggregate.schema.json",

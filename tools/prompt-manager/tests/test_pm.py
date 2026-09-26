@@ -32,13 +32,15 @@ def run(*args: str) -> subprocess.CompletedProcess:
 def test_list_returns_expected_targets():
     result = run("list")
     assert result.returncode == 0
+    listed = {line.split()[0] for line in result.stdout.splitlines() if "→" in line}
     for name in [
         "agents",
+        "claude-entrypoint",
         "agent-core",
         "agent-playbook",
         "agent-rule-catalog",
     ]:
-        assert name in result.stdout
+        assert name in listed
     for retired in [
         "codex-rules",
         "codex-start",
@@ -47,7 +49,7 @@ def test_list_returns_expected_targets():
         "cursor-supplements",
         "claude",
     ]:
-        assert retired not in result.stdout
+        assert retired not in listed
 
 
 def test_status_runs():
@@ -92,10 +94,18 @@ def test_deprecated_and_inert_prompt_surfaces_are_absent():
         ".cursor/rules/AI-START-PROMPT.md",
         ".cursor/rules/FAIL-CLOSED-POLICY.md",
         ".cursor/rules/cursor-supplements.mdc",
-        "CLAUDE.md",
         "AGENT_REFERENCE.md",
     ]:
         assert not (REPO_ROOT / relative).exists(), relative
+
+
+def test_claude_entrypoint_imports_shared_contract_without_duplication():
+    result = run("preview", "--target", "claude-entrypoint")
+    assert result.returncode == 0, result.stderr
+    body = result.stdout.split("-->\n", 1)[1]
+    assert body == "@AGENTS.md\n"
+    assert (REPO_ROOT / "AGENTS.md").is_file()
+    assert "## Verification Contract" not in result.stdout
 
 
 def test_configured_render_budgets_are_enforced():

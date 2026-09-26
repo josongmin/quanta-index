@@ -9,6 +9,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 from bisect import bisect_right
 from dataclasses import dataclass
@@ -18,6 +19,10 @@ from re import Pattern
 import jsonschema
 
 ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from tools.ci.proof_json import parse_proof_json  # noqa: E402
+
 SCHEMA_PATH = ROOT / "tools/ci/error-authority-inventory.schema.json"
 DEFAULT_OUTPUT = ROOT / "artifacts/sep-21/p00/error-authority-inventory.json"
 
@@ -155,7 +160,7 @@ def publish_inventory(*, root: Path, output: Path, require_closed: bool) -> tupl
     except ValueError as error:
         raise ValueError("output must remain inside the repository") from error
     payload = build_inventory(root)
-    schema = json.loads((root / SCHEMA_PATH.relative_to(ROOT)).read_text(encoding="utf-8"))
+    schema = parse_proof_json((root / SCHEMA_PATH.relative_to(ROOT)).read_text(encoding="utf-8"))
     jsonschema.Draft202012Validator(schema).validate(payload)
     output.parent.mkdir(parents=True, exist_ok=True)
     serialized = (json.dumps(payload, sort_keys=True, indent=2) + "\n").encode()

@@ -16,8 +16,13 @@ What is not an edge:
     hold the shared type definitions every module uses;
   * a module and its own submodules: a module owns its subtree;
   * anything inside `#[cfg(test)]` items, and modules declared
-    `#[cfg(test)]` (test modules, test-support files);
+    `#[cfg(test)]` (test modules, test-support files), evaluated separately
+    for `lib.rs` and `main.rs` roots so binary attributes cannot hide library edges;
   * comments, doc comments (intra-doc links) and string literals.
+
+The existing `src/bin/` target exclusion remains explicit: library and
+`src/main.rs` file-owner graphs are covered; separately named binary targets
+under `src/bin/` require their own structural scope.
 
 A path through a facade (`mod.rs` re-export) is resolved to the submodule
 that defines the item, so a facade does not hide a cycle.
@@ -48,11 +53,11 @@ BASELINE = ROOT / "tools" / "ci" / "lint" / "baselines" / "module-cycles.txt"
 
 IDENT = r"[A-Za-z_][A-Za-z0-9_]*"
 DEFINITION_RE = re.compile(
-    r"^\s*(?:pub(?:\([a-z ]+\))?\s+)?(?:(?:const|async|unsafe)\s+)*"
+    r"^[ \t]*(?:pub(?:\([a-z ]+\))?\s+)?(?:(?:const|async|unsafe)\s+)*"
     r"(?:fn|struct|enum|trait|type|const|static|mod|union)\s+(" + IDENT + r")",
     re.M,
 )
-MACRO_RE = re.compile(r"^\s*macro_rules!\s+(" + IDENT + r")", re.M)
+MACRO_RE = re.compile(r"^[ \t]*macro_rules!\s+(" + IDENT + r")", re.M)
 MOD_DECL_RE = re.compile(r"^[ \t]*(?:pub(?:\([a-z ]+\))?\s+)?mod\s+(" + IDENT + r")\s*;", re.M)
 
 
@@ -258,13 +263,19 @@ def module_path_of(src: Path, file: Path) -> str | None:
     return "::".join(parts)
 
 
-def load_crate(crate_dir: Path) -> Crate:
+def load_crate(crate_dir: Path, root_file: str | None = None) -> Crate:
     src = crate_dir / "src"
     if not src.is_dir() or not any(src.rglob("*.rs")):
         raise ValueError(f"missing Rust source inventory for {crate_dir}")
+    if root_file is None:
+        root_file = "lib.rs" if (src / "lib.rs").is_file() else "main.rs"
+    if root_file not in {"lib.rs", "main.rs"} or not (src / root_file).is_file():
+        raise ValueError(f"missing Rust crate root {root_file} for {crate_dir}")
     crate = Crate(crate_dir.name)
     raw: dict[str, str] = {}
     for file in sorted(src.rglob("*.rs")):
+        if file.name in {"lib.rs", "main.rs"} and file.parent == src and file.name != root_file:
+            continue
         path = module_path_of(src, file)
         if path is None:
             continue
@@ -426,17 +437,30 @@ class Cycle:
 
 
 def find_cycles(crate_dirs: list[Path]) -> list[Cycle]:
-    found = []
+    # Root attributes and declarations belong to distinct compilation units.
+    # Analyze each root independently, retaining the existing crate/module keys.
+    found: dict[str, Cycle] = {}
     for crate_dir in crate_dirs:
-        crate = load_crate(crate_dir)
-        edges = module_graph(crate)
-        for component in cycles(edges):
-            members = set(component)
-            links = tuple(
-                f"{a} -> {b}" for a in component for b in sorted(edges[a]) if b in members
-            )
-            found.append(Cycle(crate.name, tuple(component), links))
-    return found
+        src = crate_dir / "src"
+        if not src.is_dir() or not any(src.rglob("*.rs")):
+            raise ValueError(f"missing Rust source inventory for {crate_dir}")
+        root_files = [name for name in ("lib.rs", "main.rs") if (crate_dir / "src" / name).is_file()]
+        if not root_files:
+            raise ValueError(f"missing Rust crate root for {crate_dir}")
+        for root_file in root_files:
+            crate = load_crate(crate_dir, root_file)
+            edges = module_graph(crate)
+            for component in cycles(edges):
+                members = set(component)
+                links = tuple(
+                    f"{a} -> {b}" for a in component for b in sorted(edges[a]) if b in members
+                )
+                cycle = Cycle(crate.name, tuple(component), links)
+                previous = found.get(cycle.key)
+                if previous is not None:
+                    cycle = Cycle(crate.name, cycle.modules, tuple(sorted(set(previous.links) | set(links))))
+                found[cycle.key] = cycle
+    return sorted(found.values(), key=lambda cycle: cycle.key)
 
 
 def read_baseline(path: Path) -> set[str]:

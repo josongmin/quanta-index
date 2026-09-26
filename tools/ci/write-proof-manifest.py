@@ -25,6 +25,10 @@ except ModuleNotFoundError:  # pragma: no cover - Python 3.10 compatibility
 
 
 ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from tools.ci.proof_json import parse_proof_json  # noqa: E402
+
 CHECKER_PATH = ROOT / "tools/ci/lint/check-proof-authority.py"
 REGISTRY_PATH = ROOT / "tools/ci/proof-authority.toml"
 SCHEMA_PATH = ROOT / "tools/ci/proof-manifest.schema.json"
@@ -60,8 +64,8 @@ def _load_module(name: str, path: Path) -> ModuleType:
 
 def _json_object_bytes(content: bytes, *, label: str) -> dict[str, Any]:
     try:
-        value = json.loads(content)
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        value = parse_proof_json(content)
+    except ValueError as error:
         raise ManifestRefused(f"{label} is not valid JSON: {error}") from error
     if not isinstance(value, dict):
         raise ManifestRefused(f"{label} root must be an object")

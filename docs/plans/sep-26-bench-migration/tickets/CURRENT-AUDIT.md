@@ -4,6 +4,265 @@
 language in `CLOSEOUT.md` and `BM-07-MIGRATION-MATRIX.md`. A registered producer
 and a valid typed fixture are not an implemented profile execution adapter.
 
+## Latest common lexical capture checkpoint
+
+Main base remains `577d60b518344163145ad2f1afe1f3e7c656762e` with concurrent
+dirty work. The lexical adapter was frozen independently at
+`421a2527bf0ecf310f8407c17d01daf16f026a74` in
+`/tmp/quanta-micro-audit.EwaPQA/proof-lexical-capture` (clean checkout).
+This does not qualify mutable main or the live products.
+
+**VERIFIED — common lexical recorded-input execution contract:**
+
+- `benchctl run lexical-diagnostic --lexical-spec <external-spec>
+  --evidence-root <external-root>` freezes all nine input roles, invokes the
+  existing lexical scorer as a subprocess and retains its report and logs.
+- Five product cases are promoted only after the whole capture succeeds.
+  Failed replacement does not displace the prior complete profile. Validation
+  binds registry, source, runtime and frozen inputs; replay re-scores raw bytes
+  without following the original mutable input paths.
+- Timeout/unavailable remain non-scored typed states, not zero recall.
+  Tampered payloads/inputs, registration drift and incompatible CLI controls
+  refuse. Full owner report retains hit rate, file recall and distinct latency
+  layers; the typed retrieval payload does not invent parity or qualification.
+- Frozen selected suites: lexical capture/scorer, retrieval capture, manifest,
+  policy, CLI and source closure: **182 passed in 178.58 s** using
+  `uv run --frozen --extra dev python -m pytest <seven owner test files> -q
+  -p no:cacheprovider --basetemp=/tmp/quanta-micro-audit.EwaPQA/lexical-capture-frozen-fixtures
+  --junitxml=/tmp/quanta-micro-audit.EwaPQA/lexical-capture-frozen.xml`.
+  JUnit SHA-256: `aa6f53f78d4730291acfe251a49c447fb34847d9937bf42c9bf2d549fb96fcf1`.
+- Actual fresh CLI capture, validate, summary and separate replay for each
+  of the five run IDs completed on fixed **test-generated inputs** at
+  `/tmp/quanta-micro-audit.EwaPQA/lexical-cli-contract`. Capture/validate output
+  SHA-256: `c18f341aeb535e61a42d85217265bc3e44bf87ca060dd63e09e15aa3e5784d62`.
+  Sourcegraph replay: `fe9bc7dc265a0c6539791a81fc636c071ce74de3fcd86f89be70201de6bb22f7`;
+  OpenGrok: `41df62685d63f0f6a08461e2a76cefbf10ea0186b7f0c081616d3138768de6c3`;
+  cs: `ff94edcb8d54568adc2276856d45b50cfaa2368d83da8c74db09e11cea123615`;
+  Quanta: `d5eb808215b206cc4b4248039cce64cc9aef36fe1c4ffe1ab95791f225cde543`;
+  Semble: `d36dd98576385cf9686cfa8e7c0aaee0fd213dd5c2777e1b5ba7bf7ac08cd7cd`.
+
+**NOT_RUN — fresh live-product search/corpus pilot, paired common CLI adapter,
+quality/performance qualification and hosted CI.** Fixture commands prove the
+execution/evidence contract, not comparator availability, independent gold,
+live index freshness or product quality/speed. Real native micro and retrieval
+contract processes still have no accepted terminal complete-profile receipt.
+
+The latest local/CI wiring correction adds one
+`benchmark-control-contract-local` recipe, selected by locked uv from both
+PREP and the CI `rust-policy` job. Seven capture/scorer owner targets are
+registered in `tools/ci/test-authority.toml`. The authority guard checks that
+the exact workflow command executes an unfiltered pytest selection; it accepts
+only the exact locked uv prefix, not arbitrary wrappers or collect-only runs.
+Current dirty-main authority validation and Ruff passed. The full new recipe
+and hosted execution are not qualified by those structural checks.
+
+Runtime wiring follow-up: launching `uv run ... just` alone did not preserve
+the Python executable through Just's `zsh -lc` shell: the initial recipe selected
+system Python 3.9 rather than uv Python 3.13.9. That source (`e11efc58`) is not
+accepted as locked-runtime proof. The recipe now invokes
+`uv run --frozen --extra dev python -m pytest` internally. Frozen corrected
+source is `816dac2aa5c4b0f0d4de741f5d595e4cd0146e12` under
+`/tmp/quanta-micro-audit.EwaPQA/proof-ci-runtime`; full recipe result is pending.
+
+The earlier frozen lexical owner regression at `febcb612` has now terminated:
+449 passed in 1623.68 s. Receipt
+`/tmp/quanta-micro-audit.EwaPQA/lexical-owner-frozen-final.xml`, SHA-256
+`fd42ad100042b59c32ababbc3dd4d7a51d712bf3964145bd97e3508fb5d237e1`.
+Its seven suites include the full native retrieval Python owner contract but
+exclude the later common lexical adapter and CI/runtime wiring changes. It
+does not supersede the source-bound 182-test adapter receipt above.
+
+## Latest lexical owner / registration correction
+
+Main reached `577d60b518344163145ad2f1afe1f3e7c656762e` with concurrent
+dirty changes. This section is newer than the contract checkpoint below.
+
+Source-backed corrections:
+
+- `lexical-file-comparison` was incorrectly registered against the pair
+  producer and manifest schema. It now names `lexical_file_comparison.py --spec`
+  and `lexical-file-diagnostic:v1`; the five-product profile is
+  `lexical-diagnostic`, separate from `retrieval-diagnostic` pair execution.
+- Validators now name their actual owners: `portable_proof.py verify` for
+  SDK/contract receipts, `run.py verdict` for pair captures, the lexical scorer
+  for five-product rows. A proof adapter refuses changed validator, scorer,
+  schema, unit, host policy or gate tier rather than silently using its old
+  hardcoded owner under new registration.
+- The lexical product scorer formerly labelled any-hit rate as file recall.
+  One retrieved file out of two gold files now yields Hit@10=1 and Recall@10=0.5.
+  Both metrics and per-query observations are retained. Pair hit counts are
+  derived from hit observations, not rounded from macro recall. The evaluator
+  emits actual per-query file recall from native candidates; the lexical scorer
+  cross-checks those observations against the aggregate. Missing historical
+  fields require original-record re-scoring, never defaulted score upgrades.
+- Duplicate JSON keys, non-finite constants, non-object rows, symlinked inputs,
+  malformed IDs/paths/count types and files changed during reading refuse.
+  Score and digest use the same bytes. Output is exclusive-create and mixed
+  explicit/spec input controls refuse before output.
+
+Scoped dirty-main tests passed: 86 tests over lexical owner, registry and CLI
+in 24.86 s; raw `/tmp/quanta-micro-audit.EwaPQA/lexical-owner-current.xml`,
+SHA-256 `7170078ecbcf7e99ed9813f5570ac5e70f665b7da58d8ddeae1935b1a1b37d02`.
+Owner-registration and proof focused rerun: 29 passed in 10.33 s; raw
+`registry-owner-guard-fixed.xml`, SHA-256
+`0fa5cec438ef3d7d06b97c37ff83b29b5ca969e23a472fbca659d88fe37c6ee6`.
+The preceding run failed six tests because a new test was inserted before
+the prior test's final context assertion; that fixture scope error was fixed,
+not suppressed. These moving-main checks do not qualify clean product execution.
+
+Private clean `febcb612c76c580dacbe8c2919cdfab31bb5d88e` at
+`/tmp/quanta-micro-audit.EwaPQA/proof-lexical` freezes the lexical metric change,
+profile split and initial negative tests. A seven-file suite including all
+`test_retrieval_benchmark.py` tests is live; no terminal receipt is accepted yet.
+Later validator registration/owner guards and exclusive-output CLI fixes on
+main are not in this older snapshot and need their own final freeze.
+
+Actual historical product rows were re-scored in that clean snapshot using
+`_tasks` and `product_result`, with suites/packs from external
+`qi-rb-coverage-set-2026-09-25/bare-symbol-lexical-inputs-03/{gin,ripgrep}`
+and raw Sourcegraph/OpenGrok/cs recordings. Result raw:
+`/tmp/quanta-micro-audit.EwaPQA/actual-lexical-products-recomputed.json`, SHA-256
+`01d088ff2e413556eb72fdea79df8d65a9d4320ff57241d7f14a1afd545a0447`.
+The result records exact corpus revisions and suite/pack/raw digests.
+
+| Corpus | Sourcegraph Hit/Recall@10 | OpenGrok Hit/Recall@10 | cs Hit/Recall@10 |
+| --- | --- | --- | --- |
+| gin, 20 recorded bare-symbol queries | 20/20, 1.0 | 20/20, 1.0 | 20/20, 1.0 |
+| ripgrep, 20 recorded bare-symbol queries | 20/20, 1.0 | 19/20, 0.95 | 19/20, 0.95 |
+
+This is **VERIFIED historical-recording diagnostic recomputation**, not fresh
+service execution, independent gold, search-universe proof or a qualified
+comparison. Sourcegraph stream HTTP, OpenGrok REST HTTP and cs spawn+search
+latencies are retained separately; no cross-product speed ratio is valid.
+Old pair lockfiles lack current execution profiles and reports lack per-query
+file recall: the current five-product scorer refuses them rather than silently
+upgrading the old pair. New common paired/lexical capture adapters, current
+paired raw re-scoring and actual fresh pilot remain open.
+
+Current registry digest after owner corrections:
+`sha256:8725e8077ab03768846c0249189a1d1d3a07a377107275d06ff67bafe756c2c7`.
+`check-benchmark-policy.py --print-registry-digest` exited 0. This is policy
+registration proof, not measured-result proof.
+
+Latest mutable-source owner suite after exclusive-create CLI and registry
+guards: `uv run --frozen --extra dev python -m pytest
+tools/ci/tests/test_lexical_file_comparison.py
+tools/ci/tests/test_benchmark_manifest.py tools/ci/tests/test_retrieval_capture.py
+-q -p no:cacheprovider --junitxml=/tmp/quanta-micro-audit.EwaPQA/lexical-registration-owner-final-current.xml`
+exited 0: **53 passed in 17.10 s**. Raw JUnit SHA-256
+`5d90b4cfb33184737ea54e2b730913232c2504dc969b33b3177eb195cf7609dd`.
+Scope: owner math, typed refusal, schema/registration and CLI output contracts;
+excludes fresh product queries, common diagnostic profile capture and whole-repo
+qualification. Ruff and scoped `git diff --check` exited 0.
+
+Audited current implementation SHA-256 (shared main, not a clean snapshot):
+
+| File | SHA-256 |
+| --- | --- |
+| `tools/benchmark/registry.toml` | `1cae8c8f3afd355a3c0077de95da26d1ce8a000e79168e2a1f80db257022941e` |
+| `tools/benchmark/retrieval/evaluator.py` | `d7a426088c3b096a900692037ce7947fdf71d2f8a6593a2f1e908855a1e67ebc` |
+| `tools/benchmark/retrieval/lexical_file_comparison.py` | `18ffc8c994e2a684a47e2b55b0ece2122b4a9758cf2b2066ae65758884495b7e` |
+| `tools/benchmark/retrieval_capture.py` | `7635fd89aa44615d0d236496bc8e86e12d89ba9888e2e0cf38743dbb6e3957cf` |
+
+## Latest BM-05 contract adapter checkpoint
+
+Shared main advanced to `2c08dccff4a9c1c23a3885dc74f10a5e9f4bd5f8`
+with concurrent dirty work. This checkpoint does not qualify mutable main.
+Verification uses private clean snapshot
+`9f8892ae9ca6e87eba7ecf4be986f09689857fc7` at
+`/tmp/quanta-micro-audit.EwaPQA/proof-retrieval`. The snapshot includes the
+matching current portable proof owners and their dependency/test authorities;
+no other owner's source was reset or committed on main.
+
+Implemented:
+
+- Common `run/validate/replay/summarize retrieval-contract` executes both
+  registered SDK and contract owners. `retrieval_capture.py` reuses their
+  portable validator and publishes only a complete two-family capture.
+- Rust, Python and the registry distinguish terminal test `proof` counts from
+  retrieval relevance. Selected/executed/pass/fail counts, source and execution
+  context digests are bound. Wrong-source, partial execution, failed tests
+  presented as passing and quality/performance scope are refused.
+- Native raw receipts retain original command/path provenance after immutable
+  relocation. SDK runner/searchd binaries are frozen independently of live
+  caches. Build target comes from recorded rustc host/target identity, not a
+  guessed OS/architecture string. Replay re-derives owner counts and checks
+  toolchain, binary, target and input inventories.
+- Shared producer execution retains owned process-group cancellation/deadline
+  behavior and explicitly refuses non-POSIX hosts. External retrieval Just
+  parameters are exported and quoted, not interpolated into shell syntax.
+
+Frozen verification commands:
+
+```sh
+uv run --frozen --extra dev python -m pytest \
+  tools/ci/tests/test_retrieval_capture.py \
+  tools/ci/tests/test_portable_proof.py \
+  tools/ci/tests/test_bench_protocol_conformance.py \
+  tools/ci/tests/test_benchctl.py \
+  tools/ci/tests/test_criterion_capture.py \
+  tools/ci/tests/test_benchmark_source_closure.py \
+  -q -p no:cacheprovider \
+  --junitxml=/tmp/quanta-micro-audit.EwaPQA/retrieval-contract-frozen-final.xml
+./scripts/cargow --lane test-light-lane test \
+  -p quanta-index-bench-protocol --locked
+```
+
+Environment: macOS/aarch64, locked Python 3.13.9 and rustc 1.92.0.
+**VERIFIED** scoped contract tests: Python 199 passed in 131.49 s;
+Rust 38 adversarial + 2 conformance + 8 round-trip passed.
+JUnit SHA-256:
+`0190aca93e871eb9da3f111e143f90e835468ea351fa6ae299f0b9dc3d845d9c`.
+Rust raw log `/tmp/quanta-micro-audit.EwaPQA/retrieval-proof-protocol-rust.log`,
+SHA-256 `e2b3c08f8d49dcdaed239e7c387caaa8596d4af61ac91a59712afdfbae357d94`.
+Frozen `cargow --lane test-light-lane fmt -p quanta-index-bench-protocol -- --check`
+and `clippy -p quanta-index-bench-protocol --all-targets --locked` also exited 0.
+Clippy raw `/tmp/quanta-micro-audit.EwaPQA/retrieval-proof-protocol-clippy.log`,
+SHA-256 `b3d0e4d5d94585b12bef561b191170a88588baac858323133a5ea03f490c1d39`.
+Composite source closure has 903 files and digest
+`494c88a057c1827ac9486c9e8427a232df8a7b69ae37e57a7e8fa3717224a598`;
+raw `/tmp/quanta-micro-audit.EwaPQA/retrieval-common-source.json`, SHA-256
+`a2eac9db450cdb038f10f59ad0b4e78d9f1c488a35b5ab8d05b14d8e2a667aaa`.
+
+Failures retained: mutable-source expanded run had 197 passes and one stale
+message assertion after the source-closure owner hardened committed-byte
+checking. The source mutation was correctly refused; the test now asserts
+dirty-source refusal and the exact affected path. Raw failed JUnit
+`retrieval-contract-final-current.xml`, SHA-256
+`69aae6551ddd3cd0b7050339ff9d22ffe0e461c947fa7543ff26e4cf64c6a6e2`.
+Four earlier argv shim tests invoked real tools because the configured login
+shell reset PATH. Tests now override only the test shell to preserve the shim
+PATH and exercise the real quoted recipes; no product proof is inferred from
+these shim tests.
+
+An additional dirty-main CLI admission regression (added after the frozen
+receipt) confirms dirty-source `RuntimeError` becomes exit 2 before any producer
+or evidence directory is created. Focused dirty-main suite: 23 passed in
+56.38 s; raw `/tmp/quanta-micro-audit.EwaPQA/retrieval-dirty-refusal-current.xml`,
+SHA-256 `c41cbf8cc8206e89cb17f8c0e0b91b10fca1fc3aaf3cac833e31059f36b5b419`.
+This does not extend the frozen 199-test source receipt to newer main edits.
+
+Actual common CLI run is in progress in the same clean snapshot:
+
+```sh
+CARGO_BUILD_JOBS=2 uv run --frozen --extra dev python tools/benchmark/benchctl.py \
+  run retrieval-contract \
+  --evidence-root /tmp/quanta-micro-audit.EwaPQA/retrieval-proof-actual \
+  --producer-timeout 7200
+```
+
+Raw log: `/tmp/quanta-micro-audit.EwaPQA/retrieval-proof-actual.log`.
+No complete profile is accepted yet: actual SDK/contract producer completion,
+fresh-process validation and both replays remain **NOT_RUN** until terminal
+results. This receipt does not cover paired/lexical comparison, independent
+gold, quiet-host performance, all Rust packages or hosted CI.
+
+Remaining implementation: `retrieval-diagnostic` paired/lexical common adapter,
+external corpus/capture custody and scorer cross-check; native measured binary
+inventory/monitored host lease (including contract Rust test-executable custody,
+not just the SDK runner/searchd pair); global cutover/CI. The in-progress micro capture
+still binds the older clean `9e0f9371` snapshot, not this newer closure.
+
 ## BM-04 follow-up: Criterion adapter and complete-profile custody
 
 This section is newer than the historical source/receipt block below. Work
@@ -351,13 +610,14 @@ in-progress root above; it is **NOT_RUN** until that sequence terminates.
 | Owner | Required code work | DoD |
 | --- | --- | --- |
 | BM-04 | Complete the actual full-profile Criterion capture/validate/replay receipt | Adapter and focused custody tests exist; require both registered targets and every case through the clean frozen CLI, then fresh-process raw-derived replay. Diagnostic ns only; instruction and performance rails are not implemented/qualified. |
-| BM-05 | Retrieval CLI parameter and evidence adapters | Explicit external corpus/query/gold/capture paths; reuse existing scorer/proof owners; one immutable complete profile capture; file/span and judged/unjudged spaces preserved; raw-derived replay and source/input mismatch negatives |
+| BM-05 | Paired CLI execution/evidence adapter, fresh live lexical pilot and actual contract-profile receipt | Contract and lexical recorded-input adapters exist; lexical frozen contract tests and CLI replay are VERIFIED above. Require terminal actual SDK/contract run plus fresh validation/replay, paired common execution with external corpus/query/gold paths, and a fresh real-product/corpus lexical pilot. Preserve file/span and judged/unjudged spaces and reuse scorer owners. |
 | BM-06 | No remaining unauthenticated import implementation gap in this audited scope | Clean-source import/validate/two-family fresh-process replay is VERIFIED on fixed fixtures. Authentic recording verification and real-agent outcomes remain NOT_RUN; the CLI rejects authenticated claims rather than fabricating that proof. |
 | BM-04/07 | Native build/binary inventory and capture-time host lease | Exact executed binary/toolchain/flags bound before execution; monitored lease loss and generator saturation exclude speed/capacity qualification; clean-source representative capture and hosted CI receipts |
 
 BM-00/01/02 infrastructure remains in place. BM-03 is a partial execution
 surface, BM-04 has native wiring/fixture coverage but not complete micro support,
-BM-05 is still registration/contracts rather than a completed capture adapter;
+BM-05 has contract-proof and lexical recorded-input adapters but no completed
+paired common adapter or fresh live lexical pilot;
 BM-06 has a verified unauthenticated diagnostic import contract, not real-agent
 qualification. BM-07 cannot claim global cutover while the other gaps remain.
 

@@ -41,6 +41,7 @@
     "generation": {"type": "integer", "minimum": 0},
     "embedder": {"enum": ["potion-code", "hash-dev"]},
     "query_stage_observation": {"enum": ["enabled", "disabled"], "default": "enabled", "description": "Actual daemon server-query-stage observation policy, explicitly passed by the runner and bound in diagnostic v5/protocol. Does not disable request/deadline or operational metrics. Sidecar serialization is separate."},
+    "experimental_hybrid_fetch_floor": {"enum": ["25", "50", "100"], "default": "100", "description": "Bounded experimental startup selector. Production default remains 100. Explicit daemon env and diagnostic v6/protocol4 config digest bind the selected floor; top-k, probe and ceiling rules still apply."},
     "cache_regime": {"enum": ["true_process_cold", "warm_cache", "undeclared"]},
     "seed": {"type": "integer", "minimum": 0},
     "timeout_secs": {"type": "integer", "minimum": 1},

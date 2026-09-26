@@ -1,6 +1,6 @@
 # RBR 공통 검증·완료 계약
 
-상태: 공통 완료 계약. 현재 `f9c3b4dc` + 공유 dirty의 구현·명령별 실행 판정은 [CURRENT-AUDIT.md](CURRENT-AUDIT.md)의 최신 절을 따른다. strict fixture/manual serde 및 server observation/V2 ingest 연결을 구현했으나 focused/local 실행은 clean-source proof나 qualified final pair가 아니다. 두 bare-symbol 탐색 pair의 `PAIR_VALID=pass`는 이 게이트를 대체하지 않는다. 이 문서 변경도 retrieval source closure 입력이다. 기존 [RB TEST-PLAN](../../sep-23-retrieval-bench/tickets/TEST-PLAN.md)의 입력 격리·replay·성능 자격을 약화하지 않는다.
+상태: 공통 완료 계약. 현재 `2c08dccf` + 공유 dirty의 구현·명령별 실행 판정은 [CURRENT-AUDIT.md](CURRENT-AUDIT.md)의 최신 절을 따른다. strict fixture/manual serde 및 server observation/V2 ingest·typed floor 연결을 구현했으나 focused/local 실행은 clean-source proof나 qualified final pair가 아니다. 현재 diagnostic6/protocol4는 requested floor와 실제 initial-fetch trace를 대조한다. 두 bare-symbol 탐색 pair의 `PAIR_VALID=pass`는 이 게이트를 대체하지 않는다. 이 문서 변경도 retrieval source closure 입력이다. 기존 [RB TEST-PLAN](../../sep-23-retrieval-bench/tickets/TEST-PLAN.md)의 입력 격리·replay·성능 자격을 약화하지 않는다.
 
 ## 1. 공통 oracle와 부정 테스트
 
@@ -13,7 +13,7 @@
 
 | 티켓 | 독립 oracle / 핵심 반례 | 최소 owning rail |
 | --- | --- | --- |
-| 00 | 실제 pytest/nextest collection; 새 계약 파일 변경 시 closure 거부; profile 위조 | Python proof/receipt tests + contract |
+| 00 | 실제 pytest/nextest collection; 새 계약 파일 변경 시 closure 거부; profile 위조. JUnit subTest count를 임의 보정하지 않고 producer의 독립 collected identity와 terminal을 정확 대조 | Python proof/receipt tests + contract |
 | 01 | SDK/sidecar 필드 대조; executed-but-empty lane; missing stage; exact enabled/disabled startup selector·config SHA; 실제 daemon 결과/페이지/cursor/failure 동등성, OFF explicit null. stage collection+DTO serialization/transport A/B와 runner sidecar 직렬화 분리 | contract + SDK + bounded overhead |
 | 02 | DSL AND 보존; literal escaping; sentence/identifier paired fixture; gold 비접근 | contract + SDK |
 | 03 | pinned reference 함수 출력과 lane 호출 spy; alpha endpoint도 dual execution | Python adapter + 실제 pinned Semble 개발 캡처 |
@@ -22,7 +22,7 @@
 | 06 | UTF-8/CRLF/긴 줄/겹친 span의 손계산; rank와 density의 독립 계산 | chunking contract + Python scorer |
 | 07 | strict schema/required policy·명시적 null/canonical input·norm·pairwise triangle 검증과 omission/subset/reorder/forgery 거부; full vectors + exhaustive cosine; 255/256·short/full ANN; 조건부 T15 raw/asset/실행 custody | asset-free validator + actual asset embed + semantic integration + proof replay |
 | 08 | 정확 이름/동명이인/부분일치; stable tie; multi-page no duplication/omission | lexical fixtures + storage |
-| 09 | 동일 후보 fixture에서 fusion 불변식; sparse filters; deadlines; actual lane cost | semantic/storage + daemon |
+| 09 | typed25/50/100와 default100; k1/10/100/public cap의 probe·ceiling·refill·pin·force-empty; spec/daemon/diagnostic6/lock4 SHA 및 actual initial-fetch exact trace. bool/float/unknown/missing/duplicate/alias 거부; 동일 후보 fixture에서 fusion 불변식; sparse filters; deadlines; actual lane cost | semantic/storage + 실제 SDK/daemon + 외부 ANN guard |
 | 10 | fresh/delta/reopen/replay/tombstone/fault/restart row set; transient observation의 request/repo/revision/batch/generation/receipt·activation digest 혼합·누락·partial/replay 거부; durable receipt timing 비혼입; V2 wire tag old request dispatch 전 거부·body digest 유지 | semantic integration + 실제 SDK/daemon |
 | 11 | 실제 프로세스 트리와 positive-RSS descendants; zero-RSS 연결 노드 | Python sampler + platform별 owner check |
 | 12 | cross-suite dev/holdout file·definition·query-family 누수 거부; raw receipts/records로 fresh-process verdict 재도출; wrong-source/admission 및 조건부 T15/T16 `pass` 요약 위조 거부 | contract proof + SDK proof + pair/replay |

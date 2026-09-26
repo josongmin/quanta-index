@@ -69,6 +69,7 @@ struct StageSemantics {
 }
 
 /// Only request correlation and observed elapsed time are nondeterministic.
+///
 /// Preserve timing availability, order, kinds, calls, counts and every other
 /// explanation field. Exhaustive destructuring forces review of new fields.
 #[derive(Debug, PartialEq)]

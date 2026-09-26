@@ -96,7 +96,8 @@ def test_changed_file_invalidates_the_closure(tmp_path: Path) -> None:
     try:
         module.build_manifest(repo, "bm-synthetic")
     except module.ClosureError as error:
-        assert "refusing dirty relevant source" in str(error)
+        assert "dirty relevant source" in str(error)
+        assert "tools/benchmark/registry.toml" in str(error)
     else:
         raise AssertionError("a changed normative file was captured into a closure")
 
@@ -290,7 +291,9 @@ def test_ignored_executable_python_helper_cannot_be_omitted_from_manifest(tmp_pa
     _git(repo, "add", "-A")
     _git(repo, "commit", "-qm", "ignored helper declaration")
     (repo / "tools/ignored_helper.py").write_text("VALUE = 1\n")
-    with pytest.raises(module.ClosureError, match="contains no files|cannot inventory"):
+    with pytest.raises(
+        module.ClosureError, match="contains no files|cannot inventory|not a committed"
+    ):
         module.build_manifest(repo, "python-synthetic")
 
 
@@ -395,4 +398,203 @@ def test_import_star_runtime_helper_change_invalidates_actual_manifest(tmp_path)
     helper.write_text("VALUE = 200\n")
     assert runtime() == "200"
     with pytest.raises(module.ClosureError):
+        module.verify_manifest(repo, manifest)
+
+
+@pytest.mark.parametrize("flag", ["--assume-unchanged", "--skip-worktree"])
+def test_git_visibility_flags_cannot_conceal_wrong_source_bytes(tmp_path, flag):
+    repo, module = _synthetic_repo(tmp_path)
+    manifest = module.build_manifest(repo, "bm-synthetic")
+    path = repo / "tools/benchmark/registry.toml"
+    _git(repo, "update-index", flag, "--", "tools/benchmark/registry.toml")
+    path.write_text("tampered source\n")
+    assert subprocess.check_output(["git", "status", "--porcelain"], cwd=repo, text=True) == ""
+    with pytest.raises(module.ClosureError, match="differs from committed HEAD"):
+        module.build_manifest(repo, "bm-synthetic")
+    with pytest.raises(module.ClosureError, match="differs from committed HEAD"):
+        module.verify_manifest(repo, manifest)
+
+
+def test_capture_rejects_hidden_source_change_after_read(tmp_path, monkeypatch):
+    repo, module = _synthetic_repo(tmp_path)
+    _git(repo, "update-index", "--assume-unchanged", "--", "tools/benchmark/registry.toml")
+    original = module._SourceFrame.read
+    changed = False
+
+    def concurrent_read(frame, path):
+        nonlocal changed
+        data = original(frame, path)
+        if path.name == "registry.toml" and not changed:
+            changed = True
+            path.write_text("changed after capture read\n")
+        return data
+
+    monkeypatch.setattr(module._SourceFrame, "read", concurrent_read)
+    with pytest.raises(module.ClosureError, match="source changed during closure operation"):
+        module.build_manifest(repo, "bm-synthetic")
+
+
+def test_deleted_hidden_import_cannot_disappear_from_committed_dependency_graph(tmp_path):
+    repo, module = _python_repo(tmp_path)
+    module.build_manifest(repo, "python-synthetic")
+    _git(repo, "update-index", "--assume-unchanged", "--", "tools/ci/junit_events.py")
+    (repo / "tools/ci/junit_events.py").unlink()
+    with pytest.raises(module.ClosureError, match="cannot read committed source"):
+        module.build_manifest(repo, "python-synthetic")
+
+
+def test_metadata_input_restoration_cannot_hide_capture_epoch_change(tmp_path, monkeypatch):
+    repo, module = _synthetic_repo(tmp_path)
+    manifest = repo / "Cargo.toml"
+    manifest.write_text("[workspace]\n")
+    module.PROFILES["bm-synthetic"]["paths"] += ("Cargo.toml",)
+    module.PROFILES["bm-synthetic"]["cargo_packages"] = ("fixture",)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "metadata source")
+    _git(repo, "update-index", "--assume-unchanged", "--", "Cargo.toml")
+
+    def racing_metadata(_repo, _packages):
+        original = manifest.read_bytes()
+        manifest.write_text("[workspace]\n# different dependency selection\n")
+        manifest.write_bytes(original)
+        return set()
+
+    monkeypatch.setattr(module, "_cargo_roots", racing_metadata)
+    with pytest.raises(module.ClosureError, match="source changed during closure operation"):
+        module.build_manifest(repo, "bm-synthetic")
+
+
+def test_missing_local_resolve_node_cannot_hide_declared_package_source(tmp_path, monkeypatch):
+    repo, module = _synthetic_repo(tmp_path)
+    package = repo / "crates/fixture"
+    (package / "src").mkdir(parents=True)
+    manifest_path = package / "Cargo.toml"
+    manifest_path.write_text('[package]\nname = "fixture"\nversion = "0.1.0"\n')
+    source = package / "src/lib.rs"
+    source.write_text("pub const VALUE: usize = 1;\n")
+    module.PROFILES["bm-synthetic"]["cargo_packages"] = ("fixture",)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "declared local package")
+    metadata = {
+        "packages": [
+            {
+                "id": "fixture-id",
+                "name": "fixture",
+                "source": None,
+                "manifest_path": str(manifest_path),
+            }
+        ],
+        "resolve": {"nodes": [{"id": "fixture-id", "dependencies": []}]},
+    }
+    monkeypatch.setattr(module, "_metadata", lambda _repo: metadata)
+    manifest = module.build_manifest(repo, "bm-synthetic")
+    metadata["resolve"]["nodes"] = []
+    with pytest.raises(module.ClosureError, match="resolve node missing for local package"):
+        module.build_manifest(repo, "bm-synthetic")
+    source.write_text("pub const VALUE: usize = 200;\n")
+    with pytest.raises(module.ClosureError, match="resolve node missing for local package"):
+        module.verify_manifest(repo, manifest)
+
+
+@pytest.mark.parametrize("duplicate", ["package", "resolve node"])
+def test_duplicate_cargo_identity_cannot_replace_source_dependencies(
+    tmp_path, monkeypatch, duplicate
+):
+    repo, module = _synthetic_repo(tmp_path)
+    packages = []
+    for name in ("fixture", "helper"):
+        package = repo / "crates" / name
+        (package / "src").mkdir(parents=True)
+        manifest_path = package / "Cargo.toml"
+        manifest_path.write_text(f'[package]\nname = "{name}"\nversion = "0.1.0"\n')
+        (package / "src/lib.rs").write_text("pub const VALUE: usize = 1;\n")
+        packages.append(
+            {"id": name, "name": name, "source": None, "manifest_path": str(manifest_path)}
+        )
+    module.PROFILES["bm-synthetic"]["cargo_packages"] = ("fixture",)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "local dependency graph")
+    metadata = {
+        "packages": packages,
+        "resolve": {
+            "nodes": [
+                {"id": "fixture", "dependencies": ["helper"]},
+                {"id": "helper", "dependencies": []},
+            ]
+        },
+    }
+    monkeypatch.setattr(module, "_metadata", lambda _repo: metadata)
+    manifest = module.build_manifest(repo, "bm-synthetic")
+    if duplicate == "resolve node":
+        metadata["resolve"]["nodes"].append({"id": "fixture", "dependencies": []})
+        omitted_source = repo / "crates/helper/src/lib.rs"
+    else:
+        replacement = dict(packages[0], manifest_path=packages[1]["manifest_path"])
+        packages.append(replacement)
+        omitted_source = repo / "crates/fixture/src/lib.rs"
+    with pytest.raises(module.ClosureError, match=f"duplicate {duplicate} id"):
+        module.build_manifest(repo, "bm-synthetic")
+    omitted_source.write_text("pub const VALUE: usize = 200;\n")
+    with pytest.raises(module.ClosureError, match=f"duplicate {duplicate} id"):
+        module.verify_manifest(repo, manifest)
+
+
+@pytest.mark.parametrize("alias", ["file", "ancestor"])
+def test_normative_source_alias_cannot_hide_selected_dirty_source(tmp_path, alias):
+    repo, module = _synthetic_repo(tmp_path)
+    replacement = repo / "replacement"
+    replacement.mkdir()
+    (replacement / "registry.toml").write_text("different behavior\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "alternate committed source")
+    manifest = module.build_manifest(repo, "bm-synthetic")
+    if alias == "file":
+        original = repo / "tools/benchmark/registry.toml"
+        original.unlink()
+        original.symlink_to(replacement / "registry.toml")
+    else:
+        original = repo / "tools/benchmark"
+        (original / "registry.toml").unlink()
+        original.rmdir()
+        original.symlink_to(replacement, target_is_directory=True)
+    assert (repo / "tools/benchmark/registry.toml").read_text() == "different behavior\n"
+    with pytest.raises(module.ClosureError, match="aliased source root"):
+        module.build_manifest(repo, "bm-synthetic")
+    with pytest.raises(module.ClosureError, match="aliased source root"):
+        module.verify_manifest(repo, manifest)
+
+
+@pytest.mark.parametrize("alias", ["file", "ancestor"])
+def test_cargo_manifest_alias_cannot_replace_selected_package(tmp_path, monkeypatch, alias):
+    repo, module = _synthetic_repo(tmp_path)
+    for name in ("fixture", "other"):
+        package = repo / "crates" / name
+        (package / "src").mkdir(parents=True)
+        (package / "Cargo.toml").write_text('[package]\nname = "fixture"\nversion = "0.1.0"\n')
+        (package / "src/lib.rs").write_text(f'pub const NAME: &str = "{name}";\n')
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "packages with equal manifest bytes")
+    module.PROFILES["bm-synthetic"]["cargo_packages"] = ("fixture",)
+    selected = repo / "crates/fixture/Cargo.toml"
+    metadata = {
+        "packages": [
+            {"id": "fixture", "name": "fixture", "source": None, "manifest_path": str(selected)}
+        ],
+        "resolve": {"nodes": [{"id": "fixture", "dependencies": []}]},
+    }
+    monkeypatch.setattr(module, "_metadata", lambda _repo: metadata)
+    manifest = module.build_manifest(repo, "bm-synthetic")
+    if alias == "file":
+        selected.unlink()
+        selected.symlink_to(repo / "crates/other/Cargo.toml")
+    else:
+        package = selected.parent
+        selected.unlink()
+        (package / "src/lib.rs").unlink()
+        (package / "src").rmdir()
+        package.rmdir()
+        package.symlink_to(repo / "crates/other", target_is_directory=True)
+    with pytest.raises(module.ClosureError, match="aliased cargo manifest"):
+        module.build_manifest(repo, "bm-synthetic")
+    with pytest.raises(module.ClosureError, match="aliased cargo manifest"):
         module.verify_manifest(repo, manifest)

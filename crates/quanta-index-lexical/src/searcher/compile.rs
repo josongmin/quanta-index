@@ -443,6 +443,16 @@ impl TantivySearcher {
     ) -> Result<Option<PreparedExecutableQuery>, CoreError> {
         let (prepared_query, doc_kind) =
             self.prepare_query_for_doc_kind(query, default_doc_kind)?;
+        if crate::symbol::unsupported_symbol_query_text(
+            &prepared_query,
+            &prepared_query.expr,
+            matches!(doc_kind, QueryDocKind::Symbol),
+        ) {
+            return Err(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::LexPlannerUnsupportedFilterCombo,
+                message: "lexical: symbol text supports keyword postings only; phrase, raw substring and regex require an unsupported symbol authority".to_string(),
+            });
+        }
         let predicate_plan = self.prepare_predicate_plan(&prepared_query, budget)?;
         if predicate_plan.force_empty {
             return Ok(None);

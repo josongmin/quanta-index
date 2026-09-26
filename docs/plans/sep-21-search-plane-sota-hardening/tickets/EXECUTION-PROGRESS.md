@@ -1,5 +1,416 @@
 # SEP-21 execution evidence
 
+## 2026-09-26 direct-exit process-group custody
+
+Review and repair on shared dirty main
+`577d60b518344163145ad2f1afe1f3e7c656762e`; another writer advanced main to
+`b24d11489d250613c4871df6d65fa3d7e70daef4`. Other writers' changes were
+preserved; no commit, push, deployment or activation was performed.
+
+- RCA: the session shim returned after its direct child exited. A same-group
+  background descendant that closed stdout/stderr remained alive after exit 0,
+  exit 7 and SIGTERM, while the controller had already accepted completion or
+  returned the direct-child error. The prior liveness pipe only covered a live
+  shim, not this terminal transition.
+- Extended the existing `producer_execution.py` owner. The shim publishes the
+  actual child exit code through a private four-byte record and retains group
+  custody. The controller drains both outputs while awaiting that record;
+  it kills the group before polling/reaping the leader, then performs the
+  existing bounded drain/reap and interprets the record. An unreaped child PID
+  pins identity even if the reported shim is killed externally before cleanup.
+  Missing/partial/oversized/out-of-range records and unproved guard termination
+  cannot establish successful execution. Error paths close both control pipes
+  and restore handlers; cleanup does not signal an already-reaped identity.
+- One public execution API and unchanged success metadata; no receipt IR,
+  second executor, consumer-local cleanup or OS waitid dependency. Parent-death
+  cascade remains in the same owner. Deliberately escaped sessions are still
+  outside sandbox containment, with retained pipes causing bounded explicit
+  failure instead of completed execution.
+- Meaningful RED through the actual owner:
+  `uv run --locked --offline --extra dev python -m pytest
+  tools/ci/tests/test_criterion_capture.py -q -k direct_child_exit --tb=short`:
+  exit 1, 3 failed / 31 deselected, 10.41s. All three failures observed a live
+  background descendant after its direct child exited. Raw `red.log`, SHA-256
+  `87b344d70864497b5935be28255dfa92c7df1033300903f65dd045670bfe0e71`.
+- RR tightened report/cleanup ordering before acceptance. Interim 62-owner
+  pass preceded that change; the controller-owned ordering then produced
+  60-pass/2-fail because missing-record paths first encountered macOS EPERM
+  signalling a dead group, losing the primary diagnostic. The owner now
+  validates the private child-status record before the kill and preserves that
+  failure plus any incomplete-cleanup context. Assertions were not weakened.
+  Both intermediate logs remain under the raw directory.
+- The first complete locked owner command:
+  `uv run --locked --offline --extra dev python -m pytest
+  tools/ci/tests/test_criterion_capture.py tools/ci/tests/test_portable_proof.py
+  -q --tb=short`: exit 0, 67 passed, 23.37s. Coverage includes normal/nonzero/
+  signalled child exit, the same transitions with an externally killed reported
+  guard, malformed and absent terminal records, descriptor closure, output
+  larger than pipe capacity, reaped-PID rejection, timeout, SIGTERM, nested
+  owner SIGKILL and held-pipe escape with both live and exited direct children.
+  `owners-full-final.log`, SHA-256
+  `652536311df787f9e93eba1efe2ab3909ac7a7ca00bd25c14ccb721f946e1c14`.
+- The first caller command:
+  `uv run --locked --offline --extra dev python -m pytest
+  tools/ci/tests/test_retrieval_capture.py tools/ci/tests/test_lexical_capture.py
+  tools/ci/tests/test_benchmark_profile_capture.py
+  tools/ci/tests/test_retrieval_contract_proof.py -q --tb=short`:
+  exit 0, 87 passed, 19.65s. `callers.log`, SHA-256
+  `96f141e36800090650ccaea3796c9a89154c7dee05fed41a964bbe5148416818`.
+  These are local owner/caller tests, not actual retrieval campaign or release
+  command qualification.
+- Locked runtime: Python 3.13.9, pytest 9.1.1, macOS 15.6 arm64;
+  `uv.lock` SHA-256
+  `c9064e8ead8593a6054d50c9b8e7523026d07d9ae7c95ddbf1268d273d6dad73`.
+  Executor before the final SIGCHLD admission change, SHA-256
+  `6d6c320689e8e576165fd99bd64926f90a832148b64c32d9d267970bd4b30c4d`;
+  corresponding owner test SHA-256
+  `5afa4fa0754766582c5d7f950cf78fbc3fec306e1fba04d1cd7c9f25cd16c9ed`;
+  portable caller unchanged at
+  `ab1f64fde89b70a62df05a935a27fd43e538e35b4d0329f0ccc3d22d6d1ce5e7`.
+  Scoped Ruff check/format passed. Raw directory:
+  `/tmp/quanta-terminal-custody.YUbAEr` (temporary, not a release archive).
+- Final RR input-boundary counterexample: an external SIGCHLD handler could
+  reap a direct child behind the owner's back; SIG_IGN can auto-reap it. Either
+  destroys the unreaped-PID custody assumption. The actual owner initially
+  launched work in both cases. Locked `test_criterion_capture.py -q -k
+  external_sigchld --tb=short`: exit 1, 2 failed / 51 deselected, 20.52s;
+  `red-sigchld.log`, SHA-256
+  `4191f63ad20f7ee26f23bc1dd240015e7f6aee3b34331d76b3e275cde68d7475`.
+  The executor now requires default SIGCHLD before creating pipes or children;
+  neither unsupported mode is silently reset or accepted. Both negatives
+  independently assert that the command's marker was never created.
+- Final locked owner command is the same complete two-file command above:
+  exit 0, 69 passed, 32.27s. Raw `owners-with-reaping-custody.log`, SHA-256
+  `a46b8aca6289109f9d438e1d120048a3c12dcaf9454f9a7c3d4b7f6845dbd253`.
+  The same complete four-file caller command re-executed after the admission
+  change: exit 0, 87 passed, 20.91s. Raw
+  `callers-with-reaping-custody.log`, SHA-256
+  `5c4fb45e71cf50065c5ab33ae6e6ed52d2e29a3f7b59564ff3ca4896cfd94aa5`.
+  Final owner SHA-256:
+  `4ca9bf58c5061aa9125893b3312bc14706d5150cd24131900d7463667def922e`;
+  final owner test SHA-256:
+  `69290229cd6516697a007861124625d74fce5c9e6d40b06394e24593516c6867`.
+- System-Python compatibility only:
+  `python3 -m pytest tools/ci/tests/test_criterion_capture.py -q -k
+  'direct_child_exit or terminal_wait_drains or external_sigchld' --tb=short`:
+  exit 0, 9 passed / 44 deselected, 16.56s; Python 3.9.6 / pytest 6.2.5,
+  unlocked. `system-python-final.log`, SHA-256
+  `be8692c5c291fa8f91da318a438192b4e2398b64beaabed24f22ad23a3bf46c3`.
+  Its unrelated urllib3/LibreSSL warning is retained. This is not the managed
+  proof environment or repository qualification. Scoped Ruff check/format and
+  final whitespace check passed; owner/caller hashes stayed fixed across final
+  local proof execution.
+- Residual audit: portable proof's actual toolchain/wrapper execution binding
+  remains R0 OPEN_PROOF_GAP. `semantic/build.rs` still performs per-owner
+  serial deletes; the 1820-owner batch multiplier is source-observed, not
+  established daemon timeout RCA. Neither issue is marked repaired. The prior
+  mandatory daemon gate remains FAILED; no unchanged retry or weakened oracle.
+  Dirty-source, Linux/release, paired-process and operational proof obligations
+  remain in the current residual table; the active goal is not complete.
+
+## 2026-09-26 bounded producer execution and direct proof calls
+
+Started on shared dirty main `9e443489e06167bfbed3b4503af558495e27206d`;
+another writer advanced it to `577d60b518344163145ad2f1afe1f3e7c656762e`.
+No commit, push, deployment or activation was performed by this repair.
+
+- RCA: failure cleanup killed an owned group then called unlimited
+  `communicate()`. An escaped session holding the pipe prevented return.
+  Portable proof also used unrestricted subprocess calls for commands, SDK
+  recipes, Git and executable versions.
+- Extended `producer_execution.py`, the existing execution owner. It now owns
+  a ten-second cleanup deadline shared by drain and reap, explicit primary
+  failure plus incomplete-cleanup reporting, pipe close, and restoration of
+  signal handlers. Repeated cancellation does not interrupt the bounded drain.
+  Its error is a leaf `ProducerExecutionError(ValueError)`; importing the
+  execution owner no longer requires benchmark envelope/schema dependencies.
+- RR caught nested-session custody loss introduced by simply routing direct
+  proof calls through `start_new_session`. The same owner now starts a small
+  isolated session shim whose parent-liveness pipe kills the group when its
+  controller dies. Nested owned sessions cascade through descriptor EOF even
+  when outer cleanup/finally cannot run (SIGKILL). The shim checks private
+  session/group ownership before using group kill; it is not a second executor.
+- Portable proof Git/tool identities use 30-second execution deadlines;
+  proof/build/SDK recipe calls use 7200 seconds per command. All use the common
+  owner, with no raw subprocess alternate. Unsuccessful execution cannot append
+  a successful command record. Raw argv, inherited environment and receipt
+  semantics remain the existing portable-proof contract. No full-rail elapsed
+  time, clean-source or external sandbox containment is claimed.
+- Pre-patch meaningful RED: locked pytest of `test_criterion_capture.py` and
+  `test_portable_proof.py`, `-q -k 'failure_cleanup_has or
+  direct_proof_command_has' --tb=short`: 2 failed / 40 deselected, 2.55s.
+  The actual callers supplied no execution/cleanup timeout. Failures are in
+  terminal tool output, not an invented raw RED log.
+- Intermediate deadline owners: 44 passed in 12.68s; nested custody repair:
+  45 passed in 15.71s. The latter raw `guarded-owners.log`, SHA-256
+  `03a0d50251ef6973de075f427ee3fe6e6c32e89892c03eaa937181887a6c45df`,
+  in `/tmp/quanta-execution-deadline.G7FaGN`. Expanded real direct-command tests
+  then exposed two fixture defects: non-atomic PID publication and an escaped
+  child not starting before a one-second deadline on the loaded host. The
+  resulting 45-pass/2-fail `final-owners.log` is preserved. PID publication is
+  now atomic, and only the reproduction's execution allowance changes to five
+  seconds; production deadlines are unchanged. Final locked command of both
+  complete owner files, `-q --tb=short`: exit 0, 47 passed, 34.13s. Raw
+  `final-owners-fixture-fixed.log`, SHA-256
+  `46d258d02efb7643548ad3c3c70d205bec556f9b959ecc5ff21abd8473aa7ff0`.
+- Caller regression: `uv run --locked --offline --extra dev python -m pytest
+  tools/ci/tests/test_retrieval_contract_proof.py
+  tools/ci/tests/test_retrieval_capture.py -q --tb=short`: exit 0, 60 passed,
+  50.78s. `callers.log`, SHA-256
+  `434b39d41ce4b980c30a8f5b71935a05230cd1ba4bbfaeeeb1c65b48dc93b33d`.
+  The subsequently added static-import closure assertion ran through locked
+  `test_retrieval_contract_proof.py -q -k shared_execution_owner --tb=short`:
+  exit 0, 1 passed, 31 deselected, 2.76s. Raw `source-binding.log`, SHA-256
+  `899b33bba15638b38a2fe1cce38812de3523b48a1e9816499aabdfa52375d6a7`.
+  Scoped Ruff check/format and whitespace checks passed. Final owner SHA-256:
+  executor `f5fcd2e980f6fb9dc524b972c496577d320b956fc5669a9dda410502a61d4b9b`,
+  portable caller `ab1f64fde89b70a62df05a935a27fd43e538e35b4d0329f0ccc3d22d6d1ce5e7`.
+  They remained unchanged across these local proofs; moving dirty source and
+  unverified release/operational inputs still exclude qualification.
+- Original mandatory daemon handle terminated FAILED, not PENDING:
+  `just rust-profile test-daemon`, exit 100; 204 executed, 203 passed,
+  1 failed, 1 skipped, test phase 2689.597s. Failure:
+  `e2e_top_k_truth_table::the_public_maximum_reports_the_continuation_over_ten_thousand_and_one_rows`,
+  1225.431s, `over-maximum fixture ingest batch 2: ipc Read timed out after
+  600000 ms`. Raw `/tmp/quanta-ss-rr-four.ZR5QK4/test-daemon.log`, SHA-256
+  `640f91a3fc340033195572c83d885deaebf4ff135b800163d12c13c788b03b0a`.
+  This old/moving-source run cannot qualify current HEAD. No unchanged retry.
+  Live source confirms batches of two 910-row files, a 600-second IPC deadline
+  and a 10001-row oracle. Failure class is UNKNOWN: daemon stage evidence is
+  missing, and concurrent Rust jobs do not independently prove host load caused
+  the timeout. Do not widen deadlines, reduce the corpus, skip the case or
+  mark flaky without RCA.
+
+## 2026-09-26 proof JSON admission closure
+
+Review/repair started on shared dirty main
+`2c08dccff4a9c1c23a3885dc74f10a5e9f4bd5f8`. Other writers continue changing
+source and advancing HEAD. No commit, push, deployment or activation was
+performed by this repair. Results below are local owner evidence, not final-tip
+or repository qualification.
+
+- RCA: plain `json.loads` erased duplicate authority keys before schema
+  validation. Digest custody bound the ambiguous bytes but did not make their
+  interpretation unambiguous. Python also accepted NaN/Infinity and numeric
+  overflow such as `1e9999`.
+- `tools/ci/proof_json.py` is the pure decoding owner. It rejects duplicate
+  keys at every depth, non-finite constants, finite-syntax float overflow and
+  excessive nesting with explicit `ValueError`. I/O, no-follow capture,
+  archive hashes, schemas, source binding and domain outcomes remain with the
+  existing callers. No new receipt IR or permissive compatibility reader.
+- Migrated envelope/schema ingress: manifest writer; checker CLI, payload,
+  dependency cache and aggregate checks; aggregate writer; handoff leaf and
+  standalone lane reader; error-authority schema; archived pytest inventory;
+  verification summary. Nextest event grammar remains separately domain-owned.
+- Meaningful pre-patch RED: locked pytest `test_write_proof_manifest.py -q
+  -k terminal_json --tb=short`, exit 1, 7 failed / 1 passed / 32 deselected.
+  All seven invalid bytes were accepted by the actual existing terminal reader.
+  The terminal tool output preserves the failures; no separate RED log was
+  written. Unknown keys are still schema-owned, not silently rewritten.
+- Locked decoder/sibling command: `uv run --locked --offline --extra dev
+  python -m pytest tools/ci/tests/test_write_proof_manifest.py
+  tools/ci/tests/test_check_proof_authority.py
+  tools/ci/tests/test_check_lane_handoff.py
+  tools/ci/tests/test_write_proof_aggregate.py
+  tools/ci/tests/test_write_verification_receipt.py -q -k 'terminal_json or
+  proof_json or duplicate_status_even or handoff_json_reader or
+  aggregate_json_reader or summary_parser' --tb=short`: exit 0, 26 passed,
+  173 deselected, 18.20s. Includes a correctly hashed immutable dependency
+  archive whose duplicate `status` is refused by the real checker.
+  `/tmp/quanta-proof-json.iZ6oUa/json-owners.log`, SHA-256
+  `22cff833fbfc15a2daf7bbb42f382e1c6e044ef86ccd77400053b81fa756ffda`.
+- RR found the first aggregate negative fixture could fail merely because its
+  schema was missing. It now supplies a schema, observes a legitimate JSON
+  positive reaching downstream validation, then requires the malformed bytes
+  to fail before that downstream boundary. Validation is deliberately stubbed
+  only for this decoder-boundary test; it is not aggregate qualification.
+  Locked same-file `-k aggregate_json_reader --tb=short`: exit 0, 3 passed,
+  18 deselected, 35.88s. Raw `aggregate-byte-admission.log` in the same temp root.
+- Existing reverse consumers completed before this JSON repair:
+  `python3 -m pytest tools/ci/tests/test_write_proof_manifest.py
+  tools/ci/tests/test_write_proof_aggregate.py
+  tools/ci/tests/test_handoff_validation.py
+  tools/ci/tests/test_check_lane_handoff.py
+  tools/ci/tests/test_write_verification_receipt.py -q`: exit 0, 101 passed,
+  842.13s. Raw `/tmp/quanta-shell-word-closure.6C7IkC/reverse-consumers.log`,
+  SHA-256 `a4bc075a826e4f8ed4f90f9ab69883ce215157db8992d3c83789545c027fd2b0`.
+  This older-input result is not proof of the new JSON owner.
+- Locked expanded owner command: `uv run --locked --offline --extra dev
+  python -m pytest tools/ci/tests/test_check_proof_authority.py
+  tools/ci/tests/test_proof_execution_result.py
+  tools/ci/tests/test_write_verification_receipt.py
+  tools/ci/tests/test_handoff_validation.py -q --tb=short`: exit 0, 163 passed,
+  113.93s. Raw `checker-owners.log`, SHA-256
+  `1a23692d95beda6b7d246b6d4cc7750a0812dba1264cb26247fb19a3c8277ea0`.
+- Locked manifest integration: `uv run --locked --offline --extra dev python
+  -m pytest tools/ci/tests/test_write_proof_manifest.py -q
+  -k writer_resolves_registry_source_and_null_binary_then_semantically_validates
+  --tb=short`: exit 0, 1 passed, 39 deselected, 26.57s. Uses real writer and
+  semantic validation on an isolated fixture repository, not a production
+  receipt. Raw `writer-publication.log`, SHA-256
+  `af1ae68deccfbf629aaaf744194c8842a58204d2a600180320cd1a00a34f3cf3`.
+- Shared main advanced to `9e443489e06167bfbed3b4503af558495e27206d` during
+  proof. Rechecked owner SHA-256: `proof_json.py`
+  `b847685c9d788cdc5363980efd2ea46a7a7c8ede4547759e228027feb2f043f1`;
+  checker `f8c622f612d2af05b6f882998844ca4671910f7e53aa27bbc0d6984b6db7277d`;
+  manifest writer `439225ec9428acf785069dc6c6c5545f95dc6cd2c2cdf6a3a9acbaac69f5d816`;
+  handoff leaf `062a40a5e85468d581d694ed73e8db94c1f783a4a45005631938ac2b1128be37`.
+  These content identities did not change during the scoped owner proof;
+  broad shared-source drift still excludes final-tip qualification.
+- Aggregate byte-admission raw SHA-256:
+  `7dfbc8424a45623ca41a6d87e4fbc7f70227b8b92f64f5cc54de768c9fc1a884`.
+  Ruff check/format and whitespace checks passed for this scoped repair.
+- `just proof-authority-lint`: exit 0, REGISTRY_ONLY, 25 registered proofs,
+  zero manifests validated; execution proof was not checked. Raw
+  `authority-lint.log`, SHA-256
+  `dbf353022f09e1b6a4c82e6878f7fa7a70e0e764e6f478c5b789046f3738bbb9`.
+  This confirms the direct CLI and registry front door, not an issued proof.
+- Open P2 lifecycle work: `producer_execution.execute` performs unbounded
+  `communicate()` during failure cleanup; portable proof subprocess entrypoints
+  lack their own execution deadline. Close the canonical execution/cleanup
+  boundary and direct proof callers before claiming this finding repaired.
+- The original mandatory daemon rail remains live on the same handle. R0
+  producing-run attestation, P11 typed resolver/build receipts, release process
+  proof and P12 operational inputs remain separate residual obligations.
+
+## 2026-09-26 shared outcome owner, DAG reuse and Bash-word closure
+
+Base `f9c3b4dc487a1b54a260e4ab2d3dd199310d3a5e`, shared dirty main;
+the index was empty at review. These are owner-local repairs, not a clean-source
+qualification receipt. No commit, push, deployment or activation was performed.
+
+During the reverse-consumer run another writer advanced main to
+`e3c87234b0b3fad94df3080b65c7e0f4b086b8b1`. The shell, JUnit and DAG owner
+content digests below remain the evidence boundary; moving shared HEAD and
+other dirty inputs exclude exact-tip or whole-repository qualification.
+Main subsequently moved again to `2c08dccff4a9c1c23a3885dc74f10a5e9f4bd5f8`
+while reverse-consumer and daemon handles remained live. This ledger does not
+promote either running rail to proof of that tip.
+
+- JUnit RCA: retrieval and archive readers used different XML interpretations.
+  Both now use `tools/ci/junit_events.py` for placement, unique identities,
+  counted outcomes and exact counters. Required inventories still reject skips
+  and selection discrepancies. Unknown wrappers and suite-level errors cannot
+  become empty success. Source closure follows the new static local import.
+- DAG RCA: recursive validation repeated intrinsic interpretation along every
+  dependency path. `check_manifest` now owns invocation-local reuse bound to
+  payload content and the complete authority object. Every incoming archive
+  edge still captures no-follow bytes, verifies digest/identity/path/ancestry,
+  and every cached/final binding is rehashed. The cache is not shared across
+  top-level aggregate calls and is not a producer attestation.
+- Bash RCA: command names and argv were interpreted through incompatible AST,
+  shlex and whitespace-rewrite rules. `_literal_shell_argv` now supplies both
+  executable and complete argv decisions. Bash escaped-newline removal,
+  single/double quotes and embedded `#` are literal; unknown expansion/glob
+  syntax and command prefix assignments fail closed. Full registered fuzz
+  argv includes the actual dictionary and time limit. Python target admission
+  also rejects help/version/collection-only/last-failed/attached filters rather
+  than treating a nearby target filename as execution. Only full-file selectors
+  and declared presentation options are admitted.
+- Behavioral RED: six Bash reinterpretation/normal-line-continuation cases
+  failed against the original owner (`red.log`); four use actual `bash -e`
+  in private pytest fixtures and demonstrate success without the failing rail.
+  Six assignment/whitespace siblings failed during construction
+  (`sibling-red.log`); six Python nonexecution/partial-selection cases failed
+  before the sibling repair (`python-selector-red.log`). A removed shlex import
+  caused an intermediate 157-pass/3-error regression; it was restored for the
+  separate static workflow-selector reader before the final run.
+- Final shell owner: `python3 -m pytest
+  tools/ci/tests/test_check_test_authority.py -q`: exit 0, **166 passed**, 39.47s.
+  Raw `/tmp/quanta-shell-word-closure.6C7IkC/owner-final.log`, SHA-256
+  `c2f5306789aefd10adee540455445256371ee34349b4ba60635c47d358d2594a`.
+  Owner SHA-256 `5447b16ad824827f05987ba267ee4fbbeb7c9d031524c9271e11129e46afe61b`;
+  test SHA-256 `b2c7f5edbf713e39ef186404189469a04a25d1b14954d83a1d64da240aa457b2`.
+  Ruff check/format-check, scoped whitespace check and `just rust-test-authority`
+  exited 0. Python was `/usr/bin/python3` 3.9.6; managed pytest9 coverage below
+  is a separate environment, not interchangeable evidence.
+  This system-Python environment has pytest6.2.5, tree-sitter-language-pack0.9.1,
+  jsonschema4.25.1, PyYAML6.0.3 and tomli2.0.1; it is not the uv-lock admission
+  environment. The final locked sibling run uses Python3.13.9/pytest9.1.1,
+  uv.lock SHA-256 `c9064e8ead8593a6054d50c9b8e7523026d07d9ae7c95ddbf1268d273d6dad73`
+  and pyproject SHA-256 `381ceb2908d49ff96cf718581404097cc621227008d1767b67ecb8c1c83ba135`.
+  Managed dependency identities: tree-sitter-language-pack0.9.1,
+  jsonschema4.25.1, PyYAML6.0.3 and tomli2.4.1.
+- Prior expanded owner run: `python3 -m pytest
+  tools/ci/tests/test_check_proof_authority.py
+  tools/ci/tests/test_check_test_authority.py
+  tools/ci/tests/test_retrieval_contract_proof.py
+  tools/ci/tests/test_proof_execution_result.py -q`: exit 0, **295 passed**, 65.74s.
+  Raw `/tmp/quanta-ss-rr-final.lYfN5u/owners-final.log`, SHA-256
+  `4913529470dbe7ef386d4a0938655222e9994bb89e91f3af2b5de045ee54fb0b`.
+  This run predates the final shell-word repair; use the 166-case result for
+  that owner. It covers shared-JUnit hidden outcomes, diamond parse counts,
+  live artifact/binary/archive/symlink tamper, changed authority, wrong source,
+  cycles and no reuse across invocations.
+- Final JUnit sibling pass also rejects unknown XML attributes, including
+  testcase `status="notrun"` and root/suite `disabled`. Three meaningful RED
+  inputs were accepted before repair, then refused through the same shared
+  owner. `python3 -m pytest tools/ci/tests/test_retrieval_contract_proof.py
+  tools/ci/tests/test_proof_execution_result.py -q`: exit 0, **69 passed**, 11.15s.
+  Raw `/tmp/quanta-shell-word-closure.6C7IkC/junit-final.log`, SHA-256
+  `b3ceaf17f042e2d35fb31701766bef8e21c13337760db77c68c011a337db8c8c`.
+  Final JUnit owner SHA-256
+  `5f7d6f5b5d285fb967b3bf702b130d3638907d71710deb330306780e6df087f6`;
+  retrieval contract test SHA-256
+  `59321413c2879d7da37ead1685d66b39633438c8ae3f94ffb48f7ef992b97552`.
+  The 295-case run predates this attribute repair. The actual Sourcegraph27
+  XML was rechecked against this final parser and the same independent method
+  identity inventory; its counters still agree exactly. Native pytest
+  xunit1/xunit2 attributes are admitted; arbitrary foreign dialects are not.
+- Locked-environment retry history is not green proof: the first run failed
+  1/235 because a concurrent Justfile repair moved output parameters to exported
+  environment variables. The test now checks the current exact recipe and
+  observes actual argv for both contract/sdk entrypoints with quote/command-
+  substitution characters treated as data. A fixture run failed 2/237 because
+  login zsh reset its observer PATH; the fixture now isolates ZDOTDIR and the
+  working directory while keeping the native shell. A subsequent run failed
+  1/237 because concurrent source-closure changed its dirty refusal message.
+  The oracle still requires dirty-source SystemExit and no output creation;
+  only the obsolete wording prefix was removed. Final rerun uses the same
+  locked three-module rail after these relevant input changes. Earlier results
+  must not be promoted to a final-source pass.
+- Final locked sibling command: `uv run --locked --offline --extra dev python
+  -m pytest tools/ci/tests/test_check_test_authority.py
+  tools/ci/tests/test_retrieval_contract_proof.py
+  tools/ci/tests/test_proof_execution_result.py -q --tb=short`:
+  exit 0, **237 passed**, 15.91s on dirty main
+  `2c08dccff4a9c1c23a3885dc74f10a5e9f4bd5f8`.
+  Raw `/tmp/quanta-shell-word-closure.6C7IkC/locked-owners-final.log`, SHA-256
+  `6d6e14cf4c954e8de29bef30c305d1cb85b53f53ad1ac4431ab0d4b15b85c5ad`.
+  Final contract-test SHA-256
+  `e7c14775b0c82503224226e4c821f7ddc59e15b9fbb65eb7fe3bd481a233652d`;
+  proof parser `87fd1374db8a09d070c3f3ca4e5d1315dc6be63496f556963a456413b686440b`;
+  concurrent source-closure owner
+  `0e4d8a306c8a2fba6649ca814a55e51b9079deaf6da4fe6066eb214b4d6a0aea`;
+  concurrent Justfile `a8b712a8ca8fba900dab246455bcb10339607059812b4c401cfaf6ac6bc45034`.
+  These results replace the intermediate three-module failures only for the
+  named local owner scope; they do not qualify unrelated dirty Rust changes,
+  the real retrieval pair, the reverse-consumer run or daemon execution.
+- Actual producer incompatibility: current uv.lock selects pytest9.1.1 on
+  Python >=3.10. Its unittest subTest passes inflate `tests` without independent
+  testcase identities. The observed retrieval XML advertised 315 tests but had
+  283 testcase nodes; strict refusal remains correct. Sourcegraph's 16 fixed
+  mutant inputs now have independent unittest methods rather than subTest
+  reports; all assertions and the unittest CLI remain. No parser counter
+  relaxation, post-hoc XML rewrite or framework downgrade was introduced.
+- Producer owner proof: `uv run --locked --offline --extra dev python -m pytest
+  tools/benchmark/retrieval/test_sourcegraph.py -q
+  --junitxml=/tmp/quanta-shell-word-closure.6C7IkC/sourcegraph-junit.xml`:
+  exit 0, **27 passed**, 1.04s, pytest9.1.1. The shared parser admitted those
+  same 27 identities against an independent source-AST method inventory:
+  selected/executed/passed=27, failed/ignored=0. Producer SHA-256
+  `747633bccc46066f39174f9874315c450e1d41ba38a45bb1bf281348a8c61beb`;
+  XML SHA-256 `bf0ebc1d8b8f5c20f95b6d5404893286127971945577377d8ea04e556d8c58c7`.
+  The retrieval owner owns duplicate imported-class/subclass removal, exact
+  `proof-required-tests.json` refresh and its full-file terminal proof. Those
+  three files are handed off/frozen here; old retrieval XML is not reusable.
+- Remaining rails: reverse manifest/aggregate/handoff/receipt consumers are
+  running in `/tmp/quanta-shell-word-closure.6C7IkC/reverse-consumers.log`.
+  The existing `just rust-profile test-daemon` handle was confirmed live and
+  executing the selected runtime tests; no terminal result is claimed.
+  Full exact-source/pair/Linux release and operational qualification remain
+  separately unverified or blocked in `CURRENT-RESIDUAL-2026-09-26.md`.
+
 ## 2026-09-26 follow-up manifest and execution-byte custody
 
 Base `f9c3b4dc487a1b54a260e4ab2d3dd199310d3a5e`, shared dirty main.

@@ -282,11 +282,15 @@ def test_summary_parser_rejects_wrong_command_and_partial_execution(tmp_path: Pa
     [
         (
             '{"command":"proof","selected":1,"selected":2,"executed":1,"passed":1,"failed":0}',
-            "duplicate summary JSON key",
+            "duplicate proof JSON key",
         ),
         (
             '{"command":"proof","selected":1,"executed":1,"passed":1,"failed":0,"extra":NaN}',
-            "non-finite summary JSON value",
+            "non-finite proof JSON value",
+        ),
+        (
+            '{"command":"proof","selected":1,"executed":1,"passed":1,"failed":0,"extra":1e9999}',
+            "non-finite proof JSON value",
         ),
     ],
 )

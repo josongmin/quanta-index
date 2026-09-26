@@ -484,7 +484,7 @@ path = "state_root/catalog/catalog-v1.sqlite (idempotency_v2.receipt_cbor)"
 reproduction = "current-format-backup"
 notes = "P02B operation journal: persisted BatchPublishReceipt bytes (batch routes) and RepoMapTerminalReceiptV2 bytes (repomap-bundle keys) are canonical CBOR behind an explicit format tag each (SEP-21-002). A runtime that finds another version refuses typed before any mutation; there is no old-receipt decoder or importer. Backup/restore preserves current-format dedup state; rebuilding an old root cannot recreate the original dedup and sequence authority."
 [[artifact.version_constants]]
-file = "crates/quanta-index-contract/src/ipc/ingest.rs"
+file = "crates/quanta-index-contract/src/ipc/publish_receipt.rs"
 name = "BATCH_PUBLISH_RECEIPT_FORMAT_VERSION"
 value = 1
 [[artifact.version_constants]]

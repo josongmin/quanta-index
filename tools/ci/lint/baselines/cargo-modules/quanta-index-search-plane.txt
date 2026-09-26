@@ -1,0 +1,279 @@
+
+crate quanta_index_search_plane
+├── mod auxiliary_authority: pub(crate)
+├── mod control_dispatcher: pub(crate)
+│   ├── enum ControlAccessV1: pub
+│   ├── enum ControlCapabilityV1: pub
+│   ├── trait ProcessReadinessPort: pub
+│   ├── trait ProcessRequestEventsPort: pub
+│   ├── struct SearchPlaneControlDispatcher: pub
+│   └── struct SearchPlaneControlDispatcherParts: pub
+├── mod crash_point: pub
+├── mod history_text: pub(crate)
+│   ├── type EpochKey: pub(self)
+│   ├── struct HistoryHandleState: pub(self)
+│   ├── enum HistoryTextClaim: pub(crate)
+│   ├── struct HistoryTextHandles: pub
+│   ├── struct HistoryTextIndexParts: pub
+│   └── enum Slot: pub(self)
+├── mod ingest_dispatcher: pub(crate)
+│   ├── mod auxiliary: pub(self)
+│   │   ├── struct AuxiliaryMaterializerParts: pub
+│   │   ├── struct AuxiliaryMutationCoordinator: pub
+│   │   ├── struct CoordinatorGuard: pub(super)
+│   │   ├── struct DirectHistoryMaterializer: pub
+│   │   ├── struct DirectRuntimeMetadataMaterializer: pub
+│   │   └── struct DirectStructuralMaterializer: pub
+│   ├── mod dispatcher: pub(self)
+│   │   └── struct SearchPlaneIngestDispatcher: pub
+│   ├── mod errors: pub(self)
+│   ├── mod generation_plan: pub(self)
+│   │   ├── enum DeferredGcStep: pub(crate)
+│   │   ├── enum PhysicalGenerationStateV1: pub(super)
+│   │   ├── struct SealedGenerationBuildPlanV1: pub(super)
+│   │   └── struct SearchCorpusPhysicalReclaimReceiptV1: pub(super)
+│   ├── mod ports: pub(self)
+│   │   ├── trait HistoryIngestPort: pub
+│   │   ├── trait RuntimeMetadataIngestPort: pub
+│   │   ├── trait SearchCorpusAuthorityInspectPort: pub
+│   │   ├── trait SearchCorpusAuthorityWritePort: pub
+│   │   └── trait StructuralIngestPort: pub
+│   ├── mod search_corpus: pub(self)
+│   │   ├── struct DirectSearchCorpusMaterializer: pub
+│   │   ├── struct IngestResourceStats: pub
+│   │   ├── struct SearchCorpusGcStats: pub
+│   │   └── struct SearchCorpusMaterializerParts: pub
+│   └── mod semantic: pub(self)
+│       ├── struct DirectSemanticMaterializer: pub
+│       └── struct SemanticIngestStreamStats: pub
+├── mod lowering: pub(crate)
+│   ├── enum SourcegraphLoweringRoute: pub(self)
+│   └── enum StructuralLeafVerdict: pub(crate)
+├── mod observability: pub(crate)
+│   ├── struct BoundedQueryObsStore: pub
+│   ├── struct BoundedRing: pub(self)
+│   ├── struct HistogramAggregate: pub(self)
+│   ├── enum MetricAggregate: pub(self)
+│   ├── struct MetricAggregates: pub(self)
+│   ├── struct NoopQueryObsSink: pub(crate)
+│   ├── struct ObservabilityScrape: pub
+│   └── trait QueryObsSink: pub
+├── mod post_durable: pub(crate)
+├── mod quarantine: pub(crate)
+│   ├── struct OrphanedSealedGenerationV1: pub
+│   ├── struct QuarantineService: pub
+│   ├── struct QuarantineServiceParts: pub
+│   └── struct TrackPorts: pub(self)
+├── mod query_dispatcher: pub(crate)
+│   ├── mod continuation: pub(self)
+│   │   ├── struct CursorAuthorityV2: pub(super)
+│   │   ├── trait CursorClockV2: pub(super)
+│   │   ├── struct CursorRequestContextV2: pub(super)
+│   │   ├── struct OpenedCursorV2: pub(super)
+│   │   └── struct SystemCursorClockV2: pub(super)
+│   ├── mod cursor_key: pub(self)
+│   │   └── struct CursorKeyStore: pub
+│   ├── mod dense_admission: pub(self)
+│   │   └── struct AdmittedDenseLaneV1: pub(super)
+│   ├── mod dispatcher: pub(self)
+│   │   ├── struct SearchPlaneDispatcher: pub
+│   │   ├── type SearchPlaneQueryDispatcher: pub
+│   │   └── type SearchPlaneQueryService: pub
+│   ├── mod errors: pub(self)
+│   ├── mod execution_trace: pub(self)
+│   │   ├── struct LaneExecutionRecorderV1: pub(super)
+│   │   └── struct LaneExecutionSummaryV1: pub(super)
+│   ├── mod keyset_page: pub(self)
+│   │   ├── struct KeysetPage: pub(super)
+│   │   ├── struct KeysetPageCollector: pub(super)
+│   │   └── enum StreamEnd: pub(super)
+│   ├── mod metrics: pub(self)
+│   │   └── enum QueryRoute: pub(super)
+│   ├── mod planning: pub(self)
+│   │   ├── struct PlannedLexicalTextQuery: pub(super)
+│   │   └── struct PreparedLanguageQueryV1: pub(super)
+│   ├── mod ranking: pub(self)
+│   ├── mod read_view: pub(self)
+│   │   ├── mod snapshots: pub(self)
+│   │   └── mod view: pub(self)
+│   │       ├── struct AuxEpochPinsV1: pub(crate)
+│   │       ├── struct LedgerParts: pub(self)
+│   │       ├── struct QueryReadViewV2: pub(crate)
+│   │       └── struct ReadViewRequestV1: pub(crate)
+│   ├── mod response_budget: pub(self)
+│   │   ├── trait RankedPage: pub(super)
+│   │   └── struct ResponsePayloadBudget: pub
+│   ├── mod rev_at_time: pub(self)
+│   │   ├── struct PreparedLexicalTextQuery: pub(super)
+│   │   └── struct RevAtTimeSelection: pub(super)
+│   ├── mod routes: pub(self)
+│   │   ├── mod cluster_membership: pub(self)
+│   │   ├── mod explain: pub(self)
+│   │   │   ├── struct HybridDenseDerivationV1: pub(self)
+│   │   │   ├── struct HybridLanePlanV1: pub(self)
+│   │   │   ├── struct HybridTraceReportV1: pub(self)
+│   │   │   ├── enum RankerFusionV1: pub(self)
+│   │   │   └── struct RederivedHybridRanksV1: pub(self)
+│   │   ├── mod history: pub(crate)
+│   │   │   ├── struct HistoryPageSelector: pub(self)
+│   │   │   ├── struct HistoryRank: pub(self)
+│   │   │   └── struct HistoryShardRequirements: pub(self)
+│   │   ├── mod history_records: pub(self)
+│   │   │   ├── struct HistoryPage: pub(super)
+│   │   │   └── enum HistoryQueryKind: pub(super)
+│   │   ├── mod history_relevance: pub(self)
+│   │   ├── mod hybrid: pub(self)
+│   │   ├── mod hybrid_seed: pub(self)
+│   │   ├── mod lexical: pub(self)
+│   │   ├── mod repo_map: pub(self)
+│   │   ├── mod runtime_metadata: pub(crate)
+│   │   │   ├── enum RuntimeDriver: pub(self)
+│   │   │   ├── struct RuntimeMetadataEpochs: pub(crate)
+│   │   │   ├── struct RuntimeMetadataPage: pub(crate)
+│   │   │   └── struct RuntimeMetadataRead: pub(crate)
+│   │   ├── mod semantic: pub(self)
+│   │   │   └── struct SemanticScopePlan: pub(self)
+│   │   └── mod structural: pub(crate)
+│   │       ├── mod buckets: pub(self)
+│   │       │   └── type StructuralCandidateBuckets: pub(super)
+│   │       ├── mod eval: pub(self)
+│   │       │   ├── struct StructuralEvalContext: pub(super)
+│   │       │   ├── type StructuralLeafCache: pub(self)
+│   │       │   └── struct StructuralLeafExecutionKey: pub(self)
+│   │       ├── mod lexical_leaves: pub(crate)
+│   │       │   └── struct LexicalSubexprEvaluator: pub(super)
+│   │       ├── mod lowering: pub(self)
+│   │       ├── mod projection: pub(self)
+│   │       ├── mod read: pub(self)
+│   │       │   └── struct StructuralRead: pub(super)
+│   │       ├── mod route: pub(self)
+│   │       │   └── struct StructuralPage: pub(self)
+│   │       └── mod universe: pub(self)
+│   ├── mod selection: pub(self)
+│   │   └── struct SemanticSelection: pub(super)
+│   ├── mod semantic_query: pub(self)
+│   │   ├── struct HybridFilterTraceV1: pub(super)
+│   │   ├── struct HybridFusion: pub(super)
+│   │   ├── struct HybridLaneTallyV1: pub(super)
+│   │   ├── struct SeedLaneTallyV1: pub(super)
+│   │   └── struct SemanticScopeV1: pub(super)
+│   ├── mod stage_timing: pub(self)
+│   │   ├── enum QueryStageObservationPolicy: pub
+│   │   └── struct StageTimings: pub(super)
+│   ├── mod text_plane: pub(self)
+│   │   ├── enum ExecutableTextPlanePolicy: pub(super)
+│   │   └── struct ExecutableTextPlaneValidationState: pub(self)
+│   ├── mod timeref: pub(self)
+│   └── mod window: pub(self)
+├── mod query_embedder: pub(crate)
+│   ├── struct HashingQueryTextEmbedder: pub
+│   ├── struct ProviderBoundaryQueryEmbedder: pub
+│   └── trait QueryTextEmbedderPort: pub
+├── mod readiness: pub
+│   ├── mod activation_catalog: pub(self)
+│   │   ├── struct ActivationCatalog: pub
+│   │   ├── struct ActivationKey: pub(super)
+│   │   ├── struct ActiveGenerationRecord: pub
+│   │   ├── type ActiveRoots: pub(self)
+│   │   └── struct ActiveSearchCorpusHeadV1: pub(self)
+│   ├── mod aux_epoch: pub(self)
+│   │   ├── enum AuxEpochRefusedError: pub
+│   │   ├── struct AuxRead: pub
+│   │   ├── struct AuxSnapshots: pub(crate)
+│   │   └── struct SupersededSnapshot: pub(self)
+│   ├── mod auxiliary_store: pub(self)
+│   │   └── struct AuxiliaryAuthorityStore: pub
+│   ├── mod durable_fs: pub(self)
+│   │   ├── enum AtomicFileWriteOutcomeV1: pub(super)
+│   │   ├── struct FsParentDirectorySyncPort: pub(super)
+│   │   └── trait ParentDirectorySyncPort: pub(super)
+│   ├── mod errors: pub(self)
+│   ├── mod history_state: pub(self)
+│   │   ├── struct HistoryAuthorityState: pub
+│   │   ├── struct HistoryDelta: pub(crate)
+│   │   ├── struct HistoryDiffKey: pub
+│   │   ├── struct HistoryStateMeta: pub(crate)
+│   │   └── enum RefChange: pub(crate)
+│   ├── mod keys: pub(self)
+│   │   ├── struct AuthorityKey: pub(crate)
+│   │   ├── struct TrackAuthorityKey: pub(super)
+│   │   └── struct TrackGenerationKey: pub(super)
+│   ├── mod ledger: pub(self)
+│   │   ├── trait AuxDomainState: pub(crate)
+│   │   ├── struct Ledger: pub
+│   │   └── type SharedLedger: pub(super)
+│   ├── mod ledger_apply: pub(self)
+│   ├── mod pair_digest: pub(self)
+│   ├── mod retention_receipt: pub(self)
+│   │   └── struct SearchCorpusHistoryRetentionReceiptV1: pub
+│   ├── mod runtime_state: pub(self)
+│   │   ├── struct ChangedDocState: pub
+│   │   ├── struct DirtyDocState: pub
+│   │   ├── struct DocFacetState: pub
+│   │   ├── struct RuntimeCatalogDelta: pub(crate)
+│   │   ├── struct RuntimeDirtyDelta: pub(crate)
+│   │   ├── struct RuntimeMetadataState: pub
+│   │   └── struct RuntimeStateMeta: pub(crate)
+│   ├── mod search_corpus_generation: pub(self)
+│   │   ├── struct PersistedSearchCorpusGenerationRootV1: pub(super)
+│   │   ├── struct PersistedSearchCorpusGenerationRootV1Visitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   ├── struct PreparedSearchCorpusGenerationV1: pub
+│   │   ├── struct SearchCorpusGenerationActivationV1: pub
+│   │   └── struct SearchCorpusGenerationV1: pub
+│   ├── mod search_corpus_history: pub(self)
+│   │   ├── struct EnforcedSearchCorpusHistoryRetentionV1: pub(super)
+│   │   ├── enum SealedSearchCorpusAuthorityStateV1: pub
+│   │   ├── struct SearchCorpusAuthorityFileV1: pub(super)
+│   │   ├── struct SearchCorpusAuthorityRecordV1: pub(super)
+│   │   └── struct SearchCorpusAuthorityRootSnapshotV1: pub(super)
+│   ├── mod serde_support: pub(self)
+│   ├── mod structural_state: pub(self)
+│   │   ├── struct StructuralAuthorityState: pub
+│   │   ├── struct StructuralChunksDelta: pub(crate)
+│   │   ├── struct StructuralStateMeta: pub(crate)
+│   │   └── struct StructuralTreesDelta: pub(crate)
+│   └── mod track_state: pub(self)
+│       ├── struct SemanticGenerationState: pub(crate)
+│       ├── struct TrackAuthorityState: pub(crate)
+│       └── struct TrackLedger: pub
+├── mod search_corpus_lifecycle: pub(crate)
+│   ├── struct ActivationPromotionParts: pub
+│   ├── enum DoorFindingPolicy: pub(self)
+│   ├── struct ProofGate: pub(self)
+│   ├── struct SearchCorpusLifecycleOwner: pub
+│   ├── struct SearchCorpusLifecycleParts: pub
+│   ├── struct SearchCorpusLifecycleService: pub(crate)
+│   └── mod pair_lock: pub(self)
+│       ├── trait ActiveSearchCorpusPinReadPort: pub(crate)
+│       ├── struct SearchCorpusPairMutationCoordinator: pub(crate)
+│       └── struct SearchCorpusPairMutationGuard: pub(crate)
+├── mod search_corpus_retention: pub(crate)
+│   ├── struct PairIndexBytesMeasurer: pub
+│   ├── struct SearchCorpusHistoryRetentionItemV1: pub(crate)
+│   ├── struct SearchCorpusHistoryRetentionPlanV1: pub(crate)
+│   ├── struct SearchCorpusHistoryRetentionPolicyV1: pub
+│   └── trait SearchCorpusIndexBytesPort: pub
+├── mod semantic_derive: pub(crate)
+│   ├── struct DerivedSemanticScopeSource: pub(crate)
+│   ├── struct DerivedSemanticStreamV1: pub(crate)
+│   ├── struct PendingOwnerScope: pub(self)
+│   └── struct ValidatedSemanticSourceScope: pub(self)
+├── mod single_flight: pub(crate)
+│   ├── enum AwaitFlightFailure: pub(crate)
+│   ├── struct Flight: pub(crate)
+│   ├── type FlightOutcome: pub(self)
+│   └── struct LiveHandleTracker: pub(crate)
+└── mod snapshot_registry: pub(crate)
+    ├── struct Entry: pub(self)
+    ├── struct OpenedSnapshot: pub
+    ├── struct RegistryState: pub(self)
+    ├── enum SnapshotAcquireOutcome: pub
+    ├── struct SnapshotAcquired: pub
+    ├── struct SnapshotKey: pub
+    ├── enum SnapshotPromoteOutcome: pub
+    ├── struct SnapshotRegistries: pub
+    ├── struct SnapshotRegistry: pub
+    ├── struct SnapshotRegistryPolicy: pub
+    ├── struct SnapshotRegistryStats: pub
+    └── enum SnapshotRetireOutcome: pub

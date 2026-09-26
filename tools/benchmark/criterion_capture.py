@@ -32,8 +32,8 @@ from evidence_bridge import (
     promote_native_run,
     source_identity,
 )
-from profile_capture import _directories, commit_capture, load_capture
 from producer_execution import execute
+from profile_capture import _directories, commit_capture, load_capture
 from registry import registry_digest
 
 

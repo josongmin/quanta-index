@@ -1,5 +1,23 @@
 # RBR 구조적 보완 — 병렬 구현과 직렬 통합
 
+## 최신 통합 checkpoint — 2026-09-26
+
+`577d60b518344163145ad2f1afe1f3e7c656762e` + 공유 dirty. 아래 시작/기존 lane 표의 숫자는 해당 source 실행 기록이며 최신 terminal의 합성 증거가 아니다. 현 상태는 [CURRENT-AUDIT](CURRENT-AUDIT.md), 잔여는 [GAP-REGISTER](GAP-REGISTER.md)를 따른다.
+
+- 구조적 후속1: `publish_receipt.rs` leaf로 ingest 역의존성 제거. canonical manual serde/wire/receipt bytes 유지; leaf contract146+SDK110와 cycle1→0 actual gate 회수. allowlist 확대 없음.
+- 구조적 후속2: daemon Clippy7 및 restart full-explanation equality false RED를 소유 lane에서 수정. supervisor21/state-migration55, reopen21(11-mutant invariant 포함) local terminal·Clippy 회수. stage presence/order/kind/calls/count는 보존한다.
+- 구조적 후속3: pytest9 native subTest의 JUnit counter/case 불일치를 producer에서 해결. Sourcegraph27 독립 test method, imported base/subclass duplicate collection 제거. strict consumer 완화 없이 current Python288 exact collection.
+- RBR-09: typed floor25/50/100 및 default100를 core→dispatcher→daemon→runner/spec로 연결. plane427/config39/Clippy local, Python 정책/프로토콜8 local. production probe/ceiling/refill/pin 유지. diagnostic6/lock4는 requested policy SHA와 실제 initial-fetch planner trace를 대조한다. SDK18/Rust108 current installed terminal 및 sidecar는 `/private/tmp/qi-rbr-sdk-symbol-final.TEINH2/`에서 fresh binary부터 직렬 재회수 중이다. 이전 floor-final SDK inventory는 source 수정 때문에 owner가 시험 전 중단해 원본 보존했다.
+- RBR-07: 기존 schema2 encoder parity와 별도로 feature=proof `quanta-index-ann-proof`의 bounded external input/full row binding/production served API/독립 f64 exact scan을 구현하는 disjoint lane. actual positive/negative와 owning Clippy 전에는 NOT_RUN. ANN policy/ranker를 바꾸지 않는다.
+- RBR-08: pinned 외부 binary의 literal10/10 zero와 native-safe7/8 positive로 ranking 이전 domain-routing fail-open을 재현. symbol phrase/raw/regex·contentfilter가 chunk-only authority로 진입하지 못하도록 중앙 query validator와 root-name rewrite를 기존 typed code로 거부한다. chunk-owned repo/file predicates와 keyword postings는 유지. 두 ingest 경로·paged/all/type/select·Boolean/forceempty 반례 및 SDK 실제 daemon 회귀 보강. canonical symbol text authority의 실제 지원은 schema/lifecycle migration을 포함하는 별도 `NOT_RUN` 후속이며 rankboost를 구현하지 않는다.
+- T15/T16: actual vector9/9·sealed8D delta5/5 owner terminal 회수. mixed-model semantic capture, dimension 및 불가능한 zero execution counter의 후속 consumer 검증은 peer의 source/receipt로 별도 회수한다. encoder/internal owner proof와 frozen suite/daemon fault/activation/signed custody의 경계를 유지한다.
+
+default public API shape gate는 contract/SDK만 검사하며 local exit0다. floor의 core/search-plane은 명시적 package 검사로 별도 exit0·selected inputs stable을 회수했다(`floor-owning-api.log`, SHA `ab19f8ccdfe842a40ceff7adfba8eed288c23d5f0c56a9a390fca4529ebf0462`). 실제 baseline은 floor와 기존 observation/leaf type 경로를 함께 반영했다. 외부 owner의 기존 identity-probe port도 current rendered surface에 나타나므로 API shape 통과를 그 동작 proof로 사용하지 않는다. module/cycle/fuzz/daemon 및 clean-source/final pair는 각각 raw terminal/입력 경계에서 판정한다. 수동 approval/gold/quiet host는 engineering task로 다시 넣지 않는다.
+
+최신 Python288 whole invocation은285passed/3failed(21m12s), raw `/private/tmp/qi-rbr-floor-final.kMdtIk/python-full.log`. 실행 중 evaluator의 per-query metric 추가로 cached in-process와 fresh CLI report가 달라졌고 같은3건의 최신 bytes 재검증은3passed/285deselected였다. raw failure를 덮거나 focused 성공을 whole qualification으로 합성하지 않는다. leaf 이동의 stale wire constant owner는 publish_receipt.rs로만 수정해 공식 `rust-wire-inventory` exit0·selected inputs stable을 회수했다. source 읽기 표면이 일시적으로 다르게 보인 사건은 원인 미확정이며, 추가 명령에는 absolute workdir를 지정한다. 어떤 raw source drift도 continuous source custody로 승격하지 않는다.
+
+## 이전 실행 checkpoint
+
 시작 source: `7cefac4a10a06ed56b6f5b9f42b3726468b1f198` + 공유 dirty, 2026-09-26. 현재 통합 source: `f9c3b4dc487a1b54a260e4ab2d3dd199310d3a5e` + 공유 dirty. peer commit으로 HEAD가 이동했으며 이 task에서 commit/push하지 않았다. 이전 `604149ed` 감사의 잔여를 현재 코드에서 재확인했다. 기존 searchd/CI/benchmark migration 변경은 별도 소유로 보존한다. clean-source 자격은 발급하지 않았다.
 
 ## 소유 경계와 상태

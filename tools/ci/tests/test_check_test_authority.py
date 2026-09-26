@@ -386,6 +386,21 @@ def test_python_rail_requires_unfiltered_pytest_execution(tmp_path: Path) -> Non
     module = _load_module()
     path = "tools/ci/tests/test_aggregate.py"
     assert module._python_command_selects_path(tmp_path, f"python3 -m pytest {path} -q", path)
+    assert module._python_command_selects_path(
+        tmp_path, f"uv run --frozen --extra dev python3 -m pytest {path} -q", path
+    )
+    (tmp_path / "Justfile").write_text(
+        f"benchmark-contract:\n    uv run --frozen --extra dev python -m pytest {path} -q\n"
+    )
+    assert module._python_command_selects_path(
+        tmp_path, "uv run --frozen --extra dev just benchmark-contract", path
+    )
+    assert not module._python_command_selects_path(
+        tmp_path, f"uv run --frozen --extra dev python3 -m pytest {path} --collect-only", path
+    )
+    assert not module._python_command_selects_path(
+        tmp_path, f"uv run --no-sync python3 -m pytest {path} -q", path
+    )
     assert not module._python_command_selects_path(
         tmp_path, f"python3 -m pytest {path} -k selected -q", path
     )

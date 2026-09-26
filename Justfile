@@ -382,9 +382,14 @@ benchmark-replay run:
 # those require a clean source and (for timing authority) a quiet canonical
 # Linux host. The shared test-daemon lane compiles harness binaries without
 # running their tests, then runs the harness library tests.
+# Python capture/custody contracts only: no service, model download or timing
+# producer. Invoke through `uv run --frozen --extra dev just` for locked deps.
+benchmark-control-contract-local:
+    uv run --frozen --extra dev python -m pytest tools/ci/tests/test_benchmark_manifest.py tools/ci/tests/test_benchmark_policy.py tools/ci/tests/test_bench_protocol_conformance.py tools/ci/tests/test_benchmark_evidence_bridge.py tools/ci/tests/test_benchmark_source_closure.py tools/ci/tests/test_benchctl.py tools/ci/tests/test_benchmark_profile_capture.py tools/ci/tests/test_criterion_capture.py tools/ci/tests/test_recorded_capture.py tools/ci/tests/test_retrieval_capture.py tools/ci/tests/test_lexical_capture.py tools/ci/tests/test_lexical_file_comparison.py tools/ci/tests/test_portable_proof.py tools/ci/tests/test_check_bench_artifacts.py tools/ci/tests/test_check_host_contention.py tools/ci/tests/test_compare_dsl_bench.py tools/ci/tests/test_quality_integration_summary.py tools/ci/tests/test_retrieval_contract_proof.py tools/ci/tests/test_retrieval_sdk_proof.py tools/ci/tests/test_write_verification_receipt.py tools/ci/tests/test_agent_outcome_benchmark.py tools/ci/tests/test_concurrency_sample_contract.py -q
+
 benchmark-prep-local:
     find crates/quanta-index-searchd-harness/src -name '*.rs' -print0 | xargs -0 rustfmt --check --edition 2024
-    uv run --frozen --extra dev python -m pytest tools/ci/tests/test_benchmark_manifest.py tools/ci/tests/test_benchmark_policy.py tools/ci/tests/test_bench_protocol_conformance.py tools/ci/tests/test_benchmark_evidence_bridge.py tools/ci/tests/test_benchmark_source_closure.py tools/ci/tests/test_benchctl.py tools/ci/tests/test_check_bench_artifacts.py tools/ci/tests/test_check_host_contention.py tools/ci/tests/test_compare_dsl_bench.py tools/ci/tests/test_quality_integration_summary.py tools/ci/tests/test_retrieval_contract_proof.py tools/ci/tests/test_retrieval_sdk_proof.py tools/ci/tests/test_write_verification_receipt.py -q
+    uv run --frozen --extra dev just benchmark-control-contract-local
     uv run --frozen --extra dev python -m py_compile tools/benchmark/benchctl.py tools/benchmark/registry.py tools/benchmark/manifest.py tools/benchmark/evidence.py tools/benchmark/evidence_bridge.py tools/benchmark/compare_dsl_bench.py tools/benchmark/quality_integration_summary.py tools/ci/lint/check-bench-artifacts.py tools/ci/lint/check-benchmark-policy.py tools/ci/timing/check_host_contention.py tools/benchmark/retrieval/evaluator.py tools/benchmark/retrieval/query_plan.py tools/benchmark/retrieval/retrieval_contract.py tools/benchmark/retrieval/semble.py tools/benchmark/retrieval/run.py tools/benchmark/retrieval/contract_proof.py tools/benchmark/retrieval/sdk_proof.py tools/ci/source_closure.py tools/ci/write-verification-receipt.py
     {{cargo}} --lane bench-lane test -p quanta-index-bench-protocol --all-features --locked
     {{cargo}} --lane test-daemon-lane test -p quanta-index-searchd-harness --lib --bins --all-features --locked --no-run
@@ -404,37 +409,37 @@ retrieval-contract-local:
 # Pass a fresh artifact root outside the checkout; no model download occurs.
 # pair-spec.receipts maps sdk_execution_context/source_closure to this root;
 # the driver freezes sibling command logs automatically.
-retrieval-sdk-proof out:
-    uv run --frozen --extra dev python tools/benchmark/retrieval/portable_proof.py run --rail sdk --out "{{out}}"
+retrieval-sdk-proof $out:
+    uv run --frozen --extra dev python tools/benchmark/retrieval/portable_proof.py run --rail sdk --out "$out"
 
 # Internal machine-evidence recipe; invoked only by portable_proof.py.
-_retrieval-sdk-proof-raw out:
-    test ! -e "{{out}}" || { echo "refusing non-fresh proof root: {{out}}" >&2; exit 2; }
-    python3 tools/ci/source_closure.py capture --profile retrieval --out "{{out}}/source-closure.json"
+_retrieval-sdk-proof-raw $out:
+    test ! -e "$out" || { echo "refusing non-fresh proof root: $out" >&2; exit 2; }
+    python3 tools/ci/source_closure.py capture --profile retrieval --out "$out/source-closure.json"
     env CARGO_NET_OFFLINE=true {{cargo}} --lane test-daemon-lane build -p quanta-index-searchd-runtime --bin quanta-index-searchd --locked
     env CARGO_NET_OFFLINE=true {{cargo}} --lane test-daemon-lane build -p quanta-index-retrieval-bench --bin quanta-index-retrieval-bench --locked
-    {{cargo}} --lane test-daemon-lane nextest list -p quanta-index-retrieval-bench --test sdk_roundtrip --all-features --locked --message-format json > "{{out}}/nextest-inventory.json"
-    python3 tools/benchmark/retrieval/proof_inventory.py --verify "{{out}}/nextest-inventory.json" --role sdk
-    set -e -o pipefail; target_dir="$({{cargo}} --lane test-daemon-lane metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"; NEXTEST_EXPERIMENTAL_LIBTEST_JSON=1 QUANTA_BENCH_SDK_EVIDENCE_DIR="{{out}}" QUANTA_INDEX_SEARCHD_BIN="$target_dir/debug/quanta-index-searchd" {{cargo}} --lane test-daemon-lane nextest run -p quanta-index-retrieval-bench --test sdk_roundtrip --all-features --locked --message-format libtest-json-plus --message-format-version 0.1 | tee "{{out}}/nextest.jsonl"; python3 tools/benchmark/retrieval/sdk_proof.py --record "{{out}}/actual-runner-record.json" --nextest "{{out}}/nextest.jsonl" --nextest-inventory "{{out}}/nextest-inventory.json" --runner-bin "$target_dir/debug/quanta-index-retrieval-bench" --out "{{out}}/sdk_results.json"
+    {{cargo}} --lane test-daemon-lane nextest list -p quanta-index-retrieval-bench --test sdk_roundtrip --all-features --locked --message-format json > "$out/nextest-inventory.json"
+    python3 tools/benchmark/retrieval/proof_inventory.py --verify "$out/nextest-inventory.json" --role sdk
+    set -e -o pipefail; target_dir="$({{cargo}} --lane test-daemon-lane metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"; NEXTEST_EXPERIMENTAL_LIBTEST_JSON=1 QUANTA_BENCH_SDK_EVIDENCE_DIR="$out" QUANTA_INDEX_SEARCHD_BIN="$target_dir/debug/quanta-index-searchd" {{cargo}} --lane test-daemon-lane nextest run -p quanta-index-retrieval-bench --test sdk_roundtrip --all-features --locked --message-format libtest-json-plus --message-format-version 0.1 | tee "$out/nextest.jsonl"; python3 tools/benchmark/retrieval/sdk_proof.py --record "$out/actual-runner-record.json" --nextest "$out/nextest.jsonl" --nextest-inventory "$out/nextest-inventory.json" --runner-bin "$target_dir/debug/quanta-index-retrieval-bench" --out "$out/sdk_results.json"
 
 # Public canonical route: context-bound Python and Rust schema-v2 receipts.
 # Pass a fresh artifact root outside the checkout.
 # pair-spec.receipts maps contract_execution_context/source_closure to this root;
 # the driver freezes sibling command logs automatically.
-retrieval-contract-proof out:
-    uv run --frozen --extra dev python tools/benchmark/retrieval/portable_proof.py run --rail contract --out "{{out}}"
+retrieval-contract-proof $out:
+    uv run --frozen --extra dev python tools/benchmark/retrieval/portable_proof.py run --rail contract --out "$out"
 
 # Retrieval benchmark: Quanta-only chunk A/B from a pinned spec file.
 # The spec names repo/manifest/suite/pack, strategies, binaries and output
 # root; captures stay outside the checkout. See RB-05 for the spec schema.
-retrieval-quanta spec:
-    python3 tools/benchmark/retrieval/run.py quanta --spec {{spec}}
+retrieval-quanta $spec:
+    python3 tools/benchmark/retrieval/run.py quanta --spec "$spec"
 
 # Retrieval benchmark: sequential Quanta + Semble paired capture, merge and
 # scoring from a pinned spec. Fails closed when the pinned Semble python is
 # absent; installs and model caches stay outside the checkout.
-retrieval-pair spec:
-    python3 tools/benchmark/retrieval/run.py pair --spec {{spec}}
+retrieval-pair $spec:
+    python3 tools/benchmark/retrieval/run.py pair --spec "$spec"
 
 # Retrieval benchmark: re-score immutable records into the TEST-PLAN §8
 # verdict artifact (deterministic re-score path, T13).

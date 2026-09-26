@@ -26,7 +26,7 @@ from evidence import (
 
 def _directories(root: Path) -> None:
     # Reject intermediate links as well as linked final documents.
-    for path in (root, root / "captures", root / "profiles"):
+    for path in (root, root / "captures", root / "profiles", root / "work"):
         if path.is_symlink():
             raise EvidenceError(f"capture directory is a symlink: {path}")
         if path.exists() and not path.is_dir():

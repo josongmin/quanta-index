@@ -11,6 +11,7 @@ import subprocess
 from pathlib import Path
 
 from nextest_events import NextestEvidenceError, parse_nextest_bytes, parse_nextest_inventory_bytes
+from proof_json import parse_proof_json
 from source_closure import ClosureError, load_and_verify
 
 
@@ -63,19 +64,8 @@ def _nextest_evidence_summary(
 def _summary_json_evidence_summary(evidence: Path, command: str) -> tuple[str, int]:
     raw = evidence.read_bytes()
 
-    def unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
-        result: dict[str, object] = {}
-        for key, value in pairs:
-            if key in result:
-                raise ValueError(f"duplicate summary JSON key: {key}")
-            result[key] = value
-        return result
-
-    def reject_constant(value: str) -> None:
-        raise ValueError(f"non-finite summary JSON value: {value}")
-
     try:
-        payload = json.loads(raw, object_pairs_hook=unique_object, parse_constant=reject_constant)
+        payload = parse_proof_json(raw)
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
         raise SystemExit(f"invalid summary JSON evidence {evidence}: {error}") from error
     if not isinstance(payload, dict):

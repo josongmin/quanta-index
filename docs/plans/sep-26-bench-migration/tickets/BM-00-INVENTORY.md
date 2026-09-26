@@ -14,9 +14,10 @@ registry at implementation time**. It is not a benchmark result.
   `sha256:f2066046b23aad113491157ce777f5fa25ef669a9326b939f3bfbfc7eae9291f`
   (`python3 tools/ci/lint/check-benchmark-policy.py --print-registry-digest`).
 
-The table below is generated from the registry, not maintained beside it. Any
-divergence between this prose and `registry.toml` is a documentation defect and
-fails the registry/policy checks in `tools/ci/tests/test_benchmark_manifest.py`.
+The table is a human-readable inventory, not an admission authority. Source
+registration and policy tests validate `registry.toml`; they do not independently
+verify this Markdown table. Current corrections below supersede the original
+freeze digest. Use `benchctl list/plan` for machine-derived current registration.
 
 ## 1. Registered families
 
@@ -28,18 +29,17 @@ fails the registry/policy checks in `tools/ci/tests/test_benchmark_manifest.py`.
 | `concurrency` | systems | load | `just-recipe:rust-verify-quality-concurrency` | `bench-artifacts` | `quality-integration` | local-diagnostic | authority | 16 | none | benchmark-control-plane | registry |
 | `dsl-cold` | dsl-latency | latency | `just-recipe:rust-bench-dsl-cold` | `bench-artifacts` | `dsl-latency` | canonical-linux | authority | 20 | `tools/benchmark/baselines/cold-matrix.json` | benchmark-control-plane | registry |
 | `dsl-warm` | dsl-latency | latency | `just-recipe:rust-bench-dsl-warm` | `bench-artifacts` | `dsl-latency` | canonical-linux | authority | 200 | `tools/benchmark/baselines/warm-matrix.json` | benchmark-control-plane | registry |
-| `dsl-warm-criterion` | dsl-latency | micro | `just-recipe:rust-bench-dsl-warm-criterion` | `bench-artifacts` | `none` | local-diagnostic | diagnostic | 0 | none | benchmark-control-plane | registry |
 | `freshness` | systems | freshness | `just-recipe:rust-verify-quality-freshness` | `bench-artifacts` | `quality-integration` | local-diagnostic | authority | 20 | none | benchmark-control-plane | registry |
-| `lexical-file-comparison` | retrieval | retrieval | `python-module:tools/benchmark/retrieval/run.py` | `retrieval-contract` | `lexical-file-diagnostic` | any | diagnostic | 0 | none | retrieval | registry |
+| `lexical-file-comparison` | retrieval | retrieval | `python-module:tools/benchmark/retrieval/lexical_file_comparison.py` | `lexical-file-diagnostic` | `lexical-file-diagnostic` | any | diagnostic | 0 | none | retrieval | registry |
 | `micro-lq-norm-pipeline` | micro | micro | `cargo-bench:quanta-index-lq-norm:pipeline` | `evidence-protocol` | `none` | local-diagnostic | diagnostic | 0 | none | micro | registry |
 | `micro-searchd-runtime-dsl-query-matrix` | micro | micro | `cargo-bench:quanta-index-searchd-runtime:dsl_query_matrix` | `evidence-protocol` | `none` | local-diagnostic | diagnostic | 0 | none | micro | registry |
 | `open-loop` | systems | load | `just-recipe:rust-verify-quality-open-loop` | `bench-artifacts` | `quality-integration` | local-diagnostic | authority | 0 | none | benchmark-control-plane | registry |
 | `ops` | systems | latency | `just-recipe:rust-verify-quality-ops` | `bench-artifacts` | `quality-integration` | local-diagnostic | diagnostic | 0 | none | benchmark-control-plane | registry |
 | `relevance` | search-quality | latency | `just-recipe:rust-verify-quality-relevance` | `bench-artifacts` | `quality-integration` | any | authority | 0 | none | benchmark-control-plane | registry |
 | `relevance-openai-ab` | search-quality | latency | `just-recipe:rust-capture-quality-relevance-openai-ab` | `bench-artifacts` | `quality-integration` | any | advisory | 0 | none | benchmark-control-plane | registry |
-| `retrieval-contract` | retrieval | retrieval | `just-recipe:retrieval-contract-proof` | `retrieval-contract` | `none` | any | contract | 0 | none | retrieval | registry |
-| `retrieval-pair` | retrieval | retrieval | `python-module:tools/benchmark/retrieval/run.py` | `retrieval-contract` | `retrieval-relevance` | any | diagnostic | 0 | none | retrieval | registry |
-| `retrieval-sdk` | retrieval | retrieval | `just-recipe:retrieval-sdk-proof` | `retrieval-sdk` | `retrieval-relevance` | any | contract | 0 | none | retrieval | registry |
+| `retrieval-contract` | retrieval | proof | `just-recipe:retrieval-contract-proof` | `retrieval-proof` | `none` | any | contract | 0 | none | retrieval | registry |
+| `retrieval-pair` | retrieval | retrieval | `python-module:tools/benchmark/retrieval/run.py` | `retrieval-pair` | `retrieval-relevance` | any | diagnostic | 0 | none | retrieval | registry |
+| `retrieval-sdk` | retrieval | proof | `just-recipe:retrieval-sdk-proof` | `retrieval-proof` | `none` | any | contract | 0 | none | retrieval | registry |
 | `scale` | systems | latency | `just-recipe:rust-verify-quality-scale` | `bench-artifacts` | `quality-integration` | local-diagnostic | authority | 32 | none | benchmark-control-plane | registry |
 | `scan-vs-index` | recorded-experiment | recorded_experiment | `python-module:tools/benchmark/run_scan_vs_index.py` | `evidence-protocol` | `none` | local-diagnostic | diagnostic | 0 | none | benchmark-control-plane | registry |
 | `snippet` | search-quality | latency | `just-recipe:rust-verify-quality-snippet` | `bench-artifacts` | `quality-integration` | local-diagnostic | authority | 0 | none | benchmark-control-plane | registry |
@@ -47,7 +47,7 @@ fails the registry/policy checks in `tools/ci/tests/test_benchmark_manifest.py`.
 | `ui` | systems | latency | `just-recipe:rust-verify-quality-ui` | `bench-artifacts` | `quality-integration` | local-diagnostic | diagnostic | 0 | none | benchmark-control-plane | registry |
 
 Profiles: `dsl-authority`(2), `dsl-diagnostic`(1), `micro`(2), `quality-core`(5),
-`quality-full`(11), `recorded`(2), `retrieval-contract`(2), `retrieval-diagnostic`(2),
+`quality-full`(11), `recorded`(2), `retrieval-contract`(2), `retrieval-diagnostic`(1), `lexical-diagnostic`(1),
 `semantic-ab`(1), `systems`(2).
 
 ## 2. Cargo bench targets

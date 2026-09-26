@@ -30,7 +30,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::Result as AnyResult;
+use anyhow::{Context, Result as AnyResult};
 use quanta_index_contract::{
     GenerationPin, HybridQueryRequest, QueryConstraintSetV1, SearchPlaneErrorCodeV2,
     SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
@@ -45,7 +45,7 @@ use crate::artifact::{
     LatencySummary, PhaseDurationsV1, ResourceUsageV1, ResultShape, RouteFamily, config_digest,
     corpus_digest, model_revision_of, saturating_u64,
 };
-use crate::harness::E2eRuntime;
+use crate::harness::{E2eRuntime, E2eTextChunkSpec};
 use crate::scale::{ScaleTier, generate_corpus};
 
 /// The artifact dimension this rail writes.
@@ -59,6 +59,9 @@ pub const MINIMUM_ROW_SAMPLES: u32 = 16;
 
 /// Five mixed routes must each reach the row floor at one fast client.
 pub const DEFAULT_REQUESTS_PER_CLIENT: u32 = 80;
+
+/// Bootstrap and readiness IPC have a separate deadline in debug builds.
+const FIXTURE_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Hard resource bound, including additional fast requests during slow sampling.
 const MAX_SAMPLES_PER_WORKER: u32 = 100_000;
@@ -94,7 +97,7 @@ pub enum MixedRoute {
     Semantic,
     Hybrid,
     Symbol,
-    /// The lexical route with `count:yes`, the exact-count worst case.
+    /// The lexical route with `count:all`, the exact-count worst case.
     LexicalCount,
 }
 
@@ -147,7 +150,7 @@ fn fast_request(route: MixedRoute, pin: &GenerationPin) -> SearchPlaneQueryIpcRe
         }
         MixedRoute::LexicalCount => SearchPlaneQueryIpcRequest::Text(text_request(
             pin,
-            &format!("{FAST_QUERY_TOKEN} count:yes"),
+            &format!("{FAST_QUERY_TOKEN} count:all"),
             FAST_TOP_K,
         )),
         MixedRoute::Semantic => SearchPlaneQueryIpcRequest::Semantic(SemanticQueryRequest {
@@ -302,7 +305,8 @@ fn timed_request(
     let answer = send_request::<_, SearchPlaneQueryIpcResponseEnvelope>(socket, &envelope, policy);
     let wall_ms = started.elapsed().as_secs_f64() * 1000.0;
     let outcome = match answer {
-        Ok(response) => classify_response(request_id, route, expected_generation, &response)?,
+        Ok(response) => classify_response(request_id, route, expected_generation, &response)
+            .with_context(|| format!("concurrency request: ID {request_id}, route {route:?}"))?,
         Err(IpcError::Timeout { .. } | IpcError::ClientIoDeadlineElapsed) => {
             RequestOutcome::Timeout
         }
@@ -509,6 +513,15 @@ fn collect_fast_samples(
     Ok(samples)
 }
 
+/// Allocate positive, disjoint fast-worker IDs under the sample ceiling.
+fn fast_request_id(client: u32, index: u64) -> AnyResult<u64> {
+    u64::from(client)
+        .checked_mul(1_000_000)
+        .and_then(|base| base.checked_add(index))
+        .and_then(|id| id.checked_add(1))
+        .ok_or_else(|| anyhow::anyhow!("concurrency: fast request identity overflow"))
+}
+
 /// Run one client count against the served generation.
 ///
 /// Fast workers remain active until the slow worker reaches the sample floor.
@@ -530,9 +543,7 @@ fn measure_clients(
         let slow_ready = Arc::clone(&slow_ready);
         fast_handles.push(thread::spawn(move || -> AnyResult<Vec<RequestSample>> {
             collect_fast_samples(requests_per_client, &slow_ready, budget, |index, route| {
-                let request_id = u64::from(client)
-                    .saturating_mul(1_000_000)
-                    .saturating_add(index);
+                let request_id = fast_request_id(client, index)?;
                 timed_request(
                     &socket,
                     &pin,
@@ -627,24 +638,60 @@ pub struct ConcurrencyReport {
     pub passed: bool,
 }
 
+/// Keep each bulk record identical to the public single-file ingest fixture.
+fn corpus_ingest_chunks(corpus: &[(String, String)]) -> Vec<[E2eTextChunkSpec<'_>; 1]> {
+    corpus
+        .iter()
+        .map(|(_, content)| {
+            [E2eTextChunkSpec {
+                content,
+                start_line: 1,
+                end_line: 2,
+                source_repo_id: None,
+            }]
+        })
+        .collect()
+}
+
 /// Seed the medium corpus, serve it, and measure every client count.
 pub fn run_concurrency_report(seed: u64, requests_per_client: u32) -> AnyResult<ConcurrencyReport> {
-    validate_requests_per_client(requests_per_client)?;
+    validate_requests_per_client(requests_per_client)
+        .context("concurrency configuration: request budget")?;
     let tier = ScaleTier::Medium;
     let corpus = generate_corpus(tier, seed);
-    let mut rt = E2eRuntime::boot()?;
+    let mut rt = E2eRuntime::boot_with_client_request_timeout(FIXTURE_REQUEST_TIMEOUT)
+        .context("concurrency bootstrap: runtime boot")?;
     let model_revision = model_revision_of(rt.embedder_profile());
-    for (path, content) in &corpus {
-        rt.ingest_text(CONCURRENCY_REPO, path, content)?;
+    // Preserve the one-chunk-per-file fixture while publishing one ingest
+    // wave, avoiding a semantic dataset append and transaction per file.
+    let chunks = corpus_ingest_chunks(&corpus);
+    let files: Vec<(&str, &[E2eTextChunkSpec<'_>])> = corpus
+        .iter()
+        .zip(&chunks)
+        .map(|((path, _), chunks)| (path.as_str(), chunks.as_slice()))
+        .collect();
+    let ids = rt
+        .ingest_text_files_one_batch(&files)
+        .with_context(|| format!("concurrency bootstrap: ingest {} corpus files", files.len()))?;
+    if ids.len() != corpus.len() {
+        return Err(anyhow::anyhow!(
+            "concurrency bootstrap: ingest returned {} chunk IDs for {} files",
+            ids.len(),
+            corpus.len()
+        ));
     }
     rt.ingest_symbol(
         CONCURRENCY_REPO,
         "repo0/src/file_0.rs",
         "concurrency-scale-needle",
         FAST_QUERY_TOKEN,
-    )?;
-    let sealed = rt.seal()?;
-    rt.activate_last_sealed_generation()?;
+    )
+    .context("concurrency bootstrap: ingest symbol needle")?;
+    let sealed = rt
+        .seal()
+        .context("concurrency bootstrap: seal generation")?;
+    rt.activate_last_sealed_generation()
+        .context("concurrency bootstrap: activate generation")?;
     let pin = GenerationPin::new(rt.repo(), rt.revision(), sealed);
     // One served request of every route before timing, so readiness and
     // the cold open are not inside any window and a route the fixture
@@ -653,7 +700,7 @@ pub fn run_concurrency_report(seed: u64, requests_per_client: u32) -> AnyResult<
     let primed = rt.query_text(TextQuerySyntax::Native, FAST_QUERY_TOKEN, FAST_TOP_K);
     if let Some(error) = primed.typed_error {
         return Err(anyhow::anyhow!(
-            "concurrency: the fixture does not serve: {} {}",
+            "concurrency prime: the fixture does not serve: {} {}",
             error.code,
             error.message
         ));
@@ -663,9 +710,12 @@ pub fn run_concurrency_report(seed: u64, requests_per_client: u32) -> AnyResult<
         .map(|route| (route.as_str(), fast_request(*route, &pin)))
         .chain(std::iter::once(("slow", slow_request(&pin))));
     for (label, request) in probes {
-        if let SearchPlaneQueryIpcResponse::Error(error) = rt.query_once(|_| request)? {
+        if let SearchPlaneQueryIpcResponse::Error(error) = rt
+            .query_once(|_| request)
+            .with_context(|| format!("concurrency prime: {label} route"))?
+        {
             return Err(anyhow::anyhow!(
-                "concurrency: {label} refused before timing: {} {}",
+                "concurrency prime: {label} refused before timing: {} {}",
                 error.code,
                 error.message
             ));
@@ -677,12 +727,10 @@ pub fn run_concurrency_report(seed: u64, requests_per_client: u32) -> AnyResult<
     let socket = socket.to_path_buf();
     let mut measurements = Vec::with_capacity(CLIENT_COUNTS.len());
     for clients in CLIENT_COUNTS {
-        measurements.push(measure_clients(
-            &socket,
-            &pin,
-            clients,
-            requests_per_client,
-        )?);
+        measurements.push(
+            measure_clients(&socket, &pin, clients, requests_per_client)
+                .with_context(|| format!("concurrency measurement: {clients} fast clients"))?,
+        );
     }
     let passed = measurements.iter().all(|measurement| {
         measurement.fast.timeout_count == 0
@@ -772,6 +820,8 @@ pub fn detail_json(report: &ConcurrencyReport) -> Value {
         "minimum_row_samples": MINIMUM_ROW_SAMPLES,
         "maximum_samples_per_worker": MAX_SAMPLES_PER_WORKER,
         "measurement_timeout_secs": MEASUREMENT_TIMEOUT.as_secs(),
+        "bootstrap_request_timeout_secs": FIXTURE_REQUEST_TIMEOUT.as_secs(),
+        "prime_request_timeout_secs": FIXTURE_REQUEST_TIMEOUT.as_secs(),
         "sampling_policy": "fast clients run at least requests_per_client and remain active until the slow client reaches minimum_row_samples; slow client runs through the fast window",
         "head_of_line_ratio_p50": head_of_line_ratio_p50(report),
         "dispatch_policy": "ServerAdmissionPolicy::DEFAULT (4 dispatch slots, 2s queue wait)",
@@ -855,9 +905,26 @@ pub fn artifacts(
                                     report.requests_per_client.to_string(),
                                 ),
                                 ("fast_top_k", FAST_TOP_K.to_string()),
+                                (
+                                    "lexical_count_query",
+                                    "scale_needle_token count:all".to_string(),
+                                ),
                                 ("slow_top_k", SLOW_TOP_K.to_string()),
                                 ("minimum_row_samples", MINIMUM_ROW_SAMPLES.to_string()),
                                 ("sampling_policy", "fast-until-slow-floor".to_string()),
+                                (
+                                    "request_identity_policy",
+                                    "positive-disjoint-worker-ranges-v1".to_string(),
+                                ),
+                                ("bootstrap_ingest", "single-corpus-batch-v1".to_string()),
+                                (
+                                    "bootstrap_request_timeout_secs",
+                                    FIXTURE_REQUEST_TIMEOUT.as_secs().to_string(),
+                                ),
+                                (
+                                    "prime_request_timeout_secs",
+                                    FIXTURE_REQUEST_TIMEOUT.as_secs().to_string(),
+                                ),
                                 (
                                     "maximum_samples_per_worker",
                                     MAX_SAMPLES_PER_WORKER.to_string(),
@@ -917,6 +984,108 @@ mod tests {
             route,
             wall_ms,
             outcome,
+        }
+    }
+
+    #[test]
+    fn bulk_bootstrap_preserves_public_single_file_chunk_contract() {
+        let corpus = generate_corpus(ScaleTier::Medium, 7);
+        let chunks = corpus_ingest_chunks(&corpus);
+        assert_eq!(corpus.len(), 256, "the medium fixture has 4 * 64 files");
+        assert_eq!(chunks.len(), corpus.len());
+        for ((_, content), [chunk]) in corpus.iter().zip(&chunks) {
+            // E2eRuntime::ingest_text_with_candidate_id's public fixture:
+            // one complete content record, lines 1..2, no source-repo override.
+            assert_eq!(chunk.content.as_bytes(), content.as_bytes());
+            assert_eq!((chunk.start_line, chunk.end_line), (1, 2));
+            assert!(chunk.source_repo_id.is_none());
+        }
+    }
+
+    #[test]
+    fn invalid_report_configuration_fails_with_stage_before_bootstrap() {
+        let error = run_concurrency_report(7, 0).expect_err("underfilled budget must fail");
+        let message = format!("{error:#}");
+        assert!(message.contains("concurrency configuration: request budget"));
+        assert!(message.contains("must be at least 80"));
+    }
+
+    #[test]
+    fn fixture_deadline_does_not_relax_measured_query_deadline() {
+        assert_eq!(FIXTURE_REQUEST_TIMEOUT, Duration::from_secs(300));
+        assert_eq!(REQUEST_TIMEOUT, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn fast_request_ids_obey_public_nonzero_contract_without_collisions() {
+        let slow_first = u64::MAX;
+        let slow_last = u64::MAX - u64::from(MAX_SAMPLES_PER_WORKER - 1);
+        assert!(std::num::NonZeroU64::new(slow_last).is_some());
+        assert!(slow_first > slow_last);
+        let mut previous_end = 0;
+        for client in 0..32 {
+            let first = fast_request_id(client, 0).expect("bounded client");
+            let last = fast_request_id(client, u64::from(MAX_SAMPLES_PER_WORKER - 1))
+                .expect("bounded last sample");
+            assert!(std::num::NonZeroU64::new(first).is_some());
+            assert!(std::num::NonZeroU64::new(last).is_some());
+            assert!(
+                first > previous_end,
+                "worker request ranges must be disjoint"
+            );
+            assert!(last < slow_last, "fast and slow ID ranges must be disjoint");
+            previous_end = last;
+        }
+        assert!(fast_request_id(1, u64::MAX).is_err());
+        assert_eq!(fast_request_id(0, 0).expect("first request"), 1);
+    }
+
+    #[test]
+    fn mixed_route_requests_use_public_query_contracts() {
+        let pin = GenerationPin::new(
+            RepoId::new("fixture").expect("repo"),
+            RevisionId::new("fixture").expect("revision"),
+            ManifestGeneration::new(1),
+        );
+        let SearchPlaneQueryIpcRequest::Text(request) =
+            fast_request(MixedRoute::LexicalCount, &pin)
+        else {
+            panic!("exact count must use the public text route");
+        };
+        // The public DSL count bound accepts an integer or `all`;
+        // the prior `yes` was refused at the real prime frontdoor.
+        assert_eq!(request.query_text, "scale_needle_token count:all");
+        assert_eq!(request.generation, Some(pin.clone()));
+        assert_eq!(request.syntax, TextQuerySyntax::Native);
+        for route in [
+            MixedRoute::Lexical,
+            MixedRoute::Semantic,
+            MixedRoute::Hybrid,
+            MixedRoute::Symbol,
+        ] {
+            let request = fast_request(route, &pin);
+            match (route, request) {
+                (MixedRoute::Lexical, SearchPlaneQueryIpcRequest::Text(request)) => {
+                    assert_eq!(request.query_text, "scale_needle_token");
+                    assert_eq!(request.syntax, TextQuerySyntax::Native);
+                    assert_eq!(request.generation, Some(pin.clone()));
+                }
+                (MixedRoute::Semantic, SearchPlaneQueryIpcRequest::Semantic(request)) => {
+                    assert_eq!(request.query_text, "scale_needle_token");
+                    assert_eq!(request.generation, Some(pin.clone()));
+                }
+                (MixedRoute::Hybrid, SearchPlaneQueryIpcRequest::Hybrid(request)) => {
+                    assert_eq!(request.text_query.query_text, "scale_needle_token");
+                    assert_eq!(request.semantic_query_text, "scale_needle_token");
+                    assert_eq!(request.generation, Some(pin.clone()));
+                }
+                (MixedRoute::Symbol, SearchPlaneQueryIpcRequest::Symbol(request)) => {
+                    assert_eq!(request.query_text, "scale_needle_token");
+                    assert_eq!(request.syntax, TextQuerySyntax::Native);
+                    assert_eq!(request.generation, Some(pin.clone()));
+                }
+                _ => panic!("route must use its public request variant"),
+            }
         }
     }
 

@@ -1,8 +1,8 @@
 # BM-05 — Retrieval benchmark registration and product adapters
 
-Status: `PLAN / NOT_RUN`. Priority: P1. Depends on: BM-02/BM-03; coordinate with RBR-12. Common gates: [TEST-PLAN](TEST-PLAN.md).
+Status: `PARTIAL / CONTRACT_AND_LEXICAL_SCORING_ADAPTERS_IMPLEMENTED`; fresh paired/lexical search pilot remains `NOT_RUN`. Priority: P1. Depends on: BM-02/BM-03; coordinate with RBR-12. Common gates: [TEST-PLAN](TEST-PLAN.md).
 
-Implementation/verification/qualification verdicts for this ticket are recorded in [CLOSEOUT.md](CLOSEOUT.md) and, where relevant, [BM-00-INVENTORY.md](BM-00-INVENTORY.md), [BM-03-DECISION.md](BM-03-DECISION.md) and [BM-07-MIGRATION-MATRIX.md](BM-07-MIGRATION-MATRIX.md). The original `PLAN / NOT_RUN` status above is the plan-time state, not the closeout state.
+Current implementation/verification boundaries are recorded in [CURRENT-AUDIT.md](CURRENT-AUDIT.md). Historical [CLOSEOUT.md](CLOSEOUT.md) and [BM-07-MIGRATION-MATRIX.md](BM-07-MIGRATION-MATRIX.md) do not establish complete migration qualification.
 
 ## Purpose
 
@@ -26,3 +26,39 @@ Bring retrieval execution into the common corpus/capture/evidence lifecycle whil
 ## Verification / exclusions
 
 Use corpus mutation fixtures, adapter query/rank/timeout negatives, scorer cross-checks, existing `retrieval-contract-local` and clean `retrieval-contract-proof` / `retrieval-sdk-proof` rails, then actual external pilot. Product algorithm fixes belong to RBR tickets, not this bridge.
+
+## Current implementation boundary
+
+`retrieval_capture.py` implements common `run/validate/replay/summarize` for
+`retrieval-contract`, using both existing portable proof producers. SDK/contract
+receipts are typed `proof` payloads rather than artificial relevance rows.
+Immutable custody retains original command/path provenance, raw inventories,
+source closure, tool identity and frozen SDK binaries. Complete-profile
+publication remains separate from individually promoted runs.
+
+Focused shared-custody tests exercise owner-derived replay, changed counts,
+missing rail, partial/failed terminal counts, source mismatch and quoted
+external Just parameters. These tests do not establish a real SDK execution,
+paired comparison, gold quality or performance qualification. Current-source
+terminal receipts are recorded in [CURRENT-AUDIT.md](CURRENT-AUDIT.md).
+
+`lexical_capture.py` now implements common execution of the existing scorer
+over frozen external observations, five product-specific immutable runs,
+complete-profile validation and raw replay. It retains native timing layers and
+exclusions, never treating scorer execution as live product search. Focused
+tests use declared fixtures; actual clean-source CLI and pilot receipts are
+separate. Still open: `retrieval-diagnostic` common pair execution, live comparator
+capture/corpus custody, independent scorer cross-check and actual fresh
+two-repo paired/lexical pilot.
+
+The registry now separates `retrieval-diagnostic` (pair execution) from
+`lexical-diagnostic` (five-product scorer). The lexical family points to its
+actual module/schema rather than the pair producer. Proof validation points
+to `portable_proof.py`; pair validation points to `run.py verdict`, not a
+JUnit-count checker. Adapters must refuse owner/schema/scorer registration
+drift, not silently run their hardcoded implementation under another policy.
+
+Lexical file recall is query-macro gold-file coverage, distinct from hit rate.
+Scorer raw rows and per-query paired recall are cross-checked; missing current
+per-query fields require re-scoring original records rather than manufacturing
+old receipt upgrades. This code correction does not qualify historical results.

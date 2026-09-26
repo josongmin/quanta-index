@@ -36,10 +36,35 @@ def parse_pytest_junit_bytes(
         "error": set(),
         "skipped": set(),
     }
+    # Native pytest xunit1/xunit2 attributes, not arbitrary JUnit dialects.
+    # An unknown status/disabled attribute must not silently mean passed.
+    attributes = {
+        "testsuites": {"name", "tests", "failures", "errors", "skipped", "time"},
+        "testsuite": {
+            "name",
+            "tests",
+            "failures",
+            "errors",
+            "skipped",
+            "time",
+            "timestamp",
+            "hostname",
+        },
+        "testcase": {"name", "classname", "time", "file", "line", "url"},
+        "properties": set(),
+        "property": {"name", "value"},
+        "system-out": set(),
+        "system-err": set(),
+        "failure": {"message", "type"},
+        "error": {"message", "type"},
+        "skipped": {"message", "type"},
+    }
     for node in root.iter():
         allowed = grammar.get(node.tag)
         if allowed is None or any(child.tag not in allowed for child in node):
             raise JUnitEvidenceError("pytest JUnit contains an unsupported element placement")
+        if set(node.attrib) - attributes[node.tag]:
+            raise JUnitEvidenceError("pytest JUnit contains unsupported attributes")
     suites = [root] if root.tag == "testsuite" else root.findall("testsuite")
     if not suites:
         raise JUnitEvidenceError("pytest JUnit evidence has no counted test suite")

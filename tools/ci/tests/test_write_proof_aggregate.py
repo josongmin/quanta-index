@@ -36,6 +36,50 @@ WRITER = _load_module("write_proof_aggregate", WRITER_PATH)
 CHECKER = _load_module("write_proof_aggregate_checker", CHECKER_PATH)
 INVENTORY_WRITER = _load_module("aggregate_test_inventory_writer", INVENTORY_WRITER_PATH)
 
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        b'{"status":"failed","status":"passed"}',
+        b'{"status":"passed","counts":{"failed":1,"failed":0}}',
+        b'{"status":"passed","value":1e9999}',
+    ],
+)
+def test_aggregate_json_reader_refuses_ambiguous_bytes(
+    tmp_path: Path, monkeypatch, raw: bytes
+) -> None:
+    # Isolate byte admission, not qualification: downstream validation must
+    # never be reached for ambiguous input. A valid JSON control reaches it.
+    observed = []
+    monkeypatch.setattr(CHECKER, "_cached_proof_source_snapshot", lambda *args, **kwargs: {})
+    monkeypatch.setattr(
+        CHECKER, "check_manifest", lambda payload, **kwargs: observed.append(payload) or []
+    )
+    (tmp_path / "schema.json").write_bytes(b"{}")
+    kwargs = dict(
+        root=tmp_path,
+        proof={
+            "authority_state": "executable",
+            "artifact": "proof.json",
+            "artifact_schema": "schema.json",
+        },
+        proof_by_id={},
+        checker=CHECKER,
+        paired_checkouts={},
+        source_cache={},
+        pair_cache={},
+    )
+    path = tmp_path / "proof.json"
+    path.write_bytes(b'{"status":"passed"}')
+    assert WRITER._manifest_status(**kwargs)[0] == "PASSED"
+    assert observed == [{"status": "passed"}]
+    observed.clear()
+    path.write_bytes(raw)
+    status, digest, payload = WRITER._manifest_status(**kwargs)
+    assert (status, digest, payload) == ("FAILED", None, None)
+    assert observed == []
+
+
 RELEASE_HOST_INPUT = {
     "profile": "linux-production-like",
     "cpu_count": 1,
@@ -147,6 +191,7 @@ def _build_fixture_root(tmp_path: Path, *, executable: bool) -> tuple[Path, dict
     registry_path.parent.mkdir(parents=True)
     registry_path.write_text(registry_text, encoding="utf-8")
     shutil.copyfile(MANIFEST_SCHEMA_PATH, root / "tools/ci/proof-manifest.schema.json")
+    shutil.copyfile(REPO_ROOT / "tools/ci/proof_json.py", root / "tools/ci/proof_json.py")
     shutil.copyfile(AGGREGATE_SCHEMA_PATH, root / "tools/ci/proof-aggregate.schema.json")
     shutil.copyfile(INVENTORY_WRITER_PATH, root / "tools/ci/write-error-authority-inventory.py")
     shutil.copyfile(

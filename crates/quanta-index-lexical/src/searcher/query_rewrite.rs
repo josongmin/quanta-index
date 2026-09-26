@@ -33,13 +33,17 @@ pub(crate) fn content_leaf_from_scalar(arg: &ContentScalarArg) -> LqLeaf {
 }
 
 pub(crate) fn symbol_name_predicate_leaf(args: &[LqPredicateArg]) -> Result<LqLeaf, CoreError> {
+    if let Some(value) = crate::symbol::symbol_name_keyword(args) {
+        return Ok(LqLeaf::Keyword(value.to_string()));
+    }
     match args {
-        [LqPredicateArg::Keyword(value)] => Ok(LqLeaf::Keyword(value.clone())),
-        [LqPredicateArg::Phrase(value)] => Ok(LqLeaf::Phrase(value.clone())),
-        [LqPredicateArg::RawString(value)] => Ok(LqLeaf::RawString(value.clone())),
-        [LqPredicateArg::Number(_) | LqPredicateArg::Filter { .. }] | [] | [_, _, ..] => {
+        [LqPredicateArg::Phrase(_) | LqPredicateArg::RawString(_)] => Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::LexPlannerUnsupportedFilterCombo,
+            message: "lexical: symbol.has.name supports one keyword argument only; symbol phrase and raw substring authorities are unsupported".to_string(),
+        }),
+        _ => {
             Err(unimplemented_predicate(format!(
-                "lexical: predicate leaf `symbol.has.name` only supports exactly one keyword/phrase/raw-string argument (owner: {PREDICATE_OWNER})"
+                "lexical: predicate leaf `symbol.has.name` only supports exactly one keyword argument (owner: {PREDICATE_OWNER})"
             )))
         }
     }

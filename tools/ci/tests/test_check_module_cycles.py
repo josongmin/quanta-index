@@ -262,3 +262,60 @@ def test_duplicate_module_sources_are_refused(tmp_path: Path):
     root = crate(tmp_path, {"lib.rs": "mod a;\n", "a.rs": "", "a/mod.rs": ""})
     with pytest.raises(ValueError, match="duplicate Rust module source"):
         MODULE.find_cycles([root])
+
+
+def test_binary_test_attributes_cannot_hide_library_production_cycle(tmp_path: Path):
+    root = crate(tmp_path, {
+        "lib.rs": "mod a;\nmod b;\n",
+        "main.rs": "fn main() {}\n#[cfg(test)]\nmod a;\n#[cfg(test)]\nmod b;\n",
+        "a.rs": "pub struct A;\npub fn b() -> crate::b::B { crate::b::B }\n",
+        "b.rs": "pub struct B;\npub fn a() -> crate::a::A { crate::a::A }\n",
+    })
+    assert keys(root) == ["demo: a, b"]
+
+
+def test_library_test_attributes_cannot_hide_binary_production_cycle(tmp_path: Path):
+    root = crate(tmp_path, {
+        "lib.rs": "#[cfg(test)]\nmod a;\n#[cfg(test)]\nmod b;\n",
+        "main.rs": "mod a;\nmod b;\nfn main() {}\n",
+        "a.rs": "pub struct A;\npub fn b() -> crate::b::B { crate::b::B }\n",
+        "b.rs": "pub struct B;\npub fn a() -> crate::a::A { crate::a::A }\n",
+    })
+    assert keys(root) == ["demo: a, b"]
+
+
+def test_shared_cycle_is_reported_once_and_named_bins_remain_excluded(tmp_path: Path):
+    root = crate(tmp_path, {
+        "lib.rs": "mod a;\nmod b;\n",
+        "main.rs": "mod a;\nmod b;\nfn main() {}\n",
+        "a.rs": "pub struct A;\npub fn b() -> crate::b::B { crate::b::B }\n",
+        "b.rs": "pub struct B;\npub fn a() -> crate::a::A { crate::a::A }\n",
+        "bin/extra.rs": "mod missing_binary_only;\nfn main() {}\n",
+    })
+    assert keys(root) == ["demo: a, b"]
+
+
+def test_definition_inventory_preserves_multiline_visibility_and_qualifiers():
+    source = "\n\n  pub(crate)\nasync\nunsafe\nfn operation() {}\n\tpub\nstruct Item;\n\tmacro_rules! item { () => {} }\n"
+    assert MODULE.DEFINITION_RE.findall(source) == ["operation", "Item"]
+    assert MODULE.MACRO_RE.findall(source) == ["item"]
+
+
+def test_blank_line_definition_scan_has_a_bounded_runtime():
+    import subprocess
+
+    # The old ^\s* prefix retried across every newline in comment-blanked
+    # source, taking quadratic work. The process deadline catches that failure
+    # without assigning meaning to small noisy wall-clock differences.
+    program = (
+        "import importlib.util, sys; "
+        f"spec=importlib.util.spec_from_file_location('bounded_cycles', {str(SCRIPT_PATH)!r}); "
+        "m=importlib.util.module_from_spec(spec); sys.modules[spec.name]=m; "
+        "spec.loader.exec_module(m); "
+        "text='\\n'*200000+'?'; "
+        "assert m.DEFINITION_RE.findall(text)==[]; "
+        "assert m.MACRO_RE.findall(text)==[]; "
+        "assert m.MOD_DECL_RE.findall(text)==[]"
+    )
+    result = subprocess.run([sys.executable, "-c", program], capture_output=True, text=True, timeout=8)
+    assert result.returncode == 0, result.stdout + result.stderr

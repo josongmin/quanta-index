@@ -1,10 +1,11 @@
 # RBR-06 — Span 회계 분리와 기존 청커 대조 실험
 
-## 현행 판정 — 2026-09-26, `f9c3b4dc` + 공유 dirty
+## 현행 판정 — 2026-09-26, [중앙 코드 감사](CURRENT-AUDIT.md) 기준
 
 - 구현 관측: strict/line-aligned/whole-file 청커와 손계산 fixture, Quanta v5 indexed/SDK/scored span 계약·merge 표식 보존·evaluator rank-only exact-index Hit@1/MRR@10/Recall@10·context bytes/tokens 진단이 현재 owning 소스에 있다. primary density-aware projected NDCG는 변경하지 않았다. span 회계 재구현은 불필요하며 구형 v5 기록에 새 진단을 소급하지 않는다.
-- 검증 경계: 과거 Rust lib 82/chunking contract 25·Python span/merge fixture·live SDK 16은 당시 dirty local diagnostic이다. Python authority 283개 및 실제 SDK 17개 전체의 최종 source-stable terminal/receipt는 미발급이다. clean-source producer→schema→replay→scorer proof와 외부 fixed matrix는 `NOT_RUN`이다.
-- 잔여 코드: 현재 보조 지표의 source-bound clean receipt와 fixed matrix 외 별도 청커 최적화 코드는 측정 전 도입하지 않는다.
+- 검증 경계: 과거 Rust lib82/chunking contract25·Python span/merge fixture·live SDK16은 당시 dirty local diagnostic이다. 현재 authority는 Python288/Rust108/SDK18이며 exact terminal과 source scope는 중앙 감사에 기록한다. clean-source producer→schema→replay→scorer proof와 외부 fixed matrix는 `NOT_RUN`이다.
+- 추가 reachable 결함: strict end는 `snap_backward(start+window)`인데 다음 start는 `snap_forward(start+window-overlap)`여서 overlap0에서 cap에 걸친 UTF-8 글자를 누락한다. window1024·`a`1023개+β+z는 `[0,1023)`, `[1025,1026)`로 β2bytes가 빠지고 emoji는4bytes가 빠진다. 개별 span validation과 uncovered-byte 보고만으로 성공을 막지 못한다. `fixed_window.rs`의 다음 start를 emitted end 이하로 제한하고 기존 UTF-8 test identity에 원문 byte-union/CRLF/EOF/tiny impossible-budget oracle를 보강 중이다. owning terminal 전 `NOT_RUN`; ASCII cap/기본값/ranker는 불변.
+- 잔여 코드: 위 데이터 누락 보완을 제외하면 별도 청커 최적화는 측정 전 도입하지 않는다. 보조 지표의 source-bound receipt와 외부 fixed matrix는 별도다.
 - 잔여 실험: 같은 질의/모델/route·1024 window·같은 overlap의 strict vs line-aligned, whole-file 대조군 원본 matrix·coverage·fallback을 외부 코퍼스에서 실행하고 한 후보를 development에서 선택한다. 외부 candidate corpus 존재는 admission/measurement 성공이 아니다. [중앙 코드 감사](CURRENT-AUDIT.md), [잔여 작업](GAP-REGISTER.md).
 
 - 우선순위: P1. span 분리·보조 지표는 구현 관측, fixed matrix와 clean proof는 미완료. [현재 전수 판정](CURRENT-AUDIT.md). 선행: RBR-01/02/03.

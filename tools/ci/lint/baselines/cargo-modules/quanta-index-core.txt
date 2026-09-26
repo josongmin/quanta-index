@@ -47,6 +47,7 @@ crate quanta_index_core
 │   │   └── mod service: pub(self)
 │   │       ├── struct FusedKeyV1: pub
 │   │       ├── struct FusedLaneRankV1: pub
+│   │       ├── enum HybridFetchFloorPolicy: pub
 │   │       ├── struct HybridOrchestratorPolicy: pub
 │   │       ├── struct KeyFuseAccumulator: pub(self)
 │   │       └── struct LaneRows: pub(self)

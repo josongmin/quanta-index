@@ -8,6 +8,14 @@ targets:
       - sources/operational/agent-router.md
       - sources/rules/verification-contract.md
 
+  claude-entrypoint:
+    output: CLAUDE.md
+    template: templates/claude-entrypoint.md.j2
+    description: "Claude Code import adapter for older or restricted sessions"
+    max_bytes: 256
+    sections:
+      - sources/operational/claude-entrypoint.md
+
   agent-core:
     output: AGENT_CORE.md
     template: templates/agent-core.md.j2

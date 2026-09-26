@@ -31,6 +31,8 @@
 //! See `docs/plans/may-28-lancedb-adoption/` for the full backend decision and
 //! migration packet.
 
+#[cfg(feature = "proof")]
+pub mod ann_proof;
 mod budget;
 mod build;
 mod codec;

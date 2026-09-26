@@ -35,7 +35,7 @@ use quanta_index_retrieval_bench::sdk::{
 };
 use quanta_index_retrieval_bench::symbols::extract_corpus_symbols;
 use quanta_index_retrieval_bench::{BenchError, sha256_hex};
-use quanta_index_search_plane::QueryStageObservationPolicy;
+use quanta_index_search_plane::{HybridFetchFloorPolicy, QueryStageObservationPolicy};
 
 const EMBEDDER: &str = "hash-dev";
 
@@ -108,12 +108,27 @@ fn boot_session_with_policy(
     identity: &BatchIdentity,
     policy: QueryStageObservationPolicy,
 ) -> DaemonSession {
+    boot_session_with_policies(
+        state_root,
+        identity,
+        policy,
+        HybridFetchFloorPolicy::default(),
+    )
+}
+
+fn boot_session_with_policies(
+    state_root: &Path,
+    identity: &BatchIdentity,
+    policy: QueryStageObservationPolicy,
+    floor: HybridFetchFloorPolicy,
+) -> DaemonSession {
     let config = DaemonConfig {
         state_root,
         searchd_binary: None,
         embedder: EMBEDDER,
         model_dir: None,
         query_stage_observation: policy,
+        hybrid_fetch_floor: floor,
         repo_id: &identity.repo_id,
         revision_id: &identity.revision_id,
         ready_timeout: Duration::from_secs(60),
@@ -236,6 +251,72 @@ fn real_daemon_query_observation_off_preserves_results_and_marks_unmeasured() {
     );
 }
 
+#[test]
+fn real_daemon_experimental_fetch_floor_matches_initial_probe_without_changing_default() {
+    let repo = tempfile::tempdir().expect("repo");
+    write_tiny_repo(repo.path());
+    let manifest = load_manifest(&repo.path().join("manifest.json")).expect("manifest");
+    let files = load_corpus(repo.path(), &manifest, &CorpusLimits::default()).expect("corpus");
+    let (chunks, _) = chunk_corpus(&WholeFileChunker, &files).expect("chunks");
+    let identity = BatchIdentity::new("bench-repo", "bench-rev", 7, "manifest:floor".to_string())
+        .expect("identity");
+    let (batch, _) = assemble_batch(&identity, &chunks, &symbols_for(&files)).expect("batch");
+    let state = tempfile::tempdir().expect("state");
+    assert_eq!(
+        HybridFetchFloorPolicy::default(),
+        HybridFetchFloorPolicy::Floor100
+    );
+    for (policy, expected) in [
+        (HybridFetchFloorPolicy::Floor25, [25, 25, 101]),
+        (HybridFetchFloorPolicy::Floor50, [50, 50, 101]),
+        (HybridFetchFloorPolicy::Floor100, [100, 100, 101]),
+    ] {
+        let session = boot_session_with_policies(
+            &state.path().join(policy.as_str()),
+            &identity,
+            QueryStageObservationPolicy::Disabled,
+            policy,
+        );
+        let (_receipt, _ack, _ingest) =
+            publish_and_activate(&session, &batch, &identity, None).expect("publish");
+        for (top_k, fetch) in [1, 10, 100].into_iter().zip(expected) {
+            let outcome = query_route(&RouteQuery {
+                client: session.client(),
+                route: "hybrid",
+                lexical_request: "sphinx quartz vaults",
+                semantic_text: "sphinx quartz vaults",
+                repo_id: &identity.repo_id,
+                revision_id: &identity.revision_id,
+                generation: identity.generation,
+                top_k,
+            });
+            let QueryOutcome::ReturnedWindow {
+                hits, explanation, ..
+            } = outcome
+            else {
+                panic!("experimental floor failed: {outcome:?}");
+            };
+            assert!(!hits.is_empty());
+            let explanation = explanation.expect("actual response explanation");
+            assert!(explanation.stage_timings.is_none());
+            let actual: Vec<_> = explanation
+                .planner_trace
+                .expect("actual planner trace")
+                .into_iter()
+                .filter(|entry| entry.detail.starts_with("hybrid.internal_top_k="))
+                .collect();
+            assert_eq!(
+                actual,
+                vec![quanta_index_contract::PlannerTraceEntry {
+                    stage: quanta_index_contract::PlannerStage::Plan,
+                    detail: format!("hybrid.internal_top_k={fetch}"),
+                }]
+            );
+        }
+        session.stop().expect("stop");
+    }
+}
+
 fn collect_sources(dir: &Path, out: &mut Vec<PathBuf>) {
     for entry in std::fs::read_dir(dir).expect("src dir") {
         let entry = entry.expect("dir entry");
@@ -277,6 +358,7 @@ fn stale_state_root_is_refused() {
         embedder: EMBEDDER,
         model_dir: None,
         query_stage_observation: QueryStageObservationPolicy::Enabled,
+        hybrid_fetch_floor: HybridFetchFloorPolicy::default(),
         repo_id: &identity.repo_id,
         revision_id: &identity.revision_id,
         ready_timeout: Duration::from_secs(5),
@@ -305,6 +387,7 @@ fn symlink_state_root_is_refused() {
         embedder: EMBEDDER,
         model_dir: None,
         query_stage_observation: QueryStageObservationPolicy::Enabled,
+        hybrid_fetch_floor: HybridFetchFloorPolicy::default(),
         repo_id: &identity.repo_id,
         revision_id: &identity.revision_id,
         ready_timeout: Duration::from_secs(5),
@@ -336,6 +419,7 @@ fn boot_times_out_when_daemon_never_opens_sockets() {
         embedder: EMBEDDER,
         model_dir: None,
         query_stage_observation: QueryStageObservationPolicy::Enabled,
+        hybrid_fetch_floor: HybridFetchFloorPolicy::default(),
         repo_id: &identity.repo_id,
         revision_id: &identity.revision_id,
         ready_timeout: Duration::from_secs(2),
@@ -371,6 +455,7 @@ fn missing_pinned_model_fails_boot_without_a_scored_record() {
         embedder: "potion-code",
         model_dir: Some(&missing_model),
         query_stage_observation: QueryStageObservationPolicy::Enabled,
+        hybrid_fetch_floor: HybridFetchFloorPolicy::default(),
         repo_id: &identity.repo_id,
         revision_id: &identity.revision_id,
         ready_timeout: Duration::from_secs(10),
@@ -413,6 +498,7 @@ fn unavailable_provider_is_typed_and_never_returns_hits() {
         embedder: "unavailable",
         model_dir: None,
         query_stage_observation: QueryStageObservationPolicy::Enabled,
+        hybrid_fetch_floor: HybridFetchFloorPolicy::default(),
         repo_id: &identity.repo_id,
         revision_id: &identity.revision_id,
         ready_timeout: Duration::from_secs(60),
@@ -1113,6 +1199,8 @@ fn actual_runner_binary_emits_receipt_bound_v5_record() {
             out.to_str().expect("output path"),
             "--diagnostics-out",
             diagnostic_out.to_str().expect("diagnostic path"),
+            "--experimental-hybrid-fetch-floor",
+            "50",
             "--metrics-out",
             metrics_out.to_str().expect("metrics path"),
             "--refusal-out",
@@ -1171,7 +1259,14 @@ fn actual_runner_binary_emits_receipt_bound_v5_record() {
     let diagnostic: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&diagnostic_out).expect("diagnostic bytes"))
             .expect("diagnostic JSON");
-    assert_eq!(diagnostic["schema_version"], 5);
+    assert_eq!(diagnostic["schema_version"], 6);
+    assert_eq!(
+        diagnostic["hybrid_fetch_policy"],
+        quanta_index_retrieval_bench::diagnostics::hybrid_fetch_policy_value(
+            HybridFetchFloorPolicy::Floor50,
+        )
+        .expect("canonical floor config")
+    );
     assert_eq!(
         diagnostic["server_observation"],
         quanta_index_retrieval_bench::diagnostics::server_observation_value(
@@ -1308,6 +1403,7 @@ fn second_boot_over_used_root_is_refused_without_cleanup() {
         embedder: EMBEDDER,
         model_dir: None,
         query_stage_observation: QueryStageObservationPolicy::Enabled,
+        hybrid_fetch_floor: HybridFetchFloorPolicy::default(),
         repo_id: &identity.repo_id,
         revision_id: &identity.revision_id,
         ready_timeout: Duration::from_secs(5),
@@ -1385,6 +1481,22 @@ fn symbol_route_answers_from_published_units_and_proves_spans() {
         generation: identity.generation,
         top_k: 10,
     });
+    let literal = plan_query(
+        QueryInputPolicy::Literal,
+        "sphinx_riddle",
+        &NlPlanConfig::default(),
+    )
+    .expect("literal plan");
+    let unsupported = query_route(&RouteQuery {
+        client: session.client(),
+        route: "symbol",
+        lexical_request: &literal.lexical_request,
+        semantic_text: &literal.semantic_text,
+        repo_id: &identity.repo_id,
+        revision_id: &identity.revision_id,
+        generation: identity.generation,
+        top_k: 10,
+    });
     session.stop().expect("bounded shutdown");
     let hits = match outcome {
         QueryOutcome::ReturnedWindow { hits, .. } => hits,
@@ -1392,6 +1504,18 @@ fn symbol_route_answers_from_published_units_and_proves_spans() {
             panic!("symbol route failed: {other:?}")
         }
     };
+    match unsupported {
+        QueryOutcome::SdkFailure { code, message, .. } => {
+            assert_eq!(code, "LEX_PLANNER_UNSUPPORTED_FILTER_COMBO");
+            assert!(
+                !message.is_empty(),
+                "unsupported symbol text needs a reason"
+            );
+        }
+        other @ (QueryOutcome::ReturnedWindow { .. } | QueryOutcome::RejectedResponse { .. }) => {
+            panic!("unsupported literal symbol must refuse, not exhaust: {other:?}");
+        }
+    }
     assert!(
         !hits.is_empty(),
         "symbol route must answer for a published definition"

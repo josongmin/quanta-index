@@ -16,8 +16,8 @@ use quanta_index_embed::{
 use quanta_index_ipc::ServerAdmissionPolicy;
 use quanta_index_search_plane::readiness::SearchCorpusHistoryRetentionPolicyV1;
 use quanta_index_search_plane::{
-    QueryStageObservationPolicy, ResponsePayloadBudget, SEARCH_OWNED_SEMANTIC_DIMENSION,
-    SnapshotRegistryPolicy,
+    HybridFetchFloorPolicy, QueryStageObservationPolicy, ResponsePayloadBudget,
+    SEARCH_OWNED_SEMANTIC_DIMENSION, SnapshotRegistryPolicy,
 };
 
 use crate::app::socket_access::SocketAccessPolicies;
@@ -419,6 +419,7 @@ pub struct SearchdConfig {
     /// is cut and continued by its cursor (QI-BB-005 보완 #5).
     query_response_budget: ResponsePayloadBudget,
     query_stage_observation: QueryStageObservationPolicy,
+    hybrid_fetch_floor: HybridFetchFloorPolicy,
     /// How the integrity scrub is paced as maintenance (QI-BB-017): at most
     /// one bounded step per interval, on the maintenance timer.
     integrity_scrub_policy: IntegrityScrubPolicyV1,
@@ -623,6 +624,23 @@ pub(crate) const ENV_POLICY_FAMILIES: &[EnvPolicyFamily] = &[
         },
     },
     EnvPolicyFamily {
+        name: "experimental hybrid fetch floor",
+        env_vars: &["QUANTA_INDEX_EXPERIMENTAL_HYBRID_FETCH_FLOOR"],
+        apply: |config, lookup| {
+            let floor = lookup("QUANTA_INDEX_EXPERIMENTAL_HYBRID_FETCH_FLOOR")?
+                .map(|value| {
+                    HybridFetchFloorPolicy::parse(&value).map_err(|error| {
+                        anyhow::anyhow!(
+                            "QUANTA_INDEX_EXPERIMENTAL_HYBRID_FETCH_FLOOR: {error}, got {value:?}"
+                        )
+                    })
+                })
+                .transpose()?
+                .unwrap_or_default();
+            Ok(config.with_hybrid_fetch_floor(floor))
+        },
+    },
+    EnvPolicyFamily {
         name: "integrity scrub",
         env_vars: &[
             "QUANTA_INDEX_INTEGRITY_SCRUB_INTERVAL_MS",
@@ -690,6 +708,7 @@ impl SearchdConfig {
             maintenance_policy: MaintenancePolicy::DEFAULT,
             query_response_budget: ResponsePayloadBudget::DEFAULT,
             query_stage_observation: QueryStageObservationPolicy::default(),
+            hybrid_fetch_floor: HybridFetchFloorPolicy::default(),
             integrity_scrub_policy: IntegrityScrubPolicyV1::DEFAULT,
             provider_work_budget: ProviderWorkBudgetConfig::default(),
             provider_egress_grant: ProviderEgressGrantConfig::default(),
@@ -904,6 +923,17 @@ impl SearchdConfig {
     #[must_use]
     pub const fn with_query_response_budget(mut self, budget: ResponsePayloadBudget) -> Self {
         self.query_response_budget = budget;
+        self
+    }
+
+    #[must_use]
+    pub const fn hybrid_fetch_floor(&self) -> HybridFetchFloorPolicy {
+        self.hybrid_fetch_floor
+    }
+
+    #[must_use]
+    pub const fn with_hybrid_fetch_floor(mut self, floor: HybridFetchFloorPolicy) -> Self {
+        self.hybrid_fetch_floor = floor;
         self
     }
 
@@ -1932,6 +1962,7 @@ mod tests {
     fn every_knob_non_default() -> BTreeMap<&'static str, &'static str> {
         BTreeMap::from([
             ("QUANTA_INDEX_QUERY_STAGE_OBSERVATION", "disabled"),
+            ("QUANTA_INDEX_EXPERIMENTAL_HYBRID_FETCH_FLOOR", "25"),
             ("QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_GENERATIONS", "3"),
             ("QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_BYTES", "4096"),
             (
@@ -2037,6 +2068,49 @@ mod tests {
                 )
                 .is_err(),
                 "invalid stage observation policy must refuse: {value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn experimental_hybrid_fetch_floor_defaults_to_100_and_refuses_unknown_values() {
+        const KNOB: &str = "QUANTA_INDEX_EXPERIMENTAL_HYBRID_FETCH_FLOOR";
+        let family = ENV_POLICY_FAMILIES
+            .iter()
+            .find(|family| family.env_vars.contains(&KNOB))
+            .expect("floor family registered in both startup chains");
+        for (value, expected) in [
+            (None, HybridFetchFloorPolicy::Floor100),
+            (Some("25"), HybridFetchFloorPolicy::Floor25),
+            (Some("50"), HybridFetchFloorPolicy::Floor50),
+            (Some("100"), HybridFetchFloorPolicy::Floor100),
+        ] {
+            let lookup = |name: &str| -> Result<Option<String>> {
+                Ok(if name == KNOB {
+                    value.map(str::to_string)
+                } else {
+                    None
+                })
+            };
+            let config = (family.apply)(
+                SearchdConfig::from_test_state_root(PathBuf::from("/tmp/qi-floor-policy")),
+                &lookup,
+            )
+            .expect("known bounded selector");
+            assert_eq!(config.hybrid_fetch_floor(), expected);
+        }
+        for invalid in [
+            "", "0", "10", "24", "26", "51", "101", "025", "25 ", "+25", "default",
+        ] {
+            let lookup = |name: &str| -> Result<Option<String>> {
+                Ok((name == KNOB).then(|| invalid.to_string()))
+            };
+            assert!(
+                (family.apply)(
+                    SearchdConfig::from_test_state_root(PathBuf::from("/tmp/qi-floor-policy")),
+                    &lookup
+                )
+                .is_err()
             );
         }
     }

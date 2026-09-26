@@ -1,9 +1,9 @@
 # RBR-11 — Zero-RSS live parent 아래 프로세스 누락 수정
 
-## 현행 판정 — 2026-09-26, `f9c3b4dc` + 공유 dirty
+## 현행 판정 — 2026-09-26, [중앙 코드 감사](CURRENT-AUDIT.md) 기준
 
 - 구현 관측: `run.py`는 live zero-RSS connector를 소유 그래프에 유지하고 malformed/duplicate PID·missing root를 fail-closed 처리한다. macOS live fixture는 실제 자식 PID/positive RSS를 관측한 뒤 timeout을 시작하며 종료 시 child를 reap한다. cleanup `EPERM`은 성공으로 간주하지 않는다. 아래 `rss_kib > 0` 선필터와 `[100]`은 **수정 전 재현 기록**이며 같은 결함의 재구현 작업은 없다.
-- 검증 경계: Python authority는 현재 283개이나 소비자 수정 후 전체 actual collection/terminal·source-stable receipt는 미발급이다. 과거 272/276/280 결과는 현재 증거가 아니다. fixture 코드 존재와 지원 플랫폼 owner proof를 구분하고 clean resource replay/receipt는 `NOT_RUN`으로 유지한다.
+- 검증 경계: Python authority는 현재288개이며 전체 actual collection/terminal·source scope는 중앙 감사에 기록한다. immutable conditional owner283+32 subtests 통과는 최신288/플랫폼 전체 proof가 아니다. 과거272/276/280 결과도 현재 증거가 아니다. fixture 코드 존재와 지원 플랫폼 owner proof를 구분하고 clean resource replay/receipt는 `NOT_RUN`으로 유지한다.
 - 잔여: ps snapshot은 PID 시작시각/identity를 묶지 않으므로 빠른 PID 재사용까지 증명하지 못한다. 이를 legacy diagnostic 한계로 유지하고, 지원 플랫폼 owner evidence·실제 PID/RSS/cleanup·완전성 부정 fixture·최종 resource replay를 고정 source에서 재검증한다. 과거 peak RSS는 소급 교정 불가. [중앙 코드 감사](CURRENT-AUDIT.md), [잔여 작업](GAP-REGISTER.md).
 
 - 우선순위: P0. sampler 수정 코드는 관측됨; 현 소스 전체 proof는 미발급. [현재 전수 판정](CURRENT-AUDIT.md). 선행: 없음; inventory는 RBR-00과 함께 갱신.

@@ -779,9 +779,9 @@ def validate(evidence: object) -> dict[str, Any]:
     if status not in STATUSES:
         _fail(f"verdict.status {status!r} is not registered")
     if kind == "proof":
-        if scope != "contract" or payload["source_digest"] != source["closure_digest"]:
+        if scope != "contract" or record["payload"]["source_digest"] != source["closure_digest"]:
             _fail("proof requires contract scope and the bound source closure")
-        if status == "pass" and payload["failed"] != 0:
+        if status == "pass" and record["payload"]["failed"] != 0:
             _fail("failed proof tests cannot carry a pass verdict")
     if status != "pass" and not (isinstance(verdict["reason"], str) and verdict["reason"].strip()):
         _fail("a non-pass verdict must state a reason")

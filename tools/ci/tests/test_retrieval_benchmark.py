@@ -13,6 +13,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import zipfile
 from pathlib import Path
 
@@ -2332,12 +2333,10 @@ def test_ucd17_scalar_property_and_normalization_oracle_is_pinned():
         qp.plan_lexical_request("native", accepted + "a")
 
 
-from tools.benchmark.retrieval.test_sourcegraph import (  # noqa: E402
-    SourcegraphCaptureTests,
-)
+from tools.benchmark.retrieval import test_sourcegraph as sourcegraph_cases  # noqa: E402
 
 
-class TestSourcegraphComparator(SourcegraphCaptureTests):
+class TestSourcegraphComparator(sourcegraph_cases.SourcegraphCaptureTests):
     """Include offline code-search comparator contract cases in the RB proof rail."""
 
 
@@ -3759,6 +3758,7 @@ def _pair_stage(
     cache_regime="true_process_cold",
     alternate_system_order=True,
     diagnostic_version=4,
+    hybrid_floor="100",
     query_observation="enabled",
 ):
     """Build a complete valid pair stage through the real driver functions."""
@@ -3935,7 +3935,7 @@ def _pair_stage(
         qdir.mkdir(parents=True)
         sdir.mkdir(parents=True)
         qrec = record(lex_rows, lex_sha, "quanta", f"q-r{rep}", f"run-q-r{rep}")
-        ingest = _diagnostic_ingest_fixture(qrec) if diagnostic_version == 5 else None
+        ingest = _diagnostic_ingest_fixture(qrec) if diagnostic_version in (5, 6) else None
         srec = record(sem_rows, sem_sha, "semble", f"s-r{rep}", f"run-s-r{rep}")
         qpath = qdir / "record.json"
         spath = sdir / "record.json"
@@ -4317,14 +4317,18 @@ def _pair_stage(
                 }
             )
         diagnostic_path = qdir / "retrieval-diagnostic.json"
-        if diagnostic_version == 5 and query_observation == "disabled":
+        if diagnostic_version in (5, 6) and query_observation == "disabled":
             for row in diagnostic_rows:
                 row["response"]["explanation"]["stage_timings"] = None
+        if diagnostic_version == 6:
+            for row in diagnostic_rows:
+                row["response"]["explanation"]["planner_trace"] = []
         diagnostic_path.write_text(
             json.dumps(
                 {
                     "schema_version": diagnostic_version,
-                    **({"server_observation": pairrun.server_observation_configuration(query_observation), "ingest": ingest} if diagnostic_version == 5 else {}),
+                    **({"hybrid_fetch_policy": pairrun.hybrid_fetch_policy_configuration(hybrid_floor)} if diagnostic_version == 6 else {}),
+                    **({"server_observation": pairrun.server_observation_configuration(query_observation), "ingest": ingest} if diagnostic_version in (5, 6) else {}),
                     "kind": "quanta_returned_window_diagnostic",
                     "record_sha256": ev.digest(qpath.read_bytes()),
                     "query_pack_sha256": qrec["query_pack_sha256"],
@@ -4585,9 +4589,10 @@ def _pair_stage(
     (stage / "protocol-lock.json").write_text(
         json.dumps(
             {
-                "lock_version": 3 if diagnostic_version == 5 else 2,
+                "lock_version": {4: 2, 5: 3, 6: 4}[diagnostic_version],
                 "retrieval_diagnostic_version": diagnostic_version,
-                **({"server_observation": pairrun.server_observation_configuration(query_observation), "ingest_request_identity": pairrun.ingest_request_identity({})} if diagnostic_version == 5 else {}),
+                **({"hybrid_fetch_policy": pairrun.hybrid_fetch_policy_configuration(hybrid_floor)} if diagnostic_version == 6 else {}),
+                **({"server_observation": pairrun.server_observation_configuration(query_observation), "ingest_request_identity": pairrun.ingest_request_identity({})} if diagnostic_version in (5, 6) else {}),
                 "rank_metric_k_policy": "declared_top_k_v1",
                 "suite_digest": ev.digest(suite_path.read_bytes()),
                 "query_pack_digest": ev.digest(pack_path.read_bytes()),
@@ -4871,6 +4876,61 @@ def test_observation_protocol_v3_replays_and_refuses_policy_or_batch_scope_drift
         result = _stage_verdict(st)
         assert result["states"]["PAIR_VALID"] == "fail"
         assert result["state_evidence"]["PAIR_VALID"]["reason"] == "protocol_lock_malformed"
+
+
+def test_hybrid_fetch_protocol_v4_binds_every_capture_and_refuses_config_aliases(tmp_path):
+    st = _pair_stage(tmp_path, diagnostic_version=6, query_observation="disabled", hybrid_floor="25")
+    assert _stage_verdict(st)["states"]["PAIR_VALID"] == "pass"
+    lock_path = st["stage"] / "protocol-lock.json"
+    lock = json.loads(lock_path.read_text())
+    assert lock["hybrid_fetch_policy"] == pairrun.hybrid_fetch_policy_configuration("25")
+    for policy in (
+        pairrun.hybrid_fetch_policy_configuration("50"),
+        {**lock["hybrid_fetch_policy"], "floor": 25.0},
+        {**lock["hybrid_fetch_policy"], "floor": True},
+        {**lock["hybrid_fetch_policy"], "config_sha256": "0" * 64},
+        {**lock["hybrid_fetch_policy"], "scope": "default"},
+        {**lock["hybrid_fetch_policy"], "unexpected": 0},
+    ):
+        changed = json.loads(json.dumps(lock))
+        changed["hybrid_fetch_policy"] = policy
+        lock_path.write_text(json.dumps(changed))
+        assert _stage_verdict(st)["states"]["PAIR_VALID"] == "fail"
+    lock_path.write_text(json.dumps(lock))
+    for mutate in (
+        lambda value: value.pop("hybrid_fetch_policy"),
+        lambda value: value.update(lock_version=4.0),
+        lambda value: value.update(retrieval_diagnostic_version=6.0),
+        lambda value: value.update(retrieval_diagnostic_version=5),
+    ):
+        changed = json.loads(json.dumps(lock))
+        mutate(changed)
+        lock_path.write_text(json.dumps(changed))
+        assert _stage_verdict(st)["states"]["PAIR_VALID"] == "fail"
+    lock_path.write_text(json.dumps(lock))
+    assert _stage_verdict(st)["states"]["PAIR_VALID"] == "pass"
+
+
+def test_hybrid_initial_fetch_trace_requires_exact_policy_probe_and_unique_plan():
+    # Hand oracle: fixed floor, public cap 10000, one-row continuation probe.
+    for floor, top_k, expected in (
+        ("25", 1, 25), ("25", 10, 25), ("25", 100, 101),
+        ("50", 1, 50), ("50", 10, 50), ("50", 100, 101),
+        ("100", 1, 100), ("100", 10, 100), ("100", 100, 101),
+        ("25", 10000, 10001), ("100", 10000, 10001),
+    ):
+        policy = pairrun.hybrid_fetch_policy_configuration(floor)
+        trace = [{"stage": "plan", "detail": f"hybrid.internal_top_k={expected}"}]
+        pairrun._validate_hybrid_initial_fetch(trace, top_k, policy)
+        for mutant in (
+            [], trace + trace,
+            [{"stage": "plan", "detail": f"hybrid.internal_top_k={expected - 1}"}],
+            [{"stage": "parse", "detail": trace[0]["detail"]}],
+            [{"stage": "plan", "detail": f"hybrid.internal_top_k=0{expected}"}],
+            [{"stage": "plan", "detail": f"hybrid.internal_top_k={expected}.0"}],
+        ):
+            with pytest.raises(pairrun.RunError, match="initial fetch"):
+                pairrun._validate_hybrid_initial_fetch(mutant, top_k, policy)
 
 
 def test_new_protocol_requires_bound_retrieval_diagnostic_on_replay(tmp_path):
@@ -6949,11 +7009,19 @@ def test_seatbelt_profile_is_default_deny_allowlist(tmp_path):
     assert denied_probe.returncode != 0 and denied_probe.stdout == ""
 
 
+@pytest.fixture
+def seatbelt_socket_root():
+    # Darwin's sockaddr_un path limit is independent of pytest's basetemp depth.
+    with tempfile.TemporaryDirectory(prefix="qi-sb-", dir="/tmp") as directory:
+        yield Path(directory).resolve()
+
+
 @pytest.mark.skipif(
     pairrun.platform.system() != "Darwin" or not pairrun.SANDBOX_EXEC.is_file(),
     reason="macOS Seatbelt backend is unavailable",
 )
-def test_seatbelt_profile_allows_owned_unix_socket_and_child_signal(tmp_path):
+def test_seatbelt_profile_allows_owned_unix_socket_and_child_signal(seatbelt_socket_root):
+    tmp_path = seatbelt_socket_root
     socket_path = tmp_path / "allowed.sock"
     denied_socket_path = tmp_path.parent / f"{tmp_path.name}-denied.sock"
     profile = pairrun._seatbelt_profile([], [str(tmp_path)], [str(tmp_path)])
@@ -7825,6 +7893,21 @@ def test_v3_spec_accepts_lockfile_path(tmp_path):
     spec_path.write_text(json.dumps(_g0_spec()), encoding="utf-8")
     loaded = pairrun.load_spec(spec_path)
     assert loaded["semble_lockfile"] == "/tmp/semble-lock.txt"
+    assert pairrun.hybrid_fetch_policy_configuration(
+        loaded.get("experimental_hybrid_fetch_floor", "100")
+    )["floor"] == 100
+    for floor in ("25", "50", "100"):
+        observed = {**_g0_spec(), "experimental_hybrid_fetch_floor": floor}
+        jsonschema.validate(observed, _load_schema("pair-spec.schema.json"))
+        spec_path.write_text(json.dumps(observed), encoding="utf-8")
+        assert pairrun.load_spec(spec_path)["experimental_hybrid_fetch_floor"] == floor
+    for floor in (None, False, 25, 25.0, [], {}, "0", "250", "025", "25 ", ""):
+        observed = {**_g0_spec(), "experimental_hybrid_fetch_floor": floor}
+        spec_path.write_text(json.dumps(observed), encoding="utf-8")
+        with pytest.raises(pairrun.RunError, match="exactly 25, 50 or 100"):
+            pairrun.load_spec(spec_path)
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(observed, _load_schema("pair-spec.schema.json"))
     assert pairrun.server_observation_configuration(
         loaded.get("query_stage_observation", "enabled")
     )["query_stages"] == "enabled"

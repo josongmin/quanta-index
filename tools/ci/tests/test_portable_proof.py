@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
-import subprocess
 import sys
 from pathlib import Path
 
@@ -13,6 +12,48 @@ import pytest
 
 from tools.benchmark.retrieval import portable_proof
 from tools.benchmark.retrieval import run as pairrun
+
+
+def test_direct_proof_command_has_a_finite_execution_timeout(tmp_path, monkeypatch):
+    observed = []
+
+    def run(argv, **kwargs):
+        observed.append(kwargs.get("timeout"))
+        return b"complete", b"", {"exit_code": 0}
+
+    monkeypatch.setattr(portable_proof, "execute", run)
+    commands = []
+    assert portable_proof._run("fixture", [sys.executable, "-V"], tmp_path, commands) == b"complete"
+    assert len(observed) == 1
+    assert type(observed[0]) in (int, float) and 0 < observed[0] <= 7200
+
+
+def test_direct_proof_failure_uses_real_owner_and_emits_no_command(tmp_path):
+    commands = []
+    with pytest.raises(ValueError, match="exit 7"):
+        portable_proof._run(
+            "fixture", [sys.executable, "-c", "raise SystemExit(7)"], tmp_path, commands
+        )
+    assert commands == []
+    assert not list(tmp_path.iterdir())
+
+
+def test_tool_and_sdk_entrypoints_share_finite_execution_owner(tmp_path, monkeypatch):
+    calls = []
+    out = tmp_path / "fresh"
+
+    def execute(argv, **kwargs):
+        calls.append((argv, kwargs["timeout"]))
+        if argv[0] == "fixture-just":
+            out.mkdir()
+        return b"fixture-version", b"", {"exit_code": 0}
+
+    monkeypatch.setattr(portable_proof, "execute", execute)
+    assert portable_proof._git("rev-parse", "HEAD") == "fixture-version"
+    commands = []
+    portable_proof._run_fresh_recipe(["fixture-just", "recipe"], out, commands)
+    assert calls == [(["git", "rev-parse", "HEAD"], 30), (["fixture-just", "recipe"], 7200)]
+    assert commands[0]["exit_code"] == 0
 
 
 def test_collected_pytest_identity_normalizes_windows_separator() -> None:
@@ -146,8 +187,7 @@ def fake_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     def run(argv, **kwargs):
         assert kwargs["cwd"] == portable_proof.ROOT
-        assert kwargs["capture_output"] is True
-        assert kwargs["check"] is False
+        assert kwargs["timeout"] == 7200
         calls.append((argv, kwargs["env"]))
         if argv[1] == str(portable_proof.SOURCE_CLOSURE_SCRIPT):
             write_closure()
@@ -219,9 +259,9 @@ def fake_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
             raw = json.dumps({"target_directory": str(target)}).encode()
         else:
             raise AssertionError(argv)
-        return subprocess.CompletedProcess(argv, 0, raw, b"")
+        return raw, b"", {"exit_code": 0}
 
-    monkeypatch.setattr(portable_proof.subprocess, "run", run)
+    monkeypatch.setattr(portable_proof, "execute", run)
     return out, runner, calls
 
 
@@ -495,9 +535,9 @@ def test_failed_command_cannot_emit_receipt(
     out, _, _ = fake_execution
 
     def fail(*_args, **_kwargs):
-        return subprocess.CompletedProcess([], 1, b"partial", b"failure")
+        raise ValueError("benchmark producer failed with exit 1: failure")
 
-    monkeypatch.setattr(portable_proof.subprocess, "run", fail)
+    monkeypatch.setattr(portable_proof, "execute", fail)
     with pytest.raises(ValueError, match="exit 1"):
         portable_proof.produce("contract", out)
     assert not (out / "execution-context.json").exists()

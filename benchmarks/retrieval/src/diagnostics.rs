@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use quanta_index_search_plane::QueryStageObservationPolicy;
+use quanta_index_search_plane::{HybridFetchFloorPolicy, QueryStageObservationPolicy};
 use serde_json::{Value, json};
 
 use crate::record::QueryPack;
@@ -28,6 +28,7 @@ fn explanation_value(explanation: Option<&RouteExplanation>) -> Value {
         "engines_executed": detail.engines_executed,
         "engines_touched": detail.engines_touched,
         "strategy": detail.strategy,
+        "planner_trace": detail.planner_trace,
         "stage_timings": detail.stage_timings,
     })
 }
@@ -39,6 +40,7 @@ pub fn diagnostic_value(
     routes: &[&str],
     outcomes: &BTreeMap<(String, String), QueryOutcome>,
     observation_policy: QueryStageObservationPolicy,
+    fetch_floor_policy: HybridFetchFloorPolicy,
 ) -> BenchResult<Value> {
     let top_k = pack.contract_top_k;
     if record_sha256.len() != 64
@@ -367,8 +369,9 @@ pub fn diagnostic_value(
         }
     }
     Ok(json!({
-        "schema_version": 5,
+        "schema_version": 6,
         "server_observation": server_observation_value(observation_policy)?,
+        "hybrid_fetch_policy": hybrid_fetch_policy_value(fetch_floor_policy)?,
         "ingest": null,
         "kind": "quanta_returned_window_diagnostic",
         "record_sha256": record_sha256,
@@ -390,6 +393,20 @@ pub fn server_observation_value(policy: QueryStageObservationPolicy) -> BenchRes
     let object = config.as_object_mut().ok_or_else(|| {
         BenchError::Protocol("server observation config is not an object".to_string())
     })?;
+    let _previous = object.insert("config_sha256".to_string(), json!(digest));
+    Ok(config)
+}
+
+/// Bind the explicit experimental fetch floor without changing product defaults.
+pub fn hybrid_fetch_policy_value(policy: HybridFetchFloorPolicy) -> BenchResult<Value> {
+    let mut config = json!({
+        "floor": policy.get(),
+        "scope": "experimental_hybrid_fetch_floor_v1",
+    });
+    let digest = crate::sha256_hex(crate::canonical::canonical_json(&config)?.as_bytes());
+    let object = config
+        .as_object_mut()
+        .ok_or_else(|| BenchError::Protocol("hybrid fetch config is not an object".to_string()))?;
     let _previous = object.insert("config_sha256".to_string(), json!(digest));
     Ok(config)
 }
@@ -434,6 +451,7 @@ mod tests {
             engines_executed: Some(vec!["lexical", "semantic"]),
             engines_touched: Some(vec!["lexical", "semantic"]),
             strategy: Some("hybrid-rrf".to_string()),
+            planner_trace: None,
             stage_timings: None,
         }
     }
@@ -511,9 +529,35 @@ mod tests {
             &["hybrid"],
             &outcomes(),
             QueryStageObservationPolicy::Enabled,
+            HybridFetchFloorPolicy::default(),
         )
         .expect("complete diagnostic");
         assert_eq!(value.get("record_sha256"), Some(&json!("e".repeat(64))));
+        for (policy, floor, digest) in [
+            (
+                HybridFetchFloorPolicy::Floor25,
+                25,
+                "cb0a17b99da23421f29d5aced57dbf590a8f5b3d4b3fd6e1a38f34be43bc84ce",
+            ),
+            (
+                HybridFetchFloorPolicy::Floor50,
+                50,
+                "4ae57a1c4b08695816cd19ba3bdbaae560ff2b6ed3e07ba936b570253b641c91",
+            ),
+            (
+                HybridFetchFloorPolicy::Floor100,
+                100,
+                "e874086df4989a03131d54376525577cd3549d214ecff199f99f663b8a1f6e2c",
+            ),
+        ] {
+            assert_eq!(
+                hybrid_fetch_policy_value(policy).expect("config"),
+                json!({
+                    "floor": floor, "scope": "experimental_hybrid_fetch_floor_v1",
+                    "config_sha256": digest,
+                })
+            );
+        }
         assert_eq!(
             value.pointer("/results/0/candidates/0/contributions/0/rank"),
             Some(&json!(2))
@@ -533,9 +577,10 @@ mod tests {
             &["hybrid"],
             &outcomes(),
             QueryStageObservationPolicy::Enabled,
+            HybridFetchFloorPolicy::default(),
         )
         .expect("complete diagnostic");
-        assert_eq!(value.get("schema_version"), Some(&json!(5)));
+        assert_eq!(value.get("schema_version"), Some(&json!(6)));
         assert_eq!(
             value.pointer("/results/0/response_kind"),
             Some(&json!("returned_window"))
@@ -601,6 +646,7 @@ mod tests {
             &["hybrid"],
             &sparse,
             QueryStageObservationPolicy::Disabled,
+            HybridFetchFloorPolicy::default(),
         )
         .expect("complete diagnostic");
         // Absent observations remain explicit nulls: no explanation, no
@@ -621,6 +667,7 @@ mod tests {
                 &["hybrid"],
                 &BTreeMap::new(),
                 QueryStageObservationPolicy::Enabled,
+                HybridFetchFloorPolicy::default(),
             )
             .is_err()
         );
@@ -639,6 +686,7 @@ mod tests {
                 &["hybrid"],
                 &missing_lane,
                 QueryStageObservationPolicy::Enabled,
+                HybridFetchFloorPolicy::default(),
             )
             .is_err()
         );
@@ -662,6 +710,7 @@ mod tests {
             &["hybrid"],
             &unanchored,
             QueryStageObservationPolicy::Enabled,
+            HybridFetchFloorPolicy::default(),
         )
         .expect("record supplies the normalized span");
         assert_eq!(

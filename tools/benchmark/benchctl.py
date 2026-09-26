@@ -165,6 +165,7 @@ def parse_args(
                 ),
             )
         if command == "run":
+            child.add_argument("--lexical-spec", type=Path)
             child.add_argument("--agent-recording", type=Path)
             child.add_argument("--scan-recording", type=Path)
             child.add_argument("--recorded-authenticity", default=None,
@@ -735,6 +736,24 @@ def replay_command(repo_root: Path, reference: str, evidence_root: Path | None) 
         return 2
     native_families = load_manifest(registry_path, repo_root=repo_root)["families"]
     artifact_oracle = "not_applicable"
+    if evidence["profile"] == "lexical-diagnostic":
+        from lexical_capture import replay_run as replay_lexical
+
+        try:
+            replay_lexical(store, evidence)
+        except (ValueError, RuntimeError, OSError, UnicodeError, SystemExit) as exc:
+            print(f"ERROR: lexical replay refused: {exc}", file=sys.stderr)
+            return 2
+        artifact_oracle = "pass"
+    if evidence["profile"] == "retrieval-contract":
+        from retrieval_capture import replay_run as replay_proof
+
+        try:
+            replay_proof(store, evidence)
+        except (ValueError, RuntimeError, OSError, UnicodeError, SystemExit) as exc:
+            print(f"ERROR: retrieval proof replay refused: {exc}", file=sys.stderr)
+            return 2
+        artifact_oracle = "pass"
     if evidence["profile"] == "recorded":
         from recorded_capture import replay_run as replay_recorded
 
@@ -1311,6 +1330,80 @@ def main(argv: list[str] | None = None) -> int:
         return replay_command(repo_root, reference, args.evidence_root)
 
     profile = profiles[args.profile]
+    if args.command == "run" and args.profile != "lexical-diagnostic" and args.lexical_spec is not None:
+        print("ERROR: --lexical-spec applies only to lexical-diagnostic; no producer was executed", file=sys.stderr)
+        return 2
+    if args.profile == "lexical-diagnostic" and args.command == "compare":
+        print("ERROR: recorded lexical observations have no qualified baseline", file=sys.stderr)
+        return 2
+    if args.profile == "lexical-diagnostic" and args.command in {"run", "validate", "summarize"}:
+        from lexical_capture import capture as capture_lexical
+        from lexical_capture import validate as validate_lexical
+
+        root = resolve_evidence_root(args.evidence_root)
+        if root is None and args.command != "summarize":
+            print("ERROR: lexical capture requires --evidence-root; no producer was executed", file=sys.stderr)
+            return 2
+        if root is not None:
+            registry = load_registry(repo_root / "tools/benchmark/registry.toml", repo_root=repo_root)
+            try:
+                if args.command == "run":
+                    if args.lexical_spec is None:
+                        raise EvidenceError("lexical capture requires --lexical-spec")
+                    if any(getattr(args, key) is not None for key in (
+                        "criterion_samples", "criterion_warmup", "criterion_measurement", "criterion_resamples",
+                        "cold_samples", "agent_recording", "scan_recording", "recorded_authenticity")) or args.admit_baseline:
+                        raise EvidenceError("lexical capture refuses unrelated producer controls")
+                    timeout = args.producer_timeout if args.producer_timeout is not None else 1800
+                    document = capture_lexical(repo_root, root, registry, args.lexical_spec, timeout)
+                elif args.command == "validate":
+                    document = validate_lexical(repo_root, root, registry)
+                else:
+                    from lexical_capture import FAMILY, PRODUCTS, require_registration
+                    from profile_capture import load_capture
+
+                    require_registration(registry)
+                    capture_document = load_capture(root, profile=args.profile, registry_digest=registry_digest(registry))
+                    if capture_document["expected_cases"] != {FAMILY: list(PRODUCTS)}:
+                        raise EvidenceError("lexical summary product inventory differs")
+                    document = {"profile": args.profile, "capture_id": capture_document["capture_id"],
+                                "status": "capture_present_unvalidated", "source": capture_document["source"],
+                                "measurement_count": len(capture_document["runs"]),
+                                "scope": "recorded_lexical_diagnostic", "qualification": "not_run"}
+            except (ValueError, RuntimeError, OSError, UnicodeError, SystemExit) as exc:
+                print(f"ERROR: lexical capture refused: {exc}", file=sys.stderr)
+                return 2
+            print(json.dumps(document, sort_keys=True, indent=2))
+            return 0
+    if args.profile == "retrieval-contract" and args.command == "compare":
+        print("ERROR: test proofs have no relevance/performance baseline", file=sys.stderr)
+        return 2
+    if args.profile == "retrieval-contract" and args.command in {"run", "validate"}:
+        from retrieval_capture import capture as capture_proof
+        from retrieval_capture import validate as validate_proof
+
+        root = resolve_evidence_root(args.evidence_root)
+        if root is None:
+            print("ERROR: retrieval proof requires --evidence-root; no producer was executed", file=sys.stderr)
+            return 2
+        registry = load_registry(repo_root / "tools/benchmark/registry.toml", repo_root=repo_root)
+        try:
+            if args.command == "run":
+                if any(getattr(args, key) is not None for key in (
+                    "criterion_samples", "criterion_warmup", "criterion_measurement", "criterion_resamples",
+                    "cold_samples", "agent_recording", "scan_recording", "recorded_authenticity")) or args.admit_baseline:
+                    raise EvidenceError("retrieval proofs refuse unrelated producer controls")
+                timeout = args.producer_timeout if args.producer_timeout is not None else 7200
+                if timeout < 1:
+                    raise EvidenceError("retrieval producer timeout must be positive")
+                document = capture_proof(repo_root, root, registry, timeout)
+            else:
+                document = validate_proof(repo_root, root, registry)
+        except (ValueError, RuntimeError, OSError, UnicodeError, SystemExit) as exc:
+            print(f"ERROR: retrieval proof refused: {exc}", file=sys.stderr)
+            return 2
+        print(json.dumps(document, sort_keys=True, indent=2))
+        return 0
     if args.command == "run" and args.profile != "recorded" and any(
         getattr(args, key) is not None
         for key in ("agent_recording", "scan_recording", "recorded_authenticity")
@@ -1369,22 +1462,23 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 2
-    if args.profile == "recorded" and args.command == "summarize":
+    if args.profile in {"recorded", "retrieval-contract"} and args.command == "summarize":
         root = resolve_evidence_root(args.evidence_root)
         if root is not None:
             from profile_capture import load_capture
 
             registry = load_registry(repo_root / "tools/benchmark/registry.toml", repo_root=repo_root)
             try:
-                document = load_capture(root, profile="recorded", registry_digest=registry_digest(registry))
+                document = load_capture(root, profile=args.profile, registry_digest=registry_digest(registry))
                 if document["expected_cases"] != {family: [None] for family in profile["families"]}:
-                    raise EvidenceError("recorded capture inventory differs from registry")
+                    raise EvidenceError("capture inventory differs from registry")
             except (ValueError, OSError) as exc:
-                print(f"ERROR: cannot summarize recorded capture: {exc}", file=sys.stderr)
+                print(f"ERROR: cannot summarize {args.profile} capture: {exc}", file=sys.stderr)
                 return 2
-            print(json.dumps({"profile": "recorded", "capture_id": document["capture_id"],
+            print(json.dumps({"profile": args.profile, "capture_id": document["capture_id"],
                               "status": "capture_present_unvalidated", "source": document["source"],
-                              "measurement_count": len(document["runs"]), "authenticity": "unverified",
+                              "measurement_count": len(document["runs"]),
+                              "scope": "contract_only" if args.profile == "retrieval-contract" else "unauthenticated_recording",
                               "qualification": "not_run"}, sort_keys=True, indent=2))
             return 0
     if args.profile in {"micro", "dsl-diagnostic"} and args.command == "summarize":

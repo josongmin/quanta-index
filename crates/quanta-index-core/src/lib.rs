@@ -45,8 +45,9 @@ pub use domains::generation::{
 };
 pub use domains::hybrid::{
     DenseAdmissionOutcomeV1, DenseLaneFilterClassV1, ExplainQueryPort, FusedKeyV1, FusedLaneRankV1,
-    HYBRID_FILTER_UNSUPPORTED_CODE, HybridFilterPlanV1, HybridOrchestratorPolicy, HybridQueryPort,
-    classify_hybrid_filter_v1, dense_admission_round_outcome_v1, hybrid_filter_name_v1,
+    HYBRID_FILTER_UNSUPPORTED_CODE, HybridFetchFloorPolicy, HybridFilterPlanV1,
+    HybridOrchestratorPolicy, HybridQueryPort, classify_hybrid_filter_v1,
+    dense_admission_round_outcome_v1, hybrid_filter_name_v1,
 };
 pub use domains::idempotency::{
     BATCH_DIGEST_CONFLICT_CODE, BATCH_DIGEST_MISMATCH_CODE, CATALOG_BUSY_CODE,

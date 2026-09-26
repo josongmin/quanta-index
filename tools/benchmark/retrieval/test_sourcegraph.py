@@ -96,17 +96,20 @@ class SourcegraphCaptureTests(unittest.TestCase):
         with self.assertRaises(CaptureError):
             validate_capture(request, raw, manifest, universe)
 
-    def test_malformed_event_and_duplicate_json_key_refused(self) -> None:
-        for raw in (
-            b"event: progress\ndata: {bad}\n\n" + event("done", {}),
-            b'event: progress\ndata: {"done":false,"done":true,"skipped":[]}\n\n'
-            + event("done", {}),
-            b'event: progress\ndata: {"done":false,"skipped":[],"durationMs":NaN}\n\n'
-            + event("done", {}),
-            b"event: progress\ndata: {}\nextra: ignored\n\n" + event("done", {}),
-        ):
-            with self.subTest(raw=raw):
-                self.assert_refused(*inputs(raw))
+    def test_malformed_event_refused(self) -> None:
+        self.assert_refused(*inputs(b"event: progress\ndata: {bad}\n\n" + event("done", {})))
+
+    def test_duplicate_json_key_refused(self) -> None:
+        raw = b'event: progress\ndata: {"done":false,"done":true,"skipped":[]}\n\n'
+        self.assert_refused(*inputs(raw + event("done", {})))
+
+    def test_nonfinite_progress_refused(self) -> None:
+        raw = b'event: progress\ndata: {"done":false,"skipped":[],"durationMs":NaN}\n\n'
+        self.assert_refused(*inputs(raw + event("done", {})))
+
+    def test_unknown_sse_field_refused(self) -> None:
+        raw = b"event: progress\ndata: {}\nextra: ignored\n\n" + event("done", {})
+        self.assert_refused(*inputs(raw))
 
     def test_duplicate_native_hit_refused(self) -> None:
         duplicate = event("matches", [hit("a.py", 1), hit("a.py", 1)])
@@ -150,13 +153,6 @@ class SourcegraphCaptureTests(unittest.TestCase):
             + event("done", {})
         )
         self.assert_refused(*inputs(alert))
-        for progress in (
-            {"done": True, "skipped": [], "durationMs": 1},
-            {"done": True, "skipped": [], "matchCount": True, "durationMs": 1},
-            {"done": True, "skipped": [], "matchCount": 0, "durationMs": -1},
-        ):
-            with self.subTest(progress=progress):
-                self.assert_refused(*inputs(event("progress", progress) + event("done", {})))
         understated = (
             event("matches", [hit("a.py", 1)])
             + event("progress", {"done": True, "skipped": [], "matchCount": 0, "durationMs": 1})
@@ -169,6 +165,22 @@ class SourcegraphCaptureTests(unittest.TestCase):
             + event("done", {})
         )
         self.assert_refused(*inputs(regressed))
+
+    def assert_progress_refused(self, progress: dict) -> None:
+        self.assert_refused(*inputs(event("progress", progress) + event("done", {})))
+
+    def test_progress_missing_match_count_refused(self) -> None:
+        self.assert_progress_refused({"done": True, "skipped": [], "durationMs": 1})
+
+    def test_progress_boolean_match_count_refused(self) -> None:
+        self.assert_progress_refused(
+            {"done": True, "skipped": [], "matchCount": True, "durationMs": 1}
+        )
+
+    def test_progress_negative_duration_refused(self) -> None:
+        self.assert_progress_refused(
+            {"done": True, "skipped": [], "matchCount": 0, "durationMs": -1}
+        )
 
     def test_wrong_revision_refused_in_result_and_manifest(self) -> None:
         raw = good_stream().replace(REVISION.encode(), ("b" * 40).encode(), 1)
@@ -210,27 +222,36 @@ class SourcegraphCaptureTests(unittest.TestCase):
             + event("done", {})
         )
         self.assert_refused(*inputs(raw))
-        for malformed in (
-            {**hit("a.py", 1), "lineMatches": [None]},
+
+    def assert_match_refused(self, malformed: dict) -> None:
+        raw = (
+            event("matches", [malformed])
+            + event("progress", {"done": True, "skipped": [], "matchCount": 1, "durationMs": 1})
+            + event("done", {})
+        )
+        self.assert_refused(*inputs(raw))
+
+    def test_null_line_match_refused(self) -> None:
+        self.assert_match_refused({**hit("a.py", 1), "lineMatches": [None]})
+
+    def test_boolean_line_number_refused(self) -> None:
+        self.assert_match_refused(
             {
                 **hit("a.py", 1),
                 "lineMatches": [{"line": QUERY, "lineNumber": True, "offsetAndLengths": [[0, 1]]}],
-            },
+            }
+        )
+
+    def test_zero_width_match_refused(self) -> None:
+        self.assert_match_refused(
             {
                 **hit("a.py", 1),
                 "lineMatches": [{"line": QUERY, "lineNumber": 1, "offsetAndLengths": [[0, 0]]}],
-            },
-            {**hit("a.py", 1), "chunkMatches": [{"content": QUERY}]},
-        ):
-            with self.subTest(malformed=malformed):
-                raw = (
-                    event("matches", [malformed])
-                    + event(
-                        "progress", {"done": True, "skipped": [], "matchCount": 1, "durationMs": 1}
-                    )
-                    + event("done", {})
-                )
-                self.assert_refused(*inputs(raw))
+            }
+        )
+
+    def test_chunk_match_refused(self) -> None:
+        self.assert_match_refused({**hit("a.py", 1), "chunkMatches": [{"content": QUERY}]})
 
     def test_non_content_or_outside_universe_refused(self) -> None:
         for changed in ({**hit("a.py", 1), "type": "path"}, hit("other.py", 1)):
@@ -246,10 +267,27 @@ class SourcegraphCaptureTests(unittest.TestCase):
             query_expression("foo repo:other", REPOSITORY, REVISION)
         with self.assertRaises(CaptureError):
             query_expression("foo\nbar", REPOSITORY, REVISION)
-        for query in ("foo OR bar", "foo and bar", "foo NOT bar", "foo -bar", "foo /bar/"):
-            with self.subTest(query=query), self.assertRaises(CaptureError):
-                query_expression(query, REPOSITORY, REVISION)
         self.assertIn("type:file", query_expression("foo bar", REPOSITORY, REVISION))
+
+    def test_query_or_injection_refused(self) -> None:
+        with self.assertRaises(CaptureError):
+            query_expression("foo OR bar", REPOSITORY, REVISION)
+
+    def test_query_and_injection_refused(self) -> None:
+        with self.assertRaises(CaptureError):
+            query_expression("foo and bar", REPOSITORY, REVISION)
+
+    def test_query_not_injection_refused(self) -> None:
+        with self.assertRaises(CaptureError):
+            query_expression("foo NOT bar", REPOSITORY, REVISION)
+
+    def test_query_negation_injection_refused(self) -> None:
+        with self.assertRaises(CaptureError):
+            query_expression("foo -bar", REPOSITORY, REVISION)
+
+    def test_query_regex_injection_refused(self) -> None:
+        with self.assertRaises(CaptureError):
+            query_expression("foo /bar/", REPOSITORY, REVISION)
 
 
 if __name__ == "__main__":

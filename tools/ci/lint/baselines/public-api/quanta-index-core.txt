@@ -598,6 +598,8 @@ pub trait quanta_index_core::domains::generation::IncompleteGenerationDiscardPor
 pub fn quanta_index_core::domains::generation::IncompleteGenerationDiscardPort::discard_incomplete_generation(&self, candidate: &quanta_index_contract::ipc::control::GenerationSnapshot) -> core::result::Result<quanta_index_core::domains::generation::IncompleteGenerationDiscardOutcomeV1, quanta_index_core::error::CoreError>
 pub trait quanta_index_core::domains::generation::QuarantinedGenerationDiscardPort: core::marker::Send + core::marker::Sync
 pub fn quanta_index_core::domains::generation::QuarantinedGenerationDiscardPort::discard_quarantined_generation(&self, entry: &quanta_index_core::domains::generation::QuarantinedGenerationV1) -> core::result::Result<quanta_index_core::domains::generation::QuarantineDiscardOutcomeV1, quanta_index_core::error::CoreError>
+pub trait quanta_index_core::domains::generation::SealedGenerationIdentityProbePort: core::marker::Send + core::marker::Sync
+pub fn quanta_index_core::domains::generation::SealedGenerationIdentityProbePort::probe_sealed_generation_identity(&self, candidate: &quanta_index_contract::ipc::control::GenerationSnapshot) -> core::result::Result<(), quanta_index_core::error::CoreError>
 pub trait quanta_index_core::domains::generation::SealedGenerationReclaimPort: core::marker::Send + core::marker::Sync
 pub fn quanta_index_core::domains::generation::SealedGenerationReclaimPort::finish_interrupted_reclaims(&self) -> core::result::Result<quanta_index_core::domains::generation::FinishedReclaims, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::domains::generation::SealedGenerationReclaimPort::measure_sealed_generations(&self, repo_id: &quanta_index_contract_base::ids::RepoId, revision_id: &quanta_index_contract_base::ids::RevisionId, generations: &alloc::collections::btree::set::BTreeSet<quanta_index_contract_base::ids::ManifestGeneration>) -> core::result::Result<quanta_index_core::domains::generation::SealedGenerationBytesV1, quanta_index_core::error::CoreError>
@@ -661,6 +663,32 @@ impl core::marker::Unpin for quanta_index_core::DenseLaneFilterClassV1
 impl core::marker::UnsafeUnpin for quanta_index_core::DenseLaneFilterClassV1
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_core::DenseLaneFilterClassV1
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_core::DenseLaneFilterClassV1
+pub enum quanta_index_core::domains::hybrid::HybridFetchFloorPolicy
+pub quanta_index_core::domains::hybrid::HybridFetchFloorPolicy::Floor100
+pub quanta_index_core::domains::hybrid::HybridFetchFloorPolicy::Floor25
+pub quanta_index_core::domains::hybrid::HybridFetchFloorPolicy::Floor50
+impl quanta_index_core::HybridFetchFloorPolicy
+pub const fn quanta_index_core::HybridFetchFloorPolicy::as_str(self) -> &'static str
+pub const fn quanta_index_core::HybridFetchFloorPolicy::get(self) -> u32
+pub fn quanta_index_core::HybridFetchFloorPolicy::parse(value: &str) -> core::result::Result<Self, &'static str>
+impl core::clone::Clone for quanta_index_core::HybridFetchFloorPolicy
+pub fn quanta_index_core::HybridFetchFloorPolicy::clone(&self) -> quanta_index_core::HybridFetchFloorPolicy
+impl core::cmp::Eq for quanta_index_core::HybridFetchFloorPolicy
+impl core::cmp::PartialEq for quanta_index_core::HybridFetchFloorPolicy
+pub fn quanta_index_core::HybridFetchFloorPolicy::eq(&self, other: &quanta_index_core::HybridFetchFloorPolicy) -> bool
+impl core::default::Default for quanta_index_core::HybridFetchFloorPolicy
+pub fn quanta_index_core::HybridFetchFloorPolicy::default() -> quanta_index_core::HybridFetchFloorPolicy
+impl core::fmt::Debug for quanta_index_core::HybridFetchFloorPolicy
+pub fn quanta_index_core::HybridFetchFloorPolicy::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_core::HybridFetchFloorPolicy
+impl core::marker::StructuralPartialEq for quanta_index_core::HybridFetchFloorPolicy
+impl core::marker::Freeze for quanta_index_core::HybridFetchFloorPolicy
+impl core::marker::Send for quanta_index_core::HybridFetchFloorPolicy
+impl core::marker::Sync for quanta_index_core::HybridFetchFloorPolicy
+impl core::marker::Unpin for quanta_index_core::HybridFetchFloorPolicy
+impl core::marker::UnsafeUnpin for quanta_index_core::HybridFetchFloorPolicy
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_core::HybridFetchFloorPolicy
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_core::HybridFetchFloorPolicy
 pub struct quanta_index_core::domains::hybrid::FusedKeyV1<T>
 pub quanta_index_core::domains::hybrid::FusedKeyV1::fused_score: f64
 pub quanta_index_core::domains::hybrid::FusedKeyV1::key: T
@@ -731,6 +759,7 @@ pub fn quanta_index_core::HybridOrchestratorPolicy::fuse_rrf_key_lanes<T>(lanes:
 pub fn quanta_index_core::HybridOrchestratorPolicy::fuse_rrf_key_lanes_with_provenance<T>(lanes: &[&[T]], top_k: u32) -> alloc::vec::Vec<quanta_index_core::FusedKeyV1<T>> where T: core::clone::Clone + core::cmp::Ord
 pub const fn quanta_index_core::HybridOrchestratorPolicy::next_dense_admission_fetch(fetched: u32) -> core::option::Option<u32>
 pub const fn quanta_index_core::HybridOrchestratorPolicy::over_fetch_top_k(top_k: u32) -> u32
+pub const fn quanta_index_core::HybridOrchestratorPolicy::over_fetch_top_k_with_floor(top_k: u32, floor: quanta_index_core::HybridFetchFloorPolicy) -> u32
 pub const fn quanta_index_core::HybridOrchestratorPolicy::rrf_k() -> f64
 pub fn quanta_index_core::HybridOrchestratorPolicy::rrf_score(ranks: impl core::iter::traits::collect::IntoIterator<Item = u32>) -> f64
 pub fn quanta_index_core::HybridOrchestratorPolicy::validate_joint_readiness(target: quanta_index_contract_base::ids::ManifestGeneration, lex_materialized: core::option::Option<quanta_index_contract_base::ids::ManifestGeneration>, sem_materialized: core::option::Option<quanta_index_contract_base::ids::ManifestGeneration>) -> core::result::Result<(), quanta_index_core::error::CoreError>
@@ -762,7 +791,7 @@ pub enum quanta_index_core::domains::idempotency::ClaimOutcomeV1
 pub quanta_index_core::domains::idempotency::ClaimOutcomeV1::Claimed(quanta_index_core::domains::idempotency::PreparedMutationV1)
 pub quanta_index_core::domains::idempotency::ClaimOutcomeV1::Replay
 pub quanta_index_core::domains::idempotency::ClaimOutcomeV1::Replay::durable_sequence: u64
-pub quanta_index_core::domains::idempotency::ClaimOutcomeV1::Replay::receipt: quanta_index_contract::ipc::ingest::BatchPublishReceipt
+pub quanta_index_core::domains::idempotency::ClaimOutcomeV1::Replay::receipt: quanta_index_contract::ipc::publish_receipt::BatchPublishReceipt
 pub quanta_index_core::domains::idempotency::ClaimOutcomeV1::ReplayRepoMap
 pub quanta_index_core::domains::idempotency::ClaimOutcomeV1::ReplayRepoMap::durable_sequence: u64
 pub quanta_index_core::domains::idempotency::ClaimOutcomeV1::ReplayRepoMap::receipt: quanta_index_contract::repomap::terminal_receipt_v2::RepoMapTerminalReceiptV2
@@ -785,7 +814,7 @@ pub enum quanta_index_core::domains::idempotency::OperationInspectV1
 pub quanta_index_core::domains::idempotency::OperationInspectV1::Absent
 pub quanta_index_core::domains::idempotency::OperationInspectV1::Committed
 pub quanta_index_core::domains::idempotency::OperationInspectV1::Committed::durable_sequence: u64
-pub quanta_index_core::domains::idempotency::OperationInspectV1::Committed::receipt: quanta_index_contract::ipc::ingest::BatchPublishReceipt
+pub quanta_index_core::domains::idempotency::OperationInspectV1::Committed::receipt: quanta_index_contract::ipc::publish_receipt::BatchPublishReceipt
 pub quanta_index_core::domains::idempotency::OperationInspectV1::CommittedRepoMap
 pub quanta_index_core::domains::idempotency::OperationInspectV1::CommittedRepoMap::durable_sequence: u64
 pub quanta_index_core::domains::idempotency::OperationInspectV1::CommittedRepoMap::receipt: quanta_index_contract::repomap::terminal_receipt_v2::RepoMapTerminalReceiptV2
@@ -930,7 +959,7 @@ pub const quanta_index_core::domains::idempotency::OPERATION_REPLAY_FLOOR_CODE: 
 pub const quanta_index_core::domains::idempotency::SEQUENCE_EXHAUSTED_CODE: quanta_index_contract::ipc::error::SearchPlaneErrorCodeV2
 pub trait quanta_index_core::domains::idempotency::IdempotencyCatalogPort: core::marker::Send + core::marker::Sync
 pub fn quanta_index_core::domains::idempotency::IdempotencyCatalogPort::claim_prepared(&self, key: &quanta_index_core::domains::idempotency::IdempotencyKeyV1, body_sha256: &[u8; 32], owner: &str, lease_deadline_ms: u64, epoch_commitment: &[u8; 32]) -> core::result::Result<quanta_index_core::domains::idempotency::ClaimOutcomeV1, quanta_index_core::error::CoreError>
-pub fn quanta_index_core::domains::idempotency::IdempotencyCatalogPort::commit(&self, claim: &quanta_index_core::domains::idempotency::PreparedMutationV1, receipt: &quanta_index_contract::ipc::ingest::BatchPublishReceipt) -> core::result::Result<u64, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::domains::idempotency::IdempotencyCatalogPort::commit(&self, claim: &quanta_index_core::domains::idempotency::PreparedMutationV1, receipt: &quanta_index_contract::ipc::publish_receipt::BatchPublishReceipt) -> core::result::Result<u64, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::domains::idempotency::IdempotencyCatalogPort::commit_repomap(&self, claim: &quanta_index_core::domains::idempotency::PreparedMutationV1, receipt: &quanta_index_contract::repomap::terminal_receipt_v2::RepoMapTerminalReceiptV2) -> core::result::Result<u64, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::domains::idempotency::IdempotencyCatalogPort::forget_generation(&self, repo_id: &quanta_index_contract_base::ids::RepoId, revision_id: &quanta_index_contract_base::ids::RevisionId, generation: quanta_index_contract_base::ids::ManifestGeneration) -> core::result::Result<u64, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::domains::idempotency::IdempotencyCatalogPort::generations_for_pair(&self, repo_id: &quanta_index_contract_base::ids::RepoId, revision_id: &quanta_index_contract_base::ids::RevisionId) -> core::result::Result<alloc::vec::Vec<quanta_index_contract_base::ids::ManifestGeneration>, quanta_index_core::error::CoreError>
@@ -1682,9 +1711,9 @@ pub const quanta_index_core::domains::lexical::LEXICAL_EXAMINED_BUDGET_EXCEEDED_
 pub const quanta_index_core::domains::lexical::LEXICAL_WRITER_HEAP_BYTES_MAX: u64
 pub const quanta_index_core::domains::lexical::LEXICAL_WRITER_HEAP_BYTES_MIN: u64
 pub trait quanta_index_core::domains::lexical::FileContributorIngestPort: core::marker::Send + core::marker::Sync
-pub fn quanta_index_core::domains::lexical::FileContributorIngestPort::publish_batch(&self, batch: &quanta_index_contract::ipc::ingest::FileContributorIngestBatch) -> core::result::Result<quanta_index_contract::ipc::ingest::BatchPublishReceipt, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::domains::lexical::FileContributorIngestPort::publish_batch(&self, batch: &quanta_index_contract::ipc::ingest::FileContributorIngestBatch) -> core::result::Result<quanta_index_contract::ipc::publish_receipt::BatchPublishReceipt, quanta_index_core::error::CoreError>
 pub trait quanta_index_core::domains::lexical::FileOwnershipIngestPort: core::marker::Send + core::marker::Sync
-pub fn quanta_index_core::domains::lexical::FileOwnershipIngestPort::publish_batch(&self, batch: &quanta_index_contract::ipc::ingest::FileOwnershipIngestBatch) -> core::result::Result<quanta_index_contract::ipc::ingest::BatchPublishReceipt, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::domains::lexical::FileOwnershipIngestPort::publish_batch(&self, batch: &quanta_index_contract::ipc::ingest::FileOwnershipIngestBatch) -> core::result::Result<quanta_index_contract::ipc::publish_receipt::BatchPublishReceipt, quanta_index_core::error::CoreError>
 pub trait quanta_index_core::domains::lexical::HistoryTextIndexPort: core::marker::Send + core::marker::Sync
 pub fn quanta_index_core::domains::lexical::HistoryTextIndexPort::discard_epoch(&self, generation: &quanta_index_core::domains::auxiliary::AuxiliaryGenerationKeyV1, epoch: quanta_index_contract::query::aux_epoch::AuxEpochV1) -> core::result::Result<quanta_index_core::HistoryTextDiscardOutcomeV1, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::domains::lexical::HistoryTextIndexPort::discard_generation(&self, generation: &quanta_index_core::domains::auxiliary::AuxiliaryGenerationKeyV1) -> core::result::Result<quanta_index_core::HistoryTextDiscardOutcomeV1, quanta_index_core::error::CoreError>
@@ -1717,18 +1746,18 @@ pub fn quanta_index_core::domains::lexical::LexicalSearcher::search_symbols(&sel
 pub fn quanta_index_core::domains::lexical::LexicalSearcher::search_symbols_all(&self, query: &quanta_index_contract::query::expression::LqQuery, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<alloc::vec::Vec<quanta_index_contract::results::query_responses::SymbolCandidate>, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::domains::lexical::LexicalSearcher::search_symbols_constrained(&self, query: &quanta_index_contract::query::expression::LqQuery, constraints: &quanta_index_contract_base::query::constraints::QueryConstraintSetV1, page: &quanta_index_core::LexicalPageSpec, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<alloc::vec::Vec<quanta_index_contract::results::query_responses::SymbolCandidate>, quanta_index_core::error::CoreError>
 pub trait quanta_index_core::domains::lexical::RepoCommitRecencyIngestPort: core::marker::Send + core::marker::Sync
-pub fn quanta_index_core::domains::lexical::RepoCommitRecencyIngestPort::publish_batch(&self, batch: &quanta_index_contract::ipc::ingest::RepoCommitRecencyIngestBatch) -> core::result::Result<quanta_index_contract::ipc::ingest::BatchPublishReceipt, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::domains::lexical::RepoCommitRecencyIngestPort::publish_batch(&self, batch: &quanta_index_contract::ipc::ingest::RepoCommitRecencyIngestBatch) -> core::result::Result<quanta_index_contract::ipc::publish_receipt::BatchPublishReceipt, quanta_index_core::error::CoreError>
 pub trait quanta_index_core::domains::lexical::RepoDescriptionIngestPort: core::marker::Send + core::marker::Sync
-pub fn quanta_index_core::domains::lexical::RepoDescriptionIngestPort::publish_batch(&self, batch: &quanta_index_contract::ipc::ingest::RepoDescriptionIngestBatch) -> core::result::Result<quanta_index_contract::ipc::ingest::BatchPublishReceipt, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::domains::lexical::RepoDescriptionIngestPort::publish_batch(&self, batch: &quanta_index_contract::ipc::ingest::RepoDescriptionIngestBatch) -> core::result::Result<quanta_index_contract::ipc::publish_receipt::BatchPublishReceipt, quanta_index_core::error::CoreError>
 pub trait quanta_index_core::domains::lexical::RepoMetaIngestPort: core::marker::Send + core::marker::Sync
-pub fn quanta_index_core::domains::lexical::RepoMetaIngestPort::publish_batch(&self, batch: &quanta_index_contract::ipc::ingest::RepoMetaIngestBatch) -> core::result::Result<quanta_index_contract::ipc::ingest::BatchPublishReceipt, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::domains::lexical::RepoMetaIngestPort::publish_batch(&self, batch: &quanta_index_contract::ipc::ingest::RepoMetaIngestBatch) -> core::result::Result<quanta_index_contract::ipc::publish_receipt::BatchPublishReceipt, quanta_index_core::error::CoreError>
 pub trait quanta_index_core::domains::lexical::RepoTopicIngestPort: core::marker::Send + core::marker::Sync
-pub fn quanta_index_core::domains::lexical::RepoTopicIngestPort::publish_batch(&self, batch: &quanta_index_contract::ipc::ingest::RepoTopicIngestBatch) -> core::result::Result<quanta_index_contract::ipc::ingest::BatchPublishReceipt, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::domains::lexical::RepoTopicIngestPort::publish_batch(&self, batch: &quanta_index_contract::ipc::ingest::RepoTopicIngestBatch) -> core::result::Result<quanta_index_contract::ipc::publish_receipt::BatchPublishReceipt, quanta_index_core::error::CoreError>
 pub trait quanta_index_core::domains::lexical::SearchCorpusBatchBuildPort: core::marker::Send + core::marker::Sync
 pub fn quanta_index_core::domains::lexical::SearchCorpusBatchBuildPort::build_batch(&self, batch: &quanta_index_contract::ipc::ingest::SearchCorpusIngestBatch) -> core::result::Result<(), quanta_index_core::error::CoreError>
 pub trait quanta_index_core::domains::lexical::SearchCorpusIngestPort: core::marker::Send + core::marker::Sync
 pub fn quanta_index_core::domains::lexical::SearchCorpusIngestPort::preflight_batch(&self, batch: &quanta_index_contract::ipc::ingest::SearchCorpusIngestBatch) -> core::result::Result<(), quanta_index_core::error::CoreError>
-pub fn quanta_index_core::domains::lexical::SearchCorpusIngestPort::publish_batch(&self, batch: &quanta_index_contract::ipc::ingest::SearchCorpusIngestBatch, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<quanta_index_contract::ipc::ingest::BatchPublishReceipt, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::domains::lexical::SearchCorpusIngestPort::publish_batch(&self, batch: &quanta_index_contract::ipc::ingest::SearchCorpusIngestBatch, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<quanta_index_contract::ipc::ingest_observation::SearchCorpusPublishOutcome, quanta_index_core::error::CoreError>
 pub type quanta_index_core::domains::lexical::HistoryTextAdmitFn = (dyn core::ops::function::Fn(&quanta_index_core::HistoryTextHitV1) -> core::result::Result<bool, quanta_index_core::error::CoreError> + core::marker::Send + core::marker::Sync)
 pub mod quanta_index_core::domains::observability
 pub enum quanta_index_core::domains::observability::MetricValueV1
@@ -2958,6 +2987,7 @@ impl<'a> quanta_index_core::ResidentScopeSource<'a>
 pub fn quanta_index_core::ResidentScopeSource<'a>::new(scopes: &'a [quanta_index_contract::ipc::ingest::SemanticReplaceScope], policy: quanta_index_core::SemanticStreamWindowPolicy) -> core::result::Result<Self, quanta_index_core::error::CoreError>
 pub const fn quanta_index_core::ResidentScopeSource<'a>::residency(&self) -> &alloc::sync::Arc<quanta_index_core::SemanticWindowResidencyV1>
 impl quanta_index_core::SemanticScopeSource for quanta_index_core::ResidentScopeSource<'_>
+pub fn quanta_index_core::ResidentScopeSource<'_>::embedding_elapsed_ns(&self) -> core::option::Option<u64>
 pub fn quanta_index_core::ResidentScopeSource<'_>::next_window(&mut self) -> core::result::Result<core::option::Option<quanta_index_core::SemanticScopeWindowV1>, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::ResidentScopeSource<'_>::tally(&self) -> quanta_index_core::SemanticStreamTallyV1
 impl<'a> core::marker::Freeze for quanta_index_core::ResidentScopeSource<'a>
@@ -3297,17 +3327,19 @@ pub trait quanta_index_core::domains::semantic::SemanticIndexOpenPort: core::mar
 pub fn quanta_index_core::domains::semantic::SemanticIndexOpenPort::open(&self, repo: &quanta_index_contract_base::ids::RepoId, revision: &quanta_index_contract_base::ids::RevisionId, generation: quanta_index_contract_base::ids::ManifestGeneration) -> core::result::Result<alloc::boxed::Box<dyn quanta_index_core::SemanticSearcher>, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::domains::semantic::SemanticIndexOpenPort::open_proven(&self, candidate: &quanta_index_contract::ipc::control::GenerationSnapshot) -> core::result::Result<alloc::boxed::Box<dyn quanta_index_core::SemanticSearcher>, quanta_index_core::error::CoreError>
 pub trait quanta_index_core::domains::semantic::SemanticIngestPort: core::marker::Send + core::marker::Sync
-pub fn quanta_index_core::domains::semantic::SemanticIngestPort::publish_stream(&self, header: &quanta_index_core::SemanticIngestHeaderV1, scopes: &mut dyn quanta_index_core::SemanticScopeSource) -> core::result::Result<quanta_index_contract::ipc::ingest::BatchPublishReceipt, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::domains::semantic::SemanticIngestPort::publish_stream(&self, header: &quanta_index_core::SemanticIngestHeaderV1, scopes: &mut dyn quanta_index_core::SemanticScopeSource) -> core::result::Result<(quanta_index_contract::ipc::publish_receipt::BatchPublishReceipt, quanta_index_contract::ipc::ingest_observation::IngestStageReport), quanta_index_core::error::CoreError>
 pub trait quanta_index_core::domains::semantic::SemanticQueryPort: core::marker::Send + core::marker::Sync
 pub fn quanta_index_core::domains::semantic::SemanticQueryPort::semantic_query(&self, request: quanta_index_contract::query::requests::SemanticQueryRequest, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<quanta_index_contract::results::query_responses::SemanticQueryResponse, quanta_index_core::error::CoreError>
 pub trait quanta_index_core::domains::semantic::SemanticScopeSource
+pub fn quanta_index_core::domains::semantic::SemanticScopeSource::embedding_elapsed_ns(&self) -> core::option::Option<u64>
 pub fn quanta_index_core::domains::semantic::SemanticScopeSource::next_window(&mut self) -> core::result::Result<core::option::Option<quanta_index_core::SemanticScopeWindowV1>, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::domains::semantic::SemanticScopeSource::tally(&self) -> quanta_index_core::SemanticStreamTallyV1
 impl quanta_index_core::SemanticScopeSource for quanta_index_core::ResidentScopeSource<'_>
+pub fn quanta_index_core::ResidentScopeSource<'_>::embedding_elapsed_ns(&self) -> core::option::Option<u64>
 pub fn quanta_index_core::ResidentScopeSource<'_>::next_window(&mut self) -> core::result::Result<core::option::Option<quanta_index_core::SemanticScopeWindowV1>, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::ResidentScopeSource<'_>::tally(&self) -> quanta_index_core::SemanticStreamTallyV1
 pub trait quanta_index_core::domains::semantic::SemanticScopeStreamBuildPort: core::marker::Send + core::marker::Sync
-pub fn quanta_index_core::domains::semantic::SemanticScopeStreamBuildPort::build_stream(&self, header: &quanta_index_core::SemanticIngestHeaderV1, scopes: &mut dyn quanta_index_core::SemanticScopeSource) -> core::result::Result<quanta_index_core::SemanticStreamTallyV1, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::domains::semantic::SemanticScopeStreamBuildPort::build_stream(&self, header: &quanta_index_core::SemanticIngestHeaderV1, scopes: &mut dyn quanta_index_core::SemanticScopeSource) -> core::result::Result<(quanta_index_core::SemanticStreamTallyV1, quanta_index_contract::ipc::ingest_observation::IngestStageReport), quanta_index_core::error::CoreError>
 pub trait quanta_index_core::domains::semantic::SemanticSearcher: core::marker::Send + core::marker::Sync
 pub fn quanta_index_core::domains::semantic::SemanticSearcher::cluster_membership_batch_read(&self, request: &quanta_index_contract::query::cluster_membership::ClusterMembershipBatchReadRequestV1) -> core::result::Result<quanta_index_contract::results::cluster_membership::ClusterMembershipBatchReadResponseV1, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::domains::semantic::SemanticSearcher::dense_lane(&self) -> quanta_index_core::DenseLaneContractV1
@@ -3870,7 +3902,7 @@ pub enum quanta_index_core::ClaimOutcomeV1
 pub quanta_index_core::ClaimOutcomeV1::Claimed(quanta_index_core::domains::idempotency::PreparedMutationV1)
 pub quanta_index_core::ClaimOutcomeV1::Replay
 pub quanta_index_core::ClaimOutcomeV1::Replay::durable_sequence: u64
-pub quanta_index_core::ClaimOutcomeV1::Replay::receipt: quanta_index_contract::ipc::ingest::BatchPublishReceipt
+pub quanta_index_core::ClaimOutcomeV1::Replay::receipt: quanta_index_contract::ipc::publish_receipt::BatchPublishReceipt
 pub quanta_index_core::ClaimOutcomeV1::ReplayRepoMap
 pub quanta_index_core::ClaimOutcomeV1::ReplayRepoMap::durable_sequence: u64
 pub quanta_index_core::ClaimOutcomeV1::ReplayRepoMap::receipt: quanta_index_contract::repomap::terminal_receipt_v2::RepoMapTerminalReceiptV2
@@ -4181,6 +4213,32 @@ impl core::marker::Unpin for quanta_index_core::HistoryTextKindV1
 impl core::marker::UnsafeUnpin for quanta_index_core::HistoryTextKindV1
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_core::HistoryTextKindV1
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_core::HistoryTextKindV1
+pub enum quanta_index_core::HybridFetchFloorPolicy
+pub quanta_index_core::HybridFetchFloorPolicy::Floor100
+pub quanta_index_core::HybridFetchFloorPolicy::Floor25
+pub quanta_index_core::HybridFetchFloorPolicy::Floor50
+impl quanta_index_core::HybridFetchFloorPolicy
+pub const fn quanta_index_core::HybridFetchFloorPolicy::as_str(self) -> &'static str
+pub const fn quanta_index_core::HybridFetchFloorPolicy::get(self) -> u32
+pub fn quanta_index_core::HybridFetchFloorPolicy::parse(value: &str) -> core::result::Result<Self, &'static str>
+impl core::clone::Clone for quanta_index_core::HybridFetchFloorPolicy
+pub fn quanta_index_core::HybridFetchFloorPolicy::clone(&self) -> quanta_index_core::HybridFetchFloorPolicy
+impl core::cmp::Eq for quanta_index_core::HybridFetchFloorPolicy
+impl core::cmp::PartialEq for quanta_index_core::HybridFetchFloorPolicy
+pub fn quanta_index_core::HybridFetchFloorPolicy::eq(&self, other: &quanta_index_core::HybridFetchFloorPolicy) -> bool
+impl core::default::Default for quanta_index_core::HybridFetchFloorPolicy
+pub fn quanta_index_core::HybridFetchFloorPolicy::default() -> quanta_index_core::HybridFetchFloorPolicy
+impl core::fmt::Debug for quanta_index_core::HybridFetchFloorPolicy
+pub fn quanta_index_core::HybridFetchFloorPolicy::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_core::HybridFetchFloorPolicy
+impl core::marker::StructuralPartialEq for quanta_index_core::HybridFetchFloorPolicy
+impl core::marker::Freeze for quanta_index_core::HybridFetchFloorPolicy
+impl core::marker::Send for quanta_index_core::HybridFetchFloorPolicy
+impl core::marker::Sync for quanta_index_core::HybridFetchFloorPolicy
+impl core::marker::Unpin for quanta_index_core::HybridFetchFloorPolicy
+impl core::marker::UnsafeUnpin for quanta_index_core::HybridFetchFloorPolicy
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_core::HybridFetchFloorPolicy
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_core::HybridFetchFloorPolicy
 pub enum quanta_index_core::IncompleteGenerationDiscardOutcomeV1
 pub quanta_index_core::IncompleteGenerationDiscardOutcomeV1::Absent
 pub quanta_index_core::IncompleteGenerationDiscardOutcomeV1::Discarded
@@ -4378,7 +4436,7 @@ pub enum quanta_index_core::OperationInspectV1
 pub quanta_index_core::OperationInspectV1::Absent
 pub quanta_index_core::OperationInspectV1::Committed
 pub quanta_index_core::OperationInspectV1::Committed::durable_sequence: u64
-pub quanta_index_core::OperationInspectV1::Committed::receipt: quanta_index_contract::ipc::ingest::BatchPublishReceipt
+pub quanta_index_core::OperationInspectV1::Committed::receipt: quanta_index_contract::ipc::publish_receipt::BatchPublishReceipt
 pub quanta_index_core::OperationInspectV1::CommittedRepoMap
 pub quanta_index_core::OperationInspectV1::CommittedRepoMap::durable_sequence: u64
 pub quanta_index_core::OperationInspectV1::CommittedRepoMap::receipt: quanta_index_contract::repomap::terminal_receipt_v2::RepoMapTerminalReceiptV2
@@ -5385,6 +5443,7 @@ pub fn quanta_index_core::HybridOrchestratorPolicy::fuse_rrf_key_lanes<T>(lanes:
 pub fn quanta_index_core::HybridOrchestratorPolicy::fuse_rrf_key_lanes_with_provenance<T>(lanes: &[&[T]], top_k: u32) -> alloc::vec::Vec<quanta_index_core::FusedKeyV1<T>> where T: core::clone::Clone + core::cmp::Ord
 pub const fn quanta_index_core::HybridOrchestratorPolicy::next_dense_admission_fetch(fetched: u32) -> core::option::Option<u32>
 pub const fn quanta_index_core::HybridOrchestratorPolicy::over_fetch_top_k(top_k: u32) -> u32
+pub const fn quanta_index_core::HybridOrchestratorPolicy::over_fetch_top_k_with_floor(top_k: u32, floor: quanta_index_core::HybridFetchFloorPolicy) -> u32
 pub const fn quanta_index_core::HybridOrchestratorPolicy::rrf_k() -> f64
 pub fn quanta_index_core::HybridOrchestratorPolicy::rrf_score(ranks: impl core::iter::traits::collect::IntoIterator<Item = u32>) -> f64
 pub fn quanta_index_core::HybridOrchestratorPolicy::validate_joint_readiness(target: quanta_index_contract_base::ids::ManifestGeneration, lex_materialized: core::option::Option<quanta_index_contract_base::ids::ManifestGeneration>, sem_materialized: core::option::Option<quanta_index_contract_base::ids::ManifestGeneration>) -> core::result::Result<(), quanta_index_core::error::CoreError>
@@ -6476,6 +6535,7 @@ impl<'a> quanta_index_core::ResidentScopeSource<'a>
 pub fn quanta_index_core::ResidentScopeSource<'a>::new(scopes: &'a [quanta_index_contract::ipc::ingest::SemanticReplaceScope], policy: quanta_index_core::SemanticStreamWindowPolicy) -> core::result::Result<Self, quanta_index_core::error::CoreError>
 pub const fn quanta_index_core::ResidentScopeSource<'a>::residency(&self) -> &alloc::sync::Arc<quanta_index_core::SemanticWindowResidencyV1>
 impl quanta_index_core::SemanticScopeSource for quanta_index_core::ResidentScopeSource<'_>
+pub fn quanta_index_core::ResidentScopeSource<'_>::embedding_elapsed_ns(&self) -> core::option::Option<u64>
 pub fn quanta_index_core::ResidentScopeSource<'_>::next_window(&mut self) -> core::result::Result<core::option::Option<quanta_index_core::SemanticScopeWindowV1>, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::ResidentScopeSource<'_>::tally(&self) -> quanta_index_core::SemanticStreamTallyV1
 impl<'a> core::marker::Freeze for quanta_index_core::ResidentScopeSource<'a>
@@ -7164,9 +7224,9 @@ pub fn quanta_index_core::DoorFindingQuarantinePort::quarantine_door_finding(&se
 pub trait quanta_index_core::ExplainQueryPort: core::marker::Send + core::marker::Sync
 pub fn quanta_index_core::ExplainQueryPort::explain_query(&self, request: quanta_index_contract::query::requests::SearchPlaneExplainQueryRequest, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<quanta_index_contract::results::query_responses::SearchPlaneExplainQueryResponse, quanta_index_core::error::CoreError>
 pub trait quanta_index_core::FileContributorIngestPort: core::marker::Send + core::marker::Sync
-pub fn quanta_index_core::FileContributorIngestPort::publish_batch(&self, batch: &quanta_index_contract::ipc::ingest::FileContributorIngestBatch) -> core::result::Result<quanta_index_contract::ipc::ingest::BatchPublishReceipt, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::FileContributorIngestPort::publish_batch(&self, batch: &quanta_index_contract::ipc::ingest::FileContributorIngestBatch) -> core::result::Result<quanta_index_contract::ipc::publish_receipt::BatchPublishReceipt, quanta_index_core::error::CoreError>
 pub trait quanta_index_core::FileOwnershipIngestPort: core::marker::Send + core::marker::Sync
-pub fn quanta_index_core::FileOwnershipIngestPort::publish_batch(&self, batch: &quanta_index_contract::ipc::ingest::FileOwnershipIngestBatch) -> core::result::Result<quanta_index_contract::ipc::ingest::BatchPublishReceipt, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::FileOwnershipIngestPort::publish_batch(&self, batch: &quanta_index_contract::ipc::ingest::FileOwnershipIngestBatch) -> core::result::Result<quanta_index_contract::ipc::publish_receipt::BatchPublishReceipt, quanta_index_core::error::CoreError>
 pub trait quanta_index_core::GenerationIdentityValidatePort: core::marker::Send + core::marker::Sync
 pub fn quanta_index_core::GenerationIdentityValidatePort::validate_generation_identity(&self, candidate: &quanta_index_contract::ipc::control::GenerationSnapshot) -> core::result::Result<(), quanta_index_core::error::CoreError>
 pub trait quanta_index_core::HistoryTextIndexPort: core::marker::Send + core::marker::Sync
@@ -7184,7 +7244,7 @@ pub trait quanta_index_core::HybridQueryPort: core::marker::Send + core::marker:
 pub fn quanta_index_core::HybridQueryPort::hybrid_query(&self, request: quanta_index_contract::query::requests::HybridQueryRequest, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<quanta_index_contract::results::query_responses::HybridQueryResponse, quanta_index_core::error::CoreError>
 pub trait quanta_index_core::IdempotencyCatalogPort: core::marker::Send + core::marker::Sync
 pub fn quanta_index_core::IdempotencyCatalogPort::claim_prepared(&self, key: &quanta_index_core::domains::idempotency::IdempotencyKeyV1, body_sha256: &[u8; 32], owner: &str, lease_deadline_ms: u64, epoch_commitment: &[u8; 32]) -> core::result::Result<quanta_index_core::domains::idempotency::ClaimOutcomeV1, quanta_index_core::error::CoreError>
-pub fn quanta_index_core::IdempotencyCatalogPort::commit(&self, claim: &quanta_index_core::domains::idempotency::PreparedMutationV1, receipt: &quanta_index_contract::ipc::ingest::BatchPublishReceipt) -> core::result::Result<u64, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::IdempotencyCatalogPort::commit(&self, claim: &quanta_index_core::domains::idempotency::PreparedMutationV1, receipt: &quanta_index_contract::ipc::publish_receipt::BatchPublishReceipt) -> core::result::Result<u64, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::IdempotencyCatalogPort::commit_repomap(&self, claim: &quanta_index_core::domains::idempotency::PreparedMutationV1, receipt: &quanta_index_contract::repomap::terminal_receipt_v2::RepoMapTerminalReceiptV2) -> core::result::Result<u64, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::IdempotencyCatalogPort::forget_generation(&self, repo_id: &quanta_index_contract_base::ids::RepoId, revision_id: &quanta_index_contract_base::ids::RevisionId, generation: quanta_index_contract_base::ids::ManifestGeneration) -> core::result::Result<u64, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::IdempotencyCatalogPort::generations_for_pair(&self, repo_id: &quanta_index_contract_base::ids::RepoId, revision_id: &quanta_index_contract_base::ids::RevisionId) -> core::result::Result<alloc::vec::Vec<quanta_index_contract_base::ids::ManifestGeneration>, quanta_index_core::error::CoreError>
@@ -7322,9 +7382,9 @@ pub fn quanta_index_core::ProcessMemoryProbePort::resident_bytes(&self) -> core:
 pub trait quanta_index_core::QuarantinedGenerationDiscardPort: core::marker::Send + core::marker::Sync
 pub fn quanta_index_core::QuarantinedGenerationDiscardPort::discard_quarantined_generation(&self, entry: &quanta_index_core::domains::generation::QuarantinedGenerationV1) -> core::result::Result<quanta_index_core::domains::generation::QuarantineDiscardOutcomeV1, quanta_index_core::error::CoreError>
 pub trait quanta_index_core::RepoCommitRecencyIngestPort: core::marker::Send + core::marker::Sync
-pub fn quanta_index_core::RepoCommitRecencyIngestPort::publish_batch(&self, batch: &quanta_index_contract::ipc::ingest::RepoCommitRecencyIngestBatch) -> core::result::Result<quanta_index_contract::ipc::ingest::BatchPublishReceipt, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::RepoCommitRecencyIngestPort::publish_batch(&self, batch: &quanta_index_contract::ipc::ingest::RepoCommitRecencyIngestBatch) -> core::result::Result<quanta_index_contract::ipc::publish_receipt::BatchPublishReceipt, quanta_index_core::error::CoreError>
 pub trait quanta_index_core::RepoDescriptionIngestPort: core::marker::Send + core::marker::Sync
-pub fn quanta_index_core::RepoDescriptionIngestPort::publish_batch(&self, batch: &quanta_index_contract::ipc::ingest::RepoDescriptionIngestBatch) -> core::result::Result<quanta_index_contract::ipc::ingest::BatchPublishReceipt, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::RepoDescriptionIngestPort::publish_batch(&self, batch: &quanta_index_contract::ipc::ingest::RepoDescriptionIngestBatch) -> core::result::Result<quanta_index_contract::ipc::publish_receipt::BatchPublishReceipt, quanta_index_core::error::CoreError>
 pub trait quanta_index_core::RepoMapBundleIngestPort: core::marker::Send + core::marker::Sync
 pub fn quanta_index_core::RepoMapBundleIngestPort::ingest_bundle(&self, request: &quanta_index_contract::repomap::terminal_receipt_v2::RepoMapPublishBundleRequestV2) -> core::result::Result<quanta_index_contract::repomap::terminal_receipt_v2::RepoMapTerminalReceiptV2, quanta_index_core::error::CoreError>
 pub trait quanta_index_core::RepoMapGenerationActivatePort: core::marker::Send + core::marker::Sync
@@ -7336,11 +7396,13 @@ pub fn quanta_index_core::RepoMapQuarantinePort::quarantined_files(&self) -> cor
 pub trait quanta_index_core::RepoMapSnapshotAcquirePort: core::marker::Send + core::marker::Sync
 pub fn quanta_index_core::RepoMapSnapshotAcquirePort::acquire(&self, acquire: quanta_index_core::RepoMapSnapshotAcquireV1) -> core::result::Result<alloc::boxed::Box<dyn quanta_index_core::PinnedRepoMapSnapshot>, quanta_index_core::error::CoreError>
 pub trait quanta_index_core::RepoMetaIngestPort: core::marker::Send + core::marker::Sync
-pub fn quanta_index_core::RepoMetaIngestPort::publish_batch(&self, batch: &quanta_index_contract::ipc::ingest::RepoMetaIngestBatch) -> core::result::Result<quanta_index_contract::ipc::ingest::BatchPublishReceipt, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::RepoMetaIngestPort::publish_batch(&self, batch: &quanta_index_contract::ipc::ingest::RepoMetaIngestBatch) -> core::result::Result<quanta_index_contract::ipc::publish_receipt::BatchPublishReceipt, quanta_index_core::error::CoreError>
 pub trait quanta_index_core::RepoTopicIngestPort: core::marker::Send + core::marker::Sync
-pub fn quanta_index_core::RepoTopicIngestPort::publish_batch(&self, batch: &quanta_index_contract::ipc::ingest::RepoTopicIngestBatch) -> core::result::Result<quanta_index_contract::ipc::ingest::BatchPublishReceipt, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::RepoTopicIngestPort::publish_batch(&self, batch: &quanta_index_contract::ipc::ingest::RepoTopicIngestBatch) -> core::result::Result<quanta_index_contract::ipc::publish_receipt::BatchPublishReceipt, quanta_index_core::error::CoreError>
 pub trait quanta_index_core::RequestStageDiagnosticPortV1: core::fmt::Debug + core::marker::Send + core::marker::Sync
 pub fn quanta_index_core::RequestStageDiagnosticPortV1::record_provider_stage_v1(&self, stage: quanta_index_core::request_budget::RequestProviderStageV1)
+pub trait quanta_index_core::SealedGenerationIdentityProbePort: core::marker::Send + core::marker::Sync
+pub fn quanta_index_core::SealedGenerationIdentityProbePort::probe_sealed_generation_identity(&self, candidate: &quanta_index_contract::ipc::control::GenerationSnapshot) -> core::result::Result<(), quanta_index_core::error::CoreError>
 pub trait quanta_index_core::SealedGenerationReclaimPort: core::marker::Send + core::marker::Sync
 pub fn quanta_index_core::SealedGenerationReclaimPort::finish_interrupted_reclaims(&self) -> core::result::Result<quanta_index_core::domains::generation::FinishedReclaims, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::SealedGenerationReclaimPort::measure_sealed_generations(&self, repo_id: &quanta_index_contract_base::ids::RepoId, revision_id: &quanta_index_contract_base::ids::RevisionId, generations: &alloc::collections::btree::set::BTreeSet<quanta_index_contract_base::ids::ManifestGeneration>) -> core::result::Result<quanta_index_core::domains::generation::SealedGenerationBytesV1, quanta_index_core::error::CoreError>
@@ -7352,24 +7414,26 @@ pub trait quanta_index_core::SearchCorpusBatchBuildPort: core::marker::Send + co
 pub fn quanta_index_core::SearchCorpusBatchBuildPort::build_batch(&self, batch: &quanta_index_contract::ipc::ingest::SearchCorpusIngestBatch) -> core::result::Result<(), quanta_index_core::error::CoreError>
 pub trait quanta_index_core::SearchCorpusIngestPort: core::marker::Send + core::marker::Sync
 pub fn quanta_index_core::SearchCorpusIngestPort::preflight_batch(&self, batch: &quanta_index_contract::ipc::ingest::SearchCorpusIngestBatch) -> core::result::Result<(), quanta_index_core::error::CoreError>
-pub fn quanta_index_core::SearchCorpusIngestPort::publish_batch(&self, batch: &quanta_index_contract::ipc::ingest::SearchCorpusIngestBatch, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<quanta_index_contract::ipc::ingest::BatchPublishReceipt, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::SearchCorpusIngestPort::publish_batch(&self, batch: &quanta_index_contract::ipc::ingest::SearchCorpusIngestBatch, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<quanta_index_contract::ipc::ingest_observation::SearchCorpusPublishOutcome, quanta_index_core::error::CoreError>
 pub trait quanta_index_core::SemanticContentRootsPort: core::marker::Send + core::marker::Sync
 pub fn quanta_index_core::SemanticContentRootsPort::sealed_content_roots(&self, sealed: &quanta_index_contract::ipc::control::GenerationSnapshot) -> core::result::Result<quanta_index_contract::ipc::control::SemanticContentRootsV1, quanta_index_core::error::CoreError>
 pub trait quanta_index_core::SemanticIndexOpenPort: core::marker::Send + core::marker::Sync
 pub fn quanta_index_core::SemanticIndexOpenPort::open(&self, repo: &quanta_index_contract_base::ids::RepoId, revision: &quanta_index_contract_base::ids::RevisionId, generation: quanta_index_contract_base::ids::ManifestGeneration) -> core::result::Result<alloc::boxed::Box<dyn quanta_index_core::SemanticSearcher>, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::SemanticIndexOpenPort::open_proven(&self, candidate: &quanta_index_contract::ipc::control::GenerationSnapshot) -> core::result::Result<alloc::boxed::Box<dyn quanta_index_core::SemanticSearcher>, quanta_index_core::error::CoreError>
 pub trait quanta_index_core::SemanticIngestPort: core::marker::Send + core::marker::Sync
-pub fn quanta_index_core::SemanticIngestPort::publish_stream(&self, header: &quanta_index_core::SemanticIngestHeaderV1, scopes: &mut dyn quanta_index_core::SemanticScopeSource) -> core::result::Result<quanta_index_contract::ipc::ingest::BatchPublishReceipt, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::SemanticIngestPort::publish_stream(&self, header: &quanta_index_core::SemanticIngestHeaderV1, scopes: &mut dyn quanta_index_core::SemanticScopeSource) -> core::result::Result<(quanta_index_contract::ipc::publish_receipt::BatchPublishReceipt, quanta_index_contract::ipc::ingest_observation::IngestStageReport), quanta_index_core::error::CoreError>
 pub trait quanta_index_core::SemanticQueryPort: core::marker::Send + core::marker::Sync
 pub fn quanta_index_core::SemanticQueryPort::semantic_query(&self, request: quanta_index_contract::query::requests::SemanticQueryRequest, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<quanta_index_contract::results::query_responses::SemanticQueryResponse, quanta_index_core::error::CoreError>
 pub trait quanta_index_core::SemanticScopeSource
+pub fn quanta_index_core::SemanticScopeSource::embedding_elapsed_ns(&self) -> core::option::Option<u64>
 pub fn quanta_index_core::SemanticScopeSource::next_window(&mut self) -> core::result::Result<core::option::Option<quanta_index_core::SemanticScopeWindowV1>, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::SemanticScopeSource::tally(&self) -> quanta_index_core::SemanticStreamTallyV1
 impl quanta_index_core::SemanticScopeSource for quanta_index_core::ResidentScopeSource<'_>
+pub fn quanta_index_core::ResidentScopeSource<'_>::embedding_elapsed_ns(&self) -> core::option::Option<u64>
 pub fn quanta_index_core::ResidentScopeSource<'_>::next_window(&mut self) -> core::result::Result<core::option::Option<quanta_index_core::SemanticScopeWindowV1>, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::ResidentScopeSource<'_>::tally(&self) -> quanta_index_core::SemanticStreamTallyV1
 pub trait quanta_index_core::SemanticScopeStreamBuildPort: core::marker::Send + core::marker::Sync
-pub fn quanta_index_core::SemanticScopeStreamBuildPort::build_stream(&self, header: &quanta_index_core::SemanticIngestHeaderV1, scopes: &mut dyn quanta_index_core::SemanticScopeSource) -> core::result::Result<quanta_index_core::SemanticStreamTallyV1, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::SemanticScopeStreamBuildPort::build_stream(&self, header: &quanta_index_core::SemanticIngestHeaderV1, scopes: &mut dyn quanta_index_core::SemanticScopeSource) -> core::result::Result<(quanta_index_core::SemanticStreamTallyV1, quanta_index_contract::ipc::ingest_observation::IngestStageReport), quanta_index_core::error::CoreError>
 pub trait quanta_index_core::SemanticSearcher: core::marker::Send + core::marker::Sync
 pub fn quanta_index_core::SemanticSearcher::cluster_membership_batch_read(&self, request: &quanta_index_contract::query::cluster_membership::ClusterMembershipBatchReadRequestV1) -> core::result::Result<quanta_index_contract::results::cluster_membership::ClusterMembershipBatchReadResponseV1, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::SemanticSearcher::dense_lane(&self) -> quanta_index_core::DenseLaneContractV1

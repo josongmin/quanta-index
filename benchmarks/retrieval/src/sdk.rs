@@ -19,7 +19,7 @@ use quanta_index_contract::{
     SearchPlaneErrorCodeV2, SearchPlaneSearchCorpusActivationCasAck,
 };
 use quanta_index_sdk::{BatchReceipt, ConnectOptions, QuantaIndex, SdkError, SearchCorpusBatch};
-use quanta_index_search_plane::QueryStageObservationPolicy;
+use quanta_index_search_plane::{HybridFetchFloorPolicy, QueryStageObservationPolicy};
 
 use crate::batch::BatchIdentity;
 use crate::{BenchError, BenchResult};
@@ -29,6 +29,7 @@ pub const DEFAULT_IO_TIMEOUT: Duration = Duration::from_secs(30);
 pub const SEARCHD_BIN_ENV: &str = "QUANTA_INDEX_SEARCHD_BIN";
 pub const EMBEDDER_ENV: &str = "QUANTA_INDEX_EMBEDDER";
 pub const QUERY_STAGE_OBSERVATION_ENV: &str = "QUANTA_INDEX_QUERY_STAGE_OBSERVATION";
+pub const HYBRID_FETCH_FLOOR_ENV: &str = "QUANTA_INDEX_EXPERIMENTAL_HYBRID_FETCH_FLOOR";
 
 /// Resolve the daemon binary.
 ///
@@ -223,6 +224,7 @@ pub struct DaemonConfig<'a> {
     pub searchd_binary: Option<&'a Path>,
     pub embedder: &'a str,
     pub query_stage_observation: QueryStageObservationPolicy,
+    pub hybrid_fetch_floor: HybridFetchFloorPolicy,
     /// Optional explicit local-model directory. Used by failure probes and
     /// qualified captures that must not inherit a workstation cache path.
     pub model_dir: Option<&'a Path>,
@@ -329,6 +331,7 @@ impl DaemonSession {
                 QUERY_STAGE_OBSERVATION_ENV,
                 config.query_stage_observation.as_str(),
             )
+            .env(HYBRID_FETCH_FLOOR_ENV, config.hybrid_fetch_floor.as_str())
             .env(
                 "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_GENERATIONS",
                 config.history_max_generations.to_string(),
@@ -947,6 +950,7 @@ pub struct RouteExplanation {
     pub engines_executed: Option<Vec<&'static str>>,
     pub engines_touched: Option<Vec<&'static str>>,
     pub strategy: Option<String>,
+    pub planner_trace: Option<Vec<quanta_index_contract::PlannerTraceEntry>>,
     /// Measured inside the server route and bound to this response's
     /// request id and generation. `None` is unmeasured, not zero cost.
     pub stage_timings: Option<Vec<quanta_index_contract::QueryStageTimingV1>>,
@@ -974,6 +978,7 @@ fn route_explanation(explanation: &SearchExplanation) -> RouteExplanation {
                 .collect(),
         ),
         strategy: Some(explanation.strategy.clone()),
+        planner_trace: Some(explanation.planner_trace.clone()),
         stage_timings: explanation.stage_timings.clone(),
     }
 }

@@ -50,7 +50,14 @@ from manifest import (  # noqa: E402
     load_manifest,
     profile_families,
 )
-from native_contracts import validate_concurrency  # noqa: E402
+from native_contracts import (  # noqa: E402
+    BENCH_SYNTAXES,
+    RESULT_SHAPES,
+    ROUTE_FAMILIES,
+    is_non_negative_f64,
+    is_unsigned_integer,
+    validate_concurrency,
+)
 
 #: The schema every benchmark artifact must carry, mirroring
 #: ``BENCH_ARTIFACT_SCHEMA_VERSION`` in ``artifact.rs``.
@@ -130,7 +137,7 @@ def resolve_head(repo_root: Path) -> str:
     if completed.returncode != 0:
         raise RuntimeError(f"git rev-parse HEAD failed: {completed.stderr.strip()}")
     head = completed.stdout.strip()
-    if not FULL_HEAD_RE.match(head):
+    if not FULL_HEAD_RE.fullmatch(head):
         raise RuntimeError(f"git rev-parse HEAD printed {head!r}, not a full head")
     return head
 
@@ -170,13 +177,7 @@ def _unexpected(obj: object, keys: tuple[str, ...], where: str) -> list[str]:
 
 
 def _non_negative_number(value: object) -> bool:
-    return (
-        isinstance(value, (int, float))
-        and not isinstance(value, bool)
-        and value >= 0
-        and value != float("inf")
-        and value == value
-    )
+    return is_non_negative_f64(value)
 
 
 def _validate_rows(rows: list[object], *, dimension: str) -> list[str]:
@@ -196,18 +197,20 @@ def _validate_rows(rows: list[object], *, dimension: str) -> list[str]:
             reasons.append(f"{where}.scenario_id {scenario_id!r} is duplicated")
         else:
             scenario_ids.add(scenario_id)
-        for key in ("route_family", "syntax", "result_shape"):
-            if not isinstance(row.get(key), str) or not row[key]:
-                reasons.append(f"{where}.{key} is not a non-empty string")
+        for key, domain in (
+            ("route_family", ROUTE_FAMILIES),
+            ("syntax", BENCH_SYNTAXES),
+            ("result_shape", RESULT_SHAPES),
+        ):
+            if not isinstance(row.get(key), str) or row[key] not in domain:
+                reasons.append(f"{where}.{key} is not a public variant")
         for key in ("error_count", "timeout_count"):
             value = row.get(key)
-            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-                reasons.append(f"{where}.{key} is not a non-negative integer")
+            if not is_unsigned_integer(value, 64):
+                reasons.append(f"{where}.{key} is not a non-negative integer in u64 range")
         result_count = row.get("result_count")
-        if result_count is not None and (
-            not isinstance(result_count, int) or isinstance(result_count, bool) or result_count < 0
-        ):
-            reasons.append(f"{where}.result_count is not a non-negative integer or null")
+        if result_count is not None and not is_unsigned_integer(result_count, 64):
+            reasons.append(f"{where}.result_count is not a non-negative integer in u64 range or null")
         typed_error = row.get("typed_error_code")
         if typed_error is not None and (not isinstance(typed_error, str) or not typed_error):
             reasons.append(f"{where}.typed_error_code is not a non-empty string or null")
@@ -244,8 +247,8 @@ def _validate_rows(rows: list[object], *, dimension: str) -> list[str]:
         if len(percentiles) == 3 and not (percentiles[0] <= percentiles[1] <= percentiles[2]):
             reasons.append(f"{where}.latency percentiles are not ordered p50 <= p95 <= p99")
         samples = latency.get("samples")
-        if not isinstance(samples, int) or isinstance(samples, bool) or samples < 1:
-            reasons.append(f"{where}.latency.samples is not a positive integer")
+        if not is_unsigned_integer(samples, 32, minimum=1):
+            reasons.append(f"{where}.latency.samples is not a positive integer in u32 range")
     return reasons
 
 
@@ -277,21 +280,21 @@ def check_envelope(
     if payload.get("mode") not in MODES:
         reasons.append(f"mode {payload.get('mode')!r} is not one of {MODES}")
     concurrency = payload.get("concurrency")
-    if not isinstance(concurrency, int) or isinstance(concurrency, bool) or concurrency < 1:
-        reasons.append(f"concurrency {concurrency!r} is not a positive integer")
+    if not is_unsigned_integer(concurrency, 32, minimum=1):
+        reasons.append(f"concurrency {concurrency!r} is not a positive integer in u32 range")
 
     provenance = payload.get("provenance")
     reasons.extend(_missing(provenance, PROVENANCE_KEYS, "provenance"))
     reasons.extend(_unexpected(provenance, PROVENANCE_KEYS, "provenance"))
     if isinstance(provenance, dict):
         git_head = provenance.get("git_head")
-        if not isinstance(git_head, str) or not FULL_HEAD_RE.match(git_head):
+        if not isinstance(git_head, str) or not FULL_HEAD_RE.fullmatch(git_head):
             reasons.append(f"git_head {git_head!r} is not 40 lowercase hex characters")
         elif head is not None and git_head != head:
             reasons.append(f"git_head {git_head} is not HEAD {head}: stale artifact")
         for key in ("corpus_digest", "config_digest"):
             digest = provenance.get(key)
-            if not isinstance(digest, str) or not DIGEST_RE.match(digest):
+            if not isinstance(digest, str) or not DIGEST_RE.fullmatch(digest):
                 reasons.append(f"{key} {digest!r} is not a sha256: digest")
         model_revision = provenance.get("model_revision")
         if model_revision is not None and (
@@ -305,14 +308,15 @@ def check_envelope(
     if isinstance(host, dict):
         for key in ("cpu_count", "mem_bytes"):
             value = host.get(key)
-            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
-                reasons.append(f"host.{key} {value!r} is not a positive integer")
+            bits = 32 if key == "cpu_count" else 64
+            if not is_unsigned_integer(value, bits, minimum=1):
+                reasons.append(f"host.{key} {value!r} is not a positive integer in u{bits} range")
         for key in ("os", "arch"):
             value = host.get(key)
             if not isinstance(value, str) or not value:
                 reasons.append(f"host.{key} {value!r} is not a name")
         hostname_hash = host.get("hostname_hash")
-        if not isinstance(hostname_hash, str) or not DIGEST_RE.match(hostname_hash):
+        if not isinstance(hostname_hash, str) or not DIGEST_RE.fullmatch(hostname_hash):
             reasons.append(f"host.hostname_hash {hostname_hash!r} is not a sha256: digest")
         if host_policy == "canonical-linux" and host.get("os") != "linux":
             reasons.append("canonical-linux artifact was not measured on Linux")
@@ -322,8 +326,8 @@ def check_envelope(
     reasons.extend(_unexpected(resources, RESOURCE_KEYS, "resources"))
     if isinstance(resources, dict):
         peak = resources.get("peak_rss_bytes")
-        if not isinstance(peak, int) or isinstance(peak, bool) or peak < 1:
-            reasons.append(f"resources.peak_rss_bytes {peak!r} is not a positive integer")
+        if not is_unsigned_integer(peak, 64, minimum=1):
+            reasons.append(f"resources.peak_rss_bytes {peak!r} is not a positive integer in u64 range")
 
     phases = payload.get("phases")
     reasons.extend(_missing(phases, PHASE_KEYS, "phases"))
@@ -342,16 +346,17 @@ def check_envelope(
             bytes_written = amplification.get("bytes_written")
             changed_bytes = amplification.get("changed_bytes")
             for key, value in (("bytes_written", bytes_written), ("changed_bytes", changed_bytes)):
-                if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-                    reasons.append(f"disk_amplification.{key} is not a non-negative integer")
+                if not is_unsigned_integer(value, 64):
+                    reasons.append(f"disk_amplification.{key} is not a non-negative integer in u64 range")
             ratio = amplification.get("ratio")
             if changed_bytes == 0:
                 if ratio is not None:
                     reasons.append(
                         "disk_amplification.ratio must be null when changed_bytes is zero"
                     )
-            elif isinstance(bytes_written, int) and isinstance(changed_bytes, int):
-                expected_ratio = bytes_written / changed_bytes
+            elif is_unsigned_integer(bytes_written, 64) and is_unsigned_integer(changed_bytes, 64):
+                # The public Rust writer widens each u64 before dividing.
+                expected_ratio = float(bytes_written) / float(changed_bytes)
                 if (
                     not isinstance(ratio, (int, float))
                     or isinstance(ratio, bool)
@@ -617,7 +622,7 @@ def main(argv: list[str] | None = None) -> int:
     except RuntimeError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
-    if not FULL_HEAD_RE.match(head):
+    if not FULL_HEAD_RE.fullmatch(head):
         print(f"ERROR: --head {head!r} is not 40 lowercase hex characters", file=sys.stderr)
         return 2
 

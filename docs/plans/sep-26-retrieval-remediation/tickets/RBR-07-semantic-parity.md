@@ -10,6 +10,13 @@
 - 실제 raw artifact: `/private/tmp/qi-rbr07-validator.2MFS28/capture-yfucfeox/native.json`, 158333 bytes, SHA `c0d3da5bafd37c3ac3cafe2a88bee57a6b5695cfa511000ee9f9a79223f2cab6`. independent Python reference `/private/tmp/qi-rbr07-validator.2MFS28/reference-v2.json`, SHA `af59eb3be514988fb8f3dd32fd76e6af036fcdfb766606ce6225abcee126f0cf`. Capture `schema_version=1, kind=model2vec-native-parity-capture, reference_schema_version=2`는 raw output format이며 T15 proof envelope와 동일 schema가 아니다.
 - 잔여: 고정 source/dependencies에서 동일 owning rails 재발급 → 별도 T15 reference/native terminal producer 및 replay comparator → 외부 frozen query/corpus exact-vs-served decomposition. Same-model claim 자동 활성화, ANN effort 변경, 모델 교체는 이 수정 범위가 아니다. 제품 encoder/ANN defect는 여전히 확정되지 않았다.
 
+### 외부 dense RCA producer — 현재 구현, 실행 검증 대기
+
+- **NOT_RUN — 최종 실행 검증:** `quanta-index-semantic`의 기존 `proof` feature에 `ann_proof.rs`와 `quanta-index-ann-proof` CLI를 추가했다. `build.rs`의 proof-only storage-free preflight는 기존 generation/scope/vector/window validators를 재사용한다. production ANN policy·index effort·ranker·default는 변경하지 않는다. 최종 focused unit/build/Clippy와 실제 CLI raw receipt를 회수하기 전에는 구현을 qualified 결과로 취급하지 않는다.
+- 입력은 absolute external JSON과 기존에 없는 absolute external state 두 개다. recursive duplicate-key 거부, exact required query fields(선택 제약은 explicit null), strict integer counts/k, 동일 full typed batch와 vectors/query/filters/k, finite/normalization/dimension/unique-ID 검증을 저장 전에 수행한다. 입력 read는 `take(8 MiB + 1)`로 allocation 전에 제한한다. semantic rows 16,384·queries 16·k 128·dimension 4,096 및 raw output 32 MiB 상한을 적용하며 typed batch serialization expansion도 저장 전에 bounded counting writer로 계산한다. state는 exclusive `create_dir`, repo 내부/기존 target은 거부한다.
+- 실제 production builder와 sealed `open_proven` search API를 사용한다. 별도 f64 exhaustive cosine oracle은 모든 eligible input f32 vector를 순회한다. exact order는 score descending/embedding ID ascending, served order는 production 순서 그대로다. 모든 physical semantic columns와 full vectors를 input과 대조하며 corpus/input/full-row SHA, raw scores와 같은 row의 독립 score error, exact/served counts·strict/tie-aware overlap·sealed dense contract·before/after/counter deltas를 기록한다. ANN/exact/fallback 실행 여부는 실제 counter로 구분한다. 임의 pass tolerance·overall pass flag는 없다.
+- 외부 owning 실행 준비물: `/private/tmp/qi-rbr07-ann-proof.iHL7OL/input.json`(synthetic 512×8 vectors, 4 queries)와 native invalid fixtures. 이는 actual Potion/real-code matrix가 아니다. 외부 frozen 후보 code corpus + pinned 256-dimension model vectors 실행은 별도 담당 lane이 준비하며 immutable CLI binary 확인 뒤 진행한다. input/raw binding은 source/binary 실행 custody 또는 corpus-wide ANN qualification을 대신하지 않는다.
+
 ### Owning verification rails
 
 - Asset-free validator/safe-capture 6 tests: `./scripts/cargow test -p quanta-index-embed --lib --locked model2vec::parity_ -- --nocapture`.
@@ -30,12 +37,14 @@
 
 ## 파일·함수
 
-최종 manual typed fixture rail: `/private/tmp/qi-rbr07-manual-deserialize.xE4bW9/receipt.json` SHA-256 `ee0572805ab6d41179038e3094f252510f3e9fcb60d8ad56c8781c263822fc4b`; 소유 입력 전후 동일, asset-free6·actual pinned 정상1·invalid8+schema1 거부 및 Clippy/fmt 회수. 조건부 exporter는 현재 구현돼 있지만 외부 corpus 동일 vectors/filters/k의 exact-vs-served 분해 CLI는 없다. `vector_index.rs::exact_top_k`는 cfg(test) helper다. external RCA 도구 구현과 최종 T15 custody를 별도 종료한다.
+최종 manual typed fixture rail: `/private/tmp/qi-rbr07-manual-deserialize.xE4bW9/receipt.json` SHA-256 `ee0572805ab6d41179038e3094f252510f3e9fcb60d8ad56c8781c263822fc4b`; 소유 입력 전후 동일, asset-free6·actual pinned 정상1·invalid8+schema1 거부 및 Clippy/fmt 회수. 조건부 exporter와 external exact-vs-served proof-only CLI는 구현돼 있으나 이 CLI의 최종 실행 검증은 위 섹션처럼 대기 중이다. `vector_index.rs::exact_top_k` cfg(test) helper를 oracle로 재사용하지 않는다. external actual-code RCA와 최종 T15 custody는 별도 종료한다.
 
 - [model2vec.rs](../../../../crates/quanta-index-embed/src/model2vec.rs): `encode`, ignored pinned-model test.
 - [parity_fixture.rs](../../../../crates/quanta-index-embed/src/model2vec/parity_fixture.rs): required typed schema 2 + canonical input/numeric evidence validator와 asset-free 반례.
 - [parity_capture.rs](../../../../crates/quanta-index-embed/src/model2vec/parity_capture.rs): optional bounded write-once external raw artifact, capture safety tests.
 - [parity_reference.py](../../../../tools/benchmark/retrieval/parity_reference.py): exact model2vec 0.9.0·asset pin 검증 뒤 canonical schema 2 reference 생성.
+- `crates/quanta-index-semantic/src/ann_proof.rs`: duplicate-safe typed input admission, full-row corpus oracle와 independent exact-vs-served raw producer.
+- `crates/quanta-index-semantic/src/bin/quanta-index-ann-proof.rs`: bounded external input read + exclusive fresh-state CLI; `Cargo.toml`/`lib.rs`는 proof feature 등록만 추가.
 - [semantic route](../../../../crates/quanta-index-search-plane/src/query_dispatcher/routes/semantic.rs): query embedding/model gate와 projection.
 - [search.rs](../../../../crates/quanta-index-semantic/src/search.rs): `run_vector_query`, `run_lane`.
 - [vector_index.rs](../../../../crates/quanta-index-semantic/src/vector_index.rs): `plan_for_rows_v1`, `LoadedApproximateIndexV1::apply`, existing exact-cosine test helpers.

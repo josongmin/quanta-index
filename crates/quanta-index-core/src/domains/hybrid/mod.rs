@@ -11,4 +11,4 @@ pub use dense_admission::{
     hybrid_filter_name_v1,
 };
 pub use inbound::{ExplainQueryPort, HybridQueryPort};
-pub use service::{FusedKeyV1, FusedLaneRankV1, HybridOrchestratorPolicy};
+pub use service::{FusedKeyV1, FusedLaneRankV1, HybridFetchFloorPolicy, HybridOrchestratorPolicy};

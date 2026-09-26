@@ -24,6 +24,106 @@ use crate::query_dispatcher::tests::support::semantic::{
 };
 use crate::query_dispatcher::tests::support::structural::FailClosedStructuralProducer;
 
+#[test]
+fn hybrid_fetch_floor_reaches_both_backends_and_keeps_force_empty_idle() -> TestResult {
+    use crate::HybridFetchFloorPolicy;
+    for floor in [
+        HybridFetchFloorPolicy::Floor25,
+        HybridFetchFloorPolicy::Floor50,
+        HybridFetchFloorPolicy::Floor100,
+    ] {
+        for (top_k, force_empty) in [(1, false), (10, false), (100, false), (10, true)] {
+            let lexical = Arc::new(Mutex::new(RecordingLexicalState::default()));
+            let semantic = Arc::new(Mutex::new(RecordingSemanticState {
+                constrained_search_results: Some(vec![candidate("dense-a", 1.0)]),
+                ..RecordingSemanticState::default()
+            }));
+            let dispatcher = dispatcher_with_obs(
+                Arc::new(RecordingLexicalOpener {
+                    state: Arc::clone(&lexical),
+                    results: vec![candidate("lex-a", 1.0)],
+                }),
+                Arc::new(RecordingSemanticOpener {
+                    state: Arc::clone(&semantic),
+                }),
+                Arc::new(BoundedQueryObsStore::default()),
+            )?;
+            if dispatcher.hybrid_fetch_floor() != HybridFetchFloorPolicy::Floor100 {
+                return Err("default dispatcher must preserve production floor 100".into());
+            }
+            let dispatcher = dispatcher.with_hybrid_fetch_floor(floor);
+            if dispatcher.hybrid_fetch_floor() != floor {
+                return Err("dispatcher did not retain the selected floor".into());
+            }
+            let constraints = if force_empty {
+                QueryConstraintSetV1::from_languages([
+                    quanta_index_contract::lex::LanguageCode::new("rust")
+                        .map_err(str::to_string)?,
+                ])
+            } else {
+                QueryConstraintSetV1::unconstrained()
+            };
+            let response = dispatcher.dispatch(
+                SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
+                    text_query: TextQueryRequest {
+                        syntax: TextQuerySyntax::Sourcegraph,
+                        query_text: if force_empty {
+                            "lang:python needle"
+                        } else {
+                            "needle"
+                        }
+                        .to_string(),
+                        constraints,
+                        generation: Some(ready_pin()),
+                        generation_selector: None,
+                        top_k,
+                        cursor: None,
+                    },
+                    semantic_query_text: "needle".to_string(),
+                    generation: Some(ready_pin()),
+                    generation_selector: None,
+                    top_k,
+                }),
+                &RequestBudgetV1::unbounded(),
+            );
+            let SearchPlaneQueryIpcResponse::Hybrid(response) = response else {
+                return Err(format!(
+                    "floor={floor:?}, k={top_k}: expected hybrid success, got {response:?}"
+                )
+                .into());
+            };
+            let expected = if force_empty {
+                Vec::new()
+            } else {
+                vec![floor.get().max(top_k.saturating_add(1))]
+            };
+            let lexical_fetches = lexical
+                .lock()
+                .map_err(|error| error.to_string())?
+                .search_top_ks
+                .clone();
+            let semantic_fetches = semantic
+                .lock()
+                .map_err(|error| error.to_string())?
+                .search_top_ks
+                .clone();
+            if lexical_fetches != expected
+                || semantic_fetches != expected
+                || response.generation != ready_pin()
+            {
+                return Err(format!("floor={floor:?}, k={top_k}: wrong fetch/pin; lexical={lexical_fetches:?}, semantic={semantic_fetches:?}, expected={expected:?}").into());
+            }
+            if force_empty
+                && (!response.results.is_empty()
+                    || !response.explanation.engines_executed.is_empty())
+            {
+                return Err("force-empty floor variant invoked a lane or returned rows".into());
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The explanation of one hybrid execution with the given lane tally, the
 /// given observed invocation truth, and no DSL filter.
 fn hybrid_explanation(

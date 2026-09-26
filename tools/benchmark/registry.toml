@@ -164,6 +164,13 @@ recipe = "retrieval-sdk-proof"
 requires_out = true
 outputs = []
 
+[producers.lexical-file-diagnostic]
+kind = "python-module"
+module = "tools/benchmark/retrieval/lexical_file_comparison.py"
+argv = ["--spec"]
+requires_spec = true
+outputs = []
+
 [producers.retrieval-contract-proof]
 kind = "just-recipe"
 recipe = "retrieval-contract-proof"
@@ -189,13 +196,20 @@ kind = "python-module"
 module = "tools/benchmark/agent_outcome/__main__.py"
 argv = ["validate"]
 
-[validators.retrieval-sdk]
+[validators.retrieval-proof]
 kind = "python-module"
-module = "tools/benchmark/retrieval/sdk_proof.py"
+module = "tools/benchmark/retrieval/portable_proof.py"
+argv = ["verify", "--receipt"]
 
-[validators.retrieval-contract]
+[validators.retrieval-pair]
 kind = "python-module"
-module = "tools/benchmark/retrieval/contract_proof.py"
+module = "tools/benchmark/retrieval/run.py"
+argv = ["verdict"]
+
+[validators.lexical-file-diagnostic]
+kind = "python-module"
+module = "tools/benchmark/retrieval/lexical_file_comparison.py"
+argv = ["--spec"]
 
 [validators.evidence-protocol]
 kind = "rust-test"
@@ -496,7 +510,7 @@ purpose = "retrieval"
 payload = "proof"
 result_unit = "count"
 producer = "retrieval-sdk-proof"
-validator = "retrieval-sdk"
+validator = "retrieval-proof"
 scorer = "none"
 closure = "retrieval"
 host_policy = "any"
@@ -512,7 +526,7 @@ purpose = "retrieval"
 payload = "proof"
 result_unit = "count"
 producer = "retrieval-contract-proof"
-validator = "retrieval-contract"
+validator = "retrieval-proof"
 scorer = "none"
 closure = "retrieval"
 host_policy = "any"
@@ -528,7 +542,7 @@ purpose = "retrieval"
 payload = "retrieval"
 result_unit = "ratio"
 producer = "retrieval-pair"
-validator = "retrieval-contract"
+validator = "retrieval-pair"
 scorer = "retrieval-relevance"
 closure = "retrieval"
 host_policy = "any"
@@ -543,15 +557,15 @@ title = "Bare-symbol lexical file diagnostic across products"
 purpose = "retrieval"
 payload = "retrieval"
 result_unit = "ratio"
-producer = "retrieval-pair"
-validator = "retrieval-contract"
+producer = "lexical-file-diagnostic"
+validator = "lexical-file-diagnostic"
 scorer = "lexical-file-diagnostic"
 closure = "retrieval"
 host_policy = "any"
 gate_tier = "diagnostic"
 sample_floor = 0
 baseline = "none"
-native_schema = "retrieval-run-manifest:v5"
+native_schema = "lexical-file-diagnostic:v1"
 authority = "registry"
 
 [families.agent-outcome]
@@ -636,7 +650,11 @@ families = ["retrieval-sdk", "retrieval-contract"]
 
 [profiles.retrieval-diagnostic]
 description = "Retrieval paired capture diagnostics; requires external corpus"
-families = ["retrieval-pair", "lexical-file-comparison"]
+families = ["retrieval-pair"]
+
+[profiles.lexical-diagnostic]
+description = "Five-product bare-symbol file diagnostic; separate capture inputs and timing layers"
+families = ["lexical-file-comparison"]
 
 [profiles.recorded]
 description = "Recorded-only evaluation; no producer is allowed to manufacture input"

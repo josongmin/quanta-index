@@ -57,6 +57,22 @@ def test_registry_has_no_second_manifest_data_source() -> None:
     )
 
 
+def test_paired_and_lexical_profiles_have_distinct_owners() -> None:
+    registry = _registry_module().load_registry()
+    assert registry["profiles"]["retrieval-diagnostic"]["families"] == ["retrieval-pair"]
+    assert registry["profiles"]["lexical-diagnostic"]["families"] == ["lexical-file-comparison"]
+    family = registry["families"]["lexical-file-comparison"]
+    assert family["native_schema"] == "lexical-file-diagnostic:v1"
+    producer = registry["producers"][family["producer"]]
+    assert producer["module"].endswith("lexical_file_comparison.py")
+    assert producer["argv"] == ["--spec"] and producer["requires_spec"] is True
+    assert family["validator"] == "lexical-file-diagnostic"
+    assert registry["families"]["retrieval-pair"]["validator"] == "retrieval-pair"
+    for rail in ("retrieval-sdk", "retrieval-contract"):
+        assert registry["families"][rail]["validator"] == "retrieval-proof"
+    assert registry["validators"]["retrieval-proof"]["module"].endswith("portable_proof.py")
+
+
 def test_artifact_projection_matches_the_registry() -> None:
     registry = _registry_module().load_registry()
     manifest = _manifest_module().load_manifest()

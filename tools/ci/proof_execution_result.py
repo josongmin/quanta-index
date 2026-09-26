@@ -29,6 +29,7 @@ except ModuleNotFoundError:  # direct tool entrypoints place only their own dire
 
 from tools.ci.junit_events import JUnitEvidenceError, parse_pytest_junit_bytes
 from tools.ci.lint.handoff_validation import _read_repo_regular_bytes
+from tools.ci.proof_json import parse_proof_json
 
 
 class ExecutionResultError(ValueError):
@@ -144,15 +145,6 @@ def run_p12a_pytest(selectors: list[str], raw_dir: Path | None) -> int:
     return 0
 
 
-def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in result:
-            raise ExecutionResultError(f"duplicate inventory key: {key}")
-        result[key] = value
-    return result
-
-
 def _pytest_result(events: Path, inventory: Path) -> tuple[dict[str, int], set[str]]:
     try:
         return _pytest_result_bytes(events.read_bytes(), inventory.read_bytes())
@@ -162,7 +154,7 @@ def _pytest_result(events: Path, inventory: Path) -> tuple[dict[str, int], set[s
 
 def _pytest_result_bytes(events: bytes, inventory: bytes) -> tuple[dict[str, int], set[str]]:
     try:
-        expected = json.loads(inventory, object_pairs_hook=_unique_object)
+        expected = parse_proof_json(inventory)
     except (UnicodeError, ValueError) as error:
         raise ExecutionResultError(f"invalid pytest result: {error}") from error
     if (

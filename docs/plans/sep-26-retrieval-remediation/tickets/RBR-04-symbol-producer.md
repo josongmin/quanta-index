@@ -1,11 +1,11 @@
 # RBR-04 — 소스 기반 심볼 생성과 파일 단위 combined publication
 
-## 현행 판정 — 2026-09-26, `f9c3b4dc` + 공유 dirty
+## 현행 판정 — 2026-09-26, [중앙 코드 감사](CURRENT-AUDIT.md) 기준
 
 현재 owning 소스의 `extract_corpus_symbols`는 unsupported admitted path/SHA와 parse failure를 typed abort로 처리하며 source path/hash/text를 재검증한다. 현 profile은 partial capability를 선언하지 않은 strict full이다. phase metrics의 파일별 path/SHA/grammar/count coverage를 verdict가 frozen corpus와 비교하고 nonzero unsupported count를 거부한다. strict-full coverage를 다시 구현할 작업은 없다. [중앙 코드 감사](CURRENT-AUDIT.md), [잔여 작업](GAP-REGISTER.md)가 통합 상태 authority다.
 
 - 구현: `symbols.rs`의 다언어 definition producer와 파일당 combined `replace_scope`가 있으며, unsupported admitted 파일은 path/SHA를 포함한 typed failure로 abort한다. 현 profile은 strict full이고 partial 지원은 선언하지 않는다.
-- 검증 경계: 과거 Rust lib 82/chunking 25와 live SDK 16은 당시 dirty local diagnostic이다. 실제 SDK 17개 전체는 진행 중이며 새 observation-off 단일 성공은 5언어 combined publication 증명이 아니다. 최종 frozen-source 5언어 수작업 span·replace/reopen·source/grammar mutation의 exact terminal/receipt는 미발급이고 clean-source proof는 `NOT_RUN`이다.
+- 검증 경계: 과거 Rust lib82/chunking25와 live SDK16/17은 당시 dirty local diagnostic이다. 현재 authority는 Python288/Rust108/SDK18이며 실제 terminal은 중앙 감사에 기록한다. observation-off/floor 단일 성공은 5언어 combined publication 증명이 아니다. 최종 frozen-source 5언어 수작업 span·replace/reopen·source/grammar mutation의 exact terminal/receipt는 별도이고 clean-source proof는 `NOT_RUN`이다.
 - 잔여 코드: 현 strict-full 성공/실패 coverage는 phase metrics와 corpus replay에 연결했다. 별도 partial profile은 없으며 무음 skip은 허용하지 않는다.
 - 잔여 proof: 5언어 fixture와 실 daemon 게시·교체·재개방을 같은 revision/binary에서 다시 증명하고 parser/grammar/coverage manifest를 묶는다. [현재 전수 판정](CURRENT-AUDIT.md).
 

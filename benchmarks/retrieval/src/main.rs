@@ -43,7 +43,7 @@ use quanta_index_retrieval_bench::sdk::{
 };
 use quanta_index_retrieval_bench::symbols::extract_corpus_symbols;
 use quanta_index_retrieval_bench::{BenchError, BenchResult, sha256_hex};
-use quanta_index_search_plane::QueryStageObservationPolicy;
+use quanta_index_search_plane::{HybridFetchFloorPolicy, QueryStageObservationPolicy};
 
 const KNOWN_ROUTES: [&str; 4] = ["lexical", "semantic", "hybrid", "symbol"];
 
@@ -66,6 +66,7 @@ fn print_help() -> BenchResult<()> {
          run adds: --query-pack PATH --routes a,b --top-k N --state-root PATH\n\
          [--query-protocol PATH] [--query-input-policy native|literal|natural_language]\n\
          [--query-stage-observation enabled|disabled] (default enabled; server query stages only)\n\
+         [--experimental-hybrid-fetch-floor 25|50|100] (default 100; explicit experimental startup policy)\n\
          --repo-id ID --revision-id ID --generation N\n\
          --runner-name NAME --runner-revision REV --run-id ID\n\
          --blinding attested|isolated --isolation-method TEXT --access-block-log TEXT\n\
@@ -558,6 +559,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             "metrics-out",
             "diagnostics-out",
             "query-stage-observation",
+            "experimental-hybrid-fetch-floor",
             "out",
             "io-timeout-secs",
             "ready-timeout-secs",
@@ -747,6 +749,12 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             .map_or("enabled", String::as_str),
     )
     .map_err(|message| BenchError::Config(message.to_string()))?;
+    let hybrid_fetch_floor = HybridFetchFloorPolicy::parse(
+        args.flags
+            .get("experimental-hybrid-fetch-floor")
+            .map_or("100", String::as_str),
+    )
+    .map_err(|message| BenchError::Config(message.to_string()))?;
     if model_dir.as_ref().is_some_and(|path| !path.is_dir()) {
         return Err(BenchError::Config(
             "--model-dir must name an existing directory".to_string(),
@@ -779,6 +787,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         searchd_binary: Some(searchd_bin.as_path()),
         embedder: profile.selector,
         query_stage_observation,
+        hybrid_fetch_floor,
         model_dir: model_dir.as_deref(),
         repo_id: &identity.repo_id,
         revision_id: &identity.revision_id,
@@ -1089,6 +1098,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             &routes,
             &outcomes,
             query_stage_observation,
+            hybrid_fetch_floor,
         )?;
         let detail = serde_json::json!({
             "clock": "runner_monotonic_wall_v1",

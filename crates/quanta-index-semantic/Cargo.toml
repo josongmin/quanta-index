@@ -17,6 +17,11 @@ name = "quanta-index-incremental-proof"
 path = "src/bin/quanta-index-incremental-proof.rs"
 required-features = ["proof"]
 
+[[bin]]
+name = "quanta-index-ann-proof"
+path = "src/bin/quanta-index-ann-proof.rs"
+required-features = ["proof"]
+
 [features]
 proof = []
 

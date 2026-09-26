@@ -3,49 +3,278 @@
 from __future__ import annotations
 
 import os
+import selectors
 import signal
+import stat
+import struct
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
 
-from evidence import EvidenceError
+CLEANUP_TIMEOUT_SECONDS = 10
 
 
-def execute(argv: list[str], *, cwd: Path, env: dict[str, str], timeout: int) -> tuple[bytes, bytes, dict]:
-    if threading.current_thread() is not threading.main_thread():
-        raise EvidenceError("benchmark execution requires the signal-owning main thread")
-    if type(timeout) is not int or timeout < 1:
-        raise EvidenceError("producer timeout must be a positive integer")
-    started = time.monotonic_ns()
-    process, interrupted = None, False
+class ProducerExecutionError(ValueError):
+    """A producer did not complete under its execution/cleanup contract."""
 
-    def on_terminate(_signum, _frame):
-        nonlocal interrupted
-        interrupted = True
-        if process is not None:
-            raise EvidenceError("benchmark producer interrupted by SIGTERM")
 
-    previous = signal.signal(signal.SIGTERM, on_terminate)
-    try:
-        process = subprocess.Popen(argv, cwd=cwd, env=env, stdout=subprocess.PIPE,
-                                   stderr=subprocess.PIPE, start_new_session=True)
+def _owned_child(lifeline: int, terminal: int, argv: list[str]) -> int:
+    """Keep nested groups tied to their actual parent's descriptor lifetime."""
+    if os.getpid() != os.getpgrp() or os.getpid() != os.getsid(0):
+        raise ProducerExecutionError("owned child requires its private session")
+    if (
+        lifeline < 3
+        or terminal < 3
+        or lifeline == terminal
+        or not stat.S_ISFIFO(os.fstat(lifeline).st_mode)
+        or not stat.S_ISFIFO(os.fstat(terminal).st_mode)
+        or not argv
+    ):
+        raise ProducerExecutionError("owned child requires distinct pipes and a command")
+
+    with selectors.DefaultSelector() as watch:
+        watch.register(lifeline, selectors.EVENT_READ)
+
+        def parent_gone() -> bool:
+            if not watch.select(0):
+                return False
+            if os.read(lifeline, 1):
+                raise ProducerExecutionError("unexpected parent-liveness pipe data")
+            return True
+
+        # Never launch work after the controlling descriptor has already closed.
+        if parent_gone():
+            return 125
+        child = subprocess.Popen(argv, close_fds=True)
+        reported = False
         try:
-            if interrupted:
-                raise EvidenceError("benchmark producer interrupted during spawn")
-            stdout, stderr = process.communicate(timeout=timeout)
-        except BaseException as exc:
+            while True:
+                if parent_gone():
+                    # This live session leader pins the group identity. Descendant
+                    # owners observe EOF too, so nested owned sessions cascade.
+                    os.killpg(os.getpid(), signal.SIGKILL)
+                result = None if reported else child.poll()
+                if result is not None:
+                    # Publish only the direct child's actual terminal status. The
+                    # controller keeps this leader's PID unreaped until it kills
+                    # the group. This leader stays alive until that kill or loss
+                    # of its controller, so a terminal record is never mistaken
+                    # for proof that background descendants have terminated.
+                    record = struct.pack("!i", result)
+                    if os.write(terminal, record) != len(record):
+                        raise ProducerExecutionError("incomplete child terminal record")
+                    reported = True
+                watch.select(0.05)
+        finally:
+            # Unexpected guard failure also terminates its owned group. It has no
+            # valid terminal record and therefore cannot establish completion.
+            os.killpg(os.getpid(), signal.SIGKILL)
+
+
+def _wait_for_terminal(
+    process: subprocess.Popen, terminal: int, timeout: float
+) -> tuple[bytes, bytes, bytes]:
+    """Drain pipes without reaping the group leader before custody cleanup.
+
+    Even an externally killed leader retains its child PID until the
+    controller calls wait. No poll/wait/communicate may precede group kill:
+    otherwise a replacement group could reuse its identity.
+    """
+    deadline = time.monotonic() + timeout
+    stdout, stderr = bytearray(), bytearray()
+    output = {process.stdout.fileno(): stdout, process.stderr.fileno(): stderr}
+    with selectors.DefaultSelector() as watch:
+        for fd in (terminal, *output):
+            watch.register(fd, selectors.EVENT_READ)
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired("owned producer terminal", timeout)
+            for key, _ in watch.select(remaining):
+                fd = key.fd
+                block = os.read(fd, 5 if fd == terminal else 65536)
+                if fd == terminal:
+                    return bytes(stdout), bytes(stderr), block
+                if block:
+                    output[fd].extend(block)
+                else:
+                    watch.unregister(fd)
+                    del output[fd]
+
+
+def _child_result(raw: bytes) -> int:
+    if len(raw) != 4:
+        raise ProducerExecutionError("owned producer terminated without a valid terminal record")
+    result = struct.unpack("!i", raw)[0]
+    if result < -(signal.NSIG - 1) or result > 255:
+        raise ProducerExecutionError("owned producer supplied an invalid exit code")
+    return result
+
+
+def _terminal_result(returncode: int, raw: bytes) -> int:
+    """Interpret a private, bounded record only after group-owner termination."""
+    if returncode != -signal.SIGKILL:
+        raise ProducerExecutionError("owned producer terminated without a valid terminal record")
+    return _child_result(raw)
+
+
+def _cleanup(process: subprocess.Popen) -> str | None:
+    """Bound pipe drain and direct-child reaping after killing the owned group.
+
+    A process that escapes this group is not contained. A retained pipe must
+    still produce an explicit incomplete-cleanup failure, never an endless
+    wait or completed execution. Repeated cancellation cannot abort cleanup.
+    """
+    deadline = time.monotonic() + CLEANUP_TIMEOUT_SECONDS
+    previous = {sig: signal.signal(sig, signal.SIG_IGN) for sig in (signal.SIGTERM, signal.SIGINT)}
+    errors = []
+    try:
+        if getattr(process, "returncode", None) is None:
             try:
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-            process.communicate()
-            if isinstance(exc, subprocess.TimeoutExpired):
-                raise EvidenceError(f"benchmark producer timed out: {argv!r}") from exc
-            raise
+            except OSError as error:
+                errors.append(f"process-group kill failed: {error}")
+        drained = False
+        try:
+            process.communicate(timeout=max(0.0, deadline - time.monotonic()))
+            drained = True
+        except subprocess.TimeoutExpired:
+            errors.append("pipe drain deadline exceeded")
+        except OSError as error:
+            errors.append(f"pipe drain failed: {error}")
+        if not drained:
+            for stream in (process.stdout, process.stderr):
+                if stream is not None:
+                    try:
+                        stream.close()
+                    except OSError as error:
+                        errors.append(f"pipe close failed: {error}")
+            try:
+                process.wait(timeout=max(0.0, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                errors.append("direct-child reap deadline exceeded")
+            except OSError as error:
+                errors.append(f"direct-child reap failed: {error}")
+        return "; ".join(errors) if errors else None
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
+
+
+def execute(
+    argv: list[str], *, cwd: Path, env: dict[str, str], timeout: int
+) -> tuple[bytes, bytes, dict]:
+    if os.name != "posix" or not hasattr(os, "killpg"):
+        raise ProducerExecutionError("benchmark execution requires POSIX process-group custody")
+    if threading.current_thread() is not threading.main_thread():
+        raise ProducerExecutionError("benchmark execution requires the signal-owning main thread")
+    if signal.getsignal(signal.SIGCHLD) != signal.SIG_DFL:
+        raise ProducerExecutionError("benchmark execution requires default SIGCHLD reaping custody")
+    if type(timeout) is not int or timeout < 1:
+        raise ProducerExecutionError("producer timeout must be a positive integer")
+    started = time.monotonic_ns()
+    deadline = time.monotonic() + timeout
+    process, interrupted, cleaning, communicated = None, False, False, False
+    lifeline_read, lifeline_write = os.pipe()
+    try:
+        terminal_read, terminal_write = os.pipe()
+    except BaseException:
+        os.close(lifeline_read)
+        os.close(lifeline_write)
+        raise
+
+    def on_terminate(_signum, _frame):
+        nonlocal interrupted
+        if interrupted:
+            return
+        interrupted = True
+        if process is not None and not cleaning and not communicated:
+            raise ProducerExecutionError("benchmark producer interrupted by SIGTERM")
+
+    previous = signal.signal(signal.SIGTERM, on_terminate)
+    try:
+        os.set_blocking(terminal_read, False)
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                "-I",
+                str(Path(__file__).resolve()),
+                "--owned-child",
+                str(lifeline_read),
+                str(terminal_write),
+                *argv,
+            ],
+            cwd=cwd,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+            pass_fds=(lifeline_read, terminal_write),
+        )
+        os.close(lifeline_read)
+        lifeline_read = None
+        os.close(terminal_write)
+        terminal_write = None
+        if interrupted:
+            raise ProducerExecutionError("benchmark producer interrupted during spawn")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(argv, timeout)
+        prefix_out, prefix_err, terminal_raw = _wait_for_terminal(process, terminal_read, remaining)
+        _child_result(terminal_raw)
+        # Never reap/poll the leader before this kill. Its unreaped PID pins
+        # group identity even if it was killed between reporting and cleanup.
+        os.killpg(process.pid, signal.SIGKILL)
+        stdout, stderr = process.communicate(timeout=max(0.0, deadline - time.monotonic()))
+        stdout, stderr = prefix_out + stdout, prefix_err + stderr
+        communicated = True
+    except BaseException as exc:
+        cleaning = True
+        cleanup_error = _cleanup(process) if process is not None and not communicated else None
+        primary = (
+            f"benchmark producer timed out: {argv!r}"
+            if isinstance(exc, subprocess.TimeoutExpired)
+            else str(exc)
+        )
+        if cleanup_error is not None:
+            raise ProducerExecutionError(f"{primary}; incomplete cleanup: {cleanup_error}") from exc
+        if isinstance(exc, subprocess.TimeoutExpired):
+            raise ProducerExecutionError(primary) from exc
+        raise
     finally:
         signal.signal(signal.SIGTERM, previous)
-    if process.returncode != 0:
-        raise EvidenceError(f"benchmark producer failed ({process.returncode}): {stderr.decode(errors='replace')[-4000:]}")
-    return stdout, stderr, {"argv": argv, "cwd": str(cwd), "status": "completed", "exit_code": 0,
-                           "timeout_seconds": timeout, "wall_ms": (time.monotonic_ns() - started) // 1_000_000}
+        if lifeline_read is not None:
+            os.close(lifeline_read)
+        os.close(lifeline_write)
+        if terminal_write is not None:
+            os.close(terminal_write)
+        os.close(terminal_read)
+    result = _terminal_result(process.returncode, terminal_raw)
+    if interrupted:
+        raise ProducerExecutionError("benchmark producer interrupted by SIGTERM")
+    if result != 0:
+        raise ProducerExecutionError(
+            f"benchmark producer failed with exit {result}: {stderr.decode(errors='replace')[-4000:]}"
+        )
+    return (
+        stdout,
+        stderr,
+        {
+            "argv": argv,
+            "cwd": str(cwd),
+            "status": "completed",
+            "exit_code": 0,
+            "timeout_seconds": timeout,
+            "wall_ms": (time.monotonic_ns() - started) // 1_000_000,
+        },
+    )
+
+
+if __name__ == "__main__":
+    if len(sys.argv) < 5 or sys.argv[1] != "--owned-child":
+        raise SystemExit("internal owned-child entrypoint only")
+    raise SystemExit(_owned_child(int(sys.argv[2]), int(sys.argv[3]), sys.argv[4:]))

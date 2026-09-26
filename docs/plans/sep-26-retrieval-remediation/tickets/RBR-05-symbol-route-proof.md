@@ -1,9 +1,9 @@
 # RBR-05 — Symbol route와 공통 published-unit 증명
 
-## 현행 판정 — 2026-09-26, `f9c3b4dc` + 공유 dirty
+## 현행 판정 — 2026-09-26, [중앙 코드 감사](CURRENT-AUDIT.md) 기준
 
 - 구현 관측: `published_units.rs` typed registry, SDK `symbol` route와 `record.rs::prove_hit`의 published-unit 증명 경로가 현재 owning 소스에 있다. scored byte span은 full-line projection이지만 **indexed/SDK/scored span 분리와 indexed-span 보조 지표는 RBR-06에서 이미 구현**됐다. 기존 미구현 판정은 철회한다; live propagation proof는 별도다.
-- 검증 경계: 과거 live SDK 기록은 현 source의 forged/stale/timeout/no-answer·동명이인 proof가 아니다. 실제 SDK 17개 전체는 진행 중이고 새 observation-off 단일 성공은 symbol-route 전체 terminal을 대체하지 않는다. 최종 live SDK terminal/receipt는 미발급이며 clean-source proof는 `NOT_RUN`.
+- 검증 경계: 과거 live SDK 기록은 현 source의 forged/stale/timeout/no-answer·동명이인 proof가 아니다. 현재 authority는 SDK18이며 기존 symbol route identity에 실제 daemon의 literal typed-refusal 회귀도 포함했다. terminal/receipt와 정확한 binary bytes는 중앙 감사에 기록한다. observation-off/floor 단일 성공은 symbol-route 전체 terminal을 대체하지 않으며 clean-source proof는 `NOT_RUN`.
 - 잔여: 구현된 RBR-06 span 표식·회계를 producer→SDK→record→merge→validator에서 같은 revision/binary/config로 재검증하고 현 daemon route·negative fixtures의 exact collection·terminal·receipt를 발급한다. 별도 span 재구현은 하지 않는다. [중앙 코드 감사](CURRENT-AUDIT.md), [잔여 작업](GAP-REGISTER.md).
 
 - 우선순위: P1. typed registry·symbol route 코드 관측; 현 소스 SDK proof 미발급. [현재 전수 판정](CURRENT-AUDIT.md). 선행: RBR-01/02/04.

@@ -1789,6 +1789,7 @@ def evaluate(
                     "mrr_at_10": NOT_APPLICABLE,
                     "ndcg_at_10": NOT_APPLICABLE,
                     "file_hit_at_10": NOT_APPLICABLE,
+                    "file_recall_at_10": NOT_APPLICABLE,
                     "error_code": _result_error_code(result),
                     "query_latency_ms": _result_latency(result),
                 }
@@ -1807,6 +1808,7 @@ def evaluate(
                         ndcg_at_k(candidates, labels, NDCG_K) if graded else NOT_APPLICABLE
                     ),
                     "file_hit_at_10": bool(file_recall_at_k(candidates, labels, MRR_K) > 0),
+                    "file_recall_at_10": file_recall_at_k(candidates, labels, MRR_K),
                     "error_code": None,
                     "query_latency_ms": _result_latency(result),
                 }
@@ -1823,6 +1825,7 @@ def evaluate(
                     "mrr_at_10": 0.0,
                     "ndcg_at_10": (0.0 if graded else NOT_APPLICABLE),
                     "file_hit_at_10": False,
+                    "file_recall_at_10": 0.0,
                     "error_code": _result_error_code(result),
                     "query_latency_ms": _result_latency(result),
                 }

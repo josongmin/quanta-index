@@ -2268,6 +2268,7 @@ SPEC_OPTIONAL = (
     "query_repetitions_per_root",
     "query_warmup_passes",
     "query_stage_observation",
+    "experimental_hybrid_fetch_floor",
     "baseline_route",
     "candidate_route",
     "host_profile",
@@ -2613,6 +2614,7 @@ def load_spec(path: Path) -> dict:
         _validate_semble_profile(profiles["semble"], "spec.execution_profiles.semble")
     _spec_int(spec, "top_k", 1)
     server_observation_configuration(spec.get("query_stage_observation", "enabled"))
+    hybrid_fetch_policy_configuration(spec.get("experimental_hybrid_fetch_floor", "100"))
     if not _is_hex(spec["searchd_expected_sha256"], 64):
         raise RunError("spec.searchd_expected_sha256 must be a lowercase sha256")
     strategies = spec["strategies"]
@@ -3040,11 +3042,13 @@ def _validate_explanation(
     observation_policy: str = "enabled",
 ) -> None:
     if value is None:
-        if version in (4, 5) and route in ("lexical", "semantic", "hybrid"):
+        if version in (4, 5, 6) and route in ("lexical", "semantic", "hybrid"):
             raise RunError(f"{where} is missing measured stage timings")
         return
     fields = {"request_id", "early_stop_reason", "engines_executed", "engines_touched", "strategy"}
-    if version in (4, 5):
+    if version == 6:
+        fields.add("planner_trace")
+    if version in (4, 5, 6):
         fields.add("stage_timings")
     detail = _exact_keys(value, fields, where)
     if detail["request_id"] is not None and (type(detail["request_id"]) is not int or detail["request_id"] < 0):
@@ -3057,10 +3061,18 @@ def _validate_explanation(
             raise RunError(f"{where}.{field} is invalid")
     if detail["strategy"] is not None and not isinstance(detail["strategy"], str):
         raise RunError(f"{where}.strategy is invalid")
-    if version not in (4, 5):
+    if version == 6:
+        trace = detail["planner_trace"]
+        if not isinstance(trace, list) or any(
+            not isinstance(entry, dict) or set(entry) != {"stage", "detail"}
+            or not isinstance(entry["stage"], str) or not isinstance(entry["detail"], str)
+            for entry in trace
+        ):
+            raise RunError(f"{where}.planner_trace is missing or malformed")
+    if version not in (4, 5, 6):
         return
     timings = detail["stage_timings"]
-    if version == 5 and observation_policy == "disabled":
+    if version in (5, 6) and observation_policy == "disabled":
         if timings is not None:
             raise RunError(f"{where} disabled observation must be unmeasured, not zero/empty")
         if route in ("lexical", "semantic", "hybrid") and (
@@ -3230,6 +3242,29 @@ def _validate_server_observation(payload: object) -> dict:
     return config
 
 
+def hybrid_fetch_policy_configuration(floor: object = "100") -> dict:
+    """Only bounded experimental selectors; the production default remains 100."""
+    if type(floor) is not str or floor not in ("25", "50", "100"):
+        raise RunError("experimental hybrid fetch floor must be exactly 25, 50 or 100")
+    config = {"floor": int(floor), "scope": "experimental_hybrid_fetch_floor_v1"}
+    return {**config, "config_sha256": digest(canonical_bytes(config))}
+
+
+def _validate_hybrid_fetch_policy(payload: object) -> dict:
+    config = _exact_keys(payload, {"floor", "scope", "config_sha256"}, "hybrid fetch policy")
+    if type(config["floor"]) is not int or config != hybrid_fetch_policy_configuration(str(config["floor"])):
+        raise RunError("hybrid fetch policy configuration digest/scope mismatch")
+    return config
+
+
+def _validate_hybrid_initial_fetch(trace: list[dict], top_k: int, policy: dict) -> None:
+    # Independent public-cap/probe invariant, not the producer's self-reported count.
+    effective = max(min(max(top_k, policy["floor"]), 10_000), top_k + 1)
+    actual = [entry for entry in trace if entry["detail"].startswith("hybrid.internal_top_k=")]
+    if actual != [{"stage": "plan", "detail": f"hybrid.internal_top_k={effective}"}]:
+        raise RunError("hybrid actual initial fetch contradicts bounded policy/probe")
+
+
 def ingest_request_identity(spec: dict) -> dict:
     return _validate_ingest_request_identity({
         "repo_id": spec.get("repo_id", "bench-repo"),
@@ -3353,8 +3388,10 @@ def validate_retrieval_diagnostic(
         "schema_version", "kind", "record_sha256", "query_pack_sha256",
         "top_k", "scope", "results", "runner_timing_detail_ms",
     }
-    if isinstance(payload, dict) and payload.get("schema_version") == 5:
+    if isinstance(payload, dict) and payload.get("schema_version") in (5, 6):
         fields.update({"server_observation", "ingest"})
+    if isinstance(payload, dict) and payload.get("schema_version") == 6:
+        fields.add("hybrid_fetch_policy")
     diagnostic = _exact_keys(
         payload,
         fields,
@@ -3367,7 +3404,7 @@ def validate_retrieval_diagnostic(
         raise RunError("retrieval diagnostic requires a valid record contract and digest")
     if (
         type(diagnostic["schema_version"]) is not int
-        or diagnostic["schema_version"] not in (2, 3, 4, 5)
+        or diagnostic["schema_version"] not in (2, 3, 4, 5, 6)
         or diagnostic["kind"] != "quanta_returned_window_diagnostic"
         or diagnostic["scope"] != "returned_window_only"
         or diagnostic["record_sha256"] != record_sha256
@@ -3379,9 +3416,12 @@ def validate_retrieval_diagnostic(
         raise RunError("retrieval diagnostic identity or contract mismatch")
     observation_policy = (
         _validate_server_observation(diagnostic["server_observation"])["query_stages"]
-        if diagnostic["schema_version"] == 5 else "enabled"
+        if diagnostic["schema_version"] in (5, 6) else "enabled"
     )
     if diagnostic["schema_version"] == 5:
+        _validate_ingest_diagnostic(diagnostic["ingest"], record)
+    if diagnostic["schema_version"] == 6:
+        _validate_hybrid_fetch_policy(diagnostic["hybrid_fetch_policy"])
         _validate_ingest_diagnostic(diagnostic["ingest"], record)
     detail = _exact_keys(
         diagnostic["runner_timing_detail_ms"],
@@ -3448,7 +3488,7 @@ def validate_retrieval_diagnostic(
             "candidates",
             "response",
         }
-        if diagnostic["schema_version"] in (3, 4, 5):
+        if diagnostic["schema_version"] in (3, 4, 5, 6):
             row_fields.add("response_kind")
         row = _exact_keys(
             row,
@@ -3481,7 +3521,10 @@ def validate_retrieval_diagnostic(
             lane_execution: dict[str, bool] = {}
         else:
             lane_execution = _validate_diagnostic_response_v3(row, key, diagnostic["schema_version"], observation_policy)
-            if diagnostic["schema_version"] in (4, 5) and key[1] in ("lexical", "semantic", "hybrid") and row["response_kind"] != "sdk_failure":
+            if diagnostic["schema_version"] == 6 and key[1] == "hybrid" and row["response_kind"] == "returned_window":
+                trace = row["response"]["explanation"]["planner_trace"]
+                _validate_hybrid_initial_fetch(trace, diagnostic["top_k"], diagnostic["hybrid_fetch_policy"])
+            if diagnostic["schema_version"] in (4, 5, 6) and key[1] in ("lexical", "semantic", "hybrid") and row["response_kind"] != "sdk_failure":
                 request_id = row["response"]["explanation"]["request_id"]
                 if request_id in seen_request_ids:
                     raise RunError("retrieval diagnostic reuses a transport request id")
@@ -3552,7 +3595,7 @@ def validate_retrieval_diagnostic(
                     or not math.isfinite(lane["raw_score"])
                 ):
                     raise RunError("retrieval diagnostic lane is invalid")
-                if diagnostic["schema_version"] in (3, 4, 5) and not (
+                if diagnostic["schema_version"] in (3, 4, 5, 6) and not (
                     lane_execution.get(lane["lane"], False)
                     or lane_execution.get(f"hybrid.{lane['lane']}", False)
                 ):
@@ -3646,6 +3689,8 @@ def run_quanta_strategy(
         spec["execution_profiles"]["quanta"]["policy"],
         "--query-stage-observation",
         server_observation_configuration(spec.get("query_stage_observation", "enabled"))["query_stages"],
+        "--experimental-hybrid-fetch-floor",
+        str(hybrid_fetch_policy_configuration(spec.get("experimental_hybrid_fetch_floor", "100"))["floor"]),
         "--strategy",
         name,
         "--routes",
@@ -3769,8 +3814,10 @@ def run_quanta_strategy(
         sha_file(record_path),
         read_json(pack_path),
     )
-    if diagnostic["schema_version"] != 5 or diagnostic["server_observation"] != server_observation_configuration(spec.get("query_stage_observation", "enabled")):
+    if diagnostic["schema_version"] != 6 or diagnostic["server_observation"] != server_observation_configuration(spec.get("query_stage_observation", "enabled")):
         raise RunError("current capture omitted or contradicted the actual server observation policy")
+    if diagnostic["hybrid_fetch_policy"] != hybrid_fetch_policy_configuration(spec.get("experimental_hybrid_fetch_floor", "100")):
+        raise RunError("captured hybrid fetch floor differs from explicit spec policy")
     if _validate_ingest_diagnostic(diagnostic["ingest"], read_json(record_path)) != ingest_request_identity(spec):
         raise RunError("captured ingest identity differs from requested batch scope")
     index_bytes = tree_size(state_root)
@@ -5645,8 +5692,10 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     }
     if parent_binding is not None:
         protocol_keys.add("delegated_cgroup_parent")
-    if isinstance(protocol_payload, dict) and protocol_payload.get("lock_version") == 3:
+    if isinstance(protocol_payload, dict) and protocol_payload.get("lock_version") in (3, 4):
         protocol_keys.update({"server_observation", "ingest_request_identity"})
+    if isinstance(protocol_payload, dict) and protocol_payload.get("lock_version") == 4:
+        protocol_keys.add("hybrid_fetch_policy")
     protocol_shape_valid = (
         isinstance(protocol_payload, dict) and set(protocol_payload) == protocol_keys
     )
@@ -5666,7 +5715,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         root_digests = protocol_payload["query_protocol_sha256s"]
         protocol_shape_valid = protocol_shape_valid and (
             type(protocol_payload["lock_version"]) is int
-            and protocol_payload["lock_version"] in (2, 3)
+            and protocol_payload["lock_version"] in (2, 3, 4)
             and type(protocol_payload["retrieval_diagnostic_version"]) is int
             and
             all(
@@ -5713,14 +5762,16 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             and protocol_payload["execution_profiles_sha256"]
             == digest(canonical_bytes(protocol_payload["execution_profiles"]))
             and protocol_payload["retrieval_diagnostic_version"]
-            == (5 if protocol_payload["lock_version"] == 3 else 4)
+            == {2: 4, 3: 5, 4: 6}.get(protocol_payload["lock_version"])
             and protocol_payload["rank_metric_k_policy"] == "declared_top_k_v1"
         )
         if protocol_shape_valid:
             try:
-                if protocol_payload["lock_version"] == 3:
+                if protocol_payload["lock_version"] in (3, 4):
                     _validate_server_observation(protocol_payload["server_observation"])
                     _validate_ingest_request_identity(protocol_payload["ingest_request_identity"])
+                if protocol_payload["lock_version"] == 4:
+                    _validate_hybrid_fetch_policy(protocol_payload["hybrid_fetch_policy"])
                 profiles = protocol_payload["execution_profiles"]
                 if set(profiles) != {"quanta", "semble"}:
                     raise RunError("protocol execution profile systems are incomplete")
@@ -6201,7 +6252,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 bound_records.add(observed)
             diagnostic_ref = run_entry.get("retrieval_diagnostic")
             diagnostic_digest = run_entry.get("retrieval_diagnostic_digest")
-            if protocol_payload.get("retrieval_diagnostic_version") in (2, 3, 4, 5) and (
+            if protocol_payload.get("retrieval_diagnostic_version") in (2, 3, 4, 5, 6) and (
                 diagnostic_ref is None or diagnostic_digest is None
             ):
                 pair_note("retrieval_diagnostic_missing", ("T12",))
@@ -6229,9 +6280,11 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                         raise RunError(
                             "retrieval diagnostic version differs from the current protocol lock"
                         )
-                    if diagnostic["schema_version"] == 5 and diagnostic["server_observation"] != protocol_payload.get("server_observation"):
+                    if diagnostic["schema_version"] in (5, 6) and diagnostic["server_observation"] != protocol_payload.get("server_observation"):
                         raise RunError("retrieval diagnostic server configuration differs from protocol")
-                    if diagnostic["schema_version"] == 5 and _validate_ingest_diagnostic(diagnostic["ingest"], record_payload) != protocol_payload.get("ingest_request_identity"):
+                    if diagnostic["schema_version"] == 6 and diagnostic["hybrid_fetch_policy"] != protocol_payload.get("hybrid_fetch_policy"):
+                        raise RunError("retrieval diagnostic hybrid fetch policy differs from protocol")
+                    if diagnostic["schema_version"] in (5, 6) and _validate_ingest_diagnostic(diagnostic["ingest"], record_payload) != protocol_payload.get("ingest_request_identity"):
                         raise RunError("retrieval diagnostic ingest identity differs from protocol")
                 except (KeyError, TypeError, ValueError, OSError) as exc:
                     pair_note(f"retrieval_diagnostic_invalid:{exc}", ("T12",))
@@ -6317,7 +6370,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 or adapter.get("model_cache_manifest_digest") != sha_file(rep0_model_cache)
             ):
                 pair_note("adapter_model_cache_binding_broken", ("T11", "T12"))
-        if protocol_payload.get("retrieval_diagnostic_version") in (3, 4, 5):
+        if protocol_payload.get("retrieval_diagnostic_version") in (3, 4, 5, 6):
             expected_profile = protocol_payload.get("execution_profiles", {}).get("semble", {})
             expected_mode = expected_profile.get("mode")
             expected_alpha = expected_profile.get("alpha")
@@ -7456,9 +7509,10 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
         )
         driver_closure_digest = driver_closure["digest"]
     protocol_lock = {
-        "lock_version": 3,
-        "retrieval_diagnostic_version": 5,
+        "lock_version": 4,
+        "retrieval_diagnostic_version": 6,
         "server_observation": server_observation_configuration(spec.get("query_stage_observation", "enabled")),
+        "hybrid_fetch_policy": hybrid_fetch_policy_configuration(spec.get("experimental_hybrid_fetch_floor", "100")),
         "ingest_request_identity": ingest_request_identity(spec),
         "rank_metric_k_policy": "declared_top_k_v1",
         "suite_digest": sha_file(Path(spec["suite"])),

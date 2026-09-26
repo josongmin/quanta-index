@@ -44,7 +44,9 @@ families; the current end-to-end native capture path is narrower:
 | --- | --- |
 | `dsl-authority`, `quality-core`, `quality-full`, `systems`, `semantic-ab` | Native Just producers, artifact checks, baseline comparison where declared, immutable promotion and raw-derived replay. Requires clean source and the declared host/inputs. |
 | `micro`, `dsl-diagnostic` | Registered Criterion owners execute with an explicit external evidence root. Fresh output directories, binary listing + correctness smoke, exact sample/estimate retention, per-case immutable runs and complete-profile publication. Diagnostic wall time only; no performance qualification. |
-| `retrieval-contract`, `retrieval-diagnostic` | Existing retrieval owners remain authoritative. Registered plans exist; CLI capture parameters and native-to-common evidence adapters are not implemented. |
+| `retrieval-contract` | Executes both existing SDK/contract proof owners, retains raw terminal inventories and immutable binary copies, publishes a complete profile and replays with the existing owner validator. Typed test proof only, not relevance or speed. |
+| `retrieval-diagnostic` | Paired Quanta/Semble capture owner only. Paired native-to-common adapter remains unimplemented. |
+| `lexical-diagnostic` | Executes the existing scorer over nine frozen external observation inputs; publishes five product-specific file-recall runs as one complete capture, with raw-derived replay. Recorded diagnostic only, not live product search or qualified speed. |
 | `recorded` | Explicit external A/B/C JSONL and scan-native JSON imports; existing agent evaluator, per-family immutable runs, complete profile publication and raw-derived replay. Submitted recordings remain unauthenticated diagnostics; authenticated claims are refused. |
 
 Unsupported profiles do not execute a supported subset and then claim a full
@@ -84,6 +86,22 @@ DSL uses the executable's complete `--list` inventory. Each run retains native
 metadata, samples, estimates, listing, Cargo messages, rustc identity and actual
 execution arguments. Replay recomputes the native mean; validation also requires
 the complete profile and current source/registry/lockfile identities.
+
+The common POSIX producer executor bounds failure cleanup to ten seconds.
+Nested owned sessions use a parent-liveness descriptor so controller death
+terminates their groups. A direct child's exit does not release group custody:
+the controller drains output while awaiting a private terminal record, kills
+the group before reaping its leader, and only then interprets the actual child
+exit status. Same-group background descendants with closed output pipes are
+also terminated on normal, nonzero and signalled child exit. Missing/malformed
+records or an unproved guard termination cannot establish completion.
+External/ignored SIGCHLD handlers are refused before spawning: the executor
+must own direct-child reaping and keep the group leader's PID pinned.
+Pipe-drain/reap failure remains an explicit
+`incomplete cleanup`, never completed evidence. This is not sandbox containment
+of an arbitrary subprocess that deliberately escapes its owned group.
+Portable retrieval proof commands use this same owner: thirty seconds for Git
+and tool identity, 7200 seconds per proof/build command, plus bounded cleanup.
 
 Only the complete capture pointer publishes a profile. Individually promoted
 runs left by an I/O failure are not a complete profile. Python store GC pins
@@ -135,6 +153,66 @@ reported as an offered rate; a recorded experiment cannot claim qualification.
 See `benchmarks/bench-protocol/fixtures/` for the cross-language canonical
 vectors both implementations must reproduce byte-for-byte.
 
+Retrieval test proofs use a separate `proof` payload: terminal selected,
+executed, passed and failed counts plus source/context digests. Incomplete
+execution, failed tests presented as passing, wrong source and relevance or
+performance verdict scopes are refused. Proof counts are never retrieval scores.
+
+```sh
+uv run --frozen --extra dev python tools/benchmark/benchctl.py run retrieval-contract \
+  --evidence-root /external/bench --producer-timeout 7200
+uv run --frozen --extra dev python tools/benchmark/benchctl.py validate retrieval-contract \
+  --evidence-root /external/bench
+uv run --frozen --extra dev python tools/benchmark/benchctl.py replay \
+  --family retrieval-sdk --evidence-root /external/bench
+```
+
+The capture retains original absolute execution paths without rewriting native
+receipts. SDK runner/searchd bytes are frozen for replay independently of the
+mutable build cache. Outer recipe wall time is not search latency. `compare`
+refuses test proofs because they have no relevance/performance baseline.
+
+### Lexical diagnostic scorer
+
+`retrieval-diagnostic` and `lexical-diagnostic` are separate profiles. The former
+owns paired execution; the latter consumes one exact nine-role external spec
+(`schema_version: 1`): `suite`, `query_pack`, `pair_report`, `pair_lock`,
+`semble_native`, `pair_verdict`, `sourcegraph_rows`, `opengrok_rows`, `cs_rows`.
+Paths must be absolute; omitted, unknown or mixed inputs are refused.
+
+```sh
+uv run --frozen --extra dev python -m tools.benchmark.retrieval.lexical_file_comparison \
+  --spec /external/lexical-inputs.json --out /external/fresh-lexical-report.json
+uv run --frozen --extra dev python tools/benchmark/benchctl.py run lexical-diagnostic \
+  --lexical-spec /external/lexical-inputs.json --evidence-root /external/bench
+uv run --frozen --extra dev python tools/benchmark/benchctl.py validate lexical-diagnostic \
+  --evidence-root /external/bench
+```
+
+`file_hit_rate_at_10` is the fraction of queries with at least one gold file.
+`file_recall_at_10` is query-macro coverage of all gold files; these differ when
+a query has multiple answers. The paired report must carry per-query
+`file_recall_at_10` and hit observations; the scorer cross-checks their aggregate
+instead of deriving hit count from recall. Old reports without those facts
+must be re-scored from native records, never relabelled or defaulted.
+The scorer retains per-query observations and derives descriptive latency from
+each product's recorded timing layer. Raw rows remain diagnostic; index-universe
+attestation, independent judgments, qualified speed and raw HTTP/process
+authenticity are not inferred from a summary flag.
+
+The common adapter freezes exact input bytes before running the owner module,
+retains the original spec and original execution paths, and independently
+re-scores captured raw observations. Products are separate case IDs and every
+run retains the full native report (hit rate, latency layers, exclusions and
+per-query rows); the typed payload is file recall only. All five product cases
+must validate before the complete profile pointer changes. Timeout/unsupported
+paired rows carry no typed score; missing/unrepresentable terminal states refuse.
+Re-scoring succeeds without the original mutable recording paths, but requires
+the original scorer identity. Publication uses the same immutable store and GC
+custody as other profiles. No live HTTP request or product binary execution is
+claimed by `run lexical-diagnostic`; a fresh search pilot is a separate input
+producer requirement, and `compare` refuses a qualified baseline claim.
+
 `benchctl run` requires declared baselines before starting a comparison run and
 requires a clean host preflight receipt; contention overrides are diagnostic.
 The preflight also refuses missing load data or a one-minute load average at or
@@ -164,7 +242,12 @@ For local PREP after benchmark-control-plane changes, run
 `just benchmark-prep-local`. It validates the registry, the evidence contract
 (Rust tests plus Python conformance vectors), the benchmark-control-plane Python
 suites, benchmark-harness Rust formatting and library tests, and producer-binary
-compilation in the warm `test-daemon-lane`. Retrieval evaluator and chunking
+compilation in the warm `test-daemon-lane`. The Python capture/custody subset has one
+shared local/CI entrypoint: `uv run --frozen --extra dev just
+benchmark-control-contract-local`. It includes Criterion, system, recorded,
+retrieval-proof and lexical adapters and their rejection cases; it does not run
+live products or qualify performance. CI runs that exact entrypoint, not a
+second independently maintained test-file list. Retrieval evaluator and chunking
 contracts are intentionally separate: run `just retrieval-contract-local` for a
 dirty-checkout edit loop, or `just retrieval-contract-proof <fresh-output-root>`
 once on a clean source to run them and emit source-bound receipts. Running prep

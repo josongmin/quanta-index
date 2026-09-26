@@ -1,6 +1,6 @@
 # RBR Canonical Profile Contract — Query/Producer/Comparator/Diagnostic provenance
 
-- 작성 근거: [RBR-00](RBR-00-proof-contract.md) 작업 3. 현재 생산 기준: pair-spec v2, protocol-lock v3, runner record v5, diagnostic v5, publish wire V2. 이전 protocol2/diagnostic2~4는 immutable historical replay만 지원한다.
+- 작성 근거: [RBR-00](RBR-00-proof-contract.md) 작업 3. 현재 생산 기준: pair-spec v2, protocol-lock v4, runner record v5, diagnostic v6, publish wire V2. 이전 protocol2/3·diagnostic2~5는 immutable historical replay만 지원한다. protocol4/diagnostic6는 explicit experimental hybrid floor 및 실제 initial-fetch planner trace를 추가로 바인딩한다.
 - 이 문서는 RBR-01/02/03/04가 공통으로 사용하는 profile 계약의 단일 canonical 정의다. 구현 티켓은 이 정의를 변경 없이 구현하며, 변경이 필요하면 이 문서를 먼저 고치고 관련 receipt를 무효화한다.
 - 이 디렉터리는 retrieval source closure에 포함되므로(2026-09-26 등록), 이 계약의 사후 변경은 기존 proof/receipt를 무효화한다.
 
@@ -34,6 +34,7 @@ Quanta query result는 아래 3개 SHA를 가지며, policy/config identity는 c
 
 - 두 제품(Quanta/Semble)에는 **동일 원문**을 전달하고 제품별 identity shape를 혼합하지 않는다.
 - planning 비용의 latency 포함 여부는 `planning_cost_in_latency: bool`로 protocol에 고정한다. 결과를 본 뒤 바꾸지 않는다.
+- symbol route의 현행 실행 capability는 keyword postings다. literal policy의 Phrase 및 symbol Phrase/RawString/Regex·regexp keyword·per-result contentfilter는 `LEX_PLANNER_UNSUPPORTED_FILTER_COMBO`로 거부한다. 이를 `exact_exhausted=0`/no-answer로 기록하거나 native 정책으로 치환하지 않는다. `symbol.has.name`의 미지원 scalar 및 nested Boolean도 같은 경계를 따른다. chunk-owned repo/file predicates는 이 symbol text 제한과 별개다. canonical symbol text authority 지원은 RBR-08의 별도 format/lifecycle 작업이며 아직 `NOT_RUN`이다.
 
 ## 4. Producer/parser profile (구현: RBR-04/06)
 
@@ -60,7 +61,8 @@ Quanta query result는 아래 3개 SHA를 가지며, policy/config identity는 c
 | 보존 응답 정보 | request/generation id, explanation, window completeness, early stop, **executed engines** (contributed와 별개) | executed-but-empty fixture; 미관측 값은 missing으로 남김 |
 | dense lane identity | exact/approximate, internal fetch, admitted/examined/fused counts | SDK 응답↔sidecar 대조 |
 | stage timings | query 단계별 elapsed/call counts, publish 내부 total/prepare/promotion fsync/embedding/delete/append/seal. activation은 별도 control request로 ingest `activation_ns=null`; runner SDK publish+activate wall은 별도 opaque 값 | nested stage 합계를 total로 둔갑하거나 runner wall time을 서버 단계로 분배 금지 |
-| server observation | pair-spec optional `query_stage_observation`의 선언 기본값은 `enabled`, 값은 exact `enabled\|disabled`. runner가 daemon env를 명시 설정; protocol3/diagnostic5에 canonical config SHA와 `server_query_stage_only_v1` scope 보존 | spec/schema/daemon selector·raw config SHA 동등성, alias/whitespace/타입 위조 거부. OFF는 query stage clocks/storage만 생략하며 operational/deadline clock과 ingest stage는 유지 |
+| server observation | pair-spec optional `query_stage_observation`의 선언 기본값은 `enabled`, 값은 exact `enabled\|disabled`. runner가 daemon env를 명시 설정; protocol4/diagnostic6에 canonical config SHA와 `server_query_stage_only_v1` scope 보존 | spec/schema/daemon selector·raw config SHA 동등성, alias/whitespace/타입 위조 거부. OFF는 query stage clocks/storage만 생략하며 operational/deadline clock과 ingest stage는 유지 |
+| hybrid fetch | optional `experimental_hybrid_fetch_floor`의 값은 exact string `25\|50\|100`, default100. runner가 `QUANTA_INDEX_EXPERIMENTAL_HYBRID_FETCH_FLOOR`를 명시 설정; policy `{floor:u32,scope:experimental_hybrid_fetch_floor_v1,config_sha256}`를 diagnostic6/lock4에 보존 | requested/spec/capture/lock 동등성. 실제 hybrid `plan` trace의 유일한 `hybrid.internal_top_k=N`이 `max(min(max(k,floor),10000),k+1)`과 일치해야 한다. bool/float/leading-zero/duplicate/missing/unknown 거부; refill/ceiling/pin 유지. floor 승격·ANN quality·quiet performance는 별도 |
 | transient ingest | V2 response의 durable receipt와 transient observation을 분리; required nullable fields·strict numeric·canonical TrackId `Lexical/Semantic`; activation ACK/receipt digest와 모든 capture의 scope/generation 결합 | old wire 요청을 dispatch 전에 거부. manual serde의 unknown/duplicate/missing-null 거부. fresh capture는 executed/applied/sealed, activation sequence1; replay/partial/finalize-only를 fresh로 위장하면 거부 |
 | bounded stage trace | opt-in only. request/generation/config 바인딩 + 상한 + truncation 표시 필수 | 잘린 trace 거부/명시 |
 

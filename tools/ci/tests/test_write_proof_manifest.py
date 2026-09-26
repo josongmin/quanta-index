@@ -41,6 +41,30 @@ ERROR_INVENTORY_WRITER = _load_module(
 )
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [
+        b'{"status":"failed","status":"passed"}',
+        b'{"counts":{"failed":1,"failed":0}}',
+        b'{"items":[{"proof_id":"wrong","proof_id":"right"}]}',
+        b'{"value":NaN}',
+        b'{"value":Infinity}',
+        b'{"value":-Infinity}',
+        b'{"value":1e9999}',
+    ],
+)
+def test_terminal_json_refuses_ambiguous_or_nonfinite_bytes(raw: bytes) -> None:
+    with pytest.raises(WRITER.ManifestRefused, match="valid JSON"):
+        WRITER._json_object_bytes(raw, label="terminal input")
+
+
+def test_terminal_json_preserves_unambiguous_values() -> None:
+    assert WRITER._json_object_bytes(
+        b'{"status":"failed","counts":{"failed":1},"items":[null,true,1.25]}',
+        label="terminal input",
+    ) == {"status": "failed", "counts": {"failed": 1}, "items": [None, True, 1.25]}
+
+
 def test_cross_repo_hellgate_selects_live_repomap_terminal_target() -> None:
     command = subprocess.run(
         ["just", "--dry-run", "rust-verify-hellgate-cross-repo"],
@@ -93,6 +117,7 @@ def _build_fixture_root(tmp_path: Path) -> tuple[Path, dict]:
     registry_path.parent.mkdir(parents=True)
     shutil.copyfile(REGISTRY_PATH, registry_path)
     shutil.copyfile(SCHEMA_PATH, root / "tools/ci/proof-manifest.schema.json")
+    shutil.copyfile(REPO_ROOT / "tools/ci/proof_json.py", root / "tools/ci/proof_json.py")
     shutil.copyfile(AGGREGATE_SCHEMA_PATH, root / "tools/ci/proof-aggregate.schema.json")
     shutil.copyfile(
         ERROR_INVENTORY_WRITER_PATH, root / "tools/ci/write-error-authority-inventory.py"

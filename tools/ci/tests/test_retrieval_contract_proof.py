@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -35,7 +37,7 @@ def test_proof_recipes_capture_source_once_before_execution(tmp_path: Path) -> N
         rail = "contract" if name == "retrieval-contract-proof" else "sdk"
         assert commands.strip() == (
             f"uv run --frozen --extra dev python tools/benchmark/retrieval/portable_proof.py run --rail {rail} "
-            f'--out "{tmp_path / name}"'
+            '--out "$out"'
         )
     tools = {
         "python": {"path": sys.executable},
@@ -67,6 +69,49 @@ def test_proof_recipes_capture_source_once_before_execution(tmp_path: Path) -> N
     assert "write-verification-receipt.py" not in commands
 
 
+@pytest.mark.parametrize("rail", ["contract", "sdk"])
+def test_proof_recipe_passes_output_as_data(tmp_path: Path, rail: str) -> None:
+    tools = tmp_path / "bin"
+    tools.mkdir()
+    uv = tools / "uv"
+    uv.write_text(f"#!{sys.executable}\nimport json, sys\nprint(json.dumps(sys.argv[1:]))\n")
+    uv.chmod(0o700)
+    # The real Justfile uses login zsh, whose system profile resets PATH.
+    # Isolate user startup files and restore only this fixture's observer.
+    (tmp_path / ".zprofile").write_text(f'export PATH={shlex.quote(str(tools))}:"$PATH"\n')
+    out = str(tmp_path / 'proof "$(touch injected)"')
+    completed = subprocess.run(
+        [
+            "just",
+            "--justfile",
+            str(ROOT / "Justfile"),
+            "--working-directory",
+            str(tmp_path),
+            f"retrieval-{rail}-proof",
+            out,
+        ],
+        cwd=tmp_path,
+        env={**os.environ, "ZDOTDIR": str(tmp_path)},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert json.loads(completed.stdout) == [
+        "run",
+        "--frozen",
+        "--extra",
+        "dev",
+        "python",
+        "tools/benchmark/retrieval/portable_proof.py",
+        "run",
+        "--rail",
+        rail,
+        "--out",
+        out,
+    ]
+    assert not (tmp_path / "injected").exists()
+
+
 def test_retrieval_local_runs_both_rust_targets_once() -> None:
     completed = subprocess.run(
         ["just", "--dry-run", "retrieval-contract-local"],
@@ -85,6 +130,31 @@ def test_retrieval_source_closure_binds_the_shared_junit_owner() -> None:
         ROOT, ["tools/benchmark/retrieval/contract_proof.py"]
     )
     assert "tools/ci/junit_events.py" in roots
+
+
+def test_retrieval_source_closure_binds_the_shared_execution_owner() -> None:
+    roots = source_closure._python_import_roots(
+        ROOT, ["tools/benchmark/retrieval/portable_proof.py"]
+    )
+    assert "tools/benchmark/producer_execution.py" in roots
+
+
+@pytest.mark.parametrize(
+    "xml",
+    [
+        '<testsuites disabled="1"><testsuite tests="1" failures="0" errors="0" skipped="0">'
+        '<testcase name="one"/></testsuite></testsuites>',
+        '<testsuite tests="1" failures="0" errors="0" skipped="0" disabled="1">'
+        '<testcase name="one"/></testsuite>',
+        '<testsuite tests="1" failures="0" errors="0" skipped="0">'
+        '<testcase name="one" status="notrun"/></testsuite>',
+    ],
+)
+def test_junit_does_not_ignore_unknown_outcome_attributes(tmp_path: Path, xml: str) -> None:
+    path = tmp_path / "junit.xml"
+    path.write_text(xml)
+    with pytest.raises(SystemExit, match="unsupported"):
+        MODULE.pytest_summary(path)
 
 
 def test_capture_rejects_dirty_source_before_creating_output(
@@ -123,7 +193,7 @@ def test_capture_rejects_dirty_source_before_creating_output(
         "argv",
         ["source_closure.py", "capture", "--profile", "test-capture", "--out", str(output)],
     )
-    with pytest.raises(SystemExit, match="refusing dirty relevant source"):
+    with pytest.raises(SystemExit, match="dirty relevant source"):
         source_closure.main()
     assert not output.parent.exists()
 

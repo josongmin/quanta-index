@@ -14,7 +14,6 @@ import json
 import os
 import platform
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 
@@ -26,7 +25,11 @@ except ModuleNotFoundError:  # direct script invocation
     from tools.benchmark.retrieval import contract_proof, proof_inventory, sdk_proof
     from tools.ci import source_closure
 
+from tools.benchmark.producer_execution import execute
+
 ROOT = Path(__file__).resolve().parents[3]
+PROOF_COMMAND_TIMEOUT_SECONDS = 7200
+TOOL_TIMEOUT_SECONDS = 30
 PACKAGE = "quanta-index-retrieval-bench"
 FLAGS = ["--all-features", "--locked"]
 FORMAT = ["--message-format", "libtest-json-plus", "--message-format-version", "0.1"]
@@ -84,8 +87,10 @@ def _write_json(path: Path, value: object) -> None:
 
 
 def _git(*args: str) -> str:
-    completed = subprocess.run(["git", *args], cwd=ROOT, capture_output=True, check=True, text=True)
-    return completed.stdout.strip()
+    stdout, _, _ = execute(
+        ["git", *args], cwd=ROOT, env=dict(os.environ), timeout=TOOL_TIMEOUT_SECONDS
+    )
+    return stdout.decode("utf-8").strip()
 
 
 def _source_revision() -> str:
@@ -121,14 +126,13 @@ def _tools() -> dict[str, dict[str, str]]:
         if name == "cargow":
             version = "source-controlled wrapper"
         else:
-            completed = subprocess.run(
+            stdout, _, _ = execute(
                 [str(invocation), "-Vv" if name == "rustc" else "--version"],
                 cwd=ROOT,
-                capture_output=True,
-                check=True,
-                text=True,
+                env=dict(os.environ),
+                timeout=TOOL_TIMEOUT_SECONDS,
             )
-            version = completed.stdout.strip()
+            version = stdout.decode("utf-8").strip()
             if not version:
                 raise ValueError(f"required executable has no version identity: {name}")
         result[name] = {
@@ -195,21 +199,16 @@ def _run(
         raise ValueError(f"{name} requires an absolute executable")
     overrides = {"CARGO_NET_OFFLINE": "true", **(env_overrides or {})}
     environment = {**os.environ, **overrides}
-    completed = subprocess.run(
+    output, errors, _ = execute(
         argv,
         cwd=ROOT,
         env=environment,
-        capture_output=True,
-        check=False,
+        timeout=PROOF_COMMAND_TIMEOUT_SECONDS,
     )
-    if completed.returncode != 0:
-        raise ValueError(
-            f"{name} failed with exit {completed.returncode}: {completed.stderr[-2000:]!r}"
-        )
     stdout = f"{name}.stdout"
     stderr = f"{name}.stderr"
-    _write(out / stdout, completed.stdout)
-    _write(out / stderr, completed.stderr)
+    _write(out / stdout, output)
+    _write(out / stderr, errors)
     commands.append(
         {
             "name": name,
@@ -218,14 +217,14 @@ def _run(
             "environment": overrides,
             "inherited_environment": _relevant_environment(dict(os.environ)),
             "environment_sha256": _environment_digest(_relevant_environment(environment)),
-            "exit_code": completed.returncode,
+            "exit_code": 0,
             "stdout": stdout,
             "stdout_sha256": _sha(out / stdout),
             "stderr": stderr,
             "stderr_sha256": _sha(out / stderr),
         }
     )
-    return completed.stdout
+    return output
 
 
 def _run_fresh_recipe(argv: list[str], out: Path, commands: list[dict[str, object]]) -> None:
@@ -233,15 +232,13 @@ def _run_fresh_recipe(argv: list[str], out: Path, commands: list[dict[str, objec
         raise ValueError(f"refusing non-fresh proof root: {out}")
     overrides = {"CARGO_NET_OFFLINE": "true"}
     environment = {**os.environ, **overrides}
-    completed = subprocess.run(argv, cwd=ROOT, env=environment, capture_output=True, check=False)
-    if completed.returncode != 0:
-        raise ValueError(
-            f"sdk-recipe failed with exit {completed.returncode}: {completed.stderr[-2000:]!r}"
-        )
+    output, errors, _ = execute(
+        argv, cwd=ROOT, env=environment, timeout=PROOF_COMMAND_TIMEOUT_SECONDS
+    )
     if not out.is_dir():
         raise ValueError("SDK recipe returned success without a proof root")
-    _write(out / "sdk-recipe.stdout", completed.stdout)
-    _write(out / "sdk-recipe.stderr", completed.stderr)
+    _write(out / "sdk-recipe.stdout", output)
+    _write(out / "sdk-recipe.stderr", errors)
     commands.append(
         {
             "name": "sdk-recipe",
@@ -250,7 +247,7 @@ def _run_fresh_recipe(argv: list[str], out: Path, commands: list[dict[str, objec
             "environment": overrides,
             "inherited_environment": _relevant_environment(dict(os.environ)),
             "environment_sha256": _environment_digest(_relevant_environment(environment)),
-            "exit_code": completed.returncode,
+            "exit_code": 0,
             "stdout": "sdk-recipe.stdout",
             "stdout_sha256": _sha(out / "sdk-recipe.stdout"),
             "stderr": "sdk-recipe.stderr",
@@ -858,7 +855,7 @@ def main() -> int:
     try:
         path = produce(args.rail, args.out.resolve()) if args.action == "run" else args.receipt
         validate(path)
-    except (OSError, ValueError, subprocess.CalledProcessError, SystemExit) as error:
+    except (OSError, ValueError, SystemExit) as error:
         raise SystemExit(f"portable proof refused: {error}") from error
     print(path)
     return 0

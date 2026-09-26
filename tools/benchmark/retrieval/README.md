@@ -177,7 +177,7 @@ per-system records (`merge`), re-scores immutable records into the TEST-PLAN
 §8 verdict artifact (`verdict`), records the host check (`host-probe`), and
 freezes a canonical machine/power fingerprint (`host-profile`).
 
-The current Quanta runner emits returned-window diagnostic v5. Lexical,
+The current Quanta runner emits returned-window diagnostic v6. Lexical,
 semantic, and hybrid responses carry measured server-side `stage_timings` (monotonic ns,
 backend call count, and stage output count) through the typed SDK response.
 Replay rejects missing, duplicate, reordered, malformed, or request-ID-mixed
@@ -185,7 +185,7 @@ stages and final counts that differ from the returned window. Dense fetch can
 refill and repeat rows; its output count is cumulative, while admission is
 the final admitted set. The two timings overlap and must not be added.
 The V2 publish outcome separately carries transient server ingest stages and
-the unchanged durable receipt. Diagnostic v5 binds the original outcome,
+the unchanged durable receipt. Diagnostics v5 and v6 bind the original outcome,
 activation ACK and every route capture's receipt/active hashes to the expected
 request, repository, revision and generation. Preparation/promotion, streaming,
 embedding, delete/append, tombstones and sealing have explicit nesting;
@@ -197,6 +197,17 @@ force-empty plan records prepare/project but no read-view/backend search.
 `lexical.project` time stops before response-budget fitting; its candidate
 count is reconciled to the final fitted page, so the count is not a wall-time
 claim for serialization or cursor budgeting.
+
+Symbol text currently supports keyword postings. Symbol Phrase, RawString,
+Regex and regexp-pattern keyword leaves, including per-result `content:`
+filters and `symbol.has.name` textual arguments, refuse with
+`LEX_PLANNER_UNSUPPORTED_FILTER_COMBO` rather than claiming exact exhaustion.
+Literal query policy emits a Phrase and therefore does not currently search
+the symbol route. The runner preserves that policy and typed error; it does
+not silently switch to native. Chunk-owned `repo.has.content` and
+`file.contains` predicates retain their separate content domain. Implementing
+symbol text authority is a distinct index-format and lifecycle change, not a
+ranker adjustment.
 
 Each system consumes a projected pack (same tasks/universe/commit, narrowed
 routes, rebound suite commitment); the merge re-derives and re-validates
@@ -217,7 +228,8 @@ keys: `repo`, `manifest`, `suite`, `query_pack`, `top_k`, `output_root`,
 | `strategies` | required for `quanta`/`pair` | e.g. `[{"name":"whole_file"},{"name":"brace_heuristic"}]` |
 | `searchd_binary` | required | explicit daemon pin; unpinned capture is refused |
 | `embedder` | `potion-code` | Rust runner embedder profile (`hash-dev` is an explicit diagnostic control) |
-| `query_stage_observation` | `enabled` | Exact `enabled`/`disabled` server query-stage policy; optional in the spec, explicit in daemon env and protocol3/diagnostic5 config SHA |
+| `query_stage_observation` | `enabled` | Exact `enabled`/`disabled` server query-stage policy; optional in the spec, explicit in daemon env and protocol4/diagnostic6 config SHA |
+| `experimental_hybrid_fetch_floor` | `100` | Exact string `25`/`50`/`100`; explicit daemon startup env and diagnostic6/protocol4 canonical policy SHA. Production default remains100; actual unique `plan` initial-fetch trace is independently checked against floor/public cap/k+1 probe. External ANN and latency qualification are separate |
 | `repo_id`/`revision_id`/`generation` | `bench-repo`/`bench-rev`/`7` | batch identity |
 | `runner_name`/`run_id` | `quanta-sdk-runner`/`run` | runner identity; `runner_revision` is derived from the binary SHA-256 |
 | `blinding` | `attested` | `isolated` requires the enforced Seatbelt (macOS) or Landlock (Linux) path; unsupported or unavailable backends fail closed |

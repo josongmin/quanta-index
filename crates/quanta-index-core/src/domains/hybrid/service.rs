@@ -15,6 +15,44 @@ use crate::{
 const RRF_K: f64 = 60.0;
 const MIN_INTERNAL_FETCH_K: u32 = 100;
 
+/// Bounded startup-only fetch-floor experiment; production defaults to 100.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum HybridFetchFloorPolicy {
+    Floor25,
+    Floor50,
+    #[default]
+    Floor100,
+}
+
+impl HybridFetchFloorPolicy {
+    pub fn parse(value: &str) -> Result<Self, &'static str> {
+        match value {
+            "25" => Ok(Self::Floor25),
+            "50" => Ok(Self::Floor50),
+            "100" => Ok(Self::Floor100),
+            _ => Err("hybrid fetch floor must be exactly 25, 50 or 100"),
+        }
+    }
+
+    #[must_use]
+    pub const fn get(self) -> u32 {
+        match self {
+            Self::Floor25 => 25,
+            Self::Floor50 => 50,
+            Self::Floor100 => MIN_INTERNAL_FETCH_K,
+        }
+    }
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Floor25 => "25",
+            Self::Floor50 => "50",
+            Self::Floor100 => "100",
+        }
+    }
+}
+
 /// Where one lane placed a fused identity: the lane's index in the fusion
 /// input and the identity's 1-based rank in that lane (after the lane's
 /// duplicates are dropped).
@@ -50,8 +88,13 @@ impl HybridOrchestratorPolicy {
 
     #[must_use]
     pub const fn over_fetch_top_k(top_k: u32) -> u32 {
-        let floored = if top_k < MIN_INTERNAL_FETCH_K {
-            MIN_INTERNAL_FETCH_K
+        Self::over_fetch_top_k_with_floor(top_k, HybridFetchFloorPolicy::Floor100)
+    }
+
+    #[must_use]
+    pub const fn over_fetch_top_k_with_floor(top_k: u32, floor: HybridFetchFloorPolicy) -> u32 {
+        let floored = if top_k < floor.get() {
+            floor.get()
         } else {
             top_k
         };
@@ -405,6 +448,56 @@ mod tests {
     use quanta_index_contract::{
         LexicalCandidate, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
     };
+
+    #[test]
+    fn hybrid_fetch_floor_policy_is_closed_and_defaults_to_production() {
+        assert_eq!(
+            HybridFetchFloorPolicy::default(),
+            HybridFetchFloorPolicy::Floor100
+        );
+        for (text, value) in [("25", 25), ("50", 50), ("100", 100)] {
+            let policy = HybridFetchFloorPolicy::parse(text).expect("bounded selector");
+            assert_eq!(policy.as_str(), text);
+            assert_eq!(policy.get(), value);
+        }
+        for invalid in [
+            "", "0", "10", "24", "26", "51", "101", "025", "25 ", "+25", "default",
+        ] {
+            assert!(HybridFetchFloorPolicy::parse(invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn hybrid_fetch_floor_preserves_default_and_ceiling() {
+        for top_k in [0, 1, 10, 25, 50, 100, SemanticPolicy::max_top_k(), u32::MAX] {
+            assert_eq!(
+                HybridOrchestratorPolicy::over_fetch_top_k(top_k),
+                top_k.max(100).min(SemanticPolicy::max_top_k()),
+            );
+            for floor in [
+                HybridFetchFloorPolicy::Floor25,
+                HybridFetchFloorPolicy::Floor50,
+                HybridFetchFloorPolicy::Floor100,
+            ] {
+                assert_eq!(
+                    HybridOrchestratorPolicy::over_fetch_top_k_with_floor(top_k, floor),
+                    top_k.max(floor.get()).min(SemanticPolicy::max_top_k()),
+                );
+            }
+        }
+        assert_eq!(
+            HybridOrchestratorPolicy::next_dense_admission_fetch(25),
+            Some(50)
+        );
+        assert_eq!(
+            HybridOrchestratorPolicy::next_dense_admission_fetch(50),
+            Some(100)
+        );
+        assert_eq!(
+            HybridOrchestratorPolicy::next_dense_admission_fetch(INTERNAL_FETCH_CEILING),
+            None
+        );
+    }
 
     #[test]
     fn validate_top_k_boundary_kills_gt_to_ge_mutation() {

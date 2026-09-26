@@ -18,6 +18,10 @@ except ModuleNotFoundError:  # pragma: no cover - Python 3.10 compatibility
 
 
 ROOT = Path(__file__).resolve().parents[3]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from tools.ci.proof_json import parse_proof_json  # noqa: E402
+
 PROOF_CHECKER_PATH = ROOT / "tools/ci/lint/check-proof-authority.py"
 CHAIN_VALIDATOR_PATH = ROOT / "tools/ci/lint/handoff_validation.py"
 
@@ -40,7 +44,9 @@ def _read_handoff_json(path: Path, *, root: Path) -> Any:
         relative = path.relative_to(root).as_posix()
     except ValueError as error:
         raise ValueError(f"handoff must be inside repository root: {path}") from error
-    return json.loads(CHAIN_VALIDATOR._read_repo_regular_bytes(root, relative, label="handoff"))
+    return parse_proof_json(
+        CHAIN_VALIDATOR._read_repo_regular_bytes(root, relative, label="handoff")
+    )
 
 
 def validate_handoff(

@@ -107,6 +107,7 @@ impl LexicalPlanner {
         // path.
         let filter_plan = plan_filters(&query.filters, &query.options)
             .map_err(LexicalPlannerError::FilterPlan)?;
+        Self::validate_symbol_text(query, &query.expr)?;
         let (root, trace, engines) = Self::plan_expr(query, &query.expr)?;
         Ok(LexicalPlan {
             root,
@@ -122,7 +123,25 @@ impl LexicalPlanner {
     }
 
     pub(crate) fn validate_expr(query: &LqQuery, expr: &LqExpr) -> Result<(), LexicalPlannerError> {
+        Self::validate_symbol_text(query, expr)?;
         let _planned = Self::plan_expr(query, expr)?;
+        Ok(())
+    }
+
+    fn validate_symbol_text(query: &LqQuery, expr: &LqExpr) -> Result<(), LexicalPlannerError> {
+        let symbol_domain = query.filters.iter().any(|filter| {
+            matches!(
+                filter,
+                quanta_index_contract::LqFilter::Type {
+                    kind: quanta_index_contract::LqType::Symbol
+                } | quanta_index_contract::LqFilter::Select {
+                    dim: quanta_index_contract::LqSelect::Symbol
+                }
+            )
+        });
+        if crate::symbol::unsupported_symbol_query_text(query, expr, symbol_domain) {
+            return Err(LexicalPlannerError::UnsupportedFilterCombo);
+        }
         Ok(())
     }
 
@@ -366,34 +385,23 @@ impl LexicalPlanner {
     }
 }
 
-/// Extract a single keyword / raw-string / phrase argument as `String`.
+/// Extract the supported single keyword symbol-name argument.
 ///
 /// `symbol.has.name(foo)` is the only predicate form wired today; the helper
 /// is narrow on purpose so the predicate arm rejects shapes outside the
 /// single-string contract via typed error.
 fn single_string_arg(name: &str, args: &[LqPredicateArg]) -> Result<String, LexicalPlannerError> {
-    if args.len() != 1 {
-        return Err(LexicalPlannerError::Unimplemented {
-            node: predicate_arity_label(name),
-            owner_ticket: PREDICATE_OWNER,
-        });
+    if let Some(value) = crate::symbol::symbol_name_keyword(args) {
+        return Ok(value.to_string());
     }
-    let Some(arg) = args.first() else {
-        return Err(LexicalPlannerError::Unimplemented {
+    match args {
+        [LqPredicateArg::Phrase(_) | LqPredicateArg::RawString(_)] => {
+            Err(LexicalPlannerError::UnsupportedFilterCombo)
+        }
+        _ => Err(LexicalPlannerError::Unimplemented {
             node: predicate_arity_label(name),
             owner_ticket: PREDICATE_OWNER,
-        });
-    };
-    match arg {
-        LqPredicateArg::Keyword(v) | LqPredicateArg::Phrase(v) | LqPredicateArg::RawString(v) => {
-            Ok(v.clone())
-        }
-        LqPredicateArg::Number(_) | LqPredicateArg::Filter { .. } => {
-            Err(LexicalPlannerError::Unimplemented {
-                node: predicate_arity_label(name),
-                owner_ticket: PREDICATE_OWNER,
-            })
-        }
+        }),
     }
 }
 
@@ -624,6 +632,32 @@ mod tests {
                 plan.root
             );
             assert!(plan.engines.contains(&EngineKind::Positions));
+        }
+    }
+
+    #[test]
+    fn symbol_predicate_literal_shapes_are_refused_before_boolean_planning() {
+        use quanta_index_contract::LqPredicateArg;
+        for arg in [
+            LqPredicateArg::Phrase("foo".to_string()),
+            LqPredicateArg::RawString("foo".to_string()),
+        ] {
+            let predicate = LqExpr::Leaf(LqLeaf::Predicate {
+                name: "symbol.has.name".to_string(),
+                args: vec![arg],
+            });
+            for expr in [
+                predicate.clone(),
+                LqExpr::Not(Box::new(predicate.clone())),
+                LqExpr::Any(vec![LqExpr::Empty, predicate.clone()]),
+                LqExpr::All(vec![LqExpr::Empty, predicate]),
+            ] {
+                let query = query_with_expr(expr);
+                assert!(matches!(
+                    LexicalPlanner::plan(&query),
+                    Err(LexicalPlannerError::UnsupportedFilterCombo)
+                ));
+            }
         }
     }
 

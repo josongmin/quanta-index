@@ -712,3 +712,127 @@ def test_concurrency_error_codes_cannot_outnumber_typed_error_responses() -> Non
             assert reasons == []
         else:
             assert any("outnumber" in reason for reason in reasons), reasons
+
+
+def test_native_rows_reject_unknown_public_enum_variants() -> None:
+    for key in ("route_family", "syntax", "result_shape"):
+        value = artifact()
+        value["rows"][0]["latency"]["samples"] = 10_000
+        assert MODULE.check_artifact(value, dimension="dsl-warm", head=HEAD, require=True) == []
+        value["rows"][0][key] = "not_a_public_variant"
+        reasons = MODULE.check_artifact(value, dimension="dsl-warm", head=HEAD, require=True)
+        assert any(f"{key} is not a public variant" in reason for reason in reasons), reasons
+
+
+def test_every_public_native_row_enum_tag_is_accepted() -> None:
+    # Fixed public serialization oracle from artifact.rs, not imported validator domains.
+    domains = {
+        "route_family": (
+            "lexical", "semantic", "hybrid", "symbol", "repomap", "history",
+            "runtime_catalog", "structural", "adversarial",
+        ),
+        "syntax": ("native", "sourcegraph"),
+        "result_shape": ("candidates", "commits", "diff_paths", "typed_error", "empty"),
+    }
+    for key, tags in domains.items():
+        for tag in tags:
+            value = artifact()
+            value["rows"][0][key] = tag
+            assert MODULE.check_envelope(value, dimension="dsl-warm", head=HEAD) == []
+
+
+def test_native_unsigned_scalar_widths_match_public_rust_dto() -> None:
+    # Rust DTO types are the oracle; positive envelope fields retain their existing lower bound.
+    fields = (
+        (("concurrency",), 32, 1),
+        (("host", "cpu_count"), 32, 1),
+        (("host", "mem_bytes"), 64, 1),
+        (("resources", "peak_rss_bytes"), 64, 1),
+        (("rows", 0, "error_count"), 64, 0),
+        (("rows", 0, "timeout_count"), 64, 0),
+        (("rows", 0, "result_count"), 64, 0),
+        (("rows", 0, "latency", "samples"), 32, 1),
+        (("disk_amplification", "bytes_written"), 64, 0),
+        (("disk_amplification", "changed_bytes"), 64, 0),
+    )
+    for path, bits, minimum in fields:
+        for scalar, allowed in (
+            (minimum, True), ((1 << bits) - 1, True),
+            (minimum - 1, False), (1 << bits, False), (True, False), (1.0, False),
+        ):
+            value = artifact()
+            if path[0] == "disk_amplification":
+                value["disk_amplification"] = {"bytes_written": 3, "changed_bytes": 1, "ratio": 3.0}
+            parent = value
+            for component in path[:-1]:
+                parent = parent[component]
+            parent[path[-1]] = scalar
+            if path[0] == "disk_amplification":
+                disk = value["disk_amplification"]
+                disk["ratio"] = (
+                    float(disk["bytes_written"]) / float(disk["changed_bytes"])
+                    if disk["changed_bytes"] else None
+                )
+            reasons = MODULE.check_envelope(value, dimension="dsl-warm", head=HEAD)
+            assert (reasons == []) == allowed, (path, scalar, reasons)
+
+
+def test_native_disk_ratio_uses_public_rust_widening_before_division() -> None:
+    value = artifact()
+    # The Rust DTO casts each operand to f64 first; integer rational division differs here.
+    value["disk_amplification"] = {
+        "bytes_written": (1 << 53) + 1,
+        "changed_bytes": 3,
+        "ratio": float((1 << 53) + 1) / float(3),
+    }
+    assert MODULE.check_envelope(value, dimension="dsl-warm", head=HEAD) == []
+
+
+def test_native_f64_values_reject_overflow_before_conversion() -> None:
+    fields = (
+        ("rows", 0, "latency", "p50_ms"),
+        ("rows", 0, "latency", "p95_ms"),
+        ("rows", 0, "latency", "p99_ms"),
+        ("rows", 0, "qps"),
+        ("phases", "build_ms"),
+        ("phases", "update_ms"),
+        ("phases", "gc_ms"),
+    )
+    for path in fields:
+        for invalid in (10**400, float("inf"), float("nan"), True, -1):
+            value = artifact()
+            parent = value
+            for component in path[:-1]:
+                parent = parent[component]
+            parent[path[-1]] = invalid
+            reasons = MODULE.check_envelope(value, dimension="dsl-warm", head=HEAD)
+            assert any("finite non-negative" in reason for reason in reasons), (path, reasons)
+    value = artifact()
+    for key in ("p50_ms", "p95_ms", "p99_ms"):
+        value["rows"][0]["latency"][key] = sys.float_info.max
+    value["rows"][0]["qps"] = sys.float_info.max
+    for key in ("build_ms", "update_ms", "gc_ms"):
+        value["phases"][key] = sys.float_info.max
+    assert MODULE.check_envelope(value, dimension="dsl-warm", head=HEAD) == []
+
+
+def test_unselected_concurrency_result_count_still_obeys_u64_domain() -> None:
+    for scalar, allowed in (((1 << 64) - 1, True), (1 << 64, False)):
+        value = artifact("concurrency")
+        value["detail"]["measurements"][2]["routes"][0]["last_result_count"] = scalar
+        reasons = MODULE.check_artifact(value, dimension="concurrency", head=HEAD, require=True)
+        assert (reasons == []) == allowed, reasons
+
+
+def test_native_source_and_host_digests_are_exact_without_trailing_newline() -> None:
+    for path in (
+        ("provenance", "git_head"),
+        ("provenance", "corpus_digest"),
+        ("provenance", "config_digest"),
+        ("host", "hostname_hash"),
+    ):
+        value = artifact()
+        assert MODULE.check_envelope(value, dimension="dsl-warm", head=None) == []
+        value[path[0]][path[1]] += "\n"
+        reasons = MODULE.check_envelope(value, dimension="dsl-warm", head=None)
+        assert any(path[1] in reason for reason in reasons), reasons

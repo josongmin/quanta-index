@@ -19,12 +19,17 @@ from tools.benchmark.retrieval.conditional_proof import load, sha
 def compare(on: dict, off: dict, on_phases: dict, off_phases: dict, on_diagnostic: dict, off_diagnostic: dict, pack: dict) -> dict:
     for record, phases, diagnostic, policy in ((on, on_phases, on_diagnostic, "enabled"), (off, off_phases, off_diagnostic, "disabled")):
         if record.get("schema_version") != 5 or record.get("span_accounting_version") != 1 \
-            or diagnostic.get("schema_version") != 5 or phases.get("system") != "quanta" or not phases.get("query_protocol"):
+            or diagnostic.get("schema_version") not in (5, 6) or phases.get("system") != "quanta" or not phases.get("query_protocol"):
             raise ValueError("overhead comparison requires v5 records and explicit on/off protocol")
         if diagnostic.get("server_observation") != pairrun.server_observation_configuration(policy):
             raise ValueError("overhead capture lacks its actual server observation policy")
         pairrun._validate_phase_metrics(phases, "overhead phase metrics")
         pairrun.validate_retrieval_diagnostic(diagnostic, record, phases["record_sha256"], pack)
+    if on_diagnostic["schema_version"] != off_diagnostic["schema_version"] or (
+        on_diagnostic["schema_version"] == 6
+        and on_diagnostic["hybrid_fetch_policy"] != off_diagnostic["hybrid_fetch_policy"]
+    ):
+        raise ValueError("on/off hybrid fetch policy or diagnostic version differs")
     for key in ("strategy", "query_schedule", "query_protocol", "task_count", "route_count", "measurement_repetitions", "warmup_passes",
                 "runner_binary_sha256", "file_count", "chunk_count", "symbol_count",
                 "symbol_coverage", "symbol_unsupported_details"):

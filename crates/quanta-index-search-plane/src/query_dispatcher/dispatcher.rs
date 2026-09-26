@@ -15,8 +15,9 @@ use quanta_index_contract::{
 };
 use quanta_index_core::domains::structural::StructuralProducerPort;
 use quanta_index_core::{
-    CoreError, ExplainQueryPort, HybridQueryPort, LexicalIndexOpenPort, QueryRouteV1,
-    RepoMapSnapshotAcquirePort, RequestBudgetV1, SemanticIndexOpenPort, SemanticQueryPort,
+    CoreError, ExplainQueryPort, HybridFetchFloorPolicy, HybridQueryPort, LexicalIndexOpenPort,
+    QueryRouteV1, RepoMapSnapshotAcquirePort, RequestBudgetV1, SemanticIndexOpenPort,
+    SemanticQueryPort,
 };
 use quanta_index_lq_obs::{Dimensions, MetricKind, MetricSample};
 
@@ -63,6 +64,7 @@ pub struct SearchPlaneDispatcher {
     /// is cut and continued by its cursor (QI-BB-005 보완 #5).
     pub(super) response_budget: ResponsePayloadBudget,
     pub(super) query_stage_observation: QueryStageObservationPolicy,
+    pub(super) hybrid_fetch_floor: HybridFetchFloorPolicy,
     /// One continuation authority for all pageable routes. Product
     /// composition installs the persistent state-root key before serving;
     /// owner-local composition initializes a process-local authority lazily.
@@ -125,6 +127,7 @@ impl SearchPlaneDispatcher {
             history_text: None,
             response_budget: ResponsePayloadBudget::DEFAULT,
             query_stage_observation: QueryStageObservationPolicy::default(),
+            hybrid_fetch_floor: HybridFetchFloorPolicy::default(),
             cursor_authority: OnceLock::new(),
         }
     }
@@ -158,6 +161,18 @@ impl SearchPlaneDispatcher {
     #[must_use]
     pub const fn query_stage_observation(&self) -> QueryStageObservationPolicy {
         self.query_stage_observation
+    }
+
+    /// Select one bounded experimental floor without changing refill or probe rules.
+    #[must_use]
+    pub const fn with_hybrid_fetch_floor(mut self, floor: HybridFetchFloorPolicy) -> Self {
+        self.hybrid_fetch_floor = floor;
+        self
+    }
+
+    #[must_use]
+    pub const fn hybrid_fetch_floor(&self) -> HybridFetchFloorPolicy {
+        self.hybrid_fetch_floor
     }
 
     /// Install the persistent cursor signing key held under the product

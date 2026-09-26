@@ -7,11 +7,11 @@ the proof checker as an injected dependency and never imports it back.
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import secrets
 import stat
 import subprocess
+import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from types import ModuleType
@@ -24,6 +24,10 @@ except ModuleNotFoundError:  # pragma: no cover - Python 3.10 compatibility
 
 
 ROOT = Path(__file__).resolve().parents[3]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from tools.ci.proof_json import parse_proof_json  # noqa: E402
+
 SCHEMA_PATH = (
     ROOT / "docs/plans/sep-21-search-plane-sota-hardening/tickets/handoffs/lane-handoff.schema.json"
 )
@@ -456,7 +460,7 @@ def validate_handoff(
 
     errors: list[str] = []
     proof_registry_path = root / PROOF_REGISTRY_PATH.relative_to(ROOT)
-    schema = json.loads(
+    schema = parse_proof_json(
         _read_repo_regular_bytes(
             root, SCHEMA_PATH.relative_to(ROOT).as_posix(), label="handoff schema"
         )
@@ -468,7 +472,7 @@ def validate_handoff(
     if not isinstance(payload, dict) or errors:
         return errors
 
-    proof_schema = json.loads(
+    proof_schema = parse_proof_json(
         _read_repo_regular_bytes(
             root, PROOF_SCHEMA_PATH.relative_to(ROOT).as_posix(), label="proof schema"
         )
@@ -567,8 +571,8 @@ def validate_handoff(
             errors.append(f"proof {item['id']} manifest digest mismatch")
             continue
         try:
-            manifest = json.loads(manifest_bytes)
-        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            manifest = parse_proof_json(manifest_bytes)
+        except ValueError as error:
             errors.append(f"proof {item['id']} manifest is unreadable: {error}")
             continue
         if not isinstance(manifest, dict):
@@ -742,7 +746,7 @@ def inspect_handoff_ledger(
         try:
             content = _read_repo_regular_bytes(root, relative, label="handoff")
             reference["sha256"] = hashlib.sha256(content).hexdigest()
-            payload = json.loads(content)
+            payload = parse_proof_json(content)
             errors = validate_handoff(
                 payload,
                 handoff_path=path,

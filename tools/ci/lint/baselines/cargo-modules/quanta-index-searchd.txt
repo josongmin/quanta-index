@@ -1,0 +1,119 @@
+
+crate quanta_index_searchd
+├── mod app: pub
+│   ├── mod boot_inventory: pub
+│   │   ├── struct BootInventoryReportV1: pub
+│   │   ├── struct HalfSealedPair: pub
+│   │   ├── enum InterruptedReclaimsAtBoot: pub
+│   │   ├── struct SealedDirectory: pub
+│   │   ├── struct SealedGenerationKey: pub
+│   │   ├── struct TrackInventoryReportV1: pub
+│   │   └── struct TrackScrubInventoryV1: pub
+│   ├── mod config: pub
+│   │   ├── type EnvLookup: pub(crate)
+│   │   ├── struct EnvPolicyFamily: pub(crate)
+│   │   ├── struct MaintenancePolicy: pub
+│   │   ├── struct OpenAiEmbedderTuning: pub
+│   │   ├── struct ProcessMemoryCeilings: pub
+│   │   ├── struct ProviderEgressGrantConfig: pub
+│   │   ├── struct ProviderWorkBudgetConfig: pub
+│   │   ├── struct SearchdConfig: pub
+│   │   └── enum SemanticEmbedderProfile: pub
+│   ├── mod integrity_scrub: pub
+│   │   ├── struct InFlightScrubV1: pub(self)
+│   │   ├── struct PacedIntegrityScrubV1: pub
+│   │   ├── struct ScrubSchedulerV1: pub
+│   │   ├── struct ScrubTalliesV1: pub
+│   │   └── enum ScrubTickV1: pub
+│   ├── mod ipc_dispatcher: pub(self)
+│   │   ├── trait PlaneDispatch: pub(super)
+│   │   ├── type SearchPlaneControlIpcAdapter: pub(super)
+│   │   ├── type SearchPlaneIngestIpcAdapter: pub(super)
+│   │   ├── struct SearchPlaneIpcDispatcher: pub(super)
+│   │   └── type SearchPlaneQueryIpcAdapter: pub(super)
+│   ├── mod maintenance: pub
+│   │   ├── struct BackendObservation: pub(self)
+│   │   ├── struct BackendProbeParts: pub
+│   │   ├── struct MaintenanceMetricSource: pub
+│   │   ├── struct MaintenanceParts: pub
+│   │   ├── struct MaintenanceStop: pub
+│   │   ├── struct MaintenanceTallies: pub
+│   │   └── struct MaintenanceTimer: pub
+│   ├── mod process_memory: pub
+│   │   └── struct KernelResidentMemoryProbe: pub
+│   ├── mod readiness: pub(self)
+│   │   ├── struct ProvenActive: pub(crate)
+│   │   └── struct RuntimeReadiness: pub(crate)
+│   ├── mod request_events: pub(self)
+│   │   └── struct RuntimeRequestEvents: pub(crate)
+│   ├── mod runtime: pub
+│   │   ├── struct LedgerStructuralProducer: pub(self)
+│   │   ├── struct NoopQueryObsSink: pub(self)
+│   │   ├── struct ProviderUnavailableQueryTextEmbedder: pub(self)
+│   │   ├── struct QueryEmbedderAdapter: pub(self)
+│   │   ├── struct RuntimeGuards: pub
+│   │   ├── struct RuntimeServers: pub
+│   │   ├── struct SearchdRuntime: pub
+│   │   ├── struct SearchdRuntimeParts: pub
+│   │   ├── struct SemanticEmbedders: pub(self)
+│   │   ├── struct SharedFileEmbeddingCache: pub(self)
+│   │   ├── enum StateRootAccessV1: pub
+│   │   └── struct StateRootLease: pub
+│   ├── mod searchd: pub
+│   │   └── struct ChildAlive: pub(self)
+│   ├── mod semantic_boot: pub
+│   │   ├── struct SemanticBootReport: pub
+│   │   └── struct SemanticSeedReport: pub
+│   ├── mod server: pub
+│   │   ├── struct QueryServer: pub
+│   │   ├── type SearchPlaneControlServer: pub
+│   │   ├── type SearchPlaneIngestServer: pub
+│   │   └── type SearchPlaneQueryServer: pub
+│   ├── mod socket_access: pub
+│   │   ├── trait PrincipalResolver: pub
+│   │   ├── struct SocketAccessPolicies: pub
+│   │   ├── enum SocketRole: pub
+│   │   └── struct SystemPrincipals: pub
+│   ├── mod state_format: pub
+│   │   ├── struct EnvironmentStateMigrationFaultV1: pub
+│   │   ├── struct NoStateMigrationFaultsV1: pub
+│   │   ├── enum OfflineRootRoleV1: pub
+│   │   ├── enum StateMigrationFaultPointV1: pub
+│   │   ├── trait StateMigrationFaultPort: pub
+│   │   ├── struct StateObjectEntryV1: pub
+│   │   ├── enum StateRootFormatV1: pub
+│   │   └── struct StateRootManifestV1: pub
+│   ├── mod state_migration: pub
+│   │   ├── struct CatalogFreezeV1: pub
+│   │   ├── trait CatalogSnapshotPort: pub
+│   │   ├── struct CatalogSnapshotV1: pub
+│   │   ├── enum OfflineSourceCustodyV1: pub
+│   │   ├── struct OfflineSourceSessionV1: pub
+│   │   ├── struct OfflineStateCommandV1: pub
+│   │   ├── enum OfflineStateOperationV1: pub
+│   │   ├── struct OfflineStateOutcomeV1: pub
+│   │   ├── struct OfflineStateVerificationV1: pub
+│   │   ├── struct ReadOnlyRootLeaseV1: pub
+│   │   ├── enum SourceEntryKindV1: pub
+│   │   ├── struct SourceFreezeReceiptV1: pub
+│   │   ├── struct SourceFrozenFileV1: pub
+│   │   ├── trait StateRootDeepOpenPort: pub
+│   │   ├── struct StateRootDeepOpenReceiptV1: pub
+│   │   └── enum VerifyManifestKindV1: pub
+│   ├── mod supervisor: pub
+│   │   ├── struct CancelRoot: pub
+│   │   ├── struct ChildContext: pub
+│   │   ├── struct ChildExit: pub
+│   │   ├── enum ChildExitKind: pub
+│   │   ├── struct ChildSpawnFailure: pub
+│   │   ├── struct DrainTally: pub(self)
+│   │   ├── struct RegisteredChild: pub(self)
+│   │   ├── struct SearchdSupervisor: pub
+│   │   ├── struct SupervisionError: pub
+│   │   ├── enum SupervisionOutcome: pub
+│   │   ├── enum SupervisorPhase: pub
+│   │   └── struct SupervisorStatus: pub(crate)
+│   └── mod umask: pub
+└── mod cli: pub
+    └── mod command: pub
+        └── struct SearchdCommand: pub
