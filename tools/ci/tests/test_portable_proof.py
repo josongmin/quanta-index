@@ -127,6 +127,7 @@ def fake_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
             json.dumps(
                 {
                     "schema_version": 5,
+                    "span_accounting_version": 1,
                     "captures": {
                         "run": {
                             "runner_binary": {"name": "runner", "digest": digest},

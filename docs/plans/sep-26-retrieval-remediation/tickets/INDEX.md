@@ -53,6 +53,7 @@ Rust-heavy 검증과 성능 측정은 경쟁 writer/build가 없는 구간에 �
 
 | 티켓 | 구현·소유 rail | clean-source proof·잔여 게이트 |
 | --- | --- | --- |
+| RBR-00 | `VERIFIED` — A2 portable SDK proof fixture를 runner v5 span accounting 형태로 정렬; `test_portable_proof.py` 11/11 (공유 dirty local) | `NOT_RUN` — 고정 소스 portable receipt와 repository contract proof |
 | RBR-04 | `VERIFIED` — A1 Go 직접 type 분류, 중첩 함수·제네릭, cursor 경계, producer defect 전파; retrieval-bench lib 83/83 (공유 dirty local), 새 테스트의 nextest identity 확인 | `NOT_RUN` — 고정 소스 전체 inventory·SDK·clean receipt와 외부 coverage admission |
 
 ### 2026-09-26 2차 라운드 상태 (역사적 기록; 현 상태 아님)
