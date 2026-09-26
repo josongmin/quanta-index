@@ -73,3 +73,21 @@ Rust-heavy 검증과 성능 측정은 경쟁 writer/build가 없는 구간에 �
 | RBR-03 | 진행 중 — worker 단일 dispatch(cold/warmup/measured 공유), 4 profile 및 v5 record capture별 profile/digest 구현. 어댑터는 총 lane 호출 수와 각 이벤트의 호출·후보 깊이 및 alpha 범위를 대조한다. 잔여: W0-B 승인 입력에서 pair driver 재실행과 품질·속도 자격 판정 | `VERIFIED` — stub/적대 검증과 고정 Semble 0.6.0 환경의 GIN 99파일·20질의 4 profile 실캡처(각 40 이벤트, 매핑 누락/불일치 0). [원본 경로·SHA·명령](../../sep-23-retrieval-bench/tickets/CODE-SEARCH-COMPARATORS-2026-09.md) | `NOT_RUN` — 현재 dirty source의 clean-source receipt; 과거 `c52007d3` receipt는 이후 소스 변경에 대해 무효 | 실핀 프로파일 진단 `VERIFIED`; admitted pair/quality/speed `NOT_RUN` |
 
 RBR-04~10, RBR-12의 최종 자격 판정은 `NOT_RUN`. 현재 RBR-03 실핀 캡처도 dirty 작업 트리의 진단 결과이며, TEST-PLAN §3의 clean-source proof rail은 별도 발급해야 한다. 위 inventory 숫자(python 231 / rust 70 / sdk 12)는 이전 receipt 시점의 기록이고 현재 소스의 최신 inventory가 아니다.
+
+### 2026-09-26 conditional owner 보완 검증 — `e3c87234` 코드 체크포인트
+
+이 절은 해당 코드 체크포인트의 **소유 범위 local 검증**이다. 실행 당시 HEAD는 `f9c3b4dc487a1b54a260e4ab2d3dd199310d3a5e` + 공유 dirty였고, 다른 writer가 같은 선택 코드 bytes를 `e3c87234b0b3fad94df3080b65c7e0f4b086b8b1`에 커밋했다. 이후 ANN exporter·hybrid floor selector·Sourcegraph 수집 변경은 이 검증 범위 밖이다. 앞의 역사 기록을 최신 source qualification으로 읽지 않는다.
+
+| 티켓 / 범위 | 구현·소유 rail | 미발급 게이트 |
+| --- | --- | --- |
+| RBR-12 / T15·T16 | `VERIFIED` — schema 2 producer/consumer가 원본 build·실행 streams, 입력 bytes, binary·source·model·dependency identities 및 receipt를 재생한다. T16은 실제 변경 5종과 무관 owner 보존을 독립 input oracle로 확인하고 sealed table의 모든 semantic·membership column을 비교한다. summary-only, no-op, 누락·변조·중복 terminal 및 bool/float 정수 우회를 거부한다. 기존 Rust owner test 1/1, 소유 semantic·embed Clippy와 fmt exit 0 | `NOT_RUN` — clean-source receipt, frozen suite 전체 입력의 조건부 qualification, 최종 holdout pair |
+| RBR-07 / 실제 벡터 원본 | `VERIFIED` — pinned assets 3종의 실행 전후 SHA 일치, 별도 Python 3.13/model2vec 0.9.0 reference와 9개 입력의 256차원 전수·역순 batch 비교 9/9 | `NOT_RUN` — suite query 전체 및 외부 corpus의 exact-vs-served 평가 |
+| RBR-01·09 / on-off 비교 도구 | `VERIFIED` — config·원본 digest·ingest binding·답변/순위·정확한 표본 집합을 검증한 뒤 median latency delta/ratio를 계산하는 diagnostic comparator와 고정 손계산 fixture | `NOT_RUN` — quiet-host 실제 overhead 측정·performance qualification |
+
+- `VERIFIED` — 최종 선택 Python bytes 전후 일치: `test_retrieval_benchmark.py` 전체 **283 passed, 32 subtests passed**, 720.50s; raw `/private/tmp/qi-rbr-integrate.Fg8v62/python-final-scalars.log`. 이 수치는 해당 snapshot의 실행 결과이며, 이후 collection 변경에 대한 exact authority나 최신-source receipt가 아니다.
+- 소유 Rust 명령: `./scripts/cargow --lane test-daemon-lane test -p quanta-index-semantic --test generation_delta_reuse --features proof --locked delta_generation_inherits_base_dataset_by_link_without_touching_base_bytes` — **1 passed, 0 failed, 1 filtered**, 100.43s. 수정된 membership fixture에는 before/fresh 양쪽에 무관 owner가 있고 delta에는 없다.
+- 소유 원본·명령·환경·dirty state·범위·digest: `/private/tmp/qi-rbr-supplement-proof/final-owner-rails-receipt.json`, SHA-256 `171d7c86380936cd76a601c718b13e4aa275d445f668e3caf5d860dff787dd93`.
+- 실제 T15 receipt: `/private/tmp/qi-rbr-supplement-proof/actual-vector-owner-receipt.json`, SHA-256 `4dcb44fcfda7f20ad2079b0d275431c7bbf3801daced35a44b4013c36cd8f164`.
+- 실제 T16 receipt: `/private/tmp/qi-rbr-supplement-proof/exact-t16-owner-receipt.json`, SHA-256 `a238ee5fdd2bafb67c229054b32ab885d713b2f8f650ff26da3a51f3b6b14c38`. 실행 중 test fixture 한 줄 변경은 executable source 범위에서 명시적으로 제외했다. 이후 해당 fixture의 test·Clippy를 다시 실행한 결과가 위 owner receipt다.
+- `NOT_RUN` — 마지막 manual-serde source의 installed SDK 17건 재캡처. 최초 JSON 실행은 nextest 환경 설정 누락으로 시작 전 거부됐고, 재시도는 후속 hybrid floor 변경 중 compile 실패로 실행에 도달하지 않았다. 이전 SDK 17/17 관측을 새 source proof로 승격하지 않는다.
+- `NOT_RUN` — repository/workspace qualification·서명된 build/OS attestation·clean-source integration·qualified final pair. 원본과 receipt의 local custody 검증이 이들을 대신하지 않는다.
