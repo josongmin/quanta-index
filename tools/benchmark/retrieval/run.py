@@ -38,7 +38,6 @@ try:
     from tools.benchmark.retrieval import query_plan as qp
     from tools.benchmark.retrieval import semble as semble_adapter
     from tools.benchmark.retrieval.contract_proof import nextest_summary, pytest_summary
-    from tools.benchmark.retrieval.finite_json import is_finite_json_number
     from tools.benchmark.retrieval.evaluator import (
         CHUNK_STRATEGIES,
         RUNNER_SCHEMA_VERSION,
@@ -55,6 +54,7 @@ try:
     from tools.benchmark.retrieval.evaluator import (
         read_json as read_evidence_json,
     )
+    from tools.benchmark.retrieval.finite_json import is_finite_json_number
     from tools.benchmark.retrieval.proof_inventory import verify_inventory_authority
     from tools.benchmark.retrieval.sdk_proof import build_summary_from_evidence
 except ImportError:  # direct script invocation: import the sibling module
@@ -65,7 +65,6 @@ except ImportError:  # direct script invocation: import the sibling module
     import query_plan as qp  # noqa: E402
     import semble as semble_adapter  # noqa: E402
     from contract_proof import nextest_summary, pytest_summary  # noqa: E402
-    from finite_json import is_finite_json_number  # noqa: E402
     from evaluator import (  # noqa: E402
         CHUNK_STRATEGIES,
         RUNNER_SCHEMA_VERSION,
@@ -82,6 +81,7 @@ except ImportError:  # direct script invocation: import the sibling module
     from evaluator import (
         read_json as read_evidence_json,
     )
+    from finite_json import is_finite_json_number  # noqa: E402
     from proof_inventory import verify_inventory_authority  # noqa: E402
     from sdk_proof import build_summary_from_evidence  # noqa: E402
 
@@ -4318,6 +4318,8 @@ def _valid_bootstrap_ci(ci: object, sample_count: int, *, estimable: bool) -> bo
 
 
 def _valid_stratified_delta(strata: object, sample_count: int, expected_mean: float | None) -> bool:
+    if type(sample_count) is not int or not is_finite_json_number(sample_count) or sample_count < 0:
+        return False
     if not isinstance(strata, dict) or set(strata) != {"category", "language", "repository"}:
         return False
     for dimension in strata.values():
@@ -4328,7 +4330,10 @@ def _valid_stratified_delta(strata: object, sample_count: int, expected_mean: fl
         for entry in dimension.values():
             if not isinstance(entry, dict) or set(entry) != {"sample_count", "mean_delta", "ci_95"}:
                 return False
-            if type(entry["sample_count"]) is not int or entry["sample_count"] < 1:
+            if (
+                type(entry["sample_count"]) is not int
+                or not 1 <= entry["sample_count"] <= sample_count - observed
+            ):
                 return False
             observed += entry["sample_count"]
             if not is_finite_json_number(entry["mean_delta"]):

@@ -8,7 +8,6 @@ samples only; host quietness and interleaved repetitions remain separate gates.
 from __future__ import annotations
 
 import argparse
-import math
 import statistics
 from pathlib import Path
 

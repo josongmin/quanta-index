@@ -594,6 +594,69 @@ fn hard_deadline_escalation_is_not_graceful() {
     );
 }
 
+/// Cooperative and hard deadlines share one drain origin. The cooperative
+/// checkpoint cannot buy an extra hard-deadline interval for any child kind.
+#[test]
+fn cooperative_checkpoint_does_not_restart_the_hard_drain_deadline() {
+    for kind in ["unreported", "reported", "adopted"] {
+        let root = CancelRoot::new();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (dropped_tx, dropped_rx) = mpsc::channel();
+        struct Guard(mpsc::Sender<()>);
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                let _sent = self.0.send(());
+            }
+        }
+        let mut supervisor = SearchdSupervisor::new(
+            Duration::from_millis(450),
+            Duration::from_millis(450),
+            Guard(dropped_tx),
+            CancelRoot::clone(&root),
+        );
+        if kind == "adopted" {
+            supervisor.adopt_child(
+                "deadline-held",
+                no_stop(),
+                std::thread::spawn(move || {
+                    let _released = release_rx.recv();
+                }),
+            );
+        } else {
+            supervisor
+                .spawn_child("deadline-held", no_stop(), move |context| {
+                    Ok(std::thread::spawn(move || {
+                        if kind == "reported" {
+                            context.report_exit(ChildExitKind::Completed);
+                        }
+                        let _released = release_rx.recv();
+                    }))
+                })
+                .expect("fixture child spawns");
+        }
+        root.request_shutdown();
+        let started = std::time::Instant::now();
+        let outcome = supervisor.run(&root);
+        let elapsed = started.elapsed();
+        let retained = dropped_rx.try_recv().is_err();
+        // Release custody before assertions, including the RED failure path.
+        release_tx.send(()).expect("held child remains alive");
+        dropped_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("guard drops after its child exits");
+        assert!(retained, "{kind}: a live child must retain its guard");
+        assert!(
+            matches!(outcome, SupervisionOutcome::HardDeadlineEscalated { unfinished }
+                if unfinished == vec!["deadline-held"]),
+            "{kind}: a live child must be escalated"
+        );
+        assert!(
+            elapsed < Duration::from_millis(700),
+            "{kind}: one 450 ms hard deadline, not two: {elapsed:?}"
+        );
+    }
+}
+
 /// Escalation returns at the deadline, but custody follows the unfinished
 /// child rather than the supervisor's terminal receipt.
 #[test]

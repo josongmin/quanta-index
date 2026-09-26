@@ -1,6 +1,8 @@
 # RBR-09 — Hybrid fetch 비용 측정과 제한된 정책 최적화
 
-## 현행 판정 — 2026-09-26, `2c08dccf` + 공유 dirty
+## 현행 판정 — 2026-09-26, [중앙 코드 감사](CURRENT-AUDIT.md) 기준
+
+- 최신 installed integration `VERIFIED` local: SDK18 exact selected/executed/passed·failed0 및 실제 floor25/50/100×k1/10/100 초기 fetch golden 확인. runner/spec의 floor SHA는 diagnostic6/lock4로 연결됐고 floor50 actual3route sidecar+10targeted변조 replay도 exit0다. `/private/tmp/qi-rbr-sdk-symbol-final.TEINH2/actual-terminals.json`, SHA `713a3cfd070b573ce27af094393712ada341a396285062e93508f7f4e46f6fdd`. binary bytes 전후 동일·source drift local이며 quiet-host latency/외부k/filter/quality frontier는 제외한다. 아래 원래 CLI 연결 후속 범위와 installed 미실행은 역사적 checkpoint다.
 
 - 구현 관측: production 기본값 100을 유지하며 `HybridFetchFloorPolicy::{Floor25,Floor50,Floor100}`의 bounded startup selector를 추가했다. strict `parse`/`as_str`/`get`, dispatcher/config getter·builder와 `QUANTA_INDEX_EXPERIMENTAL_HYBRID_FETCH_FLOOR=25|50|100`을 연결한다. unset은 100이고 empty/alias/whitespace/범위 밖 값은 거부한다. hybrid·hybrid-seed·explain 재도출이 같은 선택 정책을 사용한다. benchmark CLI/spec/diagnostic canonical binding은 직렬 통합 소유자의 후속 범위다.
 - 잔여 결정: RBR-01의 source-bound stage timing 후 같은 질의·filter·k에서 유한 matrix를 실행한다. 개선/품질/CI 근거가 부족하면 floor 100 **유지**. 측정 전 floor 축소나 순차 실행의 비용 비율 추정 금지. [현재 전수 판정](CURRENT-AUDIT.md).

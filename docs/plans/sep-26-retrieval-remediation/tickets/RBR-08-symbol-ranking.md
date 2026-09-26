@@ -1,9 +1,9 @@
 # RBR-08 — 근거 기반 exact-name 심볼 ranking
 
-## 현행 판정 — 2026-09-26, `577d60b5` + 공유 dirty
+## 현행 판정 — 2026-09-26, [중앙 코드 감사](CURRENT-AUDIT.md) 기준
 
 - 구현/검증: 독립 원문·정의 span·symbol ID를 선고정한 설치 daemon probe를 실행했다. native-safe 8개는 7 success/1 abstained, literal 10개는 10 abstained였다. **FAILED — literal symbol candidate admission**: 지원되지 않는 실행을 exact-empty로 응답하는 공백이 재현되었으며 ranker 변경으로 해결할 수 없다. 이것은 고정 설치 binary의 국소 관측이고 현재 dirty source 전체 qualification은 아니다.
-- 현 코드 수정: 기존 `LEX_PLANNER_UNSUPPORTED_FILTER_COMBO`로 symbol Phrase/RawString/Regex·Regexp keyword·contentfilter 및 symbol.has.name 미지원 scalar를 중앙 query validator와 executor의 resolved domain에서 거부한다. paged/all·type/select·Boolean/predicate 및 predicate force-empty보다 먼저 적용하며 keyword postings·chunk-owned repo/file predicates는 유지한다. 거짓 exact exhaustion 경로의 최소 수정이며 지원 확장이 아니다. lib121·smoke37·192거부 반례·all-target Clippy/fmt/diff exit0 owning local을 회수했다. 새 installed SDK18은 `/private/tmp/qi-rbr-sdk-symbol-final.TEINH2/`에서 재검증 중이다.
+- 현 코드 수정: 기존 `LEX_PLANNER_UNSUPPORTED_FILTER_COMBO`로 symbol Phrase/RawString/Regex·Regexp keyword·contentfilter 및 symbol.has.name 미지원 scalar를 중앙 query validator와 executor의 resolved domain에서 거부한다. paged/all·type/select·Boolean/predicate 및 predicate force-empty보다 먼저 적용하며 keyword postings·chunk-owned repo/file predicates는 유지한다. 거짓 exact exhaustion 경로의 최소 수정이며 지원 확장이 아니다. lib121·smoke37·192거부 반례·all-target Clippy/fmt/diff exit0 owning local을 회수했다. installed SDK18/18은 실제 daemon의 native symbol positive와 literal typed failure를 같은 기존 identity에서 확인했다. raw `/private/tmp/qi-rbr-sdk-symbol-final.TEINH2/sdk-terminal.log`, SHA `f85b39cabd082a0fc2c9cf3832c2607f82b3bb2e3475ba84d10fd376f3a31545`; binary 전후 동일, source drift local이라 clean-source qualification은 아님.
 - 잔여 결정: 실제 symbol phrase/raw/regex 지원은 아래 별도 authority/format/lifecycle 후속 `NOT_RUN`이다. lower-case exact-name 후보의 case-fold 동점 아래 rank2는 **정책 실험 후보**이며 현재 계약 위반으로 판정하지 않는다. exact-name ranker 효과·rank pagination/reopen·holdout guard는 `NOT_RUN`. [현재 전수 판정](CURRENT-AUDIT.md).
 
 - 우선순위: P2. bounded 진입 probe `VERIFIED`; ranking 변경/유지 최종 결정 `NOT_RUN`. literal admission은 [RBR-02](RBR-02-query-policy.md)와 먼저 분리한다. 정책을 임의 승격하지 않는다. [현재 전수 판정](CURRENT-AUDIT.md). 선행: RBR-05/06.

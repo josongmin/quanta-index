@@ -283,6 +283,18 @@ def test_retrieval_diagnostic_binds_complete_record_and_lanes():
     }
     pairrun.validate_retrieval_diagnostic(diagnostic, record, "b" * 64, pack)
 
+    for invalid in (10**400, -(10**400), float("nan"), float("inf"), -float("inf"), True, None):
+        for field in ("score", "lane_score", "timing"):
+            forged = json.loads(json.dumps(diagnostic))
+            if field == "timing":
+                forged["runner_timing_detail_ms"]["daemon_shutdown"] = invalid
+            elif field == "lane_score":
+                forged["results"][0]["candidates"][0]["contributions"][0]["raw_score"] = invalid
+            else:
+                forged["results"][0]["candidates"][0]["score"] = invalid
+            with pytest.raises(pairrun.RunError):
+                pairrun.validate_retrieval_diagnostic(forged, record, "b" * 64, pack)
+
     tampered = json.loads(json.dumps(diagnostic))
     tampered["results"][0]["candidates"][0]["contributions"] = []
     with pytest.raises(pairrun.RunError, match="lane provenance"):
@@ -1402,6 +1414,21 @@ def test_qualified_uncertainty_contract_rejects_incomplete_or_forged_strata(monk
         "no_answer_abstention_delta": ev.no_answer_delta_summary([], "a" * 40),
     }
     assert pairrun._qualified_uncertainty(comparison)
+    for invalid_count in (10**400, -(10**400), True, None):
+        forged = json.loads(json.dumps(comparison))
+        forged["stratified_primary_delta"]["category"]["symbol"]["sample_count"] = invalid_count
+        assert not pairrun._qualified_uncertainty(forged)
+        assert not pairrun._valid_stratified_delta({}, invalid_count, 0.0)
+    for invalid in (10**400, -(10**400), float("nan"), float("inf"), -float("inf"), True, None):
+        for field in ("primary_delta", "ci_mean", "stratum_mean"):
+            forged = json.loads(json.dumps(comparison))
+            if field == "primary_delta":
+                forged["primary_delta"] = invalid
+            elif field == "ci_mean":
+                forged["primary_delta_ci_95"]["mean"] = invalid
+            else:
+                forged["stratified_primary_delta"]["category"]["symbol"]["mean_delta"] = invalid
+            assert not pairrun._qualified_uncertainty(forged)
 
     mutants = []
     for mutate in (
@@ -2162,9 +2189,27 @@ def test_worker_template_dispatches_profiles_with_lane_isolation(tmp_path, monke
     completed, _ = run_profile("hybrid-no-rerank", alpha=None)
     assert completed.returncode != 0
     assert "alpha" in completed.stderr
+    for invalid in (10**400, -(10**400), float("nan"), float("inf"), -float("inf"), True):
+        completed, _ = run_profile("hybrid-no-rerank", alpha=invalid)
+        assert completed.returncode != 0
+        assert "alpha" in completed.stderr
+        assert "OverflowError" not in completed.stderr
 
 
 def test_adapter_rejects_forged_or_mismatched_profile_reports():
+    for alpha in (10**400, -(10**400), float("nan"), float("inf"), -float("inf"), True, None):
+        profile = {
+            "profile_id": "semble-hybrid-no-rerank-v1", "mode": "hybrid-no-rerank",
+            "alpha": alpha, "rerank": False,
+        }
+        with pytest.raises(semble_adapter.AdapterError, match="alpha"):
+            semble_adapter.execution_profile("hybrid-no-rerank", alpha)
+        with pytest.raises(ev.EvidenceError, match="alpha"):
+            ev.validate_execution_profile(profile, "semble", "profile")
+        with pytest.raises(pairrun.RunError, match="hybrid profile"):
+            pairrun._validate_semble_profile(profile, "profile")
+    assert semble_adapter.execution_profile("hybrid-no-rerank", 0.5)["alpha"] == 0.5
+
     def event(mode: str, alpha: float | None, lanes: dict, depths: dict, rerank):
         profile = semble_adapter.execution_profile(mode, alpha)
         return {
@@ -2919,6 +2964,7 @@ def test_isolation_boundary_denies_suite_and_allows_blind_pack(tmp_path):
 
 
 def test_runner_bundle_is_deterministic_closed_and_isolated(tmp_path):
+    assert "finite_json.py" in pairrun.RUNNER_BUNDLE_MEMBERS
     first = tmp_path / "first.pyz"
     second = tmp_path / "second.pyz"
     first_proof = pairrun.build_runner_bundle(first)
@@ -5992,6 +6038,19 @@ def test_protocol_phase_metrics_bind_raw_warm_counts_and_cold_separately():
         "total_ms": 16.0,
     }
     assert pairrun._validate_phase_metrics(phase, "phase") == phase
+    for invalid in (10**400, -(10**400), float("nan"), float("inf"), -float("inf"), True, None):
+        for field in ("warm", "cold", "phase", "total"):
+            forged = json.loads(json.dumps(phase))
+            if field == "warm":
+                forged["warm_latencies_ms"]["hybrid"]["T1"][0] = invalid
+            elif field == "cold":
+                forged["cold_latencies_ms"]["hybrid"] = invalid
+            elif field == "phase":
+                forged["phases_ms"]["discovery"] = invalid
+            else:
+                forged["total_ms"] = invalid
+            with pytest.raises(pairrun.RunError):
+                pairrun._validate_phase_metrics(forged, "phase")
     current = json.loads(json.dumps(phase))
     current.update(
         {
@@ -7708,6 +7767,23 @@ def test_v3_refuses_unknown_fields(tmp_path):
 
 
 def test_v3_nullable_timing_semantics(tmp_path):
+    from tools.benchmark.retrieval.finite_json import is_finite_json_number
+
+    for value in (10**400, -(10**400), float("nan"), float("inf"), -float("inf"), True, None):
+        assert not is_finite_json_number(value)
+        with pytest.raises(ev.EvidenceError, match="finite number"):
+            ev.finite_timing(value, "probe")
+        if value is not None:
+            with pytest.raises(pairrun.RunError):
+                pairrun._sample_value(value, "probe")
+    assert is_finite_json_number(sys.float_info.max)
+    assert is_finite_json_number(-sys.float_info.max)
+    assert not is_finite_json_number(int(sys.float_info.max) + 1)
+    assert not is_finite_json_number(-int(sys.float_info.max) - 1)
+    assert ev.finite_timing(1, "probe") == 1.0
+    assert ev.finite_timing(0.5, "probe") == 0.5
+    assert pairrun._sample_value(None, "probe") is None
+
     repo, suite, run, suite_path, runner_path, _files = fixture_v3(tmp_path, answerable_only=True)
     run["results"][0]["timings"]["query_latency_ms"] = None
     run["results"][1]["timings"]["query_latency_ms"] = 0
@@ -9114,6 +9190,11 @@ def test_query_clock_overhead_replay_requires_identical_answers_and_coverage(tmp
     assert result["status"] == "diagnostic_unqualified"
     assert all(row["on_median_ms"] == 5. and row["off_median_ms"] == 2.5
         and row["delta_ms"] == 2.5 and row["relative_delta"] == 1. for row in result["rows"])
+    for invalid in (10**400, -(10**400), float("nan"), float("inf"), -float("inf"), True, None):
+        forged = json.loads(json.dumps(off_phases))
+        next(iter(next(iter(forged["warm_latencies_ms"].values())).values()))[0] = invalid
+        with pytest.raises((ValueError, pairrun.RunError)):
+            overhead.compare(record, record, phases, forged, diagnostic, off, pack)
     for mutate in (
         lambda value: value.update(query_schedule="wrong"),
         lambda value: value.update(measurement_repetitions=3),
@@ -9130,3 +9211,76 @@ def test_query_clock_overhead_replay_requires_identical_answers_and_coverage(tmp
     mutant["results"][0]["candidates"] = []
     with pytest.raises((ValueError, pairrun.RunError)):
         overhead.compare(record, mutant, phases, off_phases, diagnostic, off, pack)
+
+
+@pytest.mark.parametrize("parameter", ["timeout_secs", "cleanup_timeout_secs"])
+@pytest.mark.parametrize("invalid", [10**400, -(10**400), float("inf"), float("nan"), True, 0, -1, None])
+def test_native_linux_monitor_numeric_preflight_refuses_without_conversion(parameter, invalid):
+    from tools.benchmark.retrieval import linux_process
+
+    kwargs = {"timeout_secs": 1, parameter: invalid}
+    with pytest.raises(linux_process.ProcessError, match="invalid command or timeout"):
+        linux_process.run(["fixture"], **kwargs)
+
+
+@pytest.mark.parametrize("invalid", [10**400, -(10**400), float("inf"), float("nan"), True, 0, -1, None])
+def test_native_windows_monitor_numeric_preflight_always_closes(invalid):
+    from tools.benchmark.retrieval import windows_job
+
+    job = object.__new__(windows_job.OwnedWindowsProcess)
+    job._closed = False
+    closed = []
+    job.close = lambda: closed.append(True)
+    with pytest.raises(windows_job.JobError, match="monitor timeout and sample interval"):
+        job.monitor(timeout_secs=invalid)
+    assert closed == [True]
+
+
+def test_native_windows_monitor_numeric_preflight_reports_cleanup_failure():
+    from tools.benchmark.retrieval import windows_job
+
+    job = object.__new__(windows_job.OwnedWindowsProcess)
+    job._closed = False
+    closed = []
+
+    def fail_close():
+        closed.append(True)
+        raise windows_job.JobError("fixture cleanup failure")
+
+    job.close = fail_close
+    with pytest.raises(windows_job.JobError, match="invalid monitor parameters; cleanup failed: fixture cleanup failure"):
+        job.monitor(timeout_secs=10**400)
+    assert closed == [True]
+
+
+@pytest.mark.parametrize("valid", [1, 0.25, sys.float_info.max])
+def test_native_linux_monitor_numeric_preflight_accepts_finite_positive(valid, monkeypatch):
+    from tools.benchmark.retrieval import linux_process
+
+    sentinel = object()
+    monkeypatch.setattr(linux_process, "_run_cgroup", lambda *args, **kwargs: sentinel)
+    assert linux_process.run(["fixture"], timeout_secs=valid, cleanup_timeout_secs=valid, qualified=True) is sentinel
+
+
+@pytest.mark.parametrize("valid", [1, 0.25, sys.float_info.max])
+def test_native_windows_monitor_numeric_preflight_accepts_finite_positive(valid):
+    from tools.benchmark.retrieval import windows_job
+
+    job = object.__new__(windows_job.OwnedWindowsProcess)
+    job._closed = False
+    job.pid = 123
+    job.stdout_path = job.stderr_path = None
+    initial = windows_job.JobSample(1, 10, 1, 1, 1, 1, 20)
+    final = windows_job.JobSample(2, 10, 1, 1, 1, 0)
+    closed = []
+    job.sample = lambda: initial
+    job.wait = lambda _: 0
+
+    def close():
+        closed.append(True)
+        return final
+
+    job.close = close
+    result = job.monitor(timeout_secs=valid)
+    assert result.root_exit_code == 0 and result.cleanup_complete
+    assert closed == [True]

@@ -110,15 +110,20 @@ def host_load_guard(host: dict[str, object]) -> tuple[float, float] | None:
         return None
     if not isinstance(load_average, list) or len(load_average) != 3:
         return None
-    if any(
-        isinstance(value, bool)
-        or not isinstance(value, (int, float))
-        or not math.isfinite(value)
-        or value < 0
-        for value in load_average
-    ):
+    try:
+        invalid_load = any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or value < 0
+            for value in load_average
+        )
+        limit = cpu_count * MAX_ONE_MINUTE_LOAD_PER_CPU
+    except OverflowError:
         return None
-    return float(load_average[0]), cpu_count * MAX_ONE_MINUTE_LOAD_PER_CPU
+    if invalid_load or not math.isfinite(limit):
+        return None
+    return float(load_average[0]), limit
 
 
 def preflight_receipt(

@@ -9,7 +9,6 @@ between samples are not observable. Keep these metrics distinct in evidence.
 from __future__ import annotations
 
 import ctypes
-import math
 import os
 import subprocess
 import sys
@@ -853,10 +852,8 @@ class OwnedWindowsProcess:
         if self._closed:
             raise JobError("cannot monitor a closed Windows Job")
         if (
-            isinstance(timeout_secs, bool)
-            or not isinstance(timeout_secs, (int, float))
-            or not math.isfinite(timeout_secs)
-            or timeout_secs <= 0
+            type(timeout_secs) not in (int, float)
+            or not 0 < timeout_secs <= sys.float_info.max
             or type(sample_interval_ms) is not int
             or sample_interval_ms <= 0
         ):

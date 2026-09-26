@@ -213,6 +213,10 @@ def test_latency_summary_rejects_missing_and_nonfinite_values():
         latency_summary(values[:-1], 20, "test-layer")
     with pytest.raises(ValueError, match="invalid latency"):
         latency_summary(values[:-1] + [float("nan")], 20, "test-layer")
+    for invalid in (10**400, -(10**400), float("nan"), float("inf"), -float("inf"), True, None):
+        with pytest.raises(ValueError, match="invalid latency"):
+            latency_summary(values[:-1] + [invalid], 20, "test-layer")
+    assert latency_summary([0, 1, 2.5], 3, "control")["count"] == 3
 
 
 def test_multiple_gold_files_distinguish_hit_rate_from_macro_file_recall(tmp_path):

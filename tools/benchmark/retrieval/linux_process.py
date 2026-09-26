@@ -17,7 +17,6 @@ exclude the run from an unrestricted orphan=0 claim.
 
 from __future__ import annotations
 
-import math
 import os
 import signal
 import stat
@@ -833,10 +832,8 @@ def run(
         or not command[0]
         or any(not isinstance(arg, str) or "\0" in arg for arg in command)
         or any(
-            isinstance(value, bool)
-            or not isinstance(value, (int, float))
-            or not math.isfinite(value)
-            or value <= 0
+            type(value) not in (int, float)
+            or not 0 < value <= sys.float_info.max
             for value in (timeout_secs, cleanup_timeout_secs)
         )
         or type(sample_interval_ms) is not int
