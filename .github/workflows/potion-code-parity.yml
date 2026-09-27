@@ -15,11 +15,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Fetch private Cargo dependencies
-        uses: ./.github/actions/private-cargo-dependencies
-        with:
-          sstable-ssh-key: ${{ secrets.QUANTA_TANTIVY_SSTABLE_READ_KEY }}
-
       - name: Install pinned Rust
         uses: dtolnay/rust-toolchain@stable
         with:

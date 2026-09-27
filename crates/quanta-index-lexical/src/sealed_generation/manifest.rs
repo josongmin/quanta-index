@@ -4,7 +4,7 @@
 //! Written after every file it lists is durable and before the sealed
 //! identity, so the identity's presence implies the manifest's. It carries
 //! the identity's `manifest_digest` so the two files bind each other, the
-//! text normalizer the generation was built under, and five sections:
+//! text normalizer the generation was built under, and six sections:
 //!
 //! - **index meta** — the Tantivy commit (`meta.json`), hashed at every
 //!   door: it is the index's identity and names every segment file;
@@ -15,6 +15,8 @@
 //!   and length only, because a query maps these files instead of decoding
 //!   them and hashing a corpus-sized index at every cold open is the cost
 //!   QI-BB-017 removes. The section stamps that policy explicitly;
+//! - **ranked keys** — one immutable, digest-proved key table per segment;
+//!   a query ranks by these tables without decoding SSTable strings;
 //! - **text authority** — `None` for a generation built without one, or the
 //!   `text-authority/` manifest and every shard it lists. A door reads each
 //!   file once, hashing it as it decodes it;
@@ -25,7 +27,8 @@
 //!   universe and producer event, both decoded from the same proved bytes.
 //!   Absence means unavailable capability, not complete coverage.
 //!
-//! Format 7 also commits optional source-file coverage. Format 6 and earlier
+//! Format 8 commits ranked-key tables. Format 7 added optional source-file
+//! coverage. Format 7 and earlier
 //! cannot represent that commitment and require an explicit rebuild.
 //! The index's text documents carry their
 //! text-authority doc id indexed and as a fast column, so a derived match
@@ -54,7 +57,7 @@ use crate::text_authority::{TEXT_AUTHORITY_DIR_NAME, leading_format_version};
 pub(crate) const LEXICAL_SEALED_MANIFEST_FILE_NAME: &str = "search-corpus-generation-manifest.cbor";
 /// The manifest format this build writes and serves; see the module
 /// documentation for what each earlier format lacked.
-pub(crate) const LEXICAL_SEALED_MANIFEST_FORMAT_VERSION: u32 = 7;
+pub(crate) const LEXICAL_SEALED_MANIFEST_FORMAT_VERSION: u32 = 8;
 /// The format-2 layout: whole-corpus text-authority sidecars beside the
 /// index, no doc ids in the index. Refused by that name so the operator
 /// learns why a rebuild is needed.
@@ -97,6 +100,8 @@ pub(crate) struct LexicalSealedManifest {
     /// Every segment component file the commit references, ascending by
     /// name.
     pub(crate) index_segments: Vec<SealedArtifactCommitmentV1>,
+    /// One immutable ranked-key table per committed index segment.
+    pub(crate) ranked_keys: Vec<SealedArtifactCommitmentV1>,
     /// The `text-authority/` tree by `/`-joined path, ascending by name, or
     /// `None` for a generation built without a text authority.
     pub(crate) text_authority: Option<Vec<SealedArtifactCommitmentV1>>,
@@ -118,6 +123,7 @@ type SealedManifestRow = (
     (u16, u16),
     CommitmentRow,
     u8,
+    Vec<CommitmentRow>,
     Vec<CommitmentRow>,
     Option<Vec<CommitmentRow>>,
     Vec<CommitmentRow>,
@@ -194,6 +200,7 @@ impl LexicalSealedManifest {
             to_commitment_row(&self.index_meta),
             self.index_segment_verification.code(),
             self.index_segments.iter().map(to_commitment_row).collect(),
+            self.ranked_keys.iter().map(to_commitment_row).collect(),
             self.text_authority
                 .as_ref()
                 .map(|files| files.iter().map(to_commitment_row).collect()),
@@ -227,7 +234,7 @@ impl LexicalSealedManifest {
             return Err(CoreError::Typed {
                 code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported,
                 message: format!(
-                    "lexical: sealed generation manifest {} has format {format_version} (this build serves {LEXICAL_SEALED_MANIFEST_FORMAT_VERSION}: index-segment and overlay commitments over an index carrying the text-authority doc id and the ranked page order as fast columns); the generation must be rebuilt",
+                    "lexical: sealed generation manifest {} has format {format_version} (this build serves {LEXICAL_SEALED_MANIFEST_FORMAT_VERSION}: committed ranked-key tables beside the fast columns); the generation must be rebuilt",
                     path.display()
                 ),
             });
@@ -239,6 +246,7 @@ impl LexicalSealedManifest {
             index_meta,
             segment_verification,
             index_segments,
+            ranked_keys,
             text_authority,
             overlays,
             source_coverage,
@@ -272,6 +280,7 @@ impl LexicalSealedManifest {
                 .into_iter()
                 .map(from_commitment_row)
                 .collect(),
+            ranked_keys: ranked_keys.into_iter().map(from_commitment_row).collect(),
             text_authority: text_authority
                 .map(|files| files.into_iter().map(from_commitment_row).collect()),
             overlays: overlays.into_iter().map(from_commitment_row).collect(),
@@ -295,10 +304,17 @@ impl LexicalSealedManifest {
         let top_level = |name: &str| !name.is_empty() && !name.contains('/');
         ensure_names(path, "index segments", &self.index_segments, |name| {
             top_level(name)
+                && !crate::ranked_keys::is_file_name(name)
                 && name != crate::TANTIVY_INDEX_META_FILE_NAME
                 && name != SOURCE_FILE_COVERAGE_FILE_NAME
                 && OverlayFamily::from_file_name(name).is_none()
         })?;
+        ensure_names(
+            path,
+            "ranked keys",
+            &self.ranked_keys,
+            crate::ranked_keys::is_file_name,
+        )?;
         if let Some(files) = &self.text_authority {
             let prefix = format!("{TEXT_AUTHORITY_DIR_NAME}/");
             ensure_names(path, "text authority", files, |name| {
@@ -370,6 +386,7 @@ impl LexicalSealedManifest {
     pub(crate) fn all_commitments(&self) -> impl Iterator<Item = &SealedArtifactCommitmentV1> {
         std::iter::once(&self.index_meta)
             .chain(self.index_segments.iter())
+            .chain(self.ranked_keys.iter())
             .chain(self.text_authority.iter().flatten())
             .chain(self.overlays.iter())
             .chain(self.source_coverage.iter())
@@ -461,6 +478,7 @@ mod tests {
             index_segment_verification:
                 IndexSegmentVerificationV1::LengthAtOpenContentAtSealAndScrub,
             index_segments: vec![artifact("aa.idx"), artifact("aa.term")],
+            ranked_keys: vec![artifact("ranked-keys-00000000000000000000000000000000.bin")],
             text_authority: Some(vec![
                 artifact("text-authority/manifest.cbor"),
                 artifact("text-authority/shard-00000000-0000000000000000.cbor"),
@@ -485,7 +503,7 @@ mod tests {
         let bytes = manifest.encode().expect("encode");
         let decoded = LexicalSealedManifest::decode(&bytes, Path::new("/g1/m")).expect("decode");
         assert_eq!(decoded, manifest);
-        assert_eq!(decoded.all_commitments().count(), 7);
+        assert_eq!(decoded.all_commitments().count(), 8);
     }
 
     #[test]
@@ -509,6 +527,13 @@ mod tests {
                 "an overlay listed as a segment",
                 LexicalSealedManifest {
                     index_segments: vec![artifact("repo-meta.cbor")],
+                    ..manifest()
+                },
+            ),
+            (
+                "a ranked-key file without a full segment identity",
+                LexicalSealedManifest {
+                    ranked_keys: vec![artifact("ranked-keys-short.bin")],
                     ..manifest()
                 },
             ),
@@ -563,13 +588,14 @@ mod tests {
     /// one alike are never read under this build's layout.
     #[test]
     fn another_format_or_policy_is_refused_by_name() {
-        for format in [1, 3, 4, 5, 6, LEXICAL_SEALED_MANIFEST_FORMAT_VERSION + 1] {
+        for format in [1, 3, 4, 5, 6, 7, LEXICAL_SEALED_MANIFEST_FORMAT_VERSION + 1] {
             let other_format: SealedManifestRow = (
                 format,
                 "digest".to_string(),
                 (TEXT_NORMALIZER_VERSION.major, TEXT_NORMALIZER_VERSION.minor),
                 ("meta.json".to_string(), 1, [0; 32]),
                 1,
+                Vec::new(),
                 Vec::new(),
                 None,
                 Vec::new(),
@@ -589,6 +615,7 @@ mod tests {
             (TEXT_NORMALIZER_VERSION.major, TEXT_NORMALIZER_VERSION.minor),
             ("meta.json".to_string(), 1, [0; 32]),
             9,
+            Vec::new(),
             Vec::new(),
             None,
             Vec::new(),

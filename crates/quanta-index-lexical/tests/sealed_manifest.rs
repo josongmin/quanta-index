@@ -732,6 +732,68 @@ fn both_doors_refuse_an_overlay_that_does_not_match_the_manifest() -> TestResult
     Ok(())
 }
 
+#[test]
+fn both_doors_refuse_missing_changed_or_uncommitted_ranked_keys() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().to_path_buf();
+    let adapter = LexicalAdapter::with_state_root(root.clone());
+    let generation = ManifestGeneration::new(1);
+    adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
+    let dir = generation_dir(&root, generation);
+    let entries = std::fs::read_dir(&dir)?.collect::<Result<Vec<_>, _>>()?;
+    let tables: Vec<_> = entries
+        .into_iter()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("ranked-keys-")
+        })
+        .map(|entry| entry.path())
+        .collect();
+    if tables.len() != 1 {
+        return Err(format!("expected one ranked-key table, found {}", tables.len()).into());
+    }
+    let path = &tables[0];
+    let original = std::fs::read(path)?;
+    expect_admitted(&knock(&adapter, generation), "intact ranked keys")?;
+    std::fs::remove_file(path)?;
+    expect_refused(
+        &knock(&adapter, generation),
+        "missing ranked keys",
+        "GENERATION_SIDECAR_CORRUPT",
+    )?;
+    std::fs::write(path, &original[..original.len() - 1])?;
+    expect_refused(
+        &knock(&adapter, generation),
+        "truncated ranked keys",
+        "GENERATION_SIDECAR_CORRUPT",
+    )?;
+    let mut flipped = original.clone();
+    flipped[40] ^= 1;
+    std::fs::write(path, &flipped)?;
+    expect_refused(
+        &knock(&adapter, generation),
+        "changed ranked keys",
+        "GENERATION_SIDECAR_CORRUPT",
+    )?;
+    std::fs::write(path, &original)?;
+    expect_admitted(&knock(&adapter, generation), "restored ranked keys")?;
+    let extra = dir.join("ranked-keys-ffffffffffffffffffffffffffffffff.bin");
+    std::fs::write(&extra, &original)?;
+    expect_refused(
+        &knock(&adapter, generation),
+        "uncommitted ranked keys",
+        "GENERATION_SIDECAR_CORRUPT",
+    )?;
+    std::fs::remove_file(extra)?;
+    expect_admitted(
+        &knock(&adapter, generation),
+        "uncommitted ranked keys removed",
+    )?;
+    Ok(())
+}
+
 /// An overlay file the seal did not commit to is refused when it appears:
 /// a generation sealed without an overlay family says so in its manifest,
 /// and a file that shows up later is not silently decoded.

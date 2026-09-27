@@ -68,6 +68,7 @@ pub mod planner;
 
 mod predicate_registry;
 
+mod ranked_keys;
 mod ranked_page;
 
 pub mod regex;
@@ -521,6 +522,7 @@ struct TantivySearcher {
     generation: ManifestGeneration,
     fields: SchemaFields,
     reader: IndexReader,
+    ranked_keys: Arc<ranked_keys::RankedKeyTables>,
     repo_metadata: Option<LexicalRepoMetadataPayload>,
     regex_match_cache: Arc<Mutex<RegexMatchCache>>,
     /// Deployment-scoped regex policy threaded from the adapter at open time.

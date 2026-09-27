@@ -29,191 +29,63 @@ use crate::budgeted_search::{CollectionBudget, budgeted_collection, budgeted_sea
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 #[test]
-fn l3_dictionary_reserves_each_allocation_and_releases_temporary_bytes() -> TestResult {
-    let long = "a".repeat(3_000);
-    let index = index_with(&[&[&long, "b.rs"]])?;
-    let searcher = index.reader()?.searcher();
-    let column = searcher.segment_readers()[0]
-        .fast_fields()
-        .str("repo_relative_path")?
-        .ok_or("path column")?;
-    let dictionary = column.dictionary();
-    assert_eq!(dictionary.num_terms(), 2);
-    for denied_stage in 0..3 {
-        let resources = LexicalCollectionBudget::new(100, 1_000_000)?;
-        let mut calls = 0;
-        let result = dictionary.ord_to_term_budgeted(1, |bytes| {
-            let stage = calls;
-            calls += 1;
-            if stage == denied_stage {
-                return Err(std::io::Error::other("admission refused"));
-            }
-            resources
-                .reserve_bytes(u64::try_from(bytes).map_err(std::io::Error::other)?)
-                .map_err(std::io::Error::other)
-        });
-        assert!(result.is_err());
-        assert_eq!(calls, denied_stage + 1);
-        assert_eq!(resources.resident_bytes(), 0);
-    }
-    let resources = LexicalCollectionBudget::new(100, 1_000_000)?;
-    let (output, guard) = dictionary
-        .ord_to_term_budgeted(1, |bytes| {
-            resources
-                .reserve_bytes(u64::try_from(bytes).map_err(std::io::Error::other)?)
-                .map_err(std::io::Error::other)
-        })?
-        .ok_or("second term")?;
-    assert_eq!(output, b"b.rs");
-    assert_eq!(resources.resident_bytes(), 4);
-    assert!(
-        resources.peak_bytes() >= 3_000,
-        "decode workspace must remain reserved through output allocation"
-    );
-    drop(output);
-    drop(guard);
-    assert_eq!(resources.resident_bytes(), 0);
-    assert!(
-        dictionary
-            .ord_to_term_budgeted(2, |_| Err::<(), _>(std::io::Error::other(
-                "absent ordinal must not allocate"
-            )))?
-            .is_none()
-    );
-    Ok(())
-}
-
-#[test]
-fn l3_short_ranked_key_cannot_hide_large_dictionary_decode_workspace() -> TestResult {
+fn l3_ranked_keys_avoid_query_time_sstable_decode() -> TestResult {
     use tantivy::query::TermQuery;
     use tantivy::schema::IndexRecordOption;
     let long = "a".repeat(3_000);
     let index = index_with(&[&[&long, "b.rs"]])?;
     let searcher = index.reader()?.searcher();
-    let column = searcher.segment_readers()[0]
-        .fast_fields()
-        .str("repo_relative_path")?
-        .ok_or("path column")?;
-    // The old decoder reconstructs the large predecessor even though this row
-    // retains only four path bytes. Its actual String capacity is the witness.
-    let mut old_buffer = String::new();
-    assert!(column.ord_to_str(1, &mut old_buffer)?);
-    assert_eq!(old_buffer, "b.rs");
-    assert!(old_buffer.capacity() >= long.len());
+    let segment = &searcher.segment_readers()[0];
+    let encoded = crate::ranked_keys::encode(segment)?;
+    let table = crate::ranked_keys::SegmentKeys::decode(encoded, segment)?;
+    assert_eq!(table.get(1, 0), Some(long.as_str()));
+    assert_eq!(table.get(1, 1), Some("b.rs"));
+    assert_eq!(table.get(1, 2), None);
     let resources = LexicalCollectionBudget::new(100, 1_024)?;
     let ledger = CollectionBudget::new(LexicalExecutionBudgetV1::new(10)?, resources.clone());
     let query = TermQuery::new(
         tantivy::Term::from_field_text(index.schema().get_field("repo_relative_path")?, "b.rs"),
         IndexRecordOption::Basic,
     );
-    let collector =
-        RankedPageCollector::new(1, None, 1.0, false).with_resource_budget(ledger.clone());
-    let result = budgeted_collection(
+    let collector = RankedPageCollector::new(test_keys(&searcher)?, 1, None, 1.0, false)
+        .with_resource_budget(ledger.clone());
+    let fruit = budgeted_collection(
         &searcher,
         &query,
         &collector,
         &RequestBudgetV1::unbounded(),
         ledger,
-        "test:decode-bytes",
-    );
-    assert!(matches!(
-        result,
-        Err(CoreError::Typed {
-            code: quanta_index_contract::SearchPlaneErrorCodeV2::LexicalCollectionBudgetExceeded,
-            ..
-        })
-    ));
+        "test:prepared-keys",
+    )?;
+    assert_eq!(fruit.rows[0].key.repo_relative_path, "b.rs");
     assert!(resources.peak_bytes() <= 1_024);
+    drop(fruit);
     assert_eq!(resources.resident_bytes(), 0);
     Ok(())
 }
 
 #[test]
-fn l3_budgeted_dictionary_refuses_malformed_key_deltas_without_panicking() -> TestResult {
-    use tantivy::directory::{FileSlice, OwnedBytes};
-    let dictionary = tantivy::columnar::Dictionary::build_for_tests(&["short"]);
-    let original = dictionary.sstable_slice.read_bytes()?.to_vec();
-    assert_eq!(original[4], 0, "small fixture is an uncompressed block");
-    for delta in [0x11, 0xf0] {
-        let mut encoded = original.clone();
-        encoded[5] = delta; // Impossible first prefix, or suffix past block end.
-        let mut malformed = tantivy::columnar::Dictionary::build_for_tests(&["short"]);
-        malformed.sstable_slice = FileSlice::new(Arc::new(OwnedBytes::new(encoded)));
-        let resources = LexicalCollectionBudget::new(100, 10_000)?;
-        let result = malformed.ord_to_term_budgeted(0, |bytes| {
-            resources
-                .reserve_bytes(u64::try_from(bytes).map_err(std::io::Error::other)?)
-                .map_err(std::io::Error::other)
-        });
-        assert!(result.is_err());
-        assert_eq!(resources.resident_bytes(), 0);
-    }
-    Ok(())
-}
-
-#[test]
-fn l3_budgeted_dictionary_matches_fixed_keys_across_blocks() -> TestResult {
-    let expected: Vec<String> = (0..96)
-        .map(|index| format!("{index:04}-{}", "Café".repeat(60)))
-        .collect();
-    let borrowed: Vec<&str> = expected.iter().map(String::as_str).collect();
-    let dictionary = tantivy::columnar::Dictionary::build_for_tests(&borrowed);
-    assert_eq!(dictionary.num_terms(), 96);
-    let resources = LexicalCollectionBudget::new(100, 1_000_000)?;
-    for (ordinal, wanted) in expected.iter().enumerate() {
-        let (bytes, guard) = dictionary
-            .ord_to_term_budgeted(u64::try_from(ordinal)?, |bytes| {
-                resources
-                    .reserve_bytes(u64::try_from(bytes).map_err(std::io::Error::other)?)
-                    .map_err(std::io::Error::other)
-            })?
-            .ok_or("fixture ordinal")?;
-        assert_eq!(bytes, wanted.as_bytes());
-        assert_eq!(resources.resident_bytes(), u64::try_from(wanted.len())?);
-        drop(bytes);
-        drop(guard);
-        assert_eq!(resources.resident_bytes(), 0);
-    }
-    Ok(())
-}
-
-#[test]
-fn l3_budgeted_dictionary_rejects_bad_headers_and_varints() -> TestResult {
-    use tantivy::directory::{FileSlice, OwnedBytes};
-    let key = "longer than ten bytes";
-    let dictionary = tantivy::columnar::Dictionary::build_for_tests(&[key]);
-    let original = dictionary.sstable_slice.read_bytes()?.to_vec();
-    let mut cases = Vec::new();
-    let mut unknown_codec = original.clone();
-    unknown_codec[4] = 2;
-    cases.push(unknown_codec);
-    let mut invalid_zstd = original.clone();
-    invalid_zstd[4] = 1;
-    cases.push(invalid_zstd);
-    let mut oversized_block = original.clone();
-    oversized_block[..4].copy_from_slice(&u32::MAX.to_le_bytes());
-    cases.push(oversized_block);
-    for byte in [0x80, 0xff] {
-        let mut varint = original.clone();
-        varint[5] = 1;
-        varint[6..16].fill(byte);
-        cases.push(varint);
-    }
-    let mut truncated = original;
-    truncated.truncate(6);
-    cases.push(truncated);
-    for encoded in cases {
-        let mut malformed = tantivy::columnar::Dictionary::build_for_tests(&[key]);
-        malformed.sstable_slice = FileSlice::new(Arc::new(OwnedBytes::new(encoded)));
-        let resources = LexicalCollectionBudget::new(100, 1_000_000)?;
-        let result = malformed.ord_to_term_budgeted(0, |bytes| {
-            resources
-                .reserve_bytes(u64::try_from(bytes).map_err(std::io::Error::other)?)
-                .map_err(std::io::Error::other)
-        });
-        assert!(result.is_err());
-        assert_eq!(resources.resident_bytes(), 0);
-    }
+fn l3_ranked_key_table_rejects_corruption_and_wrong_segment() -> TestResult {
+    let index = index_with(&[&["a.rs", "b.rs"], &["c.rs"]])?;
+    let searcher = index.reader()?.searcher();
+    let first = &searcher.segment_readers()[0];
+    let other = &searcher.segment_readers()[1];
+    let encoded = crate::ranked_keys::encode(first)?;
+    assert!(crate::ranked_keys::SegmentKeys::decode(encoded.clone(), other).is_err());
+    let mut bad_magic = encoded.clone();
+    bad_magic[0] ^= 1;
+    assert!(crate::ranked_keys::SegmentKeys::decode(bad_magic, first).is_err());
+    let mut bad_offset = encoded.clone();
+    let last = bad_offset.len() - 1;
+    bad_offset[last] ^= 0xff;
+    assert!(crate::ranked_keys::SegmentKeys::decode(bad_offset, first).is_err());
+    let mut trailing = encoded.clone();
+    trailing.push(0);
+    assert!(crate::ranked_keys::SegmentKeys::decode(trailing, first).is_err());
+    assert!(
+        crate::ranked_keys::SegmentKeys::decode(encoded[..encoded.len() - 1].to_vec(), first)
+            .is_err()
+    );
     Ok(())
 }
 
@@ -329,6 +201,20 @@ fn index_with(segments: &[&[&str]]) -> Result<Index, Box<dyn std::error::Error>>
     Ok(index)
 }
 
+fn test_keys(
+    searcher: &tantivy::Searcher,
+) -> Result<Arc<crate::ranked_keys::RankedKeyTables>, CoreError> {
+    let segments = searcher
+        .segment_readers()
+        .iter()
+        .map(|segment| {
+            let encoded = crate::ranked_keys::encode(segment)?;
+            crate::ranked_keys::SegmentKeys::decode(encoded, segment).map(Arc::new)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    crate::ranked_keys::RankedKeyTables::bind(segments, searcher.segment_readers()).map(Arc::new)
+}
+
 fn collection(cap: usize, segments: usize) -> Result<CollectionBudget, CoreError> {
     let policy = LexicalExecutionBudgetV1::new(cap)?;
     Ok(CollectionBudget::new(
@@ -350,7 +236,12 @@ fn l3_group_limit_stops_native_walk_before_materializing_excess() -> TestResult 
     let searcher = index.reader()?.searcher();
     let query = MeasuredQuery::default();
     let ledger = collection(3, searcher.segment_readers().len())?;
-    let collector = GroupedPageCollector::new(ProjectionGroup::Path, 1.0, ledger.clone());
+    let collector = GroupedPageCollector::new(
+        test_keys(&searcher)?,
+        ProjectionGroup::Path,
+        1.0,
+        ledger.clone(),
+    );
     assert_budget_error(budgeted_collection(
         &searcher,
         &query,
@@ -380,7 +271,8 @@ fn l3_one_group_does_not_hide_excess_walk_work() -> TestResult {
     for group in [ProjectionGroup::Repo, ProjectionGroup::Path] {
         let query = MeasuredQuery::default();
         let ledger = collection(2, searcher.segment_readers().len())?;
-        let collector = GroupedPageCollector::new(group, 1.0, ledger.clone());
+        let collector =
+            GroupedPageCollector::new(test_keys(&searcher)?, group, 1.0, ledger.clone());
         assert_budget_error(budgeted_collection(
             &searcher,
             &query,
@@ -403,7 +295,12 @@ fn l3_budget_is_shared_across_segments_and_stops_before_later_segments() -> Test
     assert_eq!(searcher.segment_readers().len(), 3);
     let query = MeasuredQuery::default();
     let ledger = collection(2, searcher.segment_readers().len())?;
-    let collector = GroupedPageCollector::new(ProjectionGroup::Path, 1.0, ledger.clone());
+    let collector = GroupedPageCollector::new(
+        test_keys(&searcher)?,
+        ProjectionGroup::Path,
+        1.0,
+        ledger.clone(),
+    );
     assert_budget_error(budgeted_collection(
         &searcher,
         &query,
@@ -427,7 +324,12 @@ fn l3_exact_cap_keeps_global_best_representative_and_deterministic_ties() -> Tes
         let index = index_with(&refs)?;
         let searcher = index.reader()?.searcher();
         let ledger = collection(4, searcher.segment_readers().len())?;
-        let collector = GroupedPageCollector::new(ProjectionGroup::Path, 1.0, ledger.clone());
+        let collector = GroupedPageCollector::new(
+            test_keys(&searcher)?,
+            ProjectionGroup::Path,
+            1.0,
+            ledger.clone(),
+        );
         let fruit = budgeted_collection(
             &searcher,
             &MeasuredQuery::default(),
@@ -465,8 +367,8 @@ fn l3_whole_set_limit_stops_native_walk_too() -> TestResult {
     let searcher = index.reader()?.searcher();
     let query = MeasuredQuery::default();
     let ledger = collection(2, searcher.segment_readers().len())?;
-    let collector =
-        RankedPageCollector::new(2, None, 1.0, true).with_collection_budget(ledger.clone());
+    let collector = RankedPageCollector::new(test_keys(&searcher)?, 2, None, 1.0, true)
+        .with_collection_budget(ledger.clone());
     assert_budget_error(budgeted_collection(
         &searcher,
         &query,
@@ -480,7 +382,7 @@ fn l3_whole_set_limit_stops_native_walk_too() -> TestResult {
     let fruit = budgeted_search(
         &searcher,
         &MeasuredQuery::default(),
-        &RankedPageCollector::new(2, None, 1.0, true),
+        &RankedPageCollector::new(test_keys(&searcher)?, 2, None, 1.0, true),
         &RequestBudgetV1::unbounded(),
         "test:count",
     )?;
@@ -509,8 +411,8 @@ fn l3_preinterrupted_collection_refuses_before_weight_or_allocation() -> TestRes
             let resources = LexicalCollectionBudget::new(100, bytes)?;
             let ledger =
                 CollectionBudget::new(LexicalExecutionBudgetV1::new(10)?, resources.clone());
-            let collector =
-                RankedPageCollector::new(1, None, 1.0, false).with_resource_budget(ledger.clone());
+            let collector = RankedPageCollector::new(test_keys(&searcher)?, 1, None, 1.0, false)
+                .with_resource_budget(ledger.clone());
             let result = budgeted_collection(
                 &searcher,
                 &query,
@@ -549,7 +451,12 @@ fn l3_grouped_cancellation_and_deadline_remain_typed() -> TestResult {
     ] {
         let query = MeasuredQuery::default();
         let ledger = collection(2, searcher.segment_readers().len())?;
-        let collector = GroupedPageCollector::new(ProjectionGroup::Path, 1.0, ledger.clone());
+        let collector = GroupedPageCollector::new(
+            test_keys(&searcher)?,
+            ProjectionGroup::Path,
+            1.0,
+            ledger.clone(),
+        );
         let result = budgeted_collection(
             &searcher,
             &query,
@@ -582,7 +489,12 @@ fn l3_terminal_cancellation_precedes_harvest_and_merge_resources() -> TestResult
                 budgeted_collection(
                     &searcher,
                     &query,
-                    &GroupedPageCollector::new(ProjectionGroup::Path, 1.0, ledger.clone()),
+                    &GroupedPageCollector::new(
+                        test_keys(&searcher)?,
+                        ProjectionGroup::Path,
+                        1.0,
+                        ledger.clone(),
+                    ),
                     &request,
                     ledger,
                     "test:terminal-cancel",
@@ -592,7 +504,7 @@ fn l3_terminal_cancellation_precedes_harvest_and_merge_resources() -> TestResult
                 budgeted_collection(
                     &searcher,
                     &query,
-                    &RankedPageCollector::new(1, None, 1.0, true)
+                    &RankedPageCollector::new(test_keys(&searcher)?, 1, None, 1.0, true)
                         .with_resource_budget(ledger.clone()),
                     &request,
                     ledger,
@@ -674,6 +586,7 @@ fn l3_merge_cancellation_precedes_resource_admission() -> TestResult {
                     &query,
                     &CancelBeforeMerge {
                         inner: GroupedPageCollector::new(
+                            test_keys(&searcher)?,
                             ProjectionGroup::Path,
                             1.0,
                             ledger.clone(),
@@ -690,7 +603,7 @@ fn l3_merge_cancellation_precedes_resource_admission() -> TestResult {
                     &searcher,
                     &query,
                     &CancelBeforeMerge {
-                        inner: RankedPageCollector::new(1, None, 1.0, true)
+                        inner: RankedPageCollector::new(test_keys(&searcher)?, 1, None, 1.0, true)
                             .with_resource_budget(ledger.clone()),
                         cancel: request.cancel_handle(),
                     },
@@ -718,7 +631,12 @@ fn l3_collection_cannot_rebind_to_a_different_search_request() -> TestResult {
     let searcher = index.reader()?.searcher();
     let ledger = collection(10, 1)?;
     let query = MeasuredQuery::default();
-    let collector = GroupedPageCollector::new(ProjectionGroup::Path, 1.0, ledger.clone());
+    let collector = GroupedPageCollector::new(
+        test_keys(&searcher)?,
+        ProjectionGroup::Path,
+        1.0,
+        ledger.clone(),
+    );
     let fruit = budgeted_collection(
         &searcher,
         &query,
@@ -799,7 +717,8 @@ fn l3_failed_admission_never_builds_group_output() -> TestResult {
     let index = index_with(&[&["a", "b"]])?;
     let searcher = index.reader()?.searcher();
     let ledger = collection(1, searcher.segment_readers().len())?;
-    let collector = GroupedPageCollector::new(ProjectionGroup::Path, 1.0, ledger);
+    let collector =
+        GroupedPageCollector::new(test_keys(&searcher)?, ProjectionGroup::Path, 1.0, ledger);
     // Even a direct Tantivy caller cannot harvest a partial success.
     assert!(
         searcher
@@ -832,7 +751,12 @@ fn l3_corrupt_order_key_stops_walk_without_becoming_budget_refusal() -> TestResu
     let searcher = index.reader()?.searcher();
     let query = MeasuredQuery::default();
     let ledger = collection(100, searcher.segment_readers().len())?;
-    let collector = GroupedPageCollector::new(ProjectionGroup::Path, 1.0, ledger.clone());
+    let collector = GroupedPageCollector::new(
+        test_keys(&searcher)?,
+        ProjectionGroup::Path,
+        1.0,
+        ledger.clone(),
+    );
     let result = budgeted_collection(
         &searcher,
         &query,
@@ -876,7 +800,12 @@ fn l3_duplicate_line_keys_are_rejected_by_ranked_and_grouped_collectors() -> Tes
                 budgeted_collection(
                     &searcher,
                     &query,
-                    &GroupedPageCollector::new(ProjectionGroup::Path, 1.0, ledger.clone()),
+                    &GroupedPageCollector::new(
+                        test_keys(&searcher)?,
+                        ProjectionGroup::Path,
+                        1.0,
+                        ledger.clone(),
+                    ),
                     &RequestBudgetV1::unbounded(),
                     ledger,
                     "test:duplicate-line",
@@ -886,7 +815,7 @@ fn l3_duplicate_line_keys_are_rejected_by_ranked_and_grouped_collectors() -> Tes
                 budgeted_collection(
                     &searcher,
                     &query,
-                    &RankedPageCollector::new(2, None, 1.0, false)
+                    &RankedPageCollector::new(test_keys(&searcher)?, 2, None, 1.0, false)
                         .with_resource_budget(ledger.clone()),
                     &RequestBudgetV1::unbounded(),
                     ledger,
@@ -901,109 +830,6 @@ fn l3_duplicate_line_keys_are_rejected_by_ranked_and_grouped_collectors() -> Tes
             );
             assert_eq!(query.scored.load(Ordering::Relaxed), 1);
             assert_eq!(query.advanced.load(Ordering::Relaxed), 0);
-        }
-    }
-    Ok(())
-}
-
-fn corrupt_group_key(index: &Index, segment: usize) -> TestResult {
-    use tantivy::SegmentComponent;
-    use tantivy::directory::Directory;
-
-    let target = index.reader()?.searcher().segment_readers()[segment].segment_id();
-    let meta = index
-        .searchable_segment_metas()?
-        .into_iter()
-        .find(|meta| meta.id() == target)
-        .ok_or("target segment metadata")?;
-    let file = meta.relative_path(SegmentComponent::FastFields);
-    let mut bytes = index.directory().atomic_read(&file)?;
-    let marker = b"fixture-repo";
-    let locations: Vec<_> = bytes
-        .windows(marker.len())
-        .enumerate()
-        .filter_map(|(offset, value)| (value == marker).then_some(offset))
-        .collect();
-    assert_eq!(locations.len(), 1, "one uncompressed dictionary key");
-    // Preserve the column/index layout while making a group key non-UTF-8.
-    // Ordinals can still be collected; decoding fails only during harvest.
-    bytes[locations[0]] = 0xff;
-    index.directory().atomic_write(&file, &bytes)?;
-    assert_eq!(
-        index.reader()?.searcher().segment_readers()[segment].segment_id(),
-        target
-    );
-
-    Ok(())
-}
-
-#[test]
-fn l3_group_harvest_corruption_stops_before_the_next_segment() -> TestResult {
-    let index = index_with(&[&["first.rs"], &["second.rs"]])?;
-    corrupt_group_key(&index, 0)?;
-    let searcher = index.reader()?.searcher();
-    for work in [3, 100] {
-        let query = MeasuredQuery::default();
-        let resources = LexicalCollectionBudget::new(work, 1_000_000)?;
-        let collection =
-            CollectionBudget::new(LexicalExecutionBudgetV1::new(10)?, resources.clone());
-        let result = budgeted_collection(
-            &searcher,
-            &query,
-            &GroupedPageCollector::new(ProjectionGroup::Path, 1.0, collection.clone()),
-            &RequestBudgetV1::unbounded(),
-            collection,
-            "test:harvest-corruption",
-        );
-        assert!(
-            matches!(result, Err(CoreError::Storage(ref message)) if message.contains("utf-8")),
-            "work={work}: {result:?}"
-        );
-        assert_eq!(query.opened.load(Ordering::Relaxed), 1);
-        assert_eq!(query.scored.load(Ordering::Relaxed), 1);
-        assert_eq!(resources.used_work(), 3);
-        assert_eq!(resources.resident_bytes(), 0);
-        assert!(resources.failure().is_none());
-    }
-    Ok(())
-}
-
-#[test]
-fn l3_later_group_corruption_is_not_masked_by_merge_work() -> TestResult {
-    // Independent oracle: each one-document segment takes scorer init,
-    // terminal advance, and one harvest decode. A failed harvest permits
-    // neither another segment nor global merge work.
-    for failed_segment in 0..3 {
-        let index = index_with(&[&["first.rs"], &["middle.rs"], &["last.rs"]])?;
-        corrupt_group_key(&index, failed_segment)?;
-        let searcher = index.reader()?.searcher();
-        let visited = failed_segment + 1;
-        let expected_work = u64::try_from(3 * visited)?;
-        for group in [ProjectionGroup::Path, ProjectionGroup::Repo] {
-            for work in [expected_work, 100] {
-                let query = MeasuredQuery::default();
-                let resources = LexicalCollectionBudget::new(work, 1_000_000)?;
-                let ledger =
-                    CollectionBudget::new(LexicalExecutionBudgetV1::new(10)?, resources.clone());
-                let result = budgeted_collection(
-                    &searcher,
-                    &query,
-                    &GroupedPageCollector::new(group, 1.0, ledger.clone()),
-                    &RequestBudgetV1::unbounded(),
-                    ledger,
-                    "test:later-harvest-corruption",
-                );
-                assert!(
-                    matches!(result, Err(CoreError::Storage(ref message))
-                        if message.contains("utf-8")),
-                    "segment={failed_segment} group={group:?} work={work}: {result:?}"
-                );
-                assert_eq!(query.opened.load(Ordering::Relaxed), visited);
-                assert_eq!(query.scored.load(Ordering::Relaxed), visited);
-                assert_eq!(resources.used_work(), expected_work);
-                assert_eq!(resources.resident_bytes(), 0);
-                assert!(resources.failure().is_none());
-            }
         }
     }
     Ok(())
@@ -1120,7 +946,7 @@ fn l3_direct_group_merge_rejects_first_error_before_spending_resources() -> Test
         let query = MeasuredQuery::default();
         let resources = LexicalCollectionBudget::new(1, 1_000_000)?;
         let ledger = CollectionBudget::new(LexicalExecutionBudgetV1::new(10)?, resources.clone());
-        let collector = GroupedPageCollector::new(group, 1.0, ledger);
+        let collector = GroupedPageCollector::new(test_keys(&searcher)?, group, 1.0, ledger);
         // Native weight: only the single harvest decode charges work.
         let weight = query.weight(EnableScoring::enabled_from_searcher(&searcher))?;
         let fruit =
@@ -1150,7 +976,12 @@ fn l3_work_cap_refuses_before_next_native_advance() -> TestResult {
     let query = MeasuredQuery::default();
     let resources = LexicalCollectionBudget::new(1, 1_000_000)?;
     let ledger = CollectionBudget::new(LexicalExecutionBudgetV1::new(100)?, resources.clone());
-    let collector = GroupedPageCollector::new(ProjectionGroup::Path, 1.0, ledger.clone());
+    let collector = GroupedPageCollector::new(
+        test_keys(&searcher)?,
+        ProjectionGroup::Path,
+        1.0,
+        ledger.clone(),
+    );
     let result = budgeted_collection(
         &searcher,
         &query,
@@ -1182,7 +1013,12 @@ fn l3_merge_work_exhaustion_is_typed_refusal_not_partial_success() -> TestResult
     // No work remains for the global merge's first representative.
     let resources = LexicalCollectionBudget::new(7, 1_000_000)?;
     let ledger = CollectionBudget::new(LexicalExecutionBudgetV1::new(100)?, resources.clone());
-    let collector = GroupedPageCollector::new(ProjectionGroup::Path, 1.0, ledger.clone());
+    let collector = GroupedPageCollector::new(
+        test_keys(&searcher)?,
+        ProjectionGroup::Path,
+        1.0,
+        ledger.clone(),
+    );
     let result = budgeted_collection(
         &searcher,
         &query,
@@ -1211,7 +1047,12 @@ fn l3_fruit_buffer_bytes_are_reserved_before_native_collection() -> TestResult {
     let query = MeasuredQuery::default();
     let resources = LexicalCollectionBudget::new(100, 1)?;
     let ledger = CollectionBudget::new(LexicalExecutionBudgetV1::new(100)?, resources.clone());
-    let collector = GroupedPageCollector::new(ProjectionGroup::Path, 1.0, ledger.clone());
+    let collector = GroupedPageCollector::new(
+        test_keys(&searcher)?,
+        ProjectionGroup::Path,
+        1.0,
+        ledger.clone(),
+    );
     let result = budgeted_collection(
         &searcher,
         &query,
@@ -1247,7 +1088,12 @@ fn l3_group_map_bytes_refuse_before_next_document() -> TestResult {
     // Enough for the outer fruit record, too small for an admitted BTree node.
     let resources = LexicalCollectionBudget::new(100, 128)?;
     let ledger = CollectionBudget::new(LexicalExecutionBudgetV1::new(100)?, resources.clone());
-    let collector = GroupedPageCollector::new(ProjectionGroup::Path, 1.0, ledger.clone());
+    let collector = GroupedPageCollector::new(
+        test_keys(&searcher)?,
+        ProjectionGroup::Path,
+        1.0,
+        ledger.clone(),
+    );
     let result = budgeted_collection(
         &searcher,
         &query,
@@ -1276,7 +1122,12 @@ fn l3_returned_row_buffer_stays_reserved_until_iterator_drops() -> TestResult {
     let searcher = index.reader()?.searcher();
     let resources = LexicalCollectionBudget::new(100, 1_000_000)?;
     let ledger = CollectionBudget::new(LexicalExecutionBudgetV1::new(100)?, resources.clone());
-    let collector = GroupedPageCollector::new(ProjectionGroup::Path, 1.0, ledger.clone());
+    let collector = GroupedPageCollector::new(
+        test_keys(&searcher)?,
+        ProjectionGroup::Path,
+        1.0,
+        ledger.clone(),
+    );
     let fruit = budgeted_collection(
         &searcher,
         &MeasuredQuery::default(),
@@ -1311,7 +1162,12 @@ fn l3_empty_index_reports_zero_without_consuming_work() -> TestResult {
     let query = MeasuredQuery::default();
     let resources = LexicalCollectionBudget::new(1, 1)?;
     let ledger = CollectionBudget::new(LexicalExecutionBudgetV1::new(1)?, resources.clone());
-    let collector = GroupedPageCollector::new(ProjectionGroup::Path, 1.0, ledger.clone());
+    let collector = GroupedPageCollector::new(
+        test_keys(&searcher)?,
+        ProjectionGroup::Path,
+        1.0,
+        ledger.clone(),
+    );
     let fruit = budgeted_collection(
         &searcher,
         &query,
@@ -1346,8 +1202,8 @@ fn l3_generic_pruning_walk_stops_even_after_threshold_suppresses_callbacks() -> 
     };
     let resources = LexicalCollectionBudget::new(3, 1_000_000)?;
     let ledger = CollectionBudget::new(LexicalExecutionBudgetV1::new(1)?, resources.clone());
-    let collector =
-        RankedPageCollector::new(1, None, 1.0, false).with_resource_budget(ledger.clone());
+    let collector = RankedPageCollector::new(test_keys(&searcher)?, 1, None, 1.0, false)
+        .with_resource_budget(ledger.clone());
     let result = budgeted_collection(
         &searcher,
         &query,
@@ -1375,8 +1231,8 @@ fn l3_streaming_count_uses_resource_budget_without_candidate_materialization_cap
     let searcher = index.reader()?.searcher();
     let resources = LexicalCollectionBudget::new(100, 1_000_000)?;
     let ledger = CollectionBudget::new(LexicalExecutionBudgetV1::new(2)?, resources.clone());
-    let collector =
-        RankedPageCollector::new(2, None, 1.0, true).with_resource_budget(ledger.clone());
+    let collector = RankedPageCollector::new(test_keys(&searcher)?, 2, None, 1.0, true)
+        .with_resource_budget(ledger.clone());
     let fruit = budgeted_collection(
         &searcher,
         &MeasuredQuery::default(),
@@ -1460,7 +1316,8 @@ fn l3_source_repo_groups_and_cursor_walk_match_fixed_oracle_and_manual_path() ->
         ),
     ] {
         let ledger = collection(20, searcher.segment_readers().len())?;
-        let collector = GroupedPageCollector::new(group, 1.0, ledger.clone());
+        let collector =
+            GroupedPageCollector::new(test_keys(&searcher)?, group, 1.0, ledger.clone());
         let fruit = budgeted_collection(
             &searcher,
             &MeasuredQuery::default(),
@@ -1497,8 +1354,9 @@ fn l3_source_repo_groups_and_cursor_walk_match_fixed_oracle_and_manual_path() ->
         let mut walked = Vec::new();
         for _page in 0..5 {
             let ledger = collection(20, searcher.segment_readers().len())?;
-            let collector = RankedPageCollector::new(1, after.clone(), 1.0, count)
-                .with_resource_budget(ledger.clone());
+            let collector =
+                RankedPageCollector::new(test_keys(&searcher)?, 1, after.clone(), 1.0, count)
+                    .with_resource_budget(ledger.clone());
             let fruit = budgeted_collection(
                 &searcher,
                 &MeasuredQuery::default(),
@@ -1535,7 +1393,12 @@ fn l3_best_hit_in_last_visited_segment_replaces_earlier_group_representative() -
         ..MeasuredQuery::default()
     };
     let ledger = collection(10, searcher.segment_readers().len())?;
-    let collector = GroupedPageCollector::new(ProjectionGroup::Path, 1.0, ledger.clone());
+    let collector = GroupedPageCollector::new(
+        test_keys(&searcher)?,
+        ProjectionGroup::Path,
+        1.0,
+        ledger.clone(),
+    );
     let fruit = budgeted_collection(
         &searcher,
         &query,
@@ -1565,10 +1428,13 @@ fn l3_term_pruning_preserves_results_and_refuses_work_exhaustion() -> TestResult
         Term::from_field_text(path, "same.rs"),
         IndexRecordOption::Basic,
     );
-    let expected = searcher.search(&query, &RankedPageCollector::new(2, None, 1.0, false))?;
+    let expected = searcher.search(
+        &query,
+        &RankedPageCollector::new(test_keys(&searcher)?, 2, None, 1.0, false),
+    )?;
     let ledger = collection(10, searcher.segment_readers().len())?;
-    let collector =
-        RankedPageCollector::new(2, None, 1.0, false).with_resource_budget(ledger.clone());
+    let collector = RankedPageCollector::new(test_keys(&searcher)?, 2, None, 1.0, false)
+        .with_resource_budget(ledger.clone());
     let actual = budgeted_collection(
         &searcher,
         &query,
@@ -1586,8 +1452,8 @@ fn l3_term_pruning_preserves_results_and_refuses_work_exhaustion() -> TestResult
     }
     let resources = LexicalCollectionBudget::new(1, 1_000_000)?;
     let ledger = CollectionBudget::new(LexicalExecutionBudgetV1::new(10)?, resources.clone());
-    let collector =
-        RankedPageCollector::new(2, None, 1.0, false).with_resource_budget(ledger.clone());
+    let collector = RankedPageCollector::new(test_keys(&searcher)?, 2, None, 1.0, false)
+        .with_resource_budget(ledger.clone());
     let result = budgeted_collection(
         &searcher,
         &query,
@@ -1645,8 +1511,14 @@ fn l3_adversarial_pages_and_groups_match_fixed_score_and_tie_oracles() -> TestRe
                 for _page in 0..=oracle.len() {
                     let ledger = collection(20, searcher.segment_readers().len())?;
                     let resources = ledger.resources.clone();
-                    let collector = RankedPageCollector::new(limit, after.clone(), boost, count)
-                        .with_resource_budget(ledger.clone());
+                    let collector = RankedPageCollector::new(
+                        test_keys(&searcher)?,
+                        limit,
+                        after.clone(),
+                        boost,
+                        count,
+                    )
+                    .with_resource_budget(ledger.clone());
                     let fruit = budgeted_collection(
                         &searcher,
                         &query,
@@ -1690,7 +1562,7 @@ fn l3_adversarial_pages_and_groups_match_fixed_score_and_tie_oracles() -> TestRe
             let fruit = budgeted_collection(
                 &searcher,
                 &query,
-                &GroupedPageCollector::new(group, boost, ledger.clone()),
+                &GroupedPageCollector::new(test_keys(&searcher)?, group, boost, ledger.clone()),
                 &RequestBudgetV1::unbounded(),
                 ledger,
                 "test:adversarial-group",

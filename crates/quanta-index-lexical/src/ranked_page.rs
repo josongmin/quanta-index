@@ -34,6 +34,7 @@ use tantivy::query::Weight;
 use tantivy::{DocAddress, DocId, Score, SegmentOrdinal, SegmentReader, TantivyError};
 
 use crate::budgeted_search::CollectionBudget;
+use crate::ranked_keys::{RankedKeyTables, SegmentKeys};
 
 #[path = "ranked_rows.rs"]
 mod rows;
@@ -119,6 +120,7 @@ fn missing_column(name: &str) -> TantivyError {
 
 /// One segment's ranked-row columns.
 struct RankedRowColumns {
+    keys: Arc<SegmentKeys>,
     source_repo: StrColumn,
     path: StrColumn,
     candidate_id: StrColumn,
@@ -127,9 +129,10 @@ struct RankedRowColumns {
 }
 
 impl RankedRowColumns {
-    fn open(reader: &SegmentReader) -> tantivy::Result<Self> {
+    fn open(reader: &SegmentReader, keys: Arc<SegmentKeys>) -> tantivy::Result<Self> {
         let fast = reader.fast_fields();
         Ok(Self {
+            keys,
             source_repo: fast
                 .str(RANKED_SOURCE_REPO_COLUMN)?
                 .ok_or_else(|| missing_column(RANKED_SOURCE_REPO_COLUMN))?,
@@ -173,25 +176,29 @@ impl RankedRowColumns {
     }
 
     fn string(
-        column: &StrColumn,
+        &self,
+        column: usize,
         ord: u64,
         name: &str,
         collection: Option<&CollectionBudget>,
     ) -> tantivy::Result<(String, Option<LexicalMemoryReservation>)> {
-        let Some((bytes, memory)) = column.dictionary().ord_to_term_budgeted(ord, |bytes| {
-            collection
-                .map(|budget| budget.reserve_bytes(bytes))
-                .transpose()
-                .map_err(std::io::Error::other)
-        })?
-        else {
+        let Some(key) = self.keys.get(column, ord) else {
             return Err(TantivyError::InternalError(format!(
                 "`{name}` ordinal {ord} names no term"
             )));
         };
-        let value = String::from_utf8(bytes).map_err(|error| {
-            TantivyError::InternalError(format!("`{name}` ordinal {ord} is not UTF-8: {error}"))
+        let memory = if key.is_empty() {
+            None
+        } else {
+            collection
+                .map(|budget| budget.reserve_bytes(key.len()))
+                .transpose()?
+        };
+        let mut value = String::new();
+        value.try_reserve_exact(key.len()).map_err(|error| {
+            TantivyError::InvalidArgument(format!("`{name}` key allocation failed: {error}"))
         })?;
+        value.push_str(key);
         Ok((value, memory))
     }
 
@@ -204,21 +211,13 @@ impl RankedRowColumns {
         let source_repo = Self::ord(&self.source_repo, doc, RANKED_SOURCE_REPO_COLUMN)?;
         let path = Self::ord(&self.path, doc, RANKED_PATH_COLUMN)?;
         let candidate_id = Self::ord(&self.candidate_id, doc, RANKED_CANDIDATE_ID_COLUMN)?;
-        // The canonical dictionary decoder reserves encoded IO, decode buffers
-        // and the exact retained output before their respective allocations.
-        let (repo, repo_memory) = Self::string(
-            &self.source_repo,
-            source_repo,
-            RANKED_SOURCE_REPO_COLUMN,
-            collection,
-        )?;
-        let (path, path_memory) = Self::string(&self.path, path, RANKED_PATH_COLUMN, collection)?;
-        let (id, id_memory) = Self::string(
-            &self.candidate_id,
-            candidate_id,
-            RANKED_CANDIDATE_ID_COLUMN,
-            collection,
-        )?;
+        // Immutable tables were verified at open. Only the returned strings
+        // allocate in this request, and each is reserved before copying.
+        let (repo, repo_memory) =
+            self.string(0, source_repo, RANKED_SOURCE_REPO_COLUMN, collection)?;
+        let (path, path_memory) = self.string(1, path, RANKED_PATH_COLUMN, collection)?;
+        let (id, id_memory) =
+            self.string(2, candidate_id, RANKED_CANDIDATE_ID_COLUMN, collection)?;
         Ok(RankedRowKey {
             source_repo_id: repo,
             score,
@@ -227,6 +226,27 @@ impl RankedRowColumns {
             end_line: Self::line(&self.end_line, doc, RANKED_END_LINE_COLUMN)?,
             candidate_id: id,
             _string_memory: [repo_memory, path_memory, id_memory],
+        })
+    }
+
+    /// Compare a candidate by immutable table slices before allocating its
+    /// retained strings. Segment ordinals are never compared across segments.
+    fn borrowed_key(&self, doc: DocId, score: f32) -> tantivy::Result<LexicalRowOrderKey<'_>> {
+        let source_repo = Self::ord(&self.source_repo, doc, RANKED_SOURCE_REPO_COLUMN)?;
+        let path = Self::ord(&self.path, doc, RANKED_PATH_COLUMN)?;
+        let candidate_id = Self::ord(&self.candidate_id, doc, RANKED_CANDIDATE_ID_COLUMN)?;
+        let get = |column, ord, name| {
+            self.keys.get(column, ord).ok_or_else(|| {
+                TantivyError::InternalError(format!("`{name}` ordinal {ord} names no term"))
+            })
+        };
+        Ok(LexicalRowOrderKey {
+            score,
+            source_repo_id: get(0, source_repo, RANKED_SOURCE_REPO_COLUMN)?,
+            repo_relative_path: get(1, path, RANKED_PATH_COLUMN)?,
+            start_line: Self::line(&self.start_line, doc, RANKED_START_LINE_COLUMN)?,
+            end_line: Self::line(&self.end_line, doc, RANKED_END_LINE_COLUMN)?,
+            candidate_id: get(2, candidate_id, RANKED_CANDIDATE_ID_COLUMN)?,
         })
     }
 }
@@ -262,6 +282,7 @@ pub(crate) struct RankedPageFruit {
 
 /// The first `limit` rows strictly after `after`, in exact page order.
 pub(crate) struct RankedPageCollector {
+    keys: Arc<RankedKeyTables>,
     limit: usize,
     after: Option<Arc<LexicalCursor>>,
     boost: f32,
@@ -271,13 +292,15 @@ pub(crate) struct RankedPageCollector {
 }
 
 impl RankedPageCollector {
-    pub(crate) const fn new(
+    pub(crate) fn new(
+        keys: Arc<RankedKeyTables>,
         limit: usize,
         after: Option<Arc<LexicalCursor>>,
         boost: f32,
         count: bool,
     ) -> Self {
         Self {
+            keys,
             limit,
             after,
             boost,
@@ -350,12 +373,12 @@ impl RankedPageSegment {
             self.matched = self.matched.saturating_add(1);
             return Ok(());
         }
-        let key = self.columns.key(doc, score, self.collection.as_ref())?;
+        let borrowed = self.columns.borrowed_key(doc, score)?;
         if position == ScorePosition::Tied
             && !self
                 .after
                 .as_deref()
-                .is_some_and(|cursor| cursor.admits(&key.order_key()))
+                .is_some_and(|cursor| cursor.admits(&borrowed))
         {
             return Ok(());
         }
@@ -363,6 +386,15 @@ impl RankedPageSegment {
         if !enters {
             return Ok(());
         }
+        if self.heap.len() >= self.limit
+            && self
+                .heap
+                .peek()
+                .is_some_and(|latest| borrowed.order(&latest.0.key.order_key()) != Ordering::Less)
+        {
+            return Ok(());
+        }
+        let key = self.columns.key(doc, score, self.collection.as_ref())?;
         let row = RankedRow {
             key,
             address: DocAddress::new(self.segment_ord, doc),
@@ -471,7 +503,25 @@ impl Collector for RankedPageCollector {
         reader: &SegmentReader,
     ) -> tantivy::Result<RankedPageSegment> {
         Ok(RankedPageSegment {
-            columns: RankedRowColumns::open(reader)?,
+            columns: RankedRowColumns::open(
+                reader,
+                Arc::clone(
+                    self.keys
+                        .segment(
+                            usize::try_from(segment_ord).map_err(|error| {
+                                TantivyError::InternalError(format!(
+                                    "segment ordinal overflow: {error}"
+                                ))
+                            })?,
+                            reader,
+                        )
+                        .ok_or_else(|| {
+                            TantivyError::InternalError(
+                                "ranked-key segment binding mismatch".into(),
+                            )
+                        })?,
+                ),
+            )?,
             segment_ord,
             limit: self.limit,
             after: self.after.clone(),
@@ -604,18 +654,21 @@ pub(crate) struct GroupedPageFruit {
 
 /// One representative per group: the group's first row in page order.
 pub(crate) struct GroupedPageCollector {
+    keys: Arc<RankedKeyTables>,
     group: ProjectionGroup,
     boost: f32,
     collection: CollectionBudget,
 }
 
 impl GroupedPageCollector {
-    pub(crate) const fn new(
+    pub(crate) fn new(
+        keys: Arc<RankedKeyTables>,
         group: ProjectionGroup,
         boost: f32,
         collection: CollectionBudget,
     ) -> Self {
         Self {
+            keys,
             group,
             boost,
             collection,
@@ -745,7 +798,25 @@ impl Collector for GroupedPageCollector {
         reader: &SegmentReader,
     ) -> tantivy::Result<GroupedPageSegment> {
         Ok(GroupedPageSegment {
-            columns: RankedRowColumns::open(reader)?,
+            columns: RankedRowColumns::open(
+                reader,
+                Arc::clone(
+                    self.keys
+                        .segment(
+                            usize::try_from(segment_ord).map_err(|error| {
+                                TantivyError::InternalError(format!(
+                                    "segment ordinal overflow: {error}"
+                                ))
+                            })?,
+                            reader,
+                        )
+                        .ok_or_else(|| {
+                            TantivyError::InternalError(
+                                "ranked-key segment binding mismatch".into(),
+                            )
+                        })?,
+                ),
+            )?,
             segment_ord,
             group: self.group,
             boost: self.boost,

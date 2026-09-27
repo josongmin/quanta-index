@@ -22,14 +22,16 @@ use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
     BatchIngestMode, ChunkId, ChunkRecord, LQ_VERSION_TAG, LqExpr, LqLeaf, LqOptions, LqQuery,
     LqSpan, ManifestGeneration, RepoId, RepoMetaEntry, RepoMetaIngestBatch, RepoRelativePath,
-    RevisionId, SearchCorpusIngestBatch, SearchCorpusReplaceScope, SearchScopeKey,
-    SearchScopeSurface,
+    RevisionId, SearchCorpusIngestBatch, SearchCorpusReplaceScope, SourceFileCoverage,
+    SourceFileKey, SourceFileRevision, SourcePublicationEvent, SymbolCoverage,
+    source_event_payload_sha256, source_file_unit_set_sha256,
 };
 use quanta_index_core::{
     GenerationStorageKeyV1, LexicalIndexOpenPort, RepoMetaIngestPort, RequestBudgetV1,
     SearchCorpusBatchBuildPort,
 };
 use quanta_index_lexical::{LexicalAdapter, LexicalSealCommitmentStats};
+use sha2::{Digest as _, Sha256};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -80,25 +82,36 @@ fn scope(index: usize, body: &str) -> Result<SearchCorpusReplaceScope, Box<dyn E
     let language = LanguageCode::new("rust")
         .map_err(|err| -> Box<dyn Error> { format!("language code: {err}").into() })?;
     let path = scope_path(index);
+    let chunks = vec![ChunkRecord {
+        chunk_id: ChunkId::new(scope_chunk(index)),
+        repo_relative_path: RepoRelativePath::new(&path),
+        language: language.clone(),
+        start_byte: 0,
+        end_byte: u32::try_from(body.len())?,
+        start_line: 1,
+        end_line: 1,
+        text: body.to_string().into_boxed_str(),
+        structural: None,
+        parent_chunk_id: None,
+        source_repo_id: None,
+    }];
     Ok(SearchCorpusReplaceScope {
-        scope: SearchScopeKey {
-            doc_surface: SearchScopeSurface::File,
-            repo_relative_path: RepoRelativePath::new(&path),
-        },
-        scope_digest: format!("scope:{path}:{body}"),
-        chunks: vec![ChunkRecord {
-            chunk_id: ChunkId::new(scope_chunk(index)),
-            repo_relative_path: RepoRelativePath::new(&path),
+        coverage: SourceFileCoverage {
+            source: SourceFileRevision {
+                file: SourceFileKey {
+                    source_repo_id: repo(),
+                    repo_relative_path: RepoRelativePath::new(&path),
+                },
+                revision_id: revision(),
+                source_sha256: Sha256::digest(body.as_bytes()).into(),
+            },
             language,
-            start_byte: 0,
-            end_byte: u32::try_from(body.len())?,
-            start_line: 1,
-            end_line: 1,
-            text: body.to_string().into_boxed_str(),
-            structural: None,
-            parent_chunk_id: None,
-            source_repo_id: None,
-        }],
+            producer_policy_sha256: Sha256::digest(b"seal-cost-fixture-v1").into(),
+            unit_set_sha256: source_file_unit_set_sha256(&chunks, &[])?,
+            text_admitted: true,
+            symbols: SymbolCoverage::Complete { symbol_count: 0 },
+        },
+        chunks,
         symbols: Vec::new(),
     })
 }
@@ -107,20 +120,28 @@ fn batch(
     generation: ManifestGeneration,
     base: Option<ManifestGeneration>,
     mut replace_scopes: Vec<SearchCorpusReplaceScope>,
-) -> SearchCorpusIngestBatch {
+) -> Result<SearchCorpusIngestBatch, Box<dyn Error>> {
     replace_scopes.sort_by(|left, right| {
-        left.scope
+        left.coverage
+            .source
+            .file
             .repo_relative_path
             .as_str()
-            .cmp(right.scope.repo_relative_path.as_str())
+            .cmp(right.coverage.source.file.repo_relative_path.as_str())
     });
-    SearchCorpusIngestBatch {
+    let mut batch = SearchCorpusIngestBatch {
+        source_event: SourcePublicationEvent {
+            stream_id: "seal-cost-test".into(),
+            event_id: format!("event-{}", generation.get()),
+            expected_base_event_id: base.map(|previous| format!("event-{}", previous.get())),
+            payload_sha256: [0; 32],
+        },
         repo_id: repo(),
         revision_id: revision(),
         generation,
         base_generation: base,
         manifest_digest: format!("cost-manifest:{}", generation.get()),
-        batch_digest: format!("cost-batch:{}:{}", generation.get(), replace_scopes.len()),
+        batch_digest: "0".repeat(64),
         mode: if base.is_some() {
             BatchIngestMode::Delta
         } else {
@@ -133,7 +154,9 @@ fn batch(
         semantic_replace_scopes: Vec::new(),
         semantic_tombstone_scopes: Vec::new(),
         seal: true,
-    }
+    };
+    batch.source_event.payload_sha256 = source_event_payload_sha256(&batch)?;
+    Ok(batch)
 }
 
 fn base_batch(generation: ManifestGeneration) -> Result<SearchCorpusIngestBatch, Box<dyn Error>> {
@@ -141,7 +164,7 @@ fn base_batch(generation: ManifestGeneration) -> Result<SearchCorpusIngestBatch,
     for index in 0..DOCS {
         scopes.push(scope(index, &scope_body(index))?);
     }
-    Ok(batch(generation, None, scopes))
+    batch(generation, None, scopes)
 }
 
 fn generation_dir(root: &Path, generation: ManifestGeneration) -> PathBuf {
@@ -181,8 +204,8 @@ struct CommittedFile {
 /// Every file the seal commits to, as an independent walk of the directory
 /// sees it.
 ///
-/// The Tantivy commit, every segment component file, every file under
-/// `text-authority/` and every overlay present. Tantivy's managed list and
+/// The Tantivy commit, every segment component and ranked-key file, every
+/// file under `text-authority/` and every overlay present. Tantivy's managed list and
 /// lock files, the seal's own manifest and identity and the delta marker
 /// are not query content and are not committed.
 fn committed_files(generation_dir: &Path) -> Result<Vec<CommittedFile>, Box<dyn Error>> {
@@ -212,7 +235,12 @@ fn committed_files(generation_dir: &Path) -> Result<Vec<CommittedFile>, Box<dyn 
         let is_segment_file = name.split_once('.').is_some_and(|(stem, _)| {
             stem.len() == 32 && stem.chars().all(|ch| ch.is_ascii_hexdigit())
         });
-        if name == TANTIVY_META || is_segment_file || OVERLAY_FILES.contains(&name.as_str()) {
+        let is_ranked_keys = name.starts_with("ranked-keys-") && name.ends_with(".bin");
+        if name == TANTIVY_META
+            || is_segment_file
+            || is_ranked_keys
+            || OVERLAY_FILES.contains(&name.as_str())
+        {
             files.push(CommittedFile {
                 name,
                 bytes: metadata.len(),
@@ -319,7 +347,7 @@ fn a_delta_seal_reads_only_what_the_delta_wrote() -> TestResult {
         g2,
         Some(g1),
         vec![scope(replaced, "fn replaced() { replacedsentinel }")?],
-    ))?;
+    )?)?;
     let delta_seal = delta_stats(before_delta, adapter.seal_commitment_stats()?);
     let delta_files = committed_files(&generation_dir(&root, g2))?;
     let (linked, written): (Vec<&CommittedFile>, Vec<&CommittedFile>) = delta_files
@@ -332,6 +360,15 @@ fn a_delta_seal_reads_only_what_the_delta_wrote() -> TestResult {
         ("docs", DOCS.to_string()),
         ("base_files", base_files.len().to_string()),
         ("base_bytes", base_bytes.to_string()),
+        (
+            "base_ranked_key_bytes",
+            total_bytes(
+                base_files
+                    .iter()
+                    .filter(|file| file.name.starts_with("ranked-keys-")),
+            )
+            .to_string(),
+        ),
         ("base_seal_bytes_hashed", base_seal.bytes_hashed.to_string()),
         ("delta_files", delta_files.len().to_string()),
         ("delta_written_bytes", written_bytes.to_string()),
@@ -402,6 +439,12 @@ fn a_delta_seal_reads_only_what_the_delta_wrote() -> TestResult {
         .any(|file| !file.name.starts_with(TEXT_AUTHORITY_DIR) && file.name != "repo-meta.cbor")
     {
         return Err("no segment file was inherited; the base index was rewritten".into());
+    }
+    if !linked
+        .iter()
+        .any(|file| file.name.starts_with("ranked-keys-"))
+    {
+        return Err("an unchanged segment did not inherit its ranked-key table".into());
     }
     // The delta's read is a fraction of the base: the budget the ticket
     // names, on this fixture, is well under half.

@@ -36,6 +36,7 @@ use tantivy::{Index, IndexReader, ReloadPolicy, Term};
 
 use crate::normalize::TEXT_NORMALIZER_VERSION;
 use crate::overlay_codec::OverlayFamily;
+use crate::ranked_keys::{self, MAX_RANKED_KEYS_BYTES};
 use crate::sealed_generation::coverage::SOURCE_FILE_COVERAGE_FILE_NAME;
 use crate::sealed_generation::index_files::referenced_index_files;
 use crate::sealed_generation::manifest::{
@@ -250,6 +251,7 @@ pub(crate) fn seal_generation(
     for name in referenced_index_files(&index, generation_dir)? {
         index_segments.push(measurer.commit(&name)?);
     }
+    let ranked_keys = commit_ranked_keys(&index, &mut measurer)?;
     let text_authority_manifest = finalize_for_seal(generation_dir)?;
     ensure_text_authority_covers_index(
         &index,
@@ -293,12 +295,107 @@ pub(crate) fn seal_generation(
         index_meta,
         index_segment_verification: IndexSegmentVerificationV1::LengthAtOpenContentAtSealAndScrub,
         index_segments,
+        ranked_keys,
         text_authority,
         overlays,
         source_coverage,
     };
     write_manifest(generation_dir, &manifest)?;
     Ok(measurer.stats)
+}
+
+/// Build only new segment tables; a delta inherits the exact inode and
+/// commitment of an unchanged segment's table. Remove tables for merged or
+/// deleted segments so an unlisted sidecar cannot masquerade as authority.
+fn commit_ranked_keys(
+    index: &Index,
+    measurer: &mut Measurer,
+) -> Result<Vec<SealedArtifactCommitmentV1>, CoreError> {
+    let reader: IndexReader = index
+        .reader_builder()
+        .reload_policy(ReloadPolicy::Manual)
+        .try_into()
+        .map_err(|error| CoreError::Storage(format!("lexical: ranked-key seal reader: {error}")))?;
+    reader
+        .reload()
+        .map_err(|error| CoreError::Storage(format!("lexical: ranked-key seal reload: {error}")))?;
+    let searcher = reader.searcher();
+    let mut segments: Vec<(String, &tantivy::SegmentReader)> = searcher
+        .segment_readers()
+        .iter()
+        .map(|segment| (ranked_keys::file_name(segment), segment))
+        .collect();
+    segments.sort_by(|left, right| left.0.cmp(&right.0));
+    if segments.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+        return Err(CoreError::Storage(
+            "lexical: duplicate ranked-key segment".into(),
+        ));
+    }
+    let expected: std::collections::BTreeSet<&str> =
+        segments.iter().map(|(name, _)| name.as_str()).collect();
+    for entry in std::fs::read_dir(&measurer.generation_dir)
+        .map_err(|error| CoreError::Storage(format!("lexical: list ranked-key files: {error}")))?
+    {
+        let entry = entry.map_err(|error| {
+            CoreError::Storage(format!("lexical: read ranked-key entry: {error}"))
+        })?;
+        let entry_name = entry.file_name();
+        let Some(entry_name) = entry_name.to_str() else {
+            continue;
+        };
+        if ranked_keys::is_ranked_key_entry(entry_name) && !expected.contains(entry_name) {
+            std::fs::remove_file(entry.path()).map_err(|error| {
+                CoreError::Storage(format!("lexical: remove stale ranked-key table: {error}"))
+            })?;
+        }
+    }
+    let mut commitments = Vec::new();
+    let mut total = 0_u64;
+    for (name, segment) in segments {
+        let path = measurer.generation_dir.join(&name);
+        let existing = match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.is_file() => true,
+            Ok(_) => {
+                return Err(crate::index_store::sidecar_corrupt(
+                    &measurer.generation_dir,
+                    &name,
+                    "ranked-key table is not a regular file",
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => {
+                return Err(CoreError::Storage(format!(
+                    "lexical: inspect ranked-key table {}: {error}",
+                    path.display()
+                )));
+            }
+        };
+        let inherited = if existing {
+            measurer
+                .base
+                .as_ref()
+                .map(|base| base.inherited(&name, &path))
+                .transpose()?
+                .flatten()
+        } else {
+            None
+        };
+        if inherited.is_none() {
+            let bytes = ranked_keys::encode(segment)?;
+            crate::index_store::write_atomic_durable(&path, &bytes, "ranked keys")?;
+        }
+        let commitment = measurer.commit(&name)?;
+        total = total
+            .checked_add(commitment.bytes)
+            .ok_or_else(|| CoreError::Storage("lexical: ranked-key table size overflow".into()))?;
+        if total > MAX_RANKED_KEYS_BYTES as u64 {
+            return Err(CoreError::Storage(
+                "lexical: ranked-key tables exceed resident limit".into(),
+            ));
+        }
+        commitments.push(commitment);
+    }
+    Ok(commitments)
 }
 
 /// The `text-authority/` tree as the seal commits it: the manifest file

@@ -245,6 +245,11 @@ impl LexicalAdapter {
         reader
             .reload()
             .map_err(|err| CoreError::Storage(format!("lexical: reader reload: {err}")))?;
+        let ranked_keys = Arc::new(
+            verified
+                .ranked_keys
+                .rebind(reader.searcher().segment_readers())?,
+        );
         let text_authority = verified
             .manifest
             .text_authority
@@ -260,9 +265,12 @@ impl LexicalAdapter {
             verified.coverage.as_ref(),
             verified.source_publication.as_ref(),
         )?;
-        let resident_bytes_estimate = resident_bytes_estimate(path, text_authority.as_ref())?
-            .checked_add(coverage_bytes)
-            .ok_or_else(|| CoreError::Storage("lexical resident byte estimate overflow".into()))?;
+        let resident_bytes_estimate =
+            resident_bytes_estimate(path, text_authority.as_ref(), &ranked_keys)?
+                .checked_add(coverage_bytes)
+                .ok_or_else(|| {
+                    CoreError::Storage("lexical resident byte estimate overflow".into())
+                })?;
         let artifact_identity = LexicalArtifactIdentityV1 {
             manifest_digest: verified.manifest.manifest_digest.clone(),
             normalizer: TextNormalizerVersionV1 {
@@ -279,6 +287,7 @@ impl LexicalAdapter {
             generation: identity.manifest_generation,
             fields: self.fields.clone(),
             reader,
+            ranked_keys,
             repo_metadata: loaded.repo_metadata,
             regex_match_cache: Arc::clone(&self.regex_match_cache),
             regex_policy: self.regex_policy,
@@ -298,14 +307,19 @@ impl LexicalAdapter {
 
 /// What an opened handle keeps resident.
 ///
-/// Every mapped or decoded file under the generation directory except the
-/// text-authority sidecars (each inode counted once), plus the decoded text
-/// authority's heap estimate in their place.
+/// Every mapped file under the generation directory except the decoded
+/// text-authority and ranked-key sidecars (each inode counted once), plus
+/// their resident heap estimates in place of their disk lengths.
 pub(crate) fn resident_bytes_estimate(
     generation_dir: &Path,
     text_authority: Option<&ShardedTextAuthority>,
+    ranked_keys: &crate::ranked_keys::RankedKeyTables,
 ) -> Result<u64, CoreError> {
-    let skip = |name: &str| is_writer_lock_entry(name) || name == TEXT_AUTHORITY_DIR_NAME;
+    let skip = |name: &str| {
+        is_writer_lock_entry(name)
+            || name == TEXT_AUTHORITY_DIR_NAME
+            || crate::ranked_keys::is_ranked_key_entry(name)
+    };
     let mapped =
         unique_inode_tree_bytes(&[generation_dir.to_path_buf()], &skip).map_err(|err| {
             CoreError::Storage(format!(
@@ -314,5 +328,9 @@ pub(crate) fn resident_bytes_estimate(
             ))
         })?;
     let decoded = text_authority.map_or(0, ShardedTextAuthority::heap_bytes_estimate);
-    Ok(mapped.saturating_add(decoded))
+    let ranked_key_heap = ranked_keys.heap_bytes_estimate()?;
+    mapped
+        .checked_add(decoded)
+        .and_then(|bytes| bytes.checked_add(ranked_key_heap))
+        .ok_or_else(|| CoreError::Storage("lexical resident byte estimate overflow".into()))
 }

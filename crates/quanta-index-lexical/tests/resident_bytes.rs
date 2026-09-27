@@ -19,11 +19,13 @@ use std::path::{Path, PathBuf};
 use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
     BatchIngestMode, ChunkId, ChunkRecord, ManifestGeneration, RepoId, RepoRelativePath,
-    RevisionId, SearchCorpusIngestBatch, SearchCorpusReplaceScope, SearchScopeKey,
-    SearchScopeSurface,
+    RevisionId, SearchCorpusIngestBatch, SearchCorpusReplaceScope, SourceFileCoverage,
+    SourceFileKey, SourceFileRevision, SourcePublicationEvent, SymbolCoverage,
+    source_event_payload_sha256, source_file_unit_set_sha256,
 };
 use quanta_index_core::{GenerationStorageKeyV1, LexicalIndexOpenPort, SearchCorpusBatchBuildPort};
 use quanta_index_lexical::LexicalAdapter;
+use sha2::{Digest as _, Sha256};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -48,25 +50,36 @@ fn revision() -> RevisionId {
 fn scope(path: &str, body: &str) -> Result<SearchCorpusReplaceScope, Box<dyn Error>> {
     let language = LanguageCode::new("rust")
         .map_err(|err| -> Box<dyn Error> { format!("language code: {err}").into() })?;
+    let chunks = vec![ChunkRecord {
+        chunk_id: ChunkId::new(format!("chunk:{path}")),
+        repo_relative_path: RepoRelativePath::new(path),
+        language: language.clone(),
+        start_byte: 0,
+        end_byte: u32::try_from(body.len())?,
+        start_line: 1,
+        end_line: 1,
+        text: body.to_string().into_boxed_str(),
+        structural: None,
+        parent_chunk_id: None,
+        source_repo_id: None,
+    }];
     Ok(SearchCorpusReplaceScope {
-        scope: SearchScopeKey {
-            doc_surface: SearchScopeSurface::File,
-            repo_relative_path: RepoRelativePath::new(path),
-        },
-        scope_digest: format!("scope:{path}"),
-        chunks: vec![ChunkRecord {
-            chunk_id: ChunkId::new(format!("chunk:{path}")),
-            repo_relative_path: RepoRelativePath::new(path),
+        coverage: SourceFileCoverage {
+            source: SourceFileRevision {
+                file: SourceFileKey {
+                    source_repo_id: repo(),
+                    repo_relative_path: RepoRelativePath::new(path),
+                },
+                revision_id: revision(),
+                source_sha256: Sha256::digest(body.as_bytes()).into(),
+            },
             language,
-            start_byte: 0,
-            end_byte: u32::try_from(body.len())?,
-            start_line: 1,
-            end_line: 1,
-            text: body.to_string().into_boxed_str(),
-            structural: None,
-            parent_chunk_id: None,
-            source_repo_id: None,
-        }],
+            producer_policy_sha256: Sha256::digest(b"resident-test-fixture-v1").into(),
+            unit_set_sha256: source_file_unit_set_sha256(&chunks, &[])?,
+            text_admitted: true,
+            symbols: SymbolCoverage::Complete { symbol_count: 0 },
+        },
+        chunks,
         symbols: Vec::new(),
     })
 }
@@ -75,14 +88,20 @@ fn batch(
     generation: u64,
     base: Option<u64>,
     scopes: Vec<SearchCorpusReplaceScope>,
-) -> SearchCorpusIngestBatch {
-    SearchCorpusIngestBatch {
+) -> Result<SearchCorpusIngestBatch, Box<dyn Error>> {
+    let mut batch = SearchCorpusIngestBatch {
+        source_event: SourcePublicationEvent {
+            stream_id: "resident-test".into(),
+            event_id: format!("event-{generation}"),
+            expected_base_event_id: base.map(|previous| format!("event-{previous}")),
+            payload_sha256: [0; 32],
+        },
         repo_id: repo(),
         revision_id: revision(),
         generation: ManifestGeneration::new(generation),
         base_generation: base.map(ManifestGeneration::new),
         manifest_digest: format!("manifest-digest:{generation}"),
-        batch_digest: format!("batch-digest:{generation}"),
+        batch_digest: "0".repeat(64),
         mode: if base.is_some() {
             BatchIngestMode::Delta
         } else {
@@ -95,7 +114,9 @@ fn batch(
         semantic_replace_scopes: Vec::new(),
         semantic_tombstone_scopes: Vec::new(),
         seal: true,
-    }
+    };
+    batch.source_event.payload_sha256 = source_event_payload_sha256(&batch)?;
+    Ok(batch)
 }
 
 fn generation_dir(root: &Path, generation: u64) -> PathBuf {
@@ -169,7 +190,7 @@ fn the_estimate_counts_the_decoded_authority_not_its_cbor() -> TestResult {
         1,
         None,
         vec![scope("src/a.rs", &body(1))?, scope("src/b.rs", &body(2))?],
-    ))?;
+    )?)?;
     let dir = generation_dir(&root, 1);
     let (mapped, _inodes) = inode_set_bytes(&dir, TEXT_AUTHORITY_DIR)?;
     let authority_cbor = text_authority_disk_bytes(&dir)?;
@@ -197,8 +218,8 @@ fn a_hard_linked_delta_counts_shared_inodes_once() -> TestResult {
     let temp = tempfile::tempdir()?;
     let root = temp.path().join("indexes").join("lexical");
     let adapter = LexicalAdapter::with_state_root(root.clone());
-    adapter.build_batch(&batch(1, None, vec![scope("src/a.rs", &body(1))?]))?;
-    adapter.build_batch(&batch(2, Some(1), vec![scope("src/b.rs", &body(2))?]))?;
+    adapter.build_batch(&batch(1, None, vec![scope("src/a.rs", &body(1))?])?)?;
+    adapter.build_batch(&batch(2, Some(1), vec![scope("src/b.rs", &body(2))?])?)?;
     let base = generation_dir(&root, 1);
     let delta = generation_dir(&root, 2);
     let (_base_bytes, base_inodes) = inode_set_bytes(&base, TEXT_AUTHORITY_DIR)?;
