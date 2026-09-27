@@ -1,0 +1,19 @@
+{
+  "status": "NOT_RUN",
+  "label": "owner",
+  "command": [
+    "./scripts/cargow",
+    "test",
+    "-p",
+    "quanta-index-lexical",
+    "-p",
+    "quanta-index-lq-regex",
+    "-p",
+    "quanta-index-lq-text-normalizer",
+    "--lib",
+    "--test",
+    "l4_match_anchored_preview",
+    "--locked"
+  ],
+  "command_executed": false
+}

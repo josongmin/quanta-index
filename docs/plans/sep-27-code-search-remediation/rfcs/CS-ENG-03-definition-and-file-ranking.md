@@ -1,11 +1,33 @@
 # CS-ENG-03 — Definition and distinct-file ranking
 
-Status: **PROPOSED**. Policy selection, implementation and holdout: **NOT_RUN**.
+Status: exact-name/source-identity and collection-budget repairs **IMPLEMENTED**;
+historical owner execution is scoped by [L3 completion](../handoffs/L3_SS_AUDIT.md).
+Final combined-source execution and ranking-quality/holdout promotion: **NOT_RUN**.
 Category: engine relevance. Findings: F02/F03; part of F04.
 Depends on ENG-01/02; tuning requires BENCH-01/03 development contracts.
 
 Final audit: E05/E06/E07 in [engine-audit.md](../engine-audit.md). Native grouped
 file collection already exists; reuse and repair its identified boundaries.
+
+## Current disposition and remaining acceptance
+
+At `b42a9b5d` plus dirty overlay, explicit local/qualified-name predicates,
+federated source identity and pre-materialization request accounting are present.
+The merge replaces private SSTable ordinal decoding with committed format-8
+ranked-key tables. It changes seal/open, resident accounting, ranking comparisons
+and fixture layouts; the older L3 receipt does not qualify that replacement.
+
+- **INT-R1, NOT_RUN:** execute ranked/grouped exact-reference tests, same-path
+  federation, complete cursor walks, resource/cancellation precedence and storage
+  tamper/reopen regressions on the combined source. Check migration fixtures and
+  registered authority, API/module snapshots, compile and Clippy.
+- **Ranking experiment, NOT_RUN:** exact-case preference/weights, development
+  ablation, independent holdout and comparative relevance admission. No default
+  ranking-weight change or quality improvement follows from the L3 repair.
+
+No new L3 behavioral defect was reproduced in this audit. The original checklist
+below includes experimental requirements beyond the completed L3 A/B/C scope.
+See [CS-INT-01](CS-INT-01-integration-and-qualification.md#current-remaining-work-audit--2026-09-27).
 
 ## Purpose and RCA
 
@@ -44,10 +66,10 @@ where a declared policy requires it; do not replace the retrieval substrate.
 | File locator | Matching content/path candidates in scope | Distinct-file top-k, one file identity per slot |
 | Definition locator | Source-bound complete declaration facts | Exact local/qualified name, requested case and symbol kind |
 
-The producer's `SymbolRecord` already contains local/qualified name, signature and
-definition byte span. The lexical adapter drops most of that authority and indexes
-synthetic `local_name + container_qualified_name` text plus the path. Preserve the
-existing facts in dedicated fields; do not create a second symbol producer.
+The producer's `SymbolRecord` contains local/qualified name, signature and
+definition byte span. The implemented lexical adapter retains original and
+normalized exact-name fields and source facts in addition to legacy broad keyword
+text. Explicit exact lookup uses those fields; it does not create another producer.
 
 `symbol.has.name(utils)` currently returns symbols located in `utils.py`, and
 `symbol.has.name(DefaultPlaceholder)` also returns its methods. The current
@@ -89,11 +111,10 @@ candidate universe; measure the cost. No global content-hash dedup across paths.
 
 ### Federated identity
 
-`ChunkRecord.source_repo_id` is explicitly supported as a searchable facet inside
-one generation pin. The current collector groups only by path (`select:repo`
-uses one constant group); candidate conversion returns the containing pin's repo,
-not that stored source facet. Existing distinct-path federation tests cannot
-decide equal-path behavior. Keep snapshot ownership and source identity separate.
+`ChunkRecord.source_repo_id` is supported inside one generation pin. The repaired
+collector groups files by source repository and path, and candidates preserve
+source identity separately from the containing pin. Same-path federation fixtures
+cover distinct owners. Keep snapshot ownership and source identity separate.
 
 The proposed contract preserves federated origin on the result and groups files
 by `(source_repo, canonical_path)` within the pin, with source revision/hash bound
@@ -105,12 +126,11 @@ refuse the ambiguous input/profile rather than guessing a revision.
 
 ### Enforce resource limits during collection
 
-`collect_projection` currently checks the examined cap **after** the collector
-has accumulated/merged/sorted all groups. Its result refusal is truthful, but the
-core contract's pre-materialization bound is not enforced there. Keep deadline
-and cancellation support from `budgeted_search`; add a shared request work/byte
-ledger before candidate/group allocation. Charge across segments, map growth,
-merge/sort buffers and in-flight retained values, not only final serialized rows.
+The repaired `collect_projection` uses the shared request work/byte ledger before
+candidate/group allocation. Native traversal, harvest/merge/sort and retained
+output observe the canonical interruption/resource owner. Preserve accounting
+across segments and in-flight values. Logical reservations and resident estimates
+are not process-wide allocator/RSS proof; the format-8 paths need INT-R1 execution.
 
 On cap exhaustion, stop the native walk and return the existing typed budget
 refusal. Do not let the internal stop appear as successful exhaustion. Partial

@@ -1,6 +1,9 @@
 # CS-ENG-04 — Match-anchored snippets and context budgets
 
-Status: **PROPOSED**. Implementation and context-quality proof: **NOT_RUN**.
+Status: matcher-aligned source previews **IMPLEMENTED** with historical owner and
+real-daemon SDK execution in [L4 handoff](../handoffs/L4_HANDOFF.md).
+Aggregate regex heap qualification: **BLOCKED**. Context-quality/performance and
+final combined-source qualification: **NOT_RUN**.
 Category: engine result presentation. Finding: F04; ranking remains ENG-03-owned.
 Depends on ENG-01; definition anchoring also uses ENG-02/03 source facts/policy.
 
@@ -8,7 +11,35 @@ Final audit: E08 in [engine-audit.md](../engine-audit.md). The engine already ha
 a deterministic 240-byte renderer with snippet-relative offsets/highlights. This
 RFC replaces its approximate anchor selection, not an absent snippet feature.
 
+## Current disposition and remaining acceptance
+
+At `b42a9b5d` plus dirty overlay, selected immutable candidates receive canonical
+Boolean witnesses and verified original-byte provenance. False branches/NOT,
+NFC/folded mapping, complete 240-byte focus, overlapping witnesses and explicit
+optional refusal are implemented. Earlier passing receipts remain source-scoped;
+later owner/property/SDK attempts are not a combined current-source qualification.
+
+- **L4-R1, BLOCKED aggregate heap claim:** the 16 MiB base reservation plus
+  256 bytes per estimated NFA state is a logical policy charge. AST/HIR,
+  compiler temporaries, retained forward/reverse automata and search caches do
+  not share an allocator-enforced admission boundary. Coordinate allocation
+  admission before expensive work, preserve truth/range semantics and keep
+  optional refusal from changing selected hits. No current runtime aggregate
+  overrun has been reproduced. Acceptance and the historical standalone probe:
+  [L4 regex residual](../handoffs/L4_REGEX_BUDGET_RESIDUAL.md).
+- **INT-R1, NOT_RUN:** combined-source owner/SDK tests after the ranked-key merge,
+  including 32/33-overlap edge, capture-removal differential truth/ranges,
+  restart and mutable-checkout drift/deletion controls.
+- **BENCH-03/04, NOT_RUN:** context utility, payload cost and p95 overhead under
+  independently admitted labels/measurement. Do not infer those from correctness
+  regressions or source inspection.
+
+See [CS-INT-01](CS-INT-01-integration-and-qualification.md#current-remaining-work-audit--2026-09-27).
+
 ## Purpose and RCA
+
+The renderer defects below describe the historical baseline. The current matcher
+and provenance implementation replaces that approximate renderer.
 
 The diagnostic has 142/180 first-file successes but 83/180 first-result full-span
 successes. A correct file can return a reference or a window that misses the

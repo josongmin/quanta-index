@@ -12,6 +12,8 @@ import pytest
 
 from tools.benchmark.retrieval.evaluator import canonical, digest
 from tools.benchmark.retrieval.lexical_file_comparison import (
+    _file_universe,
+    _tasks,
     latency_summary,
     pair_result,
     product_result,
@@ -119,16 +121,57 @@ def test_product_result_rejects_wrong_query_and_duplicate(tmp_path):
     ]
     path = tmp_path / "rows.jsonl"
     path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
-    assert product_result("sourcegraph", path, expected)["hits"] == 20
+    universe = {gold[0] for _, gold in expected.values()}
+    assert product_result("sourcegraph", path, expected, universe)["hits"] == 20
     rows[0]["submitted_query"] = "wrong"
     path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
     with pytest.raises(ValueError, match="query or gold differs"):
-        product_result("sourcegraph", path, expected)
+        product_result("sourcegraph", path, expected, universe)
     rows[0]["submitted_query"] = expected[rows[0]["task_id"]][0]
     rows[1]["task_id"] = rows[0]["task_id"]
     path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
     with pytest.raises(ValueError, match="missing or duplicate task"):
-        product_result("sourcegraph", path, expected)
+        product_result("sourcegraph", path, expected, universe)
+
+
+@pytest.mark.parametrize("result_path", ["../outside.go", "/outside.go", "src\\0.go", "other.go"])
+def test_product_result_refuses_noncanonical_or_off_view_path(tmp_path, result_path):
+    expected = {"S01": ("symbol", ["src/answer.go"])}
+    path = tmp_path / "rows.jsonl"
+    path.write_text(
+        json.dumps({
+            "lane": "symbol_only", "task_id": "S01", "submitted_query": "symbol",
+            "gold_paths": ["src/answer.go"], "http_status": 200, "error": None,
+            "file_paths_top_10": [result_path], "file_hit_at_10": False,
+            "elapsed_ms": 1.0,
+        }) + "\n"
+    )
+    with pytest.raises(ValueError, match="malformed result paths"):
+        product_result("sourcegraph", path, expected, {"src/answer.go"})
+
+
+def test_symbol_diagnostic_refuses_non_bare_query(tmp_path):
+    _, _, suite, pack = fixture_inputs(tmp_path)
+    suite["tasks"][0]["query"] = "two words"
+    suite["tasks"][0]["query_sha256"] = hashlib.sha256(b"two words").hexdigest()
+    pack["tasks"][0]["query"] = "two words"
+    pack["tasks"][0]["query_sha256"] = suite["tasks"][0]["query_sha256"]
+    pack["suite_commitment_sha256"] = digest(canonical(suite))
+    with pytest.raises(ValueError, match="malformed blinded query"):
+        _tasks(suite, pack)
+
+
+def test_symbol_diagnostic_refuses_unbound_file_universe(tmp_path):
+    _, _, suite, pack = fixture_inputs(tmp_path)
+    files = [{"path": "src/answer.go", "file_sha256": "a" * 64}]
+    suite["file_universe"] = files
+    suite["file_universe_digest"] = digest(canonical(files))
+    pack["file_universe"] = files
+    pack["file_universe_digest"] = suite["file_universe_digest"]
+    assert _file_universe(suite, pack) == {"src/answer.go"}
+    pack["file_universe_digest"] = "b" * 64
+    with pytest.raises(ValueError, match="file universe digest differs"):
+        _file_universe(suite, pack)
 
 
 @pytest.mark.parametrize("recall", [1.0, 0.5])
@@ -241,7 +284,7 @@ def test_multiple_gold_files_distinguish_hit_rate_from_macro_file_recall(tmp_pat
         )
         + "\n"
     )
-    result = product_result("sourcegraph", path, expected)
+    result = product_result("sourcegraph", path, expected, {"first.go", "second.go"})
     assert result["hits"] == 1
     assert result["file_hit_rate_at_10"] == 1.0
     assert result["file_recall_at_10"] == 0.5
@@ -253,7 +296,7 @@ def test_malformed_or_duplicate_raw_rows_refuse(tmp_path, raw):
     path = tmp_path / "rows.jsonl"
     path.write_bytes(raw)
     with pytest.raises(ValueError):
-        product_result("sourcegraph", path, {"q": ("symbol", ["answer.go"])})
+        product_result("sourcegraph", path, {"q": ("symbol", ["answer.go"])}, {"answer.go"})
 
 
 def test_lexical_product_consumes_lines_without_materializing_input(tmp_path, monkeypatch):
@@ -279,7 +322,7 @@ def test_lexical_product_consumes_lines_without_materializing_input(tmp_path, mo
         return original(value)
 
     monkeypatch.setattr(Path, "read_bytes", bounded_only)
-    result = product_result("sourcegraph", path, {"q": ("symbol", ["answer.go"])})
+    result = product_result("sourcegraph", path, {"q": ("symbol", ["answer.go"])}, {"answer.go"})
     assert result["hits"] == result["tasks"] == 1
     assert result["latency_ms"]["mean_ms"] == 2.0
     assert result["raw_sha256"] == hashlib.sha256(data).hexdigest()
@@ -301,7 +344,7 @@ def test_lexical_stream_refuses_invalid_trailing_rows(tmp_path, tail):
     }
     path.write_bytes(json.dumps(row).encode() + b"\n" + tail)
     with pytest.raises(ValueError):
-        product_result("sourcegraph", path, {"q": ("symbol", ["answer.go"])})
+        product_result("sourcegraph", path, {"q": ("symbol", ["answer.go"])}, {"answer.go"})
 
 
 def test_lexical_control_and_line_limits_refuse_before_decode(tmp_path):
@@ -313,7 +356,7 @@ def test_lexical_control_and_line_limits_refuse_before_decode(tmp_path):
     with pytest.raises(ValueError, match="control document exceeds"):
         owner._read(path)
     with pytest.raises(ValueError, match="line exceeds"):
-        product_result("sourcegraph", path, {"q": ("symbol", ["answer.go"])})
+        product_result("sourcegraph", path, {"q": ("symbol", ["answer.go"])}, {"answer.go"})
 
 
 def test_lexical_result_metadata_has_separate_bound(tmp_path, monkeypatch):
@@ -337,7 +380,7 @@ def test_lexical_result_metadata_has_separate_bound(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(owner, "CONTROL_DOCUMENT_BYTES", 1)
     with pytest.raises(ValueError, match="result metadata exceeds"):
-        product_result("sourcegraph", path, {"q": ("symbol", ["answer.go"])})
+        product_result("sourcegraph", path, {"q": ("symbol", ["answer.go"])}, {"answer.go"})
 
 
 def test_lexical_stream_rss_does_not_retain_raw_responses(tmp_path, record_property):
@@ -348,7 +391,7 @@ sys.path.insert(0, sys.argv[1])
 from tools.benchmark.retrieval.lexical_file_comparison import product_result
 count = int(sys.argv[3])
 result = product_result('sourcegraph', Path(sys.argv[2]),
-    {f'q-{index}': ('symbol', ['answer.go']) for index in range(count)})
+    {f'q-{index}': ('symbol', ['answer.go']) for index in range(count)}, {'answer.go'})
 assert result['hits'] == result['tasks'] == len(result['per_query']) == count
 assert result['file_recall_at_10'] == result['file_hit_rate_at_10'] == 1.0
 assert result['latency_ms']['mean_ms'] == 2.0

@@ -1,0 +1,10 @@
+{
+  "observed_at": "2026-09-27T08:38:45.942799+00:00",
+  "status": "BLOCKED",
+  "reason": "previous PTY sessions and child processes absent before completion; no terminal evidence",
+  "excluded": [
+    "owner-interrupted-before-resume",
+    "sdk-lint-interrupted-before-resume",
+    "owner-lint-interrupted-before-resume"
+  ]
+}

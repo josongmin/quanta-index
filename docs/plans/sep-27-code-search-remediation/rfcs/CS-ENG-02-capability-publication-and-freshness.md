@@ -9,7 +9,35 @@ Category: engine publication. Findings: F06; G01 remains a lifecycle proof gap.
 Final audit: E03/E04 in [engine-audit.md](../engine-audit.md). Depends on ENG-01
 and the PROD-01 producer payload agreement.
 
+## Current disposition and remaining acceptance
+
+Audit source: `b42a9b5d` plus dirty overlay; full identity and remaining work are
+in [CS-INT-01](CS-INT-01-integration-and-qualification.md#current-remaining-work-audit--2026-09-27).
+Canonical file coverage, source-event lineage, immutable generation binding and
+strict incomplete-symbol refusal are implemented. Earlier owner/recovery passes
+are historical execution evidence; this audit does not reopen those repaired
+defects or promote them to final-source qualification.
+
+- **L2-C1, VERIFIED source cost mechanism; performance qualification NOT_RUN:**
+  `sealed_generation/coverage.rs::write_staged_coverage` serializes all effective
+  coverage rows into one `source-file-coverage.cbor` on a changed generation.
+  A one-file Delta therefore incurs O(admitted files) coverage serialization/write
+  cost. The previous 169,994-byte sample belongs to the pre-format-8 source and is
+  historical, not a current measurement. Measure total fresh bytes and touched
+  shards at increasing corpus sizes; declare an admitted cost ceiling. If that
+  ceiling requires incremental persistence, implement committed shard inheritance
+  with replacement/tombstone, tamper, restart and reclaim controls. This is a cost
+  issue, not a reproduced stale-result or atomicity defect.
+- **INT-R1, NOT_RUN:** rerun combined publication, wrong-source, cross-stream,
+  crash/restart and migrated storage fixtures after the format-8 merge. Execute
+  the existing real-daemon SDK cases explicitly; default ignored discovery is
+  not execution. External producer cutover and installed activation are separate
+  acceptance boundaries.
+
 ## Purpose and RCA
+
+The following problem description records the pre-cutover baseline; it is not
+a statement that the current typed coverage/publication contract is absent.
 
 Permit text search over valid admitted source bytes without claiming complete
 symbol extraction for malformed or unsupported files. The current benchmark

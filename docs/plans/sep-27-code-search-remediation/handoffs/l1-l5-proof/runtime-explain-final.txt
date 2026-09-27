@@ -1,0 +1,16 @@
+resource admission: waiting lock=/Users/songmin/Library/Caches/quanta-index/resource-admission/build-test.lock
+resource admission: admitted lock=/Users/songmin/Library/Caches/quanta-index/resource-admission/build-test.lock wait_ns=92581833958
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling quanta-index-searchd-runtime v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-searchd-runtime)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 59.51s
+     Running tests/runtime_risk_suite.rs (/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-fast-lane/debug/deps/runtime_risk_suite-fb7002f85de87143)
+
+running 3 tests
+test explain::explain_rejects_generation_mismatch ... ok
+test explain::explain_reports_present_candidate ... ok
+test dsl_scenarios::semantic_scoped_query_with_complex_scope_excludes_outsiders_and_explains_scope ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 136 filtered out; finished in 3.12s
+
+resource admission: released lock=/Users/songmin/Library/Caches/quanta-index/resource-admission/build-test.lock held_ns=67449209167

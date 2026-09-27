@@ -1,0 +1,31 @@
+{
+  "utc": "2026-09-27T05:01:44.764859+00:00",
+  "classification": "diagnostic fixed-pattern requested-allocation samples; not aggregate worst-case bound or process RSS",
+  "source_sha256": "62fdd5b1db3c9da2a77f7315097b30fc3b415d441250143f55d80ed931e15f78",
+  "rlib_path": "/Users/songmin/Library/Caches/quanta-index/target/8a6ce95c59f8245e/test-daemon-lane/debug/deps/libquanta_index_lq_regex-39eb46d35f2286b9.rlib",
+  "rlib_sha256": "1211fd6fa6589852b4fc0de61cd4bd7edfecd511cf7f1b1167950bebefedc126",
+  "probe_source_path": "/Users/songmin/Documents/code-new/quanta-index/docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/regex-memory-probe-20260927/pattern-families-probe.rs",
+  "probe_source_sha256": "9afa19e622647009d358dec4c70094680ed73d735cb6ee063ce929d774c7ed2a",
+  "probe_binary_path": "/Users/songmin/Documents/code-new/quanta-index/docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/hellgate-admitted-20260927/pattern-families-probe",
+  "probe_binary_sha256": "3a3a55de75a754f91c90f707e52d0ee0aaaeb4435c4506e12dcd2d14992eb814",
+  "measurement_path": "/Users/songmin/Documents/code-new/quanta-index/docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/hellgate-admitted-20260927/pattern-families-current.tsv",
+  "measurement_sha256": "f43d4d49082fa763e27d28471169dd29af2d524435f37ade9cd54da65878061d",
+  "compile_command": [
+    "rustc",
+    "--edition=2024",
+    "-L",
+    "dependency=/Users/songmin/Library/Caches/quanta-index/target/8a6ce95c59f8245e/test-daemon-lane/debug/deps",
+    "--extern",
+    "quanta_index_lq_regex=/Users/songmin/Library/Caches/quanta-index/target/8a6ce95c59f8245e/test-daemon-lane/debug/deps/libquanta_index_lq_regex-39eb46d35f2286b9.rlib",
+    "docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/regex-memory-probe-20260927/pattern-families-probe.rs",
+    "-o",
+    "docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/hellgate-admitted-20260927/pattern-families-probe"
+  ],
+  "run_command": [
+    "docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/hellgate-admitted-20260927/pattern-families-probe"
+  ],
+  "compile_exit_code": 0,
+  "run_exit_code": 0,
+  "rows": 8,
+  "all_sample_peaks_within_logical_charge": true
+}

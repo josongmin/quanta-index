@@ -123,16 +123,19 @@ fn assert_unavailable(
         .top_k(1)
         .execute()?;
     let candidate = response.results.first().ok_or("expected hit missing")?;
-    if response.results.len() != 1
+    if response.generation != *pin
+        || response.results.len() != 1
         || candidate.repo_relative_path.as_str() != path
         || !candidate.snippet.is_empty()
         || !candidate.highlights.is_empty()
         || candidate.snippet_hit_offset.is_some()
-        || candidate
-            .preview
-            .as_ref()
-            .and_then(|preview| preview.unavailable_reason)
-            != Some(reason)
+        || !candidate.preview.as_ref().is_some_and(|preview| {
+            preview.kind == PreviewKind::SourceChunk
+                && preview.unavailable_reason == Some(reason)
+                && preview.original_focus.is_none()
+                && preview.original_context.is_none()
+                && preview.normalized_focus.is_none()
+        })
     {
         return Err(
             format!("{query:?}: optional refusal changed selected hit: {response:?}").into(),
@@ -310,18 +313,31 @@ fn l4_sdk_preview_uses_matcher_ranges_and_original_source_bytes() -> TestResult 
 #[test]
 fn l4_sdk_preview_survives_daemon_process_restart() -> TestResult {
     let state = quanta_index_searchd_harness::private_tempdir()?;
+    let checkout = quanta_index_searchd_harness::private_tempdir()?;
+    let checkout_file = checkout.path().join("checkout.rs");
+    std::fs::write(&checkout_file, "oldanchor")?;
     let mut runtime = E2eRuntime::boot_in(state.path())?;
     runtime.ingest_text("repo", "src/decomposed.rs", "cafe\u{301}")?;
     runtime.ingest_text("repo", "src/multi.rs", "threehits threehits threehits")?;
     runtime.ingest_text("repo", "src/overlap.rs", "ababa")?;
+    runtime.ingest_text("repo", "src/overflow.rs", &"a".repeat(35))?;
+    runtime.ingest_text(
+        "repo",
+        "src/checkout.rs",
+        &std::fs::read_to_string(&checkout_file)?,
+    )?;
     let pin = runtime.generation_pin();
     let _sealed = runtime.seal()?;
     runtime.activate_last_sealed_generation()?;
     // Activation uses the harness driver for its control CAS. Release the
     // runtime and its state-root lease before a separate process boots.
     runtime.stop()?;
+    std::fs::write(&checkout_file, "newanchor")?;
 
     for round in 0..2 {
+        if round == 1 {
+            std::fs::remove_file(&checkout_file)?;
+        }
         let daemon = searchd_binary_process::SearchdBinaryProcess::start(state.path())
             .map_err(|error| format!("daemon start {round} failed: {error}"))?;
         let client = daemon.connect()?;
@@ -337,6 +353,33 @@ fn l4_sdk_preview_survives_daemon_process_restart() -> TestResult {
         )?;
         assert_multihit_highlights(&client, &pin)?;
         assert_overlapping_raw_highlights(&client, &pin)?;
+        assert_unavailable(
+            &client,
+            &pin,
+            "'aaa'",
+            "src/overflow.rs",
+            PreviewUnavailableReason::WorkBudget,
+        )?;
+        assert_preview(
+            &client,
+            &pin,
+            "oldanchor",
+            "src/checkout.rs",
+            "oldanchor",
+            PreviewByteRange { start: 0, end: 9 },
+            PreviewByteRange { start: 0, end: 9 },
+            false,
+        )?;
+        let changed = client
+            .lexical()
+            .query()
+            .native("newanchor")
+            .pinned(pin.clone())
+            .top_k(1)
+            .execute()?;
+        if changed.generation != pin || !changed.results.is_empty() {
+            return Err(format!("mutable checkout leaked into pinned result: {changed:?}").into());
+        }
         drop(client);
         daemon.stop()?;
     }

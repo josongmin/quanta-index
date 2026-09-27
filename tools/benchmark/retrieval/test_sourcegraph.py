@@ -79,6 +79,16 @@ def inputs(raw: bytes | None = None) -> tuple[dict, bytes, dict, dict]:
 
 
 class SourcegraphCaptureTests(unittest.TestCase):
+    def test_input_manifest_binding_does_not_claim_indexed_universe(self) -> None:
+        request, raw, manifest, universe = inputs()
+        universe["method"] = "input_manifest_only"
+        request["request_query"] = query_expression(QUERY, REPOSITORY, REVISION,
+                                                   [row["path"] for row in FILES])
+        result = validate_capture(request, raw, manifest, universe)
+        self.assertEqual(result["universe_binding_method"], "input_manifest_only")
+        self.assertIn("indexed_universe_unattested", result["reason"])
+        self.assertNotIn("indexed_universe_assertion_sha256", result)
+
     def test_preserves_raw_bytes_and_native_order_without_promotion(self) -> None:
         request, raw, manifest, universe = inputs()
         result = validate_capture(request, raw, manifest, universe)

@@ -1,0 +1,15 @@
+{
+  "status": "NOT_RUN",
+  "label": "sdk-lint",
+  "command": [
+    "./scripts/cargow",
+    "clippy",
+    "-p",
+    "quanta-index-searchd-runtime",
+    "--test",
+    "l4_preview_sdk",
+    "--locked",
+    "--no-deps"
+  ],
+  "command_executed": false
+}

@@ -1,0 +1,115 @@
+{
+  "status": "BLOCKED",
+  "source_sha256": "62fdd5b1db3c9da2a77f7315097b30fc3b415d441250143f55d80ed931e15f78",
+  "validator_sha256": "21105db261b9f1a2ba381a03cd3499e6e2a20b1707e66fa429b6186ba6d6bd9f",
+  "checks": [
+    {
+      "label": "format",
+      "command_exit_code": 0,
+      "command_executed": true,
+      "receipt_sha256": "295b1858db5dd3366811fd3f5bdf2147f7aab50609b7308b30aed688912bcd93",
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "selected_executed_passed": null,
+      "binary_sha256": [],
+      "daemon_binary": null,
+      "errors": []
+    },
+    {
+      "label": "owner",
+      "command_exit_code": null,
+      "command_executed": false,
+      "receipt_sha256": "349974d0e699b3b370d63788fbef781d3c474e5d02b15edbba8405fd0db7c0ec",
+      "log_sha256": "d9ef66a26a4e35b17b16b5ed13c8c1c8ba5ddb43646cac69d17c4a1d47224fe0",
+      "selected_executed_passed": 0,
+      "binary_sha256": [],
+      "daemon_binary": null,
+      "errors": [
+        "command did not finish verified with exit 0",
+        "runner did not bind unchanged frozen inputs",
+        "command did not execute",
+        "wrong source root",
+        "pre-run source differs from frozen manifest",
+        "post-run source differs from frozen manifest",
+        "external_inputs_before differs from frozen external inputs",
+        "external_inputs_after differs from frozen external inputs",
+        "wrong source digest",
+        "log digest mismatch",
+        "summary differs from raw log",
+        "missing or malformed test summary",
+        "zero or mismatched selected/executed tests",
+        "required regression did not execute: every_positive_match_in_the_emitted_window_has_a_typed_span",
+        "required regression did not execute: l4_unobserved_capture_removal_preserves_reference_ranges",
+        "required regression did not execute: indexed_and_manual_preserve_overlapping_raw_witnesses",
+        "test binary identity missing"
+      ]
+    },
+    {
+      "label": "sdk",
+      "command_exit_code": 0,
+      "command_executed": true,
+      "receipt_sha256": "badad67c393999541a5430fef386f9b216ff5d6333ab2f2b219c8b8319770882",
+      "log_sha256": "8c24ca55ffb88bb38a7e52c8697088c93c1d0f9b8f3fd499efdf8adfea9f0b27",
+      "selected_executed_passed": 7,
+      "binary_sha256": [
+        {
+          "path": "/Users/songmin/Library/Caches/quanta-index/target/8a6ce95c59f8245e/test-daemon-lane/debug/deps/l4_preview_sdk-7284de6f01f1b94b",
+          "sha256": "8fcc9de21b430c8033be79b71093e86f7cc7cf00c90adcb484b470b88dd425f4"
+        }
+      ],
+      "daemon_binary": {
+        "path": "/Users/songmin/Library/Caches/quanta-index/target/8a6ce95c59f8245e/test-daemon-lane/debug/quanta-index-searchd",
+        "sha256": "b2f7aedf8fa16c2147baf7da41648834c60e44696308ccbecffff24e0f30ff50"
+      },
+      "errors": []
+    },
+    {
+      "label": "owner-lint",
+      "command_exit_code": null,
+      "command_executed": false,
+      "receipt_sha256": "45da3568f25388f25556a5ff3bc644b30c5785c03c01c0e4c0353ecbd05e41d2",
+      "log_sha256": "d9ef66a26a4e35b17b16b5ed13c8c1c8ba5ddb43646cac69d17c4a1d47224fe0",
+      "selected_executed_passed": null,
+      "binary_sha256": [],
+      "daemon_binary": null,
+      "errors": [
+        "command did not finish verified with exit 0",
+        "runner did not bind unchanged frozen inputs",
+        "command did not execute",
+        "wrong source root",
+        "pre-run source differs from frozen manifest",
+        "post-run source differs from frozen manifest",
+        "external_inputs_before differs from frozen external inputs",
+        "external_inputs_after differs from frozen external inputs",
+        "wrong source digest",
+        "log digest mismatch",
+        "summary differs from raw log"
+      ]
+    },
+    {
+      "label": "sdk-lint",
+      "command_exit_code": null,
+      "command_executed": false,
+      "receipt_sha256": "6e3bdacf8768c38c23241745c2f03f6407effc9ab25d8a38a93a48ce1b0cc667",
+      "log_sha256": "d741e3ae1600e7a444979c66157ea46e4a3dbfa292c3c75a0b4dbc18515c1f77",
+      "selected_executed_passed": null,
+      "binary_sha256": [],
+      "daemon_binary": null,
+      "errors": [
+        "command did not finish verified with exit 0",
+        "runner did not bind unchanged frozen inputs",
+        "command did not execute",
+        "wrong source root",
+        "pre-run source differs from frozen manifest",
+        "post-run source differs from frozen manifest",
+        "external_inputs_before differs from frozen external inputs",
+        "external_inputs_after differs from frozen external inputs",
+        "wrong source digest",
+        "log digest mismatch",
+        "summary differs from raw log"
+      ]
+    }
+  ],
+  "errors": [
+    "one or more command receipts failed validation"
+  ]
+}

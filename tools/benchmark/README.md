@@ -300,6 +300,12 @@ the selected Git-derived view's commit, ordered complete file universe and
 digest. Capture retains the recipe/release/Git bundles and binding; replay
 reconstructs the view without original mutable paths. This is input binding,
 not proof of a product's indexed universe. Capsules above 256 MiB refuse.
+For fresh external rows, `python -m tools.benchmark.retrieval.live_lexical_external`
+issues Sourcegraph/OpenGrok HTTP requests and cs processes against the selected
+release view. It retains native responses and emits the three row files; it is
+a standalone exploratory producer, not a registered `benchctl` profile. The
+[operator runbook](CODE_SEARCH_RUNBOOK.md#b-score-five-recorded-lexical-products)
+gives the spec example and execution sequence.
 
 ```sh
 uv run --frozen --extra dev python -m tools.benchmark.retrieval.lexical_file_comparison \
@@ -316,6 +322,8 @@ a query has multiple answers. The paired report must carry per-query
 `file_recall_at_10` and hit observations; the scorer cross-checks their aggregate
 instead of deriving hit count from recall. Old reports without those facts
 must be re-scored from native records, never relabelled or defaulted.
+The scorer requires one bare identifier per query and rejects noncanonical
+or out-of-view result paths against the frozen suite/pack universe.
 The scorer retains per-query observations and derives descriptive latency from
 each product's recorded timing layer. Raw rows remain diagnostic; index-universe
 attestation, independent judgments, qualified speed and raw HTTP/process

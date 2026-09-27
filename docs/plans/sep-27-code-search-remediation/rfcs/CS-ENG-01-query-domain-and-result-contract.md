@@ -4,6 +4,11 @@ Status: **IMPLEMENTED** for the repaired L1 query/domain/window boundary.
 Owner regressions and changed real-daemon SDK paths: **VERIFIED** in
 [L1 adversarial RCA evidence](../handoffs/L1_ADVERSARIAL_AUDIT.md).
 Repository qualification and the remaining preventive matrix are not implied.
+Latest remaining-work audit: [CS-INT-01](CS-INT-01-integration-and-qualification.md#current-remaining-work-audit--2026-09-27).
+The repaired plan validation, logical-empty observation and authoritative window
+paths remain present at `b42a9b5d` plus the recorded dirty overlay. No new L1
+counterexample was reproduced in this audit. Final-source behavioral execution
+is **NOT_RUN**; older passing receipts retain their original source scope.
 Category: engine correctness. Findings: F01; preventive coverage for related plans.
 Baseline and reproduced requests: [evidence](../evidence.md).
 
@@ -153,6 +158,10 @@ The exact executed matrix and positive controls are in the final audit. Other
 matrix cells remain preventive coverage, not alleged failures.
 
 ## DoD
+
+The checklist is the original RFC-wide acceptance matrix, not a list of known
+remaining code defects. Owner repairs and selected execution are recorded above;
+the current combined-source rerun is owned by INT-R1 in CS-INT-01.
 
 - [ ] Endpoint/projection capability matrix is checked into contract tests.
 - [ ] Six observed cases reject deterministically before execution.

@@ -1,13 +1,28 @@
 {
   "dirty": [
-    " M crates/quanta-index-lq-regex/src/executor.rs",
-    " M crates/quanta-index-searchd-runtime/tests/l4_preview_sdk.rs",
-    " M docs/plans/sep-27-code-search-remediation/handoffs/l1-l5-proof/l5-python-frozen-final.txt",
-    "?? docs/plans/sep-27-code-search-remediation/handoffs/l1-l5-proof/public-api-final-current.txt",
-    "?? docs/plans/sep-27-code-search-remediation/handoffs/l1-l5-proof/runtime-explain-final.txt",
-    "?? docs/plans/sep-27-code-search-remediation/handoffs/l1-l5-proof/runtime-l4-final.txt",
-    "?? docs/plans/sep-27-code-search-remediation/handoffs/l1-l5-proof/runtime-window-final.txt",
-    "?? docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/hellgate-20260927/"
+    " M crates/quanta-index-contract/tests/scv2_01_semantic_source_wire.rs",
+    " M crates/quanta-index-core/tests/ingest_resource_policy.rs",
+    " M crates/quanta-index-lexical/src/adapter_ingest.rs",
+    " M crates/quanta-index-lexical/src/searcher/snippets.rs",
+    " M crates/quanta-index-lexical/tests/boot_inventory.rs",
+    " M crates/quanta-index-lexical/tests/generation_delta_base_carryforward.rs",
+    " M crates/quanta-index-lexical/tests/l4_match_anchored_preview.rs",
+    " M crates/quanta-index-lexical/tests/resident_bytes.rs",
+    " M crates/quanta-index-lexical/tests/sealed_commitment_cost.rs",
+    " M crates/quanta-index-lexical/tests/sealed_manifest.rs",
+    " M crates/quanta-index-lexical/tests/text_authority_shards.rs",
+    " M crates/quanta-index-lexical/tests/writer_envelope.rs",
+    " M crates/quanta-index-scan-experiment/src/main.rs",
+    " M crates/quanta-index-sdk/src/lib.rs",
+    " M crates/quanta-index-searchd-runtime/tests/explain.rs",
+    " M docs/plans/sep-27-code-search-remediation/handoffs/L1_L5_INTEGRATION_AUDIT_20260927.md",
+    " M docs/plans/sep-27-code-search-remediation/handoffs/L4_HANDOFF.md",
+    " M docs/plans/sep-27-code-search-remediation/handoffs/L4_REAUDIT_20260927.md",
+    " M docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/overlap-20260927/run.py",
+    " M tools/ci/lint/baselines/public-api/quanta-index-sdk.txt",
+    "?? crates/quanta-index-lexical/tests/support/current_source_fixture.rs",
+    "?? docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/hardening-20260927/",
+    "?? docs/plans/sep-27-code-search-remediation/handoffs/l5-python-frozen-final-source-pre.json"
   ],
   "external_path": "/Users/songmin/.cargo/git/checkouts/quanta-tantivy-sstable-0b83bbb979ea0a01/22b3c0e",
   "hash_algorithm": "SHA-256 over canonical JSON identity; per-file SHA-256 raw bytes",
@@ -462,7 +477,7 @@
       "crates/quanta-index-lq-regex/src/dialect_ast_walk.rs": "d30f63c0b0918d9713940cd216d9c0772e1661125ea54935c552a21b6b0efaa7",
       "crates/quanta-index-lq-regex/src/errors.rs": "be4879fa6eb82abb5d1144c829bc9534392c947b323caba6d32ac4023e3f87b3",
       "crates/quanta-index-lq-regex/src/estimator.rs": "f42d2276796f0e4d4be930996577d1f21ca4b1478d8b19d2b1112181f1ad5a6f",
-      "crates/quanta-index-lq-regex/src/executor.rs": "714be3518469a08fa081cbd9f4e87d510549c2af468a8cf4bb78485bd3812dae",
+      "crates/quanta-index-lq-regex/src/executor.rs": "56fc6e9d5d4f7beaaf2411ba4316e4f60c6a3b53d0b0a7a14417aa3749715541",
       "crates/quanta-index-lq-regex/src/lib.rs": "fe18aa04a6ef0811e0bb9330f8f38fba005ecf81ed516bb9705b5dc9e6067436",
       "crates/quanta-index-lq-regex/src/literal_extract.rs": "241e1684f4f840d4304e4d696370df9ab722eff19b45927f59f990bfb6a0a097",
       "crates/quanta-index-lq-regex/tests/golden_regex.rs": "aeb843862176584766ca3119e6cbfbf1bb18c3c3c71e98c8b517ab8b3957e8f3",
@@ -803,7 +818,7 @@
       "crates/quanta-index-searchd-runtime/tests/fixtures/lexical_corpus/docs-structural-where.toml": "18bada70f3395d7ac7e103f826864839934f69bc027f3916597452dabd77b24a",
       "crates/quanta-index-searchd-runtime/tests/fixtures/lexical_corpus/docs-timeout.toml": "2833746bec11651ffb40f698c219fdc19c357c632dd4b13c05541b68c5af64fb",
       "crates/quanta-index-searchd-runtime/tests/fixtures/lexical_corpus/runtime_rows.toml": "cdc76e7aabc39b609b9199b5dd9a66096c1d5156c2ec40be37fbb8a5acc4ab33",
-      "crates/quanta-index-searchd-runtime/tests/l4_preview_sdk.rs": "40f7fa7eb3ea27fe486e81f87f6046e4df72e892971195116febdbbf15cd2802",
+      "crates/quanta-index-searchd-runtime/tests/l4_preview_sdk.rs": "011c690efcd0a7a18d014c19563e6856b194f5c24ca6e0b389dc0c7775832398",
       "crates/quanta-index-searchd-runtime/tests/process_readiness_owner_v1.rs": "e90439879a1d02cb2592e06ca4f578c3aca7022b1963ccfdffba884a5bf474e2",
       "crates/quanta-index-searchd-runtime/tests/repo_map_end_to_end.rs": "cced148a405b2d006eedc9c95f5063bc046783a3308213d3a4649f8e10f07bfe",
       "crates/quanta-index-searchd-runtime/tests/runtime_extended_suite.rs": "8ab47af017809a097b075957f50fa298e7a39b42ca45948866c1577333f05435",
@@ -917,7 +932,6 @@
       "docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/further-audit-20260927/qi-roaring-heap-probe.rs": "978720ccae52442e1af41cac151c32f76d4cf8bf00e491041eb2dc0899acc46c",
       "docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/further-audit-20260927/run.py": "8e672fc8dd7284fd0d4d7bace5a351c664de1fc3c44e8ee4fa67d837032491fe",
       "docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/hardening-20260927/run.py": "b4fa0132be2006e859079c7049487506cc63e23e6c960bbd6741e01f16618c47",
-      "docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/hellgate-20260927/run.py": "b4fa0132be2006e859079c7049487506cc63e23e6c960bbd6741e01f16618c47",
       "docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/live-followup-20260927/run.py": "918895d96de5cdf68f035111bbe639c9ddfed79a57053fcc11429e8fc03073e7",
       "docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/overlap-20260927/freeze.py": "fb5888eeea621aa6daf8f5cf010e0ccf9aeb342648a1278dd8e310cde44ac085",
       "docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/overlap-20260927/run.py": "b4fa0132be2006e859079c7049487506cc63e23e6c960bbd6741e01f16618c47",
@@ -1197,7 +1211,7 @@
       "vendor/tree-sitter-typescript/typescript/src/tree_sitter/array.h": "4ff743903dc46f5db6aa54f31c6b4d160a8a9779e5b2ab1ee59ae7ebcd850ea1",
       "vendor/tree-sitter-typescript/typescript/src/tree_sitter/parser.h": "a1f6ef161fbaf48a0e10fca90ef5290a062462b307b3898aa562993853b9f80a"
     },
-    "head": "a7f2812314def54a78989bac985cb6eed26806d0"
+    "head": "0e99f25ab3e6928eaf294a8336d5456730fb3435"
   },
-  "source_digest": "9d3a6acef37ab408c9707bafb488d923c8f6d8e5ad4187e2c25dc0e1c8c530ef"
+  "source_digest": "f58a440d36797eb25ee09e41a1348dd6eed8cb8603cb6ba83bc72011d9302fff"
 }

@@ -1,0 +1,50 @@
+{
+  "spec_version": 2,
+  "repo": "/external/clean-corpus-checkout",
+  "manifest": "/external/manifest.json",
+  "suite": "/external/lexical-suite.json",
+  "query_pack": "/external/lexical-query-pack.json",
+  "execution_profiles": {
+    "quanta": {
+      "profile_id": "quanta-native-v1",
+      "policy": "native",
+      "config": {},
+      "planning_cost_in_latency": false
+    },
+    "semble": {
+      "profile_id": "semble-lexical-only-v1",
+      "mode": "lexical-only",
+      "alpha": null,
+      "rerank": "not_applicable"
+    }
+  },
+  "top_k": 10,
+  "output_root": "/external/fresh-pair",
+  "runner_binary": "/external/bin/quanta-index-retrieval-bench",
+  "searchd_binary": "/external/bin/quanta-index-searchd",
+  "searchd_expected_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "strategies": [{"name": "fixed_window_strict", "window_bytes": 4096, "overlap_bytes": 256}],
+  "routes": ["lexical"],
+  "baseline_route": "semble-hybrid",
+  "candidate_route": "lexical",
+  "semble_route": "semble-hybrid",
+  "semble_python": "/external/semble-venv/bin/python",
+  "semble_lockfile": "/external/semble-lockfile.txt",
+  "semble_lockfile_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "host_profile": "/external/host-profile.json",
+  "quanta_model_dir": "/external/models/potion-code",
+  "run_id": "replace-with-unique-id",
+  "runner_name": "quanta-sdk",
+  "repo_id": "replace-with-repository-id",
+  "revision_id": "replace-with-frozen-revision",
+  "generation": 1,
+  "seed": 0,
+  "timeout_secs": 120,
+  "io_timeout_secs": 60,
+  "repetitions": 1,
+  "cache_regime": "undeclared",
+  "blinding": "attested",
+  "embedder": "potion-code",
+  "scope": "exploratory",
+  "claims": {"quality": false, "speed": false, "same_model": false, "incremental": false}
+}

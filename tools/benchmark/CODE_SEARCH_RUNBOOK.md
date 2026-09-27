@@ -12,12 +12,13 @@ contracts. Neither an old report nor a successful `plan` is a new benchmark.
 | Check retrieval code while editing | `just retrieval-contract-local` | Focused Python/Rust contract tests | Dirty-checkout diagnostic; no search quality or speed |
 | Capture current-source SDK/contract proof | `benchctl run retrieval-contract` | Real daemon SDK proof and contract tests | Typed correctness proof; no relevance or speed |
 | Compare Quanta with Semble | `benchctl run retrieval-diagnostic --pair-spec ...` | Both products search the frozen repo/query pack | Exploratory paired diagnostic; not qualified quality or speed |
+| Capture the three external lexical products | `python -m tools.benchmark.retrieval.live_lexical_external --spec ...` | Live Sourcegraph/OpenGrok HTTP requests and cs processes; retains native responses | Fresh external recorded diagnostic; indexed-universe attestation remains absent |
 | Score five lexical products | `benchctl run lexical-diagnostic --lexical-spec ...` | Re-scores **recorded** Quanta, Semble, Sourcegraph, OpenGrok and cs observations | Corpus-bound recorded file-recall diagnostic; **no live product search** |
 
-There is currently no registered one-command **live five-product** producer.
-`lexical-diagnostic` never starts or calls Sourcegraph, OpenGrok or cs. A fresh
-five-product comparison requires separately collecting their raw rows first;
-do not describe a re-score of old rows as a new search run.
+There is no registered one-command **live five-product** profile. A fresh
+five-product diagnostic is the live pair, the standalone live external capture,
+and then the recorded scorer, all over one frozen corpus view and query pack.
+`lexical-diagnostic` itself never starts or calls Sourcegraph, OpenGrok or cs.
 
 ## Shared preparation
 
@@ -37,12 +38,14 @@ do not describe a re-score of old rows as a new search run.
 python3 tools/benchmark/benchctl.py list
 python3 tools/benchmark/benchctl.py plan retrieval-diagnostic
 python3 tools/benchmark/benchctl.py plan lexical-diagnostic
-python3 tools/benchmark/benchctl.py corpus validate \
+uv run --frozen --extra dev python tools/benchmark/benchctl.py corpus validate \
   --release /absolute/external/corpus-releases/release-name
 ```
 
-To create a new release, use `benchctl corpus create --spec ... --checkouts ...
---release ...` as documented in the [corpus section](README.md#shared-external-corpus-releases).
+To create a new release, use
+`uv run --frozen --extra dev python tools/benchmark/benchctl.py corpus create`
+with `--spec`, `--checkouts` and
+`--release` as documented in the [corpus section](README.md#shared-external-corpus-releases).
 The recipe and exact-commit clean checkouts must exist first. A new evaluation
 suite must bind the selected view's complete file universe and record label
 provenance. Independent judgments are required for a quality claim; mechanical
@@ -57,6 +60,11 @@ python3 -m tools.benchmark.retrieval freeze \
 
 `freeze` is not a gold-label generator. The suite, manifest and pack must
 agree on commit, file universe, query identities and comparison contract.
+Replace every placeholder in the [exploratory pair spec example](retrieval/examples/pair-spec.exploratory.json),
+[live external spec example](retrieval/examples/live-external-spec.json), and
+[common lexical spec example](retrieval/examples/lexical-spec-v2.json). The
+examples demonstrate current schema only: zero digests and `/external/...`
+paths are deliberately unusable. Do not reuse a prior binary or input digest.
 
 ## A. Run a live Quanta--Semble pair
 
@@ -72,6 +80,40 @@ not label a hybrid/default route lexical. The native runner refuses a dirty or
 wrong-HEAD corpus checkout. Build/pin actual binaries for the frozen source;
 an older spec's binary paths or digests are not reusable by assumption. Keep
 the native output, original corpus and evidence roots mutually disjoint.
+Generate a host profile at a new external path and build both binaries through
+the repository wrapper before replacing their example paths and digests:
+
+```sh
+uv run --frozen --extra dev python -m tools.benchmark.retrieval.run host-profile \
+  --profile-id code-search-exploratory --out /absolute/external/host-profile.json
+./scripts/cargow --lane bench-lane build -p quanta-index-searchd-runtime \
+  --bin quanta-index-searchd --locked
+./scripts/cargow --lane bench-lane build -p quanta-index-retrieval-bench \
+  --bin quanta-index-retrieval-bench --locked
+mkdir -p /absolute/external/bin
+QUANTA_INDEX_BUILD_LANE=bench-lane bash -lc '
+  source scripts/quanta-index-env.sh
+  install -m 0755 "$CARGO_TARGET_DIR/debug/quanta-index-searchd" \
+    /absolute/external/bin/quanta-index-searchd
+  install -m 0755 "$CARGO_TARGET_DIR/debug/quanta-index-retrieval-bench" \
+    /absolute/external/bin/quanta-index-retrieval-bench
+'
+shasum -a 256 /absolute/external/bin/quanta-index-searchd
+shasum -a 256 /absolute/external/bin/quanta-index-retrieval-bench
+```
+
+The binary paths in the spec must name the binaries actually built from this
+source. Check the pair spec shape without starting a search:
+
+```sh
+uv run --frozen --extra dev python -c \
+  'from pathlib import Path; from tools.benchmark.retrieval.run import load_spec; load_spec(Path("/absolute/external/pair-spec.json"))'
+```
+
+This is only a structural check; `run` performs the corpus/binary preflight.
+For a lexical suite derived from a different query form, use
+[`prepare_lexical_pair.py`](retrieval/prepare_lexical_pair.py) to preserve task
+labels while freezing new bare-symbol queries.
 
 ```sh
 uv run --frozen --extra dev python tools/benchmark/benchctl.py run retrieval-diagnostic \
@@ -95,15 +137,28 @@ timing for query latency, and keep failures/timeouts in the denominator.
 
 ## B. Score five recorded lexical products
 
-First capture one complete raw query row per task for local/remote
-Sourcegraph, OpenGrok and cs against the **same selected view** and blind
-query pack. Record indexed-universe evidence, submitted query, top-10
-repository-relative paths, terminal HTTP/process result, errors and per-query
-elapsed time. Keep Quanta/Semble's native pair report, lock, records and
-verdict. The checked-in scorer requires the exact row contract in
-[`lexical_file_comparison.py`](retrieval/lexical_file_comparison.py); historical
-external scripts or an unverified indexed-universe assertion are not a
-registered live collector.
+Run the live external collector with the same selected release view, suite and
+blind pack as the pair. Sourcegraph and OpenGrok must already serve that view;
+the spec pins their HTTP(S) origins, repository/project names and
+operator-supplied image digests. Put required bearer credentials in external
+`token_file` paths; the collector reads them without writing token bytes into
+the capture. cs must be an executable binary. The collector
+retains each raw HTTP response and cs stdout/stderr, checks terminal results,
+and emits exactly one `symbol_only` row per task and product. Failed or partial
+captures stay in `.staging` and do not publish the final output root:
+
+```sh
+uv run --frozen --extra dev python -m tools.benchmark.retrieval.live_lexical_external \
+  --spec /absolute/external/live-external-spec.json
+```
+
+Inspect its `capture.json`, raw response files and three `*_rows.jsonl` files.
+The release proves the admitted file bytes; an HTTP result or operator image
+digest does **not** independently attest that a server indexed every file.
+Keep Quanta/Semble's native pair report, lock, records and verdict. The scorer
+requires the exact row contract in
+[`lexical_file_comparison.py`](retrieval/lexical_file_comparison.py), including
+bare-symbol queries and result paths inside the selected file universe.
 
 Create the external `--lexical-spec` schema-v2 envelope with exactly:
 

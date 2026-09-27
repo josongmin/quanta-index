@@ -104,7 +104,8 @@ def _files(value: Any, where: str) -> list[dict[str, str]]:
     return result
 
 
-def query_expression(query: str, repository: str, revision: str) -> str:
+def query_expression(query: str, repository: str, revision: str,
+                     file_paths: list[str] | None = None) -> str:
     """Conservative keyword-term lane, with no caller-provided query syntax."""
     if (
         not isinstance(query, str)
@@ -120,7 +121,13 @@ def query_expression(query: str, repository: str, revision: str) -> str:
         raise CaptureError("repository must be a canonical slash-delimited name")
     _hex(revision, HEX40, "revision")
     repo_regex = "^" + re.escape(repository) + "$"
-    return f"{query} repo:{repo_regex} rev:{revision} type:file patternType:keyword count:all"
+    file_filter = ""
+    if file_paths is not None:
+        if not file_paths or file_paths != sorted(set(file_paths)):
+            raise CaptureError("search file universe must be sorted and unique")
+        expression = "^(?:" + "|".join(re.escape(_path(path)) for path in file_paths) + ")$"
+        file_filter = " file:" + json.dumps(expression, ensure_ascii=False)
+    return f"{query} repo:{repo_regex} rev:{revision}{file_filter} type:file patternType:keyword count:all"
 
 
 def _events(raw: bytes) -> list[tuple[str, Any]]:
@@ -181,9 +188,6 @@ def validate_capture(
     if request["content_type"] != "text/event-stream":
         raise CaptureError("Sourcegraph response was not an event stream")
     _hex(request["server_image_digest"], HEX64, "server_image_digest")
-    expected_query = query_expression(request["query"], request["repository"], request["revision"])
-    if request["request_query"] != expected_query:
-        raise CaptureError("sent query differs from the pinned keyword expression")
     if request["query_sha256"] != sha256(request["query"].encode("utf-8")):
         raise CaptureError("raw query digest mismatch")
     if request["response_sha256"] != sha256(raw):
@@ -202,9 +206,9 @@ def validate_capture(
     if (
         type(universe["proof_version"]) is not int
         or universe["proof_version"] != 1
-        or universe["method"] != "operator_asserted_indexed_universe"
+        or universe["method"] not in ("operator_asserted_indexed_universe", "input_manifest_only")
     ):
-        raise CaptureError("indexed universe has no supported assertion method")
+        raise CaptureError("universe binding has no supported method")
     if (
         universe["repository"] != request["repository"]
         or universe["revision"] != request["revision"]
@@ -214,6 +218,12 @@ def validate_capture(
     if asserted != admitted:
         raise CaptureError("asserted indexed path/SHA universe differs from admitted manifest")
     admitted_by_path = {row["path"]: row["file_sha256"] for row in admitted}
+    expected_query = query_expression(
+        request["query"], request["repository"], request["revision"],
+        [row["path"] for row in admitted] if universe["method"] == "input_manifest_only" else None,
+    )
+    if request["request_query"] != expected_query:
+        raise CaptureError("sent query differs from the pinned keyword expression and file universe")
 
     events = _events(raw)
     if not events or events[-1] != ("done", {}):
@@ -331,10 +341,17 @@ def validate_capture(
                     "first_match_rank": hit["rank"],
                 }
             )
-    return {
+    binding_digest = sha256(
+        json.dumps(universe, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    )
+    result = {
         "adapter_version": 1,
         "status": "diagnostic_unqualified",
-        "reason": "indexed_universe_is_operator_asserted_and_stream_request_authenticity_is_not_proven",
+        "reason": (
+            "indexed_universe_is_operator_asserted_and_stream_request_authenticity_is_not_proven"
+            if universe["method"] == "operator_asserted_indexed_universe"
+            else "indexed_universe_unattested_and_stream_request_authenticity_is_not_proven"
+        ),
         "api_version": "V3",
         "request": request,
         "rank_semantics": "observed_stream_order_only",
@@ -344,15 +361,17 @@ def validate_capture(
         "manifest_sha256": sha256(
             json.dumps(manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
         ),
-        "indexed_universe_assertion_sha256": sha256(
-            json.dumps(universe, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
-        ),
+        "universe_binding_method": universe["method"],
+        "universe_binding_sha256": binding_digest,
         "raw_stream_sha256": request["response_sha256"],
         "raw_stream_base64": base64.b64encode(raw).decode("ascii"),
         "raw_match_order": matches,
         "file_order": files,
         "event_count": len(events),
     }
+    if universe["method"] == "operator_asserted_indexed_universe":
+        result["indexed_universe_assertion_sha256"] = binding_digest
+    return result
 
 
 def main() -> int:

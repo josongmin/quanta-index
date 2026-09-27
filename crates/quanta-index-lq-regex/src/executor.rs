@@ -477,17 +477,50 @@ mod tests {
     #[test]
     fn l4_unobserved_capture_removal_preserves_reference_ranges()
     -> Result<(), Box<dyn std::error::Error>> {
-        for pattern in [
+        let mut patterns: Vec<String> = [
             "(ab|a)+",
             "(?i:(?<named>é))",
             "(x?)(y*)",
             "(?x)(a) # comment\n (b)",
             "((?:)?)",
             "(?i)(K)(ſ)",
-        ] {
-            let reference = regex::bytes::Regex::new(pattern)?;
-            let executor = RegexExecutor::compile(pattern)?;
-            for source in ["ababa", "É é", "xxyyy", "ab", "", "\u{212a}S", "é"] {
+            "(?m)(^a)(b?)",
+            r"(\b)(needle)(\b)",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        for atom in ["a", "é", r"\w", "[a-z]", "(?:a|é)"] {
+            patterns.push(format!("(({atom})?)"));
+            patterns.push(format!("(?i:(?<hit>{atom}))({atom})?"));
+        }
+        for pattern in patterns {
+            let reference = regex::bytes::Regex::new(&pattern)?;
+            let executor = RegexExecutor::compile(&pattern)?;
+            assert_eq!(executor.compiled.captures_len(), 1, "{pattern:?}");
+            for source in [
+                "",
+                "a",
+                "aa",
+                "b",
+                "ab",
+                "aba",
+                "é",
+                "É",
+                "e\u{301}",
+                "café",
+                "CAFE",
+                "needle42",
+                "needle",
+                "xxyyy",
+                "a\nb",
+                "a\r\nb",
+                "\u{212a}S",
+                "İi",
+                "ſK",
+                "123_",
+                "aaaaé",
+            ] {
                 let expected: Vec<_> = reference
                     .find_iter(source.as_bytes())
                     .map(|m| m.range())
@@ -498,7 +531,8 @@ mod tests {
                 assert_eq!(actual.ranges, expected, "{pattern:?} on {source:?}");
                 assert_eq!(
                     executor.verify(source.as_bytes()),
-                    reference.is_match(source.as_bytes())
+                    reference.is_match(source.as_bytes()),
+                    "{pattern:?} on {source:?}"
                 );
             }
         }

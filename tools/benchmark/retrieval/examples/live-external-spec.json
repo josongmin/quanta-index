@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "corpus": {
+    "release_path": "/external/corpus-release",
+    "release_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "repository": "replace-with-release-repository",
+    "view": "code_only"
+  },
+  "suite": "/external/lexical-suite.json",
+  "query_pack": "/external/lexical-query-pack.json",
+  "sourcegraph": {
+    "base_url": "http://127.0.0.1:7080",
+    "repository": "benchmark/replace-with-repository",
+    "server_image_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+    "token_file": "/external/sourcegraph-token"
+  },
+  "opengrok": {
+    "base_url": "http://127.0.0.1:7081",
+    "project": "replace-with-release-repository",
+    "server_image_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+    "token_file": "/external/opengrok-token"
+  },
+  "cs": {"binary": "/external/bin/cs"},
+  "output_root": "/external/fresh-external-capture"
+}

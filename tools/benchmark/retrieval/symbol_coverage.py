@@ -6,8 +6,12 @@ import os
 import re
 import stat
 import sys
-import tomllib
 from pathlib import Path
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10 uses the declared tomli dependency.
+    import tomli as tomllib
 
 ROOT = Path(__file__).resolve().parents[3]
 try:

@@ -1,8 +1,8 @@
 # SEP-27 benchmark / retrieval / test-optimization — execution SSOT
 
 Status: `ACTIVE`. Code/document re-audit: 2026-09-27 KST.
-Observed source: shared dirty `main@3887fac3d090e9af86d1508ed2ba4125bf55bcbb`;
-the benchmark Python overlay and unrelated concurrent work are not a frozen
+Observed source: shared dirty `main@b42a9b5d6a91e1895ad8d49367423e8c446bfed9`;
+the benchmark Python overlay and concurrent Rust/proof work are not a frozen
 qualification source. A commit, a file's presence or an owner-local test run
 does not establish whole-source, installed-product or performance qualification.
 
@@ -16,10 +16,55 @@ owners. Do not restore duplicate ticket bodies or redirect stubs.
 
 ## 1. Final audit: current facts and remaining work
 
-The old chronology has been removed from this SSOT. Historical test totals and
+The current audit below supersedes older snapshot-level status statements.
+Historical test totals and
 snapshots are not current proof and must not be added together. Implementation
 presence, owner tests, integrated execution and product/performance qualification
 are separate claims. The audit result is **not repository qualification**.
+
+### Latest source audit — 2026-09-27, 17:41 KST
+
+Audit scope: current implementation boundaries, CI selection/source custody,
+raw terminal evidence and remaining acceptance. Only this SSOT is edited by
+this refresh; concurrent engine, comparator and proof edits are preserved.
+No runtime repair, Cargo test, installed-product run or real comparator request
+was performed by this audit. The rows below are the remaining root-cause union,
+not a request to reimplement already retained publication/monitor/I/O code.
+
+| Priority / owner | Current evidence / RCA | Remaining work and acceptance |
+| --- | --- | --- |
+| P1 MISC-05 / regex allocation | `crates/quanta-index-lexical/src/searcher/candidates.rs::SelectedPreviewContext::prepare_leaf` reserves 16 MiB plus 256 bytes per estimated state; `crates/quanta-index-lq-regex/src/executor.rs::prepare/compile_prepared` still delegates allocating planning/compilation and caches to the public regex wrapper. The code explicitly disclaims an allocator-enforced ceiling. Capture removal and state charging are implemented mitigations, not aggregate allocation admission. | Aggregate-bound claim `BLOCKED`; coordinated implementation/qualification `NOT_RUN`. Admit AST/HIR temporaries, compilation, retained engines and search caches before their expensive allocations, with correct reservation lifetimes. Preserve one canonical truth/range matcher, Unicode/capture-heavy differential cases, cancellation and typed optional-preview refusal without changing selected IDs/order. No current runtime overrun is established by this audit; the older 20,035,301-byte compiler probe is not a measurement of today's mitigated request. |
+| P1 MISC-05 / delta coverage amplification | `crates/quanta-index-lexical/src/sealed_generation/coverage.rs::apply_file_coverage` clones the base map; `write_staged_coverage` collects and serializes every row into a new CBOR buffer. `adapter_ingest.rs` invokes it for the candidate generation before index mutation. A one-file delta therefore still rewrites generation-wide coverage; text-authority touched shards are a separate cost. | Bounded incremental storage/heap claim `BLOCKED`; structural repair/qualification `NOT_RUN`. Use generation-bound immutable partitions/inheritance or bounded deltas with an explicit compaction rule, coordinated with seal/verify/open/GC rather than a second authority. Preserve empty/failed coverage, tombstones, source-event binding, old-reader ownership and corruption refusal. Measure changed, inherited, coverage and text-shard bytes separately across growing file counts; declare storage/heap ceilings and test crash/reopen. Do not exclude coverage bytes and call total incremental cost bounded. |
+| P1 MISC-04 / external lexical test enrollment | New `tools/ci/tests/test_live_lexical_external.py` has two owner tests, but is absent from `Justfile::benchmark-control-contract-local`, `tools/ci/test-authority.toml` and explicit test roots in `tools/ci/source_closure.py`. The producer is already under the directory-bound `tools/benchmark/retrieval`; its test file is not. Authority lint passes because Python registration is opt-in, not exhaustive discovery. | Missing selection/custody is a current control-plane gap; repair `NOT_RUN`. Register the test to `live_lexical_external.py`, the existing PR rail and capture scope; enroll it in the existing selector and affected closures. Add omission/duplicate/nonempty-collection and test-mutation invalidation guards. Run both tests; the HTTP/process fixture test was not executed by this refresh. Keep this diagnostic producer unqualified: operator-supplied image identity/input manifest is not indexed-universe attestation. |
+| P1 MISC-04/05 / final integrated source | The frozen L5 consumer source map binds `0e99f25a…`, source digest `f58a440d…`, and the removed private SSTable dependency. Its 552-case terminal and identical pre/post identities are real historical evidence. Current HEAD contains the sealed ranked-key migration; 32 entries of that local file map differ, including Cargo manifests/lockfile, lexical authority and Python comparator inputs. | Transfer of that receipt to current source is `BLOCKED`; fresh integrated execution `NOT_RUN`. Finish active owners, freeze current dependencies/config/overlay and rebuild once. Execute affected Python control-plane, bench-protocol Rust/canonical fixtures, migrated lexical/core/contract targets and required daemon/SDK/restart scopes, then actual native/Criterion capture and relocated fresh Python/Rust consumption/replay. Record exact selected/executed/ignored counts, binary/input identities and terminal artifacts. Run ignored process cases explicitly when their claim requires them. Hosted/full-workspace/installed/platform claims remain separate. Do not rerun unrelated historical targets blindly or edit old receipts. |
+| P2 MISC-03 / IO-5 resource matrix | Generic 8/128 MiB publication/load/replay RSS evidence exists; it does not cover every adapter, failure log, archive cardinality or actual producer. Existing streaming code is retained. | Adapter acceptance `NOT_RUN`: whole preparation/execute/publish/load/replay with large successful and failed output, many-entry archives/metadata, interruption/corruption, an independent raw byte/digest oracle and fresh-process RSS. Declare retained-metadata limits separately from raw-byte scaling. Fix only a reproduced owner violation, not a parallel buffering API. |
+| P2 MISC-04 / documentation gate | Current `lint-doc-paths.py` exits 1 on four paths in two digest-bound L3/L4 proof documents. Their preimage hashes still match the consumer overlay / authority receipt. | Gate `FAILED`. Correct navigation plus reissue affected evidence, or define an explicit provenance-preserving archival lint treatment. Do not alter sealed preimages to fabricate unchanged proof, and do not suppress the repository gate globally. Exact files/hashes are inline below. |
+| P2 MISC-06/07 / execution and measurement | Live external producer/scorer code is present, but an executable adapter, fake-service test or old pair is not a current same-corpus live experiment. Lexical file-hit/order, semantic relevance, hybrid quality and symbol spans are different strata. | Fresh admitted live pilot, profile inventory and measurements `NOT_RUN`. Use external corpus releases and the same admitted query pack; report native order, exact searchable/indexed universe, completeness, faults and raw responses. Separate cold/warm/time-to-searchable, query on/off, micro/system/test-cost denominators. Report diagnostic results without quality/performance promotion when inputs do not support it. Manual licensing/gold/host provisioning stays outside the code work list; missing inputs block only their dependent qualified claims. |
+
+Execution dependency: structural resource owners and coverage enrollment → one
+current-source integration freeze → IO-5/actual-producer acceptance → admitted
+pilot/measurements. Proof-document repair/reissue can be prepared independently;
+it must precede a clean documentation gate. Do not run competing heavy Cargo or
+timing jobs against the shared host.
+
+Current audit evidence is external, not a second task specification:
+`/private/tmp/qi-remaining-audit-20260927.9608H0/receipt.json`, SHA-256
+`d6785fe216f391177f0aaf51a8252b3c9abfd25c8f54e889e7ac0d924ea2f65f`.
+The driver records exact argv, raw-log digests, pre/post HEAD/dirty/file hashes,
+audit Python/platform identity and the historical consumer-map comparison.
+The documentation update is subsequent to that observation, not test promotion.
+
+| Current check | Outcome and boundary |
+| --- | --- |
+| `python3 tools/ci/lint/check-test-authority.py` | `VERIFIED` for catalog validation, exit 0; it does not discover all unregistered Python tests. |
+| `python3 tools/ci/lint/check-benchmark-policy.py` | `VERIFIED` for current policy checks, exit 0; the live external test omission is outside existing guards. |
+| `python3 tools/prompt-manager/pm.py lint` | `VERIFIED` for five generated targets in sync, exit 0. |
+| `git diff --check` | `VERIFIED` for observed whitespace scope, exit 0. |
+| `python3 tools/ci/lint/lint-doc-paths.py` | `FAILED`, exit 1, four broken paths listed below. |
+| Pinned `uv run --frozen --extra dev python -m pytest tools/ci/tests/test_lexical_file_comparison.py tools/benchmark/retrieval/test_sourcegraph.py tools/ci/tests/test_live_lexical_external.py::test_cs_process_refuses_excessive_output_and_timeout -q -p no:cacheprovider --junitxml=/private/tmp/qi-remaining-audit-20260927.9608H0/diagnostics.xml` | Raw terminal: 56 passed, zero failure/error/skip, exit 0, 4.87 s; one JUnit `record_property` warning. Current-source qualification `BLOCKED`: `live_lexical_external.py` changed between the audit's pre/post observations. This is a diagnostic execution, not a frozen receipt. JUnit SHA-256 `f8e2a5ecdefd35215b6546f3369f4ce60d193754618b4eb3e7eeb5c47e792d7e`. |
+| Historical frozen L5 JUnit | 552 executed, zero failure/error/skip; raw JUnit SHA-256 `657634687041d2493f20a2a1c87017e2f244034e91b75eefe860a560eee25c64`, pre/post source identities equal. Receipt transfer to current source `BLOCKED`; this audit does not requalify that older environment or removed dependency. |
+
+### Retained implementation and historical owner evidence
 
 | Boundary | Current source fact | Remaining action / claim status |
 | --- | --- | --- |
@@ -28,7 +73,7 @@ are separate claims. The audit result is **not repository qualification**.
 | MISC-03 / IO-1–3/5 | Shared `RawFile`/`RawWriter`, process log owner, bounded controls/JSONL, streamed archives, portable receipts/replay and paired command ZIP are present. | Generic full publication/load/replay RSS probe passed for 8/128 MiB raw; adapter-specific large failure output, many-entry archive and actual producer resource acceptance remain `NOT_RUN`. No blanket whole-repository bounded-memory claim. |
 | MISC-03 / IO-4 | The epoch spans native plus five adapters. Nested nonzero/exception/refusal is sticky; source/replay callbacks cannot publish after recording failure. Native primary refusal and fresh-replay boundaries remain covered. | Post-fix eight-module selection: 379/379 passed, exit 0. `symbols/preflight.rs` changed during execution, so this is owner regression evidence, not frozen-source pair/product qualification. |
 | MISC-04 / C5 | Both Python modules are selected by the existing Just command, registered to exact owner/scope/PR rail and affected closures, and guarded for collection and mutation. | Focused C5 guards 9/9; seven related owner modules 344/344; actual `benchmark-control-contract-local` selector 1256/1256. Shared checkout/closure was not frozen; this is not hosted CI or product qualification. |
-| MISC-05 | Existing TOPT/retrieval invariants are qualification obligations, not presumed new bugs. Active SDK/engine changes are outside this edit. | Re-audit and run focused/full/installed/platform scopes after final freeze; `NOT_RUN` here. |
+| MISC-05 | Existing TOPT/retrieval invariants are qualification obligations, not presumed new bugs. Regex aggregate allocation and delta coverage amplification remain the two explicit structural resource gaps above. | Retain verified historical selected Rust/frozen Python evidence in its original scope; do not transfer it across the current ranked-key/dependency migration. Fresh final-source/full/installed/platform scopes: `NOT_RUN` here. |
 | MISC-06/07 | Timing, product pilot, independent quality and qualified pair each have distinct prerequisites and denominators. | No fresh measurement/pair executed here: `NOT_RUN`. Missing admitted inputs block only their dependent claims. |
 
 ### IO-4 repaired findings and regression obligations
@@ -114,7 +159,7 @@ At that historical point, `host_monitor.py` was not imported by a capture path.
 The current wired implementation supersedes that source fact; the 358/359
 terminal remains a failed historical run, not current proof.
 
-Current owner-local executions after EXEC-1 wiring:
+Historical owner-local executions after EXEC-1 wiring (not current HEAD proof):
 
 - Seven modules (`test_benchctl`, profile capture, evidence bridge, Criterion,
   producer notifications, benchmark policy, source closure): 344/344 passed,
@@ -264,10 +309,10 @@ benchctl + registry: select declared profile and route commands
 | Ticket | Single owner boundary | Work to perform next |
 | --- | --- | --- |
 | MISC-01 | `profile_capture.py`, `custody.py`, Rust run store | Retain atomic inventory/pointer/GC implementation; final integrated execution is MISC-04, not another gate. |
-| MISC-02 | `benchctl.py`, `producer_execution.py`, `host_monitor.py`, `evidence_bridge.py` | Retain implemented EXEC-1; close parent-death/join-failure regressions and actual-producer acceptance. |
+| MISC-02 | `benchctl.py`, `producer_execution.py`, `host_monitor.py`, `evidence_bridge.py` | Retain implemented EXEC-1 and parent-death/join-failure regressions; remaining actual-producer acceptance is owned once by MISC-04. |
 | MISC-03 | `evidence.py`, `raw_archive.py`, capture adapters, portable proof | Retain repaired IO-4 and IO-1–3 regressions; execute IO-5 whole-capture resource proof. |
-| MISC-04 | Shared CLI/bridge, Just, test authority, source closures | Retain implemented C5; freeze once and integrate actual producer/consumer/replay and governance evidence. |
-| MISC-05 | Runtime/SDK/core/platform owner tests | Qualify retained invariants, full Rust/daemon, installed ingest and supported platforms. |
+| MISC-04 | Shared CLI/bridge, Just, test authority, source closures | Retain implemented C5; enroll the new external lexical owner test and its regression guards, repair/reissue proof navigation, then freeze once and integrate producer/consumer/replay evidence. |
+| MISC-05 | Runtime/SDK/core/platform owner tests; canonical regex/resource and sealed coverage owners | Resolve aggregate regex allocation and delta coverage amplification without parallel authority; then qualify retained invariants, full Rust/daemon, installed ingest and supported platforms. |
 | MISC-06 | Existing test/query/ingest/micro/system measurement owners | Measure distinct workloads only after correctness, host and input admission. |
 | MISC-07 | Registry/domain adapters/retrieval evaluator | Complete real profile execution inventory, live comparator pilot and separately admitted quality/performance claims. |
 

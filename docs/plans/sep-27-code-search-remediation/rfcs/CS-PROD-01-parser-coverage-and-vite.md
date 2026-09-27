@@ -12,6 +12,22 @@ qualification are **NOT_RUN**. External production producers are outside this sc
 Category: producer compatibility. Findings: F05/F06.
 Parser probes are independent; publication changes depend on ENG-02.
 
+## Current disposition and remaining acceptance
+
+The producer/parser fix remains present at `b42a9b5d` plus dirty overlay. No new
+L5 counterexample was reproduced by the remaining-work audit. The historical
+Rust owner and real Vite receipts above are not rebased onto the newer merged
+source. A later frozen Python consumer selection executed 552 tests with stable
+source/environment identities; it is still a separate consumer-only proof.
+
+**INT-R1, NOT_RUN:** rerun producer Rust and consumer checks on one combined
+source, renew the required real capability-enabled/strict Vite process capture,
+and validate publication through the actual daemon. **External producer/installed
+activation: NOT_RUN** in this audit; upgrading the benchmark producer does not
+upgrade Semantica or another issuer. These are proof/cutover tasks, not a reason
+to reintroduce malformed-file exclusions or claim the repaired parser is absent.
+Latest scope: [CS-INT-01](CS-INT-01-integration-and-qualification.md#current-remaining-work-audit--2026-09-27).
+
 ## Purpose and RCA
 
 The pinned producer uses tree-sitter 0.25.10 and tree-sitter-typescript 0.23.2.

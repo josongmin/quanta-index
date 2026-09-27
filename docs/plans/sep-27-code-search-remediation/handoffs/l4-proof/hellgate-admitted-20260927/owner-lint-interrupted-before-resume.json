@@ -1,0 +1,18 @@
+{
+  "status": "NOT_RUN",
+  "label": "owner-lint",
+  "command": [
+    "./scripts/cargow",
+    "clippy",
+    "-p",
+    "quanta-index-lexical",
+    "-p",
+    "quanta-index-lq-regex",
+    "--lib",
+    "--test",
+    "l4_match_anchored_preview",
+    "--locked",
+    "--no-deps"
+  ],
+  "command_executed": false
+}

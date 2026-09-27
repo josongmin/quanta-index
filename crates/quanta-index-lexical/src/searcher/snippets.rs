@@ -897,6 +897,20 @@ mod l4_witness_regressions {
         assert!(saturated.snippet.is_empty());
         assert!(saturated.highlights.is_empty());
 
+        // Exactly thirty-two overlapping occurrences fit the witness cap.
+        let at_limit = render(
+            &LqExpr::Leaf(LqLeaf::RawString("aaa".into())),
+            &"a".repeat(34),
+        )?;
+        assert_eq!(at_limit.preview.unavailable_reason, None);
+        assert_eq!(at_limit.snippet, "a".repeat(34));
+        assert_eq!(
+            at_limit.highlights,
+            (0..32)
+                .map(|start| HighlightSpan { start, len: 3 })
+                .collect::<Vec<_>>()
+        );
+
         // Thirty-five `a` scalars contain thirty-three overlapping `aaa`
         // occurrences. This three-byte needle is admitted by the public raw
         // substring planner; a non-overlapping iterator would miss the

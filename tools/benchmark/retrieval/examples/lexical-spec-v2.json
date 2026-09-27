@@ -1,0 +1,20 @@
+{
+  "schema_version": 2,
+  "corpus": {
+    "release_path": "/external/corpus-release",
+    "release_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "repository": "replace-with-release-repository",
+    "view": "code_only"
+  },
+  "inputs": {
+    "suite": "/external/lexical-suite.json",
+    "query_pack": "/external/lexical-query-pack.json",
+    "pair_report": "/external/fresh-pair/report-semble-hybrid-vs-lexical-fixed_window_strict.json",
+    "pair_lock": "/external/fresh-pair/protocol-lock.json",
+    "semble_native": "/external/fresh-pair/rep-00/semble/native.json",
+    "pair_verdict": "/external/fresh-pair/verdict.json",
+    "sourcegraph_rows": "/external/fresh-external-capture/sourcegraph_rows.jsonl",
+    "opengrok_rows": "/external/fresh-external-capture/opengrok_rows.jsonl",
+    "cs_rows": "/external/fresh-external-capture/cs_rows.jsonl"
+  }
+}

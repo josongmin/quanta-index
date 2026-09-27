@@ -12,6 +12,7 @@ import argparse
 import hashlib
 import json
 import math
+import re
 import statistics
 from pathlib import Path
 
@@ -26,6 +27,7 @@ from tools.benchmark.retrieval.finite_json import is_finite_json_number
 from tools.benchmark.retrieval.query_plan import execution_profile
 
 PRODUCTS = ("sourcegraph", "opengrok", "cs")
+BARE_SYMBOL = re.compile(r"[A-Za-z_][A-Za-z_0-9]*\Z")
 INPUT_ROLES = (
     "suite",
     "query_pack",
@@ -98,6 +100,44 @@ def _sha(path: Path) -> str:
     return file_digest(path)[0].removeprefix("sha256:")
 
 
+def _file_universe(suite: dict, pack: dict) -> set[str]:
+    files = suite.get("file_universe")
+    if not isinstance(files, list) or not files or pack.get("file_universe") != files:
+        raise ValueError("suite and pack need the same nonempty file universe")
+    if (
+        suite.get("file_universe_digest") != digest(canonical(files))
+        or pack.get("file_universe_digest") != suite["file_universe_digest"]
+    ):
+        raise ValueError("suite/pack file universe digest differs")
+    paths: set[str] = set()
+    for file in files:
+        if not isinstance(file, dict) or set(file) != {"path", "file_sha256"}:
+            raise ValueError("malformed file universe entry")
+        path, sha = file["path"], file["file_sha256"]
+        if (
+            not _canonical_result_path(path)
+            or not isinstance(sha, str)
+            or re.fullmatch(r"[0-9a-f]{64}", sha) is None
+            or path in paths
+        ):
+            raise ValueError("noncanonical or duplicate file universe entry")
+        paths.add(path)
+    if [file["path"] for file in files] != sorted(paths):
+        raise ValueError("file universe must be sorted by unique path")
+    return paths
+
+
+def _canonical_result_path(path: object) -> bool:
+    return (
+        isinstance(path, str)
+        and bool(path)
+        and not path.startswith("/")
+        and "\\" not in path
+        and "\x00" not in path
+        and all(part not in ("", ".", "..") and part.casefold() != ".git" for part in path.split("/"))
+    )
+
+
 def _tasks(suite: dict, pack: dict) -> dict[str, tuple[str, list[str]]]:
     if pack.get("suite_commitment_sha256") != digest(canonical(suite)):
         raise ValueError("pack and suite commitment differ")
@@ -123,6 +163,7 @@ def _tasks(suite: dict, pack: dict) -> dict[str, tuple[str, list[str]]]:
             or not task_id
             or not isinstance(query, str)
             or not query
+            or BARE_SYMBOL.fullmatch(query) is None
             or task_id in blinded
         ):
             raise ValueError("duplicate or malformed blinded query")
@@ -156,7 +197,9 @@ def _tasks(suite: dict, pack: dict) -> dict[str, tuple[str, list[str]]]:
     return expected
 
 
-def product_result(product: str, path: Path, expected: dict[str, tuple[str, list[str]]]) -> dict:
+def product_result(
+    product: str, path: Path, expected: dict[str, tuple[str, list[str]]], universe: set[str]
+) -> dict:
     if product not in PRODUCTS:
         raise ValueError(f"unknown lexical product: {product}")
 
@@ -203,7 +246,7 @@ def product_result(product: str, path: Path, expected: dict[str, tuple[str, list
             if (
                 not isinstance(paths, list)
                 or len(paths) > 10
-                or any(not isinstance(value, str) or not value for value in paths)
+                or any(not _canonical_result_path(value) or value not in universe for value in paths)
                 or len(paths) != len(set(paths))
             ):
                 raise ValueError(f"{product}: {task_id} malformed result paths")
@@ -391,7 +434,10 @@ def evaluate_capture(paths: dict[str, Path]) -> dict:
         raise ValueError("lexical capture requires the exact input role inventory")
     suite_raw, pack_raw = _bytes(paths["suite"]), _bytes(paths["query_pack"])
     suite, pack = _json(suite_raw), _json(pack_raw)
+    universe = _file_universe(suite, pack)
     expected = _tasks(suite, pack)
+    if any(path not in universe for _, gold in expected.values() for path in gold):
+        raise ValueError("gold path is outside the frozen file universe")
     result = {
         "status": "diagnostic_unqualified",
         "query_form": "bare_symbol_v1",
@@ -412,7 +458,8 @@ def evaluate_capture(paths: dict[str, Path]) -> dict:
             len(expected),
         ),
         "products": {
-            name: product_result(name, paths[f"{name}_rows"], expected) for name in PRODUCTS
+            name: product_result(name, paths[f"{name}_rows"], expected, universe)
+            for name in PRODUCTS
         },
         "exclusions": [
             "independent_gold",
