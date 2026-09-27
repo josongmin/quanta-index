@@ -702,7 +702,12 @@ fn l3_retained_buffers_and_guard_carriers_observe_bound_cancellation() -> TestRe
     let fruit = budgeted_collection(
         &searcher,
         &MeasuredQuery::default(),
-        &GroupedPageCollector::new(ProjectionGroup::Path, 1.0, ledger.clone()),
+        &GroupedPageCollector::new(
+            test_keys(&searcher)?,
+            ProjectionGroup::Path,
+            1.0,
+            ledger.clone(),
+        ),
         &request,
         ledger.clone(),
         "test:buffer-cancel",
