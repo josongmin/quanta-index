@@ -33,7 +33,8 @@ use quanta_index_contract::{
     BatchIngestMode, ChunkId, ChunkRecord, LQ_VERSION_TAG, LqExpr, LqLeaf, LqOptions, LqQuery,
     LqSpan, ManifestGeneration, RepoCommitRecencyEntry, RepoCommitRecencyIngestBatch, RepoId,
     RepoRelativePath, RevisionId, SearchCorpusIngestBatch, SearchCorpusReplaceScope,
-    SearchScopeKey, SearchScopeSurface,
+    SourceFileCoverage, SourceFileKey, SourceFileRevision, SourcePublicationEvent, SymbolCoverage,
+    source_event_payload_sha256, source_file_unit_set_sha256,
 };
 use quanta_index_core::{
     LexicalIndexOpenPort, RepoCommitRecencyIngestPort, RequestBudgetV1, SearchCorpusBatchBuildPort,
@@ -82,27 +83,43 @@ fn scope(
         .map_err(|err| -> Box<dyn Error> { format!("language code: {err}").into() })?;
     let end_byte = u32::try_from(body.len())
         .map_err(|err| -> Box<dyn Error> { format!("chunk body too large: {err}").into() })?;
+    let chunks = vec![ChunkRecord {
+        chunk_id: ChunkId::new(chunk_id),
+        repo_relative_path: RepoRelativePath::new(path),
+        language: language.clone(),
+        start_byte: 0,
+        end_byte,
+        start_line: 1,
+        end_line: 1,
+        text: body.to_string().into_boxed_str(),
+        structural: None,
+        parent_chunk_id: None,
+        source_repo_id: None,
+    }];
     Ok(SearchCorpusReplaceScope {
-        scope: SearchScopeKey {
-            doc_surface: SearchScopeSurface::File,
-            repo_relative_path: RepoRelativePath::new(path),
-        },
-        scope_digest: format!("scope:{path}:{chunk_id}"),
-        chunks: vec![ChunkRecord {
-            chunk_id: ChunkId::new(chunk_id),
-            repo_relative_path: RepoRelativePath::new(path),
+        coverage: SourceFileCoverage {
+            source: SourceFileRevision {
+                file: SourceFileKey {
+                    source_repo_id: repo(),
+                    repo_relative_path: RepoRelativePath::new(path),
+                },
+                revision_id: revision(),
+                source_sha256: Sha256::digest(body.as_bytes()).into(),
+            },
             language,
-            start_byte: 0,
-            end_byte,
-            start_line: 1,
-            end_line: 1,
-            text: body.to_string().into_boxed_str(),
-            structural: None,
-            parent_chunk_id: None,
-            source_repo_id: None,
-        }],
+            producer_policy_sha256: Sha256::digest(b"carryforward-fixture-v1").into(),
+            unit_set_sha256: source_file_unit_set_sha256(&chunks, &[])?,
+            text_admitted: true,
+            symbols: SymbolCoverage::Complete { symbol_count: 0 },
+        },
+        chunks,
         symbols: Vec::new(),
     })
+}
+
+fn bind_source_event(batch: &mut SearchCorpusIngestBatch) -> Result<(), Box<dyn Error>> {
+    batch.source_event.payload_sha256 = source_event_payload_sha256(batch)?;
+    Ok(())
 }
 
 fn base_batch(generation: ManifestGeneration) -> Result<SearchCorpusIngestBatch, Box<dyn Error>> {
@@ -138,18 +155,27 @@ fn base_batch_with_filler(
         )?);
     }
     replace_scopes.sort_by(|left, right| {
-        left.scope
+        left.coverage
+            .source
+            .file
             .repo_relative_path
             .as_str()
-            .cmp(right.scope.repo_relative_path.as_str())
+            .cmp(right.coverage.source.file.repo_relative_path.as_str())
     });
-    Ok(SearchCorpusIngestBatch {
+    let mut batch = SearchCorpusIngestBatch {
+        source_event: SourcePublicationEvent {
+            stream_id: "carryforward-test".into(),
+            event_id: format!("event-{}", generation.get()),
+            expected_base_event_id: None,
+            payload_sha256: [0; 32],
+        },
         repo_id: repo(),
         revision_id: revision(),
         generation,
         base_generation: None,
         manifest_digest: format!("carryforward-manifest:{}", generation.get()),
-        batch_digest: format!("carryforward-batch:{}", generation.get()),
+        // Adapter admission checks token shape; IPC owns body-digest proof.
+        batch_digest: "0".repeat(64),
         mode: BatchIngestMode::ReplaceGeneration,
         bundle_payload: None,
         clear_surfaces: Vec::new(),
@@ -158,7 +184,9 @@ fn base_batch_with_filler(
         semantic_replace_scopes: Vec::new(),
         semantic_tombstone_scopes: Vec::new(),
         seal: true,
-    })
+    };
+    bind_source_event(&mut batch)?;
+    Ok(batch)
 }
 
 /// Replaces only `src/beta.rs`; `src/alpha.rs` must survive from the base.
@@ -166,13 +194,20 @@ fn delta_batch(
     generation: ManifestGeneration,
     base: ManifestGeneration,
 ) -> Result<SearchCorpusIngestBatch, Box<dyn Error>> {
-    Ok(SearchCorpusIngestBatch {
+    let mut batch = SearchCorpusIngestBatch {
+        source_event: SourcePublicationEvent {
+            stream_id: "carryforward-test".into(),
+            event_id: format!("event-{}", generation.get()),
+            expected_base_event_id: Some(format!("event-{}", base.get())),
+            payload_sha256: [0; 32],
+        },
         repo_id: repo(),
         revision_id: revision(),
         generation,
         base_generation: Some(base),
         manifest_digest: format!("carryforward-manifest:{}", generation.get()),
-        batch_digest: format!("carryforward-batch:{}", generation.get()),
+        // Adapter admission checks token shape; IPC owns body-digest proof.
+        batch_digest: "0".repeat(64),
         mode: BatchIngestMode::Delta,
         bundle_payload: None,
         clear_surfaces: Vec::new(),
@@ -185,7 +220,9 @@ fn delta_batch(
         semantic_replace_scopes: Vec::new(),
         semantic_tombstone_scopes: Vec::new(),
         seal: true,
-    })
+    };
+    bind_source_event(&mut batch)?;
+    Ok(batch)
 }
 
 fn keyword_query(term: &str) -> LqQuery {
@@ -623,25 +660,28 @@ fn delta_generation_text_authority_matches_independent_full_rebuild() -> TestRes
         "zeta_marker novelword appears only in the delta",
     )?);
     delta.replace_scopes.sort_by(|left, right| {
-        left.scope
+        left.coverage
+            .source
+            .file
             .repo_relative_path
             .as_str()
-            .cmp(right.scope.repo_relative_path.as_str())
+            .cmp(right.coverage.source.file.repo_relative_path.as_str())
     });
     delta
         .tombstone_scopes
         .push(quanta_index_contract::SearchCorpusTombstoneScope {
-            scope: SearchScopeKey {
-                doc_surface: SearchScopeSurface::File,
+            file: SourceFileKey {
+                source_repo_id: repo(),
                 repo_relative_path: RepoRelativePath::new("src/filler/mod_00007.rs"),
             },
         });
+    bind_source_event(&mut delta)?;
     adapter.build_batch(&delta)?;
 
     // Oracle: the same final content, built fresh with no base.
     let mut oracle = base_batch_with_filler(g9, FILLERS)?;
     oracle.replace_scopes.retain(|scope| {
-        let path = scope.scope.repo_relative_path.as_str();
+        let path = scope.coverage.source.file.repo_relative_path.as_str();
         path != "src/filler/mod_00007.rs" && path != BETA_PATH
     });
     oracle.replace_scopes.push(scope(
@@ -655,11 +695,14 @@ fn delta_generation_text_authority_matches_independent_full_rebuild() -> TestRes
         "zeta_marker novelword appears only in the delta",
     )?);
     oracle.replace_scopes.sort_by(|left, right| {
-        left.scope
+        left.coverage
+            .source
+            .file
             .repo_relative_path
             .as_str()
-            .cmp(right.scope.repo_relative_path.as_str())
+            .cmp(right.coverage.source.file.repo_relative_path.as_str())
     });
+    bind_source_event(&mut oracle)?;
     adapter.build_batch(&oracle)?;
 
     let probes: Vec<(&str, LqLeaf)> = vec![
@@ -812,18 +855,21 @@ fn delta_text_authority_update_derives_only_the_changed_scope() -> TestResult {
 
     let mut full = base_batch_with_filler(g9, FILLERS)?;
     full.replace_scopes
-        .retain(|scope| scope.scope.repo_relative_path.as_str() != BETA_PATH);
+        .retain(|scope| scope.coverage.source.file.repo_relative_path.as_str() != BETA_PATH);
     full.replace_scopes.push(scope(
         BETA_PATH,
         "chunk-beta",
         &format!("{BETA_MARKER_V2} {BETA_FRESH_WORD}"),
     )?);
     full.replace_scopes.sort_by(|left, right| {
-        left.scope
+        left.coverage
+            .source
+            .file
             .repo_relative_path
             .as_str()
-            .cmp(right.scope.repo_relative_path.as_str())
+            .cmp(right.coverage.source.file.repo_relative_path.as_str())
     });
+    bind_source_event(&mut full)?;
     let full_started = std::time::Instant::now();
     adapter.build_batch(&full)?;
     let full_wall = full_started.elapsed();

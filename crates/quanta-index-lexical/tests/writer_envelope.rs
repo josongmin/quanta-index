@@ -18,7 +18,9 @@ use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
     BatchIngestMode, ChunkId, ChunkRecord, LQ_VERSION_TAG, LqExpr, LqLeaf, LqOptions, LqQuery,
     LqSpan, ManifestGeneration, RepoId, RepoRelativePath, RevisionId, SearchCorpusIngestBatch,
-    SearchCorpusReplaceScope, SearchScopeKey, SearchScopeSurface, UpsertChunk,
+    SearchCorpusReplaceScope, SourceFileCoverage, SourceFileKey, SourceFileRevision,
+    SourcePublicationEvent, SymbolCoverage, UpsertChunk, source_event_payload_sha256,
+    source_file_unit_set_sha256,
 };
 use quanta_index_core::{
     GenerationStorageKeyV1, LEXICAL_WRITER_HEAP_BYTES_MIN, LexicalExecutionBudgetV1,
@@ -27,6 +29,7 @@ use quanta_index_core::{
 };
 use quanta_index_lexical::LexicalAdapter;
 use quanta_index_lexical::regex::RegexPolicy;
+use sha2::{Digest as _, Sha256};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -243,30 +246,51 @@ fn a_seal_releases_its_generations_writer_and_the_index_stays_readable() -> Test
     let dir = tempfile::tempdir()?;
     let adapter = adapter(dir.path().to_path_buf(), LexicalWriterPolicy::DEFAULT);
     let generation = ManifestGeneration::new(7);
-    adapter.build_batch(&SearchCorpusIngestBatch {
+    let record = chunk(7)?;
+    let coverage = SourceFileCoverage {
+        source: SourceFileRevision {
+            file: SourceFileKey {
+                source_repo_id: repo(),
+                repo_relative_path: record.repo_relative_path.clone(),
+            },
+            revision_id: revision(),
+            source_sha256: Sha256::digest(record.text.as_bytes()).into(),
+        },
+        language: record.language.clone(),
+        producer_policy_sha256: Sha256::digest(b"writer-envelope-fixture-v1").into(),
+        unit_set_sha256: source_file_unit_set_sha256(std::slice::from_ref(&record), &[])?,
+        text_admitted: true,
+        symbols: SymbolCoverage::Complete { symbol_count: 0 },
+    };
+    let mut batch = SearchCorpusIngestBatch {
+        source_event: SourcePublicationEvent {
+            stream_id: "writer-envelope-test".into(),
+            event_id: "event-7".into(),
+            expected_base_event_id: None,
+            payload_sha256: [0; 32],
+        },
         repo_id: repo(),
         revision_id: revision(),
         generation,
         base_generation: None,
         manifest_digest: "manifest:7".to_string(),
-        batch_digest: "batch:7".to_string(),
+        // Adapter admission checks token shape; IPC owns body-digest proof.
+        batch_digest: "0".repeat(64),
         mode: BatchIngestMode::ReplaceGeneration,
         bundle_payload: None,
         clear_surfaces: Vec::new(),
         replace_scopes: vec![SearchCorpusReplaceScope {
-            scope: SearchScopeKey {
-                doc_surface: SearchScopeSurface::Chunk,
-                repo_relative_path: RepoRelativePath::new("src/g7.rs"),
-            },
-            scope_digest: "scope:7".to_string(),
-            chunks: vec![chunk(7)?],
+            coverage,
+            chunks: vec![record],
             symbols: Vec::new(),
         }],
         tombstone_scopes: Vec::new(),
         semantic_replace_scopes: Vec::new(),
         semantic_tombstone_scopes: Vec::new(),
         seal: true,
-    })?;
+    };
+    batch.source_event.payload_sha256 = source_event_payload_sha256(&batch)?;
+    adapter.build_batch(&batch)?;
     let stats = adapter.writer_cache_stats()?;
     if stats.open_writers != 0 || stats.seal_releases != 1 || stats.allocated_heap_bytes != 0 {
         return Err(format!("a sealed generation holds no writer: {stats:?}").into());
