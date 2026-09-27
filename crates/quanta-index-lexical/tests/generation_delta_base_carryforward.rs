@@ -53,6 +53,7 @@ const BETA_RETIRED_WORD: &str = "retiredsentinel";
 /// Only present in the replacement body.
 const BETA_FRESH_WORD: &str = "freshsentinel";
 const BETA_MARKER_V2: &str = "gamma_replacement";
+const SOURCE_COVERAGE_FILE: &str = "source-file-coverage.cbor";
 /// Untouched scopes in the cost fixture's base. Large enough that inherited
 /// data dominates per-generation bookkeeping, small enough to stay a unit-speed
 /// test.
@@ -478,6 +479,7 @@ fn delta_generation_does_not_rewrite_unchanged_base_bytes() -> TestResult {
     assert_hits(&adapter, g2, BETA_MARKER_V2, &["chunk-beta"], "delta")?;
 
     let base_sidecar_bytes = text_authority_bytes(&base_dir)?;
+    let base_coverage_bytes = std::fs::metadata(base_dir.join(SOURCE_COVERAGE_FILE))?.len();
     let breakdown: Vec<String> = fresh_entries
         .iter()
         .map(|(name, len)| format!("{name}:{len}"))
@@ -485,6 +487,10 @@ fn delta_generation_does_not_rewrite_unchanged_base_bytes() -> TestResult {
     emit_evidence(&[
         ("base_bytes", base_bytes.to_string()),
         ("base_text_authority_bytes", base_sidecar_bytes.to_string()),
+        (
+            "base_source_coverage_bytes",
+            base_coverage_bytes.to_string(),
+        ),
         ("delta_fresh_bytes", fresh_bytes.to_string()),
         ("delta_fresh_entries", breakdown.join(",")),
     ]);
@@ -492,14 +498,18 @@ fn delta_generation_does_not_rewrite_unchanged_base_bytes() -> TestResult {
     if base_bytes == 0 {
         return Err("base generation wrote no bytes; the measurement is vacuous".into());
     }
-    // Scope: the indexed-data half of QI-BB-006. The text-authority half has
-    // its own oracle (`text_authority_shards.rs`, by shard and inode), so the
-    // two halves stay separately visible rather than folded into one number.
+    // Scope: the indexed-data half of QI-BB-006. The source-coverage
+    // publication and text-authority shards are separate artifacts; a delta
+    // writes its own coverage event even when it reuses index segments.
     let index_fresh_bytes: u64 = fresh_entries
         .iter()
-        .filter(|(name, _)| !name.starts_with(TEXT_AUTHORITY_DIR))
-        .fold(0_u64, |total, (_, len)| total.saturating_add(*len));
-    let index_base_bytes = base_bytes.saturating_sub(base_sidecar_bytes);
+        .filter(|(name, _)| !name.starts_with(TEXT_AUTHORITY_DIR) && name != SOURCE_COVERAGE_FILE)
+        .try_fold(0_u64, |total, (_, len)| total.checked_add(*len))
+        .ok_or("fresh index byte count overflow")?;
+    let index_base_bytes = base_bytes
+        .checked_sub(base_sidecar_bytes)
+        .and_then(|bytes| bytes.checked_sub(base_coverage_bytes))
+        .ok_or("base index byte count underflow")?;
 
     if index_base_bytes == 0 {
         return Err("base generation wrote no index bytes; the measurement is vacuous".into());
