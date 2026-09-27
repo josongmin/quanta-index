@@ -821,7 +821,7 @@ fn both_doors_refuse_missing_changed_or_uncommitted_ranked_keys() -> TestResult 
         &knock(&adapter, generation),
         "uncommitted ranked keys removed",
     )?;
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     {
         use std::os::unix::ffi::OsStringExt;
 
