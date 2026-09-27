@@ -821,6 +821,24 @@ fn both_doors_refuse_missing_changed_or_uncommitted_ranked_keys() -> TestResult 
         &knock(&adapter, generation),
         "uncommitted ranked keys removed",
     )?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt;
+
+        let invalid_name = std::ffi::OsString::from_vec(b"ranked-keys-\xff.bin".to_vec());
+        let invalid_extra = dir.join(invalid_name);
+        std::fs::write(&invalid_extra, &original)?;
+        expect_refused(
+            &knock(&adapter, generation),
+            "uncommitted non-UTF-8 ranked key",
+            "GENERATION_SIDECAR_CORRUPT",
+        )?;
+        std::fs::remove_file(invalid_extra)?;
+        expect_admitted(
+            &knock(&adapter, generation),
+            "uncommitted non-UTF-8 ranked key removed",
+        )?;
+    }
     Ok(())
 }
 

@@ -166,13 +166,11 @@ fn verify_ranked_keys(
             CoreError::Storage(format!("lexical: read ranked-key directory: {error}"))
         })?;
         let file_name = entry.file_name();
-        if let Some(name) = file_name.to_str()
-            && ranked_keys::is_ranked_key_entry(name)
-            && !by_name.contains_key(name)
-        {
+        let name = file_name.to_string_lossy();
+        if ranked_keys::is_ranked_key_entry(&name) && !by_name.contains_key(name.as_ref()) {
             return Err(crate::index_store::sidecar_corrupt(
                 generation_dir,
-                name,
+                &name,
                 "uncommitted ranked-key file",
             ));
         }

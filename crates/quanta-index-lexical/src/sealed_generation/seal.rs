@@ -346,10 +346,8 @@ fn commit_ranked_keys(
             CoreError::Storage(format!("lexical: read ranked-key entry: {error}"))
         })?;
         let entry_name = entry.file_name();
-        let Some(entry_name) = entry_name.to_str() else {
-            continue;
-        };
-        if ranked_keys::is_ranked_key_entry(entry_name) && !expected.contains(entry_name) {
+        let name = entry_name.to_string_lossy();
+        if ranked_keys::is_ranked_key_entry(&name) && !expected.contains(name.as_ref()) {
             std::fs::remove_file(entry.path()).map_err(|error| {
                 CoreError::Storage(format!("lexical: remove stale ranked-key table: {error}"))
             })?;
