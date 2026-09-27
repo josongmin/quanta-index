@@ -218,6 +218,35 @@ def test_execution_does_not_use_whole_output_communicate(tmp_path, monkeypatch):
     assert result.stdout.read_control() == b"fixed"
 
 
+def test_public_execution_passes_reservation_to_guard_without_child_inheritance(tmp_path, monkeypatch):
+    original = execution._execute_owned
+    observed = []
+
+    def checked(argv, **kwargs):
+        observed.append(kwargs["custody_fds"])
+        return original(argv, **kwargs)
+
+    monkeypatch.setattr(execution, "_execute_owned", checked)
+    lock = tmp_path / "reservation"
+    fd = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        script = (
+            "import os,sys; "
+            "identity=os.stat(sys.argv[1]); "
+            "assert not any((lambda s: (s.st_dev,s.st_ino)==(identity.st_dev,identity.st_ino))"
+            "(os.fstat(fd)) for fd in range(3,256) if os.path.exists('/dev/fd/'+str(fd)))"
+        )
+        result = execution.execute(
+            [sys.executable, "-c", script, str(lock)], cwd=tmp_path,
+            env=dict(os.environ), timeout=10, log_dir=tmp_path / "execution",
+            custody_fds=(fd,),
+        )
+        assert result.command["exit_code"] == 0
+        assert observed == [(fd,)]
+    finally:
+        os.close(fd)
+
+
 def test_execution_peak_rss_is_payload_independent(tmp_path, record_property):
     results = []
     for size in (8 * 1024 * 1024, 128 * 1024 * 1024):

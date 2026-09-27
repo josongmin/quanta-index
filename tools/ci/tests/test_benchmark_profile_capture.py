@@ -1,6 +1,9 @@
 """Complete profile publication is a custody/coverage boundary."""
 
+import copy
 import json
+import os
+import stat
 import sys
 from pathlib import Path
 
@@ -8,7 +11,128 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "tools/benchmark"))
 import evidence
+import host_monitor
 import profile_capture as capture
+
+
+def _host_transcript(root, *, change=None):
+    """Independent transcript fixture; the monitor under test did not emit it."""
+    host = {"os": "macos", "arch": "arm64", "cpu_count": 8,
+            "hostname_hash": "sha256:" + "a" * 64}
+    facts = {"load_average": [0.1, 0.2, 0.3], "disk_available_bytes": 100,
+             "process_count": 1, "process_snapshot_sha256": "sha256:" + "b" * 64,
+             "foreign_rust": []}
+    header = {"kind": "cooperative-host-observations", "schema_version": 1,
+              "capture_id": "capture", "profile": "profile", "reservation_id": "reservation",
+              "lock_identity": [1, 2, os.getuid(), stat.S_IFREG | 0o600, 1],
+              "interval_ns": host_monitor.INTERVAL_NS, "max_gap_ns": host_monitor.MAX_GAP_NS,
+              "clock_tolerance_ns": host_monitor.CLOCK_TOLERANCE_NS, "host": host}
+    samples = [
+        {"sequence": sequence, "event": event, "phase": "measure", "capture_id": "capture",
+         "reservation_id": "reservation", "monotonic_ns": (sequence + 1) * 1_000_000_000,
+         "wall_ns": (sequence + 2) * 1_000_000_000, "facts": copy.deepcopy(facts),
+         "status": "completed" if event == "end" else "active"}
+        for sequence, event in enumerate(("start", "end"))
+    ]
+    rows = [header, *samples]
+    if change is not None:
+        change(rows)
+    return evidence.write_raw_file(root / "observations.jsonl", [
+        (json.dumps(row, sort_keys=True) + "\n").encode() for row in rows
+    ])
+
+
+def test_host_transcript_uses_independent_expected_capture_and_observed_count(tmp_path):
+    raw = _host_transcript(tmp_path)
+    observed = host_monitor.validate(raw, capture_id="capture", profile="profile")
+    assert observed == {
+        "os": "macos", "arch": "arm64", "cpu_count": 8,
+        "hostname_hash": "sha256:" + "a" * 64, "observed_samples": 2,
+        "capture_id": "capture", "profile": "profile", "digest": raw.sha256,
+    }
+    with pytest.raises(evidence.EvidenceError, match="identity or policy differs"):
+        host_monitor.validate(raw, capture_id="other", profile="profile")
+
+
+@pytest.mark.parametrize("damage", [
+    "missing_end", "duplicate", "sequence", "reservation", "gap", "clock",
+    "bool_count", "bad_mode", "hardlink", "failed_end", "wrong_profile",
+])
+def test_host_transcript_refuses_corrupt_or_partial_observations(tmp_path, damage):
+    def mutate(rows):
+        if damage == "missing_end":
+            rows.pop()
+        elif damage == "duplicate":
+            rows.append(copy.deepcopy(rows[-1]))
+        elif damage == "sequence":
+            rows[-1]["sequence"] = 2
+        elif damage == "reservation":
+            rows[-1]["reservation_id"] = "foreign"
+        elif damage == "gap":
+            rows[-1]["monotonic_ns"] += host_monitor.MAX_GAP_NS
+        elif damage == "clock":
+            rows[-1]["wall_ns"] += host_monitor.CLOCK_TOLERANCE_NS + 1
+        elif damage == "bool_count":
+            rows[-1]["facts"]["process_count"] = True
+        elif damage == "bad_mode":
+            rows[0]["lock_identity"][3] = stat.S_IFDIR | 0o700
+        elif damage == "hardlink":
+            rows[0]["lock_identity"][4] = 2
+        elif damage == "failed_end":
+            rows[-1]["status"] = "failed"
+        elif damage == "wrong_profile":
+            rows[0]["profile"] = "other"
+
+    with pytest.raises(evidence.EvidenceError):
+        host_monitor.validate(_host_transcript(tmp_path, change=mutate),
+                              capture_id="capture", profile="profile")
+
+
+def test_host_monitor_cooperative_reservation_and_complete_transcript(tmp_path, monkeypatch):
+    host = {"os": "macos", "arch": "arm64", "cpu_count": 8,
+            "hostname_hash": "sha256:" + "a" * 64}
+    facts = {"load_average": [0.1, 0.2, 0.3], "disk_available_bytes": 100,
+             "process_count": 1, "process_snapshot_sha256": "sha256:" + "b" * 64,
+             "foreign_rust": []}
+    monkeypatch.setattr(host_monitor, "lock_path", lambda: tmp_path / "lock")
+    monkeypatch.setattr(host_monitor, "observe", lambda: (host, facts))
+    first = host_monitor.HostMonitor(tmp_path / "first.jsonl", "capture", "profile").start()
+    try:
+        first.phase("build")
+        with pytest.raises(evidence.EvidenceError, match="already held"):
+            host_monitor.HostMonitor(tmp_path / "second.jsonl", "capture2", "profile").start()
+        raw = first.finish()
+        assert host_monitor.validate(raw, capture_id="capture", profile="profile")["observed_samples"] == 3
+        second = host_monitor.HostMonitor(tmp_path / "third.jsonl", "capture3", "profile").start()
+        second.finish()
+    finally:
+        if first.fd is not None:
+            first.finish(failed=True)
+
+
+def test_host_monitor_failure_retains_partial_raw_and_refuses_success(tmp_path, monkeypatch):
+    host = {"os": "macos", "arch": "arm64", "cpu_count": 8,
+            "hostname_hash": "sha256:" + "a" * 64}
+    facts = {"load_average": [0.1, 0.2, 0.3], "disk_available_bytes": 100,
+             "process_count": 1, "process_snapshot_sha256": "sha256:" + "b" * 64,
+             "foreign_rust": []}
+    monkeypatch.setattr(host_monitor, "lock_path", lambda: tmp_path / "lock")
+    calls = iter([(host, facts), RuntimeError("observation oracle")])
+
+    def observe():
+        value = next(calls)
+        if isinstance(value, BaseException):
+            raise value
+        return value
+
+    monkeypatch.setattr(host_monitor, "observe", observe)
+    monitor = host_monitor.HostMonitor(tmp_path / "partial.jsonl", "capture", "profile").start()
+    with pytest.raises(RuntimeError, match="observation oracle"):
+        monitor.phase("measure")
+    with pytest.raises(evidence.EvidenceError, match="observation oracle"):
+        monitor.finish(failed=True)
+    assert (tmp_path / "partial.jsonl").is_file()
+    assert monitor.fd is None
 
 
 @pytest.mark.parametrize("error_type", [ValueError, KeyboardInterrupt])
@@ -431,6 +555,75 @@ def prepared_run(root, name, case):
             "oracle.txt": evidence.write_raw_file(root / "work" / name / "oracle.txt", [b"oracle"])
         },
     }
+
+
+def test_monitored_publication_binds_raw_host_in_every_reader(tmp_path, monkeypatch):
+    import os
+
+    from evidence_bridge import verify_host_binding
+    from producer_execution import execute
+
+    root = tmp_path / "evidence"
+    monkeypatch.setattr(host_monitor, "lock_path", lambda: tmp_path / "host-lock")
+    host = {"os": "macos", "arch": "arm64", "cpu_count": 8,
+            "hostname_hash": "sha256:" + "a" * 64}
+    facts = {"load_average": [0.1, 0.2, 0.3], "disk_available_bytes": 100,
+             "process_count": 1, "process_snapshot_sha256": "sha256:" + "b" * 64,
+             "foreign_rust": []}
+    monkeypatch.setattr(host_monitor, "observe", lambda: (host, facts))
+    prepared = prepared_run(root, "capture-0", "case")
+    prepared["boundary"] = {**prepared["boundary"],
+                            "start_event": "criterion_sample_start",
+                            "end_event": "criterion_sample_end"}
+    registry = evidence.digest_bytes(b"registry")
+    with capture.CaptureEpoch(tmp_path / "repo", root, "profile", capture_id="capture",
+                              monitor_host=True) as epoch:
+        epoch.execute(
+            execute, [sys.executable, "-c", "print('owned host observation')"],
+            cwd=tmp_path, env=dict(os.environ), timeout=10,
+            log_dir=epoch.work / "execution" / "measure",
+        )
+        document = capture.publish_capture(
+            root, capture_id="capture", profile="profile", registry_digest=registry,
+            expected_cases={"family": ["case"]}, runs=[prepared],
+            replay=lambda *_: None, verify_source=lambda: None,
+        )
+    assert capture.load_capture(root, profile="profile", registry_digest=registry) == document
+    store = evidence.RunStore(root)
+    record = store.load("capture-0")
+    assert record["host"]["lease"]["mode"] == "exclusive"
+    assert record["host"]["lease"]["observed_samples"] >= 3
+    assert len([ref for ref in record["raw"] if ref["path"] == "raw/host-observations.jsonl"]) == 1
+    assert len([row for row in record["inputs"] if row["id"] == "benchmark-host-observations"]) == 1
+    verify_host_binding(store, record, capture_id="capture")
+    for mutate in (
+        lambda row: row["raw"].pop(),
+        lambda row: row["inputs"].pop(),
+        lambda row: row["host"]["lease"].update(observed_samples=0),
+        lambda row: row["verdict"].update(scope="performance"),
+    ):
+        damaged = copy.deepcopy(record)
+        mutate(damaged)
+        with pytest.raises(evidence.EvidenceError):
+            verify_host_binding(store, damaged, capture_id="capture")
+    with pytest.raises(evidence.EvidenceError, match="capture ID"):
+        verify_host_binding(store, record, capture_id="foreign")
+
+
+def test_declared_monitored_boundary_cannot_publish_without_observations(tmp_path):
+    root = tmp_path / "evidence"
+    prepared = prepared_run(root, "capture-0", "case")
+    prepared["boundary"] = {**prepared["boundary"],
+                            "start_event": "criterion_sample_start"}
+    with pytest.raises(evidence.EvidenceError, match="host observation inventory"):
+        with capture.CaptureEpoch(tmp_path / "repo", root, "profile", capture_id="capture"):
+            capture.publish_capture(
+                root, capture_id="capture", profile="profile",
+                registry_digest=evidence.digest_bytes(b"registry"),
+                expected_cases={"family": ["case"]}, runs=[prepared],
+                replay=lambda *_: None, verify_source=lambda: None,
+            )
+    assert not (root / "profiles/profile.json").exists()
 
 
 def publish_prepared(root, **overrides):

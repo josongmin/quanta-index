@@ -1018,6 +1018,11 @@ mod l4_witness_regressions {
                 vec![(0, 2), (3, 2), (6, 2)],
             ),
             (
+                LqExpr::Leaf(LqLeaf::RawString("aa".into())),
+                "aaa",
+                vec![(0, 2), (1, 2)],
+            ),
+            (
                 LqExpr::Leaf(LqLeaf::Regex("needle[0-9]+".into())),
                 "needle1 needle22",
                 vec![(0, 7), (8, 8)],

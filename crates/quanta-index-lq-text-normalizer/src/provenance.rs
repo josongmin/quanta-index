@@ -213,8 +213,8 @@ impl<'a> MappedText<'a> {
         self.find_substrings(needle).next()
     }
 
-    /// Non-overlapping raw-substring witnesses with the same transformation
-    /// and match semantics as [`Self::find_substring`].
+    /// Every raw-substring witness, including overlapping occurrences, with
+    /// the same transformation and first-match semantics as [`Self::find_substring`].
     pub fn find_substrings(&self, needle: &str) -> impl Iterator<Item = Range<usize>> + '_ {
         crate::tokens::substring_ranges_in_case_text(&self.transformed, needle, self.case)
     }
@@ -434,7 +434,7 @@ mod tests {
     }
 
     #[test]
-    fn l4_substring_ranges_keep_folded_coordinates_and_nonoverlap() -> Result<(), MappingError> {
+    fn l4_substring_ranges_keep_folded_coordinates_and_overlaps() -> Result<(), MappingError> {
         let folded = mapped("İ İ", "İ İ", CaseMode::Folded)?;
         assert_eq!(
             folded.find_substrings("i\u{307}").collect::<Vec<_>>(),
@@ -444,7 +444,12 @@ mod tests {
         let sensitive = mapped("aaa", "aaa", CaseMode::Sensitive)?;
         assert_eq!(
             sensitive.find_substrings("aa").collect::<Vec<_>>(),
-            vec![0..2]
+            vec![0..2, 1..3]
+        );
+        let utf8 = mapped("ééé", "ééé", CaseMode::Sensitive)?;
+        assert_eq!(
+            utf8.find_substrings("éé").collect::<Vec<_>>(),
+            vec![0..4, 2..6]
         );
         Ok(())
     }

@@ -9,11 +9,12 @@ use quanta_index_contract::lex::{
     LanguageCode, SymbolKindCode, SymbolKindFamily, SymbolRecord, SymbolRelationship, SymbolSpan,
 };
 use quanta_index_contract::{
-    BatchIngestMode, ChunkId, ChunkRecord, LQ_VERSION_TAG, LqCase, LqExpr, LqLeaf, LqOptions,
-    LqQuery, LqSpan, LqYesNoOnly, ManifestGeneration, PreviewKind, PreviewUnavailableReason,
-    RepoId, RepoRelativePath, RevisionId, SearchCorpusIngestBatch, SearchCorpusReplaceScope,
-    SourceFileCoverage, SourceFileKey, SourceFileRevision, SourcePublicationEvent, SymbolCoverage,
-    SymbolId, source_event_payload_sha256, source_file_unit_set_sha256,
+    BatchIngestMode, ChunkId, ChunkRecord, HighlightSpan, LQ_VERSION_TAG, LqCase, LqExpr, LqLeaf,
+    LqOptions, LqQuery, LqSpan, LqYesNoOnly, ManifestGeneration, PreviewKind,
+    PreviewUnavailableReason, RepoId, RepoRelativePath, RevisionId, SearchCorpusIngestBatch,
+    SearchCorpusReplaceScope, SourceFileCoverage, SourceFileKey, SourceFileRevision,
+    SourcePublicationEvent, SymbolCoverage, SymbolId, source_event_payload_sha256,
+    source_file_unit_set_sha256,
 };
 use quanta_index_core::{LexicalIndexOpenPort, RequestBudgetV1, SearchCorpusBatchBuildPort};
 use quanta_index_lexical::LexicalAdapter;
@@ -189,6 +190,35 @@ fn indexed_and_manual_preserve_fixed_original_focus_after_checkout_drift() -> Te
             }));
             hit.validate_source_metadata().map_err(str::to_owned)?;
         }
+    }
+    Ok(())
+}
+
+#[test]
+fn indexed_and_manual_preserve_overlapping_raw_witnesses() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+    let batch = batch(1, None, vec![file_scope("overlap.rs", "ababa")?])?;
+    adapter.build_batch(&batch)?;
+    let view = adapter.open(&batch.repo_id, &batch.revision_id, batch.generation)?;
+    for index_mode in [None, Some(LqYesNoOnly::No)] {
+        let mut q = query("unused");
+        q.expr = LqExpr::Leaf(LqLeaf::RawString("aba".into()));
+        q.options.index_mode = index_mode;
+        let request = RequestBudgetV1::unbounded();
+        let hits = view.search(&q, 1, &request)?;
+        assert_eq!(hits.len(), 1);
+        let hit = hits.first().ok_or("overlap hit missing")?;
+        assert_eq!(hit.snippet, "ababa");
+        assert_eq!(
+            hit.highlights,
+            [
+                HighlightSpan { start: 0, len: 3 },
+                HighlightSpan { start: 2, len: 3 },
+            ]
+        );
+        assert_eq!(hit.snippet_hit_offset, Some(0));
+        hit.validate_source_metadata().map_err(str::to_owned)?;
     }
     Ok(())
 }

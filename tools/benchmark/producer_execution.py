@@ -372,7 +372,8 @@ def _execute_owned(
 
 
 def execute(
-    argv: list[str], *, cwd: Path, env: dict[str, str], timeout: int, log_dir: Path
+    argv: list[str], *, cwd: Path, env: dict[str, str], timeout: int, log_dir: Path,
+    custody_fds: tuple[int, ...] = (),
 ) -> ExecutionResult:
     """Retain bounded file-backed output for every launched execution epoch.
 
@@ -391,7 +392,10 @@ def execute(
         )
         command, primary = None, None
         try:
-            command = _execute_owned(argv, cwd=cwd, env=env, timeout=timeout, sinks=sinks)
+            command = _execute_owned(
+                argv, cwd=cwd, env=env, timeout=timeout, sinks=sinks,
+                custody_fds=custody_fds,
+            )
         except BaseException as error:
             primary = error
         refs, failures = [], []

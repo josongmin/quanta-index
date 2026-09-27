@@ -88,6 +88,8 @@ def test_capture_contracts_have_one_local_and_ci_entrypoint() -> None:
         "test_producer_notifications.py",
         "test_bootstrap_cache.py",
         "test_proof_command_timings.py",
+        "test_pair_replay_workspace.py",
+        "test_cargo_preparation.py",
     ):
         assert f"tools/ci/tests/{filename}" in command
     assert len(command[8:]) == len(set(command[8:]))
@@ -112,6 +114,8 @@ def test_execution_regressions_are_registered_to_the_real_owner_scope():
         ("test_producer_notifications.py", "producer_execution.py", False),
         ("test_bootstrap_cache.py", "retrieval/evaluator.py", True),
         ("test_proof_command_timings.py", "retrieval/portable_proof.py", True),
+        ("test_pair_replay_workspace.py", "pair_capture.py", False),
+        ("test_cargo_preparation.py", "retrieval/portable_proof.py", True),
     ):
         path = f"tools/ci/tests/{filename}"
         registered = [entry for entry in authority["python_targets"] if entry["path"] == path]
@@ -134,6 +138,8 @@ def test_execution_regression_owners_have_nonempty_live_collection(tmp_path):
         "test_producer_notifications.py",
         "test_bootstrap_cache.py",
         "test_proof_command_timings.py",
+        "test_pair_replay_workspace.py",
+        "test_cargo_preparation.py",
     )
     inventory = tmp_path / "inventory.json"
     result = subprocess.run(

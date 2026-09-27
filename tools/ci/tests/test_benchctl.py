@@ -296,19 +296,56 @@ def test_clean_preflight_runs_exact_profile_recipes(monkeypatch, tmp_path: Path)
 
     calls: list[list[str]] = []
 
-    def fake_run(command, **_kwargs):
+    def fake_execute(command, **_kwargs):
         calls.append(command)
-        return SimpleNamespace(returncode=0)
+        return SimpleNamespace(command={"exit_code": 0})
 
     monkeypatch.setattr(MODULE, "preflight", clean)
     monkeypatch.setattr(MODULE, "validate", lambda *_args: 0)
-    monkeypatch.setattr(MODULE.subprocess, "run", fake_run)
+    monkeypatch.setattr(MODULE, "execute", fake_execute)
 
     assert MODULE.main(["--repo-root", str(tmp_path), "run", "systems"]) == 0
     assert calls == [
         ["just", "rust-verify-quality-freshness"],
         ["just", "rust-verify-quality-open-loop"],
     ]
+
+
+def test_command_only_native_run_uses_owned_execution_and_retains_nonzero_logs(
+    monkeypatch, tmp_path: Path, capsys,
+) -> None:
+    args = _native_profile_fixture(monkeypatch, tmp_path, "systems")
+    repo = args["repo_root"]
+    raw_receipt = args["receipt"].read_bytes()
+
+    def preflight(_repo, _profile, receipt, _manifest):
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        receipt.write_bytes(raw_receipt)
+        return 0
+
+    monkeypatch.setattr(MODULE, "require_declared_baselines", lambda *_: None)
+    monkeypatch.setattr(MODULE, "require_clean_worktree", lambda *_: None)
+    monkeypatch.setattr(MODULE, "resolve_checkout_head", lambda *_: args["initial_head"])
+    monkeypatch.setattr(MODULE, "require_frozen_source", lambda *_: None)
+    monkeypatch.setattr(MODULE, "preflight", preflight)
+    monkeypatch.setattr(MODULE.tempfile, "gettempdir", lambda: str(tmp_path))
+    tools = tmp_path / "fixture-tools"
+    tools.mkdir()
+    just = tools / "just"
+    just.write_text("#!/bin/sh\nprintf legacy-stdout\nprintf legacy-stderr >&2\nexit 7\n")
+    just.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tools) + os.pathsep + os.environ["PATH"])
+
+    assert MODULE.main(["--repo-root", str(repo), "run", "systems"]) == 7
+    logs = list(tmp_path.glob("quanta-native-command-*/recipe-00"))
+    assert len(logs) == 1
+    assert (logs[0] / "stdout").read_bytes() == b"legacy-stdout"
+    assert (logs[0] / "stderr").read_bytes() == b"legacy-stderr"
+    terminal = json.loads((logs[0] / "execution.json").read_text())
+    assert terminal["status"] == "failed"
+    assert terminal["command"]["exit_code"] == 7
+    assert str(logs[0]) in capsys.readouterr().err
+    assert not (args["evidence_root"] / "profiles").exists()
 
 
 def test_clean_label_with_overloaded_host_is_refused(tmp_path: Path) -> None:
@@ -366,11 +403,11 @@ def _prepare_source_drift_run(monkeypatch, tmp_path: Path) -> list[list[str]]:
     monkeypatch.setattr(MODULE, "compare", lambda *_args: 0)
     calls: list[list[str]] = []
 
-    def run(command, **_kwargs):
+    def fake_execute(command, **_kwargs):
         calls.append(command)
-        return SimpleNamespace(returncode=0)
+        return SimpleNamespace(command={"exit_code": 0})
 
-    monkeypatch.setattr(MODULE.subprocess, "run", run)
+    monkeypatch.setattr(MODULE, "execute", fake_execute)
     return calls
 
 

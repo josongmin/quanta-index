@@ -368,7 +368,21 @@ targets = [
   "benchmark-proof-command-timings-python-owner",
   "benchmark-resource-admission-python-owner",
   "benchmark-cargow-resource-admission-python-owner",
+  "benchmark-pair-replay-workspace-python-owner",
+  "benchmark-cargo-preparation-python-owner",
 ]
+
+[[python_targets]]
+id = "benchmark-pair-replay-workspace-python-owner"
+path = "tools/ci/tests/test_pair_replay_workspace.py"
+owner = "tools/benchmark/pair_capture.py"
+rail = "pr-benchmark-control-python"
+
+[[python_targets]]
+id = "benchmark-cargo-preparation-python-owner"
+path = "tools/ci/tests/test_cargo_preparation.py"
+owner = "tools/benchmark/retrieval/portable_proof.py"
+rail = "pr-benchmark-control-python"
 
 [[python_targets]]
 id = "benchmark-producer-notifications-python-owner"

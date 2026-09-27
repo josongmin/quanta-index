@@ -172,6 +172,33 @@ fn assert_multihit_highlights(client: &QuantaIndex, pin: &GenerationPin) -> Test
     Ok(())
 }
 
+fn assert_overlapping_raw_highlights(client: &QuantaIndex, pin: &GenerationPin) -> TestResult {
+    let response = client
+        .lexical()
+        .query()
+        .native("'aba'")
+        .pinned(pin.clone())
+        .top_k(1)
+        .execute()?;
+    let candidate = response.results.first().ok_or("overlap source missing")?;
+    let expected = [
+        HighlightSpan { start: 0, len: 3 },
+        HighlightSpan { start: 2, len: 3 },
+    ];
+    if response.results.len() != 1
+        || candidate.repo_relative_path.as_str() != "src/overlap.rs"
+        || candidate.snippet != "ababa"
+        || candidate.highlights.as_slice() != expected.as_slice()
+        || candidate.snippet_hit_offset != Some(0)
+    {
+        return Err(format!("overlapping raw SDK spans are incomplete: {response:?}").into());
+    }
+    candidate
+        .validate_source_metadata()
+        .map_err(str::to_owned)?;
+    Ok(())
+}
+
 #[test]
 fn l4_sdk_preview_uses_matcher_ranges_and_original_source_bytes() -> TestResult {
     let mut runtime = E2eRuntime::boot()?;
@@ -188,6 +215,7 @@ fn l4_sdk_preview_uses_matcher_ranges_and_original_source_bytes() -> TestResult 
     runtime.ingest_text("repo", "src/long241.rs", &oversized_focus)?;
     runtime.ingest_text("repo", "src/needlepath.rs", "unrelated content")?;
     runtime.ingest_text("repo", "src/multi.rs", "threehits threehits threehits")?;
+    runtime.ingest_text("repo", "src/overlap.rs", "ababa")?;
     let pin = runtime.generation_pin();
     let _sealed = runtime.seal()?;
     runtime.activate_last_sealed_generation()?;
@@ -274,6 +302,7 @@ fn l4_sdk_preview_uses_matcher_ranges_and_original_source_bytes() -> TestResult 
     )?;
     assert_path_preview(&client, &pin)?;
     assert_multihit_highlights(&client, &pin)?;
+    assert_overlapping_raw_highlights(&client, &pin)?;
     drop(client);
     Ok(runtime.stop()?)
 }
@@ -284,6 +313,7 @@ fn l4_sdk_preview_survives_daemon_process_restart() -> TestResult {
     let mut runtime = E2eRuntime::boot_in(state.path())?;
     runtime.ingest_text("repo", "src/decomposed.rs", "cafe\u{301}")?;
     runtime.ingest_text("repo", "src/multi.rs", "threehits threehits threehits")?;
+    runtime.ingest_text("repo", "src/overlap.rs", "ababa")?;
     let pin = runtime.generation_pin();
     let _sealed = runtime.seal()?;
     runtime.activate_last_sealed_generation()?;
@@ -306,6 +336,7 @@ fn l4_sdk_preview_survives_daemon_process_restart() -> TestResult {
             true,
         )?;
         assert_multihit_highlights(&client, &pin)?;
+        assert_overlapping_raw_highlights(&client, &pin)?;
         drop(client);
         daemon.stop()?;
     }

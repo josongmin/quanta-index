@@ -725,7 +725,8 @@ def test_complete_profile_transaction_with_synthetic_native_owner(tmp_path, monk
         },
     }
 
-    def producer(argv, *, cwd, env, timeout, log_dir):
+    def producer(argv, *, cwd, env, timeout, log_dir, custody_fds):
+        assert len(custody_fds) == 1
         command = {
             "argv": argv,
             "cwd": str(cwd),

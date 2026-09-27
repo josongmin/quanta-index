@@ -6,6 +6,7 @@ import fcntl
 import math
 import os
 import platform
+import stat
 import subprocess
 import tempfile
 import threading
@@ -153,6 +154,8 @@ def validate(raw: RawFile, *, capture_id: str, profile: str) -> dict:
                     raise EvidenceError("host reservation identity is missing")
                 for value in identity:
                     _uint(value, "lock identity")
+                if (not stat.S_ISREG(identity[3]) or identity[4] != 1):
+                    raise EvidenceError("host reservation is not a singly linked regular file")
                 host = row["host"]
                 if not isinstance(host, dict) or set(host) != {"os", "arch", "cpu_count", "hostname_hash"}:
                     raise EvidenceError("host identity is incomplete")
@@ -209,6 +212,8 @@ class HostMonitor:
     def start(self):
         from tools.ci.resource_admission import check_lock
 
+        if self.fd is not None or self.writer is not None or self.thread is not None:
+            raise EvidenceError("host monitor cannot be started twice")
         lock = lock_path()
         self.fd = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
         try:
@@ -272,14 +277,23 @@ class HostMonitor:
             if self.error is not None:
                 raise EvidenceError(f"host monitor failed: {self.error}") from self.error
             self.phase_name = _run_id(name)
-            self._sample("phase")
+            try:
+                self._sample("phase")
+            except BaseException as error:
+                self.error = error
+                self.stop_event.set()
+                raise
 
     def finish(self, *, failed=False) -> RawFile:
+        if self.writer is None or self.fd is None:
+            raise EvidenceError("host monitor was not started or was already finished")
         self.stop_event.set()
         if self.thread is not None:
             self.thread.join(timeout=5)
             if self.thread.is_alive():
-                raise EvidenceError("host monitor did not stop before deadline")
+                # Do not close a descriptor while a still-running observer may
+                # write to it. This is a failed, retained diagnostic epoch.
+                raise EvidenceError(f"host monitor did not stop; retained raw: {self.path}")
         try:
             if self.error is not None:
                 raise EvidenceError(f"host monitor failed: {self.error}") from self.error
@@ -292,6 +306,8 @@ class HostMonitor:
             self.close()
 
     def close(self):
+        if self.thread is not None and self.thread.is_alive():
+            raise EvidenceError(f"cannot release a live host observer: {self.path}")
         if self.writer is not None:
             self.writer.__exit__(None, None, None)
             self.writer = None

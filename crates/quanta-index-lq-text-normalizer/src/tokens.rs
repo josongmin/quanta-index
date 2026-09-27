@@ -228,7 +228,10 @@ pub(crate) fn substring_range_in_case_text(
     substring_ranges_in_case_text(haystack, needle, case).next()
 }
 
-/// Reuse the raw-substring truth transformation for each non-overlapping hit.
+/// Enumerate every raw-substring occurrence, including overlaps.
+///
+/// Reuse the truth transformation and advance one UTF-8 scalar from the
+/// previous start so a later occurrence is not hidden by an earlier match.
 pub(crate) fn substring_ranges_in_case_text<'a>(
     haystack: &'a str,
     needle: &str,
@@ -245,7 +248,8 @@ pub(crate) fn substring_ranges_in_case_text<'a>(
         let relative = remaining.find(needle.as_str())?;
         let start = cursor.saturating_add(relative);
         let end = start.saturating_add(needle.len());
-        cursor = end;
+        let first = haystack.get(start..)?.chars().next()?;
+        cursor = start.saturating_add(first.len_utf8());
         Some(start..end)
     })
 }

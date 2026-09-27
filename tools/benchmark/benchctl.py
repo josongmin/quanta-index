@@ -26,6 +26,7 @@ import socket
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -53,9 +54,10 @@ from evidence import (  # noqa: E402
     _read_control_file,
     digest_of,
     file_digest,
+    parse_json,
 )
 from manifest import DEFAULT_MANIFEST_PATH, ManifestError, load_manifest  # noqa: E402
-from producer_execution import execute  # noqa: E402
+from producer_execution import ProducerExecutionError, execute  # noqa: E402
 from profile_capture import (  # noqa: E402
     capture_entrypoint,
     capture_error,
@@ -748,6 +750,9 @@ def replay_command(repo_root: Path, reference: str, evidence_root: Path | None) 
         run_dir = store.run_dir(run_id)
     try:
         evidence = store.load(run_id)
+        from evidence_bridge import verify_host_binding
+
+        verify_host_binding(store, evidence)
     except (ValueError, OSError) as exc:
         print(f"ERROR: replay refused: {exc}", file=sys.stderr)
         return 2
@@ -814,10 +819,11 @@ def replay_command(repo_root: Path, reference: str, evidence_root: Path | None) 
         checker = _load_lint_module(repo_root)
         family = native_families[evidence["family"]]
         artifacts = []
-        if len(evidence["raw"]) > checker.native_artifact_limit(evidence["family"]):
+        native_refs = [ref for ref in evidence["raw"] if ref["path"] != "raw/host-observations.jsonl"]
+        if len(native_refs) > checker.native_artifact_limit(evidence["family"]):
             print("ERROR: replay native inventory exceeds registered count", file=sys.stderr)
             return 2
-        for reference in evidence["raw"]:
+        for reference in native_refs:
             native = run_dir / reference["path"]
             if native.suffix != ".json":
                 print("ERROR: replay native artifact is not JSON", file=sys.stderr)
@@ -1001,8 +1007,10 @@ def promote_profile_runs(
         return 2
     if receipt_digest != preflight_digest:
         return refuse_capture("benchmark preflight receipt changed during capture")
-    lease_mode = "shared"
-    lease_samples = 1
+    # Standalone artifact import has no observed producer. The monitored
+    # capture epoch replaces this diagnostic envelope before publication.
+    lease_mode = "none"
+    lease_samples = 0
     runs: list[dict] = []
     prepared = {}
     try:
@@ -1910,7 +1918,8 @@ def main(argv: list[str] | None = None) -> int:
     return _native_tail(args, argv, repo_root, profile, manifest, artifact_profile)
 
 
-@capture_entrypoint(profile_argument="profile_name", repo_argument="repo_root", root_argument="evidence_root")
+@capture_entrypoint(profile_argument="profile_name", repo_argument="repo_root",
+                    root_argument="evidence_root", monitor_host=True)
 def _capture_native_run(repo_root, evidence_root, profile_name, *, args, argv, profile, manifest, artifact_profile):
     return _native_tail(args, argv, repo_root, profile, manifest, artifact_profile)
 
@@ -1969,27 +1978,47 @@ def _native_tail(args, argv, repo_root, profile, manifest, artifact_profile):
             return refuse_capture(f"profile {args.profile!r} has no registered producer")
         capture_started_ns = time.time_ns()
         execution_started_ns = time.monotonic_ns()
-        for recipe in recipes:
+        command_logs = None
+        if requested_root is None:
+            diagnostic_parent = Path(tempfile.gettempdir()).resolve()
+            if diagnostic_parent == repo_root.resolve() or diagnostic_parent.is_relative_to(repo_root.resolve()):
+                return refuse_capture("command diagnostic root must stay outside the checkout")
+            command_logs = Path(tempfile.mkdtemp(prefix="quanta-native-command-", dir=diagnostic_parent))
+        for index, recipe in enumerate(recipes):
             assert isinstance(recipe, str)
             command = ["just", recipe]
             if recipe == "rust-bench-dsl-cold" and cold_samples is not None:
                 command.append(str(cold_samples))
+            log_dir = (current_capture().work / "execution" / recipe if requested_root is not None
+                       else command_logs / f"recipe-{index:02d}")
             try:
                 capture_phase("execution", recipe=recipe)
                 if requested_root is not None:
                     current_capture().execute(
                         execute, command, cwd=repo_root, env=dict(os.environ),
-                        timeout=3600, log_dir=current_capture().work / "execution" / recipe,
+                        timeout=3600, log_dir=log_dir,
                     )
-                    returncode = 0
                 else:
-                    returncode = subprocess.run(command, cwd=repo_root, check=False, timeout=3600).returncode
+                    execute(command, cwd=repo_root, env=dict(os.environ),
+                            timeout=3600, log_dir=log_dir)
+                    print(f"benchmark producer logs: {log_dir}", file=sys.stderr)
+            except ProducerExecutionError as exc:
+                capture_error(exc)
+                print(f"ERROR: producer recipe {recipe!r} refused: {exc}; retained logs: {log_dir}", file=sys.stderr)
+                if requested_root is None:
+                    try:
+                        record = parse_json(_read_control_file(log_dir / "execution.json").decode())
+                        terminal = record["command"] if record["status"] == "failed" else None
+                        code = terminal["exit_code"] if isinstance(terminal, dict) else None
+                        if type(code) is int and code != 0:
+                            return code
+                    except (OSError, ValueError, KeyError, TypeError):
+                        pass
+                return 2
             except (subprocess.TimeoutExpired, OSError, ValueError) as exc:
                 capture_error(exc)
                 print(f"ERROR: producer recipe {recipe!r} refused: {exc}", file=sys.stderr)
                 return 2
-            if returncode:
-                return refuse_capture(f"producer recipe {recipe!r} returned exit {returncode}", returncode)
             try:
                 require_frozen_source(repo_root, initial_head)
             except RuntimeError as exc:

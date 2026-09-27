@@ -152,6 +152,8 @@ def test_changed_file_invalidates_the_closure(tmp_path: Path) -> None:
         "test_proof_command_timings.py",
         "test_resource_admission.py",
         "test_cargow_resource_admission.py",
+        "test_pair_replay_workspace.py",
+        "test_cargo_preparation.py",
     ],
 )
 def test_execution_owner_test_mutation_invalidates_its_bound_closure(tmp_path, filename):

@@ -35,6 +35,9 @@ from evidence import (  # noqa: E402
     seal,
     validate_payload,
 )
+from host_monitor import INPUT_ID as HOST_INPUT_ID  # noqa: E402
+from host_monitor import RAW_NAME as HOST_RAW_NAME  # noqa: E402
+from host_monitor import validate as validate_host_observations  # noqa: E402
 from native_contracts import validate_concurrency  # noqa: E402
 
 ROOT = SCRIPT_DIR.parents[1]
@@ -123,6 +126,14 @@ def host_identity(
 ) -> dict[str, Any]:
     """Host identity with a hashed hostname and an explicit lease observation."""
     hostname_hash = digest_bytes(hostname.encode("utf-8"))
+    return _host_envelope(
+        policy, os_name, arch, cpu_count, hostname_hash,
+        lease_mode, lease_samples, extra_identity,
+    )
+
+
+def _host_envelope(policy, os_name, arch, cpu_count, hostname_hash,
+                   lease_mode, lease_samples, extra_identity) -> dict[str, Any]:
     identity = digest_bytes(
         f"{policy}|{os_name}|{arch}|{cpu_count}|{hostname_hash}|{lease_mode}|{extra_identity}".encode()
     )
@@ -135,6 +146,62 @@ def host_identity(
         "identity_digest": identity,
         "lease": {"mode": lease_mode, "observed_samples": lease_samples},
     }
+
+
+def host_from_observations(raw: RawFile, *, policy: str, capture_id: str, profile: str) -> dict[str, Any]:
+    """A typed diagnostic envelope derived solely from a complete transcript."""
+    observed = validate_host_observations(raw, capture_id=capture_id, profile=profile)
+    return _host_envelope(
+        policy, observed["os"], observed["arch"], observed["cpu_count"],
+        observed["hostname_hash"], "exclusive", observed["observed_samples"], raw.sha256,
+    )
+
+
+def verify_host_binding(store: RunStore, evidence: dict, *, capture_id: str | None = None) -> None:
+    """Recompute an observed host from immutable raw, never from claimed counts."""
+    from evidence import _run_id
+
+    start = evidence["boundary"]["start_event"]
+    required = start in {"profile_producer_exec", "criterion_sample_start"}
+    references = [row for row in evidence["raw"] if row["path"] == f"raw/{HOST_RAW_NAME}"]
+    inputs = [row for row in evidence["inputs"] if row["id"] == HOST_INPUT_ID]
+    if not required and not references and not inputs and evidence["host"]["lease"]["mode"] != "exclusive":
+        return
+    if not required or len(references) != 1 or len(inputs) != 1:
+        raise EvidenceError("host observation inventory differs from the capture boundary")
+    if evidence["verdict"]["scope"] != "diagnostic":
+        raise EvidenceError("cooperative host observations cannot qualify performance")
+    run_id = evidence["run_id"]
+    if capture_id is None:
+        if start == "criterion_sample_start":
+            capture_id, separator, suffix = run_id.rpartition("-")
+            if not separator or not suffix.isdecimal():
+                raise EvidenceError("Criterion run has no independent capture ID")
+        else:
+            prefix = evidence["family"] + "-"
+            if not run_id.startswith(prefix):
+                raise EvidenceError("native run has no family-bound capture ID")
+            capture_id, separator, suffix = run_id[len(prefix):].rpartition("-")
+            if not separator or len(suffix) != 8 or any(c not in "0123456789abcdef" for c in suffix):
+                raise EvidenceError("native run has no inventory-bound capture ID")
+    capture_id = _run_id(capture_id)
+    if (start == "criterion_sample_start" and not run_id.startswith(capture_id + "-")) or (
+        start == "profile_producer_exec" and not run_id.startswith(evidence["family"] + "-" + capture_id + "-")
+    ):
+        raise EvidenceError("host observation capture ID differs from run identity")
+    reference, bound_input = references[0], inputs[0]
+    if (bound_input != {"id": HOST_INPUT_ID, "availability": "present",
+                       "digest": reference["sha256"], "reason": None}):
+        raise EvidenceError("host observation input commitment differs from raw")
+    raw = RawFile.capture(store.run_dir(run_id) / reference["path"])
+    if (raw.sha256, raw.size) != (reference["sha256"], reference["bytes"]):
+        raise EvidenceError("host observation raw bytes differ from immutable reference")
+    derived = host_from_observations(
+        raw, policy=evidence["host"]["policy"], capture_id=capture_id,
+        profile=evidence["profile"],
+    )
+    if evidence["host"] != derived:
+        raise EvidenceError("host envelope differs from raw observations")
 
 
 def latency_payload_from_artifact(artifact: dict[str, Any]) -> dict[str, Any]:

@@ -31,6 +31,7 @@ from evidence_bridge import (
     host_identity,
     micro_payload_from_criterion,
     source_identity,
+    verify_host_binding,
 )
 from producer_execution import execute
 from profile_capture import (
@@ -276,6 +277,7 @@ def replay_run(store: RunStore, evidence: dict, producer: dict | None = None) ->
     capture_id = _run_id(execution.get("capture_id"))
     if not evidence["run_id"].startswith(capture_id + "-"):
         raise EvidenceError("Criterion run does not belong to its native capture")
+    verify_host_binding(store, evidence, capture_id=capture_id)
     binaries = evidence["build"]["binaries"]
     if len(binaries) != 1 or binaries[0]["sha256"] != execution.get("binary_digest"):
         raise EvidenceError("Criterion binary inventory differs from execution provenance")
@@ -337,7 +339,7 @@ def validate(repo: Path, root: Path, profile: str, registry: dict) -> dict:
     return document
 
 
-@capture_entrypoint()
+@capture_entrypoint(monitor_host=True)
 def capture(
     repo: Path,
     root: Path,

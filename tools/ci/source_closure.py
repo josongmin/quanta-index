@@ -99,6 +99,7 @@ PROFILES = {
             "tools/benchmark/retrieval",
             "tools/benchmark/criterion_capture.py",
             "tools/benchmark/producer_execution.py",
+            "tools/benchmark/host_monitor.py",
             "tools/benchmark/retrieval_capture.py",
             "tools/benchmark/lexical_capture.py",
             "tools/benchmark/pair_capture.py",
