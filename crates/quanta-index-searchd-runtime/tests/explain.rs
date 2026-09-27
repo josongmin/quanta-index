@@ -277,20 +277,20 @@ fn explain_rejects_generation_mismatch() -> TestResult {
         return Err("dispatcher never sealed".into());
     }
 
-    // Construct a candidate whose manifest_generation differs from the pin.
-    let stale_candidate = LexicalCandidate {
-        candidate_id: "c-mismatch".to_string(),
-        repo_id: repo(),
-        revision_id: revision(),
-        manifest_generation: ManifestGeneration::new(99),
-        repo_relative_path: RepoRelativePath::new(""),
-        start_line: 0,
-        end_line: 0,
-        score: 1.0,
-        snippet: "alpha bravo charlie".to_string(),
-        snippet_hit_offset: None,
-        highlights: Vec::new(),
+    // Start with a real response so the generation is the only stale field.
+    let lex_resp = send_query_request(&socket, &lex_query("alpha", pin.clone()))?;
+    let mut stale_candidate = match lex_resp.payload {
+        SearchPlaneQueryIpcResponse::Text(lex) => lex
+            .results
+            .into_iter()
+            .next()
+            .ok_or_else(|| Box::<dyn Error>::from("lexical query returned zero candidates"))?,
+        other => return Err(format!("expected Lexical, got {other:?}").into()),
     };
+    if stale_candidate.candidate_id != "c-mismatch" {
+        return Err(format!("expected c-mismatch, got {}", stale_candidate.candidate_id).into());
+    }
+    stale_candidate.manifest_generation = ManifestGeneration::new(99);
     let resp = send_query_request(&socket, &explain_request(pin, stale_candidate))?;
     let err = match resp.payload {
         SearchPlaneQueryIpcResponse::Error(e) => e,

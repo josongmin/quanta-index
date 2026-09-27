@@ -23,13 +23,16 @@ use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
     BatchIngestMode, ChunkId, ChunkRecord, GenerationSnapshot, ManifestGeneration, RepoId,
     RepoRelativePath, RevisionId, SearchCorpusIngestBatch, SearchCorpusReplaceScope,
-    SearchPlaneTrackKind, SearchScopeKey, SearchScopeSurface,
+    SearchPlaneTrackKind, SourceFileCoverage, SourceFileKey, SourceFileRevision,
+    SourcePublicationEvent, SymbolCoverage, source_event_payload_sha256,
+    source_file_unit_set_sha256,
 };
 use quanta_index_core::{
     CoreError, GenerationIdentityValidatePort, GenerationQuarantineReasonV1,
     GenerationStorageKeyV1, SealedGenerationScanPort, SearchCorpusBatchBuildPort,
 };
 use quanta_index_lexical::LexicalAdapter;
+use sha2::{Digest as _, Sha256};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -57,37 +60,56 @@ fn revision() -> RevisionId {
 fn scope(body: &str) -> Result<SearchCorpusReplaceScope, Box<dyn Error>> {
     let language = LanguageCode::new("rust")
         .map_err(|err| -> Box<dyn Error> { format!("language code: {err}").into() })?;
+    let chunks = vec![ChunkRecord {
+        chunk_id: ChunkId::new("chunk-lib"),
+        repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+        language: language.clone(),
+        start_byte: 0,
+        end_byte: u32::try_from(body.len())?,
+        start_line: 1,
+        end_line: 1,
+        text: body.to_string().into_boxed_str(),
+        structural: None,
+        parent_chunk_id: None,
+        source_repo_id: None,
+    }];
     Ok(SearchCorpusReplaceScope {
-        scope: SearchScopeKey {
-            doc_surface: SearchScopeSurface::File,
-            repo_relative_path: RepoRelativePath::new("src/lib.rs"),
-        },
-        scope_digest: "scope:src/lib.rs".to_string(),
-        chunks: vec![ChunkRecord {
-            chunk_id: ChunkId::new("chunk-lib"),
-            repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+        coverage: SourceFileCoverage {
+            source: SourceFileRevision {
+                file: SourceFileKey {
+                    source_repo_id: repo(),
+                    repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+                },
+                revision_id: revision(),
+                source_sha256: Sha256::digest(body.as_bytes()).into(),
+            },
             language,
-            start_byte: 0,
-            end_byte: u32::try_from(body.len())?,
-            start_line: 1,
-            end_line: 1,
-            text: body.to_string().into_boxed_str(),
-            structural: None,
-            parent_chunk_id: None,
-            source_repo_id: None,
-        }],
+            producer_policy_sha256: Sha256::digest(b"boot-inventory-fixture-v1").into(),
+            unit_set_sha256: source_file_unit_set_sha256(&chunks, &[])?,
+            text_admitted: true,
+            symbols: SymbolCoverage::Complete { symbol_count: 0 },
+        },
+        chunks,
         symbols: Vec::new(),
     })
 }
 
 fn sealed_batch(generation: ManifestGeneration) -> Result<SearchCorpusIngestBatch, Box<dyn Error>> {
-    Ok(SearchCorpusIngestBatch {
+    let mut batch = SearchCorpusIngestBatch {
+        source_event: SourcePublicationEvent {
+            stream_id: "boot-inventory-test".into(),
+            event_id: format!("event-{}", generation.get()),
+            expected_base_event_id: None,
+            payload_sha256: [0; 32],
+        },
         repo_id: repo(),
         revision_id: revision(),
         generation,
         base_generation: None,
         manifest_digest: format!("manifest-digest:{}", generation.get()),
-        batch_digest: format!("batch-digest:{}", generation.get()),
+        // This adapter fixture bypasses IPC digest recomputation; admission
+        // still requires the canonical token shape.
+        batch_digest: "0".repeat(64),
         mode: BatchIngestMode::ReplaceGeneration,
         bundle_payload: None,
         clear_surfaces: Vec::new(),
@@ -96,7 +118,9 @@ fn sealed_batch(generation: ManifestGeneration) -> Result<SearchCorpusIngestBatc
         semantic_replace_scopes: Vec::new(),
         semantic_tombstone_scopes: Vec::new(),
         seal: true,
-    })
+    };
+    batch.source_event.payload_sha256 = source_event_payload_sha256(&batch)?;
+    Ok(batch)
 }
 
 fn identity(generation: ManifestGeneration) -> GenerationSnapshot {

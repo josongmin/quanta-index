@@ -1186,12 +1186,12 @@ fn as_format_one(current: &[ciborium::Value]) -> Vec<ciborium::Value> {
 
 /// The current manifest row's element count: format version, identity
 /// digest, normalizer stamp, index meta, segment verification policy,
-/// index segments, text authority, overlays, source-file coverage.
-const MANIFEST_ROW_LEN: usize = 9;
+/// index segments, ranked keys, text authority, overlays, source-file coverage.
+const MANIFEST_ROW_LEN: usize = 10;
 /// Position of the normalizer stamp in the current manifest row.
 const MANIFEST_NORMALIZER_INDEX: usize = 2;
 /// The manifest format this build seals.
-const CURRENT_FORMAT: u32 = 7;
+const CURRENT_FORMAT: u32 = 8;
 
 /// Generations sealed under earlier manifest formats are refused typed by
 /// both doors.
@@ -1199,7 +1199,8 @@ const CURRENT_FORMAT: u32 = 7;
 /// Format 1 is the pre-normalizer layout (no normalizer stamp); formats 4
 /// and 5 are this row shape over indexes that lacked a fast column this
 /// build ranks or restricts by (the text-authority doc id; the page order).
-/// Format 6 predates the source-file coverage commitment.
+/// Format 6 predates the source-file coverage commitment; format 7 predates
+/// the ranked-key commitment.
 /// The validator and the query open both answer
 /// `GENERATION_MANIFEST_FORMAT_UNSUPPORTED` for each, and the intact
 /// current manifest is admitted again once restored.
@@ -1217,7 +1218,7 @@ fn a_generation_sealed_under_the_previous_format_is_refused_typed() -> TestResul
         return Err(format!("unexpected current manifest row shape: {current:?}").into());
     }
 
-    for earlier in [4_u32, 5, 6] {
+    for earlier in [4_u32, 5, 6, 7] {
         let mut downgraded = current.clone();
         if let Some(version) = downgraded.first_mut() {
             *version = ciborium::Value::from(earlier);

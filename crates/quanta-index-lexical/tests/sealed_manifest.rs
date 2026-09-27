@@ -34,7 +34,9 @@ use quanta_index_contract::{
     RepoCommitRecencyEntry, RepoCommitRecencyIngestBatch, RepoDescriptionEntry,
     RepoDescriptionIngestBatch, RepoId, RepoMetaEntry, RepoMetaIngestBatch, RepoRelativePath,
     RepoTopicEntry, RepoTopicIngestBatch, RevisionId, SearchCorpusIngestBatch,
-    SearchCorpusReplaceScope, SearchPlaneTrackKind, SearchScopeKey, SearchScopeSurface,
+    SearchCorpusReplaceScope, SearchPlaneTrackKind, SourceFileCoverage, SourceFileKey,
+    SourceFileRevision, SourcePublicationEvent, SymbolCoverage, source_event_payload_sha256,
+    source_file_unit_set_sha256,
 };
 use quanta_index_core::{
     CoreError, DoorFindingOutcome, DoorFindingQuarantinePort, FileContributorIngestPort,
@@ -47,6 +49,7 @@ use quanta_index_core::{
     SealedGenerationReclaimPort, SealedGenerationScanPort, SearchCorpusBatchBuildPort,
 };
 use quanta_index_lexical::LexicalAdapter;
+use sha2::{Digest as _, Sha256};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -92,25 +95,36 @@ fn scope(
 ) -> Result<SearchCorpusReplaceScope, Box<dyn Error>> {
     let language = LanguageCode::new("rust")
         .map_err(|err| -> Box<dyn Error> { format!("language code: {err}").into() })?;
+    let chunks = vec![ChunkRecord {
+        chunk_id: ChunkId::new(chunk_id),
+        repo_relative_path: RepoRelativePath::new(path),
+        language: language.clone(),
+        start_byte: 0,
+        end_byte: u32::try_from(body.len())?,
+        start_line: 1,
+        end_line: 1,
+        text: body.to_string().into_boxed_str(),
+        structural: None,
+        parent_chunk_id: None,
+        source_repo_id: None,
+    }];
     Ok(SearchCorpusReplaceScope {
-        scope: SearchScopeKey {
-            doc_surface: SearchScopeSurface::File,
-            repo_relative_path: RepoRelativePath::new(path),
-        },
-        scope_digest: format!("scope:{path}:{chunk_id}"),
-        chunks: vec![ChunkRecord {
-            chunk_id: ChunkId::new(chunk_id),
-            repo_relative_path: RepoRelativePath::new(path),
+        coverage: SourceFileCoverage {
+            source: SourceFileRevision {
+                file: SourceFileKey {
+                    source_repo_id: repo(),
+                    repo_relative_path: RepoRelativePath::new(path),
+                },
+                revision_id: revision(),
+                source_sha256: Sha256::digest(body.as_bytes()).into(),
+            },
             language,
-            start_byte: 0,
-            end_byte: u32::try_from(body.len())?,
-            start_line: 1,
-            end_line: 1,
-            text: body.to_string().into_boxed_str(),
-            structural: None,
-            parent_chunk_id: None,
-            source_repo_id: None,
-        }],
+            producer_policy_sha256: Sha256::digest(b"sealed-manifest-fixture-v1").into(),
+            unit_set_sha256: source_file_unit_set_sha256(&chunks, &[])?,
+            text_admitted: true,
+            symbols: SymbolCoverage::Complete { symbol_count: 0 },
+        },
+        chunks,
         symbols: Vec::new(),
     })
 }
@@ -119,13 +133,19 @@ fn sealed_batch(
     generation: ManifestGeneration,
     body: &str,
 ) -> Result<SearchCorpusIngestBatch, Box<dyn Error>> {
-    Ok(SearchCorpusIngestBatch {
+    let mut batch = SearchCorpusIngestBatch {
+        source_event: SourcePublicationEvent {
+            stream_id: "sealed-manifest-test".into(),
+            event_id: format!("event-{}", generation.get()),
+            expected_base_event_id: None,
+            payload_sha256: [0; 32],
+        },
         repo_id: repo(),
         revision_id: revision(),
         generation,
         base_generation: None,
         manifest_digest: format!("manifest-digest:{}", generation.get()),
-        batch_digest: format!("batch-digest:{}", generation.get()),
+        batch_digest: "0".repeat(64),
         mode: BatchIngestMode::ReplaceGeneration,
         bundle_payload: None,
         clear_surfaces: Vec::new(),
@@ -134,7 +154,9 @@ fn sealed_batch(
         semantic_replace_scopes: Vec::new(),
         semantic_tombstone_scopes: Vec::new(),
         seal: true,
-    })
+    };
+    batch.source_event.payload_sha256 = source_event_payload_sha256(&batch)?;
+    Ok(batch)
 }
 
 fn identity(generation: ManifestGeneration) -> GenerationSnapshot {
@@ -732,6 +754,94 @@ fn both_doors_refuse_an_overlay_that_does_not_match_the_manifest() -> TestResult
     Ok(())
 }
 
+#[test]
+fn both_doors_refuse_missing_changed_or_uncommitted_ranked_keys() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().to_path_buf();
+    let adapter = LexicalAdapter::with_state_root(root.clone());
+    let generation = ManifestGeneration::new(1);
+    adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
+    let dir = generation_dir(&root, generation);
+    let entries = std::fs::read_dir(&dir)?.collect::<Result<Vec<_>, _>>()?;
+    let tables: Vec<_> = entries
+        .into_iter()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("ranked-keys-")
+        })
+        .map(|entry| entry.path())
+        .collect();
+    if tables.len() != 1 {
+        return Err(format!("expected one ranked-key table, found {}", tables.len()).into());
+    }
+    let path = tables.first().ok_or("ranked-key table missing")?;
+    let original = std::fs::read(path)?;
+    expect_admitted(&knock(&adapter, generation), "intact ranked keys")?;
+    std::fs::remove_file(path)?;
+    expect_refused(
+        &knock(&adapter, generation),
+        "missing ranked keys",
+        "GENERATION_SIDECAR_CORRUPT",
+    )?;
+    let shortened = original
+        .get(
+            ..original
+                .len()
+                .checked_sub(1)
+                .ok_or("empty ranked-key table")?,
+        )
+        .ok_or("ranked-key truncation range missing")?;
+    std::fs::write(path, shortened)?;
+    expect_refused(
+        &knock(&adapter, generation),
+        "truncated ranked keys",
+        "GENERATION_SIDECAR_CORRUPT",
+    )?;
+    let mut flipped = original.clone();
+    *flipped.get_mut(40).ok_or("ranked-key payload missing")? ^= 1;
+    std::fs::write(path, &flipped)?;
+    expect_refused(
+        &knock(&adapter, generation),
+        "changed ranked keys",
+        "GENERATION_SIDECAR_CORRUPT",
+    )?;
+    std::fs::write(path, &original)?;
+    expect_admitted(&knock(&adapter, generation), "restored ranked keys")?;
+    let extra = dir.join("ranked-keys-ffffffffffffffffffffffffffffffff.bin");
+    std::fs::write(&extra, &original)?;
+    expect_refused(
+        &knock(&adapter, generation),
+        "uncommitted ranked keys",
+        "GENERATION_SIDECAR_CORRUPT",
+    )?;
+    std::fs::remove_file(extra)?;
+    expect_admitted(
+        &knock(&adapter, generation),
+        "uncommitted ranked keys removed",
+    )?;
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::ffi::OsStringExt;
+
+        let invalid_name = std::ffi::OsString::from_vec(b"ranked-keys-\xff.bin".to_vec());
+        let invalid_extra = dir.join(invalid_name);
+        std::fs::write(&invalid_extra, &original)?;
+        expect_refused(
+            &knock(&adapter, generation),
+            "uncommitted non-UTF-8 ranked key",
+            "GENERATION_SIDECAR_CORRUPT",
+        )?;
+        std::fs::remove_file(invalid_extra)?;
+        expect_admitted(
+            &knock(&adapter, generation),
+            "uncommitted non-UTF-8 ranked key removed",
+        )?;
+    }
+    Ok(())
+}
+
 /// An overlay file the seal did not commit to is refused when it appears:
 /// a generation sealed without an overlay family says so in its manifest,
 /// and a file that shows up later is not silently decoded.
@@ -792,10 +902,10 @@ fn a_sealed_generation_refuses_every_mutation_and_keeps_its_bytes() -> TestResul
         payload: Vec::new(),
     });
     match adapter.build(&repo(), &revision(), generation, &[mutation]) {
-        Err(CoreError::Typed {
-            code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationImmutable,
-            ..
-        }) => {}
+        Err(CoreError::InvalidContract(message))
+            if message.contains(
+                "independent raw mutations cannot alter or inherit a coverage-bound generation",
+            ) => {}
         other => return Err(format!("index mutation after seal answered {other:?}").into()),
     }
     for outcome in publish_overlays(&adapter, generation, "late")? {
@@ -848,13 +958,9 @@ fn segment_files(generation_dir: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>> 
 /// Every segment file the commit references is proved by length at the
 /// doors.
 ///
-/// A length change or a missing file is refused by every door. A
-/// same-length flip passes them — the doors prove these bytes by length,
-/// never by content, because a query maps them instead of decoding them —
-/// and is the scrub's to find (next test). The flipped file is not mapped
-/// here: Tantivy panics rather than errors on a corrupted segment
-/// component, which is exactly the exposure the scrub exists to close
-/// before a query reaches it.
+/// A length change or missing file is refused by every door. A same-length
+/// flip may be caught early when the ranked-key verifier opens a fast field;
+/// other components remain the scrub's to hash (next test).
 #[test]
 fn segment_files_are_length_proved_at_the_doors() -> TestResult {
     let temp = tempfile::tempdir()?;
@@ -904,11 +1010,13 @@ fn segment_files_are_length_proved_at_the_doors() -> TestResult {
             *byte ^= 0x01;
         }
         std::fs::write(&path, &flipped)?;
-        if let Err(err) = adapter.validate_generation_identity(&identity(generation)) {
-            return Err(format!(
-                "{name} flipped: the validator, which proves segment files by length, refused: {err}"
-            )
-            .into());
+        match adapter.validate_generation_identity(&identity(generation)) {
+            Ok(())
+            | Err(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
+                ..
+            }) => {}
+            Err(err) => return Err(format!("{name} flipped: unexpected verdict: {err}").into()),
         }
 
         std::fs::write(&path, &original)?;
@@ -936,8 +1044,11 @@ fn a_same_length_flip_is_found_by_the_scrub_and_quarantines_the_generation() -> 
     let dir = generation_dir(&root, generation);
     let segment = segment_files(&dir)?
         .into_iter()
-        .next()
-        .ok_or("a sealed generation has segment files")?;
+        .find(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "store")
+        })
+        .ok_or("a sealed generation has a stored-field segment component")?;
     let original = std::fs::read(&segment)?;
     let mut flipped = original.clone();
     let middle = flipped.len().div_euclid(2);
@@ -1371,6 +1482,7 @@ fn a_generation_that_indexed_nothing_seals_openable() -> TestResult {
     let generation = ManifestGeneration::new(1);
     let mut empty = sealed_batch(generation, "unused")?;
     empty.replace_scopes.clear();
+    empty.source_event.payload_sha256 = source_event_payload_sha256(&empty)?;
     adapter.build_batch(&empty)?;
     let doors = knock(&adapter, generation);
     if let Err(err) = doors.validate {

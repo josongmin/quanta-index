@@ -125,8 +125,9 @@ impl TantivySearcher {
             self.execution_budget
                 .collection_budget(searcher.segment_readers().len())?,
         );
-        let collector = RankedPageCollector::new(limit, after, boost, count)
-            .with_resource_budget(collection.clone());
+        let collector =
+            RankedPageCollector::new(Arc::clone(&self.ranked_keys), limit, after, boost, count)
+                .with_resource_budget(collection.clone());
         budgeted_collection(
             searcher,
             compiled,
@@ -153,8 +154,9 @@ impl TantivySearcher {
             self.execution_budget
                 .collection_budget(searcher.segment_readers().len())?,
         );
-        let collector = RankedPageCollector::new(examined, None, boost, true)
-            .with_collection_budget(collection.clone());
+        let collector =
+            RankedPageCollector::new(Arc::clone(&self.ranked_keys), examined, None, boost, true)
+                .with_collection_budget(collection.clone());
         let fruit = budgeted_collection(
             searcher,
             compiled,
@@ -197,7 +199,12 @@ impl TantivySearcher {
         let fruit = budgeted_collection(
             searcher,
             compiled,
-            &GroupedPageCollector::new(group, boost, collection.clone()),
+            &GroupedPageCollector::new(
+                Arc::clone(&self.ranked_keys),
+                group,
+                boost,
+                collection.clone(),
+            ),
             budget,
             collection,
             "lexical:collect",
