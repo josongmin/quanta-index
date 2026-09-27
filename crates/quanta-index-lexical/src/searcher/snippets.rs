@@ -896,6 +896,20 @@ mod l4_witness_regressions {
         );
         assert!(saturated.snippet.is_empty());
         assert!(saturated.highlights.is_empty());
+
+        // Thirty-four `a` scalars contain thirty-three overlapping `aa`
+        // occurrences. A non-overlapping iterator would miss the overflow
+        // and publish an incomplete highlight set as if it were complete.
+        let overlapping = render(
+            &LqExpr::Leaf(LqLeaf::RawString("aa".into())),
+            &"a".repeat(34),
+        )?;
+        assert_eq!(
+            overlapping.preview.unavailable_reason,
+            Some(PreviewUnavailableReason::WorkBudget)
+        );
+        assert!(overlapping.snippet.is_empty());
+        assert!(overlapping.highlights.is_empty());
         Ok(())
     }
 }

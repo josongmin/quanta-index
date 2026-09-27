@@ -4600,9 +4600,12 @@ dependencies = [
  "anyhow",
  "quanta-index-contract",
  "quanta-index-core",
+ "quanta-index-ipc",
  "quanta-index-lexical",
  "quanta-index-searchd-harness",
  "serde_json",
+ "sha2",
+ "tempfile",
 ]
 
 [[package]]
