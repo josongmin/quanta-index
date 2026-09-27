@@ -502,12 +502,15 @@ impl LexicalSearcher for TantivySearcher {
         let boost_factor = Self::boost_factor(&effective_query.options);
         if Self::uses_unindexed_scan(&effective_query.options) {
             Self::ensure_manual_scan_supports_constraints(constraints, "lexical")?;
+            self.ensure_manual_language_query_supported(&effective_query)?;
+            let mut regex_cache = super::manual_scan::ManualScanCache::default();
             if !self.manual_doc_matches(
                 &doc,
                 &effective_query,
                 &prepared_query,
                 constraints,
                 budget,
+                &mut regex_cache,
             )? {
                 return not_matched("the unindexed scan does not match the document");
             }

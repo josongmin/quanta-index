@@ -22,9 +22,11 @@ count, or implementation status can be mistaken for current authority.
 2. Current capability and implementation state are established by live source,
    checked inventories, and the current ticket or residual ledger named by the
    owning packet.
-3. Verification claims require a fresh exact-source receipt under the repository
-   verification contract. Historical test output, status labels, and counts do
-   not qualify a later source revision.
+3. Verification follows the repository contract: routine focused edits use
+   relevant source inspection and terminal results; formal replay, release and
+   qualified benchmarks bind the required exact inputs and evidence. A receipt
+   is required only by the selected contract. Historical output, status labels
+   and counts do not qualify a later source revision.
 4. Completed or superseded records are removed from the live documentation
    tree once their decisions are represented by an accepted ADR and their
    unfinished work has a current owner. Git history retains the exact bodies;
@@ -77,3 +79,13 @@ in Git or the verified external content backup for dirty/untracked preimages.
   preserves the old bodies without presenting them as current documentation.
 - Removing a completed packet does not assert that every finding in it was
   implemented or qualified; open work stays in the active owner ledger.
+
+## Operator documentation boundary
+
+Benchmark and CLI directories retain command usage, required input fields,
+output interpretation and failure recovery. Accepted architecture, scoring,
+custody and admission rules live in ADRs; generated capability matrices live in
+`docs/reference`. Completed progress reports, handoffs and frozen result counts
+are removed rather than copied into operator READMEs. Unfinished acceptance stays
+in its active owner ledger. Normative decisions moved into ADRs remain bound by
+the affected source-closure profiles.

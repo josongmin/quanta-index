@@ -264,6 +264,27 @@ fn l4_sdk_preview_uses_matcher_ranges_and_original_source_bytes() -> TestResult 
         },
         false,
     )?;
+    for native in [
+        "/[a-z]+[0-9]+/ case:yes",
+        "/[a-z]+[0-9]+/ case:yes index:no",
+    ] {
+        assert_preview(
+            &client,
+            &pin,
+            native,
+            "src/regex.rs",
+            &regex,
+            PreviewByteRange {
+                start: 640,
+                end: 648,
+            },
+            PreviewByteRange {
+                start: 640,
+                end: 648,
+            },
+            false,
+        )?;
+    }
     assert_preview(
         &client,
         &pin,
@@ -318,6 +339,7 @@ fn l4_sdk_preview_survives_daemon_process_restart() -> TestResult {
     std::fs::write(&checkout_file, "oldanchor")?;
     let mut runtime = E2eRuntime::boot_in(state.path())?;
     runtime.ingest_text("repo", "src/decomposed.rs", "cafe\u{301}")?;
+    runtime.ingest_text("repo", "src/regex.rs", "needle42")?;
     runtime.ingest_text("repo", "src/multi.rs", "threehits threehits threehits")?;
     runtime.ingest_text("repo", "src/overlap.rs", "ababa")?;
     runtime.ingest_text("repo", "src/overflow.rs", &"a".repeat(35))?;
@@ -352,6 +374,21 @@ fn l4_sdk_preview_survives_daemon_process_restart() -> TestResult {
             true,
         )?;
         assert_multihit_highlights(&client, &pin)?;
+        for native in [
+            "/[a-z]+[0-9]+/ case:yes",
+            "/[a-z]+[0-9]+/ case:yes index:no",
+        ] {
+            assert_preview(
+                &client,
+                &pin,
+                native,
+                "src/regex.rs",
+                "needle42",
+                PreviewByteRange { start: 0, end: 8 },
+                PreviewByteRange { start: 0, end: 8 },
+                false,
+            )?;
+        }
         assert_overlapping_raw_highlights(&client, &pin)?;
         assert_unavailable(
             &client,

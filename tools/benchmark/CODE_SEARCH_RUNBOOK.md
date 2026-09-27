@@ -1,9 +1,10 @@
 # Code-search benchmark runbook
 
-Run commands from the repository root. This is the operator guide; the
-[benchmark README](README.md) owns the common evidence contract, and the
-[retrieval README](retrieval/README.md) owns the native runner and metric
-contracts. Neither an old report nor a successful `plan` is a new benchmark.
+Run commands from the repository root. Use the [benchmark guide](README.md)
+for other profiles and the [retrieval guide](retrieval/README.md) for native
+runner options. Evidence and scoring policy lives in
+[SEP-26-003](../../docs/adr/SEP-26-003-retrieval-evidence-custody-and-qualification.md)
+and [SEP-27-004](../../docs/adr/SEP-27-004-benchmark-capture-and-resource-custody.md).
 
 ## Choose the rail first
 
@@ -38,7 +39,10 @@ uv run --frozen --extra dev python tools/benchmark/benchctl.py code-search verif
 `workflow.json` is published only after all five products, both profile validations,
 both replays and the native external replay succeed. A failed run retains
 `failure.json` and per-stage execution logs; start a fresh root after repair.
-External replay re-derives result rows from the retained HTTP/process bytes.
+Use `code-search verify` to replay retained native responses and profile inputs.
+Inspect `workflow.json` for complete capture identities. Long socket paths use a
+short native runtime directory recorded in `pair-spec.json`; the permanent
+workflow root retains the native tree. Retry failures with a fresh root.
 
 ## Shared preparation
 
@@ -49,6 +53,8 @@ External replay re-derives result rows from the retained HTTP/process bytes.
 2. Keep corpus checkouts, release, suite, query pack, model assets, specs,
    native outputs and evidence **outside this checkout**. Give every capture
    a fresh output root. Do not overwrite an earlier run to retry it.
+   Use complete Git history with all reachable objects. Shallow/partial checkouts
+   cannot produce a self-contained bundle and are refused before live capture.
 3. If using a common corpus release, validate it before choosing one repository
    and view. Both products must use its same commit, ordered file/path/SHA
    universe and frozen queries. A release is `frozen_not_admitted`, not proof

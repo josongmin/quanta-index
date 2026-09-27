@@ -1,83 +1,36 @@
-# S21-11 — Current-format state backup, restore, and rollback
+# S21-11 — Current-format state qualification
 
-Status: owner code exists; current-source owner receipt and Linux release
-qualification must be checked separately.
+Status: `ACTIVE — owner, Linux release and authorized-target proof remain separate`.
+Completed CLI/original-manifest/copy-custody decisions are in
+[SEP-27-005](../../../adr/SEP-27-005-catalog-recovery-supervision-and-proof-custody.md).
+[Residual R4](CURRENT-RESIDUAL-2026-09-26.md) owns status;
+[the operator runbook](../../../operator/state-cutover-runbook.md) owns commands.
 
-2026-09-26 follow-up: the original backup manifest is pinned in read-only
-custody. Restore admits it through the same inventory/catalog verification as
-`verify-state` before staging, verifies copied bytes before incarnation rotation,
-and refuses changed/missing/malformed authority before publication with staging
-cleanup. Catalog row counts are checked as well as digest. This implementation
-update is not a completed owner/release receipt; see
-[current residual status](CURRENT-RESIDUAL-2026-09-26.md) and
-[execution progress](EXECUTION-PROGRESS.md).
+## Remaining acceptance
 
-## Current contract
+- Execute disposable-root backup/restore/verify with interruption, corruption,
+  exclusive lease/path ownership, original manifest replacement/removal,
+  catalog row/digest mismatch, staging cleanup and unchanged source on failure.
+- Issue the registered `p10-state-migration-owner` proof with exact relevant
+  source, commands, terminal outcomes and required artifacts. An old focused
+  pass or a broad profile name does not establish this receipt.
+- Execute separate `p10-state-migration` Linux production-like release proof
+  using the attested daemon and unchanged required process targets.
+- Inventory every authorized real target root's exact schema/format and
+  retained-data obligations. Obtain rebuild/retention/rollback authority before
+  target cutover; a disposable fixture is not that operational action.
+- Prove stopped daemon plus exclusive lease, current-format SQLite backup,
+  manifest/inventory verification, separate-destination restore and incarnation
+  rotation, attested reopen and restore-forward after mutation. Refuse old-root/
+  new-binary, old-binary/new-root and partial staging without mutation.
 
-The prerelease breaking cutover retired the legacy `migrate-state` importer.
-`crates/quanta-index-searchd/src/cli/command.rs` accepts
-`backup-state`, `restore-state`, and `verify-state`. Unknown
-`migrate-state` is refused. `crates/quanta-index-searchd/src/app/state_format.rs`
-refuses legacy roots at boot. The offline implementation is in
-`crates/quanta-index-searchd-runtime/src/state_migration.rs`.
+## Scope
 
-A historical materialized RepoMap snapshot does not contain the original
-source graph, exactness, and authority commitment needed to construct a
-current `RepoMapSourceBundle`. Copying old `activations/` and
-`snapshots/` into a new root would falsely claim an equivalent active
-candidate. No snapshot-to-source-IR conversion is part of this contract.
-A target with retained legacy data needs an explicit producer rebuild and
-data-retention decision before cutover.
+Owners: `quanta-index-searchd` CLI/state-format/offline adapters,
+`quanta-index-searchd-runtime/src/state_migration.rs`, the registered
+`state_migration_owner_v1` tests and the operator runbook.
 
-## Supported workflow
-
-1. Stop the daemon and take the exclusive state-root lease.
-2. Back up a current-format root with the SQLite backup API and an inventory
-   of immutable objects; do not raw-copy a live database/WAL pair.
-3. Verify the backup manifest, restore to a separate destination, and verify
-   the restored root before publication.
-4. Reopen with the attested release binary. Refuse incomplete staging,
-   wrong manifest/version, old-root/new-binary, and old-binary/new-root pairs.
-5. After any new-format mutation, use restore-forward. Do not claim a
-   backward-compatible rollback path.
-
-The [operator runbook](../../../operator/state-cutover-runbook.md) owns
-command syntax and operational order.
-
-## Evidence required
-
-- Disposable-root owner tests for backup/restore/verify, interruption,
-  corruption, lease/path ownership, typed legacy refusal, and unchanged
-  source on failure.
-- Exact source, commands, counts, raw evidence, and artifact digests in the
-  `p10-state-migration-owner` manifest.
-- A separate `p10-state-migration` Linux production-like release receipt
-  bound to the release daemon. The registry currently marks this release
-  node staged; an owner pass does not promote it.
-- Inventory of every real target root's format and retained-data obligation
-  before operational cutover. A policy decision or disposable test is not a
-  migration or deployment receipt.
-
-Historical importer designs and their dated RCA remain in Git history.
-They are not implementation instructions.
-
-## Dirty-source local checkpoint (2026-09-24; not an owner receipt)
-
-At Quanta `563da185` with unrelated and P06/P09 dirty changes,
-`./scripts/cargow test -p quanta-index-searchd-runtime --test
-state_migration_owner_v1 -- --nocapture` executed 36/36 tests successfully.
-This covers disposable-root backup, restore, verification, interruption,
-corruption, lease/path ownership, and typed legacy refusal. It does not prove
-any real target-root inventory, retained-data decision, Linux release binary,
-or registered P10 owner/release manifest.
-
-`just proof-p10-state-migration-owner` later exited 0: the disposable-root
-integration profile executed 36/36 and the library profile 87/87; hexagonal,
-wire-inventory, and public-API checks passed. This is a local command result,
-not an exact-source owner receipt. The shared `main` advanced from the
-observed pre-run `e8a034296a75972b268c7cc70ac5dacf4262a090` to
-`9ed8e761397b3d3173a0276bf6591f89ce2ee44f` during the run, including
-a test-fixture constant hoist in `state_migration_owner_v1.rs`. Re-run from a
-frozen source before issuing an authoritative manifest. The real-root
-inventory, retained-data decision, Linux release rail, and exact-pair proof
-remain absent.
+Legacy import is retired. Historical materialized RepoMap state cannot recreate
+source authority; retained legacy roots need producer rebuild and a data policy.
+No backup, deployment, activation or rollback is inferred from implementation.
+Historical checkpoints remain in Git, not live qualification.

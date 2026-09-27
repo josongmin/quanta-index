@@ -219,9 +219,13 @@ fn committed_files(generation_dir: &Path) -> Result<Vec<CommittedFile>, Box<dyn 
         let is_segment_file = name.split_once('.').is_some_and(|(stem, _)| {
             stem.len() == 32 && stem.chars().all(|ch| ch.is_ascii_hexdigit())
         });
-        let is_ranked_keys = name.starts_with("ranked-keys-") && name.ends_with(".bin");
+        let extension = Path::new(&name).extension();
+        let is_ranked_keys =
+            name.starts_with("ranked-keys-") && extension == Some(std::ffi::OsStr::new("bin"));
         if name == TANTIVY_META
             || name == SOURCE_FILE_COVERAGE
+            || (name.starts_with("source-file-coverage-page-")
+                && extension == Some(std::ffi::OsStr::new("cbor")))
             || is_segment_file
             || is_ranked_keys
             || OVERLAY_FILES.contains(&name.as_str())

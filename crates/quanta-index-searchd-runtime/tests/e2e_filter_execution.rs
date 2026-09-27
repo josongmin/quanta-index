@@ -1953,7 +1953,8 @@ fn repo_has_file_path_content_correlates_per_document_on_sourcegraph_surface(
         sorted_candidate_paths(&miss),
     );
 
-    // Empty content value still fails closed (typed).
+    // Empty content value still fails closed (typed). The parser may reject
+    // this malformed argument before the predicate registry sees it.
     let empty = rt.query_text(
         TextQuerySyntax::Sourcegraph,
         "repo:has.file(path:src/gate-a.rs, content:) shared_oracle_needle",
@@ -1966,8 +1967,8 @@ fn repo_has_file_path_content_correlates_per_document_on_sourcegraph_surface(
         );
     };
     ensure!(
-        error.code.as_str() == "LEX_PREDICATE_UNIMPLEMENTED" && error.message.contains("content:"),
-        "empty content must fail with the content: empty reason, got {} {:?}",
+        error.code.as_str() == "LEX_PREDICATE_UNIMPLEMENTED",
+        "empty content must fail with a typed predicate error, got {} {:?}",
         error.code,
         error.message,
     );

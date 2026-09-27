@@ -5,6 +5,13 @@ use crate::normalize::CaseMode;
 use crate::{QueryDocKind, SYMBOL_DOC_KIND, SchemaFields, TEXT_DOC_KIND};
 use tantivy::schema::{FAST, INDEXED, STORED, STRING, Schema};
 
+/// Canonical field names shared by schema construction, persisted keys and collectors.
+pub(crate) const RANKED_SOURCE_REPO_COLUMN: &str = "repo_id";
+pub(crate) const RANKED_PATH_COLUMN: &str = "repo_relative_path";
+pub(crate) const RANKED_CANDIDATE_ID_COLUMN: &str = "candidate_id";
+pub(crate) const RANKED_START_LINE_COLUMN: &str = "start_line";
+pub(crate) const RANKED_END_LINE_COLUMN: &str = "end_line";
+
 impl QueryDocKind {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
@@ -20,8 +27,9 @@ impl SchemaFields {
         // The ranked page order's columns are fast columns, so pages are
         // ranked, cut and grouped without reading stored documents
         // (QI-BB-005).
-        let candidate_id = builder.add_text_field("candidate_id", STRING | STORED | FAST);
-        let repo_id = builder.add_text_field("repo_id", STRING | STORED | FAST);
+        let candidate_id =
+            builder.add_text_field(RANKED_CANDIDATE_ID_COLUMN, STRING | STORED | FAST);
+        let repo_id = builder.add_text_field(RANKED_SOURCE_REPO_COLUMN, STRING | STORED | FAST);
         let revision_id = builder.add_text_field("revision_id", STRING | STORED);
         let source_revision_id = builder.add_text_field("source_revision_id", STRING | STORED);
         let source_sha256 = builder.add_bytes_field("source_sha256", STORED);
@@ -29,8 +37,7 @@ impl SchemaFields {
         let chunk_end_byte = builder.add_u64_field("chunk_end_byte", STORED);
         let chunk_raw_sha256 = builder.add_bytes_field("chunk_raw_sha256", STORED);
         let doc_kind = builder.add_text_field("doc_kind", STRING | STORED);
-        let repo_relative_path =
-            builder.add_text_field("repo_relative_path", STRING | STORED | FAST);
+        let repo_relative_path = builder.add_text_field(RANKED_PATH_COLUMN, STRING | STORED | FAST);
         let repo_relative_path_query = builder.add_text_field(
             "repo_relative_path_query",
             tokenized_text_options(CaseMode::Folded),
@@ -41,8 +48,8 @@ impl SchemaFields {
         );
         let file_name = builder.add_text_field("file_name", STRING);
         let language = builder.add_text_field("language", STRING);
-        let start_line = builder.add_u64_field("start_line", STORED | FAST);
-        let end_line = builder.add_u64_field("end_line", STORED | FAST);
+        let start_line = builder.add_u64_field(RANKED_START_LINE_COLUMN, STORED | FAST);
+        let end_line = builder.add_u64_field(RANKED_END_LINE_COLUMN, STORED | FAST);
         let snippet = builder.add_text_field("snippet", STORED);
         let chunk_text = builder.add_text_field(
             "chunk_text",

@@ -22,6 +22,7 @@ use tantivy::TantivyDocument;
 
 use crate::TantivySearcher;
 use crate::documents::required_stored_text;
+use crate::searcher::manual_scan::ManualScanCache;
 use crate::searcher::planner_errors::planner_preflight_expr;
 use crate::searcher::query_rewrite::rewrite_symbol_name_predicate_query;
 
@@ -73,7 +74,9 @@ impl TantivySearcher {
         let searcher = self.reader.searcher();
         if Self::uses_unindexed_scan(&effective_query.options) {
             Self::ensure_manual_scan_supports_constraints(constraints, "lexical")?;
+            self.ensure_manual_language_query_supported(&effective_query)?;
             let mut admitted = BTreeSet::new();
+            let mut regex_cache = ManualScanCache::default();
             for candidate_id in candidate_ids {
                 budget.checkpoint(ADMISSION_STAGE)?;
                 let Some((_address, doc)) =
@@ -87,6 +90,7 @@ impl TantivySearcher {
                     &prepared,
                     constraints,
                     budget,
+                    &mut regex_cache,
                 )? {
                     let _first = admitted.insert(candidate_id.clone());
                 }

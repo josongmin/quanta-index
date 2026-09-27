@@ -11796,6 +11796,57 @@ impl core::marker::Unpin for quanta_index_contract::FileContributorIngestBatch
 impl core::marker::UnsafeUnpin for quanta_index_contract::FileContributorIngestBatch
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::FileContributorIngestBatch
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::FileContributorIngestBatch
+pub struct quanta_index_contract::FileCoverageIter<'a>(_)
+impl<'a> core::iter::traits::iterator::Iterator for quanta_index_contract::FileCoverageIter<'a>
+pub type quanta_index_contract::FileCoverageIter<'a>::Item = (&'a quanta_index_contract_base::source_file::SourceFileKey, &'a quanta_index_contract::SourceFileCoverage)
+pub fn quanta_index_contract::FileCoverageIter<'a>::next(&mut self) -> core::option::Option<Self::Item>
+pub fn quanta_index_contract::FileCoverageIter<'a>::size_hint(&self) -> (usize, core::option::Option<usize>)
+impl<'a> core::marker::Freeze for quanta_index_contract::FileCoverageIter<'a>
+impl<'a> core::marker::Send for quanta_index_contract::FileCoverageIter<'a>
+impl<'a> core::marker::Sync for quanta_index_contract::FileCoverageIter<'a>
+impl<'a> core::marker::Unpin for quanta_index_contract::FileCoverageIter<'a>
+impl<'a> core::marker::UnsafeUnpin for quanta_index_contract::FileCoverageIter<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::FileCoverageIter<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for quanta_index_contract::FileCoverageIter<'a>
+pub struct quanta_index_contract::FileCoverageSnapshot
+impl quanta_index_contract::FileCoverageSnapshot
+pub fn quanta_index_contract::FileCoverageSnapshot::contains_key(&self, key: &quanta_index_contract_base::source_file::SourceFileKey) -> bool
+pub fn quanta_index_contract::FileCoverageSnapshot::get(&self, key: &quanta_index_contract_base::source_file::SourceFileKey) -> core::option::Option<&quanta_index_contract::SourceFileCoverage>
+pub fn quanta_index_contract::FileCoverageSnapshot::insert(&mut self, key: quanta_index_contract_base::source_file::SourceFileKey, value: quanta_index_contract::SourceFileCoverage) -> core::option::Option<quanta_index_contract::SourceFileCoverage>
+pub fn quanta_index_contract::FileCoverageSnapshot::is_empty(&self) -> bool
+pub fn quanta_index_contract::FileCoverageSnapshot::iter(&self) -> quanta_index_contract::FileCoverageIter<'_>
+pub fn quanta_index_contract::FileCoverageSnapshot::last_key_value(&self) -> core::option::Option<(&quanta_index_contract_base::source_file::SourceFileKey, &quanta_index_contract::SourceFileCoverage)>
+pub fn quanta_index_contract::FileCoverageSnapshot::len(&self) -> usize
+pub fn quanta_index_contract::FileCoverageSnapshot::new() -> Self
+pub fn quanta_index_contract::FileCoverageSnapshot::partition(&self, partition: u8) -> impl core::iter::traits::iterator::Iterator<Item = (&quanta_index_contract_base::source_file::SourceFileKey, &quanta_index_contract::SourceFileCoverage)>
+pub fn quanta_index_contract::FileCoverageSnapshot::partition_for(key: &quanta_index_contract_base::source_file::SourceFileKey) -> u8
+pub fn quanta_index_contract::FileCoverageSnapshot::remove(&mut self, key: &quanta_index_contract_base::source_file::SourceFileKey) -> core::option::Option<quanta_index_contract::SourceFileCoverage>
+pub fn quanta_index_contract::FileCoverageSnapshot::values(&self) -> impl core::iter::traits::iterator::Iterator<Item = &quanta_index_contract::SourceFileCoverage>
+impl core::clone::Clone for quanta_index_contract::FileCoverageSnapshot
+pub fn quanta_index_contract::FileCoverageSnapshot::clone(&self) -> quanta_index_contract::FileCoverageSnapshot
+impl core::cmp::Eq for quanta_index_contract::FileCoverageSnapshot
+impl core::cmp::PartialEq for quanta_index_contract::FileCoverageSnapshot
+pub fn quanta_index_contract::FileCoverageSnapshot::eq(&self, other: &quanta_index_contract::FileCoverageSnapshot) -> bool
+impl core::default::Default for quanta_index_contract::FileCoverageSnapshot
+pub fn quanta_index_contract::FileCoverageSnapshot::default() -> quanta_index_contract::FileCoverageSnapshot
+impl core::fmt::Debug for quanta_index_contract::FileCoverageSnapshot
+pub fn quanta_index_contract::FileCoverageSnapshot::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::iter::traits::collect::FromIterator<(quanta_index_contract_base::source_file::SourceFileKey, quanta_index_contract::SourceFileCoverage)> for quanta_index_contract::FileCoverageSnapshot
+pub fn quanta_index_contract::FileCoverageSnapshot::from_iter<T: core::iter::traits::collect::IntoIterator<Item = (quanta_index_contract_base::source_file::SourceFileKey, quanta_index_contract::SourceFileCoverage)>>(iter: T) -> Self
+impl core::marker::StructuralPartialEq for quanta_index_contract::FileCoverageSnapshot
+impl<'a> core::iter::traits::collect::IntoIterator for &'a quanta_index_contract::FileCoverageSnapshot
+pub type &'a quanta_index_contract::FileCoverageSnapshot::IntoIter = quanta_index_contract::FileCoverageIter<'a>
+pub type &'a quanta_index_contract::FileCoverageSnapshot::Item = (&'a quanta_index_contract_base::source_file::SourceFileKey, &'a quanta_index_contract::SourceFileCoverage)
+pub fn &'a quanta_index_contract::FileCoverageSnapshot::into_iter(self) -> Self::IntoIter
+impl<const N: usize> core::convert::From<[(quanta_index_contract_base::source_file::SourceFileKey, quanta_index_contract::SourceFileCoverage); N]> for quanta_index_contract::FileCoverageSnapshot
+pub fn quanta_index_contract::FileCoverageSnapshot::from(rows: [(quanta_index_contract_base::source_file::SourceFileKey, quanta_index_contract::SourceFileCoverage); N]) -> Self
+impl core::marker::Freeze for quanta_index_contract::FileCoverageSnapshot
+impl core::marker::Send for quanta_index_contract::FileCoverageSnapshot
+impl core::marker::Sync for quanta_index_contract::FileCoverageSnapshot
+impl core::marker::Unpin for quanta_index_contract::FileCoverageSnapshot
+impl core::marker::UnsafeUnpin for quanta_index_contract::FileCoverageSnapshot
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::FileCoverageSnapshot
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::FileCoverageSnapshot
 pub struct quanta_index_contract::FileOwnerProjectionRow
 pub quanta_index_contract::FileOwnerProjectionRow::candidate_id: alloc::string::String
 pub quanta_index_contract::FileOwnerProjectionRow::manifest_generation: quanta_index_contract_base::ids::ManifestGeneration
@@ -15810,7 +15861,6 @@ pub fn quanta_index_contract::validate_file_owner_projection_v1(results: &[quant
 pub fn quanta_index_contract::validate_hybrid_results_v1(results: &[quanta_index_contract::HybridCandidateV1]) -> core::result::Result<(), quanta_index_contract::HybridCandidatePolicyErrorV1>
 pub fn quanta_index_contract::validate_lexical_file_mutations_v1(clear: &[quanta_index_contract::SearchScopeSurface], replace: &[quanta_index_contract::SearchCorpusReplaceScope], tombstone: &[quanta_index_contract::SearchCorpusTombstoneScope]) -> core::result::Result<(), quanta_index_contract::SearchCorpusSurfaceMutationConflictV1>
 pub fn quanta_index_contract::validate_semantic_source_record_v1(record: &quanta_index_contract::SemanticSourceRecordV1) -> core::result::Result<(), &'static str>
-pub type quanta_index_contract::FileCoverageSnapshot = alloc::collections::btree::map::BTreeMap<quanta_index_contract_base::source_file::SourceFileKey, quanta_index_contract::SourceFileCoverage>
 pub type quanta_index_contract::HistoryTagDelete = quanta_index_contract::HistoryRefDelete
 pub type quanta_index_contract::HistoryTagMutation = quanta_index_contract::HistoryRefMutation
 pub type quanta_index_contract::HistoryTagUpsert = quanta_index_contract::HistoryRefUpsert

@@ -1,80 +1,11 @@
 # S21-12 — Cross-Repo Terminal Receipt and Breaking Cutover
 
-Status: exact-pair release qualification staged.
-
-2026-09-26: actual resolved dependency pre/postflight is implemented and the
-registry binds the nested resolver lock. Twenty helper negatives cover wrong
-checkout and graph/path failures. Resolver mapping manifest custody and fresh
-live exact-pair evidence remain open; see [current status](CURRENT-RESIDUAL-2026-09-26.md).
-The 2026-09-24 root-lock/preflight description below is historical.
-
-2026-09-24 adversarial plan correction: the current pair snapshot binds
-Semantica Git state and `Cargo.lock`, but does not prove the resolved
-`quanta-index-{contract,ipc,sdk}` Cargo path packages point into the frozen
-Quanta checkout. Before the fresh build, resolve those packages from the
-actual Semantica build graph, compare canonical roots with the expected
-Quanta package roots, and bind the mapping in the paired receipt. A clean
-Semantica checkout pointing to another clean Quanta tree must fail. The
-current manifest writer archives binary bytes and a raw file but does not
-derive build/test outcome from that raw file; use the common R0 result
-authority, not a P11-specific `passed` assertion. The deployment,
-activation, and rollback registry nodes currently name absent `Justfile`
-recipes and have empty test target lists under `test-authority`; convert
-them to typed operational-action evidence only after target host/root
-authority is fixed. See [R0/R5/R6](FINAL-RESIDUAL-EXECUTION-PLAN.md).
-
-2026-09-24 P11 proof-command correction (local source, not execution proof):
-`Justfile::rust-verify-hellgate-cross-repo` had selected Semantica's
-file-contributor roundtrip despite declaring a RepoMap terminal-receipt
-target. It now requires both the live RepoMap V2
-publish/activate/restart/query test and the producer-owned negative
-full-bundle/transition receipt validator to exist, then runs those exact
-tests through Semantica's QBC front door. The recipe now delegates to one
-script that refuses dirty or moving source, performs a fresh Quanta release
-daemon build, requires `QUANTA_INDEX_SEARCHD_BIN` to be byte-identical to
-that output, runs both targets, and rechecks source and binary at exit. A
-Python regression checks target selection and shell syntax. These are static
-selection checks, not execution of the fresh build or either Rust target.
-The proof writer still archives daemon bytes/digest without independently
-validating this build step or its raw result; a manifest alone is not a build
-attestation. The exact source pair, P10 dependency, Linux execution,
-deployment, activation, and rollback receipts remain unverified; the registry
-node stays `staged`.
-
-2026-09-24 local follow-up, tested at Quanta `7dec5965` plus the store patch
-and committed as `3b1d7b19`: the private terminal receipt
-constructor now rejects a nonpositive catalog sequence instead of emitting a
-successful receipt with sequence `0`. The exact unit test passed 1/1 and
-`./scripts/cargow test -p quanta-index-repomap --test candidate_activation_owner_v1`
-passed 19/19. `just fmt-check` passed. This closes only the local fail-closed
-conversion defect; it does not create a P11 cross-repo, deployment, activation,
-or rollback proof manifest. The `.ken` snapshot files became dirty during
-local verification and are excluded from this source claim pending ownership
-review.
-
-2026-09-24 source update: the local RepoMap mutation surface now has only
-source-digest-bound V2 requests/receipts across SDK, IPC, core ports, and
-store. The V2 activation identity is flat; V1 opcodes/direct-store methods
-and weak persisted projection metadata are refused or removed. The
-2026-09-21 static delta below is historical, not a current API description.
-The flat V2 request now carries `expected_active`; the catalog transaction
-checks that prior-head token before sequence allocation and checks the
-persisted prior expectation on replay. See
-`crates/quanta-index-contract/src/repomap/terminal_receipt_v2.rs` and
-`crates/quanta-index-catalog/src/candidate.rs`. The Semantica durable intent,
-exact source pair, and terminal receipt chain still require fresh paired
-verification. Quanta-local CAS code is not that proof.
-Cross-repo producer qualification, deployment, and activation remain separate
-unverified gates; this note does not close S21-12.
-
-2026-09-24 dirty-source local check at Quanta `563da185`: the live IPC
-control variants expose `RepoMapActivateV2`/`RepoMapActiveHeadV2`, the SDK
-namespace exposes only V2 content-bound publish/activate, and the RepoMap
-store's public mutation entrypoints are `ingest_bundle_v2` and
-`activate_generation_v2`. The `request_v1` string remains in a legacy-wire
-refusal fixture; that JSON/CBOR refusal test ran 1/1. This is bounded local
-source/test evidence, not a frozen Semantica/Quanta pair, release binary,
-deployment, activation, or rollback receipt.
+Status: `ACTIVE — exact-pair and operational qualification remain staged`.
+Completed resolver pre/postflight and V2 receipt decisions are in
+[SEP-27-005](../../../adr/SEP-27-005-catalog-recovery-supervision-and-proof-custody.md)
+and the [SEP-21 registry](../../../adr/SEP-21-DECISION-REGISTRY.md).
+Resolver mapping needs typed receipt custody and actual fresh build/test results;
+[the residual ledger](CURRENT-RESIDUAL-2026-09-26.md) owns remaining status.
 
 Depends on: S21-02, S21-04, S21-07, S21-11
 
@@ -82,13 +13,6 @@ Depends on: S21-02, S21-04, S21-07, S21-11
 
 Semantica producer의 prepared payload부터 quanta-index durable candidate/activation까지 exact content-bound
 terminal receipt를 만들고, producer/SDK/daemon을 하나의 breaking cutover로 전환한다.
-
-## Root cause
-
-- RepoMap direct handoff ACK는 identity 중심이며 exact payload/manifest/content를 증명하지 못함
-- aggregate strong terminal receipt는 현재 unsupported
-- producer source, linked contract/SDK tree, daemon binary가 하나의 receipt에 결속되지 않음
-- dirty/path dependency skew가 release compatibility와 분리됨
 
 ## Source-pair entry condition
 
@@ -118,7 +42,7 @@ Producer source identity
 
 각 arrow는 이전 identity를 포함한 domain-separated commitment다.
 
-## Work items
+## Paired acceptance work
 
 1. producer preparation manifest와 canonical payload digest schema 확정
 2. SDK request context가 payload/operation identity를 운반
@@ -209,18 +133,3 @@ preparation부터 daemon terminal commit까지 하나의 mandatory commitment ch
 - query-only SDK profile and mutation-capable SDK profile를 각각 compile/run evidence로 분리한다.
 - Semantica current snapshot은 `observed_at`, HEAD, dirty-path digest, dependency resolution을 receipt에 포함하고
   closeout 직전 재-freeze한다.
-
-## 2026-09-21 static implementation delta
-
-- Observed quanta-index HEAD: `4ee230efb927884663c671e623b25cf8892142da`. Runtime, Cargo, daemon, tests, and QBC are `NOT_RUN` by explicit user instruction.
-- V1 `RepoMapMutationAck` and its wire decoder remain unchanged. The parallel V2 surface adds `PublishRepoMapBundleV2`, `RepoMapActivateV2`, and phase-tagged `RepoMapTerminalReceiptV2`.
-- The V2 publish request carries the exact full source-bundle digest. The daemon recomputes it before mutation. Candidate `projection_meta` durably retains manifest digest plus source-bundle digest, while legacy rows remain readable and are rejected for V2 activation.
-- V2 activation compares repo/revision/generation, manifest digest, snapshot id, projection version, authority digest, and source-bundle digest with immutable candidate metadata before activation.
-- Publish and activate responses bind those axes to candidate commitment, activation epoch, terminal sequence, and replay status. The SDK exposes separate `publish_v2` and `activate_v2` methods; V1 methods remain compatibility-only.
-- Static hostile review found and closed a same-commitment replay substitution: compiled candidate bytes can remain identical while manifest/snapshot/projection/authority custody changes. Catalog replay now requires exact durable object address, content digest, byte size, and projection metadata; the RepoMap owner also re-reads and compares every retained axis before issuing the V2 publish terminal receipt.
-- V1 and V2 persistence are separated at the RepoMap owner. V1 keeps the exact legacy projection-metadata JSON shape, including omission of the two V2 custody keys, so upgrade-time V1 replay remains byte-compatible. V2 seals both strong fields together. A V2 call cannot relabel an existing V1 row; it receives a typed candidate conflict and leaves the durable row unchanged.
-- V2 publish receipts now use phase-correct stable activation fields: publish does not mutate the active head, so `prior_candidate_commitment=None` and `activation_epoch=0`. Later activation changes therefore cannot rewrite an ACK-loss publish replay. Publish and activate restart replays must equal their original receipts on every field except `mutation.replayed`, which changes to `true`.
-- Activation replay now forwards the catalog-reconstructed original `prior_candidate_commitment`; the store no longer discards it in the replay branch. This preserves full receipt identity for superseding activation after restart.
-- Projection metadata decoding rejects one-sided keys, present-but-non-string values, invalid manifest digests, and non-canonical source-bundle digests as `CatalogRowCorrupt`; malformed V2 custody cannot fall through as a legacy V1 row or authorize V2 activation.
-- Added source-only contract and owner selectors for per-axis source digest sensitivity, strict duplicate/unknown-field refusal, same-commitment axis substitution, durable-row preservation, restart replay, activation replay prior-commitment stability, and terminal-sequence stability. These selectors are not executed.
-- Cross-version wire refusal, response-loss restart replay, daemon binary attestation, cross-repo qualification, deployment, activation, and rollback evidence remain unexecuted.

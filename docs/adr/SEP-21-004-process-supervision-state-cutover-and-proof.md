@@ -9,6 +9,10 @@ archive edges; lane handoffs gained a semantic validator. Current aliases remain
 
 Gate owner: S21-00; blocks S21-09, S21-10, S21-11, S21-12 and S21-13
 
+Consolidated: 2026-09-27 — [SEP-27-005](SEP-27-005-catalog-recovery-supervision-and-proof-custody.md)
+owns completed report/deadline/backend, original-backup and proof-custody repairs.
+Legacy import is retired; this record does not authorize a live or offline importer.
+
 ## Supervision and shutdown
 
 `SearchdSupervisor` owns every plane, maintenance task, connection/peer watch, provider task and runtime guard,
@@ -36,7 +40,7 @@ not begun. A process may be ready with zero active repositories. Repository/gene
 versions, cursor key ID/digest, migration receipt digest and binary/contract digest. Missing, V1 or malformed root
 is refused as `STATE_ROOT_FORMAT_UNSUPPORTED` before adapters open.
 
-Migration/backup/restore is offline-only under the exclusive state-root lease:
+Current-format backup/restore is offline-only under the exclusive state-root lease:
 
 1. preserve source root read-only;
 2. use the SQLite backup API, never raw live DB/WAL copy;
@@ -50,10 +54,15 @@ Before the first V2 mutation, rollback may return to the untouched V1 root/binar
 forbidden; only verified V2 backup restore or forward repair is allowed. Deployment must never hand a V2 root to an
 old binary.
 
+Legacy roots require an explicit producer rebuild and retained-data decision.
+No snapshot-to-source conversion or automatic migration is implemented by this
+workflow. Preserve the original backup manifest through admission and copied-byte
+verification before intentional incarnation rotation.
+
 ## Cross-repository cutover
 
 Mutation protocol version 2 plus contract digest handshake occurs before body decode. Live dual decoder is forbidden.
-Order: publish Quanta contract/SDK V2, pin Semantica exact dependency, quiesce ingress, backup/offline migrate, start
+Order: publish Quanta contract/SDK V2, pin Semantica exact dependency, quiesce ingress, back up and rebuild/verify the admitted current-format root, start
 attested V2 daemon, handshake/canary, switch producer, then activate. Mismatched producer/daemon is
 `PROTOCOL_VERSION_UNSUPPORTED` with zero mutation.
 

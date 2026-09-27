@@ -237,7 +237,9 @@ mod tests {
         assert!(LexicalCollectionBudget::new(0, 1).is_err());
         assert!(LexicalCollectionBudget::new(1, 0).is_err());
         let budget = LexicalCollectionBudget::new(3, 5)?;
-        budget.clone().charge_work(3)?;
+        let peer = budget.clone();
+        peer.charge_work(3)?;
+        assert_eq!(peer.used_work(), budget.used_work());
         assert_eq!(budget.used_work(), 3);
         assert!(budget.charge_work(1).is_err());
         assert_eq!(budget.used_work(), 3);
@@ -250,7 +252,9 @@ mod tests {
     fn reservations_account_peak_move_release_and_first_failure() -> TestResult {
         let budget = LexicalCollectionBudget::new(4, 8)?;
         let first = budget.reserve_bytes(3)?;
-        let second = budget.clone().reserve_bytes(5)?;
+        let peer = budget.clone();
+        let second = peer.reserve_bytes(5)?;
+        assert_eq!(peer.resident_bytes(), budget.resident_bytes());
         assert_eq!((budget.resident_bytes(), budget.peak_bytes()), (8, 8));
         drop(first);
         assert_eq!((budget.resident_bytes(), budget.peak_bytes()), (5, 8));
@@ -309,7 +313,11 @@ mod tests {
         let _ready = start.wait();
         let mut admitted = 0_u64;
         for worker in workers {
-            admitted = admitted.saturating_add(worker.join().map_err(|_| "worker panicked")?);
+            let count = match worker.join() {
+                Ok(count) => count,
+                Err(panic) => std::panic::resume_unwind(panic),
+            };
+            admitted = admitted.saturating_add(count);
         }
         assert!(admitted <= 31);
         assert_eq!(budget.used_work(), 31);
@@ -337,7 +345,10 @@ mod tests {
         let excess_refused = budget.reserve_bytes(1).is_err();
         let _release = barrier.wait();
         for worker in workers {
-            worker.join().map_err(|_| "worker panicked")??;
+            match worker.join() {
+                Ok(result) => result?,
+                Err(panic) => std::panic::resume_unwind(panic),
+            }
         }
         assert_eq!(held_snapshot, (64, 64));
         assert!(excess_refused);

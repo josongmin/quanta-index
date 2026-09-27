@@ -1,54 +1,40 @@
-# Jun 7 Search Product Quality Ticket Index
+# Search product quality — residual index
 
-Parent RFC: [../rfc.md](../rfc.md)
+Status: `ACTIVE_RESIDUAL`
 
-Status summary:
+[Parent](../README.md) · [Accepted gate decisions](../../../adr/JUN-08-001-verification-hellgate-and-benchmark-separation.md)
 
-- packet planned
-- this packet owns search product quality, not DSL feature coverage
-- this packet is restricted to the non-semantic code-search stack
-- correctness verification remains owned by
-  `git show eff53181:docs/plans/jun-7-verification-hellgates/rfc.md`
-- current quality backlog is split into relevance, snippet/explain, scale,
-  tail, operator UX, ambiguity repair, and UI contract lanes
+The old `planned` labels are retired for implemented scaffolding. Scope/policy,
+CLI diagnosis, typed repairs, highlight contracts and gate registration are
+code-present; fresh consumer/runtime results and qualification remain separate.
 
-Execution discipline:
+| Remaining owner | Acceptance |
+| --- | --- |
+| [J7Q-01](J7Q-01-ranking-quality-and-relevance-corpus.md) | Independent judged route quality, hard negatives and actual Sourcegraph lexical overlap |
+| [J7Q-02](J7Q-02-snippet-and-explain-quality.md) | Current match-window/explanation usefulness and wire/SDK/CLI provenance proof |
+| [J7Q-03](J7Q-03-large-corpus-scale-tiers.md) | Measured medium/large/XL ingest/open/reopen/query/restart/RSS limits |
+| [J7Q-04](J7Q-04-latency-tail-hardening.md) | Canonical-host admitted route-tail evidence and justified blocking budgets |
 
-- every ticket must declare a primary quality dimension:
-  - relevance
-  - snippet/explain
-  - scale
-  - tail
-  - operator UX
-  - ambiguity repair
-  - UI contract
-- every ticket must encode its preferred implementation direction inside the
-  owning seam, not only in chat
-- reviewer rejection examples belong in the ticket text, not in follow-up chat
-- semantic retrieval and hybrid fusion quality are out of scope for all
-  `J7Q-*` tickets here
-- any ranking-facing `SOTA` claim must point to an explicit Sourcegraph lexical
-  overlap subset
+## Retained acceptance from retired implementation tickets
 
-Worker read order:
+- Operator/SDK owner: actual daemon and CLI `doctor`, `readiness`, generation
+  inspection, explanation and metrics must agree on activation/generation/route
+  truth under missing, divergent and failed states. Harness `cli_snapshots.json`
+  is a runtime-surface supplement, not independent proof of every CLI command.
+  Use current `generation-status` and `metrics`, not the old proposed aliases.
+- Query/SDK/CLI owner: negative consumer tests must keep unsupported, ambiguous
+  and wrong-route codes distinct and preserve typed supported alternatives,
+  route hints and docs anchors; repair metadata never silently rewrites intent.
+- Contract/SDK/CLI owner: exact preview window/highlight offsets and explanation
+  sections need fresh current-wire consumer proof, including UTF-8 boundaries,
+  truncation, empty/unavailable preview and score/provenance reconciliation.
+  Web UI and confidence fields require an explicit consumer need before design.
+- Benchmark integration owner: execute and validate the required dimensions on
+  one bound source/input/host. Registration and the aggregate summary do not
+  satisfy external comparison or quiet-host admission. Missing dimensions,
+  failed artifacts and unprovisioned overlap cannot become a passing aggregate.
 
-1. [../WORKER_START_HERE.md](../WORKER_START_HERE.md)
-2. [../NO-GO-RULES.md](../NO-GO-RULES.md)
-3. [../SOURCE_TRUTH_MAP.md](../SOURCE_TRUTH_MAP.md)
-4. [../MEASUREMENT_MATRIX.md](../MEASUREMENT_MATRIX.md)
-5. [../COMMAND_AND_ARTIFACT_CONTRACT.md](../COMMAND_AND_ARTIFACT_CONTRACT.md)
-6. [../DUMB_LLM_EXECUTION_CHECKLIST.md](../DUMB_LLM_EXECUTION_CHECKLIST.md)
-
-## Ticket Table
-
-| ticket | status | scope |
-| --- | --- | --- |
-| [J7Q-00](J7Q-00-scope-lock-and-measurement-policy.md) | planned | freeze measurement vocabulary and blocking/advisory boundaries |
-| [J7Q-01](J7Q-01-ranking-quality-and-relevance-corpus.md) | planned | add relevance corpus and ranking quality gates |
-| [J7Q-02](J7Q-02-snippet-and-explain-quality.md) | planned | raise snippet and explanation quality above field-presence proof |
-| [J7Q-03](J7Q-03-large-corpus-scale-tiers.md) | planned | define reproducible scale tiers and large-corpus proof |
-| [J7Q-04](J7Q-04-latency-tail-hardening.md) | planned | turn route-critical p95/p99 tails into explicit quality gates |
-| [J7Q-05](J7Q-05-operator-ergonomics.md) | planned | add operator-facing diagnosis and readiness surfaces |
-| [J7Q-06](J7Q-06-ambiguous-intent-handling.md) | planned | add repairable typed-failure ergonomics without weakening fail-closed behavior |
-| [J7Q-07](J7Q-07-ui-ux-contract-surface.md) | planned | add typed UI-consumable result contract fields |
-| [J7Q-08](J7Q-08-followthrough-and-gate-integration.md) | planned | integrate quality gates into stable commands and docs |
+These are acceptance scopes, not a claim that the current implementation is
+missing. Retire each after its own terminal/oracle result; do not recreate
+implemented commands or DTOs. The active code-search and MISC ledgers own
+cross-source, corpus/gold, physical regex and complete producer acceptance.

@@ -430,6 +430,290 @@ fn l4_preview_admission_unavailable_pages_do_not_exhaust_output_slots() -> TestR
 }
 
 #[test]
+fn optional_preview_refusal_preserves_selected_identity_score_and_order() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+    let batch = batch(
+        1,
+        None,
+        vec![
+            file_scope("a.rs", "needle")?,
+            file_scope("b.rs", "needle needle")?,
+            file_scope("c.rs", "needle context context")?,
+        ],
+    )?;
+    adapter.build_batch(&batch)?;
+    let view = adapter.open(&batch.repo_id, &batch.revision_id, batch.generation)?;
+    for index_mode in [None, Some(LqYesNoOnly::No)] {
+        let mut present = query("needle");
+        present.options.index_mode = index_mode;
+        let baseline = view.search(&present, 2, &RequestBudgetV1::unbounded())?;
+        assert_eq!(baseline.len(), 2);
+        assert_ne!(
+            baseline
+                .first()
+                .ok_or("first selected hit missing")?
+                .candidate_id,
+            baseline
+                .get(1)
+                .ok_or("second selected hit missing")?
+                .candidate_id
+        );
+        for hit in &baseline {
+            let preview = hit.preview.as_ref().ok_or("baseline preview missing")?;
+            assert_eq!(preview.unavailable_reason, None);
+            assert!(!hit.snippet.is_empty());
+            assert!(!hit.highlights.is_empty());
+        }
+        for exhaust_work in [true, false] {
+            let request = RequestBudgetV1::unbounded();
+            let ledger = request.lexical_preview_budget(10_000_000, 64 * 1024 * 1024)?;
+            // Keep the same admitted policy and exhaust only its optional
+            // resource account. Mandatory selection remains independently live.
+            let _memory = if exhaust_work {
+                ledger.charge_work(10_000_000)?;
+                None
+            } else {
+                let remaining = (64_u64 * 1024 * 1024)
+                    .checked_sub(ledger.resident_bytes())
+                    .ok_or("preview carrier exceeds the admitted memory policy")?;
+                Some(ledger.reserve_bytes(remaining)?)
+            };
+            let refused = view.search(&present, 2, &request)?;
+            assert_eq!(refused.len(), baseline.len());
+            for (expected, actual) in baseline.iter().zip(&refused) {
+                let preview = actual.preview.as_ref().ok_or("refusal metadata missing")?;
+                assert_eq!(preview.kind, PreviewKind::SourceChunk);
+                assert_eq!(
+                    preview.unavailable_reason,
+                    Some(PreviewUnavailableReason::WorkBudget)
+                );
+                assert_eq!(preview.original_focus, None);
+                assert_eq!(preview.normalized_focus, None);
+                assert_eq!(preview.original_context, None);
+                assert!(actual.snippet.is_empty());
+                assert!(actual.highlights.is_empty());
+                assert_eq!(actual.snippet_hit_offset, None);
+                actual.validate_source_metadata()?;
+                assert_eq!(actual.score.to_bits(), expected.score.to_bits());
+                let mut expected_identity = expected.clone();
+                expected_identity.preview = None;
+                expected_identity.snippet.clear();
+                expected_identity.snippet_hit_offset = None;
+                expected_identity.highlights.clear();
+                let mut actual_identity = actual.clone();
+                actual_identity.preview = None;
+                assert_eq!(actual_identity, expected_identity);
+            }
+            request.checkpoint("l4:mandatory-selection-survived-preview-refusal")?;
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn configured_regex_state_policy_cannot_be_bypassed_by_search_route_or_leaf_kind() -> TestResult {
+    use quanta_index_contract::{LqFilter, LqPatternType, SearchPlaneErrorCodeV2};
+    use quanta_index_core::{
+        CoreError, LexicalExecutionBudgetV1, LexicalWriterPolicy, RegexMatchCachePolicy,
+    };
+    use quanta_index_lexical::regex::RegexPolicy;
+
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+    let batch = batch(1, None, vec![file_scope("source.rs", "needle")?])?;
+    adapter.build_batch(&batch)?;
+    for max_nfa_states in [6, 7] {
+        let adapter = LexicalAdapter::with_state_root_and_policies(
+            dir.path().to_path_buf(),
+            RegexPolicy {
+                max_nfa_states,
+                ..RegexPolicy::defaults()
+            },
+            LexicalExecutionBudgetV1::DEFAULT,
+            RegexMatchCachePolicy::DEFAULT,
+            LexicalWriterPolicy::DEFAULT,
+        );
+        let view = adapter.open(&batch.repo_id, &batch.revision_id, batch.generation)?;
+        for index_mode in [None, Some(LqYesNoOnly::No)] {
+            for shape in 0..4 {
+                let mut present = query("needle");
+                present.options.case = Some(LqCase::Sensitive);
+                present.options.index_mode = index_mode;
+                match shape {
+                    0 => present.expr = LqExpr::Leaf(LqLeaf::Regex("needle".into())),
+                    1 => present.options.pattern_type = LqPatternType::Regexp,
+                    2 => {
+                        present.expr = LqExpr::Leaf(LqLeaf::RawString("needle".into()));
+                        present.options.pattern_type = LqPatternType::Regexp;
+                    }
+                    _ => present.filters.push(LqFilter::Content {
+                        leaf: LqLeaf::Regex("needle".into()),
+                    }),
+                }
+                match view.search(&present, 1, &RequestBudgetV1::unbounded()) {
+                    Err(CoreError::Typed { code: SearchPlaneErrorCodeV2::LexRegexBudgetExceeded, .. }) if max_nfa_states == 6 => {}
+                    Ok(hits) if max_nfa_states == 7 => {
+                        assert_eq!(hits.len(), 1);
+                        assert_eq!(hits.first().ok_or("selected hit missing")?.snippet, "needle");
+                    }
+                    result => return Err(format!("state policy bypass or wrong error: cap={max_nfa_states}, mode={index_mode:?}, shape={shape}, result={result:?}").into()),
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn verify_only_regex_matches_through_both_search_routes() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+    let batch = batch(1, None, vec![file_scope("source.rs", "needle42")?])?;
+    adapter.build_batch(&batch)?;
+    let view = adapter.open(&batch.repo_id, &batch.revision_id, batch.generation)?;
+    for index_mode in [None, Some(LqYesNoOnly::No)] {
+        for (pattern, matches) in [
+            (r"[a-z]+[0-9]+", true),
+            (".*", true),
+            ("", true),
+            ("(?:needle)?", true),
+            ("needle|", true),
+            ("^$", false),
+        ] {
+            let mut present = query("unused");
+            present.expr = LqExpr::Leaf(LqLeaf::Regex(pattern.into()));
+            present.options.case = Some(LqCase::Sensitive);
+            present.options.index_mode = index_mode;
+            let hits = view.search(&present, 1, &RequestBudgetV1::unbounded())?;
+            if !matches {
+                assert!(
+                    hits.is_empty(),
+                    "anchored empty regex cannot match nonempty source"
+                );
+                continue;
+            }
+            assert_eq!(hits.len(), 1);
+            let hit = hits.first().ok_or("verify-only hit missing")?;
+            assert_eq!(hit.candidate_id, "chunk-source.rs");
+            let reference = regex::bytes::Regex::new(pattern)?;
+            let reference_ranges: Vec<_> = reference
+                .find_iter(b"needle42")
+                .map(|found| found.start()..found.end())
+                .collect();
+            if pattern != r"[a-z]+[0-9]+" && pattern != ".*" {
+                assert!(reference_ranges.iter().any(std::ops::Range::is_empty));
+                assert_eq!(
+                    hit.preview
+                        .as_ref()
+                        .ok_or("preview missing")?
+                        .unavailable_reason,
+                    Some(PreviewUnavailableReason::UnsupportedRange)
+                );
+                assert!(hit.snippet.is_empty());
+            } else {
+                // The canonical iterator suppresses an empty match adjacent
+                // to the previous match's end. `.*` emits only 0..8 here.
+                assert_eq!(reference_ranges.len(), 1);
+                assert_eq!(reference_ranges.first(), Some(&(0..8)));
+                assert_eq!(hit.snippet, "needle42");
+                assert_eq!(hit.highlights, vec![HighlightSpan { start: 0, len: 8 }]);
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn strict_literal_policy_refuses_empty_alternatives_before_search() -> TestResult {
+    use quanta_index_contract::SearchPlaneErrorCodeV2;
+    use quanta_index_core::{
+        CoreError, LexicalExecutionBudgetV1, LexicalWriterPolicy, RegexMatchCachePolicy,
+    };
+    use quanta_index_lexical::regex::RegexPolicy;
+
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root_and_policies(
+        dir.path().to_path_buf(),
+        RegexPolicy {
+            require_literal: true,
+            ..RegexPolicy::defaults()
+        },
+        LexicalExecutionBudgetV1::DEFAULT,
+        RegexMatchCachePolicy::DEFAULT,
+        LexicalWriterPolicy::DEFAULT,
+    );
+    let batch = batch(1, None, vec![file_scope("source.rs", "needle42")?])?;
+    adapter.build_batch(&batch)?;
+    let view = adapter.open(&batch.repo_id, &batch.revision_id, batch.generation)?;
+    for index_mode in [None, Some(LqYesNoOnly::No)] {
+        for pattern in ["needle", "", "^$", r"\b", "(?:needle)?", "needle|"] {
+            let mut present = query("unused");
+            present.expr = LqExpr::Leaf(LqLeaf::Regex(pattern.into()));
+            present.options.case = Some(LqCase::Sensitive);
+            present.options.index_mode = index_mode;
+            match view.search(&present, 1, &RequestBudgetV1::unbounded()) {
+                Ok(hits) if pattern == "needle" => assert_eq!(hits.len(), 1),
+                Err(CoreError::Typed {
+                    code: SearchPlaneErrorCodeV2::LexRegexDialectUnsupported,
+                    ..
+                }) if pattern != "needle" => {}
+                result => return Err(format!(
+                    "literal policy bypass: mode={index_mode:?}, pattern={pattern:?}, result={result:?}"
+                ).into()),
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn compiled_regex_byte_refusal_is_consistent_across_search_routes() -> TestResult {
+    use quanta_index_contract::{LqFileScope, LqFilter, SearchPlaneErrorCodeV2};
+    use quanta_index_core::CoreError;
+
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+    let batch = batch(1, None, vec![file_scope("source.rs", "needle")?])?;
+    adapter.build_batch(&batch)?;
+    let view = adapter.open(&batch.repo_id, &batch.revision_id, batch.generation)?;
+    for index_mode in [None, Some(LqYesNoOnly::No)] {
+        let mut present = query("unused");
+        present.expr = LqExpr::Leaf(LqLeaf::Regex(r"[\x{80}-\x{10FFFF}]{20000}".into()));
+        present.options.case = Some(LqCase::Sensitive);
+        present.options.index_mode = index_mode;
+        match view.search(&present, 1, &RequestBudgetV1::unbounded()) {
+            Err(CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::LexRegexPlanLimitExceeded,
+                ..
+            }) => {}
+            result => return Err(format!(
+                "compiled byte refusal must remain typed: mode={index_mode:?}, result={result:?}"
+            )
+            .into()),
+        }
+    }
+    let mut present = query("needle");
+    present.options.index_mode = Some(LqYesNoOnly::No);
+    present.filters.push(LqFilter::File {
+        pattern: r"[\x{80}-\x{10FFFF}]{20000}".into(),
+        scope: LqFileScope::PathOnly,
+    });
+    match view.search(&present, 1, &RequestBudgetV1::unbounded()) {
+        Err(CoreError::Typed {
+            code: SearchPlaneErrorCodeV2::LexRegexPlanLimitExceeded,
+            ..
+        }) => {}
+        result => {
+            return Err(
+                format!("manual scope must preserve compiled byte refusal: {result:?}").into(),
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn l4_preview_admission_skips_oversized_source_before_regex_compile() -> TestResult {
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());

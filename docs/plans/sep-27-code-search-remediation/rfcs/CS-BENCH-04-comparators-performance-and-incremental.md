@@ -10,16 +10,17 @@ Depends on BENCH-01/02/03 and shared MISC execution/custody prerequisites.
 retains raw responses and excludes backend indexed-universe attestation,
 independent gold and qualified speed. Do not promote that producer's presence to
 a completed comparison. Add L2 coverage/ranked-sidecar total update cost to the
-measurement scope; the older index-only fresh-byte sample excludes coverage.
+measurement scope; index-only bytes cannot establish total update cost.
 Actual workload/host admission and final source execution remain required:
-[CS-INT-01](CS-INT-01-integration-and-qualification.md#current-remaining-work-audit--2026-09-27).
+[CS-INT-01](CS-INT-01-integration-and-qualification.md#remaining-work).
 
 ## Purpose and existing limitation
 
 Keep local Sourcegraph, OpenGrok and cs in the comparison, with Quanta and Semble.
-The historical Sourcegraph request used `count:all` then scored a truncated file
-list; Quanta requested ten chunks. Process-spawn, worker, SDK and HTTP boundaries
-also differed. Those elapsed times do not establish an equal-work engine speedup.
+Freeze output unit, result limits/completion and process-spawn/worker/SDK/HTTP
+timing boundaries before comparison. A truncated file view of an exhaustive
+request is not equivalent to a chunk top-k request; differing timing layers
+cannot establish an equal-work engine speedup.
 
 Fixed-snapshot search proves neither watcher operation nor incremental updates.
 Measure the real update pipeline separately rather than inferring it from a

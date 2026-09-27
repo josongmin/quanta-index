@@ -1,11 +1,11 @@
 //! Source-bound capability and producer-event commitments. Missing coverage
 //! cannot be interpreted as an empty, completely indexed source universe.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::fmt;
 use std::io::Write;
 
-use quanta_index_contract_base::{SourceFileKey, SourceFileRevision};
+use quanta_index_contract_base::SourceFileRevision;
 use serde::de::{MapAccess, Visitor};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
@@ -36,9 +36,9 @@ pub struct SourceFileCoverage {
     pub symbols: SymbolCoverage,
 }
 
-/// The in-memory snapshot. Persisted decoders must validate sorted unique rows
-/// before constructing this map; map deserialization can hide duplicate keys.
-pub type FileCoverageSnapshot = BTreeMap<SourceFileKey, SourceFileCoverage>;
+#[path = "coverage_snapshot.rs"]
+mod snapshot;
+pub use snapshot::{FileCoverageIter, FileCoverageSnapshot};
 
 /// An event is identified independently of a target generation or ingest batch.
 /// The durable publication owner checks replay and expected-base lineage.
@@ -325,6 +325,8 @@ pub fn source_file_unit_set_sha256(
 mod tests {
     use super::*;
     use crate::{ChunkId, RepoId, RepoRelativePath, RevisionId};
+    use quanta_index_contract_base::SourceFileKey;
+    use std::fmt::Write as _;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -381,7 +383,7 @@ mod tests {
     #[test]
     fn malformed_symbol_states_never_become_complete() {
         for invalid in [
-            r#"{}"#,
+            r"{}",
             r#"{"state":"complete"}"#,
             r#"{"state":"complete","symbol_count":null}"#,
             r#"{"state":"complete","symbol_count":-1}"#,
@@ -441,7 +443,7 @@ mod tests {
     #[test]
     fn event_tokens_are_bounded_and_validate_before_serialization() -> TestResult {
         for invalid in [
-            "".to_string(),
+            String::new(),
             "a b".into(),
             "a\n".into(),
             "é".into(),
@@ -520,7 +522,10 @@ mod tests {
         // Independent oracle: SHA256(domain || 0x82 0x80 0x80), the CBOR
         // pair of empty arrays. No source-file-byte completeness claim.
         let digest = source_file_unit_set_sha256(&[], &[])?;
-        let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+        let mut hex = String::with_capacity(64);
+        for byte in digest {
+            write!(&mut hex, "{byte:02x}")?;
+        }
         assert_eq!(
             hex,
             "03b78693ecc7e7294c11af4366b387162c2ebe9547683a8ac614a717f0027d32"

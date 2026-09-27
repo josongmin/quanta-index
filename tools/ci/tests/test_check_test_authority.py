@@ -15,6 +15,36 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPT_PATH = REPO_ROOT / "tools" / "ci" / "lint" / "check-test-authority.py"
 
 
+def test_live_code_search_owners_are_enrolled_in_the_existing_rail() -> None:
+    module = _load_module()
+    data = module.tomllib.loads((REPO_ROOT / "tools/ci/test-authority.toml").read_text())
+    entries = {entry["path"]: entry for entry in data["python_targets"]}
+    scope = data["python_scopes"]["benchmark-control-capture"]["targets"]
+    for name, owner in (
+        ("test_live_lexical_external.py", "tools/benchmark/retrieval/live_lexical_external.py"),
+        ("test_code_search_workflow.py", "tools/benchmark/code_search_workflow.py"),
+    ):
+        path = f"tools/ci/tests/{name}"
+        entry = entries[path]
+        assert entry["owner"] == owner
+        assert entry["id"] in scope
+        assert entry["rail"] == "pr-benchmark-control-python"
+        assert module._python_command_selects_path(
+            REPO_ROOT, data["rails"][entry["rail"]]["command"], path
+        )
+        collected = subprocess.run(
+            [sys.executable, "-m", "pytest", path, "--collect-only", "-q", "-p", "no:cacheprovider"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
+        )
+        assert collected.returncode == 0, collected.stdout + collected.stderr
+        identities = [line for line in collected.stdout.splitlines() if line.startswith(path + "::")]
+        assert identities and len(identities) == len(set(identities)), collected.stdout
+
+
 def _load_module():
     spec = importlib.util.spec_from_file_location("check_test_authority", SCRIPT_PATH)
     assert spec and spec.loader

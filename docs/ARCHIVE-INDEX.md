@@ -33,8 +33,9 @@ Completed plan records have a separate
 
 The four `docs/handoff/sep-27/agent-*.md` files and twelve TOPT Markdown files
 were removed along with 25 RB/BM/RBR plan files. This is one 41-document
-consolidation, not a claim of implementation completion. All current contracts
-and remaining tickets are inline in the [execution SSOT](plans/sep-27-misc/tickets/INDEX.md).
+consolidation, not a claim of implementation completion. Contracts and remaining
+tickets were initially inlined in the [execution SSOT](plans/sep-27-misc/tickets/INDEX.md).
+Completed decisions now live in SEP-27-003/004; the SSOT retains open acceptance.
 Pre-deletion HEAD was `63f09be92fca533bd18d1d71a6464ca30e8073d1`, with dirty and
 untracked documents, so Git alone does not recover every preimage.
 
@@ -45,3 +46,37 @@ All 56 regular file bodies were compared with the live preimage and matched.
 Extended-attribute warnings do not affect that byte comparison; this is content
 recovery, not filesystem-metadata backup. Recover into a separate directory,
 not over the current worktree. The archive is not a live authority.
+
+
+## SEP-27 completed owner and terminal records
+
+The latest completed L1–L5 handoff/RCA packet and completed MISC implementation
+sections are consolidated in
+[SEP-27-003](adr/SEP-27-003-code-search-source-and-preview-contract.md) and
+[SEP-27-004](adr/SEP-27-004-benchmark-capture-and-resource-custody.md).
+The [plan archive](plans/ARCHIVE-INDEX.md#sep-27-completed-code-search-and-implementation-compaction)
+records the exact pre-deletion revision, removed sets and recovery commands.
+Open allocation, update cost, native scoring, integration and measurement are
+retained in their active owners; removing history does not qualify them.
+
+The second completion sweep moves SEP-21 catalog/recovery/supervision/proof
+decisions into [SEP-27-005](adr/SEP-27-005-catalog-recovery-supervision-and-proof-custody.md).
+Its execution history, completed read-view design and June semantic seam audit
+are removed; the [plan history index](plans/ARCHIVE-INDEX.md#sep-27-second-completion-sweep)
+records exact recovery and remaining owners.
+
+## SEP-27 remaining-document compaction
+
+At `0b4839a4a8b4cf99e870b4251395b6e3df8f4a21`, the unchanged
+`docs/build-resource-budget.md` was removed: operator options live in the root
+README and cooperative admission/native preparation decisions in SEP-27-004.
+Its source-specific unit-graph counts are historical, not an active requirement.
+The purpose checklist retains all 143 G0–G13 IDs and oracle obligations while
+removing repeated rail lists and stale initial routing. The lexical owner index
+retains all ten canonical predicates; the machine proof ledger is unchanged.
+MISC T00–T17, sample floors and comparison admission now live in SEP-26-003;
+unfinished measurements, input decisions and actual-producer/platform acceptance
+remain in MISC. No proof row or product qualification is closed by compaction.
+Exact dirty preimages of all nine affected documents are retained outside the
+repository at `/tmp/qi-doc-compaction-w8x8vuv4`; `preimages.json` records their
+content digests. Git recovers the removed build-resource body at the revision above.

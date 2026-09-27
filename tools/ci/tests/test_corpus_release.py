@@ -320,3 +320,22 @@ def test_environment_excludes_service_secrets(monkeypatch):
 def test_reserved_and_noncanonical_corpus_paths_refuse(path):
     with pytest.raises(EvidenceError, match="noncanonical"):
         corpus.canonical_path(path)
+
+
+def test_shallow_history_refuses_before_release_publication(source, tmp_path):
+    checkouts, original, recipe, _ = source
+    (original / "README.md").write_text("a second commit\n")
+    git(original, "add", "README.md")
+    git(original, "commit", "-qm", "shallow fixture")
+    revision = git(original, "rev-parse", "HEAD").decode().strip()
+    shallow_root = tmp_path / "shallow-checkouts"
+    shallow_root.mkdir()
+    subprocess.run(["git", "clone", "--quiet", "--no-local", "--depth", "1",
+                    "--", str(original), str(shallow_root / "fixture")], check=True)
+    spec = json.loads(recipe.read_text())
+    spec["repositories"][0]["revision"] = revision
+    recipe.write_text(json.dumps(spec))
+    target = tmp_path / "refused-release"
+    with pytest.raises(EvidenceError, match="complete Git history"):
+        corpus.create(recipe, shallow_root, target)
+    assert not target.exists()

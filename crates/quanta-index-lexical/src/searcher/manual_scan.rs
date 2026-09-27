@@ -27,7 +27,7 @@ use quanta_index_core::{
     CoreError, LexicalSearchPageV1, RequestBudgetV1, timeref::is_rev_at_time_spec,
 };
 use quanta_index_lq_regex::RegexExecutor;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use tantivy::DocSet as _;
 use tantivy::collector::TopDocs;
 use tantivy::query::{AllQuery, BooleanQuery, EnableScoring, Occur, Query, TermQuery};
@@ -53,6 +53,108 @@ struct ManualDocumentView<'a> {
     source_repo_id: &'a str,
     repo_relative_path: &'a str,
     content: &'a str,
+}
+
+/// Reusable predicate results live for one unindexed scan or candidate-admission pass.
+///
+/// Regex keys include the exact execution pattern and query option flags.
+/// Repo-gate keys include the canonical predicate, ordered arguments, and
+/// options; the gate set is collected at most once for the request. A fixed
+/// regex entry cap prevents query complexity from growing retained engines
+/// without bound; a regex miss evicts one entry before compilation.
+const MANUAL_REGEX_CACHE_ENTRIES: usize = 4;
+
+struct ManualRepoGate {
+    name: String,
+    args: Vec<LqPredicateArg>,
+    options: LqOptions,
+    repo_ids: BTreeSet<String>,
+}
+
+#[derive(Default)]
+pub(crate) struct ManualScanCache {
+    compiled: BTreeMap<String, RegexExecutor>,
+    repo_gates: Vec<ManualRepoGate>,
+    #[cfg(test)]
+    compiled_builds: usize,
+}
+
+impl ManualScanCache {
+    fn repo_gate_ids(
+        &mut self,
+        name: &str,
+        args: &[LqPredicateArg],
+        options: &LqOptions,
+        collect: impl FnOnce() -> Result<BTreeSet<String>, CoreError>,
+    ) -> Result<&BTreeSet<String>, CoreError> {
+        if let Some(index) = self.repo_gates.iter().position(|cached| {
+            cached.name == name && cached.args == args && cached.options == *options
+        }) {
+            return self
+                .repo_gates
+                .get(index)
+                .map(|gate| &gate.repo_ids)
+                .ok_or_else(|| {
+                    CoreError::Storage("lexical: manual repo gate cache lost a known entry".into())
+                });
+        }
+        let ids = collect()?;
+        self.repo_gates.push(ManualRepoGate {
+            name: name.to_owned(),
+            args: args.to_vec(),
+            options: options.clone(),
+            repo_ids: ids,
+        });
+        let last = self.repo_gates.last().ok_or_else(|| {
+            CoreError::Storage("lexical: manual repo gate cache lost its inserted entry".into())
+        })?;
+        Ok(&last.repo_ids)
+    }
+
+    fn get_or_compile(
+        &mut self,
+        pattern: &str,
+        compile: impl FnOnce() -> Result<RegexExecutor, CoreError>,
+    ) -> Result<&RegexExecutor, CoreError> {
+        use std::collections::btree_map::Entry;
+        if self.compiled.contains_key(pattern) {
+            return self.compiled.get(pattern).ok_or_else(|| {
+                CoreError::Storage("lexical: manual regex cache lost a known entry".into())
+            });
+        }
+        if self.compiled.len() == MANUAL_REGEX_CACHE_ENTRIES {
+            let _evicted = self.compiled.pop_first();
+        }
+        match self.compiled.entry(pattern.to_owned()) {
+            Entry::Occupied(entry) => Ok(entry.into_mut()),
+            Entry::Vacant(entry) => {
+                let compiled = compile()?;
+                #[cfg(test)]
+                {
+                    self.compiled_builds = self.compiled_builds.saturating_add(1);
+                }
+                Ok(entry.insert(compiled))
+            }
+        }
+    }
+
+    fn regex_matches(
+        &mut self,
+        source: &str,
+        options: &LqOptions,
+        haystack: &str,
+    ) -> Result<bool, CoreError> {
+        let normalized_source = TantivySearcher::regex_source_for_options(source, options);
+        let executor = self.get_or_compile(&normalized_source, || {
+            RegexExecutor::compile(&normalized_source).map_err(|err| CoreError::Typed {
+                code: crate::query_errors::regex_wire_code(err.code),
+                message: format!(
+                    "lexical: regex {source:?} failed to compile on unindexed scan route: {err}"
+                ),
+            })
+        })?;
+        Ok(executor.verify(haystack.as_bytes()))
+    }
 }
 
 fn manual_language_unavailable() -> CoreError {
@@ -179,9 +281,15 @@ impl TantivySearcher {
         filter_name: &str,
     ) -> Result<RegexExecutor, CoreError> {
         RegexExecutor::compile(pattern).map_err(|err| {
-            CoreError::InvalidContract(format!(
-                "lexical: {filter_name} regex filter compile: {err}"
-            ))
+            let message = format!("lexical: {filter_name} regex filter compile: {err}");
+            if err.code == quanta_index_lq_regex::RegexErrorCode::PlanLimitExceeded {
+                CoreError::Typed {
+                    code: crate::query_errors::regex_wire_code(err.code),
+                    message,
+                }
+            } else {
+                CoreError::InvalidContract(message)
+            }
         })
     }
 
@@ -190,16 +298,9 @@ impl TantivySearcher {
         source: &str,
         options: &LqOptions,
         haystack: &str,
+        regex_cache: &mut ManualScanCache,
     ) -> Result<bool, CoreError> {
-        let normalized_source = Self::regex_source_for_options(source, options);
-        let executor =
-            RegexExecutor::compile(&normalized_source).map_err(|err| CoreError::Typed {
-                code: crate::query_errors::regex_wire_code(err.code),
-                message: format!(
-                    "lexical: regex {source:?} failed to compile on unindexed scan route: {err}"
-                ),
-            })?;
-        Ok(executor.verify(haystack.as_bytes()))
+        regex_cache.regex_matches(source, options, haystack)
     }
 
     pub(crate) fn manual_doc_restrictions_allow(
@@ -266,6 +367,7 @@ impl TantivySearcher {
         arg: &FileContributorArg,
         source_repo_id: &str,
         repo_relative_path: &str,
+        regex_cache: &mut ManualScanCache,
     ) -> Result<bool, CoreError> {
         let authority = self.file_contributor_authority()?;
         let Some(contributors) = authority
@@ -280,11 +382,13 @@ impl TantivySearcher {
                 .iter()
                 .any(|identity| identity.canonical == *contributor)),
             ContributorPattern::Regex(source) => {
-                let executor = RegexExecutor::compile(source).map_err(|err| CoreError::Typed {
-                    code: crate::query_errors::regex_wire_code(err.code),
-                    message: format!(
-                        "lexical: file.has.contributor regex {source:?} failed to compile: {err}"
-                    ),
+                let executor = regex_cache.get_or_compile(source, || {
+                    RegexExecutor::compile(source).map_err(|err| CoreError::Typed {
+                        code: crate::query_errors::regex_wire_code(err.code),
+                        message: format!(
+                            "lexical: file.has.contributor regex {source:?} failed to compile: {err}"
+                        ),
+                    })
                 })?;
                 Ok(contributors.iter().any(|identity| {
                     identity
@@ -305,10 +409,12 @@ impl TantivySearcher {
         pattern: &str,
         scope: LqFileScope,
         repo_relative_path: &str,
+        regex_cache: &mut ManualScanCache,
     ) -> Result<bool, CoreError> {
-        let executor = Self::manual_filter_regex(pattern, "file")?;
+        let executor =
+            regex_cache.get_or_compile(pattern, || Self::manual_filter_regex(pattern, "file"))?;
         Ok(Self::file_filter_scope_matches(
-            &executor,
+            executor,
             scope,
             repo_relative_path,
         ))
@@ -333,6 +439,10 @@ impl TantivySearcher {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the private content predicate evaluator carries source identity and request-local regex state"
+    )]
     pub(crate) fn manual_content_predicate_matches(
         &self,
         doc: &TantivyDocument,
@@ -342,9 +452,10 @@ impl TantivySearcher {
         repo_relative_path: &str,
         content: &str,
         budget: &RequestBudgetV1,
+        regex_cache: &mut ManualScanCache,
     ) -> Result<bool, CoreError> {
         if let Some(ContentPathScope { pattern, scope }) = constraint.path_scope.as_ref()
-            && !self.manual_file_filter_matches(pattern, *scope, repo_relative_path)?
+            && !self.manual_file_filter_matches(pattern, *scope, repo_relative_path, regex_cache)?
         {
             return Ok(false);
         }
@@ -361,6 +472,7 @@ impl TantivySearcher {
             content,
             false,
             budget,
+            regex_cache,
         )
     }
 
@@ -378,6 +490,7 @@ impl TantivySearcher {
         repo_relative_path: &str,
         content: &str,
         budget: &RequestBudgetV1,
+        regex_cache: &mut ManualScanCache,
     ) -> Result<bool, CoreError> {
         let Some((canonical_name, canonical_args)) =
             self.canonicalize_predicate_call(name, args)?
@@ -387,56 +500,62 @@ impl TantivySearcher {
             )));
         };
         match kind_of(&canonical_name) {
-            Some(PredicateKind::RepoFileGate) => {
-                let constraint = self.repo_has_file_constraint(&canonical_name, &canonical_args)?;
-                Ok(self.manual_repo_gate_matches(
-                    &self.collect_repo_ids_for_repo_has_file(&constraint, options, budget)?,
-                    source_repo_id,
-                ))
-            }
-            Some(PredicateKind::RepoContentGate) => {
-                let leaf = self.repo_content_constraint(&canonical_name, &canonical_args)?;
-                Ok(self.manual_repo_gate_matches(
-                    &self.collect_repo_ids_for_repo_has_content(&leaf, options, budget)?,
-                    source_repo_id,
-                ))
-            }
-            Some(PredicateKind::RepoCommitRecencyGate) => {
-                let timeref =
-                    self.repo_commit_after_constraint(&canonical_name, &canonical_args)?;
-                Ok(self.manual_repo_gate_matches(
-                    &self.collect_repo_ids_for_repo_has_commit_after(&timeref)?,
-                    source_repo_id,
-                ))
-            }
-            Some(PredicateKind::RepoMetaGate) => {
-                let arg = self.repo_meta_constraint(&canonical_name, &canonical_args)?;
-                Ok(self.manual_repo_gate_matches(
-                    &self.collect_repo_ids_for_repo_has_meta(&arg)?,
-                    source_repo_id,
-                ))
-            }
-            Some(PredicateKind::RepoTopicGate) => {
-                let arg = self.repo_topic_constraint(&canonical_name, &canonical_args)?;
-                Ok(self.manual_repo_gate_matches(
-                    &self.collect_repo_ids_for_repo_has_topic(&arg)?,
-                    source_repo_id,
-                ))
-            }
-            Some(PredicateKind::RepoDescriptionGate) => {
-                let arg = self.repo_description_constraint(&canonical_name, &canonical_args)?;
-                Ok(self.manual_repo_gate_matches(
-                    &self.collect_repo_ids_for_repo_has_description(&arg)?,
-                    source_repo_id,
-                ))
-            }
+            Some(PredicateKind::RepoFileGate) => Ok(self.manual_repo_gate_matches(
+                regex_cache.repo_gate_ids(&canonical_name, &canonical_args, options, || {
+                    let constraint =
+                        self.repo_has_file_constraint(&canonical_name, &canonical_args)?;
+                    self.collect_repo_ids_for_repo_has_file(&constraint, options, budget)
+                })?,
+                source_repo_id,
+            )),
+            Some(PredicateKind::RepoContentGate) => Ok(self.manual_repo_gate_matches(
+                regex_cache.repo_gate_ids(&canonical_name, &canonical_args, options, || {
+                    let leaf = self.repo_content_constraint(&canonical_name, &canonical_args)?;
+                    self.collect_repo_ids_for_repo_has_content(&leaf, options, budget)
+                })?,
+                source_repo_id,
+            )),
+            Some(PredicateKind::RepoCommitRecencyGate) => Ok(self.manual_repo_gate_matches(
+                regex_cache.repo_gate_ids(&canonical_name, &canonical_args, options, || {
+                    let timeref =
+                        self.repo_commit_after_constraint(&canonical_name, &canonical_args)?;
+                    self.collect_repo_ids_for_repo_has_commit_after(&timeref)
+                })?,
+                source_repo_id,
+            )),
+            Some(PredicateKind::RepoMetaGate) => Ok(self.manual_repo_gate_matches(
+                regex_cache.repo_gate_ids(&canonical_name, &canonical_args, options, || {
+                    let arg = self.repo_meta_constraint(&canonical_name, &canonical_args)?;
+                    self.collect_repo_ids_for_repo_has_meta(&arg)
+                })?,
+                source_repo_id,
+            )),
+            Some(PredicateKind::RepoTopicGate) => Ok(self.manual_repo_gate_matches(
+                regex_cache.repo_gate_ids(&canonical_name, &canonical_args, options, || {
+                    let arg = self.repo_topic_constraint(&canonical_name, &canonical_args)?;
+                    self.collect_repo_ids_for_repo_has_topic(&arg)
+                })?,
+                source_repo_id,
+            )),
+            Some(PredicateKind::RepoDescriptionGate) => Ok(self.manual_repo_gate_matches(
+                regex_cache.repo_gate_ids(&canonical_name, &canonical_args, options, || {
+                    let arg = self.repo_description_constraint(&canonical_name, &canonical_args)?;
+                    self.collect_repo_ids_for_repo_has_description(&arg)
+                })?,
+                source_repo_id,
+            )),
             Some(PredicateKind::FileOwnerGate) => {
                 let arg = self.file_owner_constraint(&canonical_name, &canonical_args)?;
                 self.manual_file_owner_matches(&arg, source_repo_id, repo_relative_path)
             }
             Some(PredicateKind::FileContributorGate) => {
                 let arg = self.file_contributor_constraint(&canonical_name, &canonical_args)?;
-                self.manual_file_contributor_matches(&arg, source_repo_id, repo_relative_path)
+                self.manual_file_contributor_matches(
+                    &arg,
+                    source_repo_id,
+                    repo_relative_path,
+                    regex_cache,
+                )
             }
             Some(PredicateKind::ContentLeaf) => {
                 let constraint =
@@ -449,6 +568,7 @@ impl TantivySearcher {
                     repo_relative_path,
                     content,
                     budget,
+                    regex_cache,
                 )
             }
             None => Err(unimplemented_predicate(format!(
@@ -471,12 +591,13 @@ impl TantivySearcher {
         content: &str,
         include_path_terms: bool,
         budget: &RequestBudgetV1,
+        regex_cache: &mut ManualScanCache,
     ) -> Result<bool, CoreError> {
         let case = Self::case_mode(options);
         match leaf {
             LqLeaf::Keyword(text) => {
                 if options.pattern_type == LqPatternType::Regexp {
-                    return self.manual_regex_matches(text, options, content);
+                    return self.manual_regex_matches(text, options, content, regex_cache);
                 }
                 Ok(Self::manual_token_sequence_matches(text, content, case)?
                     || (include_path_terms
@@ -485,11 +606,11 @@ impl TantivySearcher {
             LqLeaf::Phrase(text) => Self::manual_token_sequence_matches(text, content, case),
             LqLeaf::RawString(text) => {
                 if options.pattern_type == LqPatternType::Regexp {
-                    return self.manual_regex_matches(text, options, content);
+                    return self.manual_regex_matches(text, options, content, regex_cache);
                 }
                 Ok(normalize::contains_substring(content, text, case))
             }
-            LqLeaf::Regex(text) => self.manual_regex_matches(text, options, content),
+            LqLeaf::Regex(text) => self.manual_regex_matches(text, options, content, regex_cache),
             LqLeaf::StructuralBlock(_) => Err(CoreError::Typed {
                 code: quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
                     quanta_index_contract::lex::LexicalErrorCode::StrProducerParseTreeUnavailable,
@@ -506,6 +627,7 @@ impl TantivySearcher {
                 repo_relative_path,
                 content,
                 budget,
+                regex_cache,
             ),
         }
     }
@@ -517,6 +639,7 @@ impl TantivySearcher {
         options: &LqOptions,
         include_path_terms: bool,
         budget: &RequestBudgetV1,
+        regex_cache: &mut ManualScanCache,
     ) -> Result<bool, CoreError> {
         match expr {
             LqExpr::Leaf(LqLeaf::Predicate { name, args })
@@ -550,10 +673,18 @@ impl TantivySearcher {
                 view.content,
                 include_path_terms,
                 budget,
+                regex_cache,
             ),
             LqExpr::All(children) => {
                 for child in children {
-                    if !self.manual_expr_matches(view, child, options, false, budget)? {
+                    if !self.manual_expr_matches(
+                        view,
+                        child,
+                        options,
+                        false,
+                        budget,
+                        regex_cache,
+                    )? {
                         return Ok(false);
                     }
                 }
@@ -561,18 +692,22 @@ impl TantivySearcher {
             }
             LqExpr::Any(children) => {
                 for child in children {
-                    if self.manual_expr_matches(view, child, options, false, budget)? {
+                    if self.manual_expr_matches(view, child, options, false, budget, regex_cache)? {
                         return Ok(true);
                     }
                 }
                 Ok(false)
             }
             LqExpr::Not(inner) => {
-                Ok(!self.manual_expr_matches(view, inner, options, false, budget)?)
+                Ok(!self.manual_expr_matches(view, inner, options, false, budget, regex_cache)?)
             }
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the private filter evaluator carries document identity and request-local regex state"
+    )]
     pub(crate) fn manual_filter_matches(
         &self,
         doc: &TantivyDocument,
@@ -582,6 +717,7 @@ impl TantivySearcher {
         repo_relative_path: &str,
         content: &str,
         budget: &RequestBudgetV1,
+        regex_cache: &mut ManualScanCache,
     ) -> Result<bool, CoreError> {
         match filter {
             LqFilter::Repo { pattern, revs } => {
@@ -592,11 +728,12 @@ impl TantivySearcher {
                             .to_string(),
                     });
                 }
-                let executor = Self::manual_filter_regex(pattern, "repo")?;
+                let executor = regex_cache
+                    .get_or_compile(pattern, || Self::manual_filter_regex(pattern, "repo"))?;
                 Ok(executor.verify(source_repo_id.as_bytes()))
             }
             LqFilter::File { pattern, scope } => {
-                self.manual_file_filter_matches(pattern, *scope, repo_relative_path)
+                self.manual_file_filter_matches(pattern, *scope, repo_relative_path, regex_cache)
             }
             LqFilter::Content { leaf } => self.manual_leaf_matches(
                 doc,
@@ -607,6 +744,7 @@ impl TantivySearcher {
                 content,
                 false,
                 budget,
+                regex_cache,
             ),
             LqFilter::Lang { id } => {
                 if normalize_language(id.as_str()).is_none() {
@@ -715,6 +853,7 @@ impl TantivySearcher {
         )?;
         let boosted_score = Self::apply_query_boost_score(1.0, &query.options);
         let mut out: Vec<ManualRankedCandidate<LexicalCandidate>> = Vec::new();
+        let mut regex_cache = ManualScanCache::default();
         // The scan matches every document against the plan itself; the
         // budget is observed between documents (W5 phase 2).
         for row in hits {
@@ -723,7 +862,14 @@ impl TantivySearcher {
             let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
                 CoreError::Storage(format!("lexical: fetch doc {doc_address:?}: {err}"))
             })?;
-            if !self.manual_doc_matches(&doc, query, prepared, constraints, budget)? {
+            if !self.manual_doc_matches(
+                &doc,
+                query,
+                prepared,
+                constraints,
+                budget,
+                &mut regex_cache,
+            )? {
                 continue;
             }
             out.push(ManualRankedCandidate {
@@ -799,6 +945,7 @@ impl TantivySearcher {
         prepared: &PreparedExecutableQuery,
         constraints: &QueryConstraintSetV1,
         budget: &RequestBudgetV1,
+        regex_cache: &mut ManualScanCache,
     ) -> Result<bool, CoreError> {
         if stored_doc_kind(doc, self.fields.doc_kind)? != prepared.doc_kind.as_str() {
             return Ok(false);
@@ -833,6 +980,7 @@ impl TantivySearcher {
             &query.options,
             include_path_terms,
             budget,
+            regex_cache,
         )? {
             return Ok(false);
         }
@@ -845,6 +993,7 @@ impl TantivySearcher {
                 repo_relative_path,
                 content,
                 budget,
+                regex_cache,
             )? {
                 return Ok(false);
             }
@@ -949,13 +1098,21 @@ impl TantivySearcher {
         )?;
         let boosted_score = Self::apply_query_boost_score(1.0, &query.options);
         let mut out: Vec<ManualRankedCandidate<SymbolCandidate>> = Vec::new();
+        let mut regex_cache = ManualScanCache::default();
         for row in hits {
             budget.checkpoint("lexical:scan")?;
             let doc_address = row.address;
             let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
                 CoreError::Storage(format!("lexical: fetch doc {doc_address:?}: {err}"))
             })?;
-            if !self.manual_doc_matches(&doc, query, prepared, constraints, budget)? {
+            if !self.manual_doc_matches(
+                &doc,
+                query,
+                prepared,
+                constraints,
+                budget,
+                &mut regex_cache,
+            )? {
                 continue;
             }
             out.push(ManualRankedCandidate {
@@ -980,7 +1137,116 @@ impl TantivySearcher {
 )]
 mod stored_authority_tests {
     use super::*;
+    use quanta_index_contract::LqCase;
+    use std::cell::Cell;
     use tantivy::schema::{STORED, Schema};
+
+    #[test]
+    fn manual_matcher_reuses_compilation_across_documents_and_separates_case_modes()
+    -> Result<(), CoreError> {
+        let mut cache = ManualScanCache::default();
+        let folded = LqOptions::defaults();
+        for (content, expected) in [("needle42", true), ("absent", false), ("NEEDLE43", true)] {
+            assert_eq!(
+                cache.regex_matches("needle[0-9]+", &folded, content)?,
+                expected
+            );
+        }
+        assert_eq!(cache.compiled_builds, 1);
+        let mut sensitive = folded;
+        sensitive.case = Some(LqCase::Sensitive);
+        assert!(!cache.regex_matches("needle[0-9]+", &sensitive, "NEEDLE44")?);
+        assert!(cache.regex_matches("needle[0-9]+", &sensitive, "needle44")?);
+        assert_eq!(cache.compiled_builds, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn manual_repo_gate_cache_preserves_identity_empty_sets_and_retry_after_error()
+    -> Result<(), CoreError> {
+        let mut cache = ManualScanCache::default();
+        let options = LqOptions::defaults();
+        let args = [LqPredicateArg::Keyword("needle".into())];
+        let collections = Cell::new(0);
+        for _ in 0..3 {
+            let ids = cache.repo_gate_ids("repo.has.content", &args, &options, || {
+                collections.set(collections.get() + 1);
+                Ok(["repo-a".to_string()].into())
+            })?;
+            assert!(ids.contains("repo-a"));
+        }
+        assert_eq!(collections.get(), 1);
+        let empty = cache.repo_gate_ids("repo.has.file", &args, &options, || {
+            collections.set(collections.get() + 1);
+            Ok(BTreeSet::new())
+        })?;
+        assert!(empty.is_empty());
+        let empty = cache.repo_gate_ids("repo.has.file", &args, &options, || {
+            Err(CoreError::Storage(
+                "cached empty gate was recollected".into(),
+            ))
+        })?;
+        assert!(empty.is_empty());
+        assert_eq!(collections.get(), 2);
+        let other_args = [LqPredicateArg::Keyword("other".into())];
+        assert!(
+            cache
+                .repo_gate_ids("repo.has.content", &other_args, &options, || {
+                    Err(CoreError::Storage("transient collection failure".into()))
+                })
+                .is_err()
+        );
+        let retry = cache.repo_gate_ids("repo.has.content", &other_args, &options, || {
+            collections.set(collections.get() + 1);
+            Ok(["repo-b".to_string()].into())
+        })?;
+        assert!(retry.contains("repo-b"));
+        assert_eq!(collections.get(), 3);
+        Ok(())
+    }
+
+    #[test]
+    fn manual_regex_cache_compiles_each_execution_pattern_once_and_does_not_cache_failures()
+    -> Result<(), CoreError> {
+        let mut cache = ManualScanCache::default();
+        let compilations = Cell::new(0);
+        for _ in 0..3 {
+            let executor = cache.get_or_compile("a+", || {
+                compilations.set(compilations.get() + 1);
+                TantivySearcher::manual_filter_regex("a+", "file")
+            })?;
+            assert!(executor.verify(b"aaa"));
+        }
+        assert_eq!(compilations.get(), 1);
+        let insensitive = cache.get_or_compile("(?i)a+", || {
+            compilations.set(compilations.get() + 1);
+            TantivySearcher::manual_filter_regex("(?i)a+", "file")
+        })?;
+        assert!(insensitive.verify(b"AAA"));
+        assert_eq!(compilations.get(), 2);
+        assert!(
+            cache
+                .get_or_compile("[", || TantivySearcher::manual_filter_regex("[", "file"))
+                .is_err()
+        );
+        assert_eq!(cache.compiled.len(), 2);
+        for pattern in ["b+", "c+", "d+"] {
+            let _executor = cache.get_or_compile(pattern, || {
+                compilations.set(compilations.get() + 1);
+                TantivySearcher::manual_filter_regex(pattern, "file")
+            })?;
+            assert!(cache.compiled.len() <= MANUAL_REGEX_CACHE_ENTRIES);
+        }
+        assert_eq!(cache.compiled.len(), MANUAL_REGEX_CACHE_ENTRIES);
+        // `(?i)a+` was the first lexical key, so deterministic eviction must
+        // compile it again when the query revisits that leaf.
+        let _executor = cache.get_or_compile("(?i)a+", || {
+            compilations.set(compilations.get() + 1);
+            TantivySearcher::manual_filter_regex("(?i)a+", "file")
+        })?;
+        assert_eq!(compilations.get(), 6);
+        Ok(())
+    }
 
     #[test]
     fn required_manual_fields_reject_missing_malformed_and_duplicate_values()
@@ -1011,13 +1277,12 @@ mod stored_authority_tests {
     }
 
     #[test]
-    fn unknown_document_kind_is_not_silently_excluded() -> Result<(), CoreError> {
+    fn unknown_document_kind_is_not_silently_excluded() {
         let mut schema = Schema::builder();
         let kind = schema.add_text_field("doc_kind", STORED);
         let _schema = schema.build();
         let mut doc = TantivyDocument::new();
         doc.add_text(kind, "unknown");
         assert!(stored_doc_kind(&doc, kind).is_err());
-        Ok(())
     }
 }

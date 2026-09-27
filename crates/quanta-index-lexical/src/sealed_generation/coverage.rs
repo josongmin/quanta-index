@@ -4,18 +4,22 @@
 //! This artifact is not a parser completeness
 //! proof: source hashes and extraction policy remain producer attestations.
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::io::Cursor;
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use quanta_index_contract::{
-    FileCoverageSnapshot, GenerationSnapshot, RepoId, RepoRelativePath, RevisionId,
-    SearchScopeSurface, SourceFileCoverage, SourceFileKey, SourcePublicationEvent,
+    FileCoverageSnapshot, GenerationSnapshot, SearchScopeSurface, SourceFileCoverage,
+    SourceFileKey, SourcePublicationEvent,
 };
 use quanta_index_core::CoreError;
 
 pub(crate) const SOURCE_FILE_COVERAGE_FILE_NAME: &str = "source-file-coverage.cbor";
-const COVERAGE_FORMAT: u32 = 1;
+#[path = "coverage_pages.rs"]
+mod pages;
+pub(crate) use pages::{
+    CoveragePlan, CoverageWriteBase, MAX_COVERAGE_ROOT_BYTES_U64, is_coverage_page,
+    root_page_commitments,
+};
 
 pub(crate) type CoverageSnapshot = FileCoverageSnapshot;
 
@@ -26,15 +30,6 @@ pub(crate) struct CoverageArtifact {
     pub(crate) publication: SourcePublicationEvent,
 }
 
-// Rows rather than a serialized map preserve duplicate keys for validation.
-// A map deserializer could silently retain only the last duplicate.
-type CoverageRow = (
-    u32,
-    GenerationSnapshot,
-    SourcePublicationEvent,
-    Vec<SourceFileCoverage>,
-);
-
 fn corrupt(generation_dir: &Path, reason: &str) -> CoreError {
     crate::index_store::sidecar_corrupt(generation_dir, SOURCE_FILE_COVERAGE_FILE_NAME, reason)
 }
@@ -44,87 +39,17 @@ pub(crate) fn decode_coverage(
     generation_dir: &Path,
     expected: &GenerationSnapshot,
 ) -> Result<CoverageArtifact, CoreError> {
-    let mut reader = Cursor::new(bytes);
-    let (format, identity, publication, rows): CoverageRow = ciborium::from_reader(&mut reader)
-        .map_err(|error| corrupt(generation_dir, &format!("decode coverage: {error}")))?;
-    if reader.position()
-        != u64::try_from(bytes.len()).map_err(|error| {
-            corrupt(
-                generation_dir,
-                &format!("coverage byte length overflow: {error}"),
-            )
-        })?
-    {
-        return Err(corrupt(
-            generation_dir,
-            "trailing bytes after coverage artifact",
-        ));
-    }
-    if format != COVERAGE_FORMAT {
-        return Err(corrupt(generation_dir, "unsupported coverage format"));
-    }
-    if identity != *expected {
-        return Err(corrupt(
-            generation_dir,
-            "coverage belongs to another generation identity",
-        ));
-    }
-    let mut snapshot = BTreeMap::new();
-    for mut entry in rows {
-        // The private ID wrappers do not expose String capacity. Compact them
-        // at the decode boundary so retained string bytes can be accounted
-        // from their lengths rather than guessing hidden spare capacity.
-        let key = &mut entry.source.file;
-        key.source_repo_id = RepoId::new(
-            key.source_repo_id
-                .as_str()
-                .to_owned()
-                .into_boxed_str()
-                .into_string(),
-        )
-        .map_err(|error| corrupt(generation_dir, &error.to_string()))?;
-        key.repo_relative_path = RepoRelativePath::new(
-            key.repo_relative_path
-                .as_str()
-                .to_owned()
-                .into_boxed_str()
-                .into_string(),
-        );
-        entry.source.revision_id = RevisionId::new(
-            entry
-                .source
-                .revision_id
-                .as_str()
-                .to_owned()
-                .into_boxed_str()
-                .into_string(),
-        )
-        .map_err(|error| corrupt(generation_dir, &error.to_string()))?;
-        let key = &entry.source.file;
-        if snapshot
-            .last_key_value()
-            .is_some_and(|(previous, _)| previous >= key)
-        {
-            return Err(corrupt(
-                generation_dir,
-                "coverage files are duplicate or out of order",
-            ));
-        }
-        let _previous = snapshot.insert(key.clone(), entry);
-    }
-    Ok(CoverageArtifact {
-        coverage: snapshot,
-        publication,
-    })
+    pages::decode_coverage_pages(bytes, generation_dir, expected)
 }
 
 /// Conservative retained-heap admission estimate, not measured allocator use
 /// or RSS.
 ///
 /// Charge a full 16-slot B-tree node per file (including links/header),
-/// both the map key and the duplicate source key, all retained strings, and
+/// both tree indexes and the shared row's source key, all retained strings, and
 /// the event's actual String capacities. This intentionally overestimates
-/// partially occupied nodes. Decode compacts opaque ID string allocations.
+/// partially occupied nodes. Strings include conservative decoder capacity;
+/// this is not a measured allocator ceiling.
 pub(crate) fn coverage_heap_bytes_estimate(
     coverage: Option<&CoverageSnapshot>,
     publication: Option<&SourcePublicationEvent>,
@@ -144,7 +69,7 @@ pub(crate) fn coverage_heap_bytes_estimate(
     if let Some(snapshot) = coverage {
         add(&mut bytes, std::mem::size_of::<CoverageSnapshot>())?;
         for (key, entry) in snapshot {
-            for _slot in 0..16 {
+            for _slot in 0..32 {
                 add(
                     &mut bytes,
                     std::mem::size_of::<(SourceFileKey, SourceFileCoverage)>(),
@@ -155,11 +80,14 @@ pub(crate) fn coverage_heap_bytes_estimate(
             for string in [
                 key.source_repo_id.as_str(),
                 key.repo_relative_path.as_str(),
+                key.source_repo_id.as_str(),
+                key.repo_relative_path.as_str(),
                 entry.source.file.source_repo_id.as_str(),
                 entry.source.file.repo_relative_path.as_str(),
                 entry.source.revision_id.as_str(),
                 entry.language.as_str(),
             ] {
+                add(&mut bytes, string.len())?;
                 add(&mut bytes, string.len())?;
                 add(&mut bytes, 16)?;
             }
@@ -183,18 +111,9 @@ pub(crate) fn read_staged_coverage(
     generation_dir: &Path,
     expected: &GenerationSnapshot,
 ) -> Result<Option<CoverageArtifact>, CoreError> {
-    let path = generation_dir.join(SOURCE_FILE_COVERAGE_FILE_NAME);
-    let bytes = match std::fs::read(&path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => {
-            return Err(CoreError::Storage(format!(
-                "lexical: read source coverage {}: {error}",
-                path.display()
-            )));
-        }
-    };
-    decode_coverage(&bytes, generation_dir, expected).map(Some)
+    pages::read_coverage_root(generation_dir)?
+        .map(|bytes| pages::decode_staged_coverage_pages(&bytes, generation_dir, expected))
+        .transpose()
 }
 
 /// Atomic rename preserves immutable old-reader and hard-link ownership.
@@ -203,31 +122,37 @@ pub(crate) fn write_staged_coverage(
     generation_dir: &Path,
     identity: &GenerationSnapshot,
     publication: &SourcePublicationEvent,
-    snapshot: &CoverageSnapshot,
+    plan: &CoveragePlan,
 ) -> Result<(), CoreError> {
-    for (key, entry) in snapshot {
-        if key != &entry.source.file {
-            return Err(corrupt(
-                generation_dir,
-                "coverage map key differs from file owner",
-            ));
-        }
-    }
-    let rows: Vec<_> = snapshot.values().collect();
-    let mut bytes = Vec::new();
-    ciborium::into_writer(&(COVERAGE_FORMAT, identity, publication, rows), &mut bytes)
-        .map_err(|error| corrupt(generation_dir, &format!("encode coverage: {error}")))?;
-    std::fs::create_dir_all(generation_dir).map_err(|error| {
-        corrupt(
-            generation_dir,
-            &format!("create coverage staging directory: {error}"),
-        )
-    })?;
-    crate::index_store::write_atomic_durable(
-        &generation_dir.join(SOURCE_FILE_COVERAGE_FILE_NAME),
-        &bytes,
-        "source file coverage",
+    pages::write_coverage_pages(
+        generation_dir,
+        identity,
+        publication,
+        &plan.coverage,
+        plan.base.as_ref(),
+        &plan.touched,
     )
+}
+
+pub(crate) fn plan_file_coverage(
+    base: &CoverageSnapshot,
+    write_base: Option<CoverageWriteBase>,
+    replacements: &[SourceFileCoverage],
+    tombstones: &[SourceFileKey],
+    clears: &[SearchScopeSurface],
+) -> Result<CoveragePlan, CoreError> {
+    let coverage = apply_file_coverage(base, replacements, tombstones, clears)?;
+    let touched = replacements
+        .iter()
+        .map(|row| &row.source.file)
+        .chain(tombstones.iter())
+        .map(CoverageSnapshot::partition_for)
+        .collect();
+    Ok(CoveragePlan {
+        coverage,
+        base: write_base,
+        touched,
+    })
 }
 
 /// Compute an immutable candidate before any index or sidecar mutation.
@@ -287,8 +212,9 @@ pub(crate) fn apply_file_coverage(
     reason = "assertions report regression failures"
 )]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::collections::BTreeSet;
     use std::error::Error;
+    use std::fmt::Write as _;
     use std::path::Path;
 
     use quanta_index_contract::lex::LanguageCode;
@@ -301,10 +227,12 @@ mod tests {
     use sha2::{Digest as _, Sha256};
 
     use super::{
-        COVERAGE_FORMAT, CoverageRow, CoverageSnapshot, SOURCE_FILE_COVERAGE_FILE_NAME,
-        apply_file_coverage, decode_coverage, read_staged_coverage, write_staged_coverage,
+        CoverageSnapshot, SOURCE_FILE_COVERAGE_FILE_NAME, apply_file_coverage, decode_coverage,
+        read_staged_coverage,
     };
     use crate::sealed_generation::verify::verify_source_coverage;
+
+    use super::pages::write_coverage_pages as write_staged_coverage;
 
     type TestResult = Result<(), Box<dyn Error>>;
 
@@ -346,7 +274,8 @@ mod tests {
     }
 
     fn encode(rows: Vec<SourceFileCoverage>) -> Result<Vec<u8>, Box<dyn Error>> {
-        let row: CoverageRow = (COVERAGE_FORMAT, identity(1)?, publication(), rows);
+        // Legacy flat-row artifacts are explicitly rejected by format 2.
+        let row = (1_u32, identity(1)?, publication(), rows);
         let mut bytes = Vec::new();
         ciborium::into_writer(&row, &mut bytes)?;
         Ok(bytes)
@@ -356,8 +285,12 @@ mod tests {
     fn empty_file_and_failed_parser_survive_delta_inheritance() -> TestResult {
         let empty = file("empty.rs", SymbolCoverage::Complete { symbol_count: 0 })?;
         let failed = file("failed.rs", SymbolCoverage::ParseFailed)?;
-        let base =
-            apply_file_coverage(&BTreeMap::new(), &[empty.clone(), failed.clone()], &[], &[])?;
+        let base = apply_file_coverage(
+            &CoverageSnapshot::new(),
+            &[empty.clone(), failed.clone()],
+            &[],
+            &[],
+        )?;
         let added = file("new.rs", SymbolCoverage::NotRequested)?;
         let delta = apply_file_coverage(&base, std::slice::from_ref(&added), &[], &[])?;
         assert_eq!(delta.len(), 3);
@@ -374,7 +307,12 @@ mod tests {
     #[test]
     fn rejected_clears_and_conflicts_leave_the_base_unchanged() -> TestResult {
         let entry = file("a.rs", SymbolCoverage::Complete { symbol_count: 0 })?;
-        let base = apply_file_coverage(&BTreeMap::new(), std::slice::from_ref(&entry), &[], &[])?;
+        let base = apply_file_coverage(
+            &CoverageSnapshot::new(),
+            std::slice::from_ref(&entry),
+            &[],
+            &[],
+        )?;
         let before = base.clone();
         for surface in [SearchScopeSurface::Chunk, SearchScopeSurface::Symbol] {
             assert!(apply_file_coverage(&base, &[], &[], &[surface]).is_err());
@@ -393,7 +331,7 @@ mod tests {
             apply_file_coverage(
                 &base,
                 &[],
-                &[entry.source.file.clone(), entry.source.file.clone()],
+                &[entry.source.file.clone(), entry.source.file],
                 &[]
             )
             .is_err()
@@ -424,9 +362,7 @@ mod tests {
         let mut trailing = bytes.clone();
         trailing.push(0);
         assert!(decode_coverage(&trailing, dir, &identity(1)?).is_err());
-        let decoded = decode_coverage(&bytes, dir, &identity(1)?)?;
-        assert_eq!(decoded.coverage.len(), 2);
-        assert_eq!(decoded.publication, publication());
+        assert!(decode_coverage(&bytes, dir, &identity(1)?).is_err());
         Ok(())
     }
 
@@ -435,11 +371,14 @@ mod tests {
         let dir = tempfile::tempdir()?;
         let identity = identity(1)?;
         assert!(read_staged_coverage(dir.path(), &identity)?.is_none());
+        assert!(read_staged_coverage(&dir.path().join("uncreated"), &identity)?.is_none());
         write_staged_coverage(
             dir.path(),
             &identity,
             &publication(),
             &CoverageSnapshot::new(),
+            None,
+            &BTreeSet::new(),
         )?;
         assert_eq!(
             read_staged_coverage(dir.path(), &identity)?.map(|artifact| artifact.coverage),
@@ -458,7 +397,7 @@ mod tests {
                 .map(|artifact| artifact.coverage),
             Some(CoverageSnapshot::new())
         );
-        let mut tampered = bytes.clone();
+        let mut tampered = bytes;
         let byte = tampered.last_mut().ok_or("empty artifact fixture")?;
         *byte ^= 1;
         std::fs::write(&path, &tampered)?;
@@ -466,6 +405,469 @@ mod tests {
         std::fs::remove_file(&path)?;
         assert!(verify_source_coverage(dir.path(), &identity, Some(&committed)).is_err());
         assert!(verify_source_coverage(dir.path(), &identity, None)?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_map_owner_is_refused_before_creating_the_target() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let target = dir.path().join("uncreated");
+        let row = file("a.rs", SymbolCoverage::Complete { symbol_count: 0 })?;
+        let mut key = row.source.file.clone();
+        key.repo_relative_path = RepoRelativePath::new("b.rs");
+        let invalid = CoverageSnapshot::from([(key, row)]);
+        assert!(
+            write_staged_coverage(
+                &target,
+                &identity(1)?,
+                &publication(),
+                &invalid,
+                None,
+                &BTreeSet::new()
+            )
+            .is_err()
+        );
+        assert!(
+            !target.exists(),
+            "refused ownership cannot leave partial staging"
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::print_stdout,
+        reason = "owner-local physical page cost evidence"
+    )]
+    fn one_file_delta_shares_rows_and_inherits_unmodified_pages() -> TestResult {
+        use std::os::unix::fs::MetadataExt as _;
+        for files in [1024, 2048, 4096] {
+            let directory = tempfile::tempdir()?;
+            let base_dir = directory.path().join("base");
+            let candidate_dir = directory.path().join("delta");
+            let mut original = Vec::new();
+            for n in 0..files {
+                original.push(file(
+                    &format!("src/{n:05}.rs"),
+                    SymbolCoverage::Complete { symbol_count: 0 },
+                )?);
+            }
+            let base = apply_file_coverage(&CoverageSnapshot::new(), &original, &[], &[])?;
+            write_staged_coverage(
+                &base_dir,
+                &identity(1)?,
+                &publication(),
+                &base,
+                None,
+                &BTreeSet::new(),
+            )?;
+            let root_bytes = std::fs::read(base_dir.join(SOURCE_FILE_COVERAGE_FILE_NAME))?;
+            let root = SealedArtifactCommitmentV1 {
+                name: SOURCE_FILE_COVERAGE_FILE_NAME.into(),
+                bytes: u64::try_from(root_bytes.len())?,
+                sha256: Sha256::digest(&root_bytes).into(),
+            };
+            let mut changed = original.first().ok_or("missing first fixture")?.clone();
+            changed.source.source_sha256 = [9; 32];
+            changed.symbols = SymbolCoverage::ParseFailed;
+            let candidate = apply_file_coverage(&base, std::slice::from_ref(&changed), &[], &[])?;
+            assert!(
+                std::ptr::eq(
+                    base.get(&original.get(1).ok_or("missing second fixture")?.source.file)
+                        .ok_or("missing base")?,
+                    candidate
+                        .get(&original.get(1).ok_or("missing second fixture")?.source.file)
+                        .ok_or("missing candidate")?
+                ),
+                "an unchanged row must be shared, not deep-cloned"
+            );
+            let touched = BTreeSet::from([CoverageSnapshot::partition_for(&changed.source.file)]);
+            let inherited = super::CoverageWriteBase {
+                directory: base_dir.clone(),
+                root,
+            };
+            let event = SourcePublicationEvent {
+                event_id: "event-2".into(),
+                expected_base_event_id: Some("event-1".into()),
+                ..publication()
+            };
+            write_staged_coverage(
+                &candidate_dir,
+                &identity(2)?,
+                &event,
+                &candidate,
+                Some(&inherited),
+                &touched,
+            )?;
+            crate::generation_dir::clone_generation_directory_preserving_existing(
+                &base_dir,
+                &candidate_dir,
+            )?;
+            let reopened =
+                read_staged_coverage(&candidate_dir, &identity(2)?)?.ok_or("coverage missing")?;
+            assert_eq!(reopened.publication, event);
+            for row in &original {
+                let expected = if row.source.file == changed.source.file {
+                    &changed
+                } else {
+                    row
+                };
+                assert_eq!(reopened.coverage.get(&row.source.file), Some(expected));
+            }
+            assert_eq!(reopened.coverage.len(), original.len());
+            assert_eq!(base.get(&changed.source.file), original.first());
+            let mut fresh = 0_u64;
+            let mut base_bytes = 0_u64;
+            let mut inherited_pages = 0;
+            for entry in std::fs::read_dir(&base_dir)? {
+                base_bytes += entry?.metadata()?.len();
+            }
+            for entry in std::fs::read_dir(&candidate_dir)? {
+                let entry = entry?;
+                let metadata = entry.metadata()?;
+                let source = base_dir.join(entry.file_name());
+                if source.exists() && source.metadata()?.ino() == metadata.ino() {
+                    inherited_pages += 1;
+                } else {
+                    fresh += metadata.len();
+                }
+            }
+            assert!(
+                inherited_pages > 200,
+                "untouched partitions must carry their original inodes"
+            );
+            assert!(
+                fresh.saturating_mul(4) < base_bytes,
+                "one-file update must not rewrite all coverage bytes: {fresh}/{base_bytes}"
+            );
+            println!(
+                "COVERAGE-PAGE-EVIDENCE files={files} base_bytes={base_bytes} fresh_bytes={fresh} inherited_pages={inherited_pages}"
+            );
+        }
+        Ok(())
+    }
+    fn cbor(value: &impl serde::Serialize) -> Result<Vec<u8>, Box<dyn Error>> {
+        let mut bytes = Vec::new();
+        ciborium::into_writer(value, &mut bytes)?;
+        Ok(bytes)
+    }
+
+    #[test]
+    fn committed_pages_refuse_semantic_forgery_even_with_recomputed_hashes() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let a = file("a.rs", SymbolCoverage::NotRequested)?;
+        let slot = CoverageSnapshot::partition_for(&a.source.file);
+        let b = (0..10000)
+            .map(|n| file(&format!("z{n:05}.rs"), SymbolCoverage::ParseFailed))
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .find(|row| CoverageSnapshot::partition_for(&row.source.file) == slot)
+            .ok_or("no deterministic collision fixture")?;
+        let expected = vec![a.clone(), b];
+        for mutant in 0..12 {
+            let mut rows = expected.clone();
+            match mutant {
+                1 => *rows.get_mut(1).ok_or("missing duplicate fixture")? = a.clone(),
+                2 => rows.reverse(),
+                3 => {
+                    rows.first_mut()
+                        .ok_or("missing misrouted fixture")?
+                        .source
+                        .file
+                        .repo_relative_path = RepoRelativePath::new("misrouted.rs");
+                }
+                _ => {}
+            }
+            let mut raw = cbor(&(if mutant == 4 { 1_u32 } else { 2 }, slot, rows))?;
+            if mutant == 5 {
+                raw.push(0);
+            }
+            let digest: [u8; 32] = Sha256::digest(&raw).into();
+            let mut hex = String::with_capacity(64);
+            for byte in digest {
+                write!(&mut hex, "{byte:02x}")?;
+            }
+            let name = format!("source-file-coverage-page-{slot:02x}-{hex}.cbor");
+            std::fs::write(dir.path().join(&name), &raw)?;
+            let mut pages = vec![(
+                slot,
+                u64::try_from(raw.len())?,
+                digest,
+                if mutant == 6 { 1_u32 } else { 2 },
+            )];
+            if mutant == 7 {
+                pages.push(*pages.first().ok_or("missing page fixture")?);
+            }
+            if mutant == 8 {
+                pages.first_mut().ok_or("missing page fixture")?.1 += 1;
+            }
+            if mutant == 9 {
+                *pages
+                    .first_mut()
+                    .ok_or("missing page fixture")?
+                    .2
+                    .first_mut()
+                    .ok_or("missing page digest")? ^= 1;
+            }
+            let generation = identity(if mutant == 10 { 2 } else { 1 })?;
+            let mut root = cbor(&(2_u32, generation, publication(), pages))?;
+            if mutant == 11 {
+                root.push(0);
+            }
+            let decoded = decode_coverage(&root, dir.path(), &identity(1)?);
+            if mutant == 0 {
+                let decoded = decoded?;
+                assert_eq!(decoded.coverage.len(), 2);
+                for row in &expected {
+                    assert_eq!(decoded.coverage.get(&row.source.file), Some(row));
+                }
+            } else {
+                assert!(decoded.is_err(), "semantic mutant {mutant} must be refused");
+            }
+            std::fs::remove_file(dir.path().join(name))?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn missing_tampered_symlink_and_orphan_pages_are_typed_corruption() -> TestResult {
+        use quanta_index_contract::SearchPlaneErrorCodeV2;
+        let dir = tempfile::tempdir()?;
+        let row = file("a.rs", SymbolCoverage::NotRequested)?;
+        let snapshot = CoverageSnapshot::from([(row.source.file.clone(), row)]);
+        write_staged_coverage(
+            dir.path(),
+            &identity(1)?,
+            &publication(),
+            &snapshot,
+            None,
+            &BTreeSet::new(),
+        )?;
+        let root_path = dir.path().join(SOURCE_FILE_COVERAGE_FILE_NAME);
+        let root = std::fs::read(&root_path)?;
+        let page = std::fs::read_dir(dir.path())?
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .find(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(super::is_coverage_page)
+            })
+            .ok_or("no page")?
+            .path();
+        let raw = std::fs::read(&page)?;
+        for mutant in 0..3 {
+            match mutant {
+                0 => {
+                    let mut changed = raw.clone();
+                    *changed.first_mut().ok_or("missing page bytes")? ^= 1;
+                    std::fs::write(&page, changed)?;
+                }
+                1 => {
+                    std::fs::remove_file(&page)?;
+                }
+                _ => {
+                    std::fs::remove_file(&page)?;
+                    std::os::unix::fs::symlink(&root_path, &page)?;
+                }
+            }
+            assert!(matches!(
+                decode_coverage(&root, dir.path(), &identity(1)?),
+                Err(quanta_index_core::CoreError::Typed {
+                    code: SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
+                    ..
+                })
+            ));
+            if page.symlink_metadata().is_ok() {
+                std::fs::remove_file(&page)?;
+            }
+            std::fs::write(&page, &raw)?;
+        }
+        let orphan = dir
+            .path()
+            .join("source-file-coverage-page-uncommitted.cbor");
+        std::fs::write(&orphan, b"uncommitted")?;
+        assert!(decode_coverage(&root, dir.path(), &identity(1)?).is_err());
+        std::fs::remove_file(orphan)?;
+        std::fs::remove_file(root_path)?;
+        assert!(read_staged_coverage(dir.path(), &identity(1)?)?.is_none());
+        assert!(verify_source_coverage(dir.path(), &identity(1)?, None).is_err());
+        // Candidate pages without a root can be reclaimed by an identical
+        // retry. The sealed door above must still reject that same state.
+        let row = file("a.rs", SymbolCoverage::NotRequested)?;
+        let snapshot = CoverageSnapshot::from([(row.source.file.clone(), row)]);
+        write_staged_coverage(
+            dir.path(),
+            &identity(1)?,
+            &publication(),
+            &snapshot,
+            None,
+            &BTreeSet::new(),
+        )?;
+        assert_eq!(
+            read_staged_coverage(dir.path(), &identity(1)?)?
+                .ok_or("missing recovered root")?
+                .coverage,
+            snapshot
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn unsealed_retry_reclaims_orphans_without_weakening_sealed_verification() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let row = file("a.rs", SymbolCoverage::NotRequested)?;
+        let snapshot = CoverageSnapshot::from([(row.source.file.clone(), row)]);
+        let generation = identity(1)?;
+        let event = publication();
+        write_staged_coverage(
+            dir.path(),
+            &generation,
+            &event,
+            &snapshot,
+            None,
+            &BTreeSet::new(),
+        )?;
+        let root = std::fs::read(dir.path().join(SOURCE_FILE_COVERAGE_FILE_NAME))?;
+        let orphan = dir
+            .path()
+            .join("source-file-coverage-page-uncommitted.cbor");
+        std::fs::write(&orphan, b"interrupted page write")?;
+
+        assert!(decode_coverage(&root, dir.path(), &generation).is_err());
+        assert_eq!(
+            read_staged_coverage(dir.path(), &generation)?
+                .ok_or("missing staged root")?
+                .coverage,
+            snapshot
+        );
+        write_staged_coverage(
+            dir.path(),
+            &generation,
+            &event,
+            &snapshot,
+            None,
+            &BTreeSet::new(),
+        )?;
+        assert!(!orphan.exists());
+        let root = std::fs::read(dir.path().join(SOURCE_FILE_COVERAGE_FILE_NAME))?;
+        assert_eq!(
+            decode_coverage(&root, dir.path(), &generation)?.coverage,
+            snapshot
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn deleting_the_last_file_replaces_the_root_without_retaining_pages() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let row = file("last.rs", SymbolCoverage::ParseFailed)?;
+        let base = CoverageSnapshot::from([(row.source.file.clone(), row.clone())]);
+        let base_dir = dir.path().join("base");
+        let target = dir.path().join("delta");
+        write_staged_coverage(
+            &base_dir,
+            &identity(1)?,
+            &publication(),
+            &base,
+            None,
+            &BTreeSet::new(),
+        )?;
+        let raw = std::fs::read(base_dir.join(SOURCE_FILE_COVERAGE_FILE_NAME))?;
+        let plan = super::plan_file_coverage(
+            &base,
+            Some(super::CoverageWriteBase {
+                directory: base_dir.clone(),
+                root: SealedArtifactCommitmentV1 {
+                    name: SOURCE_FILE_COVERAGE_FILE_NAME.into(),
+                    bytes: u64::try_from(raw.len())?,
+                    sha256: Sha256::digest(&raw).into(),
+                },
+            }),
+            &[],
+            std::slice::from_ref(&row.source.file),
+            &[],
+        )?;
+        let event = SourcePublicationEvent {
+            event_id: "event-2".into(),
+            expected_base_event_id: Some("event-1".into()),
+            ..publication()
+        };
+        super::write_staged_coverage(&target, &identity(2)?, &event, &plan)?;
+        crate::generation_dir::clone_generation_directory_preserving_existing(&base_dir, &target)?;
+        let reopened = read_staged_coverage(&target, &identity(2)?)?.ok_or("missing empty root")?;
+        assert!(reopened.coverage.is_empty());
+        assert_eq!(reopened.publication, event);
+        assert_eq!(std::fs::read_dir(&target)?.count(), 1);
+        assert_eq!(
+            read_staged_coverage(&base_dir, &identity(1)?)?
+                .ok_or("missing old reader")?
+                .coverage,
+            base
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn oversized_page_refuses_before_target_mutation() -> TestResult {
+        use quanta_index_contract::SearchPlaneErrorCodeV2;
+        // Precomputed collision suffixes keep the boundary test cheap even in a
+        // debug build; every row is still routed and validated at runtime.
+        const SUFFIXES: [usize; 300] = [
+            0, 158, 399, 454, 1131, 1235, 1315, 1935, 2123, 2161, 2404, 2629, 2913, 2970, 3024,
+            3046, 3177, 3504, 3700, 3744, 4246, 4287, 4479, 4500, 4686, 4765, 4818, 4964, 5364,
+            5562, 6188, 6255, 6464, 6567, 6748, 6954, 7000, 7361, 7443, 7597, 7633, 8280, 9125,
+            9332, 9413, 9460, 9647, 9992, 10623, 10910, 11402, 11554, 11715, 11745, 12161, 13473,
+            14550, 15390, 15504, 15640, 16680, 16876, 16987, 17384, 17446, 17756, 18309, 18314,
+            18519, 18763, 18865, 19278, 19515, 19620, 19750, 20695, 20948, 21640, 21675, 22376,
+            22735, 22978, 23092, 23810, 23816, 23865, 23953, 23959, 24006, 24224, 24397, 24805,
+            25656, 25931, 26057, 26130, 26263, 26470, 26632, 26858, 27023, 27056, 27330, 27458,
+            27846, 27889, 28003, 28365, 28831, 29061, 29121, 29315, 29948, 30199, 30372, 31252,
+            31560, 32024, 32283, 32353, 32374, 32694, 32807, 33468, 33470, 33642, 33661, 33728,
+            33766, 33908, 34091, 34753, 35340, 35647, 36553, 36633, 36946, 36953, 37082, 37309,
+            37559, 37724, 38184, 38224, 38358, 38477, 38593, 38625, 38751, 38753, 39091, 39291,
+            39403, 39474, 40109, 40144, 40155, 40263, 40291, 40417, 40731, 41091, 41252, 41311,
+            41688, 41800, 42364, 42508, 42735, 42926, 43353, 43541, 43562, 43937, 44845, 45269,
+            46030, 47032, 47372, 49200, 49235, 49635, 49796, 50261, 50339, 50581, 51295, 51392,
+            51634, 51763, 51824, 52485, 52628, 52687, 52758, 52866, 53364, 54657, 54697, 54803,
+            55152, 55182, 55457, 55673, 55790, 55832, 55856, 56324, 56830, 57291, 57403, 57467,
+            57508, 57843, 58057, 58298, 58498, 58820, 58822, 58947, 58977, 59320, 59619, 60060,
+            60176, 60253, 60433, 60579, 60630, 60762, 61008, 61206, 61398, 61502, 61662, 61883,
+            62067, 62164, 62197, 62650, 63154, 63440, 63563, 63621, 63731, 63833, 63969, 64040,
+            64306, 65063, 66043, 66175, 66800, 66930, 66965, 67069, 67137, 67529, 67815, 68591,
+            68754, 69039, 69061, 69161, 69551, 69568, 70419, 70658, 70977, 71273, 71570, 71590,
+            71725, 71886, 72805, 72944, 73519, 73738, 73854, 74218, 74246, 74470, 74698, 74742,
+            74954, 74967, 75488, 75554, 75559, 75906, 75949, 76301, 76420, 76709, 76772, 76779,
+            77073, 77259, 77796, 78023,
+        ];
+        let dir = tempfile::tempdir()?;
+        let target = dir.path().join("uncreated");
+        let mut rows = Vec::with_capacity(SUFFIXES.len());
+        for n in SUFFIXES {
+            let row = file(
+                &format!("src/{}-{n:05}.rs", "x".repeat(3900)),
+                SymbolCoverage::NotRequested,
+            )?;
+            assert_eq!(CoverageSnapshot::partition_for(&row.source.file), 223);
+            rows.push((row.source.file.clone(), row));
+        }
+        let snapshot: CoverageSnapshot = rows.into_iter().collect();
+        assert!(matches!(
+            write_staged_coverage(
+                &target,
+                &identity(1)?,
+                &publication(),
+                &snapshot,
+                None,
+                &BTreeSet::new()
+            ),
+            Err(quanta_index_core::CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::IngestResourceBudgetExceeded,
+                ..
+            })
+        ));
+        assert!(!target.exists());
         Ok(())
     }
 }

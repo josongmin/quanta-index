@@ -61,7 +61,7 @@ impl TantivySearcher {
     /// `LqLeaf::Regex(_)` AST shape AND `LqLeaf::Keyword`/`LqLeaf::RawString`
     /// leaves carrying `LqOptions::pattern_type = LqPatternType::Regexp`.
     /// Routing both shapes through one body keeps the dialect filter,
-    /// trigram-missing threshold, and typed `LEX_REGEX_*` codes identical
+    /// candidate admission, and typed `LEX_REGEX_*` codes identical
     /// across surface kinds — no second path bypasses the planner.
     ///
     /// Pipeline:
@@ -109,7 +109,7 @@ impl TantivySearcher {
                 // Both AST shapes route through the planner-gated regex
                 // pipeline when the caller's options pin
                 // `LqPatternType::Regexp`; bypassing this would skip the
-                // dialect filter, the trigram-missing threshold, and the
+                // dialect filter, candidate admission, and the
                 // typed `LEX_REGEX_*` error codes.
                 if options.pattern_type == LqPatternType::Regexp {
                     return self.compile_regex_content_leaf(text, options, budget);

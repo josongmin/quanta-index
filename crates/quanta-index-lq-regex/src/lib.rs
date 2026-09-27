@@ -11,7 +11,7 @@
 //! 2. walk the resulting HIR through [`dialect::dialect_filter`] to reject
 //!    `lookbehind` / `lookahead` / `backreference` / inline mode-switch
 //!    constructs at parse time with [`RegexErrorCode::ForbiddenSyntax`];
-//! 3. estimate the upper-bound NFA state count with
+//! 3. compute the structural planning charge with
 //!    [`estimator::estimate_nfa_states`]; exceed the 100k cap →
 //!    [`RegexErrorCode::PlanLimitExceeded`] tagged
 //!    [`LimitDimension::NfaStates`];
@@ -29,7 +29,8 @@
 //!
 //! - Dependency identity: `Cargo.lock` resolves the workspace's `regex` and
 //!   `regex-syntax` requirements; do not infer exact versions from this API.
-//! - NFA budget: `100_000` states.
+//! - Planning budget: `100_000` structural units. This is not a compiled-state
+//!   or aggregate allocation bound; engine byte ceilings are separate.
 //! - D18: wire shapes use hand-rolled `impl serde::Serialize`.
 //! - No silent failure / no silent fallback / no
 //!   `panic!`/`unwrap`/`expect`/`todo!`.

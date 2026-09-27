@@ -19,6 +19,17 @@ CLOSURE_PATH = REPO_ROOT / "tools" / "ci" / "source_closure.py"
 PROFILE = "benchmark-control-plane"
 
 
+@pytest.mark.parametrize("profile", ["retrieval", "benchmark-control-plane"])
+def test_live_workflow_and_owner_tests_are_bound(profile: str) -> None:
+    module = _closure_module()
+    paths = set(module.PROFILES[profile]["paths"])
+    assert {
+        "tools/benchmark/code_search_workflow.py",
+        "tools/ci/tests/test_live_lexical_external.py",
+        "tools/ci/tests/test_code_search_workflow.py",
+    } <= paths
+
+
 def _closure_module():
     spec = importlib.util.spec_from_file_location("benchmark_source_closure", CLOSURE_PATH)
     assert spec and spec.loader
@@ -59,6 +70,11 @@ def test_normative_benchmark_files_are_bound() -> None:
     paths = set(profile["paths"])
     for required in (
         "docs/plans/sep-27-misc/tickets",
+        "docs/adr/JUN-08-001-verification-hellgate-and-benchmark-separation.md",
+        "docs/adr/SEP-26-003-retrieval-evidence-custody-and-qualification.md",
+        "docs/adr/SEP-27-002-single-benchmark-orchestrator-and-typed-evidence.md",
+        "docs/adr/SEP-27-004-benchmark-capture-and-resource-custody.md",
+        "docs/adr/SEP-27-005-catalog-recovery-supervision-and-proof-custody.md",
         "tools/benchmark/registry.toml",
         "tools/benchmark/registry.py",
         "tools/benchmark/evidence.py",
@@ -72,6 +88,11 @@ def test_normative_benchmark_files_are_bound() -> None:
     ):
         assert required in paths, required
     assert "quanta-index-bench-protocol" in profile["cargo_packages"]
+
+
+def test_semantic_decision_is_bound_by_retrieval_closure() -> None:
+    module = _closure_module()
+    assert "docs/adr/MAY-31-001-lancedb-semantic-generation-authority.md" in module.PROFILES["retrieval"]["paths"]
 
 
 def test_portable_execution_transitively_binds_file_custody_owner() -> None:
@@ -252,6 +273,10 @@ def test_unrelated_planning_edit_does_not_invalidate(tmp_path: Path) -> None:
         ("benchmark-control-plane", "tools/benchmark/native_contracts.py"),
         ("benchmark-control-plane", "uv.lock"),
         ("benchmark-control-plane", "scripts/quanta-index-env.sh"),
+        ("benchmark-control-plane", "docs/adr/JUN-08-001-verification-hellgate-and-benchmark-separation.md"),
+        ("benchmark-control-plane", "docs/adr/SEP-26-003-retrieval-evidence-custody-and-qualification.md"),
+        ("benchmark-control-plane", "docs/adr/SEP-27-002-single-benchmark-orchestrator-and-typed-evidence.md"),
+        ("retrieval", "docs/adr/MAY-31-001-lancedb-semantic-generation-authority.md"),
         ("retrieval", "tools/ci/lint/rust_attribute_policy.py"),
     ],
 )

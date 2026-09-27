@@ -37,9 +37,10 @@ Total: 215 removed historical plan Markdown files. The SEP-26 historical
 archive manifest and initial `audit-evidence.json` were also removed; both are
 recoverable at the same Git revision.
 
-Still live: the May-25 lexical closeout and capability matrix, active semantic
+Still live: the May-25 lexical capability/proof inventory, active semantic
 packet, Sep-21 residual execution and Sep-23/24 drafts. RB/BM/RBR and TOPT
-execution contracts now live only in the [SEP-27 SSOT](sep-27-misc/tickets/INDEX.md).
+accepted contracts now live in the SEP-26/27 ADRs; open execution remains in the
+[SEP-27 ledger](sep-27-misc/tickets/INDEX.md).
 A packet is not complete merely because its superseded documents were removed.
 
 ## SEP-27 additional consolidation
@@ -50,3 +51,94 @@ counts are additional to the historical 215 above. Contracts, acceptance
 matrices and remaining work were inlined in the SSOT; no redirect stubs remain.
 Exact dirty/untracked preimages are recoverable from the content backup recorded
 in the [documentation recovery index](../ARCHIVE-INDEX.md#sep-27-execution-consolidation).
+
+
+## SEP-27 completed code-search and implementation compaction
+
+Pre-deletion revision: `1419f3087f4f09a6ecab4ef39c30a2bf32544d5d`. All 41 removed file bodies
+matched that revision before deletion (40 Markdown and one preparation
+JSON). Git retains their exact contents; no redirect stubs or live history
+packet remains. Recovery is historical, not current qualification.
+
+| Removed set | Current authority / remaining owner |
+| --- | --- |
+| `sep-27-code-search-remediation/handoffs/*.md` | [Code-search contracts](../adr/SEP-27-003-code-search-source-and-preview-contract.md); open allocation/cost/integration and benchmark work stays in the active RFCs |
+| `evidence.md`, `engine-audit.md`, `l2-g0-request.md`, `l2-preparation-receipt.json` under that packet | Accepted code-search ADR; original diagnostics and G0 chronology in Git |
+| `rfcs/CS-ENG-01-query-domain-and-result-contract.md`, `CS-ENG-03-definition-and-file-ranking.md`, `CS-PROD-01-parser-coverage-and-vite.md` | Code-search ADR; ranking/holdout and external/combined-source acceptance remain in BENCH-03 and CS-INT-01 |
+| `sep-21-search-plane-sota-hardening/tickets/S21-00-authority-freeze-and-cutover-contract.md` | [SEP-21 accepted registry](../adr/SEP-21-DECISION-REGISTRY.md); current residual execution and proof authority retain S21-00 as an identity |
+| Completed MISC implementation/RCA/terminal sections | [Capture/process/resource ADR](../adr/SEP-27-004-benchmark-capture-and-resource-custody.md); only open acceptance remains in MISC |
+| May-25 lexical closeout chronology | Existing DSL/Sourcegraph ADRs; active capability matrix and machine-readable inventory retained |
+
+Recover one body with `git show 1419f3087f4f09a6ecab4ef39c30a2bf32544d5d:<repository-relative-path>`.
+Enumerate the code-search packet with
+`git ls-tree -r --name-only 1419f3087f4f09a6ecab4ef39c30a2bf32544d5d -- docs/plans/sep-27-code-search-remediation`.
+Recover the previous MISC ledger or lexical closeout with the same `git show`
+command. Restore into a separate location, never over current active records.
+
+Active May semantic follow-on, Jun/Jul quality/hardening, SEP-21 residual and
+SEP-23/24 drafts remain open; age alone did not classify them as completed.
+
+## SEP-27 second completion sweep
+
+Pre-deletion revision: `0b4839a4a8b4cf99e870b4251395b6e3df8f4a21`.
+The three additional removed Markdown bodies matched that revision byte-for-byte
+before deletion. This is additional to the 41-file compaction above.
+
+| Removed record | Retained authority / remaining owner |
+| --- | --- |
+| `sep-21-search-plane-sota-hardening/tickets/EXECUTION-PROGRESS.md` | [SEP-27-005](../adr/SEP-27-005-catalog-recovery-supervision-and-proof-custody.md) carries completed catalog/recovery/supervision/proof decisions; active R0–R6 ledgers retain remaining acceptance |
+| `sep-21-search-plane-sota-hardening/tickets/S21-05-read-view-v2-and-snapshot-lifetime.md` | SEP-21-003 and SEP-27-005; remaining P04 process/pin/retirement acceptance is retained in the residual execution plan |
+| `may-25-search-owned-semantic-derivation/tickets/SEM-OWN-FOLLOWUP-jun23-seam-hardening.md` | Semantic/retrieval ADRs carry completed model/score/truth contracts; shared-provider, labeled ranking and model/dimension migration leads remain deferred in the parent design |
+
+The SEP-21 index, residual status and S21-11/12/13 now retain open acceptance
+without terminal counts, obsolete API descriptions or repeated repair history.
+Recover their previous bodies and the removed files with
+`git show 0b4839a4a8b4cf99e870b4251395b6e3df8f4a21:<repository-relative-path>`.
+No historical execution is promoted to current-source or release qualification.
+
+## SEP-27 operator and semantic compaction
+
+Pre-deletion revision: `0b4839a4a8b4cf99e870b4251395b6e3df8f4a21`.
+Six `may-25-search-owned-semantic-derivation/tickets/SEM-OWN-00` through
+`SEM-OWN-05` Markdown bodies matched that revision byte-for-byte before removal.
+They combined completed public-surface work with a superseded chunk-text and
+subscriber-worker design. Implemented boundaries live in
+[MAY-31-001](../adr/MAY-31-001-lancedb-semantic-generation-authority.md);
+unfinished proof/provider/observability leads remain in
+[the semantic residual ledger](may-25-search-owned-semantic-derivation/tickets/INDEX.md).
+Proposed worker/job/seal types are not promoted to implemented contracts.
+
+Recover with `git show 0b4839a4a8b4cf99e870b4251395b6e3df8f4a21:<repository-relative-path>`.
+Benchmark README design/scoring/ratchet content is consolidated into SEP-26-003,
+SEP-27-004 and JUN-08-001. Benchmark and searchctl READMEs retain usage only;
+Sourcegraph coverage generation now writes `docs/reference/sourcegraph-filter-parity.md`.
+The old benchmark/reference bodies are recoverable at the same revision; the
+active runbook's dirty preimage is retained outside the repository under
+`/tmp/qi-doc-cleanup-preimages-rbxlmdok`. No historical result is new qualification.
+
+## SEP-27 quality and test-authority completion sweep
+
+Pre-deletion revision: `0b4839a4a8b4cf99e870b4251395b6e3df8f4a21`.
+All 18 removed plan Markdown bodies matched that revision before deletion.
+The additional `docs/ranked-key-tables.md` body also matched that revision;
+its implemented storage contract is consolidated into
+[SEP-27-003](../adr/SEP-27-003-code-search-source-and-preview-contract.md),
+including the 64 MiB resident limit, integrity window and producer rebuild.
+This sweep removes 19 files in total; current-source integration proof remains open.
+
+| Removed historical record | Implemented decision / remaining acceptance |
+| --- | --- |
+| Jun-7 `rfc.md`, command/artifact and measurement matrices, source map and three worker/checklist/rule documents (7 files) | [JUN-08-001](../adr/JUN-08-001-verification-hellgate-and-benchmark-separation.md); current registration is code-owned, open J7Q-01–04 remain in the quality residual index |
+| J7Q-00/05/06/07/08 implementation tickets (5 files) | Existing scope/policy, diagnosis, repair, typed preview and producer registration; consumer/operator/aggregate execution obligations retained in [the residual index](jun-7-search-product-quality/tickets-wave2/INDEX.md) |
+| Jul-15 CI/invariant/source matrices, worker/rule scaffolding and dependency DAG (6 files) | [SEP-27-005](../adr/SEP-27-005-catalog-recovery-supervision-and-proof-custody.md); all unmet QIT owner/quantitative/hosted/release acceptance retained in [the residual board](jul-15-sota-test-hardening/tickets/00-ticket-status-board.md) |
+
+Recover an exact body with `git show 0b4839a4a8b4cf99e870b4251395b6e3df8f4a21:<repository-relative-path>`.
+The mixed packets were compacted by implementation/acceptance scope; neither
+whole quality nor whole QIT qualification is declared complete. Dirty preimages
+of retained edited files were copied outside the repository before this sweep.
+
+The lexical capability prose and MISC contract/command copies were subsequently
+compacted without deleting pending acceptance. See the
+[document compaction record](../ARCHIVE-INDEX.md#sep-27-remaining-document-compaction)
+for exact dirty preimages. The lexical TOML ledger and all 143 purpose checks
+remain; canonical comparison/admission now lives in SEP-26-003.

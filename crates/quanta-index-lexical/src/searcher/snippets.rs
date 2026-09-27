@@ -374,7 +374,6 @@ pub(crate) fn snippet_offset_u32(within: usize) -> u32 {
 #[cfg(test)]
 #[expect(
     clippy::panic_in_result_fn,
-    clippy::expect_used,
     reason = "owner regressions assert fixed byte/source oracles and propagate renderer failures"
 )]
 mod l4_selected_preview_regressions {
@@ -713,6 +712,10 @@ mod l4_selected_preview_regressions {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "byte-exact witness regressions use assertions and propagate fixture errors"
+)]
 mod l4_witness_regressions {
     use super::RenderedPreview;
     use super::l4_selected_preview_regressions::render;
@@ -720,16 +723,12 @@ mod l4_witness_regressions {
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-    #[expect(
-        clippy::expect_used,
-        reason = "a fixed admitted regression fixture must render"
-    )]
     fn emitted(expr: &LqExpr, source: &str) -> RenderedPreview {
         render(expr, source).expect("admitted fixed fixture must render")
     }
 
-    fn assert_focus(expr: LqExpr, source: &str, expected: &str) {
-        let result = emitted(&expr, source);
+    fn assert_focus(expr: &LqExpr, source: &str, expected: &str) {
+        let result = emitted(expr, source);
         let snippet = &result.snippet;
         let primary = result.snippet_hit_offset;
         let highlights = &result.highlights;
@@ -759,7 +758,7 @@ mod l4_witness_regressions {
     #[test]
     fn ordinary_literal_positive_control() {
         assert_focus(
-            LqExpr::Leaf(LqLeaf::Keyword("needle".into())),
+            &LqExpr::Leaf(LqLeaf::Keyword("needle".into())),
             &distant("needle"),
             "needle",
         );
@@ -768,7 +767,7 @@ mod l4_witness_regressions {
     #[test]
     fn default_case_fold_anchors_original_uppercase() {
         assert_focus(
-            LqExpr::Leaf(LqLeaf::Keyword("needle".into())),
+            &LqExpr::Leaf(LqLeaf::Keyword("needle".into())),
             &distant("NEEDLE"),
             "NEEDLE",
         );
@@ -777,7 +776,7 @@ mod l4_witness_regressions {
     #[test]
     fn regex_anchors_executor_match() {
         assert_focus(
-            LqExpr::Leaf(LqLeaf::Regex("needle[0-9]+".into())),
+            &LqExpr::Leaf(LqLeaf::Regex("needle[0-9]+".into())),
             &distant("needle42"),
             "needle42",
         );
@@ -787,7 +786,7 @@ mod l4_witness_regressions {
     fn whole_token_does_not_anchor_token_prefix() {
         let source = format!("needlework {}needle", "context ".repeat(80));
         assert_focus(
-            LqExpr::Leaf(LqLeaf::Keyword("needle".into())),
+            &LqExpr::Leaf(LqLeaf::Keyword("needle".into())),
             &source,
             "needle",
         );
@@ -798,7 +797,7 @@ mod l4_witness_regressions {
     #[test]
     fn nfc_match_maps_to_decomposed_source_interval() {
         assert_focus(
-            LqExpr::Leaf(LqLeaf::Keyword("café".into())),
+            &LqExpr::Leaf(LqLeaf::Keyword("café".into())),
             &distant("cafe\u{301}"),
             "cafe\u{301}",
         );
@@ -807,7 +806,7 @@ mod l4_witness_regressions {
     #[test]
     fn expanding_lowercase_maps_to_one_original_scalar() {
         assert_focus(
-            LqExpr::Leaf(LqLeaf::RawString("i\u{307}".into())),
+            &LqExpr::Leaf(LqLeaf::RawString("i\u{307}".into())),
             &distant("İ"),
             "İ",
         );
@@ -820,7 +819,7 @@ mod l4_witness_regressions {
             LqExpr::Leaf(LqLeaf::Keyword("allow".into())),
         ]);
         assert_focus(
-            expr,
+            &expr,
             &format!("blocked {}allow", "context ".repeat(80)),
             "allow",
         );
@@ -829,7 +828,7 @@ mod l4_witness_regressions {
     #[test]
     fn phrase_uses_token_positions_across_crlf() {
         assert_focus(
-            LqExpr::Leaf(LqLeaf::Phrase("blue whale".into())),
+            &LqExpr::Leaf(LqLeaf::Phrase("blue whale".into())),
             &distant("blue\r\nwhale"),
             "blue\r\nwhale",
         );
@@ -839,7 +838,7 @@ mod l4_witness_regressions {
     fn fitting_two_hundred_byte_focus_kept_before_context() {
         let focus = "n".repeat(200);
         assert_focus(
-            LqExpr::Leaf(LqLeaf::RawString(focus.clone())),
+            &LqExpr::Leaf(LqLeaf::RawString(focus.clone())),
             &distant(&focus),
             &focus,
         );

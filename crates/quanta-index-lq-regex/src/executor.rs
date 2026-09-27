@@ -15,10 +15,11 @@
 //!    [`RegexErrorCode::ForbiddenSyntax`] when applicable; otherwise
 //!    [`RegexErrorCode::ParseFail`];
 //! 4. run [`crate::dialect::dialect_filter`] over the HIR;
-//! 5. estimate NFA states via [`crate::estimate_nfa_states`];
+//! 5. compute the structural planning charge via [`crate::estimate_nfa_states`];
 //! 6. remove unobserved explicit captures, then compile with
 //!    `regex::bytes::Regex::new`, wrapping `regex::Error`
-//!    into [`RegexErrorCode::ExecutionInternal`].
+//!    size refusals into [`RegexErrorCode::PlanLimitExceeded`] and other
+//!    engine failures into [`RegexErrorCode::ExecutionInternal`].
 //!
 //! Verify path: [`RegexExecutor::verify`] calls
 //! `regex::bytes::Regex::is_match` against a single document's bytes.
@@ -39,7 +40,7 @@ use regex_syntax::hir::Hir;
 
 use crate::dialect::{classify_ast_error, classify_construct_from_slice, dialect_filter};
 use crate::dialect_ast_walk::ast_walk_filter;
-use crate::errors::{RegexError, RegexErrorCode};
+use crate::errors::{LimitDimension, RegexError, RegexErrorCode};
 use crate::estimator::estimate_nfa_states;
 use crate::literal_extract::extract_prefilter_literal_alternation;
 
@@ -67,6 +68,11 @@ impl RegexCompilationPlan {
     #[must_use]
     pub const fn estimated_states(&self) -> u64 {
         self.estimated_states
+    }
+
+    /// Extract prefilter literals from validated HIR without allocating an engine.
+    pub fn prefilter_literal_alternation(&self) -> Result<Vec<Vec<u8>>, RegexError> {
+        extract_prefilter_literal_alternation(&self.hir)
     }
 }
 
@@ -107,10 +113,10 @@ impl RegexExecutor {
     /// - [`RegexErrorCode::ForbiddenSyntax`] — pattern uses a construct
     ///   forbidden by the LQ regex dialect;
     /// - [`RegexErrorCode::ParseFail`] — pattern fails RE2 syntax;
-    /// - [`RegexErrorCode::PlanLimitExceeded`] — estimator overshoots the
-    ///   NFA budget;
-    /// - [`RegexErrorCode::ExecutionInternal`] — `regex::Regex::new`
-    ///   internal-budget overshoot despite the planner-time estimator.
+    /// - [`RegexErrorCode::PlanLimitExceeded`] — the structural planning
+    ///   charge or compiled-engine byte ceiling is exceeded;
+    /// - [`RegexErrorCode::ExecutionInternal`] — an engine construction
+    ///   failure distinct from a resource limit.
     pub fn compile(pattern: &str) -> Result<Self, RegexError> {
         Self::compile_prepared(Self::prepare(pattern)?)
     }
@@ -143,10 +149,17 @@ impl RegexExecutor {
     /// Compile an already validated plan without repeating dialect parsing.
     pub fn compile_prepared(plan: RegexCompilationPlan) -> Result<Self, RegexError> {
         let compiled = regex::bytes::Regex::new(&plan.execution_pattern).map_err(|e| {
-            RegexError::new(
-                RegexErrorCode::ExecutionInternal,
-                format!("regex::Regex::new rejected pattern: {e}"),
-            )
+            if let regex::Error::CompiledTooBig(limit) = e {
+                RegexError::plan_limit(
+                    LimitDimension::CompiledBytes,
+                    format!("compiled regex exceeds engine byte ceiling {limit}"),
+                )
+            } else {
+                RegexError::new(
+                    RegexErrorCode::ExecutionInternal,
+                    format!("validated regex failed engine construction: {e}"),
+                )
+            }
         })?;
         Ok(Self {
             pattern: plan.pattern,
@@ -450,7 +463,7 @@ fn span_slice<'a>(pattern: &'a str, span: &regex_syntax::ast::Span) -> &'a str {
 )]
 mod tests {
     use super::RegexExecutor;
-    use crate::errors::{ForbiddenKind, RegexErrorCode};
+    use crate::errors::{ForbiddenKind, LimitDimension, RegexErrorCode};
     use quanta_index_lq_trigram::{DocId, DocResolver};
     use std::collections::BTreeMap;
 
@@ -913,5 +926,21 @@ mod tests {
             Ok(v) => assert!(false, "expected REGEX_PREFILTER_UNUSABLE, got {v:?}"),
             Err(e) => assert_eq!(e.code, RegexErrorCode::RegexPrefilterUnusable),
         }
+    }
+    #[test]
+    fn engine_size_limit_is_a_typed_resource_failure() -> Result<(), Box<dyn std::error::Error>> {
+        // This single Unicode range expands into enough UTF-8 states to hit
+        // the engine's byte ceiling while its logical planning cost fits.
+        let plan = RegexExecutor::prepare(r"[\x{80}-\x{10FFFF}]{20000}")?;
+        assert!(plan.estimated_states() <= crate::MAX_NFA_STATES);
+        let Err(error) = RegexExecutor::compile_prepared(plan) else {
+            return Err("fixture must exceed the pinned engine size ceiling".into());
+        };
+        assert_eq!(error.code, RegexErrorCode::PlanLimitExceeded);
+        assert_eq!(
+            error.dimension.map(LimitDimension::as_code_str),
+            Some("regex-compiled-bytes")
+        );
+        Ok(())
     }
 }

@@ -20,6 +20,7 @@ impl TantivySearcher {
         name: &str,
         args: &[LqPredicateArg],
         budget: &RequestBudgetV1,
+        manual: bool,
     ) -> Result<LqExpr, CoreError> {
         if let Some(predicate) = quanta_index_core::LexicalPredicateV1::from_canonical_name(name)
             && predicate.exact_symbol_name_argument(args)?.is_some()
@@ -98,7 +99,9 @@ impl TantivySearcher {
             Some(PredicateKind::ContentLeaf) => {
                 let constraint =
                     self.content_predicate_constraint(&canonical_name, &canonical_args)?;
-                drop(self.content_predicate_match_set(&constraint, budget)?);
+                if !manual {
+                    drop(self.content_predicate_match_set(&constraint, budget)?);
+                }
                 Ok(LqExpr::Leaf(LqLeaf::Predicate {
                     name: canonical_name,
                     args: canonical_args,
@@ -114,28 +117,29 @@ impl TantivySearcher {
         &self,
         expr: &LqExpr,
         budget: &RequestBudgetV1,
+        manual: bool,
     ) -> Result<LqExpr, CoreError> {
         match expr {
             LqExpr::Leaf(LqLeaf::Predicate { name, args }) => {
-                self.lower_predicate_for_boolean_scope(name, args, budget)
+                self.lower_predicate_for_boolean_scope(name, args, budget, manual)
             }
             LqExpr::Empty | LqExpr::Leaf(_) => Ok(expr.clone()),
             LqExpr::All(parts) => {
                 let mut out: Vec<LqExpr> = Vec::with_capacity(parts.len());
                 for part in parts {
-                    out.push(self.lower_predicates_for_boolean_scope(part, budget)?);
+                    out.push(self.lower_predicates_for_boolean_scope(part, budget, manual)?);
                 }
                 Ok(collapse_exprs(out, true))
             }
             LqExpr::Any(parts) => {
                 let mut out: Vec<LqExpr> = Vec::with_capacity(parts.len());
                 for part in parts {
-                    out.push(self.lower_predicates_for_boolean_scope(part, budget)?);
+                    out.push(self.lower_predicates_for_boolean_scope(part, budget, manual)?);
                 }
                 Ok(collapse_exprs(out, false))
             }
             LqExpr::Not(inner) => Ok(LqExpr::Not(Box::new(
-                self.lower_predicates_for_boolean_scope(inner, budget)?,
+                self.lower_predicates_for_boolean_scope(inner, budget, manual)?,
             ))),
         }
     }
@@ -144,6 +148,7 @@ impl TantivySearcher {
         &self,
         expr: &LqExpr,
         budget: &RequestBudgetV1,
+        manual: bool,
     ) -> Result<
         (
             LqExpr,
@@ -235,11 +240,22 @@ impl TantivySearcher {
                             Vec::new(),
                         ))
                     }
-                    Some(PredicateKind::ContentLeaf) => Ok((
-                        LqExpr::Empty,
-                        Vec::new(),
-                        vec![self.content_predicate_constraint(&canonical_name, &canonical_args)?],
-                    )),
+                    Some(PredicateKind::ContentLeaf) => {
+                        let constraint =
+                            self.content_predicate_constraint(&canonical_name, &canonical_args)?;
+                        if manual {
+                            Ok((
+                                LqExpr::Leaf(LqLeaf::Predicate {
+                                    name: canonical_name,
+                                    args: canonical_args,
+                                }),
+                                Vec::new(),
+                                Vec::new(),
+                            ))
+                        } else {
+                            Ok((LqExpr::Empty, Vec::new(), vec![constraint]))
+                        }
+                    }
                     None => Err(unimplemented_predicate(format!(
                         "lexical: predicate leaf `{canonical_name}` is not executable on Tantivy adapter (owner: {PREDICATE_OWNER})"
                     ))),
@@ -252,7 +268,7 @@ impl TantivySearcher {
                 let mut file_predicates: Vec<ContentPredicateConstraint> = Vec::new();
                 for part in parts {
                     let (lowered, repo_parts, file_parts) =
-                        self.extract_predicate_plan(part, budget)?;
+                        self.extract_predicate_plan(part, budget, manual)?;
                     if !matches!(lowered, LqExpr::Empty) {
                         exprs.push(lowered);
                     }
@@ -266,7 +282,7 @@ impl TantivySearcher {
                 ))
             }
             LqExpr::Any(_) | LqExpr::Not(_) => Ok((
-                self.lower_predicates_for_boolean_scope(expr, budget)?,
+                self.lower_predicates_for_boolean_scope(expr, budget, manual)?,
                 Vec::new(),
                 Vec::new(),
             )),
@@ -278,6 +294,7 @@ impl TantivySearcher {
         query: &LqQuery,
         budget: &RequestBudgetV1,
     ) -> Result<PreparedPredicatePlan, CoreError> {
+        let manual = Self::uses_unindexed_scan(&query.options);
         if let LqExpr::Leaf(LqLeaf::Predicate { name, args }) = &query.expr {
             if let Some(predicate) =
                 quanta_index_core::LexicalPredicateV1::from_canonical_name(name)
@@ -301,6 +318,18 @@ impl TantivySearcher {
             if matches!(kind_of(&canonical_name), Some(PredicateKind::ContentLeaf)) {
                 let constraint =
                     self.content_predicate_constraint(&canonical_name, &canonical_args)?;
+                if manual && constraint.has_scopes() {
+                    return Ok(PreparedPredicatePlan {
+                        expr: LqExpr::Leaf(LqLeaf::Predicate {
+                            name: canonical_name,
+                            args: canonical_args,
+                        }),
+                        allowed_paths: None,
+                        allowed_repo_ids: None,
+                        allowed_candidate_ids: None,
+                        force_empty: false,
+                    });
+                }
                 let allowed_paths =
                     self.collect_matching_paths_for_content_scope(&constraint, budget)?;
                 if allowed_paths.as_ref().is_some_and(BTreeSet::is_empty) {
@@ -323,7 +352,7 @@ impl TantivySearcher {
             }
         }
         let (expr, repo_constraints, file_predicates) =
-            self.extract_predicate_plan(&query.expr, budget)?;
+            self.extract_predicate_plan(&query.expr, budget, manual)?;
         let mut allowed_repo_ids: Option<BTreeSet<String>> = None;
         for constraint in &repo_constraints {
             let repo_ids = match constraint {

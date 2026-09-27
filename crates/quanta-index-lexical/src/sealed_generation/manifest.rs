@@ -27,9 +27,9 @@
 //!   universe and producer event, both decoded from the same proved bytes.
 //!   Absence means unavailable capability, not complete coverage.
 //!
-//! Format 8 commits ranked-key tables. Format 7 added optional source-file
-//! coverage. Format 7 and earlier
-//! cannot represent that commitment and require an explicit rebuild.
+//! Format 9 binds bounded immutable coverage pages through a generation root.
+//! Format 8 added ranked-key tables; format 7 added flat source-file coverage.
+//! Formats 8 and earlier require an explicit rebuild for the current layout.
 //! The index's text documents carry their
 //! text-authority doc id indexed and as a fast column, so a derived match
 //! set restricts a query as one bitmap (QI-BB-024), and whose documents
@@ -57,7 +57,7 @@ use crate::text_authority::{TEXT_AUTHORITY_DIR_NAME, leading_format_version};
 pub(crate) const LEXICAL_SEALED_MANIFEST_FILE_NAME: &str = "search-corpus-generation-manifest.cbor";
 /// The manifest format this build writes and serves; see the module
 /// documentation for what each earlier format lacked.
-pub(crate) const LEXICAL_SEALED_MANIFEST_FORMAT_VERSION: u32 = 8;
+pub(crate) const LEXICAL_SEALED_MANIFEST_FORMAT_VERSION: u32 = 9;
 /// The format-2 layout: whole-corpus text-authority sidecars beside the
 /// index, no doc ids in the index. Refused by that name so the operator
 /// learns why a rebuild is needed.
@@ -234,7 +234,7 @@ impl LexicalSealedManifest {
             return Err(CoreError::Typed {
                 code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported,
                 message: format!(
-                    "lexical: sealed generation manifest {} has format {format_version} (this build serves {LEXICAL_SEALED_MANIFEST_FORMAT_VERSION}: committed ranked-key tables beside the fast columns); the generation must be rebuilt",
+                    "lexical: sealed generation manifest {} has format {format_version} (this build serves {LEXICAL_SEALED_MANIFEST_FORMAT_VERSION}: ranked keys and bounded committed coverage pages); the generation must be rebuilt",
                     path.display()
                 ),
             });

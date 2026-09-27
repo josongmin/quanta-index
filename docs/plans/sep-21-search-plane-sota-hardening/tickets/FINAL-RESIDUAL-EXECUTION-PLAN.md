@@ -5,46 +5,16 @@ conditional importer plan are retained in Git history, not as executable
 instructions. Reinspect code and proof registry at the source revision used
 for each run; this document is not a receipt.
 
-## Contract already present in source
-
-- The CLI exposes `backup-state`, `restore-state`, and `verify-state`.
-  `migrate-state` is not a command. Boot refuses legacy state instead of
-  converting it. See [the operator runbook](../../../operator/state-cutover-runbook.md).
-- `tools/ci/proof-aggregate.schema.json`,
-  `tools/ci/write-proof-aggregate.py`,
-  `tools/ci/lint/check-proof-authority.py`, and
-  `tools/ci/lint/handoff_validation.py` implement the aggregate schema,
-  producer, validator, and handoff DAG checks. `Justfile` has the P12A owner
-  recipe and final producer recipe. Code presence is not a P12A manifest.
-- `tools/ci/proof-authority.toml` is the operational registry. The checker
-  independently fixes the expected proof dependency DAG and verdict inputs.
-  Keep these distinct so editing the registry cannot redefine its own oracle.
-- PR CI generates a fresh P00 receipt. The all-proof release gate in
-  `.github/workflows/correctness.yml` is an explicit proof-bundle dispatch,
-  not an ordinary PR gate.
-
-## Adversarial current-source audit (2026-09-24)
-
-Read-only snapshot: Quanta clean `28c20fabfdc9d57b0d7d94794d59bcf78ea7cd14`;
-Semantica `f5e8ff63642ce815cafed296f2f5556f6e8e4048` had 13 dirty paths.
-These identities expire when either checkout changes. No Rust/build/release
-command was run for this audit. Registry-only lint is not execution evidence.
-
-| Finding | Current-source evidence | Decision |
-|---|---|---|
-| Test result parsing is present; execution provenance remains open | `check-proof-authority.py::check_manifest` uses `proof_execution_result.py::derive_test_result` to recompute passed test counts and registered target coverage from archived Nextest or pytest results and collection inventories. `terminal.environment.host.profile` remains caller-supplied, and the result does not attest every recipe subcommand or CI bundle producer. | Retain the raw-result check. Bind host class, complete command outcome, and trusted CI producer before release qualification. A log digest alone is custody, not runner or host attestation. |
-| Exact pair does not close path dependencies | `paired_source_snapshot` binds Semantica Git state and `Cargo.lock`, while Semantica's `quanta-runtime-retrieval-kernel/Cargo.toml` resolves `quanta-index-{contract,ipc,sdk}` through relative paths. `verify-repomap-cross-repo.sh` does not prove those canonical paths resolve to this Quanta checkout. | Add a resolved dependency-root check before building or accepting an exact-pair manifest. No extra RepoMap IR or compatibility reader. |
-| P09 has two distinct gaps | `RuntimeReadiness` sets `required_backend: true` after boot; the transport event ring is only read in tests. Control wire/dispatcher/SDK/searchctl have no diagnostic opcode. | Replace the constant with live required-backend authority and expose one bounded, authorized projection of the existing ring. |
-| P11 operational commands are declarations only | `proof-authority.toml` registers `proof-p11-deployment`, `proof-p11-activation`, `proof-p11-rollback`; `Justfile` contains no such recipes. All three use `execution_mode=test-authority` with empty target lists. | Model them as operational actions with independently observed before/after state, not fake test counts; add one real recipe per stage only after host/root authority is fixed. |
-| P03-P08 are not blanket rewrite tasks | Pinned RepoMap/read-view, V2 query window, SDK response binding, provider admission, and supervisor owners exist; release nodes remain `staged`. | Audit each registered release target against its acceptance counterexamples. Change source only for a demonstrated missing behavior or target. |
-| Semantic no-op is intentionally ambiguous | `SearchCorpusIngestBatch` carries semantic mutation vectors but no independent expected-scope authority; `semantic_derive.rs` accepts empty typed sources as a legitimate no-op. | Do not add a self-asserted `complete=true` field. First locate an independent producer source-plan/manifest oracle that distinguishes unchanged scopes from omitted required scopes. If none exists, narrow the claim and prove producer behavior separately. |
-| Historical custody is absent | `lane-handoff-chain-check` requires P00/P01/P02A/P02B/P02I/P11; those files are absent from `artifacts/sep-21/handoffs`. | Recover authentic records or explicitly revise acceptance. Never synthesize historical handoffs from current manifests. |
+Completed contracts and structural repairs are owned by
+[SEP-27-005](../../../adr/SEP-27-005-catalog-recovery-supervision-and-proof-custody.md)
+and the SEP-21 registry. The original dated audit and execution chronology are
+recoverable through the [plan archive](../../ARCHIVE-INDEX.md).
 
 ## Code work in dependency order
 
 Current implementation/status corrections and next-action acceptance:
-[2026-09-26 structural audit](CURRENT-RESIDUAL-2026-09-26.md). The dated source
-table above is historical; it is not the current implementation verdict.
+[residual ledger](CURRENT-RESIDUAL-2026-09-26.md). Revalidate the selected
+source before promoting a recorded open condition or proof.
 
 ### R0 — Establish the proof-result authority before release claims
 
@@ -73,40 +43,6 @@ R0 is a release-evidence prerequisite, not a reason to stop independent P09
 code development. Do not reissue owner receipts while source is still moving;
 each commit invalidates earlier exact-source receipts.
 
-2026-09-24 implementation note: the manifest checker now recomputes passed
-owner-test counts from archived Nextest JSONL plus collection inventory or
-pytest JUnit plus collection inventory. It rejects missing, malformed, skipped,
-duplicate, partial and count-mismatched runner evidence. P00 passed counts are
-fixed to the single inventory invariant, and a source-bound P00 validation
-recomputes the archived discovery inventory. This closes the arbitrary-log/count
-path for executable owner-test manifests. `QUANTA_PROOF_RAW_DIR` makes local
-Nextest scopes emit collection inventories and JSONL events. P00 collects a
-pytest inventory when `QUANTA_PROOF_RAW_DIR` is set; P12A collects an inventory
-and emits matching JUnit through `proof_execution_result.py run-p12a` in that
-mode. Both proof recipes reject `PYTEST_ADDOPTS` and `PYTEST_PLUGINS` because
-they can change test selection. Default recipe runs do not emit these artifacts,
-`--run-ignored all` scopes have no capture mode, and issuance does not bind
-every recipe subcommand to its exit result. No new owner `passed` manifest
-should be issued from human-readable logs. Trusted CI-run provenance, Linux host
-inventory, executable/command binding, operational pre/post result modes and
-the release recipe producers remain open R0 work. The parser is evidence
-interpretation, not runner attestation or release qualification.
-
-Historical P01 attempts exposed two source issues: the `quanta-index-contract`
-module baseline omitted public active-head control DTOs, and the runtime E2E
-fixture sent lexical chunks without the typed semantic sources required by its
-semantic query expectations. Both were corrected in source. On 2026-09-25,
-`just proof-p01-canonical-identity` completed on clean Quanta source
-`623e80cea2cc8e6a62c5c77304c7c0addebb7e90`. The local log is
-`/tmp/qi-p01-clean-623e80ce.log` (SHA-256
-`ca187d90e44d72bd4cdd10bc41c4d62948aeb80f208d84da79a17bb2b6e06a76`):
-canonical identity 15/15, shared surface 783/783, integration-fast 210/210,
-CLI smoke 25/25, and daemon 204/204 with one ignored real-provider test;
-structural, public API, wire, and fuzz rails also completed. This is a
-source-specific recipe result, not a P01 proof manifest or release qualification.
-The log lacks the archived machine-readable runner evidence required for an
-authoritative manifest, and later commits make it stale for the current HEAD.
-
 ### R1 — Close the P03-P08 release counterexample inventory, not the owners again
 
 Use `tools/ci/proof-authority.toml` and `tools/ci/test-authority.toml` as the
@@ -124,6 +60,12 @@ oracle, release-binary/host requirement, and result parser before promoting
 | P07 | `crates/quanta-index-search-plane/src/query_embedder.rs`, provider owner test | Approved real-provider identity/budget/cancellation evidence, separate from spy tests. |
 | P08 | `crates/quanta-index-searchd/src/app/{supervisor,searchd}.rs`, runtime supervisor owner test | Release binary signal/child-loss/FD/lease residue, separate from in-process supervisor tests. |
 
+P04 lifetime acceptance retains activation/acquisition and retire-first barriers,
+old-view GC/compaction/quarantine, panic/cancel reference release, cross-repository
+churn and auxiliary-epoch changes. Require one evidence per declared domain,
+explicit shared resource groups, identical physical identity throughout a request,
+no ambient latest reads and no deletion until every live handle/flight permits it.
+
 DoD per node: a concrete registered target and independent negative oracle;
 no staged-to-executable flip based only on a broad `test-daemon` recipe or a
 test name. If the existing code and target already cover the case, no product
@@ -140,32 +82,11 @@ Owners: `crates/quanta-index-searchd/src/app/readiness.rs`,
 `crates/quanta-index-searchctl/src/lib.rs`, and
 `crates/quanta-index-searchd-runtime/tests/e2e_process_readiness.rs`.
 
-- Replace `required_backend: true` with an owned, live required-backend health
-  observation that fails closed. Specify which opened backend handles and
-  catalog/scrub invalidations it covers; do not perform an unbounded full
-  repository scan on every readiness call or mistake an initial boot proof for
-  ongoing health.
-- Root-loss counterexample (confirmed on pre-fix source): both lexical and
-  semantic `inventory_*generations` return an empty successful inventory when
-  their track root is missing; both `track_disk_bytes` ports return successful
-  zero bytes. A scrub that discovers candidates only from those inventories
-  can therefore go idle without incrementing its error epoch, leaving the
-  cached active proof and constant backend Boolean apparently healthy after
-  an active track root disappears. The live signal must compare durable active
-  expectations with observed backend state, or invalidate/re-prove that exact
-  active set through a bounded owner. Do not equate empty inventory/zero bytes
-  with health when active generations are named; missing roots remain valid
-  before any generation has been published. Define and test a maximum
-  root-loss detection interval, including recovery after an authorized
-  restore, without a full physical re-open on every readiness poll.
-- The committed implementation probes each active sealed identity on the
-  maintenance timer and binds the observation to the activation token; the
-  default readiness staleness horizon is three five-second maintenance ticks.
-  The owner rail now includes in-process lexical/semantic root-loss and a
-  separate Cargo-built daemon restart followed by active lexical root-loss
-  and recovery. Both ran successfully only on a shared dirty overlay; no
-  clean-HEAD receipt, complete backend-content liveness guarantee, or P09
-  event/provenance closure follows from those focused results.
+- Retain the implemented exact active-generation/token backend observation and
+  bounded sealed-identity probes in SEP-27-005. Revalidate maximum detection
+  cadence, stale/missing/wrong-identity refusal, authorized root restoration and
+  zero-active behavior on the actual selected daemon. Root/identity probes do
+  not establish full backend-content liveness; retain deep-open/scrub coverage.
 - Define a bounded control DTO and adapter projection from the *existing*
   `IpcServerCounters` ring. Bound event count and encoded bytes below the
   transport's 16 MiB frame cap; carry process instance, plane, sequence gap
@@ -213,10 +134,9 @@ cutover. DoD: stopped daemon + exclusive lease, current-format backup,
 verify, restore-forward, activation-incarnation rotation and wrong-format
 refusal on one disposable and one authorized target root. No legacy importer.
 
-The `git show eff53181:docs/plans/sep-21-search-plane-sota-hardening/tickets/P10-ADVERSARIAL-AUDIT-2026-09-26.md`
-records manifest canonical authority, exact path admission, bounded catalog
-sidecar exceptions and verification-scoped custody changes. Local owner
-checks do not discharge the authorized-target or release DoD above.
+Original-manifest authority, exact paths and bounded catalog sidecar custody
+are retained in SEP-27-005. Local checks do not discharge the authorized-target
+or release DoD above.
 
 ### R5 — P11 exact source pair, resolved dependency roots and build result
 
@@ -254,5 +174,5 @@ must accept the exact pair and raw evidence; deployment, activation and
 rollback verdicts remain separate. Missing, staged or stale evidence is not
 production readiness.
 
-Use [EXECUTION-PROGRESS.md](EXECUTION-PROGRESS.md) for the live result. This
-plan is an action map, not a passed receipt.
+Use the [residual ledger](CURRENT-RESIDUAL-2026-09-26.md) for remaining status.
+This plan is an action map, not a passed receipt.

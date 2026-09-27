@@ -29,7 +29,7 @@ if str(BENCH_ROOT) not in sys.path:
 
 import corpus_binding  # noqa: E402
 import corpus_release  # noqa: E402
-from evidence import _read_control_file  # noqa: E402
+from evidence import _read_control_file, canonical_json  # noqa: E402
 
 from tools.benchmark.retrieval import lexical_file_comparison as lexical  # noqa: E402
 from tools.benchmark.retrieval import sourcegraph  # noqa: E402
@@ -440,10 +440,29 @@ def verify(root: Path) -> dict:
     inventory = corpus_release.regular_tree(root)
     spec = _spec(root / "spec.json")
     summary = _json(_read_control_file(root / "capture.json"))
-    if (summary.get("schema_version") != 1 or summary.get("status") != "diagnostic_unqualified"
+    fields = {"schema_version", "status", "release_digest", "binding", "tasks",
+              "indexed_universe_attested", "producer_sources_sha256", "python_executable_sha256",
+              "python_version", "server_image_digests_operator_supplied", "cs_binary_sha256",
+              "cs_version", "rows_sha256", "raw_capture_sha256", "exclusions"}
+    if (set(summary) != fields
+            or type(summary.get("schema_version")) is not int or summary["schema_version"] != 1
+            or summary.get("status") != "diagnostic_unqualified"
             or summary.get("indexed_universe_attested") is not False
-            or summary.get("producer_sources_sha256") != _source_hashes()):
-        raise ValueError("external capture has unsupported claim or schema")
+            or type(summary.get("tasks")) is not int or summary["tasks"] <= 0
+            or summary.get("producer_sources_sha256") != _source_hashes()
+            or summary.get("python_executable_sha256") != _sha(Path(sys.executable).resolve().read_bytes())
+            or summary.get("python_version") != sys.version.split()[0]
+            or summary.get("server_image_digests_operator_supplied") != {
+                name: spec[name]["server_image_digest"] for name in ("sourcegraph", "opengrok")}
+            or summary.get("cs_binary_sha256") != _sha(Path(spec["cs"]["binary"]).resolve(strict=True).read_bytes())
+            or not isinstance(summary.get("rows_sha256"), dict)
+            or set(summary["rows_sha256"]) != set(lexical.PRODUCTS)
+            or summary.get("exclusions") != ["backend_indexed_universe_attestation",
+                                            "independent_gold", "qualified_speed"]):
+        raise ValueError("unsupported capture metadata, claim or runtime identity")
+    code, version, stderr, _ = _process([spec["cs"]["binary"], "--version"], 10)
+    if code != 0 or stderr or summary.get("cs_version") != version.decode().strip():
+        raise ValueError("unsupported capture metadata: cs version identity differs")
     suite_raw = _read_control_file(root / "suite.json")
     pack_raw = _read_control_file(root / "query-pack.json")
     suite, pack = _json(suite_raw), _json(pack_raw)
@@ -460,8 +479,8 @@ def verify(root: Path) -> dict:
     if manifest_raw != _read_control_file(release / repository["views"][view_name]["manifest"]):
         raise ValueError("retained manifest differs from release")
     binding = corpus_binding._bind(document, manifest_raw, spec["corpus"], suite_raw, pack_raw)
-    if (binding != _json(_read_control_file(root / "binding.json"))
-            or binding != summary.get("binding") or summary.get("tasks") != len(tasks)
+    if (canonical_json(binding) != canonical_json(_json(_read_control_file(root / "binding.json")))
+            or canonical_json(binding) != canonical_json(summary.get("binding")) or summary.get("tasks") != len(tasks)
             or summary.get("release_digest") != document["digest"]):
         raise ValueError("external capture binding differs")
     manifest = _json(manifest_raw)
@@ -508,7 +527,7 @@ def verify(root: Path) -> dict:
                 else:
                     derived = _opengrok_response(spec[name], task, gold, view, files,
                         terminal["status"], terminal["content_type"], raw, terminal["elapsed_ms"])
-            if row != derived:
+            if canonical_json(row) != canonical_json(derived):
                 raise ValueError("external row disagrees with retained native response")
     return summary
 

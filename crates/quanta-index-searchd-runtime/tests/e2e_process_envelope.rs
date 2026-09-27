@@ -147,7 +147,9 @@ fn a_new_writer_is_refused_typed_above_the_rss_ceiling_and_admitted_below_it() -
     )?;
     // Above the ceiling: the first batch needs a writer and is refused.
     let batch = rt.text_search_corpus_batch("src/gate.rs", "fn gate_body() { gate_needle }")?;
-    let refused = rt.ingest_once(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch))?;
+    let refused = rt.ingest_once(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(
+        batch.clone(),
+    ))?;
     if typed_code(&refused) != Some(PROCESS_RSS_CEILING_EXCEEDED_CODE.as_wire_str()) {
         return Err(format!(
             "a writer open above the resident-memory ceiling is refused typed, got {refused:?}"
@@ -179,17 +181,11 @@ fn a_new_writer_is_refused_typed_above_the_rss_ceiling_and_admitted_below_it() -
         &0.0,
     )?;
 
-    // Below the ceiling the next batch is admitted and served. It is a
-    // different body on purpose: the refused batch above was recorded as a
-    // frozen-policy refusal and an identical retry replays it by design
-    // (S21-04), so a fresh body is what exercises the gate's new reading.
+    // The source publication is retryable after this runtime admission
+    // failure. Retry the exact same event and body: a different event may
+    // not take over the target generation already bound by staged coverage.
     probe.0.store(ceiling - 1, Ordering::Release);
-    rt.ingest_text(
-        "repo-e2e",
-        "src/gate.rs",
-        "fn gate_body_v2() { gate_needle }",
-    )?;
-    let _generation = rt.seal()?;
+    rt.publish_search_corpus_batch(batch)?;
     rt.activate_last_sealed_generation()?;
     let served = rt.query_text(TextQuerySyntax::Native, "gate_needle", 10);
     if let Some(error) = served.typed_error {

@@ -1029,13 +1029,13 @@ const SCENARIOS: &[ParityScenario] = &[
         expected: ExpectedOutcome::Candidates {
             ids: &[
                 "alpha_rust",
+                "beta_py",
+                "gamma_md",
+                "delta_other_path",
                 "delta_phrase",
                 "epsilon_regex",
                 "zeta_raw",
                 "theta_symbol",
-                "beta_py",
-                "gamma_md",
-                "delta_other_path",
             ],
         },
     },
@@ -1058,13 +1058,13 @@ const SCENARIOS: &[ParityScenario] = &[
         expected: ExpectedOutcome::Candidates {
             ids: &[
                 "alpha_rust",
+                "beta_py",
+                "gamma_md",
+                "delta_other_path",
                 "delta_phrase",
                 "epsilon_regex",
                 "zeta_raw",
                 "theta_symbol",
-                "beta_py",
-                "gamma_md",
-                "delta_other_path",
             ],
         },
     },
@@ -1095,13 +1095,13 @@ const SCENARIOS: &[ParityScenario] = &[
         expected: ExpectedOutcome::Candidates {
             ids: &[
                 "alpha_rust",
+                "beta_py",
+                "gamma_md",
+                "delta_other_path",
                 "delta_phrase",
                 "epsilon_regex",
                 "zeta_raw",
                 "theta_symbol",
-                "beta_py",
-                "gamma_md",
-                "delta_other_path",
             ],
         },
     },
@@ -1132,13 +1132,13 @@ const SCENARIOS: &[ParityScenario] = &[
         expected: ExpectedOutcome::Candidates {
             ids: &[
                 "alpha_rust",
+                "beta_py",
+                "gamma_md",
+                "delta_other_path",
                 "delta_phrase",
                 "epsilon_regex",
                 "zeta_raw",
                 "theta_symbol",
-                "beta_py",
-                "gamma_md",
-                "delta_other_path",
             ],
         },
     },
@@ -2383,6 +2383,7 @@ fn run_parity_matrix(
 ) -> AnyResult<Vec<RowReport>> {
     let mut rt = E2eRuntime::boot()?;
     ingest(&mut rt)?;
+    rt.declare_staged_symbol_extraction_complete()?;
     _ = rt.seal()?;
     rt.activate_last_sealed_generation()?;
     let mut rt = rt.reopen();

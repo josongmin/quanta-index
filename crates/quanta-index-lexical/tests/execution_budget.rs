@@ -20,8 +20,8 @@ use std::error::Error;
 
 use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
-    ChunkId, ChunkRecord, LQ_VERSION_TAG, LqCountBound, LqExpr, LqFilter, LqLeaf, LqOptions,
-    LqPredicateArg, LqQuery, LqSelect, LqSpan, LqType, LqYesNoOnly, ManifestGeneration,
+    ChunkId, ChunkRecord, LQ_VERSION_TAG, LqCountBound, LqExpr, LqFileScope, LqFilter, LqLeaf,
+    LqOptions, LqPredicateArg, LqQuery, LqSelect, LqSpan, LqType, LqYesNoOnly, ManifestGeneration,
     QueryConstraintSetV1, RepoId, RepoRelativePath, RevisionId, SearchCorpusIngestBatch,
     SearchCorpusReplaceScope, SearchPlaneErrorCodeV2,
 };
@@ -137,6 +137,10 @@ fn seeded(budget: usize) -> Result<(tempfile::TempDir, LexicalAdapter), Box<dyn 
 }
 
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "fixed oracle assertions in a fallible fixture"
+)]
 fn predicate_scope_refuses_materialization_past_the_examined_budget() -> TestResult {
     let scoped = query(
         LqExpr::All(vec![
@@ -366,6 +370,10 @@ fn unindexed_scans_over_the_budget_are_refused_before_scanning() -> TestResult {
 }
 
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "fixed oracle assertions in a fallible fixture"
+)]
 fn unindexed_scan_obeys_native_collection_byte_limit() -> TestResult {
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root_and_policies(
@@ -399,6 +407,10 @@ fn unindexed_scan_obeys_native_collection_byte_limit() -> TestResult {
 }
 
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "fixed oracle assertions in a fallible fixture"
+)]
 fn dense_admission_refuses_candidate_set_over_examined_limit() -> TestResult {
     let (_dir, adapter) = seeded(BUDGET)?;
     let searcher = adapter.open(&repo(), &revision(), generation())?;
@@ -415,6 +427,39 @@ fn dense_admission_refuses_candidate_set_over_examined_limit() -> TestResult {
         matches!(&refused, Err(error) if is_budget_refusal(error)),
         "dense admission accepted more candidates than the examined limit: {refused:?}"
     );
+    Ok(())
+}
+
+#[test]
+fn dense_manual_regex_admission_matches_the_independent_path_oracle() -> TestResult {
+    let (_dir, adapter) = seeded(usize::try_from(DOCS)?)?;
+    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let candidate_ids = (1..=DOCS)
+        .map(|id| format!("chunk-{id}"))
+        .collect::<std::collections::BTreeSet<_>>();
+    let expected = ["chunk-1".to_string(), "chunk-2".to_string()]
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut manual = query(
+        LqExpr::Leaf(LqLeaf::Regex(r"item_[12]\(\)".into())),
+        vec![LqFilter::File {
+            pattern: r"^src/file_[12]\.rs$".into(),
+            scope: LqFileScope::PathOnly,
+        }],
+    );
+    manual.options.index_mode = Some(LqYesNoOnly::No);
+    let admitted = searcher.admitted_candidates(
+        &manual,
+        &QueryConstraintSetV1::unconstrained(),
+        &candidate_ids,
+        &RequestBudgetV1::unbounded(),
+    )?;
+    if expected.len() != 2 || admitted != expected {
+        return Err(format!(
+            "manual dense regex admission drifted: expected={expected:?} actual={admitted:?}"
+        )
+        .into());
+    }
     Ok(())
 }
 

@@ -1,106 +1,28 @@
-# J7Q-02 — Snippet And Explain Quality
+# J7Q-02 — Snippet and explanation acceptance
 
-Parent RFC: [../rfc.md](../rfc.md)
+Status: `ACTIVE_RESIDUAL`
+Parent: [quality index](INDEX.md)
+Owner: lexical previews, explanation contract, SDK/CLI consumers
 
-Status: `planned`
+Structured window/highlight and planner/engine/contribution contracts exist;
+`snippet.rs` grades emitted phrase/regex/multi-hit/long-line fixtures without
+repairing output, and `ui.rs` observes highlight/explanation fields. Current
+contracts are in [the code-search ADR](../../../adr/SEP-27-003-code-search-source-and-preview-contract.md).
 
-## Goal
+## Remaining acceptance
 
-Raise snippet and explanation proof from “field exists” to “human-useful and
-internally consistent”.
+- Prove current phrase, regex, repeated-hit, long-line and symbol previews
+  against source bytes: exact windows/offsets, UTF-8 boundaries, bounded length,
+  deterministic truncation, empty/unavailable states and advertised highlights.
+- Reconcile required planner stages, engine ordering and contribution rows with
+  actual execution/ranking. Required route-specific rationale must carry useful
+  provenance; a populated summary alone is insufficient.
+- Execute current-wire contract, SDK and CLI consumer cases. The harness fixture
+  cannot replace these or the physical regex work in
+  [CS-ENG-04](../../sep-27-code-search-remediation/rfcs/CS-ENG-04-match-anchored-snippets.md)
+  and combined-source acceptance in
+  [CS-INT-01](../../sep-27-code-search-remediation/rfcs/CS-INT-01-integration-and-qualification.md).
 
-## Current Code Fact
-
-- snippet fields are shipped on candidate surfaces
-- explanation wire and tests already exist
-- current assertions still skew toward presence and simple substring checks
-
-## Owner Seam
-
-- snippet derivation
-- explanation payload contract
-- runtime explain surface
-- corpus snippet assertions
-
-## Source Truth Anchors
-
-- `/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical/src/lib.rs`
-- `/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-contract/src/results/explanation.rs`
-- `/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-search-plane/src/query_dispatcher.rs`
-- `/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-searchd-runtime/tests/explain.rs`
-- `/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-searchd-runtime/tests/e2e_full_corpus.rs`
-- `/Users/songmin/Documents/code-new/quanta-index/docs/plans/jun-7-search-product-quality/COMMAND_AND_ARTIFACT_CONTRACT.md`
-
-## Preferred Implementation Direction
-
-- snippet quality should be asserted via hit-centered windows, offsets, and
-  highlight spans
-- explanation quality should be asserted via sectioned provenance from actual
-  planner and runtime stages
-- route-specific explanation should explain why a result ranked, not only that
-  it existed
-- long snippets should truncate deterministically around the most informative hit
-
-## Layer Boundary Clarification
-
-- this ticket owns human usefulness of emitted payloads
-- it does not own core relevance ordering metrics from `J7Q-01`
-
-## Concrete Work Items
-
-1. Add snippet golden assertions for phrase, regex, multi-hit, and long-line
-   cases.
-2. Add explain assertions for planner stages, engine order, and contribution
-   rows.
-3. Assert route-specific explanation rationale, not just non-empty summaries.
-4. Keep snippet and explanation quality separate from relevance metrics.
-
-## Required Outputs
-
-- stable command:
-  - `just rust-verify-quality-snippet`
-- canonical artifacts:
-  - `artifacts/search-quality/snippet/latest/summary.json`
-  - `artifacts/search-quality/snippet/latest/golden_windows.json`
-
-## First Increment
-
-- tighten existing explain rail before adding new fields
-
-## Red Rail To Pin First
-
-```bash
-./scripts/cargow test -p quanta-index-searchd-runtime --test explain -- --nocapture
-./scripts/cargow test -p quanta-index-searchd-runtime --test e2e_full_corpus -- --nocapture
-```
-
-## Worker First Commands
-
-```bash
-rg -n "snippet|explanation|planner_trace|summary|contribution" crates/quanta-index-searchd-runtime crates/quanta-index-contract crates/quanta-index-lexical -S
-sed -n '1,260p' crates/quanta-index-searchd-runtime/tests/explain.rs
-sed -n '1660,1795p' crates/quanta-index-searchd-runtime/tests/e2e_full_corpus.rs
-```
-
-## No-Go
-
-- do not treat summary non-empty as sufficient
-- do not weaken snippet provenance into UI-only formatting heuristics
-- do not pull semantic retrieval or hybrid fusion explanation into this ticket
-- do not let snippet quality collapse to “contains the needle somewhere”
-
-## Reviewer Rejection Checklist
-
-- reject if snippet “quality” is still asserted with substring presence only
-- reject if explanation text is manually composed without stable provenance
-- reject if the payload gets prettier but less deterministic
-
-## DoD
-
-- degraded snippets or low-information explanations fail dedicated rails
-
-## Not Done If
-
-- snippets are still only loosely asserted
-- explanation quality is still mostly “string not empty”
-- no persisted golden-window artifact exists
+Registered producer: `snippet_matrix`; emitted `summary.json` and
+`golden_windows.json` retain the scored native output. Snippet correctness and
+human usefulness remain separate from relevance quality; keep failures visible.

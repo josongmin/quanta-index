@@ -323,6 +323,7 @@ fn publish_structural_ready_fixture(socket: &Path, corpus: &mut SourceCorpusFixt
         )?],
         Some(b"manifest".to_vec()),
     )?;
+    seal_lexical(socket, corpus)?;
     publish_structural_scope(
         socket,
         "src/lib.rs",
@@ -1031,8 +1032,8 @@ fn end_to_end_widened_history_and_runtime_queries_roundtrip_exact_truth() -> Tes
         Some(b"manifest".to_vec()),
     )?;
     publish_history_authority_fixture(&ingest_socket)?;
-    publish_runtime_catalog_fixture(&ingest_socket)?;
     seal_lexical(&ingest_socket, &mut corpus)?;
+    publish_runtime_catalog_fixture(&ingest_socket)?;
 
     for &scenario in IPC_FRONTDOOR_SCENARIOS {
         match scenario.expected {
@@ -2507,7 +2508,7 @@ fn verify_structural_generation_not_ready(socket: &Path) -> TestResult {
 }
 
 #[test]
-fn structural_query_returns_typed_shard_unavailable_error() -> TestResult {
+fn orphan_structural_tree_is_refused_before_query_readiness() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
     let ingest_socket = fixture.ingest_socket;
@@ -2536,7 +2537,9 @@ fn structural_query_returns_typed_shard_unavailable_error() -> TestResult {
         ],
         Some(b"manifest".to_vec()),
     )?;
-    publish_structural_scope(
+    tombstone_lexical_scopes(&mut corpus, &["src/lib.rs"])?;
+    seal_lexical(&ingest_socket, &mut corpus)?;
+    let refused = publish_structural_scope(
         &ingest_socket,
         "src/lib.rs",
         vec![StructuralTreeRecord {
@@ -2561,9 +2564,11 @@ fn structural_query_returns_typed_shard_unavailable_error() -> TestResult {
                 }],
             },
         }],
-    )?;
-    tombstone_lexical_scopes(&mut corpus, &["src/lib.rs"])?;
-    seal_lexical(&ingest_socket, &mut corpus)?;
+    );
+    let error = refused.expect_err("orphan structural tree must be refused at publication");
+    if !error.to_string().contains("reason=source_chunk_missing") {
+        return Err(format!("unexpected orphan-tree refusal: {error}").into());
+    }
     seal_structural(&ingest_socket)?;
 
     let request = SearchPlaneQueryIpcRequestEnvelope {
@@ -2587,7 +2592,7 @@ fn structural_query_returns_typed_shard_unavailable_error() -> TestResult {
             Ok(response) => match response.payload {
                 SearchPlaneQueryIpcResponse::Error(err) => {
                     observed = Some(err.code.as_wire_str().to_string());
-                    err.code.as_wire_str() == "STR_SHARD_UNAVAILABLE"
+                    err.code.as_wire_str() == "STR_GENERATION_NOT_READY"
                 }
                 other => {
                     observed = Some(format!("{other:?}"));
@@ -2602,7 +2607,7 @@ fn structural_query_returns_typed_shard_unavailable_error() -> TestResult {
     });
     if !saw_expected {
         return Err(format!(
-            "expected STR_SHARD_UNAVAILABLE after orphaning structural chunk authority, observed {observed:?}"
+            "expected STR_GENERATION_NOT_READY after the orphan tree was refused, observed {observed:?}"
         )
         .into());
     }
@@ -3070,7 +3075,6 @@ fn structural_ready_queries_share_one_indexed_fixture() -> TestResult {
         format!("fixture-event-{}", next_request_id()),
     );
     publish_structural_ready_fixture(&ingest_socket, &mut corpus)?;
-    seal_lexical(&ingest_socket, &mut corpus)?;
     seal_structural(&ingest_socket)?;
 
     let verification: TestResult = (|| {

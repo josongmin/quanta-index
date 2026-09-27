@@ -446,7 +446,8 @@ fn replace_fixture_file(
     chunks: Vec<ChunkRecord>,
     symbols: Vec<SymbolRecord>,
 ) -> Result<SearchCorpusBatch, Box<dyn Error>> {
-    let scope = fixture_source_scope_v1(
+    let no_symbols = symbols.is_empty();
+    let mut scope = fixture_source_scope_v1(
         SourceFileKey {
             source_repo_id,
             repo_relative_path: RepoRelativePath::new(path),
@@ -455,6 +456,12 @@ fn replace_fixture_file(
         chunks,
         symbols,
     )?;
+    if no_symbols {
+        // The synthetic fixture has run symbol extraction and found none.
+        // A known empty result is Complete(0), not NotRequested.
+        scope.coverage.symbols =
+            quanta_index_contract::SymbolCoverage::Complete { symbol_count: 0 };
+    }
     Ok(batch.replace_scope(scope.coverage, scope.chunks, scope.symbols))
 }
 
@@ -4524,7 +4531,7 @@ fn sdk_wait_not_ready_then_ready_recovers() {
 #[test]
 fn l2_source_replay_keeps_original_publication_through_sdk_activation_and_restart() -> TestResult {
     use quanta_index_contract::{IngestObservationStatus, SourcePublicationEvent};
-    let root = tempfile::tempdir()?;
+    let root = quanta_index_searchd_harness::private_tempdir()?;
     let fixture = SdkFrontdoorRuntime::start_at(root.path())?;
     let event = SourcePublicationEvent {
         stream_id: "l2-sdk-stream".into(),

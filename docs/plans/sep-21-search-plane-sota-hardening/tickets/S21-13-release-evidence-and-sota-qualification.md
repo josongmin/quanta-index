@@ -1,48 +1,11 @@
-# S21-13 — Release Evidence and SOTA Qualification
+# S21-13 — Remaining release evidence and qualification
 
-Status: infrastructure implemented; final qualification blocked.
-
-2026-09-26: JUnit grammar/outcome and inventory-selector admission strengthened;
-resolved dependency counterexamples added to the existing P12A scope. Parser
-checks are not trusted producer/host/complete-recipe attestation. See
-[current status and remaining actions](CURRENT-RESIDUAL-2026-09-26.md).
-
-2026-09-24 adversarial audit found self-reported terminal test counts.
-The current checker derives passed test counts and target coverage from archived
-Nextest or pytest runner results plus collection inventories. This closes the
-arbitrary-log/count path for those registered test proofs. The terminal still
-supplies its host profile, and issuance does not attest every recipe subcommand
-or bind a downloaded CI proof bundle to a trusted producing run. An issued
-`passed` test manifest alone is therefore not release qualification. Complete
-the remaining host, command, and producer authority in
-[R0](FINAL-RESIDUAL-EXECUTION-PLAN.md#r0--establish-the-proof-result-authority-before-release-claims).
-Keep this as one proof-plane fix; do not implement bespoke parsers in every
-P03-P11 lane. Historical P00/P01/P02A/P02B/P02I/P11 handoffs are currently
-absent; recover authentic records or revise the acceptance contract, never
-reconstruct them from today's manifests.
-
-Phase A status: `done` for the M0 foundation gate. Registry-driven atomic manifest production, staged/unstaged/
-Git-visible-untracked source binding, conditional non-binary semantics, exact-pair binding, blocking P00 validation
-and the fail-closed aggregate release command are implemented. The P12A aggregate
-schema, writer, validator, handoff-DAG checks, and final recipe are also present
-in source. P12A can issue an exact-source receipt independently of P11; its
-current alias is a generated runtime artifact, so validate it at the target
-HEAD rather than inferring its presence from this document. The final aggregate requires all registered current-source proofs. Code presence does not qualify the product or the release.
-
-2026-09-24 clean-source local checkpoint at Quanta
-`7dec59654564412d2265e5ee46339ae3218c756b`, before the later RepoMap
-store edit: `just proof-p12a-proof-infrastructure` exited 0, with
-test-authority lint OK, registry-only proof-authority lint reporting 26
-registered proofs and **zero validated manifests**, and 121/121 Python owner
-tests passing. This was a clean-Quanta-source infrastructure check without a
-source-bound P12A manifest or archived runner result. It was neither a P12A
-receipt nor final aggregate qualification.
-
-2026-09-24 dirty-source checkpoint at Quanta `563da185`: `just
-proof-p12a-proof-infrastructure` passed test-authority lint, registry-only
-proof-authority lint, and 121/121 Python owner tests. The registry lint
-validated **zero manifests**. This is local P12A infrastructure behavior,
-not an authoritative P12A receipt or final aggregate qualification.
+Status: `ACTIVE — infrastructure exists; final qualification remains open`.
+Completed proof parsing/custody/selection decisions are in
+[SEP-27-005](../../../adr/SEP-27-005-catalog-recovery-supervision-and-proof-custody.md).
+Trusted host, authentic producer, complete recipe and final source-bound execution
+remain [R0/R6-owned](FINAL-RESIDUAL-EXECUTION-PLAN.md). Historical P12A
+checks and numerical counts are recoverable in Git; they are not issued receipts.
 
 Depends on: phase A depends on S21-00; phase B depends on S21-01 through S21-12
 
@@ -50,14 +13,6 @@ Depends on: phase A depends on S21-00; phase B depends on S21-01 through S21-12
 
 모든 구조 변경을 동일 final source에서 검증하고, artifact absence/staleness가 green이 될 수 없는 blocking
 release proof graph를 만든다.
-
-## Root cause
-
-- benchmark/quality artifact checker가 absence를 허용
-- 일부 summary schema/boolean/source binding이 약함
-- verification receipt가 full source/binary/host/feature 정보를 자체 검증하지 않음
-- focused/static/in-process proof가 product closure로 승격될 수 있음
-- deploy/backup/provider/cross-repo rail이 하나의 mandatory graph에 연결되지 않음
 
 ## Proof manifest
 
@@ -91,49 +46,7 @@ S21-00에서 baseline과 target을 같은 corpus/host/profile로 고정한다. �
 - operations: recovery time, restore verification time, GC progress and reclaim
 - provider: request count, residual tasks, tokens/usage/cost, model identity
 
-## Work items
-
-1. strict proof-manifest schema and validator
-2. `check-bench-artifacts --require` equivalent를 blocking workflow에 연결
-3. mandatory family inventory에 ambiguity/snippet/ops/ui/integration 포함 여부를 owner 결정
-4. strict boolean/schema/full HEAD/source binding
-5. test-authority invariant universe에 S21 scenarios 등록
-6. Justfile canonical profiles와 CI workflow 연결
-7. receipt writer가 terminal success와 source metadata를 자체 검증
-8. exact-source artifact store/publish policy
-9. purpose checklist에 pass2/pass3 proposed rows 실제 반영
-10. final closeout report와 unresolved risk ledger
-11. composite local test scope는 포함된 scope 중 가장 엄격한 thread/resource cap을 적용
-12. generated checklist/agent docs는 canonical source owner를 수정한 뒤 생성·lint
-
-### Phase A — land early
-
-- `proof-authority.toml` 또는 동등한 canonical registry에 proof ID, owner, family, command/profile,
-  source-binding rule, required host, artifact schema를 선언한다.
-- strict proof-manifest schema/validator, test-authority entries, CI workflow skeleton을 W0/W1에 배치한다.
-- schema는 full 40-char SHA, dirty digest, selected/executed/passed/failed/ignored counts, exact binary SHA,
-  features/toolchain/OS/arch/host, timestamps와 artifact digest를 mandatory로 한다.
-
-Implemented owners:
-
-- `tools/ci/proof-authority.toml`
-- `tools/ci/proof-manifest.schema.json`
-- `tools/ci/lint/check-proof-authority.py`
-- `.pre-commit-config.yaml` `proof-authority` hook
-- `.github/workflows/ci.yml` blocking proof-authority step
-
-Closed Phase A owners:
-
-- source digest semantics include staged, unstaged and Git-visible untracked bytes while excluding proof output
-- `tools/ci/write-proof-manifest.py` atomically publishes registry-derived terminal receipts
-- `binary_binding=none`, upstream-less/detached worktrees and non-passing terminal receipts are explicit
-- PR CI blocks on the current P00 receipt; the explicit release gate uses `--require-all --bind-source`
-- exact-pair release receipts bind normalized Semantica repository identity, Git state and `Cargo.lock`
-
-Per-lane requirement, not Phase A closure: each P01-P11 owner and P12A infrastructure owner must register any new concrete `test-authority`
-target before claiming its proof. Empty future target lists are not evidence and are not promoted by the M0 receipt.
-
-### Phase B — final aggregate
+## Final aggregate
 
 Phase B는 독립적인 P12A infrastructure proof와 최종 aggregate qualification으로 나뉜다.
 P12A는 Quanta exact-source와 원시 Python 실행 증거로 발급할 수 있다. Aggregate는
@@ -222,7 +135,7 @@ source dirty state; its Semantica source and lockfile are checked separately.
 
 추가 mandatory proof inventory:
 
-- 등록된 J7Q/live owner target 전수(현재 inventory 기준 7개는 구현 착수 시 재산정)
+- 등록된 J7Q/live owner target 전수(실제 collection과 현재 authority 기준)
 - ANN recall/relevance와 latency/resource를 분리한 fixed-corpus proof
 - activation/read-view/GC concurrency 및 state-root two-process lease proof
 - provider spy cancellation/egress matrix와 opt-in real-provider budgeted proof

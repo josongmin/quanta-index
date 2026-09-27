@@ -19,6 +19,7 @@ SEP-21 accepted set:
 - [Read view, continuation and provider policy](SEP-21-003-read-view-continuation-and-provider-policy.md)
 - [Process supervision, state cutover and proof](SEP-21-004-process-supervision-state-cutover-and-proof.md)
 - [Decision registry](SEP-21-DECISION-REGISTRY.md)
+- [Catalog recovery, supervision and proof custody](SEP-27-005-catalog-recovery-supervision-and-proof-custody.md)
 
 SEP-26 retrieval accepted set:
 
@@ -34,6 +35,11 @@ Documentation governance:
 Benchmark control plane:
 
 - [Single benchmark orchestrator and typed evidence](SEP-27-002-single-benchmark-orchestrator-and-typed-evidence.md)
+- [Capture, process and resource custody](SEP-27-004-benchmark-capture-and-resource-custody.md)
+
+Code search:
+
+- [Query plans, source coverage, exact identity and previews](SEP-27-003-code-search-source-and-preview-contract.md)
 
 May–Jun 2026 accepted set:
 
@@ -41,7 +47,7 @@ May–Jun 2026 accepted set:
 - [Search DSL authority and runtime contract](JUN-02-001-search-dsl-authority-and-runtime-contract.md)
 - [Sourcegraph compatibility boundary](JUN-06-001-sourcegraph-compatibility-boundary.md)
 - [LanceDB semantic generation authority](MAY-31-001-lancedb-semantic-generation-authority.md)
-- [Verification hellgate and benchmark separation](JUN-08-001-verification-hellgate-and-benchmark-separation.md)
+- [Verification, quality gates and benchmark separation](JUN-08-001-verification-hellgate-and-benchmark-separation.md)
 - [Decision registry](MAY-JUN-2026-DECISION-REGISTRY.md)
 
 Historical implementation packets absorbed by these ADRs are indexed in

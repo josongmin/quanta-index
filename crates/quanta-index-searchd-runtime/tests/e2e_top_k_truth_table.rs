@@ -211,6 +211,7 @@ fn seeded_runtime() -> Result<E2eRuntime, Box<dyn Error>> {
     rt.ingest_text("repo", "src/needle.rs", NEEDLE_CONTENT)?;
     rt.ingest_text("repo", "src/other.rs", "fn other() { let needle = 2; }")?;
     rt.ingest_symbol("repo", "src/needle.rs", "sym-needle", "needle")?;
+    rt.declare_staged_symbol_extraction_complete()?;
     rt.ingest_structural_function_tree("src/needle.rs", NEEDLE_CONTENT, "needle")?;
     rt.ingest_dirty_for_path("src/other.rs", 7)?;
     rt.ingest_history_fixture("src/needle.rs")?;

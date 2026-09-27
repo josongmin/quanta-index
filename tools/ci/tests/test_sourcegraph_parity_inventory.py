@@ -45,7 +45,11 @@ def test_typed_registry_inventory_is_complete():
         "repo.contains.path",
         "repo.has.path",
     }
-    assert route_owned == ["symbol.has.name"]
+    assert route_owned == [
+        "symbol.has.name",
+        "symbol.local_name.exact",
+        "symbol.qualified_name.exact",
+    ]
 
 
 def test_typed_registry_inventory_refuses_missing_rows_or_names():
@@ -70,3 +74,25 @@ def test_typed_registry_inventory_refuses_missing_rows_or_names():
     )
     with pytest.raises(ValueError, match="ALL/name tables are incomplete"):
         module._typed_names(missing_name, "LexicalPredicateV1")
+
+
+@pytest.mark.parametrize("mutation", ["missing", "duplicate", "wrong_family"])
+def test_predicate_inventory_rejects_family_drift(monkeypatch, mutation):
+    module = _module()
+    core = module.read(module.CORE_PREDICATE_RS)
+    start = core.index("pub const fn family(self)")
+    end = core.index("\n    }", start)
+    family = core[start:end]
+    if mutation == "missing":
+        family = family.replace(" | Self::SymbolLocalNameExact", "", 1)
+    elif mutation == "duplicate":
+        family = family.replace("Self::SymbolLocalNameExact", "Self::SymbolHasName", 1)
+    else:
+        family = family.replace("LexicalPredicateFamilyV1::Symbol", "LexicalPredicateFamilyV1::ContentOrRepo", 1)
+    changed = core[:start] + family + core[end:]
+    original_read = module.read
+    monkeypatch.setattr(
+        module, "read", lambda path: changed if path == module.CORE_PREDICATE_RS else original_read(path)
+    )
+    with pytest.raises(ValueError, match="family"):
+        module.ours_predicates()

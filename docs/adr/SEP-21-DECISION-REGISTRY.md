@@ -5,7 +5,8 @@ Status: `Accepted`
 Decided: 2026-09-21
 
 This table is the compact implementation contract for S21-01 through S21-13. The four linked ADRs own rationale and
-full semantics.
+full semantics. Completed recovery/custody extensions are owned by
+[SEP-27-005](SEP-27-005-catalog-recovery-supervision-and-proof-custody.md).
 
 | ID | Frozen value | Owner | Blocking consumers |
 |---|---|---|---|
@@ -18,7 +19,7 @@ full semantics.
 | D-AUTH-01 | SQLite candidate/activation ledger is sole RepoMap visibility authority | catalog | S21-02/05/11 |
 | D-AUTH-02 | process-global `MutationCoordinatorV1`, prepared plan and fence | core/catalog/runtime | S21-04/09 |
 | D-REC-01 | `OperationTerminalResultV2`, canonical CBOR v2, immutable replay bytes | contract/catalog | S21-04/11/12 |
-| D-REC-02 | replay floor 1; terminal retention for root lifetime; offline floor advance only | catalog/migration | S21-04/11 |
+| D-REC-02 | exact retained terminal replay; target-bound generation-GC invalidation and durable checked replay floor; retry supersession remains distinct | catalog | S21-04/11 |
 | D-SEQ-01 | one state-root-global `1..=i64::MAX` sequence plus generic `catalog_sequence_event_v2`; allocator/event/domain row commit atomically; exhaustion refuses | catalog | S21-02/04/11 |
 | D-READ-01 | one domain evidence each; handles held by `QueryReadViewV2` | search-plane/core | S21-05/06 |
 | D-QUERY-01 | explicit exact/lower-bound/capped/interrupted/approximate outcomes | contract/core | S21-06/07 |
@@ -27,7 +28,7 @@ full semantics.
 | D-EGRESS-01 | remote default-deny; query/source grants separate; complete profile mandatory | semantic/runtime | S21-08/13 |
 | D-PROC-01 | supervisor owns all work/guards; 125s hard deadline; exits 0/70/128+signal | runtime | S21-09/10 |
 | D-READY-01 | process readiness separate from repository/generation status | runtime/control | S21-10 |
-| D-ROOT-01 | state-root format 2; offline-only migration; manifest-last atomic cutover | runtime/migration | S21-11 |
+| D-ROOT-01 | state-root format 2; current-format offline backup/verify/restore-forward; legacy typed refusal and explicit producer rebuild; manifest-last atomic cutover | runtime/state custody | S21-11 |
 | D-XREPO-01 | protocol v2+contract digest handshake; breaking producer cutover | contract/deployment | S21-12 |
 | D-PROOF-01 | strict registered proof graph and exact source pair; required release daemon binary identity is shared, while code/process proofs may use distinct eligible hosts and deployment/activation/rollback share one operational host | CI/release | S21-13 |
 | D-PROOF-02 | source/source-pair domain digest plus manifest digest address indexed immutable receipt leaves; evidence/binaries are content-addressed; dependency edges reference exact archive leaves and never current aliases | CI/release | S21-00/13 |

@@ -1,112 +1,29 @@
 # quanta-index
 
-External search-plane for Semantica/Quanta indexing and serving.
+External search plane for Semantica/Quanta. Producers publish typed search
+records through `quanta-index-sdk`; this workspace owns indexing, generations,
+activation and lexical/semantic/hybrid serving over Unix sockets.
 
-> Current owner model (SPA-00 freeze plus Semantic Corpus V2): the producer
-> (`semantica-codegraph-v2`) mints search truth — `ChunkRecord`, `SymbolRecord`,
-> structural, dirty/runtime, and repo-map records — and, in the typed-only
-> cutover, must publish typed semantic-source replace/tombstone scopes or
-> intentionally empty semantic deltas. `quanta-index` validates those
-> sources, derives semantic vectors, and owns generation/readiness, fusion, and
-> lexical/semantic/hybrid serving. Typed semantic sources are the intended
-> sole live derivation input. The cutover removes
-> `QUANTA_INDEX_SEMANTIC_DERIVE_MODE` and chunk-text derivation fallback;
-> producers must supply typed semantic replacements/tombstones or an intentional
-> no-op. The current wire does not independently attest semantic coverage for
-> an empty list; producer and cross-repo proofs remain required.
-> `RawCodeFallback` is a producer-authored typed source, not permission to
-> derive vectors from legacy chunks. This dirty-tree cutover
-> is not yet a qualified runtime or cross-repo producer claim.
-> Semantic manifest format 11 and pre-seal contract format 3 reject
-> pre-cutover generations; they require a typed-source rebuild.
-> The retired `migrate-state` importer is unavailable. Serving boot refuses
-> legacy roots; recreate them from typed producer input. `backup-state`,
-> `restore-state`, and `verify-state` operate on current-format roots only.
-> The cross-repo boundary is typed contract DTOs plus the
-> `quanta-index-sdk` ingress facade over UDS transport.
+## Usage
 
-Current status (lexical + semantic/hybrid serving live on the current tree;
-live-network semantic proof and production ops hardening remain separate gates):
+- [Search CLI](crates/quanta-index-searchctl/README.md): query, diagnose and scrape the daemon.
+- [Code-search benchmark](tools/benchmark/CODE_SEARCH_RUNBOOK.md): live five-product execution and recorded re-scoring.
+- [Other benchmark profiles](tools/benchmark/README.md): corpus releases, Criterion, DSL gates and recording imports.
+- [State operations](docs/operator/state-cutover-runbook.md): verify, backup, restore and rebuild.
+- [Embedding provider](docs/potion-code-embedder.md): local model preparation.
 
-- shared contract crate with bundle/control/query DTOs (manual `Serialize` /
-  `Deserialize` impls, no proc-macro derives per workspace rule D18). Current
-  ingest batches require explicitly encoded clear/semantic fields, semantic
-  sources require explicit membership and optional-value fields, IPC errors
-  require `repair` (which may be null), and explanations require execution and
-  request identity. Hybrid seed candidates/contributions likewise encode
-  optional provenance and scores explicitly (including `null`); missing older
-  shapes are refused, not default-filled.
-- RepoMap publish/activate uses only source-digest-bound V2 mutation requests
-  and terminal receipts across SDK, IPC, ports, and store. Legacy opcodes,
-  nested V1 activation identity, and weak catalog projection metadata are
-  refused; old roots require producer-authoritative rebuild.
-- The SDK's semantic-source builder uses one `replace_semantic_scope` form
-  with an explicit cluster-membership vector (empty for non-cluster scopes);
-  the former three-argument compatibility overload is removed.
-- Semantic tombstones use typed semantic-owner scope only; path-scoped
-  tombstones are rejected. Cluster-membership reads return `Available` or
-  typed `Rejected`; the legacy-only `Unavailable` response is refused.
-- hexagonal core crate with port traits and validation services
-- search-plane authority/runtime path with manifest catalog, activation,
-  generation pin, readiness, delta-apply governance, and typed ingest/query
-  dispatch, owned by the persisted authority stores in
-  `crates/quanta-index-search-plane`; the historical standalone
-  `quanta-index-control` crate has been deleted
-- `quanta-index-lexical` Tantivy 0.22 adapter: per-query open via
-  `LexicalIndexOpenPort` (no generation read cache on the lexical path today)
-- `quanta-index-semantic` persisted, generation-scoped semantic adapter:
-  durable LanceDB build + direct open from sealed generations, with a bounded
-  open cache (`OPEN_CACHE_CAPACITY=8`) and no boot-time journal replay.
-  Legacy `state_root/semantic/journal.cbor` is a refusal marker, not migration input.
-  Logical corpus predicates are pushed into the storage query instead of
-  applied after an unfiltered ANN read.
-- `quanta-index-ipc` CBOR wire codec (16 MiB frame cap)
-- `searchd` binary that actually runs: blocking `std::thread` UDS accept loops
-  over `UnixListener` (query/control/ingest sockets), lexical + semantic +
-  repomap serving, SIGINT/SIGTERM draining shutdown. Tokio exists inside the
-  semantic LanceDB adapter seam, not as the UDS listener runtime.
+Build and start the daemon against an external current-format state root:
 
-Semantic Corpus V2 historical snapshot (HEAD `526349b`, 2026-09-16; not
-current-source qualification):
+```sh
+./scripts/cargow --lane daemon-lane build -p quanta-index-searchd-runtime --bin quanta-index-searchd --locked
+./scripts/cargow --lane daemon-lane run -p quanta-index-searchd-runtime --bin quanta-index-searchd --locked -- serve --state-root /absolute/state-root
+```
 
-- typed semantic-source wire covers symbol/module/cluster/document/test/raw-fallback corpora;
-- semantic storage v4 preserves owner/corpus/provenance metadata and exact owner-scoped replacement;
-- HybridSeed accepts typed per-corpus budgets, runs storage-prefiltered dense
-  lanes independently, collapses views to stable owner identity, and fuses
-  stable IDs without manufacturing lexical candidates;
-- SCV2 source-wire and persisted scenario rails exist under
-  `crates/quanta-index-contract/tests/scv2_01_semantic_source_wire.rs` and
-  `crates/quanta-index-semantic/tests/scv2_persisted_scenarios.rs`;
-- owner-local unit coverage is broad across contract/core/SDK/search-plane/
-  semantic crates; exact counts drift — use `just rust-profile test-fast` rather
-  than frozen README numbers;
-- this historical snapshot does not establish current typed-only runtime or
-  live card-required activation qualification;
-- Semantica remains responsible for graph facts, Stage3 graph expansion, and source hydration.
+Publish typed producer input through the SDK before querying an active generation.
+Legacy generations require a rebuild; see the state operations guide.
 
-Current verification posture (2026-09-16):
+## Build and verification
 
-- substrate rails that remain the merge gate:
-  - `just rust-profile verify-rust`
-  - `just rust-public-api`
-  - `just rust-cargo-modules`
-  - `just rust-hexagonal`
-  - `just rust-fuzz-smoke`
-  - `just rust-profile test-daemon`
-- these prove correctness of the current code substrate, not production ops readiness;
-- the Sep-16 bugbash is historical (`git show eff53181:docs/bugbash/sep-16/findings.md`);
-  use the [SEP-21 decision registry](docs/adr/SEP-21-DECISION-REGISTRY.md),
-  [current residual ledger](docs/plans/sep-21-search-plane-sota-hardening/tickets/FINAL-RESIDUAL-EXECUTION-PLAN.md),
-  live source and fresh receipts for production-readiness claims.
-
-Code-search benchmark and test-optimization work:
-
-- [Code-search benchmark runbook](tools/benchmark/CODE_SEARCH_RUNBOOK.md) gives the runnable commands, required external inputs, outputs, and claim boundaries for live pairs versus recorded five-product scoring.
-- [SEP-27 execution SSOT](docs/plans/sep-27-misc/tickets/INDEX.md) contains the current audit, structural implementation tickets, full retrieval acceptance contract, test-optimization invariants, measurement rules and external-input boundaries inline.
-- Frozen local contract/SDK proof and historical exploratory comparisons are not current-source, independent-gold quality or qualified speed evidence. The SSOT separates those scopes; retired packets are not live authorities.
-- Corpus checkouts, indexes, models, and raw results stay **outside** this repository. Do not infer current benchmark qualification from a package installation or a historical pair verdict.
-
-Build artifacts:
 
 - use `./scripts/cargow ...` for raw Cargo commands
 - use `just ...` for repo recipes
@@ -122,13 +39,13 @@ Recommended Rust profiles:
 - `just rust-profile dev-all-targets` — widest compile rail after shared-surface edits
 - `just rust-profile validate-shared-surface` — one test-profile compile plus bounded contract/core/sdk/search-plane validation
 - `just rust-profile test-fast` — default local test loop
-- `just rust-profile test-integration-fast` — 15-target bounded integration loop
+- `just rust-profile test-integration-fast` — bounded integration loop
 - `just rust-profile test-integration-storage` — text-authority shard persistence slice
-- `just rust-profile test-integration-semantic` — five Lance/DataFusion-backed semantic targets
+- `just rust-profile test-integration-semantic` — Lance/DataFusion-backed semantic targets
 - `just rust-profile test-integration` — complete fast + storage + semantic integration rail
-- `just rust-profile test-daemon-fast` — 9-source/1-binary daemon edit loop; excludes DSL cold-matrix truth
-- `just rust-profile test-daemon` — 30 runtime scenario sources plus DSL truth, linked as 3 binaries
-- `just rust-profile test-daemon-all` — 49 runtime scenario sources plus DSL truth, linked as 4 binaries
+- `just rust-profile test-daemon-fast` — bounded daemon edit loop; excludes DSL cold-matrix truth
+- `just rust-profile test-daemon` — runtime scenario suite plus DSL truth
+- `just rust-profile test-daemon-all` — extended runtime scenario suite plus DSL truth
 - `just rust-profile verify-rust` — standard merge gate
 - `just rust-profile verify-rust-heavy` — nightly/heavy correctness rail
 - `just rust-profile timings-fast` / `timings-daemon` — build-regression capture rails
@@ -164,75 +81,52 @@ The integration, CLI-smoke, and daemon recipes resolve target IDs from
 rails refuse to start while unrelated Cargo/rustc processes are active; set
 `QUANTA_INDEX_ALLOW_CONTENDED_TIMINGS=1` only for non-authoritative diagnosis.
 
-Repo layout:
+### Local resource options
 
-- `crates/quanta-index-contract`
-  - contract-only crate
-  - bundle DTOs
-  - query DTOs
-  - control-plane DTOs
-  - IPC envelopes
-- `crates/quanta-index-core`
-  - vendor-neutral port traits
-  - application validation services
-  - no `rusqlite`, no `tantivy`, no `lancedb`
-- `crates/quanta-index-search-plane`
-  - ingest/query/control authority
-  - generation/activation/readiness plumbing in persisted authority stores
-  - semantic/hybrid serving helpers
-- `crates/quanta-index-lexical`, `quanta-index-semantic`
-  - driven adapters; the lexical backend is Tantivy and the semantic backend is
-    LanceDB, each living inside its crate. Names stay purpose-driven so the
-    backend can swap without renaming.
-- `crates/quanta-index-ipc`
-  - IPC wire codec (CBOR framing via `ciborium`, 16 MiB cap, manual error
-    enum — no proc-macro derives)
-- `crates/quanta-index-searchd`
-  - composition root + process entry
-  - `searchd serve` binds the UDS, wires `DomainQueryEngine` to all adapters,
-    handles SIGINT/SIGTERM with drain semantics
+The wrapper serializes leaf build/test work using the shared cache-root slot.
+Inspect `wait_ns`/`held_ns` diagnostics for queue versus command time. These
+observations do not qualify benchmark-host idleness or performance.
 
-Current search-plane authority and residual work:
+| Variable | Default / usage |
+| --- | --- |
+| `CARGO_BUILD_JOBS` | 4 locally when unset; explicit values and Cargo `--jobs` keep precedence. `CI=true` leaves an unset budget unset. |
+| `QUANTA_INDEX_RESOURCE_ADMISSION` | `auto`: local admission, diagnostic bypass in CI; `1` enables in CI; `0` disables; other values refuse. |
+| `QUANTA_INDEX_RESOURCE_WAIT_SECONDS` | 300, positive integer; admission timeout exits 124. |
+| `QUANTA_INDEX_RESOURCE_TIMEOUT_SECONDS` | 7200, positive integer; command timeout exits 124. |
 
-- [accepted architecture decisions](docs/adr/README.md)
-- [current residual execution plan](docs/plans/sep-21-search-plane-sota-hardening/tickets/FINAL-RESIDUAL-EXECUTION-PLAN.md)
+Use one shared `QUANTA_INDEX_CACHE_ROOT` when coordinating checkout/lane work.
+Do not wrap a whole orchestrator in the leaf lock: nested wrapper calls acquire it.
+A quiet performance host and explicit bound-binary reuse still need their own
+admission. [Capture/resource decisions](docs/adr/SEP-27-004-benchmark-capture-and-resource-custody.md)
+own the guarantees; this section is operator usage.
 
-Producer integration points in `semantica-codegraph-v2`:
+## Source and architecture
 
-The current aggregate producer path prepares typed SearchPlane members before
-visibility and dispatches through aggregate custody. Ordinary late SearchPlane
-handoff and persisted V3 lexical replay are retired. Delta semantic publication
-still needs a product-authoritative prior semantic-state binding: the aggregate
-path does not write the V4 lexical outbox that the current prior-state resolver
-reads, so a delta requiring that state fails closed. Do not treat the cross-repo
-delta cutover as qualified until that binding and a paired restart test exist.
+| Package | Role |
+| --- | --- |
+| `quanta-index-contract` | Bundle, query, control and IPC DTOs |
+| `quanta-index-core` | Vendor-neutral ports and validation |
+| `quanta-index-search-plane` | Persisted ingest/query/control authority |
+| `quanta-index-lexical`, `quanta-index-semantic` | Tantivy and LanceDB adapters |
+| `quanta-index-ipc` | CBOR transport framing |
+| `quanta-index-searchd`, `quanta-index-searchd-runtime` | Composition and daemon executable |
+| `quanta-index-searchctl` | Operator CLI |
+| `quanta-index-sdk` | External producer/client facade |
 
-- prepare-side bundle registration:
-  - `packages/analysis/quanta-v2/crates/quanta-runtime/src/retrieval/port_impls/index_projection_writer/mod.rs`
-  - `commit_internal()` / `commit_internal_with_source_bound_dense_carry_forward_v1()`
-  - after `prepare_commit_publish_v1(...)`
-  - before `publish_prepared_commit_v1(...)`
-- finalize-side generation activation:
-  - `packages/analysis/quanta-v2/crates/quanta-runtime/src/retrieval/port_impls/index_projection_writer/commit_finalize.rs`
-  - after `publish_prepared_manifest_after_prepare_v1(...)`
-  - after `finalize_published_commit_receipt_v1(...)`
-- query-side IPC caller:
-  - `packages/analysis/codegraph-shared/codegraph_shared/infra/fluent_engine.py`
-  - `search_text_hits_v1`
-  - `search_symbol_hits_v1`
-  - `search_semantic_hits_v1`
-  - `search_hybrid_hits_v1`
+Accepted contracts are in [ADRs](docs/adr/README.md). Generated references:
+[DSL capabilities](docs/reference/dsl-capabilities.md) and
+[Sourcegraph filter coverage](docs/reference/sourcegraph-filter-parity.md).
 
-Non-goals in this Phase 1–3 cut:
+## Active work
 
-- no raw HIR/source ingestion (producer responsibility)
-- no HTTP transport (UDS only)
-- no producer-authored public vector publish path; semantic corpus is derived
-  inside `quanta-index` from producer-authored typed semantic sources; the
-  chunk-text derivation path is removed in the typed-only cutover
-- no `materialized` / `failed` catalog-state transitions yet (only `prepared`
-  and `active` are written; SSOT lifecycle is a Phase 3.5 follow-up)
-- no production observability exporter (tracing/metrics shipping) — Phase 4;
-  process-local query/embedding diagnostic stores exist for harness and bounded
-  in-process sampling only
-- no TLS/authz on UDS — Phase 4; UDS access controlled by filesystem perms
+- [Production/state/cross-repository residuals](docs/plans/sep-21-search-plane-sota-hardening/tickets/FINAL-RESIDUAL-EXECUTION-PLAN.md)
+- [Code-search engine and benchmark acceptance](docs/plans/sep-27-code-search-remediation/readme.md)
+- [Benchmark execution and measurement ledger](docs/plans/sep-27-misc/tickets/INDEX.md)
+- [Semantic ownership proof](docs/plans/may-25-search-owned-semantic-derivation/README.md)
+- [Search quality acceptance](docs/plans/jun-7-search-product-quality/tickets-wave2/INDEX.md)
+- [Test hardening acceptance](docs/plans/jul-15-sota-test-hardening/tickets/00-ticket-status-board.md)
+
+Completed tickets and historical reports are indexed for Git recovery in the
+[documentation archive](docs/ARCHIVE-INDEX.md) and [plan archive](docs/plans/ARCHIVE-INDEX.md).
+Use fresh source-bound results for verification; README command lists are not
+qualification evidence.

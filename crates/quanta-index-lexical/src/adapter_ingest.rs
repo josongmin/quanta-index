@@ -11,8 +11,8 @@ use crate::overlay_codec::{
     encode_repo_topic_batch,
 };
 use crate::sealed_generation::coverage::{
-    SOURCE_FILE_COVERAGE_FILE_NAME, apply_file_coverage, read_staged_coverage,
-    write_staged_coverage,
+    CoveragePlan, CoverageWriteBase, SOURCE_FILE_COVERAGE_FILE_NAME, plan_file_coverage,
+    read_staged_coverage, write_staged_coverage,
 };
 use crate::sealed_generation::{DiscardingVisitor, seal_generation, walk_sealed_generation};
 use crate::{GenKey, LexicalAdapter, op_mutates_index, op_writes_generation};
@@ -434,15 +434,17 @@ impl LexicalAdapter {
         batch: &SearchCorpusIngestBatch,
         candidate: &GenerationSnapshot,
         generation_dir: &std::path::Path,
-    ) -> Result<quanta_index_contract::FileCoverageSnapshot, CoreError> {
+    ) -> Result<CoveragePlan, CoreError> {
         // Derive the complete next admitted universe from a proved base before
         // any target writes. A missing base capability cannot become empty.
         batch
             .source_event
             .validate()
             .map_err(|error| CoreError::InvalidContract(error.to_string()))?;
-        let base_coverage = match batch.mode {
-            BatchIngestMode::ReplaceGeneration => std::collections::BTreeMap::new(),
+        let (base_coverage, base) = match batch.mode {
+            BatchIngestMode::ReplaceGeneration => {
+                (quanta_index_contract::FileCoverageSnapshot::new(), None)
+            }
             BatchIngestMode::Delta => {
                 let base = batch.base_generation.ok_or_else(|| {
                     CoreError::InvalidContract("lexical: coverage delta requires a base".into())
@@ -478,7 +480,17 @@ impl LexicalAdapter {
                     });
                 }
                 self.validate_inherited_candidate_ownership(&verified.index, batch)?;
-                verified.coverage.ok_or_else(|| CoreError::Typed { code: quanta_index_contract::SearchPlaneErrorCodeV2::SymbolCoverageUnavailable, message: "lexical: coverage delta requires a base with admitted file coverage; rebuild the generation".into() })?
+                let coverage = verified.coverage.ok_or_else(|| CoreError::Typed { code: quanta_index_contract::SearchPlaneErrorCodeV2::SymbolCoverageUnavailable, message: "lexical: coverage delta requires a base with admitted file coverage; rebuild the generation".into() })?;
+                let root = verified.manifest.source_coverage.ok_or_else(|| {
+                    CoreError::Storage("lexical: verified coverage has no root commitment".into())
+                })?;
+                (
+                    coverage,
+                    Some(CoverageWriteBase {
+                        directory: base_dir,
+                        root,
+                    }),
+                )
             }
         };
         let replacements: Vec<_> = batch
@@ -491,15 +503,17 @@ impl LexicalAdapter {
             .iter()
             .map(|scope| scope.file.clone())
             .collect();
-        let coverage = apply_file_coverage(
+        let coverage = plan_file_coverage(
             &base_coverage,
+            base,
             &replacements,
             &tombstones,
             &batch.clear_surfaces,
         )?;
         match read_staged_coverage(generation_dir, candidate)? {
             Some(staged)
-                if staged.publication != batch.source_event || staged.coverage != coverage =>
+                if staged.publication != batch.source_event
+                    || staged.coverage != *coverage.snapshot() =>
             {
                 return Err(CoreError::InvalidContract(
                     "lexical: target already belongs to a different source publication".into(),

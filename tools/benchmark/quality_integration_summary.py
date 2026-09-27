@@ -5,7 +5,7 @@ Aggregates the per-dimension search-quality rails into one integration summary
 *without erasing dimension boundaries*. Each dimension keeps its own claim type
 and an explicit blocking status. The canonical ``quality-full`` profile supplies
 the live family set, so the aggregate cannot silently omit a newly registered
-authority rail (per MEASUREMENT_MATRIX.md / NO-GO-RULES.md).
+authority rail (see docs/adr/JUN-08-001-verification-hellgate-and-benchmark-separation.md).
 
 This script is read-only over the per-dimension ``summary.json`` artifacts; it
 does not run rails itself (the Justfile recipe runs the live rails first).

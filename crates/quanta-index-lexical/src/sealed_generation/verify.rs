@@ -186,6 +186,13 @@ pub(crate) fn verify_source_coverage(
     committed: Option<&SealedArtifactCommitmentV1>,
 ) -> Result<Option<CoverageArtifact>, CoreError> {
     if let Some(artifact) = committed {
+        if artifact.bytes > super::coverage::MAX_COVERAGE_ROOT_BYTES_U64 {
+            return Err(crate::index_store::sidecar_corrupt(
+                generation_dir,
+                SOURCE_FILE_COVERAGE_FILE_NAME,
+                "coverage root exceeds its byte ceiling",
+            ));
+        }
         let path = generation_dir.join(SOURCE_FILE_COVERAGE_FILE_NAME);
         match std::fs::symlink_metadata(&path) {
             Ok(metadata) if metadata.is_file() => {}
@@ -219,7 +226,21 @@ pub(crate) fn verify_source_coverage(
             SOURCE_FILE_COVERAGE_FILE_NAME,
             "coverage exists without a manifest commitment",
         )),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            for entry in std::fs::read_dir(generation_dir)
+                .map_err(|error| CoreError::Storage(error.to_string()))?
+            {
+                let entry = entry.map_err(|error| CoreError::Storage(error.to_string()))?;
+                if super::coverage::is_coverage_page(&entry.file_name().to_string_lossy()) {
+                    return Err(crate::index_store::sidecar_corrupt(
+                        generation_dir,
+                        SOURCE_FILE_COVERAGE_FILE_NAME,
+                        "coverage page exists without a root commitment",
+                    ));
+                }
+            }
+            Ok(None)
+        }
         Err(error) => Err(CoreError::Storage(format!(
             "lexical: inspect source coverage under {}: {error}",
             generation_dir.display()

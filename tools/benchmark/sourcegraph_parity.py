@@ -16,7 +16,7 @@ straight from code:
      the DSL bench `SCENARIOS` table, and the pos/neg filter-execution tests in
      `e2e_filter_execution.rs`.
 
-`--write` regenerates `tools/benchmark/SOURCEGRAPH_PARITY.md`. `--check` fails
+`--write` regenerates `docs/reference/sourcegraph-filter-parity.md`. `--check` fails
 if any accepted `SgFilter` variant is neither execution-verified nor explicitly
 refused (i.e. "accepted but silently untested") — a CI-able guard against the
 comparison drifting back into parse-only claims.
@@ -48,7 +48,7 @@ RUNTIME_ROWS_TOML = (
     REPO_ROOT
     / "crates/quanta-index-searchd-runtime/tests/fixtures/lexical_corpus/runtime_rows.toml"
 )
-OUT_MD = REPO_ROOT / "tools/benchmark/SOURCEGRAPH_PARITY.md"
+OUT_MD = REPO_ROOT / "docs/reference/sourcegraph-filter-parity.md"
 
 # The one hand-maintained contract: SgFilter enum variant -> its query keyword.
 # `--check` flags any enum variant missing here, so drift is caught.
@@ -599,6 +599,36 @@ def _registry_variants(registry_body: str, table: str, row: str, enum: str, fiel
     return set(variants)
 
 
+def _predicate_families(core_body: str, variants: set[str]) -> dict[str, set[str]]:
+    match = re.search(
+        r"pub const fn family\(self\).*?match self \{(.*?)\n        \}", core_body, re.S
+    )
+    if not match or "/*" in match.group(1):
+        raise ValueError("cannot locate predicate family table")
+    body = match.group(1)
+    arm = re.compile(
+        r"((?:\s*(?:\|\s*)?Self::\w+)+)\s*=>\s*"
+        r"(?:LexicalPredicateFamilyV1::(ContentOrRepo|Symbol)|"
+        r"\{\s*LexicalPredicateFamilyV1::(ContentOrRepo|Symbol)\s*\})\s*,?"
+    )
+    families: dict[str, set[str]] = {"ContentOrRepo": set(), "Symbol": set()}
+    seen: set[str] = set()
+    end = 0
+    for row in arm.finditer(body):
+        if body[end : row.start()].strip():
+            raise ValueError("predicate family table contains unsupported syntax")
+        names = re.findall(r"Self::(\w+)", row.group(1))
+        if len(names) != len(set(names)) or seen.intersection(names):
+            raise ValueError("predicate family table contains duplicate variants")
+        family = row.group(2) or row.group(3)
+        families[family].update(names)
+        seen.update(names)
+        end = row.end()
+    if body[end:].strip() or seen != variants:
+        raise ValueError("predicate family table is incomplete or ambiguous")
+    return families
+
+
 def ours_predicates() -> tuple[list[str], list[str], list[str]]:
     core_body = read(CORE_PREDICATE_RS)
     registry_body = read(PREDICATE_REGISTRY_RS)
@@ -610,8 +640,9 @@ def ours_predicates() -> tuple[list[str], list[str], list[str]]:
     registered_aliases = _registry_variants(
         registry_body, "PREDICATE_ALIASES", "PredicateAliasSpec", "LexicalPredicateAliasV1", "alias"
     )
-    if canonical_variants - registry_variants != {"SymbolHasName"}:
-        raise ValueError("predicate registry omits a non-symbol core predicate")
+    families = _predicate_families(core_body, canonical_variants)
+    if registry_variants != families["ContentOrRepo"]:
+        raise ValueError("predicate registry disagrees with the content/repo family")
     if registry_variants - canonical_variants or registered_aliases != alias_variants:
         raise ValueError("predicate registry disagrees with core typed names")
     if set(canonical_names.values()) & set(alias_names.values()):
@@ -619,7 +650,7 @@ def ours_predicates() -> tuple[list[str], list[str], list[str]]:
     return (
         sorted(canonical_names[variant] for variant in registry_variants),
         sorted(alias_names[variant] for variant in registered_aliases),
-        [canonical_names["SymbolHasName"]],
+        sorted(canonical_names[variant] for variant in families["Symbol"]),
     )
 
 
@@ -657,7 +688,9 @@ def build_report(
         f"{exec_rows} `e2e_filter_execution` queries + {frontdoor_rows} shared "
         f"front-door queries + {runtime_rows} runtime rows + "
         f"{owner_local_demotion_hits} owner-local structural demotion witnesses). "
-        "Do not hand-edit; run `--write` to regenerate."
+        "Do not hand-edit; run `--write` to regenerate. "
+        "This is a source coverage inventory: generation/checking does not execute "
+        "those tests or establish a current-source passing receipt."
     )
     lines.append("")
     lines.append("## Accepted SgFilter surface — disposition")

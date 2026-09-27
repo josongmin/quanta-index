@@ -2967,6 +2967,15 @@ fn tantivy_executes_repo_has_content_predicate_under_or_and_not() -> TestResult 
         )
         .into());
     }
+    let mut manual_or = or_query;
+    manual_or.options.index_mode = Some(LqYesNoOnly::No);
+    let mut manual_or_ids: Vec<String> = searcher
+        .search(&manual_or, 10, &RequestBudgetV1::unbounded())?
+        .into_iter()
+        .map(|candidate| candidate.candidate_id)
+        .collect();
+    manual_or_ids.sort();
+    assert_eq!(manual_or_ids, or_ids, "index:no repo.has.content OR");
 
     let not_true_query = make_query(LqExpr::All(vec![
         LqExpr::Not(Box::new(LqExpr::Leaf(LqLeaf::Predicate {
@@ -2987,6 +2996,17 @@ fn tantivy_executes_repo_has_content_predicate_under_or_and_not() -> TestResult 
         )
         .into());
     }
+    let mut manual_not = not_true_query;
+    manual_not.options.index_mode = Some(LqYesNoOnly::No);
+    let manual_not_ids: Vec<String> = searcher
+        .search(&manual_not, 10, &RequestBudgetV1::unbounded())?
+        .into_iter()
+        .map(|candidate| candidate.candidate_id)
+        .collect();
+    assert_eq!(
+        manual_not_ids, not_true_ids,
+        "index:no repo.has.content NOT"
+    );
 
     // QI-BB-011: a keyword matches whole tokens of the shared normalizer, and
     // `shared_oracle_needle` is one token (`_` never splits), so the corpus
@@ -3134,6 +3154,15 @@ fn tantivy_executes_repo_has_file_predicate_under_or_and_not() -> TestResult {
         )
         .into());
     }
+    let mut manual_or = or_query;
+    manual_or.options.index_mode = Some(LqYesNoOnly::No);
+    let mut manual_or_ids: Vec<String> = searcher
+        .search(&manual_or, 10, &RequestBudgetV1::unbounded())?
+        .into_iter()
+        .map(|candidate| candidate.candidate_id)
+        .collect();
+    manual_or_ids.sort();
+    assert_eq!(manual_or_ids, or_ids, "index:no repo.has.file OR");
 
     let not_true_query = make_query(LqExpr::All(vec![
         LqExpr::Not(Box::new(LqExpr::Leaf(LqLeaf::Predicate {
@@ -3157,6 +3186,14 @@ fn tantivy_executes_repo_has_file_predicate_under_or_and_not() -> TestResult {
         )
         .into());
     }
+    let mut manual_not = not_true_query;
+    manual_not.options.index_mode = Some(LqYesNoOnly::No);
+    let manual_not_ids: Vec<String> = searcher
+        .search(&manual_not, 10, &RequestBudgetV1::unbounded())?
+        .into_iter()
+        .map(|candidate| candidate.candidate_id)
+        .collect();
+    assert_eq!(manual_not_ids, not_true_ids, "index:no repo.has.file NOT");
 
     // QI-BB-011: a keyword matches whole tokens of the shared normalizer, and
     // `shared_oracle_needle` is one token (`_` never splits), so the corpus
@@ -3748,25 +3785,70 @@ fn tantivy_executes_index_no_full_scan_with_scoped_content_predicate() -> TestRe
     adapter.build(&repo(), &revision(), generation(), &ops)?;
 
     let searcher = adapter.open(&repo(), &revision(), generation())?;
-    let mut query = make_query(LqExpr::Leaf(LqLeaf::Predicate {
-        name: "file.contains".to_string(),
-        args: vec![
-            LqPredicateArg::Filter {
-                name: "name".to_string(),
-                value: r"lib\.rs".to_string(),
-            },
-            LqPredicateArg::Keyword("needle".to_string()),
-        ],
-    }));
-    query.options.index_mode = Some(LqYesNoOnly::No);
+    for name_pattern in [r"lib\.rs", r"\blib\.rs\b"] {
+        let scoped = LqExpr::Leaf(LqLeaf::Predicate {
+            name: "file.contains".to_string(),
+            args: vec![
+                LqPredicateArg::Filter {
+                    name: "name".to_string(),
+                    value: name_pattern.to_string(),
+                },
+                LqPredicateArg::Keyword("needle".to_string()),
+            ],
+        });
+        for expr in [
+            scoped.clone(),
+            LqExpr::All(vec![
+                scoped.clone(),
+                LqExpr::Leaf(LqLeaf::Keyword("needle".into())),
+            ]),
+            LqExpr::Any(vec![
+                scoped.clone(),
+                LqExpr::Leaf(LqLeaf::Keyword("absent".into())),
+            ]),
+        ] {
+            let mut query = make_query(expr);
+            query.options.index_mode = Some(LqYesNoOnly::No);
 
-    let hits = searcher.search(&query, 10, &RequestBudgetV1::unbounded())?;
-    let ids: Vec<String> = hits.into_iter().map(|hit| hit.candidate_id).collect();
-    if ids != ["alpha".to_string()] {
-        return Err(format!(
-            "expected index:no scoped content predicate to match [alpha], got {ids:?}"
-        )
-        .into());
+            let hits = searcher.search(&query, 10, &RequestBudgetV1::unbounded())?;
+            let ids: Vec<String> = hits.into_iter().map(|hit| hit.candidate_id).collect();
+            if ids != ["alpha".to_string()] {
+                return Err(format!(
+                    "expected index:no scoped content predicate {name_pattern:?} to match [alpha], got {ids:?}"
+                )
+                .into());
+            }
+        }
+        let mut negated = make_query(LqExpr::Not(Box::new(scoped.clone())));
+        negated.options.index_mode = Some(LqYesNoOnly::No);
+        let negated_ids: std::collections::BTreeSet<String> = searcher
+            .search(&negated, 10, &RequestBudgetV1::unbounded())?
+            .into_iter()
+            .map(|hit| hit.candidate_id)
+            .collect();
+        if negated_ids != ["beta".to_string(), "gamma".to_string()].into() {
+            return Err(format!(
+                "index:no negated scoped content predicate {name_pattern:?} drifted: {negated_ids:?}"
+            )
+            .into());
+        }
+        let LqExpr::Leaf(leaf) = scoped else {
+            return Err("scoped predicate fixture lost its leaf shape".into());
+        };
+        let mut filtered = make_query(LqExpr::Empty);
+        filtered.options.index_mode = Some(LqYesNoOnly::No);
+        filtered.filters.push(LqFilter::Content { leaf });
+        let filtered_ids: Vec<String> = searcher
+            .search(&filtered, 10, &RequestBudgetV1::unbounded())?
+            .into_iter()
+            .map(|hit| hit.candidate_id)
+            .collect();
+        if filtered_ids != ["alpha".to_string()] {
+            return Err(format!(
+                "index:no content filter {name_pattern:?} drifted: {filtered_ids:?}"
+            )
+            .into());
+        }
     }
 
     Ok(())
@@ -3847,6 +3929,32 @@ fn tantivy_index_no_language_refuses_without_stored_authority() -> TestResult {
     assert!(
         matches!(&refusal, CoreError::NotImplemented(message) if message.contains("language filtering requires indexed execution")),
         "{refusal:?}"
+    );
+    let candidate_ids =
+        std::iter::once("rust-source".to_string()).collect::<std::collections::BTreeSet<_>>();
+    let admission_refusal = searcher
+        .admitted_candidates(
+            &scoped,
+            &QueryConstraintSetV1::unconstrained(),
+            &candidate_ids,
+            &RequestBudgetV1::unbounded(),
+        )
+        .expect_err("dense manual admission must refuse unsupported language authority");
+    assert!(
+        matches!(&admission_refusal, CoreError::NotImplemented(message) if message.contains("language filtering requires indexed execution")),
+        "{admission_refusal:?}"
+    );
+    let explanation_refusal = searcher
+        .explain_candidate(
+            &scoped,
+            &QueryConstraintSetV1::unconstrained(),
+            "rust-source",
+            &RequestBudgetV1::unbounded(),
+        )
+        .expect_err("manual explanation must refuse unsupported language authority");
+    assert!(
+        matches!(&explanation_refusal, CoreError::NotImplemented(message) if message.contains("language filtering requires indexed execution")),
+        "{explanation_refusal:?}"
     );
     let mut absent_scoped = make_query(LqExpr::Leaf(LqLeaf::Predicate {
         name: "file.contains".to_string(),

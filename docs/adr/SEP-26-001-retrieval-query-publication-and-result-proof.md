@@ -6,6 +6,11 @@ Decided: 2026-09-27
 
 Source campaign: RBR-02, RBR-04, RBR-05, RBR-06 and RBR-08
 
+The implemented code-search extensions (validated windows, canonical file
+coverage/event lineage, exact source identity and match witnesses) are owned by
+[SEP-27-003](SEP-27-003-code-search-source-and-preview-contract.md). That ADR
+consolidates completed L1–L5 records; ranking/default promotion remains separate.
+
 ## Context
 
 The retrieval benchmark previously mixed caller text, product-specific query syntax, published chunks, source symbols

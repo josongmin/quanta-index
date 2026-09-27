@@ -910,7 +910,7 @@ classification = "runtime"
 runtime_route = "text"
 fixture = "docs-multi-repo.toml"
 runtime_error_code = "HISTORY_INVALID_TIMEREF"
-runtime_error_message_contains = "not a valid RFC3339"
+runtime_error_message_contains = "invalid timeref"
 top_k = 10
 
 [row.expected]

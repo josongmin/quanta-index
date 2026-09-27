@@ -234,7 +234,7 @@ fn admit_content_predicate(
 ) -> Result<ContentScalarArg, CoreError> {
     let constraint = parse_content_predicate_constraint(args).map_err(predicate_error)?;
     if let Some(scope) = &constraint.path_scope {
-        admit_scope_regex(&scope.pattern)?;
+        admit_query_scope_regex(query, &scope.pattern, "file")?;
     }
     // Path discovery uses Standard options; the lowered result expression
     // additionally uses the caller's options in admit_predicate.

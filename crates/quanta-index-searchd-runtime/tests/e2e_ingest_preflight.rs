@@ -9,15 +9,13 @@
 //! directory). The same daemon then applies a well-formed batch, so the
 //! refusals cost it nothing.
 //!
-//! Raw IPC can send anything, so it drives the whole matrix: invalid
-//! mode/base pairings, a base that cannot precede its target, a delta on a
-//! base nothing ever sealed, an empty digest, a digest of the wrong shape,
-//! and a body that is not what its digest names. The SDK computes the digest
-//! itself and its typestate cannot express a mode/base mismatch, so its side
-//! of the matrix is what a producer can still get wrong: a delta on an
-//! unsealed base and a batch past the resource envelope, both typed with no
-//! record, plus the proof that what the SDK sends carries the canonical
-//! digest the receipt names.
+//! Raw IPC drives invalid mode/base pairings, a base that cannot precede
+//! its target, an unsealed delta base, invalid digests and a forged body.
+//! Invalid raw shapes and digests stop before the journal; mutable source
+//! preflight retains one prepared row so the original event can be retried.
+//! The SDK computes the digest and its typestate rules out mode/base
+//! mismatches. Its matrix covers unsealed base and resource refusals plus
+//! the canonical digest on a successful receipt.
 
 #![forbid(unsafe_code)]
 
@@ -40,7 +38,7 @@ use e2e_harness::E2eRuntime;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
-const SHAPE_INVALID: SearchPlaneErrorCodeV2 = SearchPlaneErrorCodeV2::SearchCorpusBatchShapeInvalid;
+const RAW_SHAPE_INVALID: SearchPlaneErrorCodeV2 = SearchPlaneErrorCodeV2::InvalidRequest;
 const DELTA_BASE_NOT_SEALED: SearchPlaneErrorCodeV2 =
     SearchPlaneErrorCodeV2::SearchCorpusDeltaBaseNotSealed;
 
@@ -124,15 +122,9 @@ fn refused_with_nothing_changed(
     Ok(())
 }
 
-/// Publish one batch the mutable preflight refuses and require the
-///
-/// typed refusal `expected` with exactly one new journal row and zero
-/// changed bytes (SEP-21 P02B: a frozen-policy refusal is itself the
-/// terminal record the retry replays).
-///
-/// The retry of the same batch answers the same typed refusal with no
-/// further row and no work.
-fn refused_with_one_frozen_row(
+/// Source preflight retains one prepared journal row so the same source
+/// event can be retried after its base or resource condition changes.
+fn refused_with_one_prepared_row(
     rt: &mut E2eRuntime,
     label: &str,
     batch: quanta_index_contract::SearchCorpusIngestBatch,
@@ -150,14 +142,14 @@ fn refused_with_one_frozen_row(
         .checked_add(1)
         .ok_or("idempotency row count overflow")?;
     if idempotency_rows(rt)? != expected_rows {
-        return Err(format!("{label}: a preflight refusal must freeze exactly one row").into());
+        return Err(format!("{label}: a preflight refusal must prepare exactly one row").into());
     }
     if durable_tree(rt)? != tree_before {
         return Err(format!("{label}: a refused batch changed bytes under the state root").into());
     }
     let replayed = rt.ingest_once(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch))?;
     if typed_code(&replayed) != Some(expected.as_wire_str()) {
-        return Err(format!("{label}: the retry must replay the refusal, got {replayed:?}").into());
+        return Err(format!("{label}: the unchanged retry must refuse, got {replayed:?}").into());
     }
     if idempotency_rows(rt)? != expected_rows {
         return Err(format!("{label}: a refused replay must add no row").into());
@@ -170,8 +162,8 @@ fn refused_with_one_frozen_row(
 
 /// Every refusal the raw socket can provoke: intrinsic (digest)
 ///
-/// refusals record nothing, mutable-preflight refusals freeze exactly
-/// one terminal row each, and no refusal changes a byte under the
+/// refusals record nothing, mutable source preflight retains one
+/// prepared row, and no refusal changes a byte under the
 /// state root; then a well-formed batch applies on the same daemon.
 #[test]
 fn every_preflight_refusal_over_raw_ipc_changes_nothing() -> TestResult {
@@ -186,20 +178,30 @@ fn every_preflight_refusal_over_raw_ipc_changes_nothing() -> TestResult {
     let mut replace_with_base = good.clone();
     replace_with_base.base_generation = Some(ManifestGeneration::new(0));
     rt.issue_fixture_source_event(&mut replace_with_base)?;
-    refused_with_one_frozen_row(&mut rt, "replace+base", replace_with_base, SHAPE_INVALID)?;
+    refused_with_nothing_changed(
+        &mut rt,
+        "replace+base",
+        replace_with_base,
+        RAW_SHAPE_INVALID,
+    )?;
 
     // Shape: Delta names no base.
     let mut delta_without_base = good.clone();
     delta_without_base.mode = BatchIngestMode::Delta;
     rt.issue_fixture_source_event(&mut delta_without_base)?;
-    refused_with_one_frozen_row(&mut rt, "delta-no-base", delta_without_base, SHAPE_INVALID)?;
+    refused_with_nothing_changed(
+        &mut rt,
+        "delta-no-base",
+        delta_without_base,
+        RAW_SHAPE_INVALID,
+    )?;
 
     // Shape: the base cannot precede its target.
     let mut base_not_older = good.clone();
     base_not_older.mode = BatchIngestMode::Delta;
     base_not_older.base_generation = Some(good.generation);
     rt.issue_fixture_source_event(&mut base_not_older)?;
-    refused_with_one_frozen_row(&mut rt, "base>=target", base_not_older, SHAPE_INVALID)?;
+    refused_with_nothing_changed(&mut rt, "base>=target", base_not_older, RAW_SHAPE_INVALID)?;
 
     // Cross-track preflight: a delta on a base nothing ever sealed.
     let mut unsealed_base = good.clone();
@@ -207,7 +209,7 @@ fn every_preflight_refusal_over_raw_ipc_changes_nothing() -> TestResult {
     unsealed_base.mode = BatchIngestMode::Delta;
     unsealed_base.base_generation = Some(good.generation);
     rt.issue_fixture_source_event(&mut unsealed_base)?;
-    refused_with_one_frozen_row(
+    refused_with_one_prepared_row(
         &mut rt,
         "unsealed-base",
         unsealed_base,
@@ -256,10 +258,11 @@ fn every_preflight_refusal_over_raw_ipc_changes_nothing() -> TestResult {
             return Err(format!("the well-formed batch must apply, got {applied:?}").into());
         }
     }
-    // Four frozen preflight refusals plus the one apply.
-    if idempotency_rows(&rt)? != 5 {
+    // One prepared source refusal plus the one apply. Invalid raw shapes
+    // and digests never enter the journal.
+    if idempotency_rows(&rt)? != 2 {
         return Err(format!(
-            "four frozen refusals and one apply must leave five rows, found {}",
+            "one prepared refusal and one apply must leave two rows, found {}",
             idempotency_rows(&rt)?
         )
         .into());
@@ -355,8 +358,8 @@ fn remote_code(error: &SdkError) -> Option<&str> {
 
 /// Through the SDK: a delta on an unsealed base and a batch past the
 ///
-/// resource envelope are typed refusals that each freeze exactly one
-/// terminal journal row (SEP-21 P02B); the batch that applies carries
+/// resource envelope are typed refusals that each retain one prepared
+/// journal row for retry; the batch that applies carries
 /// the canonical digest the receipt names.
 #[test]
 fn sdk_publishes_carry_the_canonical_digest_and_refusals_record_nothing() -> TestResult {
@@ -441,11 +444,11 @@ fn sdk_publishes_carry_the_canonical_digest_and_refusals_record_nothing() -> Tes
         .into());
     }
 
-    // Two preflight refusals: two frozen terminal rows, zero changed
+    // Two preflight refusals: two prepared retryable rows, zero changed
     // bytes.
     if idempotency_rows(&rt)? != rows_before.saturating_add(2) {
         return Err(format!(
-            "SDK refusals must freeze exactly one row each, found {}",
+            "SDK refusals must prepare exactly one row each, found {}",
             idempotency_rows(&rt)?
         )
         .into());

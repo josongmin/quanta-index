@@ -21,8 +21,8 @@ pub enum RegexErrorCode {
     /// The accompanying [`ForbiddenKind`] qualifier identifies which
     /// construct fired.
     ForbiddenSyntax,
-    /// A planning-time cap was exceeded (NFA state count, literal byte
-    /// budget, or candidate-set size).
+    /// A resource cap was exceeded (planning-state charge, compiled engine
+    /// bytes, literal bytes, or candidate-set size).
     ///
     /// The accompanying [`LimitDimension`] qualifier identifies which
     /// cap fired.
@@ -37,8 +37,7 @@ pub enum RegexErrorCode {
     /// candidates; verification stopped there and the caller names why.
     Interrupted,
     /// Internal failure during compilation or verification that doesn't
-    /// fit any of the above buckets (e.g. `regex::Regex::new` blew the
-    /// crate-internal size limit despite the planner-time estimator).
+    /// fit any of the above buckets. Engine size refusal is a resource cap.
     ExecutionInternal,
 }
 
@@ -113,8 +112,10 @@ impl<'de> serde::Deserialize<'de> for RegexErrorCode {
 /// [`RegexErrorCode::PlanLimitExceeded`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum LimitDimension {
-    /// Upper-bound NFA state count exceeded the `100_000` cap.
+    /// Structural planning charge exceeded the `100_000` cap.
     NfaStates,
+    /// The compiled engine exceeded its configured byte ceiling.
+    CompiledBytes,
     /// Extracted-literal byte budget exceeded the per-query cap.
     LiteralLen,
     /// Pre-verify candidate set exceeded the per-query cap.
@@ -127,6 +128,7 @@ impl LimitDimension {
     pub const fn as_code_str(self) -> &'static str {
         match self {
             Self::NfaStates => "regex-nfa-states",
+            Self::CompiledBytes => "regex-compiled-bytes",
             Self::LiteralLen => "regex-literal-len",
             Self::CandidateSet => "regex-candidate-set",
         }
@@ -137,6 +139,7 @@ impl LimitDimension {
     pub fn from_code_str(s: &str) -> Option<Self> {
         let v = match s {
             "regex-nfa-states" => Self::NfaStates,
+            "regex-compiled-bytes" => Self::CompiledBytes,
             "regex-literal-len" => Self::LiteralLen,
             "regex-candidate-set" => Self::CandidateSet,
             _ => return None,
@@ -343,6 +346,7 @@ mod tests {
 
     const ALL_DIMS: &[LimitDimension] = &[
         LimitDimension::NfaStates,
+        LimitDimension::CompiledBytes,
         LimitDimension::LiteralLen,
         LimitDimension::CandidateSet,
     ];
@@ -417,6 +421,21 @@ mod tests {
                 Err(e) => assert!(false, "deserialize failed for {c:?}: {e}"),
             }
         }
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "typed dimension wire roundtrips assert exact decoded qualifiers"
+    )]
+    fn dimension_serde_roundtrip_via_ciborium() -> Result<(), Box<dyn std::error::Error>> {
+        for dimension in ALL_DIMS {
+            let mut bytes = Vec::new();
+            ciborium::ser::into_writer(dimension, &mut bytes)?;
+            let decoded: LimitDimension = ciborium::de::from_reader(bytes.as_slice())?;
+            assert_eq!(decoded, *dimension);
+        }
+        Ok(())
     }
 
     #[test]

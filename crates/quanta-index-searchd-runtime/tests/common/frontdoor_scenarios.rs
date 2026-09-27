@@ -248,8 +248,8 @@ pub(super) const SDK_FRONTDOOR_SCENARIOS: &[SdkFrontdoorScenario] = &[
         query_text: "file:has.owner() shared_oracle_needle",
         expected: SdkFrontdoorExpectation::CandidateIds(&[
             "chunk-recency-a",
-            "chunk-recency-b",
             "chunk-recency-a-gate",
+            "chunk-recency-b",
         ]),
     },
     SdkFrontdoorScenario {
@@ -289,8 +289,8 @@ pub(super) const SDK_FRONTDOOR_SCENARIOS: &[SdkFrontdoorScenario] = &[
         query_text: "select:file.owners shared_oracle_needle",
         expected: SdkFrontdoorExpectation::CandidateIds(&[
             "chunk-recency-a",
-            "chunk-recency-b",
             "chunk-recency-a-gate",
+            "chunk-recency-b",
         ]),
     },
     SdkFrontdoorScenario {

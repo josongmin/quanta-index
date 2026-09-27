@@ -7,16 +7,16 @@ Category: benchmark inputs. Finding: F07; supports F02/F04 and G02.
 Existing release/binding and symbol-coverage helpers remain implemented; this
 status does not claim those owners are missing. The current benchmark overlay is
 not an independently audited gold/holdout release. Remaining input/acceptance
-boundary: [CS-INT-01](CS-INT-01-integration-and-qualification.md#current-remaining-work-audit--2026-09-27).
+boundary: [CS-INT-01](CS-INT-01-integration-and-qualification.md#remaining-work).
 
 ## Purpose and RCA
 
-The existing external regex recipe mistakes Python docstring examples for actual
-declarations and omits Rust `const fn` and TypeScript object methods. FastAPI's
-three example names have no real declarations in the 46 admitted Python files.
-Tokio `is_readable` and tRPC `encode` have legitimate alternative definitions.
-See [evidence](../evidence.md). This invalidates unqualified definition-quality
-interpretations, not the fact that those bytes are valid content-search targets.
+Independent definition gold must distinguish docstring examples from actual
+declarations and include valid alternatives such as Rust `const fn` and
+TypeScript object methods. Text occurrence remains a separate content-search
+oracle. The removed diagnostic bodies are recoverable through the
+[plan archive](../../ARCHIVE-INDEX.md); their old dataset counts are not release
+acceptance. Correct the oracle, then freeze fresh development/holdout inputs.
 
 No retrieval engine's output, including Quanta's symbol producer, is sufficient
 by itself to define gold for a comparison involving that engine.

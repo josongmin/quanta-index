@@ -23,6 +23,7 @@ use std::collections::BTreeSet;
 use std::error::Error;
 
 type TestResult = Result<(), Box<dyn Error>>;
+type ScopeExpectation<'a> = (&'a str, Option<&'a str>, &'a [&'a str], &'a [&'a str]);
 
 fn scope(
     owner: &str,
@@ -197,6 +198,10 @@ fn query(name: &str, value: &str, manual: bool, sensitive: bool) -> LqQuery {
     }
 }
 
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "fixed oracle assertions in a fallible fixture"
+)]
 fn check_exact_symbol_policy(manual: bool) -> TestResult {
     let (_dir, searcher) = fixture()?;
     let budget = RequestBudgetV1::unbounded();
@@ -272,6 +277,10 @@ fn l3_manual_exact_symbol_policy_preserves_overloads_and_source_owner() -> TestR
 }
 
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "fixed oracle assertions in a fallible fixture"
+)]
 fn l3_boolean_exact_names_use_symbol_fields_on_indexed_and_manual_routes() -> TestResult {
     let (_dir, searcher) = fixture()?;
     let local = query("symbol.local_name.exact", "Café", false, false).expr;
@@ -305,6 +314,10 @@ fn l3_boolean_exact_names_use_symbol_fields_on_indexed_and_manual_routes() -> Te
 }
 
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "fixed oracle assertions in a fallible fixture"
+)]
 fn l3_broad_symbol_and_content_policies_remain_independent() -> TestResult {
     let (_dir, searcher) = fixture()?;
     for manual in [false, true] {
@@ -332,6 +345,10 @@ fn l3_broad_symbol_and_content_policies_remain_independent() -> TestResult {
 }
 
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "fixed oracle assertions in a fallible fixture"
+)]
 fn l3_source_file_and_repo_projections_page_in_fixed_source_order() -> TestResult {
     for reverse in [false, true] {
         let mut scopes = vec![
@@ -433,6 +450,10 @@ fn l3_source_file_and_repo_projections_page_in_fixed_source_order() -> TestResul
 }
 
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "fixed oracle assertions in a fallible fixture"
+)]
 fn l3_repo_and_path_scope_precede_source_projection_and_paging() -> TestResult {
     use quanta_index_contract::ExactRepoRelativePathV1;
     let (_dir, searcher) = fixture_with_scopes(vec![
@@ -441,7 +462,7 @@ fn l3_repo_and_path_scope_precede_source_projection_and_paging() -> TestResult {
         scope("source-a", "other.rs", &[])?,
         scope("zero-symbols", "same.rs", &[])?,
     ])?;
-    let cases: [(&str, Option<&str>, &[&str], &[&str]); 7] = [
+    let cases: [ScopeExpectation<'_>; 7] = [
         ("source-a", None, &["other.rs", "same.rs"], &["other.rs"]),
         ("source-a", Some("same.rs"), &["same.rs"], &["same.rs"]),
         ("source-a", Some("missing.rs"), &[], &[]),

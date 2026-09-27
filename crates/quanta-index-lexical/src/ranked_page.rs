@@ -35,6 +35,10 @@ use tantivy::{DocAddress, DocId, Score, SegmentOrdinal, SegmentReader, TantivyEr
 
 use crate::budgeted_search::CollectionBudget;
 use crate::ranked_keys::{RankedKeyTables, SegmentKeys};
+use crate::schema::{
+    RANKED_CANDIDATE_ID_COLUMN, RANKED_END_LINE_COLUMN, RANKED_PATH_COLUMN,
+    RANKED_SOURCE_REPO_COLUMN, RANKED_START_LINE_COLUMN,
+};
 
 #[path = "ranked_rows.rs"]
 mod rows;
@@ -44,13 +48,6 @@ pub(crate) use rows::RankedRows;
 #[cfg(test)]
 #[path = "ranked_page_tests.rs"]
 mod tests;
-
-/// The fast columns every ranked row is keyed by.
-pub(crate) const RANKED_SOURCE_REPO_COLUMN: &str = "repo_id";
-pub(crate) const RANKED_PATH_COLUMN: &str = "repo_relative_path";
-pub(crate) const RANKED_CANDIDATE_ID_COLUMN: &str = "candidate_id";
-pub(crate) const RANKED_START_LINE_COLUMN: &str = "start_line";
-pub(crate) const RANKED_END_LINE_COLUMN: &str = "end_line";
 
 /// One row's owned order key.
 #[derive(Debug)]

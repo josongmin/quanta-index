@@ -459,12 +459,15 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
     fn preflight_batch(&self, batch: &SearchCorpusIngestBatch) -> Result<(), CoreError> {
         Self::validate_batch_shape_v1(batch)?;
         self.admit_resource_envelope(batch)?;
-        self.builder.preflight_batch(batch)?;
         if let Some(base_generation) = batch.base_generation
             && !self.can_recover_completed_target_v1(batch)?
         {
             self.preflight_delta_base_v1(batch, base_generation)?;
         }
+        // The cross-track sealed-base check owns the missing-base refusal.
+        // Do not let a track-local coverage read turn it into an incomplete
+        // identity error before the paired base has been admitted.
+        self.builder.preflight_batch(batch)?;
         Ok(())
     }
 
@@ -504,12 +507,12 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
 
         // Repeat immutable base/candidate ownership admission under this
         // operation's lock before reservation, provider calls or either builder.
-        self.builder.preflight_batch(batch)?;
         if let Some(base_generation) = batch.base_generation
             && !self.can_recover_completed_target_v1(batch)?
         {
             self.preflight_delta_base_v1(batch, base_generation)?;
         }
+        self.builder.preflight_batch(batch)?;
         if !batch.seal {
             let (lexical, semantic) = generation_pair_from_batch_v1(batch);
             ensure_generation_is_mutable_v1(

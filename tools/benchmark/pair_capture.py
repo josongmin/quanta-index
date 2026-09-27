@@ -17,6 +17,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+from corpus_release import require_complete_git
 from custody import custody
 from evidence import (
     EvidenceError,
@@ -182,6 +183,7 @@ def tree_files(root: Path) -> dict[str, RawFile]:
 def clone_corpus(source: Path, destination: Path, commit: str, timeout: int) -> None:
     """A self-contained Git clone, not forged HEAD metadata or shared objects."""
     evaluator.verify_repo(source, commit)
+    require_complete_git(source)
     execute(
         [
             "git",
@@ -229,6 +231,8 @@ def restore_corpus(bundle: Path, destination: Path, timeout: int = 300) -> None:
             timeout=timeout,
             log_dir=destination.parent / f".{destination.name}-restore-execution" / str(index),
         )
+
+    require_complete_git(destination)
 
 
 def owner_digests() -> dict[str, str]:
@@ -568,6 +572,7 @@ def capture(repo: Path, root: Path, registry: dict, spec_path: Path, timeout: in
         raise EvidenceError("pair spec, corpus, inputs and output must stay outside the checkout")
     output = Path(spec["output_root"]).resolve()
     require_disjoint_paths(root, output, Path(spec["repo"]))
+    require_complete_git(Path(spec["repo"]))
     _directories(root)
     return _capture_admitted(repo, root, registry, spec_path, timeout, original, spec, output)
 

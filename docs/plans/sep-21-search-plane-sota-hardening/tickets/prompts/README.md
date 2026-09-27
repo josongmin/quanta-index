@@ -3,8 +3,9 @@
 The former P00-P09 copy/paste prompts and common lane contract are in Git
 history. They described the initial implementation wave and are not current
 execution instructions. Use the live code, `tools/ci/proof-authority.toml`,
-`Justfile`, and [execution evidence](../EXECUTION-PROGRESS.md) to determine
-the present gate and source identity.
+`Justfile`, and [remaining status](../CURRENT-RESIDUAL-2026-09-26.md) to determine
+the required gate. Current source identity and execution come from the selected
+run; historical execution bodies are recoverable through the plan archive.
 
 - [Residual work](../FINAL-RESIDUAL-EXECUTION-PLAN.md): remaining evidence
   and source boundaries.

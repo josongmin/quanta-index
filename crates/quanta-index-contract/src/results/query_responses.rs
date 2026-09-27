@@ -2821,7 +2821,11 @@ mod tests {
             .expect("object")
             .remove("source_repo_id");
         assert!(serde_json::from_value::<FileOwnerProjectionRow>(missing).is_err());
-        let duplicated = format!("{{\"source_repo_id\":\"other\",{}", &raw[1..]);
+        let duplicated = format!(
+            "{{\"source_repo_id\":\"other\",{}",
+            raw.strip_prefix('{')
+                .expect("serialized object begins with '{'")
+        );
         assert!(serde_json::from_str::<FileOwnerProjectionRow>(&duplicated).is_err());
     }
 

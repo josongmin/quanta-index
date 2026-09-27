@@ -1512,3 +1512,130 @@ fn a_generation_that_indexed_nothing_seals_openable() -> TestResult {
     }
     Ok(())
 }
+
+#[test]
+fn coverage_pages_are_bound_at_both_doors_and_by_scrub() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().to_path_buf();
+    let adapter = LexicalAdapter::with_state_root(root.clone());
+    let generation = ManifestGeneration::new(1);
+    adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
+    let dir = generation_dir(&root, generation);
+    let page = std::fs::read_dir(&dir)?
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .find(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("source-file-coverage-page-")
+        })
+        .ok_or("missing committed coverage page")?
+        .path();
+    let original = std::fs::read(&page)?;
+    expect_admitted(&knock(&adapter, generation), "intact coverage page")?;
+    std::fs::remove_file(&page)?;
+    expect_refused(
+        &knock(&adapter, generation),
+        "missing coverage page",
+        "GENERATION_SIDECAR_CORRUPT",
+    )?;
+    std::fs::write(&page, &original)?;
+    let extra = dir.join("source-file-coverage-page-uncommitted.cbor");
+    std::fs::write(&extra, &original)?;
+    expect_refused(
+        &knock(&adapter, generation),
+        "uncommitted coverage page",
+        "GENERATION_SIDECAR_CORRUPT",
+    )?;
+    std::fs::remove_file(extra)?;
+    let mut flipped = original.clone();
+    let byte = flipped.last_mut().ok_or("empty coverage page")?;
+    *byte ^= 1;
+    std::fs::write(&page, flipped)?;
+    expect_refused(
+        &knock(&adapter, generation),
+        "changed coverage page",
+        "GENERATION_SIDECAR_CORRUPT",
+    )?;
+    let report = adapter.scrub(
+        &identity(generation),
+        None,
+        IntegrityScrubBudgetV1 {
+            max_bytes: u64::MAX,
+        },
+    )?;
+    if !matches!(report.outcome, IntegrityScrubOutcomeV1::Corrupt { .. }) {
+        return Err(format!("scrub missed changed coverage page: {report:?}").into());
+    }
+    std::fs::write(&page, original)?;
+    expect_refused(
+        &knock(&adapter, generation),
+        "coverage quarantine is durable",
+        "GENERATION_QUARANTINED",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn scrub_quarantines_a_tampered_coverage_root_before_page_expansion() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().to_path_buf();
+    let adapter = LexicalAdapter::with_state_root(root.clone());
+    let generation = ManifestGeneration::new(1);
+    adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
+    let path = generation_dir(&root, generation).join("source-file-coverage.cbor");
+    let original = std::fs::read(&path)?;
+    let mut changed = original.clone();
+    let last = changed.last_mut().ok_or("empty coverage root")?;
+    *last ^= 1;
+    std::fs::write(&path, changed)?;
+    expect_refused(
+        &knock(&adapter, generation),
+        "changed coverage root",
+        "GENERATION_SIDECAR_CORRUPT",
+    )?;
+    let report = adapter.scrub(
+        &identity(generation),
+        None,
+        IntegrityScrubBudgetV1 {
+            max_bytes: u64::MAX,
+        },
+    )?;
+    if !matches!(report.outcome, IntegrityScrubOutcomeV1::Corrupt { .. }) {
+        return Err(format!("scrub did not quarantine the coverage root: {report:?}").into());
+    }
+    std::fs::write(path, original)?;
+    expect_refused(
+        &knock(&adapter, generation),
+        "coverage-root quarantine is durable",
+        "GENERATION_QUARANTINED",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn format_eight_requires_explicit_rebuild() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().to_path_buf();
+    let adapter = LexicalAdapter::with_state_root(root.clone());
+    let generation = ManifestGeneration::new(1);
+    adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
+    let manifest = generation_dir(&root, generation).join(MANIFEST);
+    let raw = std::fs::read(&manifest)?;
+    let mut value: ciborium::Value = ciborium::from_reader(raw.as_slice())?;
+    let ciborium::Value::Array(fields) = &mut value else {
+        return Err("manifest is not an array".into());
+    };
+    let version = fields.first_mut().ok_or("missing manifest version")?;
+    *version = ciborium::Value::Integer(8.into());
+    let mut legacy = Vec::new();
+    ciborium::into_writer(&value, &mut legacy)?;
+    std::fs::write(manifest, legacy)?;
+    expect_refused(
+        &knock(&adapter, generation),
+        "format eight requires rebuild",
+        "GENERATION_MANIFEST_FORMAT_UNSUPPORTED",
+    )?;
+    Ok(())
+}

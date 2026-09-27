@@ -99,14 +99,15 @@ pub(crate) fn is_writer_lock_entry(file_name: &str) -> bool {
 /// corruption of, the base's committed bytes, which says nothing about
 /// the delta.
 pub(crate) fn is_seal_marker_entry(file_name: &str) -> bool {
-    matches!(
-        file_name,
-        LEXICAL_SEALED_IDENTITY_FILE_NAME
-            | LEXICAL_SEALED_MANIFEST_FILE_NAME
-            | LEXICAL_SCRUB_RECEIPT_FILE_NAME
-            | LEXICAL_QUARANTINE_RECEIPT_FILE_NAME
-            | crate::sealed_generation::coverage::SOURCE_FILE_COVERAGE_FILE_NAME
-    )
+    crate::sealed_generation::coverage::is_coverage_page(file_name)
+        || matches!(
+            file_name,
+            LEXICAL_SEALED_IDENTITY_FILE_NAME
+                | LEXICAL_SEALED_MANIFEST_FILE_NAME
+                | LEXICAL_SCRUB_RECEIPT_FILE_NAME
+                | LEXICAL_QUARANTINE_RECEIPT_FILE_NAME
+                | crate::sealed_generation::coverage::SOURCE_FILE_COVERAGE_FILE_NAME
+        )
 }
 
 /// Materializes one inherited entry: link the immutable ones, copy the rest.

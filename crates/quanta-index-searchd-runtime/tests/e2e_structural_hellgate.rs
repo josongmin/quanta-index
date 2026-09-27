@@ -122,8 +122,10 @@ fn boot_structural_file_predicate_fixture() -> AnyResult<E2eRuntime> {
     let mut rt = E2eRuntime::boot()?;
     let content = "fn main() {}";
     rt.ingest_text("repo-structural-hellgate", "src/lib.rs", content)?;
-    rt.ingest_structural_function_tree("src/lib.rs", content, "main")?;
-    let _generation = rt.seal()?;
+    let generation = rt.seal()?;
+    let tree = E2eRuntime::structural_function_tree_record("src/lib.rs", content, "main")?;
+    let batch = rt.structural_tree_batch("src/lib.rs", tree, generation)?;
+    rt.publish_structural_batch(batch)?;
     rt.activate_last_sealed_generation()?;
     Ok(rt.reopen())
 }
@@ -191,10 +193,11 @@ fn boot_symbol_projection_fixture() -> AnyResult<E2eRuntime> {
         semantic_source_scopes(&[chunk_a.clone(), chunk_b.clone()]),
     )?;
     let tree = function_tree(content, "ParityTypeSymbol")?;
+    let generation = rt.seal()?;
     rt.publish_structural_batch(StructuralIngestBatch {
         repo_id: rt.repo(),
         revision_id: rt.revision(),
-        generation: rt.current_generation(),
+        generation,
         base_generation: None,
         manifest_digest: "structural-symbol-hellgate-struct".to_string(),
         batch_digest: "structural-symbol-hellgate-struct-batch".to_string(),
@@ -216,7 +219,6 @@ fn boot_symbol_projection_fixture() -> AnyResult<E2eRuntime> {
         tombstone_scopes: Vec::new(),
         seal: false,
     })?;
-    let _generation = rt.seal()?;
     rt.activate_last_sealed_generation()?;
     Ok(rt.reopen())
 }

@@ -784,9 +784,9 @@ fn a_delta_refuses_to_build_on_a_shard_whose_digest_changed() -> TestResult {
     Ok(())
 }
 
-/// Canonical source publication refuses a partial unsealed batch before it
-/// creates an index or text-authority sidecar. A later sealed publication owns
-/// the complete generation and answers only its admitted files.
+// Canonical source publication refuses a partial unsealed batch before it
+// creates an index or text-authority sidecar. A later sealed publication owns
+// the complete generation and answers only its admitted files.
 #[test]
 fn an_unsealed_source_batch_cannot_leave_index_authority_skew() -> TestResult {
     let temp = tempfile::tempdir()?;

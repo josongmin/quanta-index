@@ -1,7 +1,7 @@
-//! Regex planner scaffold (ticket LXE-04).
+//! Regex planning and deployment-policy admission.
 //!
 //! Consumes a regex source string and produces a typed [`RegexPlan`] that
-//! the executor (follow-up integration pass) will route through
+//! the executor routes through
 //! `quanta_index_lq_regex::RegexExecutor` for verification. The planner is
 //! a pure function from `(source, options, policy)` to `Result<RegexPlan,
 //! RegexPlannerError>`; it owns no I/O, no candidate iteration, and no
@@ -40,7 +40,7 @@ pub enum RegexPlannerError {
     ///
     /// `estimated_states` is `0` when the upstream executor surfaced the
     /// cap exceed without returning the actual estimate (current
-    /// behaviour of `quanta_index_lq_regex::RegexExecutor::compile`).
+    /// behaviour of `quanta_index_lq_regex::RegexExecutor::prepare`).
     /// `budget` carries the planner's policy cap so explain-trace
     /// consumers can attribute the failure correctly.
     UnboundedCandidatePlan { estimated_states: u64, budget: u64 },
@@ -71,97 +71,30 @@ impl std::error::Error for RegexPlannerError {}
 /// Policy knobs for [`plan_regex`] and for the lexical adapter's regex
 /// execution gating.
 ///
-/// Default values produced by [`RegexPolicy::defaults`] are coupled to the
-/// upstream `quanta_index_lq_regex` constants (`MAX_NFA_STATES = 100_000`).
-/// Tightening `max_nfa_states` below the upstream constant is accepted by
-/// the planner surface but not enforced today, because
-/// `RegexExecutor::compile` does not return the estimated state count
-/// when it succeeds. The field is preserved for future enforcement and
-/// for error reporting on cap-exceed.
+/// The default planning-state budget equals the upstream `MAX_NFA_STATES`.
+/// Deployments can tighten it; a larger value cannot bypass the upstream cap.
+/// The gate runs on validated HIR before literal extraction or engine creation.
+/// This structural charge is not an aggregate physical heap bound.
 ///
-/// `trigram_missing_doc_threshold` is the corpus-size cap above which the
-/// lexical adapter's `compile_regex_content_leaf` surfaces
-/// `LEX_REGEX_TRIGRAM_INDEX_MISSING` instead of running a vendor full-scan
-/// regex. The lexical adapter does not yet maintain a trigram-postings
-/// field over indexed content; until that lands we honestly admit the gap
-/// above this threshold rather than silently running an O(corpus) regex
-/// on a large index.
+/// Candidate materialization is bounded by the canonical trigram cap and
+/// request execution budget. The generation's text authority owns trigram
+/// availability; it does not depend on a separate corpus-size threshold.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RegexPolicy {
     pub max_nfa_states: u64,
-    pub default_candidate_cap: u32,
     pub require_literal: bool,
-    pub trigram_missing_doc_threshold: u64,
 }
 
 impl RegexPolicy {
-    /// Sane defaults: 10k NFA states budget, 10k candidate cap, mandatory
-    /// literal NOT required (pure-wildcard patterns fall through to
-    /// verify-only execution downstream), and 10k corpus-size cap before
-    /// the trigram-missing typed error fires.
+    /// Defaults: upstream planning-state budget without requiring a literal.
+    /// Patterns without usable literals use bounded verification.
     #[must_use]
     pub const fn defaults() -> Self {
         Self {
-            max_nfa_states: 10_000,
-            default_candidate_cap: 10_000,
+            max_nfa_states: quanta_index_lq_regex::MAX_NFA_STATES,
             require_literal: false,
-            trigram_missing_doc_threshold: 10_000,
         }
     }
-}
-
-/// Reason a regex execution loop terminates before exhausting its input.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum EarlyStopReason {
-    /// The per-leaf candidate cap was hit and further candidates dropped.
-    CandidateCapHit,
-    /// The verification budget elapsed.
-    BudgetExhausted,
-    /// The pre-verify candidate set was empty.
-    EmptyResult,
-}
-
-/// Mutable accumulator the executor pass populates while iterating.
-///
-/// Frozen into [`RegexTrace`] via [`RegexTraceBuilder::build`] once a
-/// leaf finishes. The planner constructs an empty builder; the executor
-/// (follow-up integration pass) fills in counts and the optional
-/// early-stop reason.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct RegexTraceBuilder {
-    pub extracted_literals: Vec<Vec<u8>>,
-    pub prefilter_candidate_count: u64,
-    pub verify_count: u64,
-    pub early_stop_reason: Option<EarlyStopReason>,
-}
-
-impl RegexTraceBuilder {
-    /// Construct an empty builder. Equivalent to `Default::default()`
-    /// but call-site explicit.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Freeze the accumulator into an immutable [`RegexTrace`].
-    #[must_use]
-    pub fn build(self) -> RegexTrace {
-        RegexTrace {
-            extracted_literals: self.extracted_literals,
-            prefilter_candidate_count: self.prefilter_candidate_count,
-            verify_count: self.verify_count,
-            early_stop_reason: self.early_stop_reason,
-        }
-    }
-}
-
-/// Frozen trace value emitted by [`RegexTraceBuilder::build`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RegexTrace {
-    pub extracted_literals: Vec<Vec<u8>>,
-    pub prefilter_candidate_count: u64,
-    pub verify_count: u64,
-    pub early_stop_reason: Option<EarlyStopReason>,
 }
 
 /// Frozen plan for a single regex leaf.
@@ -172,8 +105,6 @@ pub struct RegexTrace {
 pub struct RegexPlan {
     source: String,
     literal_alternation: Vec<Vec<u8>>,
-    candidate_cap: u32,
-    trace: RegexTraceBuilder,
 }
 
 impl RegexPlan {
@@ -191,36 +122,17 @@ impl RegexPlan {
     pub fn literal_alternation(&self) -> &[Vec<u8>] {
         &self.literal_alternation
     }
-
-    /// Per-leaf candidate cap chosen by [`plan_regex`].
-    #[must_use]
-    pub const fn candidate_cap(&self) -> u32 {
-        self.candidate_cap
-    }
-
-    /// Borrow the in-progress trace builder.
-    #[must_use]
-    pub fn trace(&self) -> &RegexTraceBuilder {
-        &self.trace
-    }
-
-    /// Borrow the trace builder mutably so the executor pass can fill
-    /// candidate counts and early-stop reason.
-    pub fn trace_mut(&mut self) -> &mut RegexTraceBuilder {
-        &mut self.trace
-    }
 }
 
 /// Plan a regex leaf.
 ///
 /// Pipeline:
 ///
-/// 1. compile via `quanta_index_lq_regex::RegexExecutor::compile`, which
-///    runs the dialect filter, parses to HIR, and applies the upstream
-///    NFA-state budget;
-/// 2. extract mandatory byte literals via
-///    `RegexExecutor::prefilter_literal_alternation`;
-/// 3. enforce [`RegexPolicy::require_literal`] when set.
+/// 1. prepare validated HIR and apply the upstream planning-state budget;
+/// 2. enforce the deployment's tighter state budget before engine creation;
+/// 3. extract mandatory byte literals via
+///    `RegexCompilationPlan::prefilter_literal_alternation`;
+/// 4. enforce [`RegexPolicy::require_literal`] when set.
 ///
 /// Errors are typed against [`RegexPlannerError`]; no silent fallback.
 pub fn plan_regex(
@@ -228,24 +140,43 @@ pub fn plan_regex(
     _options: &LqOptions,
     policy: &RegexPolicy,
 ) -> Result<RegexPlan, RegexPlannerError> {
-    let executor = match RegexExecutor::compile(source) {
-        Ok(e) => e,
+    let prepared = match RegexExecutor::prepare(source) {
+        Ok(prepared) => prepared,
         Err(err) => return Err(map_compile_error(source, &err, policy)),
     };
-    let literals = match executor.prefilter_literal_alternation() {
+    let budget = policy
+        .max_nfa_states
+        .min(quanta_index_lq_regex::MAX_NFA_STATES);
+    if prepared.estimated_states() > budget {
+        return Err(RegexPlannerError::UnboundedCandidatePlan {
+            estimated_states: prepared.estimated_states(),
+            budget,
+        });
+    }
+    let mut literals = match prepared.prefilter_literal_alternation() {
         Ok(v) => v,
+        Err(err)
+            if err.code == RegexErrorCode::RegexPrefilterUnusable && !policy.require_literal =>
+        {
+            // An explicit empty alternation selects the bounded verify-only
+            // path. This preserves regex truth when no usable literal exists.
+            Vec::new()
+        }
         Err(err) => return Err(map_literal_error(source, &err, policy)),
     };
-    if literals.is_empty() && policy.require_literal {
-        return Err(RegexPlannerError::UnsupportedFeature {
-            feature: "regex_without_extractable_literal",
-        });
+    if literals.is_empty() || literals.iter().any(Vec::is_empty) {
+        if policy.require_literal {
+            return Err(RegexPlannerError::UnsupportedFeature {
+                feature: "regex_without_extractable_literal",
+            });
+        }
+        // An empty alternative gives no nonempty witness for every match.
+        // Normalize it to the explicit bounded verify-only plan.
+        literals.clear();
     }
     Ok(RegexPlan {
         source: source.to_owned(),
         literal_alternation: literals,
-        candidate_cap: policy.default_candidate_cap,
-        trace: RegexTraceBuilder::new(),
     })
 }
 
@@ -283,7 +214,9 @@ fn map_compile_error(
         RegexErrorCode::PlanLimitExceeded | RegexErrorCode::QueryTimeout => {
             RegexPlannerError::UnboundedCandidatePlan {
                 estimated_states: 0,
-                budget: policy.max_nfa_states,
+                budget: policy
+                    .max_nfa_states
+                    .min(quanta_index_lq_regex::MAX_NFA_STATES),
             }
         }
         RegexErrorCode::RegexPrefilterUnusable => RegexPlannerError::UnsupportedFeature {
@@ -320,5 +253,118 @@ const fn forbidden_label(kind: ForbiddenKind) -> &'static str {
         ForbiddenKind::NamedCaptureRef => "named_capture_ref",
         ForbiddenKind::InlineFlagMidPattern => "inline_flag_midpattern",
         ForbiddenKind::UnicodeClass => "unicode_class",
+    }
+}
+
+#[cfg(test)]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "planner regressions assert fixed policy boundaries and literal oracles"
+)]
+mod tests {
+    use super::{RegexPlannerError, RegexPolicy, plan_regex};
+    use quanta_index_contract::LqOptions;
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    #[test]
+    fn configured_state_limit_is_enforced_at_the_exact_boundary() -> TestResult {
+        let mut policy = RegexPolicy {
+            max_nfa_states: 6,
+            ..RegexPolicy::defaults()
+        };
+        // A six-byte literal has a fixed seven-state planning charge.
+        assert_eq!(
+            plan_regex("needle", &LqOptions::defaults(), &policy),
+            Err(RegexPlannerError::UnboundedCandidatePlan {
+                estimated_states: 7,
+                budget: 6,
+            })
+        );
+        policy.max_nfa_states = 7;
+        let admitted = plan_regex("needle", &LqOptions::defaults(), &policy)?;
+        assert_eq!(admitted.literal_alternation(), &[b"needle".to_vec()]);
+        Ok(())
+    }
+
+    #[test]
+    fn zero_state_policy_refuses_valid_input_without_hiding_syntax_errors() {
+        let policy = RegexPolicy {
+            max_nfa_states: 0,
+            ..RegexPolicy::defaults()
+        };
+        assert_eq!(
+            plan_regex("", &LqOptions::defaults(), &policy),
+            Err(RegexPlannerError::UnboundedCandidatePlan {
+                estimated_states: 1,
+                budget: 0,
+            })
+        );
+        assert!(matches!(
+            plan_regex("[", &LqOptions::defaults(), &policy),
+            Err(RegexPlannerError::ParseError { .. })
+        ));
+    }
+
+    #[test]
+    fn fallback_only_requires_literal_when_policy_explicitly_demands_it() -> TestResult {
+        let mut policy = RegexPolicy::defaults();
+        let admitted = plan_regex(".*", &LqOptions::defaults(), &policy)?;
+        assert!(admitted.literal_alternation().is_empty());
+        policy.require_literal = true;
+        assert_eq!(
+            plan_regex(".*", &LqOptions::defaults(), &policy),
+            Err(RegexPlannerError::UnsupportedFeature {
+                feature: "regex_without_extractable_literal",
+            })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn planning_extracts_literals_without_constructing_an_oversized_engine() -> TestResult {
+        let plan = plan_regex(
+            r"needle[\x{80}-\x{10FFFF}]{20000}",
+            &LqOptions::defaults(),
+            &RegexPolicy::defaults(),
+        )?;
+        assert_eq!(plan.literal_alternation(), &[b"needle".to_vec()]);
+        Ok(())
+    }
+
+    #[test]
+    fn strict_literal_policy_rejects_empty_match_alternatives() -> TestResult {
+        let policy = RegexPolicy {
+            require_literal: true,
+            ..RegexPolicy::defaults()
+        };
+        assert!(plan_regex("needle|other", &LqOptions::defaults(), &policy).is_ok());
+        for source in ["", "^$", r"\b", "(?:needle)?", "needle|"] {
+            assert_eq!(
+                plan_regex(source, &LqOptions::defaults(), &policy),
+                Err(RegexPlannerError::UnsupportedFeature {
+                    feature: "regex_without_extractable_literal",
+                }),
+                "zero-width alternative bypassed literal policy: {source:?}"
+            );
+            let admitted = plan_regex(source, &LqOptions::defaults(), &RegexPolicy::defaults())?;
+            assert!(admitted.literal_alternation().is_empty(), "{source:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn deployment_policy_cannot_raise_the_upstream_state_cap() {
+        let policy = RegexPolicy {
+            max_nfa_states: u64::MAX,
+            ..RegexPolicy::defaults()
+        };
+        assert_eq!(
+            plan_regex("a{1000000}", &LqOptions::defaults(), &policy),
+            Err(RegexPlannerError::UnboundedCandidatePlan {
+                estimated_states: 0,
+                budget: quanta_index_lq_regex::MAX_NFA_STATES,
+            })
+        );
     }
 }

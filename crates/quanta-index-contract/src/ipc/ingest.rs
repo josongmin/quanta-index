@@ -4902,6 +4902,10 @@ impl<'de> Deserialize<'de> for SearchPlaneIngestIpcResponseEnvelope {
     clippy::panic_in_result_fn,
     reason = "serde roundtrip tests use assert_eq! for compact proof"
 )]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "fixed nonempty fixture vectors intentionally fail the test if their shape changes"
+)]
 mod tests {
     use super::*;
     use crate::lex::{

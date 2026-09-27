@@ -118,6 +118,19 @@ impl CorpusPublicationState {
         Ok(())
     }
 
+    pub(super) fn declare_all_staged_symbols_complete(&mut self) -> Result<()> {
+        self.ensure_mutable()?;
+        ensure!(
+            self.semantic_fixture.is_none() && !self.files.is_empty(),
+            "symbol extraction completion requires staged source files"
+        );
+        for (key, file) in &mut self.files {
+            file.symbols_requested = true;
+            let _newly_dirty = self.dirty.insert(key.clone());
+        }
+        Ok(())
+    }
+
     pub(super) fn delete_path(&mut self, repo: RepoId, path: &str) -> Result<()> {
         self.ensure_mutable()?;
         ensure!(

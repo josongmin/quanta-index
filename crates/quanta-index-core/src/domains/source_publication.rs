@@ -139,7 +139,7 @@ mod tests {
             |value| value.target.track = SearchPlaneTrackKind::Semantic,
             |value| value.journal_key.repo_id = RepoId::new("other").expect("fixture repo"),
             |value| {
-                value.journal_key.revision_id = RevisionId::new("other").expect("fixture revision")
+                value.journal_key.revision_id = RevisionId::new("other").expect("fixture revision");
             },
             |value| value.journal_key.generation = ManifestGeneration::new(2),
             |value| value.journal_key.batch_digest = "not-canonical".into(),

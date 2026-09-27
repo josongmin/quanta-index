@@ -277,7 +277,39 @@ pub(crate) fn scrub_step(
 ) -> Result<IntegrityScrubReportV1, CoreError> {
     refuse_if_quarantined(generation_dir)?;
     let manifest = read_bound_manifest(generation_dir, &identity.manifest_digest)?;
-    let committed: Vec<SealedArtifactCommitmentV1> = manifest.all_commitments().cloned().collect();
+    let mut committed: Vec<SealedArtifactCommitmentV1> =
+        manifest.all_commitments().cloned().collect();
+    if let Some(root) = &manifest.source_coverage {
+        let pages = crate::sealed_generation::coverage::root_page_commitments(
+            generation_dir,
+            root,
+            identity,
+        );
+        match pages {
+            Ok(pages) => committed.extend(pages),
+            Err(
+                error @ CoreError::Typed {
+                    code:
+                        quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt
+                        | quanta_index_contract::SearchPlaneErrorCodeV2::IngestResourceBudgetExceeded,
+                    ..
+                },
+            ) => {
+                return Ok(IntegrityScrubReportV1 {
+                    generation: identity.clone(),
+                    files_verified: 0,
+                    bytes_read: 0,
+                    outcome: IntegrityScrubOutcomeV1::Corrupt {
+                        quarantined: quarantine_content_corrupt(
+                            generation_dir,
+                            format!("scrub cannot authenticate committed coverage root: {error}"),
+                        )?,
+                    },
+                });
+            }
+            Err(error) => return Err(error),
+        }
+    }
     if let Some(mismatch) = verify_committed_lengths(generation_dir, &committed)? {
         return Ok(IntegrityScrubReportV1 {
             generation: identity.clone(),

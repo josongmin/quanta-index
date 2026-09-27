@@ -132,6 +132,27 @@ def test_bundle_replay_restores_real_commit_and_executable_mode(tmp_path):
     assert (restored / "a.txt").read_bytes() != (source / "a.txt").read_bytes()
 
 
+def test_shallow_corpus_refuses_before_clone_and_incomplete_bundle_refuses_replay(tmp_path):
+    stage = fixture(tmp_path)
+    source = stage["repo"]
+    (source / "a.txt").write_text("a second commit\n")
+    subprocess.run(["git", "-C", str(source), "add", "a.txt"], check=True)
+    subprocess.run(["git", "-C", str(source), "commit", "-qm", "shallow fixture"], check=True)
+    commit = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
+    shallow = tmp_path / "shallow"
+    subprocess.run(["git", "clone", "--quiet", "--no-local", "--depth", "1",
+                    "--", str(source), str(shallow)], check=True)
+    clone = tmp_path / "refused-clone"
+    with pytest.raises(bridge.EvidenceError, match="complete Git history"):
+        bridge.clone_corpus(shallow, clone, commit, 60)
+    assert not clone.exists()
+    bundle = tmp_path / "shallow.bundle"
+    subprocess.run(["git", "-C", str(shallow), "bundle", "create", str(bundle), "HEAD"], check=True)
+    from producer_execution import ProducerExecutionError
+    with pytest.raises(ProducerExecutionError, match="necessary objects"):
+        bridge.restore_corpus(bundle, tmp_path / "restored", 60)
+
+
 def test_native_report_tamper_refuses_before_typed_scoring(tmp_path):
     stage = fixture(tmp_path)
     ref = stage["manifest"]["artifacts"]["reports"][0]

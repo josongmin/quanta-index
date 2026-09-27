@@ -1,35 +1,51 @@
 # CS-BENCH-02 — Native-derived normalization and evidence rejection
 
-Status: **OPEN — native/normalized rejection invariant FAILED** on the
-`b42a9b5d` dirty audit source. A fresh fixed-native cs probe reproduces F08;
-complete native-bound scoring/replay qualification is **NOT_RUN**.
+Status: **OPEN** for remaining entrypoint/format coverage and real capture
+qualification. Permanent enrolled cs/Sourcegraph/OpenGrok negative controls are
+implemented in the live owner test. Current live verification rejects fixed-native normalized
+path/hit mutations for cs, Sourcegraph and OpenGrok in a local fixture control.
+Complete native-bound scoring/replay qualification remains **NOT_RUN**.
 Category: benchmark evidence correctness. Finding: F08; supports F01/F09.
 
 ## Current remaining work
 
-`lexical_file_comparison.py::product_result` validates normalized task/query/gold,
-paths and hit-flag consistency, but does not load/rederive the retained native cs
-stdout. The new exploratory producer retains native bytes/digests; that does not
-bind them at the scorer. A fixed native `other.rs` response scores zero against
-`answer.rs` gold. Mutating only normalized `paths` and `file_hit_at_10` scores one
-while native bytes and `stdout_sha256` remain unchanged. The required refusal
-was not observed. The fixture uses an independent fixed native oracle and does
-not allege actual capture tampering.
+`lexical_file_comparison.py::product_result` is a normalized-row diagnostic
+scorer. It validates task/query/gold, paths and hit-flag consistency, but does
+not itself read native responses. Its historical F08 0→1 control establishes
+that boundary, not a current bypass of every guarded caller.
 
-Reproduction command, raw result and source identity:
-[CS-INT-01](CS-INT-01-integration-and-qualification.md#current-remaining-work-audit--2026-09-27).
-The Sourcegraph validator and exploratory live producer are partial implementation;
-do not label all native adapters absent or their exploratory output qualified.
-Complete one shared acquisition/replay decoder per admitted product, bind native
-bytes/request/source to evaluation, and execute the negative matrix below before
-using these rows for comparative quality qualification.
+Current `live_lexical_external.py::verify` reuses `_cs_response`,
+`_sourcegraph_response` and `_opengrok_response` to rederive rows from retained
+native bytes plus bound process/HTTP metadata, then compares canonical rows.
+`code_search_workflow.py` calls this verifier in capture and replay verification
+and binds native/component identities. Do not request this implementation again
+or describe raw retention as the only current protection.
+
+A current local control changed an empty-result task's normalized path/hit,
+recomputed the row digest and kept all native bytes unchanged. For each of cs,
+Sourcegraph and OpenGrok, the normalized scorer's total changed 1→2 while the
+live verifier refused with `external row disagrees with retained native
+response`. This verifies those fixture refusals; it does not establish actual
+backend indexed-universe attestation or full workflow execution. The control
+now runs in the permanent fake-service owner fixture selected by the existing
+benchmark-control rail. It is not a production capture.
+
+Remaining integration is in
+[CS-INT-01](CS-INT-01-integration-and-qualification.md#remaining-work).
+Historical reproduction bodies are recoverable through the
+[plan archive](../../ARCHIVE-INDEX.md).
+Inventory every admitted acquisition/scoring/replay entrypoint. Qualification
+must require native validation on each reachable path; the bare diagnostic
+scorer cannot independently attest native agreement. Retain the current live
+refusals in enrolled owner tests, complete the negative matrix below and
+audit Semble/Quanta under their existing native owners before qualification.
 
 ## Purpose and RCA
 
-An in-memory mutation of a cs capture preserved native stdout but replaced the
-normalized paths and hit flag. The normal comparator accepted the score changing
-from 19/20 to 20/20. It checked consistency between two derived fields, not their
-consistency with the native response. No actual capture tampering was observed.
+Normalized path/hit consistency cannot establish agreement with native results.
+The unchanged-native mutation is now refused by the current live verifier for
+the three local fixtures above. Remaining work is caller enforcement and
+coverage of each admitted format, not a reproduced live-workflow bypass.
 
 Owner: [lexical file comparison](../../../../tools/benchmark/retrieval/lexical_file_comparison.py),
 especially the product result reader. Existing native adapters include
@@ -96,8 +112,9 @@ semantic native-to-normalized consistency, not another run store or process owne
 
 ## Tests and DoD
 
-- [ ] Retain the cs 19→20 mutation as a regression: unchanged native bytes plus
-  altered normalized path/hit fields is rejected before scoring.
+- [ ] Enroll permanent cs/Sourcegraph/OpenGrok unchanged-native path/hit controls
+  that recompute normalized-row digests and still require native disagreement
+  refusal. Preserve a bare-scorer control to distinguish diagnostic scope.
 - [ ] Equivalent path/span/order/query-binding mutations are tested for each
   participating product, including legitimate zero-result complete responses.
 - [ ] HTTP-success/error-body, partial SSE, timeout, duplicate/missing task,

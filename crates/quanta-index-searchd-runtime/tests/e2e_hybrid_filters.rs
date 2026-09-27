@@ -307,9 +307,9 @@ fn verify_lang_and_type_filters(rt: &mut E2eRuntime, fixture: &Fixture) -> TestR
         return Err(format!("lang must be classed pushdown: {filters}").into());
     }
 
-    // `type:file` admits text chunks: all three; `type:symbol` admits
-    // symbol documents, of which the fixture has none — the dense chunks
-    // are not symbols and must not stand in.
+    // `type:file` admits text chunks: all three. This fixture did not
+    // request symbol extraction, so `type:symbol` cannot claim that the
+    // symbol universe is empty; strict coverage must refuse it.
     let page = hybrid_page(rt, "type:file needle")?;
     if as_set(&page.ids) != fixture.all() {
         return Err(format!("type:file must serve every chunk: {:?}", page.ids).into());
@@ -319,9 +319,9 @@ fn verify_lang_and_type_filters(rt: &mut E2eRuntime, fixture: &Fixture) -> TestR
     if filters != "hybrid.filters=exact:type:file" {
         return Err(format!("type must be classed exact: {filters}").into());
     }
-    let page = hybrid_page(rt, "type:symbol needle")?;
-    if !page.ids.is_empty() {
-        return Err(format!("type:symbol must not serve chunks: {:?}", page.ids).into());
+    let code = hybrid_refusal(rt, TextQuerySyntax::Sourcegraph, "type:symbol needle")?;
+    if code != SearchPlaneErrorCodeV2::SymbolCoverageIncomplete {
+        return Err(format!("type:symbol needs complete coverage, got {code}").into());
     }
     Ok(())
 }

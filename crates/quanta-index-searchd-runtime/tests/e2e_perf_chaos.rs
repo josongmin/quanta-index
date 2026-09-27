@@ -1131,7 +1131,7 @@ fn structural_missing_parse_tree_fails_typed_generation_not_ready() -> AnyResult
 }
 
 #[test]
-fn structural_orphan_chunk_authority_fails_typed_shard_unavailable() -> AnyResult<()> {
+fn structural_orphan_chunk_authority_is_refused_before_readiness() -> AnyResult<()> {
     let mut rt = E2eRuntime::boot()?;
     let path = "src/tree.rs";
     let content = "fn orphaned() {}";
@@ -1145,25 +1145,36 @@ fn structural_orphan_chunk_authority_fails_typed_shard_unavailable() -> AnyResul
     )?;
     rt.ingest_structural_function_tree(path, content, "orphaned")?;
     rt.delete_chunk_for_path(path)?;
-    _ = rt.seal_lexical_generation_for_tracks(&[
+    let refused = rt.seal_lexical_generation_for_tracks(&[
         SearchPlaneTrackKind::Lexical,
         SearchPlaneTrackKind::Structural,
-    ])?;
+    ]);
+    let error = refused
+        .err()
+        .ok_or_else(|| anyhow::anyhow!("orphan structural tree unexpectedly published"))?;
+    let message = format!("{error:#}");
+    if !message.contains("STR_PARSE_TREE_DECODE_FAIL")
+        || !message.contains("reason=source_chunk_missing")
+    {
+        return Err(anyhow::anyhow!(
+            "orphan structural tree refusal had unexpected error: {message}"
+        ));
+    }
 
     let result = rt.query_structural(TextQuerySyntax::Native, "match { :[x] }", 10);
     let error = result
         .typed_error
-        .ok_or_else(|| anyhow::anyhow!("expected typed structural shard-unavailable error"))?;
-    if error.code.as_str() != "STR_SHARD_UNAVAILABLE" {
+        .ok_or_else(|| anyhow::anyhow!("expected typed structural not-ready error"))?;
+    if error.code.as_str() != "STR_GENERATION_NOT_READY" {
         return Err(anyhow::anyhow!(
-            "expected STR_SHARD_UNAVAILABLE, got {}",
+            "expected STR_GENERATION_NOT_READY, got {}",
             error.code
         ));
     }
     assert_closed_metric_suffix(
         &rt,
-        &["lq_query_intake_total", "lq_typed_error_unavailable_total"],
-        &["lq_query_intake_total", "lq_typed_error_unavailable_total"],
+        &["lq_query_intake_total", "lq_typed_error_not_ready_total"],
+        &["lq_query_intake_total", "lq_typed_error_not_ready_total"],
         &["match", "tree.rs"],
     )
 }

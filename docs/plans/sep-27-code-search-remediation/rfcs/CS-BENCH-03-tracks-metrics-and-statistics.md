@@ -9,15 +9,15 @@ Current `lexical_file_comparison` reports hit rate and macro file recall
 separately. This does not establish native-derived result authority, independent
 gold or equivalent work. Close BENCH-02 before qualification scoring; then run
 the declared track units, statistical admission and ablation. Latest boundary:
-[CS-INT-01](CS-INT-01-integration-and-qualification.md#current-remaining-work-audit--2026-09-27).
+[CS-INT-01](CS-INT-01-integration-and-qualification.md#remaining-work).
 
 ## Purpose
 
 Expose developer-visible outcomes and engine diagnostics without mixing units
 or turning an observed native order into a relevance ranking. A chunk top-10, ten
 distinct files, a definition and a returned context window are not interchangeable.
-The historical 200-query run is diagnostic; corrected independent labels and
-equivalent work are needed for stronger comparative claims.
+Independent labels, declared units and equivalent work are required before
+comparative quality/statistical admission.
 
 Keep metric mathematics in the existing
 [retrieval evaluator](../../../../tools/benchmark/retrieval/evaluator.py) and

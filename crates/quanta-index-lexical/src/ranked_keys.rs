@@ -10,9 +10,7 @@ use tantivy::SegmentId;
 use tantivy::SegmentReader;
 use tantivy::columnar::StrColumn;
 
-use crate::ranked_page::{
-    RANKED_CANDIDATE_ID_COLUMN, RANKED_PATH_COLUMN, RANKED_SOURCE_REPO_COLUMN,
-};
+use crate::schema::{RANKED_CANDIDATE_ID_COLUMN, RANKED_PATH_COLUMN, RANKED_SOURCE_REPO_COLUMN};
 
 const MAGIC: &[u8; 8] = b"QIRKEY01";
 const COLUMNS: [&str; 3] = [

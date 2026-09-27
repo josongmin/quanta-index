@@ -31,6 +31,28 @@ synchronous ports. Vendor types and layout knowledge do not escape the adapter.
 Supply-chain and build-cost exceptions are explicit, named and scoped. They do
 not relax deny-by-default policy for unrelated dependencies.
 
+### Producer and derivation boundary
+
+Producers publish typed semantic-source replacement/tombstone scopes, including
+explicit `RawCodeFallback` when chosen. `semantic_derive.rs` consumes only those
+sources and derives vectors in bounded windows under the search-owned model
+contract. `ChunkRecord.text` remains lexical text; it is not an implicit dense
+fallback. The retired derive-mode selector, chunk-text/subscriber worker design
+and public producer-authored vector ingress are not alternative live paths.
+
+Semantic and hybrid callers send text. Query embedding and admitted corpus
+vectors must agree on the selected generation's provider/model/revision/dimension
+contract. Typed semantic ownership is not a universal `embedding_id == chunk_id`
+rule; owner/corpus identity follows the typed source contract. An empty semantic
+source list is a no-op, not independent evidence of complete producer coverage.
+Typed producer coverage, prior-state binding and paired restart proof remain
+separate cross-repository acceptance.
+
+The superseded May worker/job-state/render-policy structs were proposals;
+removing their tickets does not assert those proposed APIs were implemented.
+Open provider, observability and proof work remains in the semantic residual
+ledger. Model or dimension changes require coordinated generation rebuild.
+
 ### Durable authority
 
 Semantic data is generation-scoped under the semantic state root. Each sealed
@@ -62,6 +84,20 @@ Any required conversion is an offline state-root operation governed by
 the old root, build and scrub a current staging root, publish its manifest last
 and cut over atomically. The legacy journal is never a second live writer,
 serve authority or silent fallback.
+
+The current workflow implements no legacy converter. Retained legacy data needs
+an explicit producer rebuild and retention decision under
+[SEP-27-005](SEP-27-005-catalog-recovery-supervision-and-proof-custody.md).
+
+### Query model and score authority
+
+Query embedding and the selected generation must agree on admitted model,
+revision and dimensions. Preserve typed provider-unavailable/model-mismatch
+ordering and refuse invalid input; no dimension-only identity guess. Reject
+nonfinite native cosine distance before ranked-score construction. Hybrid
+execution and contribution truth follow
+[SEP-26-001](SEP-26-001-retrieval-query-publication-and-result-proof.md), not the
+historical lexical-scoped/RRF description from the June seam audit.
 
 ## Rejected alternatives
 

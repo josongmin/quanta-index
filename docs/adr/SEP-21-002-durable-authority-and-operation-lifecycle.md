@@ -72,39 +72,34 @@ deadline, cancellation, busy and provider transport failures are not terminally 
 
 ## Sequence, retention and recovery
 
-- terminal sequence is positive and unique in one state-root-global stream identified by the root UUID. Its exact
-  issued domain is `1..=i64::MAX`, matching SQLite `INTEGER`. Issuing `i64::MAX` atomically changes the allocator to
-  explicit exhausted state; every later allocation refuses `SEQUENCE_EXHAUSTED` without wrapping, mutation or a new
-  event;
-- `catalog_sequence_v2(id = 1, next)` is the sole allocator. Every terminal operation result and every durable
-  domain event allocates from it inside the same SQLite transaction that inserts `catalog_sequence_event_v2` and
-  its domain row. The allocator row is exactly
-  `(id INTEGER PRIMARY KEY CHECK(id = 1), next INTEGER NULL, exhausted INTEGER NOT NULL CHECK(exhausted IN (0,1)),
-  row_digest BLOB NOT NULL CHECK(length(row_digest) = 32), CHECK((exhausted = 0 AND next BETWEEN 1 AND
-  9223372036854775807) OR (exhausted = 1 AND next IS NULL)))`. The event row is exactly
-  `(sequence INTEGER PRIMARY KEY CHECK(sequence BETWEEN 1 AND 9223372036854775807), event_kind INTEGER NOT NULL
-  CHECK(event_kind BETWEEN 1 AND 9), identity_digest BLOB NOT NULL CHECK(length(identity_digest) = 32),
-  payload_digest BLOB NOT NULL CHECK(length(payload_digest) = 32), event_commitment BLOB NOT NULL
-  CHECK(length(event_commitment) = 32), row_digest BLOB NOT NULL CHECK(length(row_digest) = 32))`;
-- event kind is closed: `1 operation_committed`, `2 operation_refused`, `3 operation_aborted`, `4 candidate_sealed`,
-  `5 activation`, `6 rollback`, `7 invalidation`, `8 quarantine_record`, `9 quarantine_discard`;
-- `CatalogSequenceEventCommitmentV2` hashes domain `quanta-index/catalog-sequence-event/v2` over canonical CBOR map
-  `{0: 2, 1: event_kind, 2: identity_digest, 3: payload_digest}`. The row digest hashes domain
-  `quanta-index/catalog-sequence-row/v2` over canonical CBOR map
-  `{0: 2, 1: sequence, 2: event_commitment}`. The allocator row digest hashes domain
-  `quanta-index/catalog-sequence-allocator/v2` over canonical CBOR map
-  `{0: 2, 1: 1, 2: next-or-null, 3: exhausted-bool}`. All use the SEP-21 general digest framing;
-- there is no per-repository, per-plane or per-operation stream. Open/restore derives allocator state only from the
-  generic ledger: empty requires `(next=1, exhausted=0)`; non-empty max below `i64::MAX` requires
-  `(next=max+1, exhausted=0)`; max equal to `i64::MAX` requires `(next=NULL, exhausted=1)`.
-  It then verifies that every generic event has exactly one kind-appropriate domain row and every sequenced domain
-  row has the matching generic event kind/identity/payload/commitment. Domain-table maxima never advance or repair
-  the allocator; missing, duplicate or mismatched pairs are corruption and fail closed;
-- initial `replay_floor` is 1;
-- committed/refused terminal records are retained for the state-root lifetime;
-- online receipt GC is forbidden;
-- replay-floor increase requires an offline migration plus producer cutoff receipt;
-- stale fence owners cannot commit after ownership replacement.
+The current persistence layout, exact digest domains and closed event codes are
+owned by [the catalog sequence owner](../../crates/quanta-index-catalog/src/sequence.rs),
+its enum/DDL parity and installed-schema verifier. The initial ADR's hand-written
+DDL/digest layout and root-lifetime-only retention rule are superseded by the
+completed [SEP-27-005](SEP-27-005-catalog-recovery-supervision-and-proof-custody.md)
+contract; they are not an alternate decoder or migration target.
+
+- Terminal sequences are positive and unique in one state-root-global stream,
+  with issued domain `1..=i64::MAX`. Exhaustion refuses without wrapping,
+  operation mutation or a new event.
+- `catalog_sequence_v2` owns event sequencing. Event and domain writes allocate
+  in the same transaction. This is distinct from the root-global positive fence
+  allocator, which owns claim/prepare/lease fencing, not event numbers.
+- `SequenceEventKindV1` currently admits 1..12: committed, refused, aborted,
+  candidate seal, activation, rollback, retry supersession, quarantine record,
+  quarantine discard, RepoMap invalidation, candidate quarantine and generation
+  GC invalidation. Schema/enum parity is checked; old installed definitions refuse.
+- Startup reconciles the allocator from the generic ledger before allocating
+  recovery events. The contiguous ledger and domain references are verified
+  both ways for exact kind/identity/payload/commitment/state. Missing, duplicate
+  or mismatched references refuse; startup failure rolls back recovery writes.
+- Replay returns exact retained terminal bytes. Generation GC may remove journal
+  rows only with target-bound invalidation and the transactionally retained,
+  self-digested GC-floor record checked in both directions. Retry supersession
+  does not raise that floor; a retired retry cannot silently become fresh.
+- Stale owners cannot commit after ownership replacement. Fence history survives
+  release/recovery within the root; restored older-root/external fencing remains
+  a separate operational boundary.
 
 ## Quarantine crash protocol
 

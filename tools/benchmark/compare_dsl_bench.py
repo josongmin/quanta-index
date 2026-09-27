@@ -4,7 +4,7 @@
 Layer-3 (query latency) regression gate for the DSL-benchmarking model in
 ``docs/adr/JUN-08-001-verification-hellgate-and-benchmark-separation.md``.
 Reads two
-``BenchArtifactV1`` JSON artifacts (schema 2; see ``tools/benchmark/README.md``
+``BenchArtifactV1`` JSON artifacts (schema 2; see ``docs/adr/JUN-08-001-verification-hellgate-and-benchmark-separation.md``
 and ``crates/quanta-index-searchd-harness/src/artifact.rs``): one baseline
 (checked into ``tools/benchmark/baselines/``) and one current run (produced by
 ``dsl_warm_matrix`` for warm, or by ``run_dsl_cold_matrix.py`` for cold).

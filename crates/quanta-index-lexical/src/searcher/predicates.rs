@@ -389,12 +389,12 @@ impl TantivySearcher {
         // typed query error, not a silent empty result.
         //
         // We compile directly via `RegexExecutor::compile` (which applies the
-        // upstream fixed NFA-state ceiling) rather than `crate::regex::plan_regex`:
+        // upstream structural charge and engine byte ceilings) rather than
+        // `crate::regex::plan_regex`:
         // `plan_regex` exists to drive the trigram pre-filter over the indexed
-        // content corpus (`require_literal`, candidate caps), none of which apply
-        // when we verify a handful of in-memory description strings. The RE2
-        // engine is linear-time with no backtracking, so the bounded compile is
-        // the only cost and the fixed ceiling is sufficient here.
+        // content corpus and enforces its literal policy. Description matching
+        // verifies verbatim metadata without the content trigram prefilter.
+        // These compile gates do not establish aggregate heap admission.
         let executor = RegexExecutor::compile(&arg.pattern).map_err(|err| CoreError::Typed {
             code: crate::query_errors::regex_wire_code(err.code),
             message: format!(

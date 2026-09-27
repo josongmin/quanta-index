@@ -164,11 +164,11 @@ impl TantivySearcher {
         let authority = self.text_authority(TextAuthorityFeature::RegexTrigram)?;
         let plan = crate::regex::plan_regex(&normalized_source, options, &self.regex_policy)
             .map_err(map_regex_plan_error)?;
-        let executor = RegexExecutor::compile(&normalized_source).map_err(|err| {
-            CoreError::InvalidContract(format!(
-                "lexical: regex plan/verify mismatch for {source:?}: {err}"
-            ))
-        })?;
+        let executor =
+            RegexExecutor::compile(&normalized_source).map_err(|err| CoreError::Typed {
+                code: crate::query_errors::regex_wire_code(err.code),
+                message: format!("lexical: regex execution compile for {source:?}: {err}"),
+            })?;
         let folded = !Self::is_case_sensitive(options);
         let trigram_index = authority.trigram_index(folded);
         // The planner hands back an alternation, not a conjunction: a match
@@ -588,6 +588,10 @@ mod l4_verify_only_candidate_bounds {
     use std::cell::Cell;
 
     #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "fixed regression fixture assertions"
+    )]
     fn fallback_preserves_the_candidate_cap_and_checks_cancellation_before_enumeration()
     -> Result<(), CoreError> {
         let max = u64::try_from(MAX_CANDIDATE_PRE_VERIFY)

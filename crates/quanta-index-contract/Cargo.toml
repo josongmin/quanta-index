@@ -13,6 +13,7 @@ path = "src/lib.rs"
 
 [dependencies]
 ciborium = { workspace = true }
+imbl = { workspace = true }
 quanta-index-contract-base = { version = "0.1.0", path = "../quanta-index-contract-base" }
 quanta-index-lq-norm = { version = "0.1.0", path = "../quanta-index-lq-norm" }
 serde = { workspace = true }

@@ -182,8 +182,20 @@ impl SelectedPreviewContext<'_> {
                 return Ok(());
             }
         };
-        let executor = RegexExecutor::compile_prepared(plan)
-            .map_err(|error| integrity(&format!("prepared regex failed to compile: {error}")))?;
+        let executor = match RegexExecutor::compile_prepared(plan) {
+            Ok(executor) => executor,
+            Err(error)
+                if error.code == quanta_index_lq_regex::RegexErrorCode::PlanLimitExceeded =>
+            {
+                self.unavailable = Some(PreviewUnavailableReason::WorkBudget);
+                return Ok(());
+            }
+            Err(error) => {
+                return Err(integrity(&format!(
+                    "prepared regex failed to compile: {error}"
+                )));
+            }
+        };
         self.request.checkpoint("lexical:preview-regex-compiled")?;
         drop(self.executors.insert(text.clone(), executor));
         self.executor_reservations.push(reservation);
@@ -416,61 +428,6 @@ impl TantivySearcher {
     }
 }
 
-#[cfg(test)]
-#[expect(
-    clippy::panic_in_result_fn,
-    reason = "stored-field regressions assert corruption refusals"
-)]
-mod l4_source_decode_regressions {
-    use super::*;
-    use tantivy::schema::{STORED, STRING, Schema};
-
-    #[test]
-    fn malformed_and_duplicate_authority_fields_are_not_defaulted() -> Result<(), CoreError> {
-        let mut builder = Schema::builder();
-        let revision = builder.add_text_field("revision", STRING | STORED);
-        let digest = builder.add_bytes_field("digest", STORED);
-        let offset = builder.add_u64_field("offset", STORED);
-        let _schema = builder.build();
-        let mut doc = TantivyDocument::new();
-        assert_eq!(source_text(&doc, revision)?, None);
-        doc.add_text(revision, "r1");
-        doc.add_text(revision, "r2");
-        assert!(source_text(&doc, revision).is_err());
-        doc.add_bytes(digest, [7; 31]);
-        assert!(source_digest(&doc, digest).is_err());
-        doc.add_text(offset, "42");
-        assert!(source_offset(&doc, offset).is_err());
-        Ok(())
-    }
-
-    #[test]
-    fn ranked_line_fields_refuse_ambiguous_or_malformed_storage() -> Result<(), CoreError> {
-        let mut builder = Schema::builder();
-        let line = builder.add_u64_field("start_line", STORED);
-        let _schema = builder.build();
-        assert_eq!(stored_u32(&TantivyDocument::new(), line)?, None);
-
-        let mut malformed = TantivyDocument::new();
-        malformed.add_text(line, "7");
-        assert!(stored_u32(&malformed, line).is_err());
-
-        let mut duplicate = TantivyDocument::new();
-        duplicate.add_u64(line, 7);
-        duplicate.add_u64(line, 8);
-        assert!(stored_u32(&duplicate, line).is_err());
-
-        let mut overflow = TantivyDocument::new();
-        overflow.add_u64(line, u64::from(u32::MAX) + 1);
-        assert!(stored_u32(&overflow, line).is_err());
-
-        let mut valid = TantivyDocument::new();
-        valid.add_u64(line, 7);
-        assert_eq!(stored_u32(&valid, line)?, Some(7));
-        Ok(())
-    }
-}
-
 impl TantivySearcher {
     pub(crate) fn document_to_candidate_identity(
         &self,
@@ -568,5 +525,60 @@ impl TantivySearcher {
             symbol_kind,
             symbol_kind_family,
         })
+    }
+}
+
+#[cfg(test)]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "stored-field regressions assert corruption refusals"
+)]
+mod l4_source_decode_regressions {
+    use super::*;
+    use tantivy::schema::{STORED, STRING, Schema};
+
+    #[test]
+    fn malformed_and_duplicate_authority_fields_are_not_defaulted() -> Result<(), CoreError> {
+        let mut builder = Schema::builder();
+        let revision = builder.add_text_field("revision", STRING | STORED);
+        let digest = builder.add_bytes_field("digest", STORED);
+        let offset = builder.add_u64_field("offset", STORED);
+        let _schema = builder.build();
+        let mut doc = TantivyDocument::new();
+        assert_eq!(source_text(&doc, revision)?, None);
+        doc.add_text(revision, "r1");
+        doc.add_text(revision, "r2");
+        assert!(source_text(&doc, revision).is_err());
+        doc.add_bytes(digest, [7; 31]);
+        assert!(source_digest(&doc, digest).is_err());
+        doc.add_text(offset, "42");
+        assert!(source_offset(&doc, offset).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn ranked_line_fields_refuse_ambiguous_or_malformed_storage() -> Result<(), CoreError> {
+        let mut builder = Schema::builder();
+        let line = builder.add_u64_field("start_line", STORED);
+        let _schema = builder.build();
+        assert_eq!(stored_u32(&TantivyDocument::new(), line)?, None);
+
+        let mut malformed = TantivyDocument::new();
+        malformed.add_text(line, "7");
+        assert!(stored_u32(&malformed, line).is_err());
+
+        let mut duplicate = TantivyDocument::new();
+        duplicate.add_u64(line, 7);
+        duplicate.add_u64(line, 8);
+        assert!(stored_u32(&duplicate, line).is_err());
+
+        let mut overflow = TantivyDocument::new();
+        overflow.add_u64(line, u64::from(u32::MAX) + 1);
+        assert!(stored_u32(&overflow, line).is_err());
+
+        let mut valid = TantivyDocument::new();
+        valid.add_u64(line, 7);
+        assert_eq!(stored_u32(&valid, line)?, Some(7));
+        Ok(())
     }
 }

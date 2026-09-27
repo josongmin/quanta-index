@@ -1,91 +1,47 @@
-# Tickets — Search-owned Semantic Derivation
+# Semantic ownership — remaining acceptance
 
-Parent doc: [../README.md](../README.md)
+Status: `ACTIVE_RESIDUAL`
 
-This ticket pack turns semantic ownership inside out:
+Contract authority: [semantic generation ADR](../../../adr/MAY-31-001-lancedb-semantic-generation-authority.md)
+and [query/publication ADR](../../../adr/SEP-26-001-retrieval-query-publication-and-result-proof.md).
+This ledger does not reinstall the superseded SEM-OWN worker/API proposals.
 
-- external producer authors raw records
-- `quanta-index` derives corpus embeddings
-- `quanta-index` embeds query text
-- public semantic query surfaces become text-first
+## Required evidence before closure
 
-Current tree truth before this pack starts:
+| Scope / owner | Remaining acceptance |
+| --- | --- |
+| Producer + SDK/search-plane | Typed-source ReplaceGeneration and Delta, explicit no-op/tombstone membership, no legacy vector or implicit chunk-text ingress; actual paired producer/consumer source binding |
+| Producer aggregate publication | Bind authoritative prior semantic state for deltas; verify the resolver's retained state and paired restart path. The root README's earlier audit identified aggregate/V4-outbox prior-state mismatch; revalidate both repositories before repair or closure |
+| Search-plane + semantic adapter | Restart after partial derivation, delete/tombstone/membership replacement, complete sealing, provider/model/dimension refusal and blocked activation, under one fresh source-bound integration rail |
+| Query/embedding owner | Manifest-authoritative query normalization/cache identity and typed provider failures; record the policy for `FooBar`, `foobar`, `foo_bar`, `foo bar` and prove model changes cannot reuse incompatible entries |
+| Provider + operator owner | Observe request latency/failures, pending work/seal lag, query failures, active model/manifest identity, policy drift, blocked reasons and cache hits/misses; compare actual exported fields to this acceptance before adding a second metric path |
+| Release/integration owner | Contract round trips, real typed producer → derived semantic seal → text semantic/hybrid search, restart/delete and blocked-generation tests; attach exact raw inventories and source/dependency/model/runtime binding |
 
-- public semantic/hybrid query paths are already text-only
-- `searchctl` already rejects the old vector/handle flags
-- SDK public semantic publish is already removed
-- public ingest IPC no longer exposes semantic publish/receipt variants
-- remaining work is internal semantic ownership, manifest/readiness, and final
-  observability/proof closure
+The predecessor records do not establish current completeness or missing
+implementation. Revalidate each item against live source and an independent
+oracle; already implemented rows need fresh proof, not duplicate implementation.
+The current release/cross-repository obligations are owned by the
+[SEP-21 residual plan](../../sep-21-search-plane-sota-hardening/tickets/FINAL-RESIDUAL-EXECUTION-PLAN.md).
 
----
+## Deferred design and measurement leads
 
-## 1. Execution order
+- Shared batched/async corpus-query provider wiring, including provisioning
+  symmetry; decide lifecycle/retry/recovery before adopting a worker/job store.
+  Provider burst limits, retryable/terminal failures, long-downtime backlog and
+  partial-work recovery need measured acceptance if that design is selected.
+- Stable producer semantic-owner identities are required for incremental reuse;
+  if stability is not proven, use full-generation rebuild and report its cost.
+- Ranking/over-fetch or learned fusion changes require labeled relevance
+  comparison; no ranker conclusion follows from the old seam audit.
+- Model/dimension/render/normalization policy changes need a coordinated manifest
+  rebuild, compatibility refusal and migration cost measurement.
+- Richer render-policy introspection, multi-tier query caches and additional
+  projection surfaces need a new current-contract proposal before implementation.
 
-| Wave | Ticket | Title | Why first |
-|---|---|---|---|
-| 0 | [SEM-OWN-00.md](SEM-OWN-00.md) | Semantic ownership inversion and boundary freeze | prevents mixed assumptions across contract, docs, and runtime |
-| 1 | [SEM-OWN-01.md](SEM-OWN-01.md) | Raw ingest contract and chunk-text authority | semantic derivation has no stable input without this |
-| 2 | [SEM-OWN-02.md](SEM-OWN-02.md) | Search-owned corpus embedding derivation worker | creates the actual semantic corpus |
-| 3 | [SEM-OWN-03.md](SEM-OWN-03.md) | Semantic manifest, readiness, and seal gating | makes derived semantic generations query-safe |
-| 4 | [SEM-OWN-04.md](SEM-OWN-04.md) | Manifest-guided query text embedding and cache contract | aligns internal query embedding with the already-text-only public surface |
-| 5 | [SEM-OWN-05.md](SEM-OWN-05.md) | Legacy vector ingress removal, observability, and final proof | removes old seam and closes proof rails |
+## Closure rule
 
-## 2. Ticket summary
-
-| Ticket | Primary surface | Main output | Blocking deps |
-|---|---|---|---|
-| `SEM-OWN-00` | docs + contract boundary | one canonical ownership model | none |
-| `SEM-OWN-01` | `quanta-index-contract`, producer ingest | `ChunkRecord { text }` | `SEM-OWN-00` |
-| `SEM-OWN-02` | `searchd`, semantic channel, embedder client | derivation worker + job lifecycle + render policy hash | `SEM-OWN-01` |
-| `SEM-OWN-03` | manifest + readiness + activation | manifest freeze + seal proof + typed blocked reasons | `SEM-OWN-02` |
-| `SEM-OWN-04` | query IPC + dispatcher | manifest-guided internal query embedding + normalization/cache contract | `SEM-OWN-03` |
-| `SEM-OWN-05` | cleanup, metrics, proof | observability/final-proof closure after legacy ingress removal | `SEM-OWN-04` |
-
-## 3. Program exit criteria
-
-The program is complete only when all are true:
-
-1. producer no longer needs to publish embeddings
-2. chunk text is the canonical external semantic source input
-3. every active semantic generation has an internal manifest with provider/model/dim
-4. every active semantic generation is fingerprinted by a stable render policy hash
-5. semantic seal carries a completeness proof
-6. semantic blocked generations expose typed blocked reasons
-7. query embeddings are cached against normalized text + manifest identity
-8. stable chunk identity is either guaranteed or semantic derivation is
-   explicitly full-generation-only
-9. semantic and hybrid public queries work from plain text without caller-side embedding
-10. chunk delete cascades to semantic delete under `embedding_id == chunk_id`
-11. no public semantic/hybrid happy path requires caller-authored vectors
-12. restart/replay preserves semantic readiness correctness
-13. activation remains fail-closed when semantic derivation is incomplete
-
-## 4. PR slicing guidance
-
-Recommended PR units:
-
-1. `SEM-OWN-00` + `SEM-OWN-01` if the contract break is kept small
-2. `SEM-OWN-02`
-3. `SEM-OWN-03`
-4. `SEM-OWN-04`
-5. `SEM-OWN-05`
-
-Do not merge:
-
-- public query text cutover before manifest-guided query embedding exists
-- worker before chunk-text authority is frozen
-- cleanup before restart/readiness proof is green
-
-Current tree note:
-
-- the public query text cutover is already landed; `SEM-OWN-04` only owns the
-  manifest-guided internal query embedding and cache/normalization contract
-
-## 5. Explicitly rejected alternatives
-
-- keep producer-authored embeddings and only add query-time embedding in `searchd`
-- make symbols the primary semantic corpus unit
-- keep public vector requests as the main semantic API forever
-- call the embedder inline in the existing lexical channel-dispatcher ack path
-- allow one generation to mix multiple embedding models or dimensions
+Use terminal selected/executed/pass inventories and actual observed producer,
+provider and restart behavior. A README, planned interface, cached handle, empty
+queue or successful compilation does not prove completeness. Retire each row
+only after its owning acceptance is revalidated; completed decisions remain in
+ADRs and historical task bodies in Git.

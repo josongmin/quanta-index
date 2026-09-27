@@ -289,21 +289,9 @@ fn count_zero_returns_typed_invalid_count() -> TestResult {
 
 /// 6. Regex leaf executes through the planner pipeline.
 ///
-/// On a small corpus (well under `RegexPolicy::trigram_missing_doc_threshold`),
-/// the regex leaf compiles via `plan_regex` (dialect filter + literal
-/// extraction) and the executor runs the Tantivy `RegexQuery` per-token
-/// path. The planner enforces the LXE-04 dialect (lookbehind / possessive
-/// / backref rejected typed) and extracts mandatory byte literals from
-/// `foobar.*quick` — both `foobar` and `quick` are required substrings,
-/// so the candidate set is `{c2}` (the only doc containing both tokens).
-///
-/// This is the honest behaviour today: the trigram-postings index is not
-/// yet wired on this adapter, and the large-corpus path surfaces
-/// `LEX_REGEX_TRIGRAM_INDEX_MISSING` instead of silently full-scanning.
-/// `RegexQuery` runs over per-token strings (Tantivy lexes content into
-/// terms), so the regex must match a single token; `foobar.*quick` does
-/// not match anything because no single token contains both — therefore
-/// the test uses `foo.*r` against tokens that contain it (`foobar`).
+/// The planner validates the dialect and extracts literal alternatives. The
+/// executor verifies the immutable NFC text authority after bounded trigram
+/// prefiltering, rather than matching individual index terms.
 #[test]
 fn regex_leaf_small_corpus_returns_hits_via_planner() -> TestResult {
     let searcher = fresh_searcher_with_corpus(&[
@@ -316,9 +304,8 @@ fn regex_leaf_small_corpus_returns_hits_via_planner() -> TestResult {
         Vec::new(),
     );
     let hits = searcher.search(&q, 10, &RequestBudgetV1::unbounded())?;
-    // Only `foobar` (in c2) matches the per-token regex `foo.*r`. c1 has
-    // `fox` which does not match (no `r` after `foo`); c3 has no matching
-    // token at all.
+    // Only c2 contains a substring matching `foo.*r`. c1 and c3 lack
+    // the mandatory `foo` prefix.
     if hits.len() != 1 {
         return Err(format!(
             "expected 1 regex hit, got {}: {:?}",

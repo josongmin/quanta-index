@@ -47,10 +47,9 @@ benchmark data are not vendored here.
 
 ## Component validation boundary
 
-The native candidate passed both valid minimal forms in TS/TSX, kept malformed
-syntax erroneous, and passed 112 terminal upstream corpus cases. On the frozen
-Vite universe all 256 files were examined: only the intentional syntax-error
-fixture remained erroneous, compared with three failures in upstream 0.23.2.
-See `docs/plans/sep-27-code-search-remediation/handoffs/L5_HANDOFF.md` for exact
-source, commands and receipts. These component results do not establish Rust
-producer extraction, SDK publication, daemon activation or performance.
+Retain both valid minimal forms in TS/TSX and keep malformed syntax erroneous.
+Producer capability/ownership and complete admitted-file census follow
+[SEP-27-003](../../docs/adr/SEP-27-003-code-search-source-and-preview-contract.md).
+Historical component/source/command results are recoverable through the
+[plan archive](../../docs/plans/ARCHIVE-INDEX.md); they do not qualify current
+Rust extraction, SDK publication, daemon activation or performance.

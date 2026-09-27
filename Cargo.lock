@@ -4389,6 +4389,7 @@ name = "quanta-index-contract"
 version = "0.1.0"
 dependencies = [
  "ciborium",
+ "imbl",
  "proptest",
  "quanta-index-contract-base",
  "quanta-index-lq-norm",

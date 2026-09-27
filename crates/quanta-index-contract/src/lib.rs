@@ -29,8 +29,8 @@ pub use quanta_index_contract_base::{
     SourceFileRevision,
 };
 pub use source_coverage::{
-    FileCoverageSnapshot, SourceCoverageError, SourceFileCoverage, SourcePublicationEvent,
-    SymbolCoverage, source_file_unit_set_sha256,
+    FileCoverageIter, FileCoverageSnapshot, SourceCoverageError, SourceFileCoverage,
+    SourcePublicationEvent, SymbolCoverage, source_file_unit_set_sha256,
 };
 
 /// Internal legacy channel surface used by `searchd` composition-root,

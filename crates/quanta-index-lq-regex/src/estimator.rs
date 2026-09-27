@@ -1,16 +1,15 @@
-//! NFA state-count estimator — planner-time upper bound on a pattern's
-//! compiled NFA size.
+//! Structural regex complexity charge for planner-time admission.
 //!
 //! [`estimate_nfa_states`] walks the [`regex_syntax::hir::Hir`] and
-//! returns a conservative upper bound on the state count `regex` would
-//! materialise. Exceed [`MAX_NFA_STATES`] → typed
+//! returns a monotone structural charge. Exceed [`MAX_NFA_STATES`] → typed
 //! [`crate::RegexErrorCode::PlanLimitExceeded`] tagged
 //! [`crate::LimitDimension::NfaStates`].
 //!
 //! The walk is deliberately monotone: every recursive subtree adds at
-//! least one state, and bounded repetitions multiply through. This
-//! conservatively overshoots `regex`'s actual compiled size, which is
-//! the discipline LEX-04 §10 risk R-LEX04-1 documents.
+//! least one unit, and bounded repetitions multiply through. Unicode classes
+//! expand into byte automata during compilation, so this charge is not an
+//! upper bound on compiled states or physical allocation. Engine byte refusal
+//! is a separate limit; aggregate allocation admission remains a separate seam.
 
 use regex_syntax::hir::{Hir, HirKind, Repetition};
 
@@ -19,8 +18,8 @@ use crate::errors::{LimitDimension, RegexError};
 /// NFA-state cap per LEX-04 spec / RFC § Canonical Query Model.
 pub const MAX_NFA_STATES: u64 = 100_000;
 
-/// Conservative upper bound on the NFA state count the `regex` crate
-/// would emit for `hir`.
+/// Structural HIR charge, retained under the existing state-estimator API.
+/// This is not the compiled engine's state count or a physical byte bound.
 ///
 /// On overflow or cap-exceed, returns
 /// [`RegexError::plan_limit`] with [`LimitDimension::NfaStates`].
@@ -29,13 +28,13 @@ pub fn estimate_nfa_states(hir: &Hir) -> Result<u64, RegexError> {
     if n > MAX_NFA_STATES {
         return Err(RegexError::plan_limit(
             LimitDimension::NfaStates,
-            format!("estimated NFA states {n} exceeds cap {MAX_NFA_STATES}"),
+            format!("regex structural charge {n} exceeds cap {MAX_NFA_STATES}"),
         ));
     }
     Ok(n)
 }
 
-/// Recursive HIR walk producing a monotone upper-bound state count.
+/// Recursive HIR walk producing a monotone structural charge.
 ///
 /// Returns `PLAN_LIMIT_EXCEEDED` immediately on overflow so we never
 /// silently saturate.
@@ -58,9 +57,8 @@ fn walk(hir: &Hir) -> Result<u64, RegexError> {
             })
         }
         HirKind::Class(cls) => {
-            // A class contributes at most one state plus one branch per
-            // character range. Upper-bound by range count (each range is
-            // a single transition edge in the NFA).
+            // Charge each HIR character range plus one unit. Unicode ranges
+            // can expand into multiple byte transitions during compilation.
             let ranges = class_range_count(cls)?;
             ranges.checked_add(1).ok_or_else(|| {
                 RegexError::plan_limit(
@@ -133,9 +131,8 @@ fn class_range_count(cls: &regex_syntax::hir::Class) -> Result<u64, RegexError> 
     })
 }
 
-/// Bounded repetition contributes `min + max` copies of the body's state
-/// count (upper bound). Unbounded repetition (`*`, `+`) contributes a
-/// loop epsilon plus one body copy.
+/// Bounded repetition charges `max` copies of the body plus one unit per copy.
+/// Unbounded repetition (`*`, `+`) charges `min + 1` copies.
 fn repetition_bound(rep: &Repetition) -> Result<u64, RegexError> {
     let body = walk(&rep.sub)?;
     let max_factor: u64 = rep.max.map_or_else(

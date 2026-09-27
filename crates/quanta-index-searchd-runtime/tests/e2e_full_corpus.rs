@@ -1290,6 +1290,9 @@ fn ingest_fixture(rt: &mut E2eRuntime, fixture: &LoadedFixture) -> AnyResult<Fix
             let _old = candidate_id_to_id.insert(doc.id.clone(), doc.id.clone());
         }
     }
+    if fixture.docs.iter().any(|doc| doc.symbol_name.is_some()) {
+        rt.declare_staged_symbol_extraction_complete()?;
+    }
     if let Some(repo_metadata) = fixture.repo_metadata.as_ref() {
         rt.publish_repo_metadata_bundle(encode_repo_metadata_payload(repo_metadata)?)?;
     }

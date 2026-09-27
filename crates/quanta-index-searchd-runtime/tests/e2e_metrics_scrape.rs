@@ -439,11 +439,9 @@ fn boot_gauges_match_the_boot_inventory_and_the_writer_envelope_reflects_the_sea
         &1,
     )?;
     expect_eq("open writers", &scrape.gauge("lexical_writers_open")?, &0.0)?;
-    // Two chunks were ingested into one generation: the first batch found
-    // no text authority and rebuilt from its one document, the second
-    // updated it in place with its one chunk; nothing was retired, and
-    // both documents live in the one shard each write produced — nothing
-    // could be inherited within a single generation (QI-BB-006).
+    // The two locally staged chunks are published in one sealed source event.
+    // The first authority write rebuilds both documents together; there is
+    // no second in-generation update or inherited shard (QI-BB-006).
     expect_eq(
         "text-authority rebuilds",
         &scrape.counter("lexical_text_authority_rebuilds_total")?,
@@ -452,7 +450,7 @@ fn boot_gauges_match_the_boot_inventory_and_the_writer_envelope_reflects_the_sea
     expect_eq(
         "text-authority incremental updates",
         &scrape.counter("lexical_text_authority_incremental_updates_total")?,
-        &1,
+        &0,
     )?;
     expect_eq(
         "text-authority docs derived",
@@ -467,7 +465,7 @@ fn boot_gauges_match_the_boot_inventory_and_the_writer_envelope_reflects_the_sea
     expect_eq(
         "text-authority shards written",
         &scrape.counter("lexical_text_authority_shards_written_total")?,
-        &2,
+        &1,
     )?;
     expect_eq(
         "text-authority shards inherited",

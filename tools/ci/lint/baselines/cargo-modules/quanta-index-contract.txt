@@ -716,8 +716,11 @@ crate quanta_index_contract
 │       └── type Value: pub(self)
 └── mod source_coverage: pub(crate)
     ├── struct DigestWriter: pub(self)
-    ├── type FileCoverageSnapshot: pub
     ├── enum SourceCoverageError: pub
     ├── struct SourceFileCoverage: pub
     ├── struct SourcePublicationEvent: pub
-    └── enum SymbolCoverage: pub
+    ├── enum SymbolCoverage: pub
+    └── mod snapshot: pub(self)
+        ├── struct FileCoverageIter: pub
+        ├── struct FileCoverageSnapshot: pub
+        └── type Rows: pub(self)

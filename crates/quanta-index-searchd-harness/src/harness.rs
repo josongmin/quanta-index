@@ -276,6 +276,9 @@ pub struct E2eRuntime {
     batch_sequence: AtomicU64,
     generation_counter: u64,
     last_sealed_search_corpus_identity: Option<SearchCorpusGenerationIdentityV1>,
+    /// Fixture auxiliary publications wait for the source chunk authority
+    /// produced by `seal`; raw publish helpers remain immediate.
+    pending_source_aux: Vec<SearchPlaneIngestIpcRequest>,
 }
 
 struct DriverState {
@@ -677,6 +680,7 @@ impl E2eRuntime {
             batch_sequence: AtomicU64::new(1),
             generation_counter: 1,
             last_sealed_search_corpus_identity: None,
+            pending_source_aux: Vec::new(),
         })
     }
 
@@ -1491,7 +1495,9 @@ impl E2eRuntime {
 
     pub fn ingest_structural_tree(&mut self, path: &str, tree: ParseTreeRecord) -> AnyResult<()> {
         let batch = self.structural_tree_batch(path, tree, self.current_generation())?;
-        self.publish_structural_batch(batch)
+        self.pending_source_aux
+            .push(SearchPlaneIngestIpcRequest::PublishStructuralBatch(batch));
+        Ok(())
     }
 
     /// The unsealed one-scope structural batch that publishes `tree` for
@@ -1818,22 +1824,23 @@ impl E2eRuntime {
                 doc_ids,
             });
         }
-        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishRuntimeCatalogBatch(
-            RuntimeCatalogIngestBatch {
-                repo_id: self.repo(),
-                revision_id: self.revision(),
-                generation: self.current_generation(),
-                overlay_epoch_ms: catalog.generation_materialized_at_ms,
-                batch_digest: String::new(),
-                producer_head_applied_at_ms: catalog.producer_head_applied_at_ms,
-                generation_materialized_at_ms: catalog.generation_materialized_at_ms,
-                changed_entries,
-                facet_entries,
-                snapshot_entries,
-                affected_entries,
-                invalidated_by_entries,
-            },
-        ))?;
+        self.pending_source_aux
+            .push(SearchPlaneIngestIpcRequest::PublishRuntimeCatalogBatch(
+                RuntimeCatalogIngestBatch {
+                    repo_id: self.repo(),
+                    revision_id: self.revision(),
+                    generation: self.current_generation(),
+                    overlay_epoch_ms: catalog.generation_materialized_at_ms,
+                    batch_digest: String::new(),
+                    producer_head_applied_at_ms: catalog.producer_head_applied_at_ms,
+                    generation_materialized_at_ms: catalog.generation_materialized_at_ms,
+                    changed_entries,
+                    facet_entries,
+                    snapshot_entries,
+                    affected_entries,
+                    invalidated_by_entries,
+                },
+            ));
         Ok(())
     }
 
@@ -1859,22 +1866,26 @@ impl E2eRuntime {
     pub fn tombstone_structural_for_path(&mut self, path: &str) -> AnyResult<()> {
         use quanta_index_contract::StructuralTombstoneScope;
 
-        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishStructuralBatch(
-            StructuralIngestBatch {
-                repo_id: self.repo(),
-                revision_id: self.revision(),
-                generation: self.current_generation(),
-                base_generation: None,
-                manifest_digest: format!("struct-del:{path}:{}", self.current_generation().get()),
-                batch_digest: String::new(),
-                mode: BatchIngestMode::Delta,
-                replace_scopes: Vec::new(),
-                tombstone_scopes: vec![StructuralTombstoneScope {
-                    scope: scope_key(path),
-                }],
-                seal: false,
-            },
-        ))?;
+        self.pending_source_aux
+            .push(SearchPlaneIngestIpcRequest::PublishStructuralBatch(
+                StructuralIngestBatch {
+                    repo_id: self.repo(),
+                    revision_id: self.revision(),
+                    generation: self.current_generation(),
+                    base_generation: None,
+                    manifest_digest: format!(
+                        "struct-del:{path}:{}",
+                        self.current_generation().get()
+                    ),
+                    batch_digest: String::new(),
+                    mode: BatchIngestMode::Delta,
+                    replace_scopes: Vec::new(),
+                    tombstone_scopes: vec![StructuralTombstoneScope {
+                        scope: scope_key(path),
+                    }],
+                    seal: false,
+                },
+            ));
         Ok(())
     }
 
@@ -1916,6 +1927,14 @@ impl E2eRuntime {
             relationship: SymbolRelationship::Def,
         };
         self.source_publication.add_symbol(self.repo(), record)
+    }
+
+    /// Declare that this synthetic fixture finished symbol extraction for
+    /// every staged file, including files with zero symbols. Strict symbol
+    /// queries require this explicit complete universe.
+    pub fn declare_staged_symbol_extraction_complete(&mut self) -> AnyResult<()> {
+        self.source_publication
+            .declare_all_staged_symbols_complete()
     }
 
     /// Seal the current generation. Returns the sealed `ManifestGeneration`
@@ -1968,6 +1987,12 @@ impl E2eRuntime {
             .ok_or_else(|| anyhow::anyhow!("harness source event was not frozen"))?;
         self.publish_search_corpus_batch(batch)?;
         self.source_publication.finish_frozen();
+        // The search plane rejects auxiliary records whose source chunk is not
+        // yet in the sealed lexical generation. Preserve fixture call order.
+        while let Some(request) = self.pending_source_aux.first().cloned() {
+            self.dispatch_ingest(request)?;
+            let _published = self.pending_source_aux.remove(0);
+        }
         self.generation_counter = next_generation;
         Ok(sealed)
     }

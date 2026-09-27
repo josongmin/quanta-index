@@ -8,6 +8,11 @@ Consolidated: 2026-09-27
 
 Source decision: `git show 84c9331f:docs/plans/sep-26-bench-migration/tickets/BM-03-DECISION.md`
 
+Implemented complete-profile publication, capture failure, process/monitor,
+bounded file/archive I/O and test-selection decisions are consolidated in
+[SEP-27-004](SEP-27-004-benchmark-capture-and-resource-custody.md). Open execution
+and measurement acceptance stays in the MISC ledger.
+
 ## Context
 
 Benchmark registration, orchestration, evidence custody and domain scoring

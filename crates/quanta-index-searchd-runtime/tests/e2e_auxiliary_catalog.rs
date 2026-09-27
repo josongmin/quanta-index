@@ -48,8 +48,12 @@ fn auxiliary_rows_survive_a_restart_from_the_catalog() -> TestResult {
     rt.ingest_text("repo", path, content)?;
     rt.ingest_history_fixture(path)?;
     rt.ingest_dirty_for_path(path, 77)?;
-    rt.ingest_structural_function_tree(path, content, "aux_restart_alpha")?;
     let sealed = rt.seal()?;
+    // Parse trees are admitted against the published source chunk universe.
+    // The staged harness chunk does not become that authority until seal.
+    let tree = E2eRuntime::structural_function_tree_record(path, content, "aux_restart_alpha")?;
+    let structural = rt.structural_tree_batch(path, tree, sealed)?;
+    rt.publish_structural_batch(structural)?;
     rt.activate_last_sealed_generation()?;
 
     let before_restart = rt.query_history(TextQuerySyntax::Sourcegraph, "type:commit fix", 5);

@@ -129,7 +129,39 @@ fn a_tied_corpus_walks_page_by_page_in_path_order() -> TestResult {
 /// cursor walk still returns every row once in order.
 #[test]
 fn a_byte_budget_cuts_pages_with_an_explicit_continuation() -> TestResult {
-    let budget = ResponsePayloadBudget::new(2_500)?;
+    // Derive a byte cap from the current wire shape rather than a historical
+    // constant. The one-row page includes its continuation; the full page
+    // supplies an independent upper bound for the same nine-row fixture.
+    let (mut baseline, baseline_pin) = seeded(E2eRuntime::boot()?)?;
+    let one = served(baseline.query_text_page(
+        TextQuerySyntax::Native,
+        QUERY,
+        1,
+        Some(baseline_pin.clone()),
+        None,
+    )?)?;
+    let full = served(baseline.query_text_page(
+        TextQuerySyntax::Native,
+        QUERY,
+        100,
+        Some(baseline_pin),
+        None,
+    )?)?;
+    if one.results.len() != 1 || full.results.len() != FILES {
+        return Err("the budget oracle requires one-row and full-row pages".into());
+    }
+    let one_bytes = quanta_index_ipc::cbor_payload_len(&one)?;
+    let full_bytes = quanta_index_ipc::cbor_payload_len(&full)?;
+    let lower = one_bytes
+        .checked_add(1_024)
+        .ok_or("one-row budget overflow")?;
+    if lower >= full_bytes {
+        return Err(format!(
+            "the fixture has no byte-cut interval: one={one_bytes} full={full_bytes}"
+        )
+        .into());
+    }
+    let budget = ResponsePayloadBudget::new(lower + (full_bytes - lower) / 2)?;
     let (mut rt, pin) = seeded(E2eRuntime::boot_with_query_response_budget(budget)?)?;
     let first = served(rt.query_text_page(
         TextQuerySyntax::Native,
@@ -147,7 +179,7 @@ fn a_byte_budget_cuts_pages_with_an_explicit_continuation() -> TestResult {
         || first.window.has_more() != Some(true)
     {
         return Err(format!(
-            "nine rows do not fit 2500 bytes but one does: {} rows",
+            "nine rows do not fit the measured byte cap but one does: {} rows",
             first.results.len()
         )
         .into());

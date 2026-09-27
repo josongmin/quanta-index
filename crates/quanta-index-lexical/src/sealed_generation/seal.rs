@@ -112,10 +112,18 @@ impl BaseCommitments {
             return Ok(None);
         }
         let manifest = read_manifest(base_dir)?;
-        let by_name = manifest
+        let mut by_name: BTreeMap<_, _> = manifest
             .all_commitments()
             .map(|artifact| (artifact.name.clone(), artifact.clone()))
             .collect();
+        if let Some(root) = &manifest.source_coverage {
+            let identity = crate::index_store::read_lexical_sealed_identity(base_dir)?;
+            for page in crate::sealed_generation::coverage::root_page_commitments(
+                base_dir, root, &identity,
+            )? {
+                let _previous = by_name.insert(page.name.clone(), page);
+            }
+        }
         Ok(Some(Self {
             dir: base_dir.to_path_buf(),
             by_name,
@@ -289,6 +297,22 @@ pub(crate) fn seal_generation(
             }
         };
     let _coverage = verify_source_coverage(generation_dir, identity, source_coverage.as_ref())?;
+    if let Some(root) = &source_coverage {
+        for page in crate::sealed_generation::coverage::root_page_commitments(
+            generation_dir,
+            root,
+            identity,
+        )? {
+            let page_commitment = measurer.commit(&page.name)?;
+            if page_commitment != page {
+                return Err(crate::index_store::sidecar_corrupt(
+                    generation_dir,
+                    &page.name,
+                    "coverage page changed between verification and seal",
+                ));
+            }
+        }
+    }
     let manifest = LexicalSealedManifest {
         manifest_digest: identity.manifest_digest.clone(),
         normalizer: TEXT_NORMALIZER_VERSION,

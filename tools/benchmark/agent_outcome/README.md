@@ -17,7 +17,7 @@ includes `input_sha256` of the exact JSONL bytes. It makes no claim that the
 submitted recording or human evidence labels are authentic; the capture system
 must retain its source logs and test-run receipts under that digest.
 
-## JSONL row contract (`schema_version: 1`)
+## Prepare JSONL rows (`schema_version: 1`)
 
 Every row has exactly these fields:
 
@@ -59,11 +59,9 @@ Infinity, bad digests, inconsistent tests, incomplete pairs, mixed model,
 scaffold or budget within a pair, drifting or aliased arm configurations, and conflicting task identity or baseline
 across trials are refused.
 
-`fail_to_pass` counts tests that failed at baseline and pass after the run.
-`pass_to_pass` counts baseline passing tests that remain passing. A pair is
-`resolved` only if all baseline failures pass and no baseline pass regresses.
-The summary reports both numerators and denominators, cost, elapsed time,
-tool calls and first useful evidence for each arm. Aggregate rates pool test
-counts; `paired_resolved` reports win/loss/tie on the same task and trial.
-No significance, confidence interval or benchmark-wide claim is inferred
-from a small or self-selected recording set.
+## Read the summary
+
+Inspect `fail_to_pass`, `pass_to_pass`, `resolved`, `paired_resolved`, their
+numerators/denominators, cost, elapsed time and tool calls per arm. Missing useful
+evidence has null conditional timing and explicit coverage. Metrics and import
+claim policy are in [SEP-26-003](../../../docs/adr/SEP-26-003-retrieval-evidence-custody-and-qualification.md).

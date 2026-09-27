@@ -1,40 +1,16 @@
-# Jul 15 SOTA Test Hardening
+# Test hardening — remaining acceptance
 
-Status: `active plan; not a closure claim`
+Status: `ACTIVE_RESIDUAL`
 
-Purpose: turn the existing broad test suite into an auditable proof system. The
-required unit is an invariant with one owner and independently meaningful proof
-roles, not a growing test count.
+Executable test authority, invariant proof roles, workflow bindings, ignored-test
+policy and tier receipt machinery are implemented. They are consolidated in
+[SEP-27-005](../../adr/SEP-27-005-catalog-recovery-supervision-and-proof-custody.md).
+The old `b3140f8`/shared-worktree progress snapshot and worker scaffolding are
+retired. Current acceptance is in [the residual board](tickets/00-ticket-status-board.md).
 
-Truth snapshot:
-
-- committed baseline: `b3140f8`;
-- the live worktree also contains uncommitted QIT-00/QIT-02/QIT-09 changes;
-- this packet records those as `in-flight` until their owner-local tests and CI
-  receipts are green and the changes are committed;
-- external ingress, live-provider, and production-scale evidence are never
-  promoted from repo-local green.
-
-The target state has five authorities:
-
-1. invariant -> owner -> executable proof map;
-2. model-based lifecycle plus crash-consistency evidence;
-3. independent differential and metamorphic query oracles;
-4. risk-based coverage, mutation, and fuzz gates;
-5. PR, merge, nightly, and weekly/release receipts with explicit promotion.
-
-Read order:
-
-1. [WORKER_START_HERE.md](WORKER_START_HERE.md)
-2. [NO_GO_RULES.md](NO_GO_RULES.md)
-3. [SOURCE_TRUTH_MAP.md](SOURCE_TRUTH_MAP.md)
-4. [TEST_INVARIANT_MATRIX.md](TEST_INVARIANT_MATRIX.md)
-5. [CI_TIER_MATRIX.md](CI_TIER_MATRIX.md)
-6. [tickets/00-ticket-status-board.md](tickets/00-ticket-status-board.md)
-7. [tickets/TICKET_DEPENDENCY_DAG.md](tickets/TICKET_DEPENDENCY_DAG.md)
-
-Scope:
-
-- QIT-00 through QIT-09 only;
-- source and CI evidence supersede this plan;
-- no product behavior change is authorized solely by this document.
+Source owners: `tools/ci/test-authority.toml`, `check-test-authority.py`,
+`inventory/wire-surface.toml`, `check-wire-inventory.py`, current model/oracle tests,
+GitHub workflows and their actual terminal outputs. A static guard verifies
+registration/wiring; it does not prove semantic independence or execute Rust.
+External ingress/provider, full lifecycle/crash/concurrency and production-scale
+proof remain separate. Historical bodies are in [the plan archive](../ARCHIVE-INDEX.md).
