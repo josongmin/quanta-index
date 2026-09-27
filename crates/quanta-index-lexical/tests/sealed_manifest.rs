@@ -790,6 +790,36 @@ fn both_doors_refuse_missing_changed_or_uncommitted_ranked_keys() -> TestResult 
         "changed ranked keys",
         "GENERATION_SIDECAR_CORRUPT",
     )?;
+    // Change the fixture's only source-repository key without changing the
+    // table length, offsets, UTF-8, term count, or key order. Structural
+    // validation alone admits this table; the sealed digest must reject it.
+    let repo_id = repo();
+    let repo_bytes = repo_id.as_str().as_bytes();
+    let repo_positions: Vec<usize> = original
+        .windows(repo_bytes.len())
+        .enumerate()
+        .filter_map(|(offset, key)| (key == repo_bytes).then_some(offset))
+        .collect();
+    let [repo_offset] = repo_positions.as_slice() else {
+        return Err(format!(
+            "expected exactly one fixture repository key, found {repo_positions:?}"
+        )
+        .into());
+    };
+    let mut changed_key = original.clone();
+    let first = changed_key
+        .get_mut(*repo_offset)
+        .ok_or("fixture repository key missing")?;
+    if *first != b'm' {
+        return Err("fixture repository key does not start with m".into());
+    }
+    *first = b'n';
+    std::fs::write(path, &changed_key)?;
+    expect_refused(
+        &knock(&adapter, generation),
+        "same-length structurally valid ranked key substitution",
+        "GENERATION_SIDECAR_CORRUPT",
+    )?;
     std::fs::write(path, &original)?;
     expect_admitted(&knock(&adapter, generation), "restored ranked keys")?;
     let extra = dir.join("ranked-keys-ffffffffffffffffffffffffffffffff.bin");
