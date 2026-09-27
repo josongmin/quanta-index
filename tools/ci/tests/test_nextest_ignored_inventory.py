@@ -49,7 +49,9 @@ def test_file_consumer_refuses_oversized_line_before_json_decode(tmp_path, monke
 
     path = tmp_path / "events.jsonl"
     path.write_bytes(b" " * (owner.CONTROL_DOCUMENT_BYTES + 1))
-    monkeypatch.setattr(owner.json, "loads", lambda *_a, **_k: pytest.fail("decoded oversized line"))
+    monkeypatch.setattr(
+        owner.json, "loads", lambda *_a, **_k: pytest.fail("decoded oversized line")
+    )
     with pytest.raises(NextestEvidenceError, match="line exceeds"):
         parse_nextest(path)
 
@@ -97,13 +99,17 @@ def inventory():
         "test-count": 3,
         "rust-suites": {
             "demo::checks": {
-                "package-name": "demo", "binary-name": "checks", "kind": "test",
+                "package-name": "demo",
+                "binary-name": "checks",
+                "kind": "test",
                 "status": "listed",
                 "testcases": {
                     "a": {"ignored": False, "filter-match": {"status": "matches"}},
                     "b": {"ignored": False, "filter-match": {"status": "matches"}},
-                    "external": {"ignored": True, "filter-match": {
-                        "status": "mismatch", "reason": "ignored"}},
+                    "external": {
+                        "ignored": True,
+                        "filter-match": {"status": "mismatch", "reason": "ignored"},
+                    },
                 },
             },
         },
@@ -115,8 +121,15 @@ def start():
 
 
 def finish(passed, filtered=0):
-    return {"type": "suite", "event": "ok", "passed": passed, "failed": 0,
-            "ignored": 1, "filtered_out": filtered, "nextest": SUITE}
+    return {
+        "type": "suite",
+        "event": "ok",
+        "passed": passed,
+        "failed": 0,
+        "ignored": 1,
+        "filtered_out": filtered,
+        "nextest": SUITE,
+    }
 
 
 def event_row(name, event):
@@ -124,9 +137,14 @@ def event_row(name, event):
 
 
 def events(fragmented):
-    rows = [start(), event_row("external", "started"), event_row("a", "started"),
-            event_row("b", "started"), event_row("external", "ignored"),
-            event_row("a", "ok")]
+    rows = [
+        start(),
+        event_row("external", "started"),
+        event_row("a", "started"),
+        event_row("b", "started"),
+        event_row("external", "ignored"),
+        event_row("a", "ok"),
+    ]
     if fragmented:
         rows.extend([finish(1), start(), event_row("b", "ok"), finish(1, 1)])
     else:
@@ -149,13 +167,30 @@ def test_explicit_ignored_inventory_does_not_become_selected_success(fragmented)
     assert parsed.passed_names == {PREFIX + "a", PREFIX + "b"}
 
 
-@pytest.mark.parametrize("mutation", [
-    "unknown_ignored", "ignored_success", "required_ignored", "missing_required",
-    "missing_ignored", "duplicate_required", "duplicate_ignored", "wrong_binary",
-    "wrong_pass_count", "wrong_ignored_count", "wrong_announced_count",
-    "wrong_fragment_filter_count", "missing_fragment_filter_count", "failed_required",
-    "timed_out_required", "missing_start", "missing_ignored_start", "missing_suite_end", "empty_fragment",
-])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "unknown_ignored",
+        "ignored_success",
+        "required_ignored",
+        "missing_required",
+        "missing_ignored",
+        "duplicate_required",
+        "duplicate_ignored",
+        "wrong_binary",
+        "wrong_pass_count",
+        "wrong_ignored_count",
+        "wrong_announced_count",
+        "wrong_fragment_filter_count",
+        "missing_fragment_filter_count",
+        "failed_required",
+        "timed_out_required",
+        "missing_start",
+        "missing_ignored_start",
+        "missing_suite_end",
+        "empty_fragment",
+    ],
+)
 def test_inventory_bound_ignore_never_hides_incomplete_or_forged_execution(mutation):
     rows = copy.deepcopy(events(True))
     if mutation == "unknown_ignored":
@@ -249,21 +284,34 @@ def test_inventory_without_exclusions_does_not_authorize_partial_suites():
 def test_archived_proof_consumer_counts_required_tests_only(tmp_path, fragmented):
     from tools.ci.proof_execution_result import derive_test_result
 
-    inputs = {"events.jsonl": b"\n".join(json.dumps(row).encode() for row in events(fragmented)) + b"\n",
-              "inventory.json": json.dumps(inventory()).encode()}
+    inputs = {
+        "events.jsonl": b"\n".join(json.dumps(row).encode() for row in events(fragmented)) + b"\n",
+        "inventory.json": json.dumps(inventory()).encode(),
+    }
     artifacts = []
     for name, raw in inputs.items():
         (tmp_path / name).write_bytes(raw)
-        artifacts.append({"source_path": name, "path": name,
-                          "sha256": hashlib.sha256(raw).hexdigest()})
-    counts, names = derive_test_result(tmp_path, {"schema_version": 1, "runs": [{
-        "format": "nextest-jsonl", "events": "events.jsonl", "inventory": "inventory.json"}]}, artifacts)
+        artifacts.append(
+            {"source_path": name, "path": name, "sha256": hashlib.sha256(raw).hexdigest()}
+        )
+    counts, names = derive_test_result(
+        tmp_path,
+        {
+            "schema_version": 1,
+            "runs": [
+                {"format": "nextest-jsonl", "events": "events.jsonl", "inventory": "inventory.json"}
+            ],
+        },
+        artifacts,
+    )
     assert counts == {"selected": 2, "executed": 2, "passed": 2, "failed": 0, "ignored": 0}
     assert names == {("nextest-jsonl", PREFIX + "a"), ("nextest-jsonl", PREFIX + "b")}
 
 
 @pytest.mark.parametrize("fragmented", [False, True])
-def test_local_scope_frontdoor_admits_inventory_bound_ignored_events(tmp_path, monkeypatch, fragmented):
+def test_local_scope_frontdoor_admits_inventory_bound_ignored_events(
+    tmp_path, monkeypatch, fragmented
+):
     script = Path(__file__).resolve().parents[1] / "run-local-test-scope.py"
     spec = importlib.util.spec_from_file_location("ignored_scope_frontdoor", script)
     assert spec and spec.loader
@@ -275,13 +323,21 @@ def test_local_scope_frontdoor_admits_inventory_bound_ignored_events(tmp_path, m
     def execute(argv, *, stdout, **kwargs):
         calls.append(argv)
         phase = argv[argv.index("nextest") + 1]
-        stdout.write(json.dumps(inventory()).encode() if phase == "list" else
-                     b"\n".join(json.dumps(row).encode() for row in events(fragmented)) + b"\n")
+        stdout.write(
+            json.dumps(inventory()).encode()
+            if phase == "list"
+            else b"\n".join(json.dumps(row).encode() for row in events(fragmented)) + b"\n"
+        )
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(module.subprocess, "run", execute)
-    assert module.run_with_proof_evidence(
-        ["/selected/cargow", "nextest", "run", "--test-threads", "4"],
-        scopes=["daemon"], lane="test-daemon-lane", raw_dir=tmp_path / "raw",
-    ) == 0
+    assert (
+        module.run_with_proof_evidence(
+            ["/selected/cargow", "nextest", "run", "--test-threads", "4"],
+            scopes=["daemon"],
+            lane="test-daemon-lane",
+            raw_dir=tmp_path / "raw",
+        )
+        == 0
+    )
     assert [argv[argv.index("nextest") + 1] for argv in calls] == ["list", "run"]

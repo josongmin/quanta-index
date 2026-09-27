@@ -34,7 +34,12 @@ from contextlib import contextmanager
 from pathlib import Path
 
 try:
-    from tools.benchmark.retrieval import linux_isolation, linux_process, portable_proof, symbol_coverage
+    from tools.benchmark.retrieval import (
+        linux_isolation,
+        linux_process,
+        portable_proof,
+        symbol_coverage,
+    )
     from tools.benchmark.retrieval import query_plan as qp
     from tools.benchmark.retrieval import semble as semble_adapter
     from tools.benchmark.retrieval.contract_proof import nextest_summary, pytest_summary
@@ -62,9 +67,9 @@ except ImportError:  # direct script invocation: import the sibling module
     import linux_isolation  # noqa: E402
     import linux_process  # noqa: E402
     import portable_proof  # noqa: E402
-    import symbol_coverage  # noqa: E402
     import query_plan as qp  # noqa: E402
     import semble as semble_adapter  # noqa: E402
+    import symbol_coverage  # noqa: E402
     from contract_proof import nextest_summary, pytest_summary  # noqa: E402
     from evaluator import (  # noqa: E402
         CHUNK_STRATEGIES,
@@ -119,7 +124,12 @@ def _validate_semble_profile(value: object, where: str) -> dict:
     }
     if mode == "hybrid-no-rerank":
         alpha = value["alpha"]
-        if value["profile_id"] != "semble-hybrid-no-rerank-v1" or value["rerank"] is not False or not is_finite_json_number(alpha) or not 0 <= alpha <= 1:
+        if (
+            value["profile_id"] != "semble-hybrid-no-rerank-v1"
+            or value["rerank"] is not False
+            or not is_finite_json_number(alpha)
+            or not 0 <= alpha <= 1
+        ):
             raise RunError(f"{where} hybrid profile is invalid")
     elif mode in fixed:
         profile_id, alpha, rerank = fixed[mode]
@@ -188,6 +198,8 @@ def _validate_model_cache_manifest(value: object, where: str) -> dict:
     if manifest["snapshot_digest"] != digest(canonical_bytes(core)):
         raise RunError(f"{where}.snapshot_digest mismatch")
     return manifest
+
+
 SANDBOX_EXEC = Path("/usr/bin/sandbox-exec")
 MACOS_ISOLATION_BACKEND = "macos-seatbelt-v1"
 LINUX_ISOLATION_BACKEND = linux_isolation.BACKEND
@@ -201,7 +213,8 @@ RUNNER_BUNDLE_MEMBERS = (
 )
 RUNNER_ENTRYPOINT = b"from semble import main\nraise SystemExit(main())\n"
 RUNNER_BUNDLE_LIMITS = raw_archive.ArchiveLimits(
-    max_bytes=16 * 1024 * 1024, max_entries=len(RUNNER_BUNDLE_MEMBERS) + 2,
+    max_bytes=16 * 1024 * 1024,
+    max_entries=len(RUNNER_BUNDLE_MEMBERS) + 2,
     max_directory_bytes=16 * 1024,
 )
 
@@ -223,7 +236,9 @@ def build_runner_bundle(destination: Path) -> dict:
                 ],
             }
             manifest_bytes = canonical_bytes(manifest) + b"\n"
-            members["bundle-manifest.json"] = write_raw_file(root / "bundle-manifest.json", [manifest_bytes])
+            members["bundle-manifest.json"] = write_raw_file(
+                root / "bundle-manifest.json", [manifest_bytes]
+            )
             bundled = raw_archive.pack(members, destination, limits=RUNNER_BUNDLE_LIMITS)
     except (OSError, ValueError) as exc:
         raise RunError(f"cannot build runner bundle: {exc}") from exc
@@ -293,7 +308,11 @@ def _validate_runner_bundle_members(observed: dict[str, RawFile], expected: dict
     if canonical_bytes(manifest) + b"\n" != manifest_bytes:
         raise RunError("runner bundle declared manifest differs from embedded bytes")
     for name, raw in observed.items():
-        if rows[name] != {"path": name, "sha256": raw.sha256.removeprefix("sha256:"), "size": raw.size}:
+        if rows[name] != {
+            "path": name,
+            "sha256": raw.sha256.removeprefix("sha256:"),
+            "size": raw.size,
+        }:
             raise RunError("runner bundle member bytes differ from manifest")
         if name in RUNNER_BUNDLE_MEMBERS:
             source = _proof_file(Path(__file__).resolve().parent / name)
@@ -470,9 +489,7 @@ def _process_tree_sample(root_pid: int) -> list[dict]:
     if root_pid not in topology or topology[root_pid][3].startswith("Z"):
         raise ProcessRootAbsent(f"root process is absent from live ps snapshot: {root_pid}")
     # A zombie cannot bridge ownership to a live descendant.
-    topology = {
-        pid: row for pid, row in topology.items() if not row[3].startswith("Z")
-    }
+    topology = {pid: row for pid, row in topology.items() if not row[3].startswith("Z")}
     owned = {root_pid}
     changed = True
     while changed:
@@ -1217,7 +1234,7 @@ def _linux_policy(spec: dict, stage: Path, denied_roots: list[str]) -> dict:
         "/dev/urandom",
     ]
     read = [
-        stage / "runner-tools",
+        stage / "runner-tools.pyz",
         runner_input,
         Path(spec["repo"]),
         Path(spec["manifest"]),
@@ -1485,11 +1502,13 @@ def prepare_isolation(spec: dict, stage: Path, original_suite: Path) -> dict:
             "path": runner_bundle.relative_to(stage.resolve()).as_posix(),
         },
         "platform_helpers": (
-            [{
-                "path": module.relative_to(stage.resolve()).as_posix(),
-                "sha256": sha_file(module),
-                "source": "linux_isolation.py",
-            }]
+            [
+                {
+                    "path": module.relative_to(stage.resolve()).as_posix(),
+                    "sha256": sha_file(module),
+                    "source": "linux_isolation.py",
+                }
+            ]
             if system == "Linux"
             else []
         ),
@@ -2390,8 +2409,12 @@ CONTEXT_COMMAND_NAMES = {
         "rust-test",
     ),
     "sdk": (
-        "source-closure", "build-searchd", "rust-collection",
-        "rust-build", "metadata", "rust-test",
+        "source-closure",
+        "build-searchd",
+        "rust-collection",
+        "rust-build",
+        "metadata",
+        "rust-test",
     ),
 }
 MAX_CONTEXT_LOG_BYTES = 64 * 1024 * 1024
@@ -2658,13 +2681,19 @@ def load_spec(path: Path) -> dict:
             raise RunError(f"spec.{key} must be a nonempty string")
     if spec["spec_version"] != 2:
         raise RunError("spec.spec_version must be 2")
-    if spec.get("symbol_coverage_policy", "require-complete") not in ("require-complete", "allow-incomplete"):
+    if spec.get("symbol_coverage_policy", "require-complete") not in (
+        "require-complete",
+        "allow-incomplete",
+    ):
         raise RunError("unknown symbol coverage policy")
     profiles = spec["execution_profiles"]
     if not isinstance(profiles, dict) or set(profiles) not in ({"quanta"}, {"quanta", "semble"}):
         raise RunError("spec.execution_profiles must contain quanta and optional semble")
     quanta_profile = profiles["quanta"]
-    if not isinstance(quanta_profile, dict) or quanta_profile.get("policy") not in qp.SUPPORTED_POLICIES:
+    if (
+        not isinstance(quanta_profile, dict)
+        or quanta_profile.get("policy") not in qp.SUPPORTED_POLICIES
+    ):
         raise RunError("spec.execution_profiles.quanta is invalid")
     if quanta_profile != qp.execution_profile(quanta_profile["policy"]):
         raise RunError("spec.execution_profiles.quanta differs from the frozen profile")
@@ -2779,7 +2808,13 @@ def load_spec(path: Path) -> dict:
                 raise RunError(f"spec.receipts.{key} must be a nonempty path")
     if "admission" in spec:
         admission = _exact_keys(spec["admission"], set(ADMISSION_KEYS), "spec.admission")
-        for key in ("manifest", "experiment_custody", "development_suite", "license_receipt", "adjudication_receipt"):
+        for key in (
+            "manifest",
+            "experiment_custody",
+            "development_suite",
+            "license_receipt",
+            "adjudication_receipt",
+        ):
             if not isinstance(admission[key], str) or not admission[key]:
                 raise RunError(f"spec.admission.{key} must be a nonempty path")
         annotation_receipts = admission["annotation_receipts"]
@@ -2944,9 +2979,7 @@ def _validate_diagnostic_response_v2(
         type(detail["request_id"]) is not int or detail["request_id"] < 0
     ):
         raise RunError(f"{where}.request_id is invalid")
-    if detail["early_stop_reason"] is not None and not isinstance(
-        detail["early_stop_reason"], str
-    ):
+    if detail["early_stop_reason"] is not None and not isinstance(detail["early_stop_reason"], str):
         raise RunError(f"{where}.early_stop_reason is invalid")
     for field in ("engines_executed", "engines_touched"):
         engines = detail[field]
@@ -3004,7 +3037,11 @@ def _validate_diagnostic_response_v2(
 
 def _typed_count(value: object, where: str) -> tuple[str, int]:
     count = _exact_keys(value, {"kind", "value"}, where)
-    if count["kind"] not in ("exact", "at_least") or type(count["value"]) is not int or count["value"] < 0:
+    if (
+        count["kind"] not in ("exact", "at_least")
+        or type(count["value"]) is not int
+        or count["value"] < 0
+    ):
         raise RunError(f"{where} is invalid")
     return count["kind"], count["value"]
 
@@ -3032,33 +3069,59 @@ def _typed_window(value: object, where: str) -> tuple[int, bool, dict[str, bool]
         "interrupted_partial": {"kind", "reason"},
         "approximate": {"kind", "method", "quality_contract"},
     }
-    if outcome_kind not in expected_outcome_fields or set(outcome) != expected_outcome_fields[outcome_kind]:
+    if (
+        outcome_kind not in expected_outcome_fields
+        or set(outcome) != expected_outcome_fields[outcome_kind]
+    ):
         raise RunError(f"{where}.outcome fields are invalid")
     coverage = _exact_keys(
         value["coverage"],
-        {"examined", "lanes"} | ({"exhaustion_proof"} if isinstance(value["coverage"], dict) and "exhaustion_proof" in value["coverage"] else set()),
+        {"examined", "lanes"}
+        | (
+            {"exhaustion_proof"}
+            if isinstance(value["coverage"], dict) and "exhaustion_proof" in value["coverage"]
+            else set()
+        ),
         f"{where}.coverage",
     )
     examined = coverage["examined"]
-    if not isinstance(examined, dict) or examined.get("kind") not in ("exact", "at_least", "unknown"):
+    if not isinstance(examined, dict) or examined.get("kind") not in (
+        "exact",
+        "at_least",
+        "unknown",
+    ):
         raise RunError(f"{where}.coverage.examined is invalid")
     if examined["kind"] == "unknown":
         if set(examined) != {"kind"}:
             raise RunError(f"{where}.coverage.examined fields are invalid")
-    elif set(examined) != {"kind", "value"} or type(examined["value"]) is not int or examined["value"] < 0:
+    elif (
+        set(examined) != {"kind", "value"}
+        or type(examined["value"]) is not int
+        or examined["value"] < 0
+    ):
         raise RunError(f"{where}.coverage.examined fields are invalid")
     proof = coverage.get("exhaustion_proof")
     if outcome_kind == "exact_exhausted":
         if count_kind != "exact" or count_value != returned or not isinstance(proof, dict):
             raise RunError(f"{where} exact exhaustion evidence is invalid")
         proof_kind = proof.get("kind")
-        proof_field = {"probe_exhausted": "fetched", "exact_count": "total", "universe_scanned": "scanned"}.get(proof_kind)
-        if proof_field is None or set(proof) != {"kind", proof_field} or proof[proof_field] != returned:
+        proof_field = {
+            "probe_exhausted": "fetched",
+            "exact_count": "total",
+            "universe_scanned": "scanned",
+        }.get(proof_kind)
+        if (
+            proof_field is None
+            or set(proof) != {"kind", proof_field}
+            or proof[proof_field] != returned
+        ):
             raise RunError(f"{where}.coverage.exhaustion_proof is invalid")
     elif proof is not None:
         raise RunError(f"{where} non-exhausted outcome carries an exhaustion proof")
     if outcome_kind == "lower_bound":
-        if type(outcome["continuation"]) is not bool or (outcome["continuation"] and count_value <= returned):
+        if type(outcome["continuation"]) is not bool or (
+            outcome["continuation"] and count_value <= returned
+        ):
             raise RunError(f"{where} lower-bound outcome is invalid")
     elif outcome_kind == "capped_unknown":
         if type(outcome["cap"]) is not int or outcome["cap"] <= 0:
@@ -3068,7 +3131,13 @@ def _typed_window(value: object, where: str) -> tuple[int, bool, dict[str, bool]
             raise RunError(f"{where} interrupted outcome is invalid")
     elif outcome_kind == "approximate":
         quality = outcome["quality_contract"]
-        if outcome["method"] not in ("ann_search", "filtered_refill") or not isinstance(quality, dict) or set(quality) != {"examined_lower_bound"} or type(quality["examined_lower_bound"]) is not int or quality["examined_lower_bound"] < 0:
+        if (
+            outcome["method"] not in ("ann_search", "filtered_refill")
+            or not isinstance(quality, dict)
+            or set(quality) != {"examined_lower_bound"}
+            or type(quality["examined_lower_bound"]) is not int
+            or quality["examined_lower_bound"] < 0
+        ):
             raise RunError(f"{where} approximate outcome is invalid")
     empty = value.get("empty_provenance")
     if (returned == 0) != (empty in ("available_empty", "filtered_empty", "zero_hit_executed")):
@@ -3078,10 +3147,23 @@ def _typed_window(value: object, where: str) -> tuple[int, bool, dict[str, bool]
         raise RunError(f"{where}.coverage.lanes is malformed")
     lane_execution: dict[str, bool] = {}
     for lane in lanes:
-        if not isinstance(lane, dict) or set(lane) - {"lane", "executed", "contributed", "filtered_out", "candidates", "cost", "profile"} or not {"lane", "executed", "contributed", "filtered_out", "candidates"}.issubset(lane):
+        if (
+            not isinstance(lane, dict)
+            or set(lane)
+            - {"lane", "executed", "contributed", "filtered_out", "candidates", "cost", "profile"}
+            or not {"lane", "executed", "contributed", "filtered_out", "candidates"}.issubset(lane)
+        ):
             raise RunError(f"{where}.coverage lane fields are invalid")
         name = lane["lane"]
-        if not isinstance(name, str) or not name or name in lane_execution or type(lane["executed"]) is not bool or type(lane["contributed"]) is not bool or lane["contributed"] and not lane["executed"]:
+        if (
+            not isinstance(name, str)
+            or not name
+            or name in lane_execution
+            or type(lane["executed"]) is not bool
+            or type(lane["contributed"]) is not bool
+            or lane["contributed"]
+            and not lane["executed"]
+        ):
             raise RunError(f"{where}.coverage lane is invalid")
         if type(lane["filtered_out"]) is not int or lane["filtered_out"] < 0:
             raise RunError(f"{where}.coverage lane filtered_out is invalid")
@@ -3096,7 +3178,11 @@ def _typed_window(value: object, where: str) -> tuple[int, bool, dict[str, bool]
 
 
 def _validate_explanation(
-    value: object, where: str, route: str, version: int, returned: int,
+    value: object,
+    where: str,
+    route: str,
+    version: int,
+    returned: int,
     observation_policy: str = "enabled",
 ) -> None:
     if value is None:
@@ -3109,21 +3195,29 @@ def _validate_explanation(
     if version in (4, 5, 6):
         fields.add("stage_timings")
     detail = _exact_keys(value, fields, where)
-    if detail["request_id"] is not None and (type(detail["request_id"]) is not int or detail["request_id"] < 0):
+    if detail["request_id"] is not None and (
+        type(detail["request_id"]) is not int or detail["request_id"] < 0
+    ):
         raise RunError(f"{where}.request_id is invalid")
     if detail["early_stop_reason"] is not None and not isinstance(detail["early_stop_reason"], str):
         raise RunError(f"{where}.early_stop_reason is invalid")
     for field in ("engines_executed", "engines_touched"):
         engines = detail[field]
-        if engines is not None and (not isinstance(engines, list) or any(not isinstance(item, str) or not item for item in engines) or len(engines) != len(set(engines))):
+        if engines is not None and (
+            not isinstance(engines, list)
+            or any(not isinstance(item, str) or not item for item in engines)
+            or len(engines) != len(set(engines))
+        ):
             raise RunError(f"{where}.{field} is invalid")
     if detail["strategy"] is not None and not isinstance(detail["strategy"], str):
         raise RunError(f"{where}.strategy is invalid")
     if version == 6:
         trace = detail["planner_trace"]
         if not isinstance(trace, list) or any(
-            not isinstance(entry, dict) or set(entry) != {"stage", "detail"}
-            or not isinstance(entry["stage"], str) or not isinstance(entry["detail"], str)
+            not isinstance(entry, dict)
+            or set(entry) != {"stage", "detail"}
+            or not isinstance(entry["stage"], str)
+            or not isinstance(entry["detail"], str)
             for entry in trace
         ):
             raise RunError(f"{where}.planner_trace is missing or malformed")
@@ -3140,8 +3234,23 @@ def _validate_explanation(
         return
     stages = {
         "lexical": ("prepare", "read_view", "search", "project"),
-        "semantic": ("prepare", "read_view", "lexical_scope", "embedding", "dense_search", "project"),
-        "hybrid": ("prepare", "read_view", "lexical_search", "embedding", "dense_fetch", "dense_admission", "fusion"),
+        "semantic": (
+            "prepare",
+            "read_view",
+            "lexical_scope",
+            "embedding",
+            "dense_search",
+            "project",
+        ),
+        "hybrid": (
+            "prepare",
+            "read_view",
+            "lexical_search",
+            "embedding",
+            "dense_fetch",
+            "dense_admission",
+            "fusion",
+        ),
     }.get(route)
     if stages is None or not isinstance(timings, list) or not timings:
         raise RunError(f"{where} stage timings are missing or route is unknown")
@@ -3150,7 +3259,8 @@ def _validate_explanation(
     observed = []
     for index, item in enumerate(timings):
         timing = _exact_keys(
-            item, {"stage", "elapsed_ns", "calls", "returned_candidates"},
+            item,
+            {"stage", "elapsed_ns", "calls", "returned_candidates"},
             f"{where}.stage_timings[{index}]",
         )
         stage = timing["stage"]
@@ -3162,10 +3272,13 @@ def _validate_explanation(
             or timing["elapsed_ns"] < 0
             or type(timing["calls"]) is not int
             or timing["calls"] < 1
-            or (timing["returned_candidates"] is not None and (
-                type(timing["returned_candidates"]) is not int
-                or timing["returned_candidates"] < 0
-            ))
+            or (
+                timing["returned_candidates"] is not None
+                and (
+                    type(timing["returned_candidates"]) is not int
+                    or timing["returned_candidates"] < 0
+                )
+            )
         ):
             raise RunError(f"{where} stage timing is invalid")
         observed.append(stage)
@@ -3173,16 +3286,35 @@ def _validate_explanation(
         raise RunError(f"{where} stage order is invalid")
     required = {
         "lexical": {"lexical.prepare", "lexical.project"},
-        "semantic": {"semantic.prepare", "semantic.read_view", "semantic.embedding", "semantic.dense_search", "semantic.project"},
-        "hybrid": {"hybrid.prepare", "hybrid.read_view", "hybrid.embedding", "hybrid.dense_admission", "hybrid.fusion"},
+        "semantic": {
+            "semantic.prepare",
+            "semantic.read_view",
+            "semantic.embedding",
+            "semantic.dense_search",
+            "semantic.project",
+        },
+        "hybrid": {
+            "hybrid.prepare",
+            "hybrid.read_view",
+            "hybrid.embedding",
+            "hybrid.dense_admission",
+            "hybrid.fusion",
+        },
     }[route]
     if not required.issubset(observed):
         raise RunError(f"{where} required stages are absent")
     counts = {item["stage"]: item["returned_candidates"] for item in timings}
     candidate_stages = (
-        {"lexical.search", "lexical.project"} if route == "lexical" else
-        {"semantic.lexical_scope", "semantic.dense_search", "semantic.project"} if route == "semantic" else
-        {"hybrid.lexical_search", "hybrid.dense_fetch", "hybrid.dense_admission", "hybrid.fusion"}
+        {"lexical.search", "lexical.project"}
+        if route == "lexical"
+        else {"semantic.lexical_scope", "semantic.dense_search", "semantic.project"}
+        if route == "semantic"
+        else {
+            "hybrid.lexical_search",
+            "hybrid.dense_fetch",
+            "hybrid.dense_admission",
+            "hybrid.fusion",
+        }
     )
     for item in timings:
         if (item["stage"] in candidate_stages) != (item["returned_candidates"] is not None):
@@ -3193,7 +3325,13 @@ def _validate_explanation(
         searched = "lexical.search" in counts
         if (
             ("lexical.read_view" in observed) != searched
-            or (searched and (counts["lexical.project"] > counts["lexical.search"] or detail["engines_executed"] != ["lexical"]))
+            or (
+                searched
+                and (
+                    counts["lexical.project"] > counts["lexical.search"]
+                    or detail["engines_executed"] != ["lexical"]
+                )
+            )
             or (not searched and (returned != 0 or detail["engines_executed"] != []))
             or detail["engines_touched"] != (["lexical"] if returned else [])
             or detail["strategy"] != "lexical"
@@ -3202,9 +3340,8 @@ def _validate_explanation(
     if route == "semantic":
         scoped = "semantic.lexical_scope" in counts
         expected_executed = (["lexical"] if scoped else []) + ["semantic"]
-        expected_touched = (
-            (["lexical"] if counts.get("semantic.lexical_scope", 0) else [])
-            + (["semantic"] if counts["semantic.project"] else [])
+        expected_touched = (["lexical"] if counts.get("semantic.lexical_scope", 0) else []) + (
+            ["semantic"] if counts["semantic.project"] else []
         )
         expected_strategy = (
             "empty" if returned == 0 else "semantic_scoped" if scoped else "semantic"
@@ -3219,15 +3356,18 @@ def _validate_explanation(
     if route == "hybrid":
         lexical = counts.get("hybrid.lexical_search", 0)
         dense = counts["hybrid.dense_admission"]
-        expected_executed = (
-            (["lexical"] if "hybrid.lexical_search" in counts else [])
-            + (["semantic"] if "hybrid.dense_fetch" in counts else [])
+        expected_executed = (["lexical"] if "hybrid.lexical_search" in counts else []) + (
+            ["semantic"] if "hybrid.dense_fetch" in counts else []
         )
         expected_touched = (["lexical"] if lexical else []) + (["semantic"] if dense else [])
         expected_strategy = (
-            "rrf" if lexical and dense else
-            "lexical_only" if lexical else
-            "semantic_only" if dense else "empty"
+            "rrf"
+            if lexical and dense
+            else "lexical_only"
+            if lexical
+            else "semantic_only"
+            if dense
+            else "empty"
         )
         if (
             ("hybrid.dense_fetch" in counts) != ("hybrid.lexical_search" in counts)
@@ -3243,7 +3383,10 @@ def _validate_explanation(
 
 
 def _validate_diagnostic_response_v3(
-    row: dict, key: tuple[str, str], version: int, observation_policy: str = "enabled",
+    row: dict,
+    key: tuple[str, str],
+    version: int,
+    observation_policy: str = "enabled",
 ) -> dict[str, bool]:
     where = f"retrieval diagnostic response for {key}"
     kind = row["response_kind"]
@@ -3261,23 +3404,67 @@ def _validate_diagnostic_response_v3(
     if kind == "returned_window":
         detail = _exact_keys(response, {"window", "explanation"}, where)
         returned, exhausted, lanes = _typed_window(detail["window"], f"{where}.window")
-        _validate_explanation(detail["explanation"], f"{where}.explanation", key[1], version, returned, observation_policy)
+        _validate_explanation(
+            detail["explanation"],
+            f"{where}.explanation",
+            key[1],
+            version,
+            returned,
+            observation_policy,
+        )
         if returned != len(row["candidates"]):
             raise RunError(f"{where} returned count differs from candidates")
-        expected_status = "abstained" if returned == 0 and exhausted else "error" if returned == 0 else "success" if exhausted else "capped"
+        expected_status = (
+            "abstained"
+            if returned == 0 and exhausted
+            else "error"
+            if returned == 0
+            else "success"
+            if exhausted
+            else "capped"
+        )
         expected_error = "empty_non_exhausted_window" if expected_status == "error" else None
         if row["status"] != expected_status or row["error_code"] != expected_error:
             raise RunError(f"{where} status contradicts typed window")
         return lanes
     if kind == "rejected_response":
-        detail = _exact_keys(response, {"window", "explanation", "observed_hit_count", "expected_generation", "observed_generation"}, where)
+        detail = _exact_keys(
+            response,
+            {
+                "window",
+                "explanation",
+                "observed_hit_count",
+                "expected_generation",
+                "observed_generation",
+            },
+            where,
+        )
         returned, _exhausted, lanes = _typed_window(detail["window"], f"{where}.window")
-        _validate_explanation(detail["explanation"], f"{where}.explanation", key[1], version, returned, observation_policy)
-        if detail["observed_hit_count"] != returned or row["candidates"] or row["status"] != "error" or row["error_code"] != "stale_generation":
+        _validate_explanation(
+            detail["explanation"],
+            f"{where}.explanation",
+            key[1],
+            version,
+            returned,
+            observation_policy,
+        )
+        if (
+            detail["observed_hit_count"] != returned
+            or row["candidates"]
+            or row["status"] != "error"
+            or row["error_code"] != "stale_generation"
+        ):
             raise RunError(f"{where} rejected response fields are invalid")
         for field in ("expected_generation", "observed_generation"):
-            pin = _exact_keys(detail[field], {"repo_id", "revision_id", "manifest_generation"}, f"{where}.{field}")
-            if not isinstance(pin["repo_id"], str) or not isinstance(pin["revision_id"], str) or type(pin["manifest_generation"]) is not int or pin["manifest_generation"] <= 0:
+            pin = _exact_keys(
+                detail[field], {"repo_id", "revision_id", "manifest_generation"}, f"{where}.{field}"
+            )
+            if (
+                not isinstance(pin["repo_id"], str)
+                or not isinstance(pin["revision_id"], str)
+                or type(pin["manifest_generation"]) is not int
+                or pin["manifest_generation"] <= 0
+            ):
                 raise RunError(f"{where}.{field} is invalid")
         if detail["expected_generation"] == detail["observed_generation"]:
             raise RunError(f"{where} rejected generation pins are equal")
@@ -3310,7 +3497,9 @@ def hybrid_fetch_policy_configuration(floor: object = "100") -> dict:
 
 def _validate_hybrid_fetch_policy(payload: object) -> dict:
     config = _exact_keys(payload, {"floor", "scope", "config_sha256"}, "hybrid fetch policy")
-    if type(config["floor"]) is not int or config != hybrid_fetch_policy_configuration(str(config["floor"])):
+    if type(config["floor"]) is not int or config != hybrid_fetch_policy_configuration(
+        str(config["floor"])
+    ):
         raise RunError("hybrid fetch policy configuration digest/scope mismatch")
     return config
 
@@ -3324,16 +3513,23 @@ def _validate_hybrid_initial_fetch(trace: list[dict], top_k: int, policy: dict) 
 
 
 def ingest_request_identity(spec: dict) -> dict:
-    return _validate_ingest_request_identity({
-        "repo_id": spec.get("repo_id", "bench-repo"),
-        "revision_id": spec.get("revision_id", "bench-rev"),
-        "generation": spec.get("generation", 7),
-    })
+    return _validate_ingest_request_identity(
+        {
+            "repo_id": spec.get("repo_id", "bench-repo"),
+            "revision_id": spec.get("revision_id", "bench-rev"),
+            "generation": spec.get("generation", 7),
+        }
+    )
 
 
 def _validate_ingest_request_identity(payload: object) -> dict:
-    identity = _exact_keys(payload, {"repo_id", "revision_id", "generation"}, "ingest request identity")
-    if any(not isinstance(identity[key], str) or not identity[key] for key in ("repo_id", "revision_id")):
+    identity = _exact_keys(
+        payload, {"repo_id", "revision_id", "generation"}, "ingest request identity"
+    )
+    if any(
+        not isinstance(identity[key], str) or not identity[key]
+        for key in ("repo_id", "revision_id")
+    ):
         raise RunError("ingest request identity has an empty repo/revision")
     if type(identity["generation"]) is not int or not 0 < identity["generation"] < 2**64:
         raise RunError("ingest request identity generation is invalid")
@@ -3348,62 +3544,144 @@ def _validate_ingest_diagnostic(payload: object, record: dict) -> dict:
     overlap; activation is another request and must be explicitly unmeasured.
     """
     ingest = _exact_keys(payload, {"receipt", "activation_ack", "observation"}, "ingest diagnostic")
-    receipt = _exact_keys(ingest["receipt"], {
-        "generation", "manifest_digest", "batch_digest", "accepted_replace_scopes",
-        "accepted_tombstone_scopes", "accepted_semantic_replace_scopes",
-        "accepted_semantic_tombstone_scopes", "accepted_clear_surfaces", "sealed",
-        "applied", "durable_sequence", "semantic_content",
-    }, "ingest receipt")
+    receipt = _exact_keys(
+        ingest["receipt"],
+        {
+            "generation",
+            "manifest_digest",
+            "batch_digest",
+            "accepted_replace_scopes",
+            "accepted_tombstone_scopes",
+            "accepted_semantic_replace_scopes",
+            "accepted_semantic_tombstone_scopes",
+            "accepted_clear_surfaces",
+            "sealed",
+            "applied",
+            "durable_sequence",
+            "semantic_content",
+        },
+        "ingest receipt",
+    )
     captures = record.get("captures")
     if not isinstance(captures, dict) or not captures:
         raise RunError("ingest diagnostic requires nonempty captures")
     capture = next(iter(captures.values()))
-    if not isinstance(capture, dict) or capture.get("receipt_digest") != digest(canonical_bytes(receipt)):
+    if not isinstance(capture, dict) or capture.get("receipt_digest") != digest(
+        canonical_bytes(receipt)
+    ):
         raise RunError("ingest receipt digest differs from capture")
-    ack = _exact_keys(ingest["activation_ack"], {"active", "previous_sealed_active"}, "ingest activation ack")
+    ack = _exact_keys(
+        ingest["activation_ack"], {"active", "previous_sealed_active"}, "ingest activation ack"
+    )
     if capture.get("activation_digest") != digest(canonical_bytes(ack["active"])):
         raise RunError("ingest activation digest differs from capture")
-    if any(not isinstance(item, dict) or any(item.get(key) != capture.get(key) for key in ("receipt_digest", "activation_digest", "generation")) for item in captures.values()):
+    if any(
+        not isinstance(item, dict)
+        or any(
+            item.get(key) != capture.get(key)
+            for key in ("receipt_digest", "activation_digest", "generation")
+        )
+        for item in captures.values()
+    ):
         raise RunError("ingest diagnostic capture bindings diverge")
     active = _exact_keys(ack["active"], {"generation", "activation_token"}, "ingest active head")
-    generation = _exact_keys(active["generation"], {"lexical", "semantic", "semantic_content"}, "ingest active generation")
-    pins = [_exact_keys(generation[lane], {"repo_id", "revision_id", "track", "manifest_generation", "manifest_digest"}, f"ingest {lane} pin") for lane in ("lexical", "semantic")]
-    observation = _exact_keys(ingest["observation"], {
-        "request_id", "repo_id", "revision_id", "generation", "batch_digest", "status",
-        "semantic", "lexical_build_ns", "finalize_ns", "activation_ns",
-    }, "ingest observation")
-    identity = _validate_ingest_request_identity({key: observation[key] for key in ("repo_id", "revision_id", "generation")})
-    expected_pin = {"repo_id": identity["repo_id"], "revision_id": identity["revision_id"], "manifest_generation": identity["generation"], "manifest_digest": receipt["manifest_digest"]}
-    if (pins[0] != {**expected_pin, "track": "Lexical"} or pins[1] != {**expected_pin, "track": "Semantic"}
-        or type(receipt["generation"]) is not int or receipt["generation"] != identity["generation"]
+    generation = _exact_keys(
+        active["generation"],
+        {"lexical", "semantic", "semantic_content"},
+        "ingest active generation",
+    )
+    pins = [
+        _exact_keys(
+            generation[lane],
+            {"repo_id", "revision_id", "track", "manifest_generation", "manifest_digest"},
+            f"ingest {lane} pin",
+        )
+        for lane in ("lexical", "semantic")
+    ]
+    observation = _exact_keys(
+        ingest["observation"],
+        {
+            "request_id",
+            "repo_id",
+            "revision_id",
+            "generation",
+            "batch_digest",
+            "status",
+            "semantic",
+            "lexical_build_ns",
+            "finalize_ns",
+            "activation_ns",
+        },
+        "ingest observation",
+    )
+    identity = _validate_ingest_request_identity(
+        {key: observation[key] for key in ("repo_id", "revision_id", "generation")}
+    )
+    expected_pin = {
+        "repo_id": identity["repo_id"],
+        "revision_id": identity["revision_id"],
+        "manifest_generation": identity["generation"],
+        "manifest_digest": receipt["manifest_digest"],
+    }
+    if (
+        pins[0] != {**expected_pin, "track": "Lexical"}
+        or pins[1] != {**expected_pin, "track": "Semantic"}
+        or type(receipt["generation"]) is not int
+        or receipt["generation"] != identity["generation"]
         or capture.get("generation") != identity["generation"]
-        or observation["batch_digest"] != receipt["batch_digest"] or not _is_hex(receipt["batch_digest"], 64)
+        or observation["batch_digest"] != receipt["batch_digest"]
+        or not _is_hex(receipt["batch_digest"], 64)
         or receipt["semantic_content"] != generation["semantic_content"]
-        or receipt["semantic_content"] is None or receipt["sealed"] is not True or receipt["applied"] is not True
-        or ack["previous_sealed_active"] is not None):
+        or receipt["semantic_content"] is None
+        or receipt["sealed"] is not True
+        or receipt["applied"] is not True
+        or ack["previous_sealed_active"] is not None
+    ):
         raise RunError("ingest observation identity/fresh receipt/activation mismatch")
+
     def u64(value: object, where: str, positive: bool = False) -> int:
         if type(value) is not int or not (int(positive) <= value < 2**64):
             raise RunError(f"{where} must be an unsigned integer")
         return value
+
     u64(observation["request_id"], "ingest request_id", True)
     for pin in pins:
         u64(pin["manifest_generation"], "ingest activation pin generation", True)
     u64(capture.get("generation"), "ingest capture generation", True)
-    token = _exact_keys(active["activation_token"], {"root_incarnation", "activation_sequence"}, "ingest activation token")
+    token = _exact_keys(
+        active["activation_token"],
+        {"root_incarnation", "activation_sequence"},
+        "ingest activation token",
+    )
     incarnation = token["root_incarnation"]
-    if (not isinstance(incarnation, list) or len(incarnation) != 16
+    if (
+        not isinstance(incarnation, list)
+        or len(incarnation) != 16
         or any(type(value) is not int or not 0 <= value < 256 for value in incarnation)
-        or not any(incarnation)):
+        or not any(incarnation)
+    ):
         raise RunError("ingest activation root incarnation is invalid")
     u64(token["activation_sequence"], "ingest activation sequence", True)
     if token["activation_sequence"] != 1:
         raise RunError("fresh ingest activation sequence must be one")
-    roots = _exact_keys(receipt["semantic_content"], {"row_root_digest", "membership_root_digest"}, "ingest semantic content roots")
-    if any(not isinstance(value, str) or not value.startswith("sha256:") or not _is_hex(value[7:], 64) for value in roots.values()):
+    roots = _exact_keys(
+        receipt["semantic_content"],
+        {"row_root_digest", "membership_root_digest"},
+        "ingest semantic content roots",
+    )
+    if any(
+        not isinstance(value, str) or not value.startswith("sha256:") or not _is_hex(value[7:], 64)
+        for value in roots.values()
+    ):
         raise RunError("ingest semantic content roots are not canonical")
     u64(receipt["durable_sequence"], "ingest durable sequence", True)
-    for key in ("accepted_replace_scopes", "accepted_tombstone_scopes", "accepted_semantic_replace_scopes", "accepted_semantic_tombstone_scopes", "accepted_clear_surfaces"):
+    for key in (
+        "accepted_replace_scopes",
+        "accepted_tombstone_scopes",
+        "accepted_semantic_replace_scopes",
+        "accepted_semantic_tombstone_scopes",
+        "accepted_clear_surfaces",
+    ):
         if u64(receipt[key], f"ingest receipt {key}") >= 2**32:
             raise RunError("ingest receipt scope count exceeds u32")
     if not isinstance(receipt["manifest_digest"], str) or not receipt["manifest_digest"]:
@@ -3412,24 +3690,63 @@ def _validate_ingest_diagnostic(payload: object, record: dict) -> dict:
         raise RunError("fresh ingest requires executed status and unmeasured separate activation")
     u64(observation["lexical_build_ns"], "ingest lexical build")
     u64(observation["finalize_ns"], "ingest finalize")
-    report = _exact_keys(observation["semantic"], {
-        "owner_scopes", "windows", "semantic_delete_calls", "semantic_delete_commits",
-        "membership_delete_calls", "membership_delete_commits", "semantic_append_calls",
-        "membership_append_calls", "durations",
-    }, "ingest semantic report")
+    report = _exact_keys(
+        observation["semantic"],
+        {
+            "owner_scopes",
+            "windows",
+            "semantic_delete_calls",
+            "semantic_delete_commits",
+            "membership_delete_calls",
+            "membership_delete_commits",
+            "semantic_append_calls",
+            "membership_append_calls",
+            "durations",
+        },
+        "ingest semantic report",
+    )
     for key, value in report.items():
         if key != "durations":
             u64(value, f"ingest {key}")
-    durations = _exact_keys(report["durations"], {
-        "total", "prepare", "promotion", "clear_surfaces", "stream", "semantic_delete",
-        "membership_delete", "semantic_append", "membership_append", "tombstones", "seal", "embedding",
-    }, "ingest durations")
+    durations = _exact_keys(
+        report["durations"],
+        {
+            "total",
+            "prepare",
+            "promotion",
+            "clear_surfaces",
+            "stream",
+            "semantic_delete",
+            "membership_delete",
+            "semantic_append",
+            "membership_append",
+            "tombstones",
+            "seal",
+            "embedding",
+        },
+        "ingest durations",
+    )
     for key, value in durations.items():
         if key != "embedding" or value is not None:
             u64(value, f"ingest duration {key}")
-    if (sum(durations[key] for key in ("prepare", "promotion", "clear_surfaces", "stream", "tombstones", "seal")) > durations["total"]
+    if (
+        sum(
+            durations[key]
+            for key in ("prepare", "promotion", "clear_surfaces", "stream", "tombstones", "seal")
+        )
+        > durations["total"]
         or (durations["embedding"] is not None and durations["embedding"] > durations["stream"])
-        or sum(durations[key] for key in ("semantic_delete", "membership_delete", "semantic_append", "membership_append")) > sum(durations[key] for key in ("clear_surfaces", "stream", "tombstones"))):
+        or sum(
+            durations[key]
+            for key in (
+                "semantic_delete",
+                "membership_delete",
+                "semantic_append",
+                "membership_append",
+            )
+        )
+        > sum(durations[key] for key in ("clear_surfaces", "stream", "tombstones"))
+    ):
         raise RunError("ingest nested durations exceed their containing stages")
     return identity
 
@@ -3443,8 +3760,14 @@ def validate_retrieval_diagnostic(
     identities of candidates the service did not return.
     """
     fields = {
-        "schema_version", "kind", "record_sha256", "query_pack_sha256",
-        "top_k", "scope", "results", "runner_timing_detail_ms",
+        "schema_version",
+        "kind",
+        "record_sha256",
+        "query_pack_sha256",
+        "top_k",
+        "scope",
+        "results",
+        "runner_timing_detail_ms",
     }
     if isinstance(payload, dict) and payload.get("schema_version") in (5, 6):
         fields.update({"server_observation", "ingest"})
@@ -3474,7 +3797,8 @@ def validate_retrieval_diagnostic(
         raise RunError("retrieval diagnostic identity or contract mismatch")
     observation_policy = (
         _validate_server_observation(diagnostic["server_observation"])["query_stages"]
-        if diagnostic["schema_version"] in (5, 6) else "enabled"
+        if diagnostic["schema_version"] in (5, 6)
+        else "enabled"
     )
     if diagnostic["schema_version"] == 5:
         _validate_ingest_diagnostic(diagnostic["ingest"], record)
@@ -3578,11 +3902,23 @@ def validate_retrieval_diagnostic(
             _validate_diagnostic_response_v2(row["response"], row["error_code"], key)
             lane_execution: dict[str, bool] = {}
         else:
-            lane_execution = _validate_diagnostic_response_v3(row, key, diagnostic["schema_version"], observation_policy)
-            if diagnostic["schema_version"] == 6 and key[1] == "hybrid" and row["response_kind"] == "returned_window":
+            lane_execution = _validate_diagnostic_response_v3(
+                row, key, diagnostic["schema_version"], observation_policy
+            )
+            if (
+                diagnostic["schema_version"] == 6
+                and key[1] == "hybrid"
+                and row["response_kind"] == "returned_window"
+            ):
                 trace = row["response"]["explanation"]["planner_trace"]
-                _validate_hybrid_initial_fetch(trace, diagnostic["top_k"], diagnostic["hybrid_fetch_policy"])
-            if diagnostic["schema_version"] in (4, 5, 6) and key[1] in ("lexical", "semantic", "hybrid") and row["response_kind"] != "sdk_failure":
+                _validate_hybrid_initial_fetch(
+                    trace, diagnostic["top_k"], diagnostic["hybrid_fetch_policy"]
+                )
+            if (
+                diagnostic["schema_version"] in (4, 5, 6)
+                and key[1] in ("lexical", "semantic", "hybrid")
+                and row["response_kind"] != "sdk_failure"
+            ):
                 request_id = row["response"]["explanation"]["request_id"]
                 if request_id in seen_request_ids:
                     raise RunError("retrieval diagnostic reuses a transport request id")
@@ -3590,7 +3926,9 @@ def validate_retrieval_diagnostic(
             if row["response_kind"] == "rejected_response":
                 captures = record.get("captures")
                 route_owner = provenance.get(key[1])
-                capture_id = route_owner.get("capture_id") if isinstance(route_owner, dict) else None
+                capture_id = (
+                    route_owner.get("capture_id") if isinstance(route_owner, dict) else None
+                )
                 capture = captures.get(capture_id) if isinstance(captures, dict) else None
                 expected_pin = row["response"]["expected_generation"]
                 if (
@@ -3655,7 +3993,9 @@ def validate_retrieval_diagnostic(
                     lane_execution.get(lane["lane"], False)
                     or lane_execution.get(f"hybrid.{lane['lane']}", False)
                 ):
-                    raise RunError("retrieval diagnostic contribution names a lane that did not execute")
+                    raise RunError(
+                        "retrieval diagnostic contribution names a lane that did not execute"
+                    )
                 seen_lanes.add(lane["lane"])
             if len(lanes) == 2 and [lane["lane"] for lane in lanes] != ["lexical", "dense"]:
                 raise RunError("retrieval diagnostic lane order is invalid")
@@ -3745,9 +4085,15 @@ def run_quanta_strategy(
         "--query-input-policy",
         spec["execution_profiles"]["quanta"]["policy"],
         "--query-stage-observation",
-        server_observation_configuration(spec.get("query_stage_observation", "enabled"))["query_stages"],
+        server_observation_configuration(spec.get("query_stage_observation", "enabled"))[
+            "query_stages"
+        ],
         "--experimental-hybrid-fetch-floor",
-        str(hybrid_fetch_policy_configuration(spec.get("experimental_hybrid_fetch_floor", "100"))["floor"]),
+        str(
+            hybrid_fetch_policy_configuration(spec.get("experimental_hybrid_fetch_floor", "100"))[
+                "floor"
+            ]
+        ),
         "--strategy",
         name,
         "--routes",
@@ -3875,11 +4221,19 @@ def run_quanta_strategy(
         sha_file(record_path),
         read_json(pack_path),
     )
-    if diagnostic["schema_version"] != 6 or diagnostic["server_observation"] != server_observation_configuration(spec.get("query_stage_observation", "enabled")):
-        raise RunError("current capture omitted or contradicted the actual server observation policy")
-    if diagnostic["hybrid_fetch_policy"] != hybrid_fetch_policy_configuration(spec.get("experimental_hybrid_fetch_floor", "100")):
+    if diagnostic["schema_version"] != 6 or diagnostic[
+        "server_observation"
+    ] != server_observation_configuration(spec.get("query_stage_observation", "enabled")):
+        raise RunError(
+            "current capture omitted or contradicted the actual server observation policy"
+        )
+    if diagnostic["hybrid_fetch_policy"] != hybrid_fetch_policy_configuration(
+        spec.get("experimental_hybrid_fetch_floor", "100")
+    ):
         raise RunError("captured hybrid fetch floor differs from explicit spec policy")
-    if _validate_ingest_diagnostic(diagnostic["ingest"], read_json(record_path)) != ingest_request_identity(spec):
+    if _validate_ingest_diagnostic(
+        diagnostic["ingest"], read_json(record_path)
+    ) != ingest_request_identity(spec):
         raise RunError("captured ingest identity differs from requested batch scope")
     index_bytes = tree_size(state_root)
     phase = _validate_phase_metrics(read_json(phase_path), f"Rust runner phase metrics for {name}")
@@ -4377,10 +4731,7 @@ def _valid_bootstrap_ci(ci: object, sample_count: int, *, estimable: bool) -> bo
     return (
         ci.get("resamples") == 10_000
         and _is_hex(ci.get("seed_sha256"), 64)
-        and all(
-            is_finite_json_number(ci.get(key))
-            for key in ("mean", "lower_95", "upper_95")
-        )
+        and all(is_finite_json_number(ci.get(key)) for key in ("mean", "lower_95", "upper_95"))
         and ci["lower_95"] <= ci["mean"] <= ci["upper_95"]
     )
 
@@ -4583,9 +4934,11 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
         metric_keys,
         where,
     )
-    if system not in ("quanta", "semble") or (
-        system == "semble" and schema_version not in (1, 2)
-    ) or (system == "quanta" and schema_version not in (1, 2)):
+    if (
+        system not in ("quanta", "semble")
+        or (system == "semble" and schema_version not in (1, 2))
+        or (system == "quanta" and schema_version not in (1, 2))
+    ):
         raise RunError(f"{where} has unknown schema/system")
     if system == "semble" and schema_version == 2:
         profile = metrics["profile"]
@@ -4599,11 +4952,7 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
         }:
             raise RunError(f"{where} has unknown Semble profile")
         if profile == "hybrid-no-rerank":
-            if (
-                not is_finite_json_number(alpha)
-                or not 0 <= alpha <= 1
-                or rerank is not False
-            ):
+            if not is_finite_json_number(alpha) or not 0 <= alpha <= 1 or rerank is not False:
                 raise RunError(f"{where} has invalid controlled Semble profile evidence")
         elif alpha is not None or rerank is not (profile == "native-default"):
             raise RunError(f"{where} has invalid Semble profile evidence")
@@ -4720,10 +5069,7 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
                 or set(by_task) != set(schedule)
             ):
                 raise RunError(f"{where} warm latency task map differs from the protocol")
-            if (
-                not is_finite_json_number(cold[route])
-                or cold[route] < 0
-            ):
+            if not is_finite_json_number(cold[route]) or cold[route] < 0:
                 raise RunError(f"{where} cold latency is invalid")
             for task_id, values in by_task.items():
                 if (
@@ -4858,13 +5204,9 @@ def _verify_symbol_coverage_corpus(metrics: dict, corpus: object) -> None:
     if not isinstance(corpus_files, list):
         raise RunError("corpus manifest lacks file list for symbol coverage")
     try:
-        expected_rows = sorted(
-            (entry["path"], entry["file_sha256"])
-            for entry in corpus_files
-        )
+        expected_rows = sorted((entry["path"], entry["file_sha256"]) for entry in corpus_files)
         actual_rows = [
-            (entry["path"], entry["source_sha256"])
-            for entry in metrics["symbol_coverage"]
+            (entry["path"], entry["source_sha256"]) for entry in metrics["symbol_coverage"]
         ]
     except (KeyError, TypeError) as exc:
         raise RunError("malformed symbol coverage or corpus file row") from exc
@@ -4927,10 +5269,7 @@ def _validate_linux_resource_metrics(payload: dict, where: str) -> dict:
             raise RunError(f"{where}.{key} must be nonnegative")
     if metrics["exit_code"] != 0 or metrics["timed_out"] is not False:
         raise RunError(f"{where} does not describe a successful bounded process")
-    if (
-        not is_finite_json_number(metrics["elapsed_ms"])
-        or metrics["elapsed_ms"] <= 0
-    ):
+    if not is_finite_json_number(metrics["elapsed_ms"]) or metrics["elapsed_ms"] <= 0:
         raise RunError(f"{where}.elapsed_ms must be finite and positive")
     if metrics["sampling_complete"] is not True or metrics["cleanup_complete"] is not True:
         raise RunError(f"{where} Linux owner sampling or cleanup is incomplete")
@@ -5107,17 +5446,11 @@ def _validate_resource_metrics(payload: object, where: str) -> dict:
         raise RunError(f"{where}.root_pid must be positive")
     if metrics["exit_code"] != 0 or metrics["timed_out"] is not False:
         raise RunError(f"{where} does not describe a successful bounded process")
-    if (
-        not is_finite_json_number(metrics["elapsed_ms"])
-        or metrics["elapsed_ms"] <= 0
-    ):
+    if not is_finite_json_number(metrics["elapsed_ms"]) or metrics["elapsed_ms"] <= 0:
         raise RunError(f"{where}.elapsed_ms must be finite and positive")
     if type(metrics["peak_rss_bytes"]) is not int or metrics["peak_rss_bytes"] <= 0:
         raise RunError(f"{where}.peak_rss_bytes must be positive")
-    if (
-        not is_finite_json_number(metrics["peak_cpu_percent"])
-        or metrics["peak_cpu_percent"] < 0
-    ):
+    if not is_finite_json_number(metrics["peak_cpu_percent"]) or metrics["peak_cpu_percent"] < 0:
         raise RunError(f"{where}.peak_cpu_percent must be finite and nonnegative")
     processes = metrics["processes"]
     if not isinstance(processes, list) or not processes:
@@ -5577,7 +5910,13 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         resolved["driver_source_closure"] = _resolve_artifact(
             root, artifacts["driver_source_closure"], "artifacts.driver_source_closure"
         )
-        for key in ("admission_manifest", "experiment_custody", "development_suite", "license_receipt", "adjudication_receipt"):
+        for key in (
+            "admission_manifest",
+            "experiment_custody",
+            "development_suite",
+            "license_receipt",
+            "adjudication_receipt",
+        ):
             resolved[key] = _resolve_artifact(root, artifacts[key], f"artifacts.{key}")
         resolved["annotation_receipts"] = [
             _resolve_artifact(root, ref, "artifacts.annotation_receipts")
@@ -5726,9 +6065,9 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             type(protocol_payload["lock_version"]) is int
             and protocol_payload["lock_version"] in (2, 3, 4)
             and type(protocol_payload["retrieval_diagnostic_version"]) is int
-            and protocol_payload["symbol_coverage_policy"] in ("require-complete", "allow-incomplete")
-            and
-            all(
+            and protocol_payload["symbol_coverage_policy"]
+            in ("require-complete", "allow-incomplete")
+            and all(
                 _is_hex(protocol_payload[key], 64)
                 for key in (
                     "suite_digest",
@@ -5879,9 +6218,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             continue
         validated[str(path)] = {"run": run, "rep": rep, "system": system, "strategy": strategy}
         rep_records.setdefault(rep, []).append(str(path))
-    expected_reps = {
-        f"rep-{index:02d}" for index in range(protocol_payload.get("repetitions", 0))
-    }
+    expected_reps = {f"rep-{index:02d}" for index in range(protocol_payload.get("repetitions", 0))}
     if set(rep_records) != expected_reps:
         pair_note("declared_rep_set_mismatch", ("T12", "T13"))
     native_reps: dict[str, list[str]] = {}
@@ -6016,8 +6353,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         for route in protocol_payload.get("quanta_routes", [])
     }
     observed_report_keys = [
-        (entry["strategy"], entry["baseline_route"], entry["candidate_route"])
-        for entry in matched
+        (entry["strategy"], entry["baseline_route"], entry["candidate_route"]) for entry in matched
     ]
     if len(observed_report_keys) != len(set(observed_report_keys)):
         pair_note("duplicate_logical_report", ("T12", "T13"))
@@ -6054,8 +6390,12 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 raise RunError("current pair replay requires phase metrics schema_version 2")
             if metrics["system"] == "quanta":
                 _verify_symbol_coverage_corpus(metrics, corpus_payload)
-                bound_preflights.append(symbol_coverage.verify_artifact(metrics, Path(path), corpus_payload).resolve())
-                if metrics["symbol_coverage_policy"] != protocol_payload.get("symbol_coverage_policy"):
+                bound_preflights.append(
+                    symbol_coverage.verify_artifact(metrics, Path(path), corpus_payload).resolve()
+                )
+                if metrics["symbol_coverage_policy"] != protocol_payload.get(
+                    "symbol_coverage_policy"
+                ):
                     raise RunError("symbol coverage admission policy differs from frozen protocol")
             phase_record_digests.append(metrics["record_sha256"])
             if metrics["record_sha256"] in phase_by_record:
@@ -6073,7 +6413,9 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         except (RunError, ValueError, OSError) as exc:
             phase_ok = False
             pair_note(f"phase_metrics_invalid:{exc}", ("T12",))
-    if sorted(bound_preflights) != sorted(resolved["symbol_preflights"]) or len(bound_preflights) != len(set(bound_preflights)):
+    if sorted(bound_preflights) != sorted(resolved["symbol_preflights"]) or len(
+        bound_preflights
+    ) != len(set(bound_preflights)):
         phase_ok = False
         pair_note("symbol_preflight_archive_inventory_mismatch", ("T12",))
     if set(phase_record_digests) != record_digests or len(phase_record_digests) != len(
@@ -6243,12 +6585,19 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             ref = run_entry.get("record")
             want = run_entry.get("record_digest")
             try:
-                phase_path = _resolve_artifact(path.parent, run_entry.get("phase_metrics"), "capture phase")
-                preflight_path = _resolve_artifact(path.parent, run_entry.get("symbol_preflight"), "capture preflight")
+                phase_path = _resolve_artifact(
+                    path.parent, run_entry.get("phase_metrics"), "capture phase"
+                )
+                preflight_path = _resolve_artifact(
+                    path.parent, run_entry.get("symbol_preflight"), "capture preflight"
+                )
                 phase_payload = read_json(phase_path)
-                if (phase_payload["record_sha256"] != want
-                        or preflight_path != (phase_path.parent / phase_payload["symbol_preflight_out"]).resolve()
-                        or sha_file(preflight_path) != phase_payload["symbol_preflight_sha256"]):
+                if (
+                    phase_payload["record_sha256"] != want
+                    or preflight_path
+                    != (phase_path.parent / phase_payload["symbol_preflight_out"]).resolve()
+                    or sha_file(preflight_path) != phase_payload["symbol_preflight_sha256"]
+                ):
                     raise RunError("capture preflight owner binding differs")
             except (KeyError, TypeError, ValueError, OSError) as exc:
                 phase_ok = False
@@ -6303,11 +6652,21 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                         raise RunError(
                             "retrieval diagnostic version differs from the current protocol lock"
                         )
-                    if diagnostic["schema_version"] in (5, 6) and diagnostic["server_observation"] != protocol_payload.get("server_observation"):
-                        raise RunError("retrieval diagnostic server configuration differs from protocol")
-                    if diagnostic["schema_version"] == 6 and diagnostic["hybrid_fetch_policy"] != protocol_payload.get("hybrid_fetch_policy"):
-                        raise RunError("retrieval diagnostic hybrid fetch policy differs from protocol")
-                    if diagnostic["schema_version"] in (5, 6) and _validate_ingest_diagnostic(diagnostic["ingest"], record_payload) != protocol_payload.get("ingest_request_identity"):
+                    if diagnostic["schema_version"] in (5, 6) and diagnostic[
+                        "server_observation"
+                    ] != protocol_payload.get("server_observation"):
+                        raise RunError(
+                            "retrieval diagnostic server configuration differs from protocol"
+                        )
+                    if diagnostic["schema_version"] == 6 and diagnostic[
+                        "hybrid_fetch_policy"
+                    ] != protocol_payload.get("hybrid_fetch_policy"):
+                        raise RunError(
+                            "retrieval diagnostic hybrid fetch policy differs from protocol"
+                        )
+                    if diagnostic["schema_version"] in (5, 6) and _validate_ingest_diagnostic(
+                        diagnostic["ingest"], record_payload
+                    ) != protocol_payload.get("ingest_request_identity"):
                         raise RunError("retrieval diagnostic ingest identity differs from protocol")
                 except (KeyError, TypeError, ValueError, OSError) as exc:
                     pair_note(f"retrieval_diagnostic_invalid:{exc}", ("T12",))
@@ -6366,9 +6725,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                         raise RunError("model cache revision differs from adapter")
                     if cache_manifest["model_id"] != adapter.get("model_id"):
                         raise RunError("model cache id differs from adapter")
-                    if cache_manifest["model_asset_digest"] != adapter.get(
-                        "model_asset_digest"
-                    ):
+                    if cache_manifest["model_asset_digest"] != adapter.get("model_asset_digest"):
                         raise RunError("model cache asset digest differs from adapter")
                     model_cache_identities.add(
                         (
@@ -6388,9 +6745,8 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 (Path(path) for path in model_cache_paths if "rep-00" in Path(path).parts),
                 None,
             )
-            if (
-                rep0_model_cache is None
-                or adapter.get("model_cache_manifest_digest") != sha_file(rep0_model_cache)
+            if rep0_model_cache is None or adapter.get("model_cache_manifest_digest") != sha_file(
+                rep0_model_cache
             ):
                 pair_note("adapter_model_cache_binding_broken", ("T11", "T12"))
         if protocol_payload.get("retrieval_diagnostic_version") in (3, 4, 5, 6):
@@ -6405,9 +6761,11 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             if adapter.get("rerank_applied") is not expected_rerank:
                 pair_note("semble_rerank_profile_drift", ("T11", "T12"))
             lane_counts = adapter.get("lane_call_counts")
-            if not isinstance(lane_counts, dict) or set(lane_counts) != {
-                "bm25", "semantic", "encode"
-            } or any(type(value) is not int or value < 0 for value in lane_counts.values()):
+            if (
+                not isinstance(lane_counts, dict)
+                or set(lane_counts) != {"bm25", "semantic", "encode"}
+                or any(type(value) is not int or value < 0 for value in lane_counts.values())
+            ):
                 pair_note("semble_lane_counts_malformed", ("T11",))
             elif (
                 expected_mode == "lexical-only"
@@ -6429,8 +6787,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 "requested_alpha",
             )
             if not isinstance(rep0_native, dict) or any(
-                adapter.get(field) != rep0_native.get(field)
-                for field in manifest_native_fields
+                adapter.get(field) != rep0_native.get(field) for field in manifest_native_fields
             ):
                 pair_note("adapter_native_actual_call_binding_broken", ("T11", "T12"))
     mapping_diff = mapping_payload.get("diff_digest") if isinstance(mapping_payload, dict) else None
@@ -7143,7 +7500,8 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             if ref not in resolved:
                 raise RunError("no artifact")
             conditional = _validate_parity_results_shape(
-                read_json(resolved[ref]), f"{key} results",
+                read_json(resolved[ref]),
+                f"{key} results",
                 "model_vectors" if key == "model_parity" else "incremental_rows",
             )
             if sha_file(resolved[ref]) != evidence[key]["test_result_digest"]:
@@ -7154,8 +7512,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 for capture in entry["run"].get("captures", {}).values()
             ]
             if not model_rows or any(
-                not isinstance(value, str) or not value
-                for row in model_rows for value in row
+                not isinstance(value, str) or not value for row in model_rows for value in row
             ):
                 raise RunError(f"{tid} lacks frozen model identity")
             suite_identity = read_json(resolved["suite"])
@@ -7167,15 +7524,19 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 dependency_sha256=sha_file(resolved["semble_lockfile"]),
             )
             from tools.benchmark.retrieval import conditional_proof
+
             kind = "model_vectors" if key == "model_parity" else "incremental_rows"
             conditional_proof.validate_results(conditional, kind, verify_source=True)
             context = conditional["execution_context"]
-            if context["suite"]["sha256"] != sha_file(resolved["suite"]) \
-                or context["corpus"]["sha256"] != sha_file(resolved["corpus_manifest"]) \
-                or conditional_proof.load(conditional_proof.decode(context["records"])) != sorted(
+            if (
+                context["suite"]["sha256"] != sha_file(resolved["suite"])
+                or context["corpus"]["sha256"] != sha_file(resolved["corpus_manifest"])
+                or conditional_proof.load(conditional_proof.decode(context["records"]))
+                != sorted(
                     [read_json(Path(path)) for path in validated],
                     key=lambda record: conditional_proof.sha(conditional_proof.canonical(record)),
-                ):
+                )
+            ):
                 raise RunError("conditional execution inputs differ from frozen pair")
             if conditional["status"] != "pass" or conditional["failed"] != 0:
                 raise RunError("conditional raw replay reports failure")
@@ -7535,8 +7896,12 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
         "lock_version": 4,
         "retrieval_diagnostic_version": 6,
         "symbol_coverage_policy": spec.get("symbol_coverage_policy", "require-complete"),
-        "server_observation": server_observation_configuration(spec.get("query_stage_observation", "enabled")),
-        "hybrid_fetch_policy": hybrid_fetch_policy_configuration(spec.get("experimental_hybrid_fetch_floor", "100")),
+        "server_observation": server_observation_configuration(
+            spec.get("query_stage_observation", "enabled")
+        ),
+        "hybrid_fetch_policy": hybrid_fetch_policy_configuration(
+            spec.get("experimental_hybrid_fetch_floor", "100")
+        ),
         "ingest_request_identity": ingest_request_identity(spec),
         "rank_metric_k_policy": "declared_top_k_v1",
         "suite_digest": sha_file(Path(spec["suite"])),
@@ -7991,8 +8356,11 @@ def _verify_receipt_inputs(receipt: dict, expected: dict[str, Path], where: str)
 
 
 def _context_log_names(rail: str) -> set[str]:
-    return {f"{name}.{stream}" for name in CONTEXT_COMMAND_NAMES[rail]
-            for stream in ("stdout", "stderr")}
+    return {
+        f"{name}.{stream}"
+        for name in CONTEXT_COMMAND_NAMES[rail]
+        for stream in ("stdout", "stderr")
+    }
 
 
 def _context_archive_limits(rail: str) -> raw_archive.ArchiveLimits:
@@ -8015,13 +8383,19 @@ def _frozen_context_logs(path: Path | RawFile, rail: str):
     with tempfile.TemporaryDirectory(prefix="retrieval-command-logs-") as directory:
         root = Path(directory).resolve(strict=True)
         try:
-            raw_archive.unpack(path if isinstance(path, RawFile) else RawFile.capture(path), root,
-                               limits=_context_archive_limits(rail), admit_names=admit)
+            raw_archive.unpack(
+                path if isinstance(path, RawFile) else RawFile.capture(path),
+                root,
+                limits=_context_archive_limits(rail),
+                admit_names=admit,
+            )
             logs = {name: RawFile.capture(root / name) for name in expected}
             if sum(log.size for log in logs.values()) > MAX_CONTEXT_LOG_BYTES:
                 raise RunError("oversized command logs")
         except (OSError, ValueError) as exc:
-            raise RunError(f"{rail} execution context cannot inspect frozen command logs: {exc}") from exc
+            raise RunError(
+                f"{rail} execution context cannot inspect frozen command logs: {exc}"
+            ) from exc
         yield logs
 
 
@@ -8076,7 +8450,9 @@ def _verify_execution_context(
         or not _is_hex(context["revision"], 40)
     ):
         raise RunError(f"{where} schema/rail/revision mismatch")
-    closure = _validate_source_closure_shape(_proof_control(closure_file), f"{where} source closure")
+    closure = _validate_source_closure_shape(
+        _proof_control(closure_file), f"{where} source closure"
+    )
     if context["revision"] != closure["revision"]:
         raise RunError(f"{where} source revision mismatch")
     expected_raw = {"source-closure.json": closure_file, **raw_files}
@@ -8223,15 +8599,19 @@ def _verify_context_commands(commands, expected, logs, raw, collection_name, rai
                 raise RunError(f"{where} frozen command output digest mismatch: {command[stream]}")
             if stream == "stdout" and name in {"rust-build", "metadata", "rust-collection"}:
                 reuse_build_raw[name] = output
-            raw_name = {"rust-collection": collection_name,
-                        "rust-test": "nextest.jsonl" if rail == "sdk" else "rust-nextest.jsonl"}.get(name)
+            raw_name = {
+                "rust-collection": collection_name,
+                "rust-test": "nextest.jsonl" if rail == "sdk" else "rust-nextest.jsonl",
+            }.get(name)
             if stream == "stdout" and raw_name is not None:
                 if observed_digest != raw[raw_name].sha256.removeprefix("sha256:"):
                     raise RunError(f"{where} raw evidence differs from command output: {name}")
     try:
         portable_proof.verify_reused_build(
-            reuse_build_raw["rust-build"], reuse_build_raw["metadata"],
-            reuse_build_raw["rust-collection"], workspace_root=Path(commands[0]["cwd"]),
+            reuse_build_raw["rust-build"],
+            reuse_build_raw["metadata"],
+            reuse_build_raw["rust-collection"],
+            workspace_root=Path(commands[0]["cwd"]),
         )
     except ValueError as exc:
         raise RunError(f"{where} native reused build refused: {exc}") from exc
@@ -8320,8 +8700,12 @@ def _validate_sdk_results_shape(payload: object, where: str) -> dict:
 
 
 def _require_conditional_identity(
-    results: dict, *, source_revision: str, repository_commit: str,
-    model_sha256: str, dependency_sha256: str,
+    results: dict,
+    *,
+    source_revision: str,
+    repository_commit: str,
+    model_sha256: str,
+    dependency_sha256: str,
 ) -> None:
     identity = results["identity"]
     if identity != {
@@ -8336,6 +8720,7 @@ def _require_conditional_identity(
 def _validate_parity_results_shape(payload: object, where: str, raw_kind: str) -> dict:
     if isinstance(payload, dict) and payload.get("schema_version") == 2:
         from tools.benchmark.retrieval import conditional_proof
+
         try:
             return conditional_proof.validate_results(payload, raw_kind)
         except (ValueError, KeyError, TypeError, IndexError) as error:
@@ -8343,8 +8728,16 @@ def _validate_parity_results_shape(payload: object, where: str, raw_kind: str) -
     results = _exact_keys(
         payload,
         {
-            "schema_version", "command", "status", "selected", "executed", "passed",
-            "failed", "identity", "raw_proof", "execution_receipt",
+            "schema_version",
+            "command",
+            "status",
+            "selected",
+            "executed",
+            "passed",
+            "failed",
+            "identity",
+            "raw_proof",
+            "execution_receipt",
         },
         where,
     )
@@ -8363,8 +8756,12 @@ def _validate_parity_results_shape(payload: object, where: str, raw_kind: str) -
         {"source_revision", "repository_commit", "model_sha256", "dependency_sha256"},
         f"{where}.identity",
     )
-    for key, length in (("source_revision", 40), ("repository_commit", 40),
-                        ("model_sha256", 64), ("dependency_sha256", 64)):
+    for key, length in (
+        ("source_revision", 40),
+        ("repository_commit", 40),
+        ("model_sha256", 64),
+        ("dependency_sha256", 64),
+    ):
         if not _is_hex(identity[key], length):
             raise RunError(f"{where}.identity.{key} has invalid digest")
     raw = _exact_keys(results["raw_proof"], {"kind", "rows"}, f"{where}.raw_proof")
@@ -8375,28 +8772,32 @@ def _validate_parity_results_shape(payload: object, where: str, raw_kind: str) -
     for index, value in enumerate(raw["rows"]):
         row_where = f"{where}.raw_proof.rows[{index}]"
         if raw_kind == "model_vectors":
-            row = _exact_keys(
-                value, {"case_id", "reference_vector", "observed_vector"}, row_where
-            )
+            row = _exact_keys(value, {"case_id", "reference_vector", "observed_vector"}, row_where)
             reference = row["reference_vector"]
             observed = row["observed_vector"]
             if (
-                not isinstance(reference, list) or not reference or len(reference) > 4096
-                or not isinstance(observed, list) or len(reference) != len(observed)
-                or any(type(component) not in (int, float)
-                       or abs(component) > 1_000_000 or not math.isfinite(component)
-                       for vector in (reference, observed) for component in vector)
+                not isinstance(reference, list)
+                or not reference
+                or len(reference) > 4096
+                or not isinstance(observed, list)
+                or len(reference) != len(observed)
+                or any(
+                    type(component) not in (int, float)
+                    or abs(component) > 1_000_000
+                    or not math.isfinite(component)
+                    for vector in (reference, observed)
+                    for component in vector
+                )
             ):
                 raise RunError(f"{row_where} has invalid raw vectors")
             passed += reference == observed
         elif raw_kind == "incremental_rows":
-            row = _exact_keys(
-                value, {"case_id", "fresh_row_ids", "incremental_row_ids"}, row_where
-            )
+            row = _exact_keys(value, {"case_id", "fresh_row_ids", "incremental_row_ids"}, row_where)
             for key in ("fresh_row_ids", "incremental_row_ids"):
                 ids = row[key]
                 if (
-                    not isinstance(ids, list) or not ids
+                    not isinstance(ids, list)
+                    or not ids
                     or any(not isinstance(item, str) or not item for item in ids)
                     or ids != sorted(set(ids))
                 ):
@@ -8411,24 +8812,34 @@ def _validate_parity_results_shape(payload: object, where: str, raw_kind: str) -
     if cases != sorted(set(cases)):
         raise RunError(f"{where} raw case IDs must be sorted and unique")
     if (
-        results["selected"] != len(cases) or results["executed"] != len(cases)
-        or results["passed"] != passed or results["failed"] != len(cases) - passed
+        results["selected"] != len(cases)
+        or results["executed"] != len(cases)
+        or results["passed"] != passed
+        or results["failed"] != len(cases) - passed
         or (results["status"] == "pass") != (results["failed"] == 0)
     ):
         raise RunError(f"{where} summary differs from raw {raw_kind} rows")
     receipt = _exact_keys(
         results["execution_receipt"],
         {
-            "schema_version", "command", "exit_code", "source_revision",
-            "repository_commit", "model_sha256", "dependency_sha256",
-            "runner_binary_sha256", "raw_sha256",
+            "schema_version",
+            "command",
+            "exit_code",
+            "source_revision",
+            "repository_commit",
+            "model_sha256",
+            "dependency_sha256",
+            "runner_binary_sha256",
+            "raw_sha256",
         },
         f"{where}.execution_receipt",
     )
     if (
-        type(receipt["schema_version"]) is not int or receipt["schema_version"] != 1
+        type(receipt["schema_version"]) is not int
+        or receipt["schema_version"] != 1
         or receipt["command"] != results["command"]
-        or type(receipt["exit_code"]) is not int or receipt["exit_code"] != 0
+        or type(receipt["exit_code"]) is not int
+        or receipt["exit_code"] != 0
         or any(receipt[key] != identity[key] for key in identity)
         or not _is_hex(receipt["runner_binary_sha256"], 64)
         or receipt["raw_sha256"] != digest(canonical(raw))
@@ -8463,11 +8874,16 @@ def freeze_receipts(spec: dict, stage: Path) -> dict[str, str]:
             continue
         source_dir = Path(receipts[key]).parent
         context = _proof_control(Path(frozen[key]))
-        if not isinstance(context, dict) or type(context.get("schema_version")) is not int \
-            or context["schema_version"] != portable_proof.EXECUTION_CONTEXT_VERSION:
+        if (
+            not isinstance(context, dict)
+            or type(context.get("schema_version")) is not int
+            or context["schema_version"] != portable_proof.EXECUTION_CONTEXT_VERSION
+        ):
             raise RunError("execution context schema mismatch during freeze")
         try:
-            selected = portable_proof.selected_test_binaries(RawFile.capture(source_dir / "rust-collection.stdout"))
+            selected = portable_proof.selected_test_binaries(
+                RawFile.capture(source_dir / "rust-collection.stdout")
+            )
         except (OSError, ValueError) as exc:
             raise RunError(f"cannot freeze selected executable collection: {exc}") from exc
         roles = set(selected) | ({"runner", "searchd"} if rail == "sdk" else set())
@@ -8476,9 +8892,13 @@ def freeze_receipts(spec: dict, stage: Path) -> dict[str, str]:
         binary_root.mkdir(exist_ok=True)
         for role, row in binaries.items():
             binary = _exact_keys(row, {"path", "sha256"}, "execution context binary")
-            if not isinstance(binary["path"], str) or not Path(binary["path"]).is_absolute() \
-                or not _is_hex(binary["sha256"], 64) \
-                or role in selected and binary["path"] != str(selected[role]):
+            if (
+                not isinstance(binary["path"], str)
+                or not Path(binary["path"]).is_absolute()
+                or not _is_hex(binary["sha256"], 64)
+                or role in selected
+                and binary["path"] != str(selected[role])
+            ):
                 raise RunError("execution context binary differs from selected collection")
             source_binary = Path(binary["path"])
             try:
@@ -8856,7 +9276,8 @@ def build_run_manifest(
     if "model_parity_results" in frozen:
         _validate_parity_results_shape(
             read_json(Path(frozen["model_parity_results"])),
-            "model parity results", "model_vectors",
+            "model parity results",
+            "model_vectors",
         )
         evidence["model_parity"] = {
             "test_result_digest": sha_file(Path(frozen["model_parity_results"]))
@@ -8864,7 +9285,8 @@ def build_run_manifest(
     if "incremental_results" in frozen:
         _validate_parity_results_shape(
             read_json(Path(frozen["incremental_results"])),
-            "incremental results", "incremental_rows",
+            "incremental results",
+            "incremental_rows",
         )
         evidence["incremental"] = {
             "test_result_digest": sha_file(Path(frozen["incremental_results"]))
@@ -9046,7 +9468,7 @@ def run_semble_capture(
     adapter = Path(spec.get("_semble_adapter", Path(__file__).resolve().parent / "semble.py"))
     command = [
         sys.executable,
-        *( ["-I", "-S"] if adapter.suffix == ".pyz" else [] ),
+        *(["-I", "-S"] if adapter.suffix == ".pyz" else []),
         str(adapter),
         "run",
         "--repo",

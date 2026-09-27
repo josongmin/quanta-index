@@ -90,7 +90,10 @@ def test_verification_contract_keeps_routine_checks_lightweight():
     assert result.returncode == 0, result.stderr
     text = " ".join(result.stdout.split())
     assert "Terminal output is sufficient" in text
-    assert "no saved log, snapshot, receipt, digest, environment inventory or clean checkout is required by default" in text
+    assert (
+        "no saved log, snapshot, receipt, digest, environment inventory or clean checkout is required by default"
+        in text
+    )
     assert "unrelated dirty work does not invalidate a focused result" in text
     assert "`VERIFIED` requires all of the following" not in text
 

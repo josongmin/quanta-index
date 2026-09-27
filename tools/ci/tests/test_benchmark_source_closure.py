@@ -92,7 +92,10 @@ def test_normative_benchmark_files_are_bound() -> None:
 
 def test_semantic_decision_is_bound_by_retrieval_closure() -> None:
     module = _closure_module()
-    assert "docs/adr/MAY-31-001-lancedb-semantic-generation-authority.md" in module.PROFILES["retrieval"]["paths"]
+    assert (
+        "docs/adr/MAY-31-001-lancedb-semantic-generation-authority.md"
+        in module.PROFILES["retrieval"]["paths"]
+    )
 
 
 def test_portable_execution_transitively_binds_file_custody_owner() -> None:
@@ -119,15 +122,32 @@ def test_local_patch_below_registry_dependency_remains_in_source_closure(tmp_pat
     module = _closure_module()
     metadata = {
         "packages": [
-            {"id": "app", "name": "app", "source": None, "manifest_path": str(tmp_path / "app/Cargo.toml")},
-            {"id": "registry", "name": "registry", "source": "registry+https://example.invalid", "manifest_path": "/external/registry/Cargo.toml"},
-            {"id": "patch", "name": "patch", "source": None, "manifest_path": str(tmp_path / "vendor/patch/Cargo.toml")},
+            {
+                "id": "app",
+                "name": "app",
+                "source": None,
+                "manifest_path": str(tmp_path / "app/Cargo.toml"),
+            },
+            {
+                "id": "registry",
+                "name": "registry",
+                "source": "registry+https://example.invalid",
+                "manifest_path": "/external/registry/Cargo.toml",
+            },
+            {
+                "id": "patch",
+                "name": "patch",
+                "source": None,
+                "manifest_path": str(tmp_path / "vendor/patch/Cargo.toml"),
+            },
         ],
-        "resolve": {"nodes": [
-            {"id": "app", "dependencies": ["registry"]},
-            {"id": "registry", "dependencies": ["patch"]},
-            {"id": "patch", "dependencies": []},
-        ]},
+        "resolve": {
+            "nodes": [
+                {"id": "app", "dependencies": ["registry"]},
+                {"id": "registry", "dependencies": ["patch"]},
+                {"id": "patch", "dependencies": []},
+            ]
+        },
     }
     monkeypatch.setattr(module, "_metadata", lambda _repo: metadata)
     assert module._cargo_roots(tmp_path, ("app",)) == {"app", "vendor/patch"}
@@ -273,9 +293,18 @@ def test_unrelated_planning_edit_does_not_invalidate(tmp_path: Path) -> None:
         ("benchmark-control-plane", "tools/benchmark/native_contracts.py"),
         ("benchmark-control-plane", "uv.lock"),
         ("benchmark-control-plane", "scripts/quanta-index-env.sh"),
-        ("benchmark-control-plane", "docs/adr/JUN-08-001-verification-hellgate-and-benchmark-separation.md"),
-        ("benchmark-control-plane", "docs/adr/SEP-26-003-retrieval-evidence-custody-and-qualification.md"),
-        ("benchmark-control-plane", "docs/adr/SEP-27-002-single-benchmark-orchestrator-and-typed-evidence.md"),
+        (
+            "benchmark-control-plane",
+            "docs/adr/JUN-08-001-verification-hellgate-and-benchmark-separation.md",
+        ),
+        (
+            "benchmark-control-plane",
+            "docs/adr/SEP-26-003-retrieval-evidence-custody-and-qualification.md",
+        ),
+        (
+            "benchmark-control-plane",
+            "docs/adr/SEP-27-002-single-benchmark-orchestrator-and-typed-evidence.md",
+        ),
         ("retrieval", "docs/adr/MAY-31-001-lancedb-semantic-generation-authority.md"),
         ("retrieval", "tools/ci/lint/rust_attribute_policy.py"),
     ],

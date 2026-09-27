@@ -69,9 +69,7 @@ def load_baseline() -> dict[str, int]:
             result[key] = value
         return result
 
-    values = json.loads(
-        BASELINE_PATH.read_text(encoding="utf-8"), object_pairs_hook=unique_object
-    )
+    values = json.loads(BASELINE_PATH.read_text(encoding="utf-8"), object_pairs_hook=unique_object)
     if not isinstance(values, dict) or not values:
         raise ValueError("LLVM baseline must be a nonempty object")
     for package, lines in values.items():

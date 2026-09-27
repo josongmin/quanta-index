@@ -134,7 +134,9 @@ def _canonical_result_path(path: object) -> bool:
         and not path.startswith("/")
         and "\\" not in path
         and "\x00" not in path
-        and all(part not in ("", ".", "..") and part.casefold() != ".git" for part in path.split("/"))
+        and all(
+            part not in ("", ".", "..") and part.casefold() != ".git" for part in path.split("/")
+        )
     )
 
 
@@ -246,7 +248,9 @@ def product_result(
             if (
                 not isinstance(paths, list)
                 or len(paths) > 10
-                or any(not _canonical_result_path(value) or value not in universe for value in paths)
+                or any(
+                    not _canonical_result_path(value) or value not in universe for value in paths
+                )
                 or len(paths) != len(set(paths))
             ):
                 raise ValueError(f"{product}: {task_id} malformed result paths")

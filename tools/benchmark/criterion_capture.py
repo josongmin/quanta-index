@@ -418,12 +418,18 @@ def capture(
             "--no-run",
             "--message-format=json",
         ]
-        output, stderr, build_command = current_capture().execute(execute,
-            build_argv, cwd=repo, env=env, timeout=timeout, log_dir=work / "execution" / "build"
+        output, stderr, build_command = current_capture().execute(
+            execute,
+            build_argv,
+            cwd=repo,
+            env=env,
+            timeout=timeout,
+            log_dir=work / "execution" / "build",
         )
         binary, features = _binary(output, producer["target"])
         binary_digest = RawFile.capture(binary).sha256
-        rustc, rustc_stderr, _ = current_capture().execute(execute,
+        rustc, rustc_stderr, _ = current_capture().execute(
+            execute,
             ["rustc", "-vV"],
             cwd=repo,
             env=env,
@@ -441,7 +447,8 @@ def capture(
         )
         if target is None:
             raise EvidenceError("rustc did not report a target triple")
-        listing, list_stderr, _ = current_capture().execute(execute,
+        listing, list_stderr, _ = current_capture().execute(
+            execute,
             [str(binary), "--list", "--format", "terse"],
             cwd=repo,
             env=env,
@@ -455,7 +462,8 @@ def capture(
             file=sys.stderr,
             flush=True,
         )
-        smoke, smoke_stderr, _ = current_capture().execute(execute,
+        smoke, smoke_stderr, _ = current_capture().execute(
+            execute,
             [str(binary), "--test"],
             cwd=repo,
             env=env,
@@ -475,7 +483,8 @@ def capture(
             "--nresamples",
             str(resamples),
         ]
-        measured, measure_stderr, command = current_capture().execute(execute,
+        measured, measure_stderr, command = current_capture().execute(
+            execute,
             measure_argv,
             cwd=repo,
             env=env,

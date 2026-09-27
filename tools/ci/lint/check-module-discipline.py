@@ -61,8 +61,10 @@ class Violation:
 def workspace_members() -> list[Path]:
     data = tomllib.loads(WORKSPACE_TOML.read_text(encoding="utf-8"))
     members = data.get("workspace", {}).get("members")
-    if not isinstance(members, list) or not members or any(
-        not isinstance(member, str) or not member for member in members
+    if (
+        not isinstance(members, list)
+        or not members
+        or any(not isinstance(member, str) or not member for member in members)
     ):
         raise ValueError("workspace.members must be a nonempty list of paths")
     directories: list[Path] = []

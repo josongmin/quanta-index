@@ -19,8 +19,20 @@ LAUNCHER = ROOT / "tools/ci/resource_admission.py"
 
 
 def command(lock, script, *, wait=5, timeout=10):
-    return [sys.executable, str(LAUNCHER), "--lock", str(lock), "--wait-seconds", str(wait),
-            "--timeout-seconds", str(timeout), "--", sys.executable, "-c", script]
+    return [
+        sys.executable,
+        str(LAUNCHER),
+        "--lock",
+        str(lock),
+        "--wait-seconds",
+        str(wait),
+        "--timeout-seconds",
+        str(timeout),
+        "--",
+        sys.executable,
+        "-c",
+        script,
+    ]
 
 
 def wait_file(path):
@@ -57,11 +69,13 @@ with Path({str(events)!r}).open('a') as stream:
 """
     processes = []
     try:
-        processes.append(subprocess.Popen(command(lock, script), stdout=subprocess.PIPE,
-                                          stderr=subprocess.PIPE))
+        processes.append(
+            subprocess.Popen(command(lock, script), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        )
         wait_file(entered)
-        processes.append(subprocess.Popen(command(lock, script), stdout=subprocess.PIPE,
-                                          stderr=subprocess.PIPE))
+        processes.append(
+            subprocess.Popen(command(lock, script), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        )
         for process in processes:
             stdout, stderr = process.communicate(timeout=10)
             assert process.returncode == 0, stderr.decode()
@@ -83,8 +97,11 @@ def test_wait_timeout_or_cancellation_never_launches_command(tmp_path, cancel):
     lock, marker = tmp_path / "slot", tmp_path / "launched"
     with lock.open("w") as stream:
         fcntl.flock(stream, fcntl.LOCK_EX)
-        process = subprocess.Popen(command(lock, f"open({str(marker)!r},'w').close()", wait=1),
-                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        process = subprocess.Popen(
+            command(lock, f"open({str(marker)!r},'w').close()", wait=1),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
         try:
             # Read the explicit wait diagnostic before cancellation; no sleep race.
             assert b"waiting" in process.stderr.readline()
@@ -101,12 +118,17 @@ def test_wait_timeout_or_cancellation_never_launches_command(tmp_path, cancel):
 
 @pytest.mark.parametrize("exit_code", [0, 7])
 def test_real_child_exit_code_is_preserved(tmp_path, exit_code):
-    result = subprocess.run(command(tmp_path / "slot", f"raise SystemExit({exit_code})"),
-                            capture_output=True, timeout=10)
+    result = subprocess.run(
+        command(tmp_path / "slot", f"raise SystemExit({exit_code})"),
+        capture_output=True,
+        timeout=10,
+    )
     assert result.returncode == exit_code, result.stderr.decode()
 
 
-def test_phase_durations_use_one_controller_clock_without_changing_exit_status(tmp_path, monkeypatch, capsys):
+def test_phase_durations_use_one_controller_clock_without_changing_exit_status(
+    tmp_path, monkeypatch, capsys
+):
     from tools.ci import resource_admission as admission
 
     ticks = iter([100, 180, 430])
@@ -119,9 +141,11 @@ def test_phase_durations_use_one_controller_clock_without_changing_exit_status(t
 
 
 def test_child_signal_exit_is_preserved(tmp_path):
-    result = subprocess.run(command(tmp_path / "slot",
-                                    "import os,signal;os.kill(os.getpid(),signal.SIGTERM)"),
-                            capture_output=True, timeout=10)
+    result = subprocess.run(
+        command(tmp_path / "slot", "import os,signal;os.kill(os.getpid(),signal.SIGTERM)"),
+        capture_output=True,
+        timeout=10,
+    )
     assert result.returncode == 128 + signal.SIGTERM, result.stderr.decode()
 
 
@@ -137,8 +161,9 @@ def test_invalid_lock_path_refuses_before_launch(tmp_path, kind):
             lock.symlink_to(other)
         else:
             os.link(other, lock)
-    result = subprocess.run(command(lock, f"open({str(marker)!r},'w').close()"),
-                            capture_output=True, timeout=5)
+    result = subprocess.run(
+        command(lock, f"open({str(marker)!r},'w').close()"), capture_output=True, timeout=5
+    )
     assert result.returncode == 126
     assert not marker.exists()
 
@@ -162,7 +187,7 @@ for fd in range(3,256):
  except OSError: continue
  if (row.st_dev,row.st_ino)==(lock.st_dev,lock.st_ino):raise RuntimeError('lease leaked into command')
 child=subprocess.Popen([sys.executable,'-c',{grandchild!r}])
-pending=Path({str(info.with_suffix('.tmp'))!r})
+pending=Path({str(info.with_suffix(".tmp"))!r})
 pending.write_text(json.dumps([os.getpid(),os.getppid(),child.pid]))
 pending.replace({str(info)!r})
 time.sleep(60)
@@ -174,19 +199,25 @@ time.sleep(60)
         wait_file(info)
         wait_file(grandchild_info)
         pids = json.loads(info.read_text())
-        waiter = subprocess.Popen(command(lock, f"open({str(next_marker)!r},'w').close()"),
-                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        waiter = subprocess.Popen(
+            command(lock, f"open({str(next_marker)!r},'w').close()"),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
         assert b"waiting" in waiter.stderr.readline()
         os.kill(holder.pid, controller_signal)
         _, holder_error = holder.communicate(timeout=15)
-        assert holder.returncode == (143 if controller_signal == signal.SIGTERM else -signal.SIGKILL), holder_error.decode()
+        assert holder.returncode == (
+            143 if controller_signal == signal.SIGTERM else -signal.SIGKILL
+        ), holder_error.decode()
         _, error = waiter.communicate(timeout=15)
         assert waiter.returncode == 0, error.decode()
         assert next_marker.exists()
         # Orphan zombies cannot execute; platforms may reap them asynchronously.
         for pid in pids:
-            result = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True,
-                                    text=True, timeout=5)
+            result = subprocess.run(
+                ["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True, timeout=5
+            )
             assert not result.stdout.strip() or result.stdout.strip().startswith("Z")
     finally:
         finish(holder)
@@ -201,8 +232,9 @@ time.sleep(60)
 
 def test_execution_timeout_cleans_then_releases_slot(tmp_path):
     lock = tmp_path / "slot"
-    result = subprocess.run(command(lock, "import time;time.sleep(60)", timeout=1),
-                            capture_output=True, timeout=15)
+    result = subprocess.run(
+        command(lock, "import time;time.sleep(60)", timeout=1), capture_output=True, timeout=15
+    )
     assert result.returncode == 124, result.stderr.decode()
     again = subprocess.run(command(lock, "raise SystemExit(0)"), capture_output=True, timeout=5)
     assert again.returncode == 0, again.stderr.decode()
@@ -225,14 +257,18 @@ def test_stopped_guard_keeps_lease_after_controller_is_killed(tmp_path):
         os.kill(guard, signal.SIGSTOP)
         holder.kill()
         assert holder.wait(timeout=5) == -signal.SIGKILL
-        blocked = subprocess.run(command(lock, f"open({str(marker)!r},'w').close()", wait=1),
-                                 capture_output=True, timeout=5)
+        blocked = subprocess.run(
+            command(lock, f"open({str(marker)!r},'w').close()", wait=1),
+            capture_output=True,
+            timeout=5,
+        )
         assert blocked.returncode == 124, blocked.stderr.decode()
         assert not marker.exists()
         os.kill(guard, signal.SIGCONT)
         holder.communicate(timeout=10)
-        resumed = subprocess.run(command(lock, "raise SystemExit(0)"), capture_output=True,
-                                 timeout=10)
+        resumed = subprocess.run(
+            command(lock, "raise SystemExit(0)"), capture_output=True, timeout=10
+        )
         assert resumed.returncode == 0, resumed.stderr.decode()
     finally:
         if guard is not None:

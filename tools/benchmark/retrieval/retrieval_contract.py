@@ -62,9 +62,7 @@ def _git(repo: Path, *args: str) -> str:
 def verify_repo(repo: Path, commit: str) -> Path:
     if not repo.is_dir():
         raise ValueError(f"repository checkout missing: {repo}")
-    root_text, separator, head = _git(
-        repo, "rev-parse", "--show-toplevel", "HEAD"
-    ).rpartition("\n")
+    root_text, separator, head = _git(repo, "rev-parse", "--show-toplevel", "HEAD").rpartition("\n")
     if not separator or not root_text or not head:
         raise ValueError("repository Git evidence unavailable")
     root = Path(root_text).resolve()

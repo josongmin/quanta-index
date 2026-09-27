@@ -9,7 +9,7 @@ import os
 
 import pytest
 
-from tools.benchmark.retrieval import linux_process
+from tools.benchmark.retrieval import linux_process, query_plan
 from tools.benchmark.retrieval import run as pairrun
 
 
@@ -368,16 +368,19 @@ def test_qualified_linux_requires_explicit_delegation_before_launch(tmp_path, mo
 
 def test_spec_requires_absolute_delegated_parent(tmp_path):
     spec = {
+        "spec_version": 2,
         "repo": "repo",
         "manifest": "manifest",
         "suite": "suite",
         "query_pack": "pack",
+        "execution_profiles": {"quanta": query_plan.execution_profile("native")},
         "top_k": 1,
         "output_root": "out",
         "runner_binary": "runner",
         "strategies": [{"name": "whole_file"}],
         "searchd_binary": "searchd",
         "searchd_expected_sha256": "a" * 64,
+        "scope": "qualified",
         "linux_cgroup_parent": "relative",
     }
     path = tmp_path / "spec.json"

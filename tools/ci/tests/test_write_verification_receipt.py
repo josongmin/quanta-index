@@ -41,17 +41,34 @@ def test_receipt_cli_streams_large_event_log_and_preserves_exact_digest(tmp_path
             digest.update(raw)
     output = tmp_path / "receipt.json"
     result = subprocess.run(
-        [sys.executable, str(WRITER), "--rail", "proof-nextest", "--tier", "pr",
-         "--command", "fixture", "--evidence", str(evidence), "--out", str(output)],
-        cwd=source, env=_writer_env(), capture_output=True, text=True, timeout=30,
+        [
+            sys.executable,
+            str(WRITER),
+            "--rail",
+            "proof-nextest",
+            "--tier",
+            "pr",
+            "--command",
+            "fixture",
+            "--evidence",
+            str(evidence),
+            "--out",
+            str(output),
+        ],
+        cwd=source,
+        env=_writer_env(),
+        capture_output=True,
+        text=True,
+        timeout=30,
     )
     assert result.returncode == 0, result.stderr
     receipt = json.loads(output.read_text())
     assert receipt["test_event_count"] == 1
     assert receipt["evidence_sha256"] == digest.hexdigest()
-    assert receipt["revision"] == subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=source, text=True
-    ).strip()
+    assert (
+        receipt["revision"]
+        == subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source, text=True).strip()
+    )
 
 
 def test_receipt_raw_role_hashing_has_no_control_document_ceiling(tmp_path, monkeypatch):
@@ -68,7 +85,7 @@ def test_receipt_raw_role_hashing_has_no_control_document_ceiling(tmp_path, monk
 
 
 def test_nextest_receipt_and_domain_readers_have_payload_independent_rss(tmp_path, record_property):
-    script = r'''
+    script = r"""
 import importlib.util, json, resource, sys
 from pathlib import Path
 root, path, count = Path(sys.argv[1]), Path(sys.argv[2]), int(sys.argv[3])
@@ -90,12 +107,13 @@ peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
 if sys.platform != 'darwin':
     peak *= 1024
 print(json.dumps({'peak_bytes': peak, 'sha256': digest, 'count': selected}))
-'''
+"""
     peaks = []
     for count in (100, 1600):
         path = tmp_path / f"events-{count}.jsonl"
         digest = hashlib.sha256()
         with path.open("wb") as stream:
+
             def emit(row, stream=stream, digest=digest):
                 raw = json.dumps(row).encode() + b"\n"
                 stream.write(raw)
@@ -109,7 +127,9 @@ print(json.dumps({'peak_bytes': peak, 'sha256': digest, 'count': selected}))
             emit({"type": "suite", "event": "ok", "passed": count, "failed": 0, "ignored": 0})
         result = subprocess.run(
             [sys.executable, "-c", script, str(REPO_ROOT), str(path), str(count)],
-            capture_output=True, text=True, timeout=60,
+            capture_output=True,
+            text=True,
+            timeout=60,
         )
         assert result.returncode == 0, result.stderr
         measured = json.loads(result.stdout)
@@ -125,8 +145,9 @@ print(json.dumps({'peak_bytes': peak, 'sha256': digest, 'count': selected}))
 def test_receipt_refuses_input_changed_after_summary_before_publication(tmp_path, monkeypatch):
     module = _writer_module()
     evidence = tmp_path / "summary.json"
-    evidence.write_text(json.dumps({"command": "fixture", "selected": 1, "executed": 1,
-                                    "passed": 1, "failed": 0}))
+    evidence.write_text(
+        json.dumps({"command": "fixture", "selected": 1, "executed": 1, "passed": 1, "failed": 0})
+    )
     raw = tmp_path / "events"
     raw.write_bytes(b"original")
     output = tmp_path / "receipt.json"
@@ -139,10 +160,29 @@ def test_receipt_refuses_input_changed_after_summary_before_publication(tmp_path
         return result
 
     monkeypatch.setattr(module, "_summary_json_evidence_summary", mutate)
-    monkeypatch.setattr(sys, "argv", [str(WRITER), "--rail", "fixture", "--tier", "correctness",
-                                    "--command", "fixture", "--evidence-format", "summary-json",
-                                    "--evidence", str(evidence), "--source-closure", str(tmp_path / "closure"),
-                                    "--input-evidence", f"nextest-jsonl={raw}", "--out", str(output)])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(WRITER),
+            "--rail",
+            "fixture",
+            "--tier",
+            "correctness",
+            "--command",
+            "fixture",
+            "--evidence-format",
+            "summary-json",
+            "--evidence",
+            str(evidence),
+            "--source-closure",
+            str(tmp_path / "closure"),
+            "--input-evidence",
+            f"nextest-jsonl={raw}",
+            "--out",
+            str(output),
+        ],
+    )
     with pytest.raises(SystemExit, match="changed during validation"):
         module.main()
     assert not output.exists()

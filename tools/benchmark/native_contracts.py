@@ -11,8 +11,15 @@ CONCURRENCY_COUNTS = (1, 8, 32)
 
 # Public serializer tags and scalar widths in searchd-harness/src/artifact.rs.
 ROUTE_FAMILIES = (
-    "lexical", "semantic", "hybrid", "symbol", "repomap", "history",
-    "runtime_catalog", "structural", "adversarial",
+    "lexical",
+    "semantic",
+    "hybrid",
+    "symbol",
+    "repomap",
+    "history",
+    "runtime_catalog",
+    "structural",
+    "adversarial",
 )
 BENCH_SYNTAXES = ("native", "sourcegraph")
 RESULT_SHAPES = ("candidates", "commits", "diff_paths", "typed_error", "empty")

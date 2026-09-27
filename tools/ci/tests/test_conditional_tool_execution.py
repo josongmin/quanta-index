@@ -3,6 +3,7 @@
 The context constructor below is synthetic validator input, not an execution
 receipt: its fake source closure must fail current-source verification.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -26,10 +27,15 @@ def add_custody_unit_fixture(bundle: dict, tmp_path: Path) -> dict:
     context = bundle["execution_context"]
     tools = selected_tools(tmp_path)
     wrapper = cp.ROOT / "scripts/cargow"
-    tools["cargow"] = {"path": str(wrapper), "realpath": str(wrapper.resolve()),
-                       "sha256": hashlib.sha256(wrapper.read_bytes()).hexdigest(), "version": "fixture"}
-    guard = tool_custody.ToolCustody.create(cp.ROOT, tmp_path / "private-bin", tools=tools,
-                                           environment=dict(os.environ))
+    tools["cargow"] = {
+        "path": str(wrapper),
+        "realpath": str(wrapper.resolve()),
+        "sha256": hashlib.sha256(wrapper.read_bytes()).hexdigest(),
+        "version": "fixture",
+    }
+    guard = tool_custody.ToolCustody.create(
+        cp.ROOT, tmp_path / "private-bin", tools=tools, environment=dict(os.environ)
+    )
     native = executable(tmp_path / "native/proof-binary", "printf fixture-only")
     native_epoch = guard.bind_executable(native)
     context["binary_sha256"] = native_epoch["sha256"]
@@ -46,17 +52,25 @@ def add_custody_unit_fixture(bundle: dict, tmp_path: Path) -> dict:
         reference["interpreter_sha256"] = guard.bind_executable(Path(sys.executable))["sha256"]
     context["tool_custody"] = guard.record()
     inherited = portable_proof._relevant_environment(dict(os.environ))
-    overrides = {"CARGO_NET_OFFLINE": "true", **portable_proof.execution_overrides(guard.tools(), inherited)}
-    command_identity = {"cwd": str(cp.ROOT), "inherited_environment": inherited,
-                        "environment": overrides,
-                        "environment_sha256": portable_proof._environment_digest({**inherited, **overrides})}
+    overrides = {
+        "CARGO_NET_OFFLINE": "true",
+        **portable_proof.execution_overrides(guard.tools(), inherited),
+    }
+    command_identity = {
+        "cwd": str(cp.ROOT),
+        "inherited_environment": inherited,
+        "environment": overrides,
+        "environment_sha256": portable_proof._environment_digest({**inherited, **overrides}),
+    }
     context["environment"]["relevant"] = inherited
     for command in (context["build"], context["run"], reference):
         if command is not None:
             command.update(command_identity)
     files = {entry["path"]: entry["sha256"] for entry in context["source_closure"]["files"]}
     files["scripts/cargow"] = tools["cargow"]["sha256"]
-    context["source_closure"]["files"] = [{"path": path, "sha256": digest} for path, digest in sorted(files.items())]
+    context["source_closure"]["files"] = [
+        {"path": path, "sha256": digest} for path, digest in sorted(files.items())
+    ]
     context["source_closure"]["digest"] = source_closure._digest(
         {key: value for key, value in context["source_closure"].items() if key != "digest"}
     )
@@ -65,12 +79,22 @@ def add_custody_unit_fixture(bundle: dict, tmp_path: Path) -> dict:
     manifest = input_path.parent / "source-closure.json"
     for phase in ("capture", "verify"):
         argv = [tools["python"]["path"], str(cp.ROOT / "tools/ci/source_closure.py"), phase]
-        argv.extend(["--profile", "retrieval", "--out", str(manifest)] if phase == "capture" else ["--manifest", str(manifest)])
+        argv.extend(
+            ["--profile", "retrieval", "--out", str(manifest)]
+            if phase == "capture"
+            else ["--manifest", str(manifest)]
+        )
         stdout = f"source closure {phase} ok: retrieval {len(files)} files {context['source_closure']['digest']}\n".encode()
-        context[f"source_{phase}"] = {**command_identity, "argv": argv, "exit_code": 0,
-                                     "stdout": cp.artifact(stdout), "stderr": cp.artifact(b"")}
-    bundle["execution_receipt"].update(runner_binary_sha256=native_epoch["sha256"],
-                                       context_sha256=cp.sha(cp.canonical(context)))
+        context[f"source_{phase}"] = {
+            **command_identity,
+            "argv": argv,
+            "exit_code": 0,
+            "stdout": cp.artifact(stdout),
+            "stderr": cp.artifact(b""),
+        }
+    bundle["execution_receipt"].update(
+        runner_binary_sha256=native_epoch["sha256"], context_sha256=cp.sha(cp.canonical(context))
+    )
     return bundle
 
 
@@ -158,9 +182,17 @@ def test_conditional_publishes_only_after_terminal_custody(
 def test_command_frame_refuses_stderr_changes_against_execution_bytes(tmp_path):
     stdout, stderr = b"actual stdout", b"actual stderr"
     (tmp_path / "stderr").write_bytes(stderr)
-    command = {"argv": ["/tool"], "exit_code": 0, "stderr": "stderr",
-               "stdout_sha256": cp.sha(stdout), "stderr_sha256": cp.sha(stderr),
-               "cwd": "/source", "inherited_environment": {}, "environment": {}, "environment_sha256": cp.sha(b"")}
+    command = {
+        "argv": ["/tool"],
+        "exit_code": 0,
+        "stderr": "stderr",
+        "stdout_sha256": cp.sha(stdout),
+        "stderr_sha256": cp.sha(stderr),
+        "cwd": "/source",
+        "inherited_environment": {},
+        "environment": {},
+        "environment_sha256": cp.sha(b""),
+    }
     frame = cp._command_frame(command, tmp_path, stdout)
     assert cp.decode(frame["stdout"]) == stdout
     assert cp.decode(frame["stderr"]) == stderr
@@ -170,17 +202,36 @@ def test_command_frame_refuses_stderr_changes_against_execution_bytes(tmp_path):
 
 
 def test_command_environment_rejects_ambient_compiler_and_cargo_selection(tmp_path):
-    guard = tool_custody.ToolCustody.create(cp.ROOT, tmp_path / "private-bin",
-        tools=selected_tools(tmp_path), environment=dict(os.environ))
+    guard = tool_custody.ToolCustody.create(
+        cp.ROOT,
+        tmp_path / "private-bin",
+        tools=selected_tools(tmp_path),
+        environment=dict(os.environ),
+    )
     inherited = portable_proof._relevant_environment(dict(os.environ))
     context = {"tool_custody": guard.record(), "environment": {"relevant": inherited}}
-    overrides = {"CARGO_NET_OFFLINE": "true", **portable_proof.execution_overrides(guard.tools(), inherited)}
-    command = {"cwd": str(cp.ROOT), "inherited_environment": inherited, "environment": overrides,
-               "environment_sha256": portable_proof._environment_digest({**inherited, **overrides})}
+    overrides = {
+        "CARGO_NET_OFFLINE": "true",
+        **portable_proof.execution_overrides(guard.tools(), inherited),
+    }
+    command = {
+        "cwd": str(cp.ROOT),
+        "inherited_environment": inherited,
+        "environment": overrides,
+        "environment_sha256": portable_proof._environment_digest({**inherited, **overrides}),
+    }
     cp.command_identity(command, context, cp.ROOT)
-    for key in ("PATH", "RUSTC", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "QUANTA_INDEX_SCCACHE"):
+    for key in (
+        "PATH",
+        "RUSTC",
+        "RUSTC_WRAPPER",
+        "RUSTC_WORKSPACE_WRAPPER",
+        "QUANTA_INDEX_SCCACHE",
+    ):
         mutant = json.loads(json.dumps(command))
         mutant["environment"][key] = "ambient-override"
-        mutant["environment_sha256"] = portable_proof._environment_digest({**inherited, **mutant["environment"]})
+        mutant["environment_sha256"] = portable_proof._environment_digest(
+            {**inherited, **mutant["environment"]}
+        )
         with pytest.raises(ValueError, match="environment"):
             cp.command_identity(mutant, context, cp.ROOT)

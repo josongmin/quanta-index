@@ -88,11 +88,15 @@ def test_predicate_inventory_rejects_family_drift(monkeypatch, mutation):
     elif mutation == "duplicate":
         family = family.replace("Self::SymbolLocalNameExact", "Self::SymbolHasName", 1)
     else:
-        family = family.replace("LexicalPredicateFamilyV1::Symbol", "LexicalPredicateFamilyV1::ContentOrRepo", 1)
+        family = family.replace(
+            "LexicalPredicateFamilyV1::Symbol", "LexicalPredicateFamilyV1::ContentOrRepo", 1
+        )
     changed = core[:start] + family + core[end:]
     original_read = module.read
     monkeypatch.setattr(
-        module, "read", lambda path: changed if path == module.CORE_PREDICATE_RS else original_read(path)
+        module,
+        "read",
+        lambda path: changed if path == module.CORE_PREDICATE_RS else original_read(path),
     )
     with pytest.raises(ValueError, match="family"):
         module.ours_predicates()

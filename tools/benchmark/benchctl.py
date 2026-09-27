@@ -144,12 +144,15 @@ def parse_args(
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--repo-root", type=Path, default=repo_root, help="checkout to operate on")
     subparsers = parser.add_subparsers(dest="command", required=True)
-    code_search = subparsers.add_parser("code-search", help="live five-product workflow over one frozen corpus view")
+    code_search = subparsers.add_parser(
+        "code-search", help="live five-product workflow over one frozen corpus view"
+    )
     workflow_modes = code_search.add_subparsers(dest="code_search_action", required=True)
     for action in ("run", "verify", "external", "external-verify"):
         mode = workflow_modes.add_parser(action)
-        mode.add_argument("--spec" if action in {"run", "external"} else "--capture",
-                          type=Path, required=True)
+        mode.add_argument(
+            "--spec" if action in {"run", "external"} else "--capture", type=Path, required=True
+        )
     corpus = subparsers.add_parser(
         "corpus", help="create or validate an immutable external corpus release"
     )
@@ -771,7 +774,8 @@ def replay_command(repo_root: Path, reference: str, evidence_root: Path | None) 
     # Recorded imports describe the importing host, not the original
     # experiment host. They cannot inherit a live family's measurement policy.
     expected_host_policy = (
-        "any" if evidence["profile"] == "recorded"
+        "any"
+        if evidence["profile"] == "recorded"
         else registry["families"][evidence["family"]]["host_policy"]
     )
     if evidence["host"]["policy"] != expected_host_policy:
@@ -834,7 +838,9 @@ def replay_command(repo_root: Path, reference: str, evidence_root: Path | None) 
         checker = _load_lint_module(repo_root)
         family = native_families[evidence["family"]]
         artifacts = []
-        native_refs = [ref for ref in evidence["raw"] if ref["path"] != "raw/host-observations.jsonl"]
+        native_refs = [
+            ref for ref in evidence["raw"] if ref["path"] != "raw/host-observations.jsonl"
+        ]
         if len(native_refs) > checker.native_artifact_limit(evidence["family"]):
             print("ERROR: replay native inventory exceeds registered count", file=sys.stderr)
             return 2
@@ -983,7 +989,9 @@ def refuse_capture(message: str, exit_code: int = 2) -> int:
     return exit_code
 
 
-@capture_entrypoint(profile_argument="profile_name", repo_argument="repo_root", root_argument="evidence_root")
+@capture_entrypoint(
+    profile_argument="profile_name", repo_argument="repo_root", root_argument="evidence_root"
+)
 def promote_profile_runs(
     repo_root: Path,
     profile_name: str,
@@ -1946,8 +1954,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "run" and args.evidence_root is not None:
         try:
             return _capture_native_run(
-                repo_root, resolve_evidence_root(args.evidence_root), args.profile,
-                args=args, argv=argv, profile=profile, manifest=manifest,
+                repo_root,
+                resolve_evidence_root(args.evidence_root),
+                args.profile,
+                args=args,
+                argv=argv,
+                profile=profile,
+                manifest=manifest,
                 artifact_profile=artifact_profile,
             )
         except (ValueError, RuntimeError, OSError) as exc:
@@ -1956,9 +1969,15 @@ def main(argv: list[str] | None = None) -> int:
     return _native_tail(args, argv, repo_root, profile, manifest, artifact_profile)
 
 
-@capture_entrypoint(profile_argument="profile_name", repo_argument="repo_root",
-                    root_argument="evidence_root", monitor_host=True)
-def _capture_native_run(repo_root, evidence_root, profile_name, *, args, argv, profile, manifest, artifact_profile):
+@capture_entrypoint(
+    profile_argument="profile_name",
+    repo_argument="repo_root",
+    root_argument="evidence_root",
+    monitor_host=True,
+)
+def _capture_native_run(
+    repo_root, evidence_root, profile_name, *, args, argv, profile, manifest, artifact_profile
+):
     return _native_tail(args, argv, repo_root, profile, manifest, artifact_profile)
 
 
@@ -1968,9 +1987,13 @@ def _native_tail(args, argv, repo_root, profile, manifest, artifact_profile):
         if requested_root is not None and (
             requested_root == repo_root or repo_root in requested_root.parents
         ):
-            return refuse_capture("--evidence-root must stay outside the checkout; no producer was executed")
+            return refuse_capture(
+                "--evidence-root must stay outside the checkout; no producer was executed"
+            )
         if args.admit_baseline and requested_root is not None:
-            return refuse_capture("baseline admission and immutable capture are separate actions; omit --evidence-root for admission")
+            return refuse_capture(
+                "baseline admission and immutable capture are separate actions; omit --evidence-root for admission"
+            )
         cold_samples = args.cold_samples
         if cold_samples is not None:
             if args.profile != "dsl-authority":
@@ -2019,10 +2042,14 @@ def _native_tail(args, argv, repo_root, profile, manifest, artifact_profile):
         command_logs = None
         if requested_root is None:
             diagnostic_parent = Path(tempfile.gettempdir()).resolve()
-            if diagnostic_parent == repo_root.resolve() or diagnostic_parent.is_relative_to(repo_root.resolve()):
+            if diagnostic_parent == repo_root.resolve() or diagnostic_parent.is_relative_to(
+                repo_root.resolve()
+            ):
                 return refuse_capture("command diagnostic root must stay outside the checkout")
             try:
-                command_logs = Path(tempfile.mkdtemp(prefix="quanta-native-command-", dir=diagnostic_parent))
+                command_logs = Path(
+                    tempfile.mkdtemp(prefix="quanta-native-command-", dir=diagnostic_parent)
+                )
             except OSError as exc:
                 print(f"ERROR: cannot create command diagnostic root: {exc}", file=sys.stderr)
                 return 2
@@ -2031,22 +2058,33 @@ def _native_tail(args, argv, repo_root, profile, manifest, artifact_profile):
             command = ["just", recipe]
             if recipe == "rust-bench-dsl-cold" and cold_samples is not None:
                 command.append(str(cold_samples))
-            log_dir = (current_capture().work / "execution" / recipe if requested_root is not None
-                       else command_logs / f"recipe-{index:02d}")
+            log_dir = (
+                current_capture().work / "execution" / recipe
+                if requested_root is not None
+                else command_logs / f"recipe-{index:02d}"
+            )
             try:
                 capture_phase("execution", recipe=recipe)
                 if requested_root is not None:
                     current_capture().execute(
-                        execute, command, cwd=repo_root, env=dict(os.environ),
-                        timeout=3600, log_dir=log_dir,
+                        execute,
+                        command,
+                        cwd=repo_root,
+                        env=dict(os.environ),
+                        timeout=3600,
+                        log_dir=log_dir,
                     )
                 else:
-                    execute(command, cwd=repo_root, env=dict(os.environ),
-                            timeout=3600, log_dir=log_dir)
+                    execute(
+                        command, cwd=repo_root, env=dict(os.environ), timeout=3600, log_dir=log_dir
+                    )
                     print(f"benchmark producer logs: {log_dir}", file=sys.stderr)
             except ProducerExecutionError as exc:
                 capture_error(exc)
-                print(f"ERROR: producer recipe {recipe!r} refused: {exc}; retained logs: {log_dir}", file=sys.stderr)
+                print(
+                    f"ERROR: producer recipe {recipe!r} refused: {exc}; retained logs: {log_dir}",
+                    file=sys.stderr,
+                )
                 if requested_root is None:
                     try:
                         record = parse_json(_read_control_file(log_dir / "execution.json").decode())
@@ -2110,7 +2148,9 @@ def _native_tail(args, argv, repo_root, profile, manifest, artifact_profile):
     validated_artifacts = None
     if args.command == "run" and evidence_root is not None:
         if evidence_root == repo_root or repo_root in evidence_root.parents:
-            return refuse_capture("--evidence-root must stay outside the checkout; run artifacts are external")
+            return refuse_capture(
+                "--evidence-root must stay outside the checkout; run artifacts are external"
+            )
         try:
             validated_artifacts = snapshot_profile_artifacts(repo_root, args.profile, manifest)
         except RuntimeError as exc:

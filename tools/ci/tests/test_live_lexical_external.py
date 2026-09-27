@@ -32,18 +32,41 @@ class SearchHandler(BaseHTTPRequestHandler):
         query = parse_qs(parsed.query)
         hit = "symbol_0" in str(query)
         if parsed.path == "/.api/search/stream":
-            match = ({"type": "content", "path": "src/0.go", "repository": "benchmark/fixture",
-                      "commit": self.commit, "lineMatches": [{"line": "func symbol_0() {}",
-                      "lineNumber": 0, "offsetAndLengths": [[5, 8]]}]})
-            body = (b"event: matches\ndata: " + json.dumps([match]).encode() + b"\n\n") if hit else b""
-            body += (b"event: progress\ndata: " + json.dumps({
-                "done": True, "skipped": [], "matchCount": int(hit), "durationMs": 1,
-            }).encode() + b"\n\nevent: done\ndata: {}\n\n")
+            match = {
+                "type": "content",
+                "path": "src/0.go",
+                "repository": "benchmark/fixture",
+                "commit": self.commit,
+                "lineMatches": [
+                    {"line": "func symbol_0() {}", "lineNumber": 0, "offsetAndLengths": [[5, 8]]}
+                ],
+            }
+            body = (
+                (b"event: matches\ndata: " + json.dumps([match]).encode() + b"\n\n") if hit else b""
+            )
+            body += (
+                b"event: progress\ndata: "
+                + json.dumps(
+                    {
+                        "done": True,
+                        "skipped": [],
+                        "matchCount": int(hit),
+                        "durationMs": 1,
+                    }
+                ).encode()
+                + b"\n\nevent: done\ndata: {}\n\n"
+            )
             content_type = "text/event-stream"
         elif parsed.path == "/api/v1/search":
-            body = json.dumps({"time": 1, "resultCount": int(hit),
-                               "results": {"/fixture/src/0.go": [1]} if hit else {},
-                               "startDocument": 0, "endDocument": 0}).encode()
+            body = json.dumps(
+                {
+                    "time": 1,
+                    "resultCount": int(hit),
+                    "results": {"/fixture/src/0.go": [1]} if hit else {},
+                    "startDocument": 0,
+                    "endDocument": 0,
+                }
+            ).encode()
             content_type = "application/json"
         else:
             self.send_error(404)
@@ -80,13 +103,18 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(tmp_path, lex
     try:
         base = f"http://127.0.0.1:{server.server_address[1]}"
         spec = {
-            "schema_version": 1, "corpus": corpus,
-            "suite": str(paths["suite"]), "query_pack": str(paths["query_pack"]),
-            "sourcegraph": {"base_url": base, "repository": "benchmark/fixture",
-                            "server_image_digest": "a" * 64},
-            "opengrok": {"base_url": base, "project": "fixture",
-                         "server_image_digest": "b" * 64},
-            "cs": {"binary": str(binary)}, "output_root": str(tmp_path / "live"),
+            "schema_version": 1,
+            "corpus": corpus,
+            "suite": str(paths["suite"]),
+            "query_pack": str(paths["query_pack"]),
+            "sourcegraph": {
+                "base_url": base,
+                "repository": "benchmark/fixture",
+                "server_image_digest": "a" * 64,
+            },
+            "opengrok": {"base_url": base, "project": "fixture", "server_image_digest": "b" * 64},
+            "cs": {"binary": str(binary)},
+            "output_root": str(tmp_path / "live"),
         }
         spec_path = tmp_path / "live-spec.json"
         spec_path.write_text(json.dumps(spec))
@@ -111,15 +139,16 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(tmp_path, lex
     summary_path = root / "capture.json"
     # A recomputed normalized digest cannot authorize paths absent from the
     # fixed native response. Exercise all live decoder owners, not only status.
-    expected = live.lexical._tasks(json.loads(paths["suite"].read_bytes()),
-                                   json.loads(paths["query_pack"].read_bytes()))
-    universe = live.lexical._file_universe(json.loads(paths["suite"].read_bytes()),
-                                         json.loads(paths["query_pack"].read_bytes()))
+    expected = live.lexical._tasks(
+        json.loads(paths["suite"].read_bytes()), json.loads(paths["query_pack"].read_bytes())
+    )
+    universe = live.lexical._file_universe(
+        json.loads(paths["suite"].read_bytes()), json.loads(paths["query_pack"].read_bytes())
+    )
     for product in ("cs", "sourcegraph", "opengrok"):
         row_path = root / f"{product}_rows.jsonl"
         original = row_path.read_bytes()
-        native_before = {name: (root / name).read_bytes()
-                         for name in result["raw_capture_sha256"]}
+        native_before = {name: (root / name).read_bytes() for name in result["raw_capture_sha256"]}
         rows = [json.loads(line) for line in original.splitlines()]
         assert rows[1]["file_hit_at_10"] is False
         rows[1]["paths" if product == "cs" else "file_paths_top_10"] = rows[1]["gold_paths"]
@@ -127,19 +156,35 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(tmp_path, lex
         row_path.write_bytes(b"".join(json.dumps(row).encode() + b"\n" for row in rows))
         # The standalone diagnostic validates only normalized consistency.
         assert live.lexical.product_result(product, row_path, expected, universe)["hits"] == 2
-        summary_path.write_text(json.dumps({**result, "rows_sha256": {
-            **result["rows_sha256"], product: live._sha(row_path.read_bytes())}}))
-        with pytest.raises(ValueError, match="external row disagrees with retained native response"):
+        summary_path.write_text(
+            json.dumps(
+                {
+                    **result,
+                    "rows_sha256": {
+                        **result["rows_sha256"],
+                        product: live._sha(row_path.read_bytes()),
+                    },
+                }
+            )
+        )
+        with pytest.raises(
+            ValueError, match="external row disagrees with retained native response"
+        ):
             live.verify(root)
         assert all((root / name).read_bytes() == raw for name, raw in native_before.items())
         row_path.write_bytes(original)
         summary_path.write_text(json.dumps(result))
         assert live.verify(root) == result
     mutations = [
-        {"schema_version": True}, {"tasks": True}, {"quality_qualified": True},
-        {"exclusions": []}, {"python_executable_sha256": "0" * 64},
-        {"python_version": "wrong-runtime"}, {"cs_binary_sha256": "0" * 64},
-        {"cs_version": "wrong-version"}, {"server_image_digests_operator_supplied": {}},
+        {"schema_version": True},
+        {"tasks": True},
+        {"quality_qualified": True},
+        {"exclusions": []},
+        {"python_executable_sha256": "0" * 64},
+        {"python_version": "wrong-runtime"},
+        {"cs_binary_sha256": "0" * 64},
+        {"cs_version": "wrong-version"},
+        {"server_image_digests_operator_supplied": {}},
         {"rows_sha256": {**result["rows_sha256"], "forged-product": "0" * 64}},
     ]
     for mutation in mutations:
@@ -149,7 +194,9 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(tmp_path, lex
     summary_path.write_text(json.dumps(result))
     assert live.verify(root) == result
     for mutation in ({"schema_version": True}, {"index_universe_attested": 0}):
-        summary_path.write_text(json.dumps({**result, "binding": {**result["binding"], **mutation}}))
+        summary_path.write_text(
+            json.dumps({**result, "binding": {**result["binding"], **mutation}})
+        )
         with pytest.raises(ValueError, match="capture binding differs"):
             live.verify(root)
     summary_path.write_text(json.dumps(result))
@@ -158,8 +205,17 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(tmp_path, lex
     forged_rows = [json.loads(line) for line in original_rows.splitlines()]
     forged_rows[0]["http_status"] = 200.0
     row_path.write_text("".join(json.dumps(row) + "\n" for row in forged_rows))
-    summary_path.write_text(json.dumps({**result, "rows_sha256": {
-        **result["rows_sha256"], "sourcegraph": live._sha(row_path.read_bytes())}}))
+    summary_path.write_text(
+        json.dumps(
+            {
+                **result,
+                "rows_sha256": {
+                    **result["rows_sha256"],
+                    "sourcegraph": live._sha(row_path.read_bytes()),
+                },
+            }
+        )
+    )
     with pytest.raises(ValueError, match="failed request|external row disagrees"):
         live.verify(root)
     row_path.write_bytes(original_rows)

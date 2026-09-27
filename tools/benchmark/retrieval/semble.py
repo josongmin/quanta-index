@@ -68,11 +68,17 @@ def execution_profile(mode: str, alpha: float | None) -> dict:
     if mode == "hybrid-no-rerank":
         if not is_finite_json_number(alpha) or not 0 <= alpha <= 1:
             raise AdapterError("hybrid-no-rerank requires finite alpha in [0, 1]")
-        return {"profile_id": "semble-hybrid-no-rerank-v1", "mode": mode, "alpha": float(alpha), "rerank": False}
+        return {
+            "profile_id": "semble-hybrid-no-rerank-v1",
+            "mode": mode,
+            "alpha": float(alpha),
+            "rerank": False,
+        }
     if mode not in fixed or alpha is not None:
         raise AdapterError("invalid Semble execution profile")
     profile_id, fixed_alpha, rerank = fixed[mode]
     return {"profile_id": profile_id, "mode": mode, "alpha": fixed_alpha, "rerank": rerank}
+
 
 WORKER_TEMPLATE = '''"""Spawned Semble worker (pinned env only). Reads SPEC_JSON, writes NATIVE_JSON."""
 import json
@@ -634,9 +640,17 @@ def validate_native_profile_report(
     observed_lane_calls = {"bm25": 0, "semantic": 0}
     for ordinal, (event, expected_event) in enumerate(zip(events, expected_events, strict=True)):
         required = {
-            "rep", "phase", "phase_iteration", "task_id", "call_ordinal",
-            "submitted_query_sha256", "profile_sha256", "actual_alpha",
-            "actual_rerank", "candidate_depth", "lane_entry_counts",
+            "rep",
+            "phase",
+            "phase_iteration",
+            "task_id",
+            "call_ordinal",
+            "submitted_query_sha256",
+            "profile_sha256",
+            "actual_alpha",
+            "actual_rerank",
+            "candidate_depth",
+            "lane_entry_counts",
             "lane_candidate_depths",
         }
         if not isinstance(event, dict) or set(event) != required:
@@ -663,10 +677,16 @@ def validate_native_profile_report(
         lane_event = event["lane_entry_counts"]
         depths = event["lane_candidate_depths"]
         if (
-            not isinstance(lane_event, dict) or set(lane_event) != {"bm25", "semantic"}
-            or not isinstance(depths, dict) or set(depths) != {"bm25", "semantic"}
+            not isinstance(lane_event, dict)
+            or set(lane_event) != {"bm25", "semantic"}
+            or not isinstance(depths, dict)
+            or set(depths) != {"bm25", "semantic"}
             or any(type(value) is not int or value < 0 for value in lane_event.values())
-            or any(not isinstance(value, list) or any(type(depth) is not int or depth <= 0 for depth in value) for value in depths.values())
+            or any(
+                not isinstance(value, list)
+                or any(type(depth) is not int or depth <= 0 for depth in value)
+                for value in depths.values()
+            )
         ):
             raise AdapterError("Semble worker per-event lane report is invalid")
         candidate_depth = event["candidate_depth"]
@@ -683,7 +703,10 @@ def validate_native_profile_report(
                 raise AdapterError("Semble hybrid event did not enter both lanes exactly once")
             if event["actual_rerank"] is not (profile == "native-default"):
                 raise AdapterError("Semble event rerank differs from the profile")
-            if not is_finite_json_number(event["actual_alpha"]) or not 0 <= event["actual_alpha"] <= 1:
+            if (
+                not is_finite_json_number(event["actual_alpha"])
+                or not 0 <= event["actual_alpha"] <= 1
+            ):
                 raise AdapterError("Semble event actual alpha is invalid")
             if profile == "hybrid-no-rerank" and event["actual_alpha"] != alpha:
                 raise AdapterError("Semble event actual alpha differs from requested alpha")
@@ -705,10 +728,7 @@ def validate_native_profile_report(
     }:
         raise AdapterError("Semble measured execution event coverage is incomplete")
     expected_alpha_by_task = (
-        {
-            task_id: measured[(0, task_id)]["actual_alpha"]
-            for task_id in measurement_schedules[0]
-        }
+        {task_id: measured[(0, task_id)]["actual_alpha"] for task_id in measurement_schedules[0]}
         if profile in ("native-default", "hybrid-no-rerank")
         else None
     )
@@ -1594,9 +1614,7 @@ def run_adapter(args: argparse.Namespace) -> int:
         native_payload,
         profile_mode,
         alpha,
-        expected_query_sha256={
-            task["task_id"]: task["query_sha256"] for task in pack["tasks"]
-        },
+        expected_query_sha256={task["task_id"]: task["query_sha256"] for task in pack["tasks"]},
     )
     observed = native_payload.get("observed_files", [])
     proof, diff_digest = mapping_proof(admitted_rows, observed, corpus_dir)

@@ -409,6 +409,57 @@ fn unindexed_scan_obeys_native_collection_byte_limit() -> TestResult {
 #[test]
 #[expect(
     clippy::panic_in_result_fn,
+    reason = "fixed corpus checks the manual repo-gate cache boundary through the public search route"
+)]
+fn unindexed_repo_gates_refuse_excess_distinct_materializations() -> TestResult {
+    let (_dir, adapter) = seeded(usize::try_from(DOCS)?)?;
+    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let absent_gates = |count| {
+        LqExpr::Any(
+            (0..count)
+                .map(|index| {
+                    LqExpr::Leaf(LqLeaf::Predicate {
+                        name: "repo.has.content".to_string(),
+                        args: vec![LqPredicateArg::Keyword(format!("absent_gate_{index}"))],
+                    })
+                })
+                .collect(),
+        )
+    };
+    let mut allowed = query(absent_gates(64), Vec::new());
+    allowed.options.index_mode = Some(LqYesNoOnly::No);
+    let page = searcher.search_constrained(
+        &allowed,
+        &QueryConstraintSetV1::unconstrained(),
+        &LexicalPageSpec::first(2),
+        &RequestBudgetV1::unbounded(),
+    )?;
+    assert!(page.candidates.is_empty());
+
+    let mut excessive = query(absent_gates(65), Vec::new());
+    excessive.options.index_mode = Some(LqYesNoOnly::No);
+    let refused = searcher.search_constrained(
+        &excessive,
+        &QueryConstraintSetV1::unconstrained(),
+        &LexicalPageSpec::first(2),
+        &RequestBudgetV1::unbounded(),
+    );
+    assert!(
+        matches!(
+            refused,
+            Err(CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::LexicalCollectionBudgetExceeded,
+                ..
+            })
+        ),
+        "the 65th distinct repo gate must refuse the entire request"
+    );
+    Ok(())
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
     reason = "fixed oracle assertions in a fallible fixture"
 )]
 fn dense_admission_refuses_candidate_set_over_examined_limit() -> TestResult {

@@ -49,8 +49,12 @@ def observe() -> tuple[dict, dict]:
     # Avoid an unbounded communicate() buffer for a large process inventory.
     with tempfile.TemporaryFile() as output:
         result = subprocess.run(
-            ["/bin/ps", "-axo", "pid=,ppid=,comm="], stdout=output,
-            stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, check=False, timeout=3,
+            ["/bin/ps", "-axo", "pid=,ppid=,comm="],
+            stdout=output,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            check=False,
+            timeout=3,
         )
         if result.returncode:
             raise EvidenceError("host process observation failed")
@@ -70,7 +74,9 @@ def observe() -> tuple[dict, dict]:
     disk = os.statvfs(tempfile.gettempdir())
     host = {
         "os": "macos" if platform.system() == "Darwin" else platform.system().lower(),
-        "arch": arch, "cpu_count": cpus, "hostname_hash": digest_bytes(hostname.encode()),
+        "arch": arch,
+        "cpu_count": cpus,
+        "hostname_hash": digest_bytes(hostname.encode()),
     }
     facts = {
         "load_average": list(os.getloadavg()),
@@ -79,7 +85,8 @@ def observe() -> tuple[dict, dict]:
         "process_snapshot_sha256": digest_bytes(raw),
         "foreign_rust": [
             {"pid": p.pid, "ppid": p.ppid, "command_sha256": digest_bytes(p.command.encode())}
-            for p in processes if p.pid not in excluded and RUST_PROCESS.search(p.command)
+            for p in processes
+            if p.pid not in excluded and RUST_PROCESS.search(p.command)
         ],
     }
     _facts(facts)
@@ -99,13 +106,19 @@ def _digest(value):
 
 def _facts(facts):
     if not isinstance(facts, dict) or set(facts) != {
-        "load_average", "disk_available_bytes", "process_count", "process_snapshot_sha256", "foreign_rust"
+        "load_average",
+        "disk_available_bytes",
+        "process_count",
+        "process_snapshot_sha256",
+        "foreign_rust",
     }:
         raise EvidenceError("host observation facts are incomplete")
     load = facts["load_average"]
-    if (not isinstance(load, list) or len(load) != 3 or any(
-        type(v) not in {float, int} or not math.isfinite(v) or v < 0 for v in load
-    )):
+    if (
+        not isinstance(load, list)
+        or len(load) != 3
+        or any(type(v) not in {float, int} or not math.isfinite(v) or v < 0 for v in load)
+    ):
         raise EvidenceError("host load observation is unavailable or invalid")
     _uint(facts["disk_available_bytes"], "available disk")
     _uint(facts["process_count"], "process count", positive=True)
@@ -138,15 +151,31 @@ def validate(raw: RawFile, *, capture_id: str, profile: str) -> dict:
             row = parse_json(line.decode("utf-8", errors="strict"))
             if header is None:
                 if not isinstance(row, dict) or set(row) != {
-                    "kind", "schema_version", "capture_id", "profile", "reservation_id",
-                    "lock_identity", "interval_ns", "max_gap_ns", "clock_tolerance_ns", "host"
+                    "kind",
+                    "schema_version",
+                    "capture_id",
+                    "profile",
+                    "reservation_id",
+                    "lock_identity",
+                    "interval_ns",
+                    "max_gap_ns",
+                    "clock_tolerance_ns",
+                    "host",
                 }:
                     raise EvidenceError("host observation header is malformed")
-                if (row["kind"] != "cooperative-host-observations" or type(row["schema_version"]) is not int
-                        or row["schema_version"] != 1 or row["capture_id"] != capture_id or row["profile"] != profile
-                        or type(row["interval_ns"]) is not int or row["interval_ns"] != INTERVAL_NS
-                        or type(row["max_gap_ns"]) is not int or row["max_gap_ns"] != MAX_GAP_NS
-                        or type(row["clock_tolerance_ns"]) is not int or row["clock_tolerance_ns"] != CLOCK_TOLERANCE_NS):
+                if (
+                    row["kind"] != "cooperative-host-observations"
+                    or type(row["schema_version"]) is not int
+                    or row["schema_version"] != 1
+                    or row["capture_id"] != capture_id
+                    or row["profile"] != profile
+                    or type(row["interval_ns"]) is not int
+                    or row["interval_ns"] != INTERVAL_NS
+                    or type(row["max_gap_ns"]) is not int
+                    or row["max_gap_ns"] != MAX_GAP_NS
+                    or type(row["clock_tolerance_ns"]) is not int
+                    or row["clock_tolerance_ns"] != CLOCK_TOLERANCE_NS
+                ):
                     raise EvidenceError("host observation identity or policy differs")
                 _run_id(row["reservation_id"])
                 identity = row["lock_identity"]
@@ -154,10 +183,15 @@ def validate(raw: RawFile, *, capture_id: str, profile: str) -> dict:
                     raise EvidenceError("host reservation identity is missing")
                 for value in identity:
                     _uint(value, "lock identity")
-                if (not stat.S_ISREG(identity[3]) or identity[4] != 1):
+                if not stat.S_ISREG(identity[3]) or identity[4] != 1:
                     raise EvidenceError("host reservation is not a singly linked regular file")
                 host = row["host"]
-                if not isinstance(host, dict) or set(host) != {"os", "arch", "cpu_count", "hostname_hash"}:
+                if not isinstance(host, dict) or set(host) != {
+                    "os",
+                    "arch",
+                    "cpu_count",
+                    "hostname_hash",
+                }:
                     raise EvidenceError("host identity is incomplete")
                 if any(not isinstance(host[k], str) or not host[k] for k in ("os", "arch")):
                     raise EvidenceError("host platform identity is missing")
@@ -165,17 +199,36 @@ def validate(raw: RawFile, *, capture_id: str, profile: str) -> dict:
                 _digest(host["hostname_hash"])
                 header = row
                 continue
-            if ended or not isinstance(row, dict) or set(row) != {
-                "sequence", "event", "phase", "capture_id", "reservation_id", "monotonic_ns", "wall_ns", "facts", "status"
-            }:
+            if (
+                ended
+                or not isinstance(row, dict)
+                or set(row)
+                != {
+                    "sequence",
+                    "event",
+                    "phase",
+                    "capture_id",
+                    "reservation_id",
+                    "monotonic_ns",
+                    "wall_ns",
+                    "facts",
+                    "status",
+                }
+            ):
                 raise EvidenceError("host observation row is malformed or after terminal")
-            if (type(row["sequence"]) is not int or row["sequence"] != count
-                    or row["capture_id"] != capture_id or row["reservation_id"] != header["reservation_id"]):
+            if (
+                type(row["sequence"]) is not int
+                or row["sequence"] != count
+                or row["capture_id"] != capture_id
+                or row["reservation_id"] != header["reservation_id"]
+            ):
                 raise EvidenceError("host observations are reordered, missing or mixed")
             event = row["event"]
-            if (event not in {"start", "sample", "phase", "end"}
-                    or (count == 0) != (event == "start")
-                    or row["status"] != ("completed" if event == "end" else "active")):
+            if (
+                event not in {"start", "sample", "phase", "end"}
+                or (count == 0) != (event == "start")
+                or row["status"] != ("completed" if event == "end" else "active")
+            ):
                 raise EvidenceError("host observation has no valid start/terminal")
             _run_id(row["phase"])
             _uint(row["monotonic_ns"], "monotonic time", positive=True)
@@ -194,8 +247,13 @@ def validate(raw: RawFile, *, capture_id: str, profile: str) -> dict:
     raw.consume_lines(consume)
     if header is None or not ended or count < 2:
         raise EvidenceError("host observations have no complete interval")
-    return {**header["host"], "observed_samples": count,
-            "capture_id": capture_id, "profile": profile, "digest": raw.sha256}
+    return {
+        **header["host"],
+        "observed_samples": count,
+        "capture_id": capture_id,
+        "profile": profile,
+        "digest": raw.sha256,
+    }
 
 
 class HostMonitor:
@@ -226,13 +284,24 @@ class HostMonitor:
             self.host = host
             self.writer = RawWriter(self.path)
             self.writer.__enter__()
-            self._write({"kind": "cooperative-host-observations", "schema_version": 1,
-                         "capture_id": self.capture_id, "profile": self.profile,
-                         "reservation_id": self.reservation_id, "lock_identity": list(self.identity),
-                         "interval_ns": INTERVAL_NS, "max_gap_ns": MAX_GAP_NS,
-                         "clock_tolerance_ns": CLOCK_TOLERANCE_NS, "host": host})
+            self._write(
+                {
+                    "kind": "cooperative-host-observations",
+                    "schema_version": 1,
+                    "capture_id": self.capture_id,
+                    "profile": self.profile,
+                    "reservation_id": self.reservation_id,
+                    "lock_identity": list(self.identity),
+                    "interval_ns": INTERVAL_NS,
+                    "max_gap_ns": MAX_GAP_NS,
+                    "clock_tolerance_ns": CLOCK_TOLERANCE_NS,
+                    "host": host,
+                }
+            )
             self._sample("start", facts=facts)
-            self.thread = threading.Thread(target=self._poll, name="benchmark-host-observer", daemon=True)
+            self.thread = threading.Thread(
+                target=self._poll, name="benchmark-host-observer", daemon=True
+            )
             self.thread.start()
             return self
         except BaseException:
@@ -257,10 +326,19 @@ class HostMonitor:
                 raise EvidenceError("host identity changed during capture")
         if self.sequence >= MAX_SAMPLES:
             raise EvidenceError("host observation sample count exceeds limit")
-        self._write({"sequence": self.sequence, "event": event, "phase": self.phase_name,
-                     "capture_id": self.capture_id, "reservation_id": self.reservation_id,
-                     "monotonic_ns": time.monotonic_ns(), "wall_ns": time.time_ns(),
-                     "facts": facts, "status": status})
+        self._write(
+            {
+                "sequence": self.sequence,
+                "event": event,
+                "phase": self.phase_name,
+                "capture_id": self.capture_id,
+                "reservation_id": self.reservation_id,
+                "monotonic_ns": time.monotonic_ns(),
+                "wall_ns": time.time_ns(),
+                "facts": facts,
+                "status": status,
+            }
+        )
         self.sequence += 1
 
     def _poll(self):

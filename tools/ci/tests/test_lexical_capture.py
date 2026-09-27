@@ -36,10 +36,19 @@ def lexical_release_seed(tmp_path_factory):
     corpus.git(repository, "add", ".")
     corpus.git(repository, "commit", "-qm", "fixed fixture corpus")
     commit = corpus.git(repository, "rev-parse", "HEAD").decode().strip()
-    recipe = {"source_revision": "fixture recipe, not product qualification",
-              "repositories": [{"name": "fixture", "language": "go",
-                                "url": "https://example.invalid/fixture.git", "revision": commit,
-                                "benchmark_root": "src", "upstream_semble_benchmark_overlap": False}]}
+    recipe = {
+        "source_revision": "fixture recipe, not product qualification",
+        "repositories": [
+            {
+                "name": "fixture",
+                "language": "go",
+                "url": "https://example.invalid/fixture.git",
+                "revision": commit,
+                "benchmark_root": "src",
+                "upstream_semble_benchmark_overlap": False,
+            }
+        ],
+    }
     recipe_path = tmp_path / "recipe.json"
     recipe_path.write_text(json.dumps(recipe))
     release_root = tmp_path / "corpus-release"
@@ -140,10 +149,18 @@ def inputs(tmp_path, lexical_release_seed):
         paths[role].write_text("\n".join(json.dumps(row) for row in product_rows) + "\n")
     spec = tmp_path / "spec.json"
     spec.write_text(
-        json.dumps({"schema_version": 2,
-                    "corpus": {"release_path": str(release_root), "release_digest": release["digest"],
-                               "repository": "fixture", "view": "code_only"},
-                    "inputs": {role: str(path) for role, path in paths.items()}})
+        json.dumps(
+            {
+                "schema_version": 2,
+                "corpus": {
+                    "release_path": str(release_root),
+                    "release_digest": release["digest"],
+                    "repository": "fixture",
+                    "view": "code_only",
+                },
+                "inputs": {role: str(path) for role, path in paths.items()},
+            }
+        )
     )
     return spec, paths
 
@@ -159,15 +176,31 @@ def synthetic_admission(monkeypatch):
     return source
 
 
-@pytest.mark.parametrize("relationship", ["equal", "evidence-under-corpus", "corpus-under-evidence"])
+@pytest.mark.parametrize(
+    "relationship", ["equal", "evidence-under-corpus", "corpus-under-evidence"]
+)
 def test_capture_overlap_refuses_before_epoch_writes(tmp_path, monkeypatch, relationship):
     release = tmp_path / "corpus"
-    root = release if relationship == "equal" else release / "evidence" if relationship == "evidence-under-corpus" else tmp_path
+    root = (
+        release
+        if relationship == "equal"
+        else release / "evidence"
+        if relationship == "evidence-under-corpus"
+        else tmp_path
+    )
     spec = tmp_path / "spec.json"
     spec.write_text("{}")
-    monkeypatch.setattr(capture.corpus_binding, "read_spec", lambda *_: ({"release_path": str(release)}, {}))
+    monkeypatch.setattr(
+        capture.corpus_binding, "read_spec", lambda *_: ({"release_path": str(release)}, {})
+    )
     with pytest.raises(ValueError, match="roots overlap"):
-        capture.capture(capture.ROOT, root, load_registry(capture.ROOT / "tools/benchmark/registry.toml"), spec, 1)
+        capture.capture(
+            capture.ROOT,
+            root,
+            load_registry(capture.ROOT / "tools/benchmark/registry.toml"),
+            spec,
+            1,
+        )
     assert not (root / "work").exists()
     assert not (root / "failures").exists()
     assert not release.exists()

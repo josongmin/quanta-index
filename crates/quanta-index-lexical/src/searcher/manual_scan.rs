@@ -24,7 +24,8 @@ use quanta_index_contract::{
     LqPatternType, LqPredicateArg, LqQuery, QueryConstraintSetV1, SymbolCandidate,
 };
 use quanta_index_core::{
-    CoreError, LexicalSearchPageV1, RequestBudgetV1, timeref::is_rev_at_time_spec,
+    CoreError, LexicalCollectionBudget, LexicalMemoryReservation, LexicalSearchPageV1,
+    RequestBudgetV1, timeref::is_rev_at_time_spec,
 };
 use quanta_index_lq_regex::RegexExecutor;
 use std::collections::{BTreeMap, BTreeSet};
@@ -63,23 +64,40 @@ struct ManualDocumentView<'a> {
 /// regex entry cap prevents query complexity from growing retained engines
 /// without bound; a regex miss evicts one entry before compilation.
 const MANUAL_REGEX_CACHE_ENTRIES: usize = 4;
+// A query may contain many distinct gates. Keep their retained sets under one
+// request-local account, including empty results, rather than resetting the
+// native collection budget for every gate and retaining all of its outputs.
+const MANUAL_REPO_GATE_CACHE_ENTRIES: usize = 64;
+const MANUAL_REPO_GATE_ENTRY_BYTES: u64 = 512;
+const MANUAL_REPO_GATE_ID_BYTES: u64 = 256;
 
 struct ManualRepoGate {
     name: String,
     args: Vec<LqPredicateArg>,
     options: LqOptions,
     repo_ids: BTreeSet<String>,
+    _reservation: LexicalMemoryReservation,
 }
 
-#[derive(Default)]
 pub(crate) struct ManualScanCache {
     compiled: BTreeMap<String, RegexExecutor>,
     repo_gates: Vec<ManualRepoGate>,
+    repo_gate_budget: LexicalCollectionBudget,
     #[cfg(test)]
     compiled_builds: usize,
 }
 
 impl ManualScanCache {
+    pub(crate) fn new(max_collection_bytes: u64) -> Result<Self, CoreError> {
+        Ok(Self {
+            compiled: BTreeMap::new(),
+            repo_gates: Vec::new(),
+            repo_gate_budget: LexicalCollectionBudget::new(u64::MAX, max_collection_bytes)?,
+            #[cfg(test)]
+            compiled_builds: 0,
+        })
+    }
+
     fn repo_gate_ids(
         &mut self,
         name: &str,
@@ -87,6 +105,9 @@ impl ManualScanCache {
         options: &LqOptions,
         collect: impl FnOnce() -> Result<BTreeSet<String>, CoreError>,
     ) -> Result<&BTreeSet<String>, CoreError> {
+        if let Some(error) = self.repo_gate_budget.failure() {
+            return Err(error);
+        }
         if let Some(index) = self.repo_gates.iter().position(|cached| {
             cached.name == name && cached.args == args && cached.options == *options
         }) {
@@ -98,12 +119,46 @@ impl ManualScanCache {
                     CoreError::Storage("lexical: manual repo gate cache lost a known entry".into())
                 });
         }
+        if self.repo_gates.len() >= MANUAL_REPO_GATE_CACHE_ENTRIES {
+            return Err(CoreError::Typed {
+                code:
+                    quanta_index_contract::SearchPlaneErrorCodeV2::LexicalCollectionBudgetExceeded,
+                message: format!(
+                    "lexical: unindexed query has more than {MANUAL_REPO_GATE_CACHE_ENTRIES} distinct repo gates"
+                ),
+            });
+        }
+        self.repo_gates.try_reserve(1).map_err(|error| {
+            CoreError::Storage(format!(
+                "lexical: repo gate cache allocation refused: {error}"
+            ))
+        })?;
         let ids = collect()?;
+        let charge_overflow = || CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::LexicalCollectionBudgetExceeded,
+            message: "lexical: repo gate cache byte charge overflow".into(),
+        };
+        let id_bytes = ids.iter().try_fold(0_u64, |total, id| {
+            let string_bytes = u64::try_from(id.len()).map_err(|error| CoreError::Typed {
+                code:
+                    quanta_index_contract::SearchPlaneErrorCodeV2::LexicalCollectionBudgetExceeded,
+                message: format!("lexical: repo gate id length overflow: {error}"),
+            })?;
+            let entry_bytes = MANUAL_REPO_GATE_ID_BYTES
+                .checked_add(string_bytes)
+                .ok_or_else(charge_overflow)?;
+            total.checked_add(entry_bytes).ok_or_else(charge_overflow)
+        })?;
+        let retained_bytes = id_bytes
+            .checked_add(MANUAL_REPO_GATE_ENTRY_BYTES)
+            .ok_or_else(charge_overflow)?;
+        let reservation = self.repo_gate_budget.reserve_bytes(retained_bytes)?;
         self.repo_gates.push(ManualRepoGate {
             name: name.to_owned(),
             args: args.to_vec(),
             options: options.clone(),
             repo_ids: ids,
+            _reservation: reservation,
         });
         let last = self.repo_gates.last().ok_or_else(|| {
             CoreError::Storage("lexical: manual repo gate cache lost its inserted entry".into())
@@ -853,7 +908,7 @@ impl TantivySearcher {
         )?;
         let boosted_score = Self::apply_query_boost_score(1.0, &query.options);
         let mut out: Vec<ManualRankedCandidate<LexicalCandidate>> = Vec::new();
-        let mut regex_cache = ManualScanCache::default();
+        let mut regex_cache = ManualScanCache::new(self.execution_budget.max_collection_bytes())?;
         // The scan matches every document against the plan itself; the
         // budget is observed between documents (W5 phase 2).
         for row in hits {
@@ -1098,7 +1153,7 @@ impl TantivySearcher {
         )?;
         let boosted_score = Self::apply_query_boost_score(1.0, &query.options);
         let mut out: Vec<ManualRankedCandidate<SymbolCandidate>> = Vec::new();
-        let mut regex_cache = ManualScanCache::default();
+        let mut regex_cache = ManualScanCache::new(self.execution_budget.max_collection_bytes())?;
         for row in hits {
             budget.checkpoint("lexical:scan")?;
             let doc_address = row.address;
@@ -1144,7 +1199,7 @@ mod stored_authority_tests {
     #[test]
     fn manual_matcher_reuses_compilation_across_documents_and_separates_case_modes()
     -> Result<(), CoreError> {
-        let mut cache = ManualScanCache::default();
+        let mut cache = ManualScanCache::new(u64::MAX)?;
         let folded = LqOptions::defaults();
         for (content, expected) in [("needle42", true), ("absent", false), ("NEEDLE43", true)] {
             assert_eq!(
@@ -1164,7 +1219,7 @@ mod stored_authority_tests {
     #[test]
     fn manual_repo_gate_cache_preserves_identity_empty_sets_and_retry_after_error()
     -> Result<(), CoreError> {
-        let mut cache = ManualScanCache::default();
+        let mut cache = ManualScanCache::new(u64::MAX)?;
         let options = LqOptions::defaults();
         let args = [LqPredicateArg::Keyword("needle".into())];
         let collections = Cell::new(0);
@@ -1206,9 +1261,58 @@ mod stored_authority_tests {
     }
 
     #[test]
+    fn manual_repo_gate_cache_refuses_aggregate_retention_and_excess_distinct_gates()
+    -> Result<(), CoreError> {
+        use quanta_index_contract::SearchPlaneErrorCodeV2;
+
+        let options = LqOptions::defaults();
+        let mut bounded = ManualScanCache::new(1_023)?;
+        let first = [LqPredicateArg::Keyword("first".into())];
+        let second = [LqPredicateArg::Keyword("second".into())];
+        let ids = bounded.repo_gate_ids("repo.has.topic", &first, &options, || {
+            Ok(["repo-a".to_owned()].into())
+        })?;
+        assert!(ids.contains("repo-a"));
+        let refused =
+            bounded.repo_gate_ids("repo.has.topic", &second, &options, || Ok(BTreeSet::new()));
+        assert!(matches!(
+            refused,
+            Err(CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::LexicalCollectionBudgetExceeded,
+                ..
+            })
+        ));
+        assert_eq!(bounded.repo_gates.len(), 1);
+        assert!(bounded.repo_gate_budget.failure().is_some());
+
+        let mut counted = ManualScanCache::new(u64::MAX)?;
+        for index in 0..MANUAL_REPO_GATE_CACHE_ENTRIES {
+            let args = [LqPredicateArg::Keyword(index.to_string())];
+            assert!(
+                counted
+                    .repo_gate_ids("repo.has.topic", &args, &options, || Ok(BTreeSet::new()))?
+                    .is_empty()
+            );
+        }
+        let extra = [LqPredicateArg::Keyword("overflow".into())];
+        let refused = counted.repo_gate_ids("repo.has.topic", &extra, &options, || {
+            Err(CoreError::Storage("excess gate was collected".into()))
+        });
+        assert!(matches!(
+            refused,
+            Err(CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::LexicalCollectionBudgetExceeded,
+                ..
+            })
+        ));
+        assert_eq!(counted.repo_gates.len(), MANUAL_REPO_GATE_CACHE_ENTRIES);
+        Ok(())
+    }
+
+    #[test]
     fn manual_regex_cache_compiles_each_execution_pattern_once_and_does_not_cache_failures()
     -> Result<(), CoreError> {
-        let mut cache = ManualScanCache::default();
+        let mut cache = ManualScanCache::new(u64::MAX)?;
         let compilations = Cell::new(0);
         for _ in 0..3 {
             let executor = cache.get_or_compile("a+", || {

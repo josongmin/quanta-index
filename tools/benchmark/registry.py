@@ -253,9 +253,7 @@ def load_registry(
             ref = f"python:{module}:{' '.join(argv)}"
         else:
             ref = f"recorded:{name}"
-        duplicate_owner = next(
-            (key for key, value in producer_refs.items() if value == ref), None
-        )
+        duplicate_owner = next((key for key, value in producer_refs.items() if value == ref), None)
         if duplicate_owner is not None:
             raise RegistryError(
                 f"producers.{name} duplicates producer {ref!r} already owned by {duplicate_owner}"
@@ -301,8 +299,7 @@ def load_registry(
         table = _table(entry, f"families.{name}")
         _require(
             set(table) == FAMILY_KEYS,
-            f"families.{name} must contain exactly {sorted(FAMILY_KEYS)}, "
-            f"found {sorted(table)}",
+            f"families.{name} must contain exactly {sorted(FAMILY_KEYS)}, found {sorted(table)}",
         )
         _nonempty_string(table["title"], f"families.{name}.title")
         _enum(table["purpose"], PURPOSES, f"families.{name}.purpose")
@@ -400,8 +397,16 @@ def canonical_registry_bytes(registry: dict[str, Any]) -> bytes:
     """Canonical, digest-stable projection of the validated registry."""
     core = {
         key: registry[key]
-        for key in ("schema_version", "closures", "external_inputs", "producers",
-                    "validators", "scorers", "families", "profiles")
+        for key in (
+            "schema_version",
+            "closures",
+            "external_inputs",
+            "producers",
+            "validators",
+            "scorers",
+            "families",
+            "profiles",
+        )
     }
     return json.dumps(core, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
 

@@ -273,7 +273,9 @@ def _parse_nextest_stream(
                     if outcome == "started":
                         metadata_bytes += len(json.dumps(suite_identity).encode("utf-8"))
                         if metadata_bytes > CONTROL_DOCUMENT_BYTES:
-                            raise NextestEvidenceError("nextest retained identities exceed byte limit")
+                            raise NextestEvidenceError(
+                                "nextest retained identities exceed byte limit"
+                            )
                         if suite_identity in active_suites:
                             raise NextestEvidenceError("duplicate nextest suite start")
                         if suite_identity is None and active_suites:
@@ -289,14 +291,19 @@ def _parse_nextest_stream(
                         if inventory is not None:
                             bound_counts = inventory.suite_counts.get(suite_identity)
                             if bound_counts is None:
-                                raise NextestEvidenceError("nextest binary identity mismatch: suite not collected")
+                                raise NextestEvidenceError(
+                                    "nextest binary identity mismatch: suite not collected"
+                                )
                             if test_count != sum(bound_counts[:2]):
                                 raise NextestEvidenceError(
                                     "nextest execution differs from collected tests: announced test count disagrees"
                                 )
                         active_suites[suite_identity] = {
-                            "test_count": test_count, "terminal": 0, "passed": 0,
-                            "ignored_started": 0, "ignored": 0,
+                            "test_count": test_count,
+                            "terminal": 0,
+                            "passed": 0,
+                            "ignored_started": 0,
+                            "ignored": 0,
                         }
                     elif outcome == "ok":
                         if suite_identity not in active_suites:
@@ -307,23 +314,42 @@ def _parse_nextest_stream(
                         failed = _nonnegative(event.get("failed"), "failed")
                         ignored = _nonnegative(event.get("ignored"), "ignored")
                         if inventory is not None:
-                            selected, collected_ignored, filtered = inventory.suite_counts[suite_identity]
-                            if not suite_state["terminal"] or passed != suite_state["passed"] \
-                                    or ignored != collected_ignored:
-                                raise NextestEvidenceError("nextest suite/test pass counts disagree")
+                            selected, collected_ignored, filtered = inventory.suite_counts[
+                                suite_identity
+                            ]
+                            if (
+                                not suite_state["terminal"]
+                                or passed != suite_state["passed"]
+                                or ignored != collected_ignored
+                            ):
+                                raise NextestEvidenceError(
+                                    "nextest suite/test pass counts disagree"
+                                )
                             if suite_state["terminal"] != suite_state["test_count"]:
                                 # 0.9.104's reporter decrements nonignored
                                 # `running` for TestSkippedIgnored and may close
                                 # then reopen a suite. Its counters describe the
                                 # entire inventory in every fragment. Require
                                 # those exact counters, not a partial-pass shim.
-                                if not collected_ignored or "filtered_out" not in event \
-                                        or _nonnegative(event["filtered_out"], "filtered") != (
-                                            filtered + max(0, selected - passed - suite_state["ignored_started"])
-                                        ):
-                                    raise NextestEvidenceError("nextest announced test count disagrees")
-                            elif "filtered_out" in event and _nonnegative(event["filtered_out"], "filtered") != filtered:
-                                raise NextestEvidenceError("nextest filtered count differs from inventory")
+                                if (
+                                    not collected_ignored
+                                    or "filtered_out" not in event
+                                    or _nonnegative(event["filtered_out"], "filtered")
+                                    != (
+                                        filtered
+                                        + max(0, selected - passed - suite_state["ignored_started"])
+                                    )
+                                ):
+                                    raise NextestEvidenceError(
+                                        "nextest announced test count disagrees"
+                                    )
+                            elif (
+                                "filtered_out" in event
+                                and _nonnegative(event["filtered_out"], "filtered") != filtered
+                            ):
+                                raise NextestEvidenceError(
+                                    "nextest filtered count differs from inventory"
+                                )
                             suites_ignored += suite_state["ignored"]
                         else:
                             if (
@@ -332,7 +358,9 @@ def _parse_nextest_stream(
                             ):
                                 raise NextestEvidenceError("nextest announced test count disagrees")
                             if suite_state["terminal"] != passed + failed + ignored:
-                                raise NextestEvidenceError("nextest suite/test pass counts disagree")
+                                raise NextestEvidenceError(
+                                    "nextest suite/test pass counts disagree"
+                                )
                             suites_ignored += ignored
                         if failed:
                             raise NextestEvidenceError("nextest suite reports failures")
@@ -353,8 +381,11 @@ def _parse_nextest_stream(
                         raise NextestEvidenceError("nextest retained identities exceed byte limit")
                 if expected is not None:
                     if name not in expected:
-                        if inventory is None or name not in inventory.ignored \
-                                or outcome not in {"started", "ignored"}:
+                        if (
+                            inventory is None
+                            or name not in inventory.ignored
+                            or outcome not in {"started", "ignored"}
+                        ):
                             raise NextestEvidenceError(f"unexpected nextest test: {name}")
                         test_suite: SuiteIdentity | None = inventory.ignored[name]
                     else:
@@ -419,8 +450,9 @@ def _parse_nextest_stream(
             raise NextestEvidenceError("nextest ignored outcome lacks a start event")
         if set(terminal) != set(expected) | ignored_names:
             raise NextestEvidenceError("nextest execution differs from collected tests")
-        if any(terminal[name] != "ok" for name in expected) \
-                or any(terminal[name] != "ignored" for name in ignored_names):
+        if any(terminal[name] != "ok" for name in expected) or any(
+            terminal[name] != "ignored" for name in ignored_names
+        ):
             raise NextestEvidenceError("nextest required test did not pass")
     return NextestEvidence(
         sha256=digest.hexdigest(),

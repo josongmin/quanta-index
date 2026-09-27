@@ -302,33 +302,42 @@ def test_duplicate_module_sources_are_refused(tmp_path: Path):
 
 
 def test_binary_test_attributes_cannot_hide_library_production_cycle(tmp_path: Path):
-    root = crate(tmp_path, {
-        "lib.rs": "mod a;\nmod b;\n",
-        "main.rs": "fn main() {}\n#[cfg(test)]\nmod a;\n#[cfg(test)]\nmod b;\n",
-        "a.rs": "pub struct A;\npub fn b() -> crate::b::B { crate::b::B }\n",
-        "b.rs": "pub struct B;\npub fn a() -> crate::a::A { crate::a::A }\n",
-    })
+    root = crate(
+        tmp_path,
+        {
+            "lib.rs": "mod a;\nmod b;\n",
+            "main.rs": "fn main() {}\n#[cfg(test)]\nmod a;\n#[cfg(test)]\nmod b;\n",
+            "a.rs": "pub struct A;\npub fn b() -> crate::b::B { crate::b::B }\n",
+            "b.rs": "pub struct B;\npub fn a() -> crate::a::A { crate::a::A }\n",
+        },
+    )
     assert keys(root) == ["demo: a, b"]
 
 
 def test_library_test_attributes_cannot_hide_binary_production_cycle(tmp_path: Path):
-    root = crate(tmp_path, {
-        "lib.rs": "#[cfg(test)]\nmod a;\n#[cfg(test)]\nmod b;\n",
-        "main.rs": "mod a;\nmod b;\nfn main() {}\n",
-        "a.rs": "pub struct A;\npub fn b() -> crate::b::B { crate::b::B }\n",
-        "b.rs": "pub struct B;\npub fn a() -> crate::a::A { crate::a::A }\n",
-    })
+    root = crate(
+        tmp_path,
+        {
+            "lib.rs": "#[cfg(test)]\nmod a;\n#[cfg(test)]\nmod b;\n",
+            "main.rs": "mod a;\nmod b;\nfn main() {}\n",
+            "a.rs": "pub struct A;\npub fn b() -> crate::b::B { crate::b::B }\n",
+            "b.rs": "pub struct B;\npub fn a() -> crate::a::A { crate::a::A }\n",
+        },
+    )
     assert keys(root) == ["demo: a, b"]
 
 
 def test_shared_cycle_is_reported_once_and_named_bins_remain_excluded(tmp_path: Path):
-    root = crate(tmp_path, {
-        "lib.rs": "mod a;\nmod b;\n",
-        "main.rs": "mod a;\nmod b;\nfn main() {}\n",
-        "a.rs": "pub struct A;\npub fn b() -> crate::b::B { crate::b::B }\n",
-        "b.rs": "pub struct B;\npub fn a() -> crate::a::A { crate::a::A }\n",
-        "bin/extra.rs": "mod missing_binary_only;\nfn main() {}\n",
-    })
+    root = crate(
+        tmp_path,
+        {
+            "lib.rs": "mod a;\nmod b;\n",
+            "main.rs": "mod a;\nmod b;\nfn main() {}\n",
+            "a.rs": "pub struct A;\npub fn b() -> crate::b::B { crate::b::B }\n",
+            "b.rs": "pub struct B;\npub fn a() -> crate::a::A { crate::a::A }\n",
+            "bin/extra.rs": "mod missing_binary_only;\nfn main() {}\n",
+        },
+    )
     assert keys(root) == ["demo: a, b"]
 
 
@@ -354,5 +363,7 @@ def test_blank_line_definition_scan_has_a_bounded_runtime():
         "assert m.MACRO_RE.findall(text)==[]; "
         "assert m.MOD_DECL_RE.findall(text)==[]"
     )
-    result = subprocess.run([sys.executable, "-c", program], capture_output=True, text=True, timeout=8)
+    result = subprocess.run(
+        [sys.executable, "-c", program], capture_output=True, text=True, timeout=8
+    )
     assert result.returncode == 0, result.stdout + result.stderr

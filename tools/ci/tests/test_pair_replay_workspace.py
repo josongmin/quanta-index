@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import subprocess
 import shutil
+import subprocess
 
 import pytest
 
@@ -26,7 +26,9 @@ def raw_archives(tmp_path):
     return raw
 
 
-def test_repeated_restoration_shares_only_corpus_and_rechecks_archives(raw_archives, monkeypatch, tmp_path):
+def test_repeated_restoration_shares_only_corpus_and_rechecks_archives(
+    raw_archives, monkeypatch, tmp_path
+):
     calls = []
     original = bridge.restore_corpus
 

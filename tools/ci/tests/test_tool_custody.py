@@ -32,21 +32,31 @@ def selected_tools(tmp_path: Path) -> dict:
         else:
             path = executable(tmp_path / "selected" / name, f"printf 'selected-{name}\\n'")
         real = path.resolve(strict=True)
-        rows[name] = {"path": str(path), "realpath": str(real),
-                      "sha256": hashlib.sha256(real.read_bytes()).hexdigest(), "version": "fixture"}
+        rows[name] = {
+            "path": str(path),
+            "realpath": str(real),
+            "sha256": hashlib.sha256(real.read_bytes()).hexdigest(),
+            "version": "fixture",
+        }
     return rows
 
 
 def custody(tmp_path: Path, *, environment=None):
     rows = selected_tools(tmp_path)
-    return tool_custody.ToolCustody.create(tmp_path, tmp_path / "private-bin", tools=rows,
-                                           environment=environment or dict(os.environ))
+    return tool_custody.ToolCustody.create(
+        tmp_path, tmp_path / "private-bin", tools=rows, environment=environment or dict(os.environ)
+    )
 
 
 def test_private_path_executes_selected_cargo_not_wrong_ambient_cargo(tmp_path):
     wrong = executable(tmp_path / "wrong" / "cargo", "printf 'wrong-cargo\\n'")
-    original = dict(os.environ, PATH=str(wrong.parent), RUSTC_WRAPPER="wrong-wrapper",
-                    RUSTC_WORKSPACE_WRAPPER="wrong-wrapper", QUANTA_INDEX_SCCACHE="1")
+    original = dict(
+        os.environ,
+        PATH=str(wrong.parent),
+        RUSTC_WRAPPER="wrong-wrapper",
+        RUSTC_WORKSPACE_WRAPPER="wrong-wrapper",
+        QUANTA_INDEX_SCCACHE="1",
+    )
     guard = custody(tmp_path, environment=original)
     guard.check()
     output = subprocess.check_output(["cargo"], env=guard.environment(), text=True)
@@ -68,22 +78,31 @@ def test_rustup_selects_actual_tools_in_root_with_inherited_toolchain(tmp_path):
     executable(ambient / "rustc", "exit 99")
     for name in ("cargo-nextest", "git", "bash", "just"):
         executable(ambient / name, "exit 0")
-    executable(ambient / "rustup", f'''printf '%s|%s|%s\\n' "$PWD" "$RUSTUP_TOOLCHAIN" "$2" >> '{log}'
-case "$2" in cargo) printf '%s\\n' '{cargo}' ;; rustc) printf '%s\\n' '{rustc}' ;; *) exit 3 ;; esac''')
-    paths = tool_custody.resolve_tool_paths(tmp_path, {"PATH": str(ambient),
-                                                     "RUSTUP_TOOLCHAIN": "fixed-toolchain"})
+    executable(
+        ambient / "rustup",
+        f"""printf '%s|%s|%s\\n' "$PWD" "$RUSTUP_TOOLCHAIN" "$2" >> '{log}'
+case "$2" in cargo) printf '%s\\n' '{cargo}' ;; rustc) printf '%s\\n' '{rustc}' ;; *) exit 3 ;; esac""",
+    )
+    paths = tool_custody.resolve_tool_paths(
+        tmp_path, {"PATH": str(ambient), "RUSTUP_TOOLCHAIN": "fixed-toolchain"}
+    )
     assert paths["cargo"] == cargo.resolve()
     assert paths["rustc"] == rustc.resolve()
     assert log.read_text().splitlines() == [
-        f"{tmp_path}|fixed-toolchain|cargo", f"{tmp_path}|fixed-toolchain|rustc"]
+        f"{tmp_path}|fixed-toolchain|cargo",
+        f"{tmp_path}|fixed-toolchain|rustc",
+    ]
 
 
 def test_private_python_shim_preserves_original_venv_prefix(tmp_path):
     guard = custody(tmp_path)
-    expected = subprocess.check_output([sys.executable, "-c", "import sys; print(sys.prefix)"], text=True)
+    expected = subprocess.check_output(
+        [sys.executable, "-c", "import sys; print(sys.prefix)"], text=True
+    )
     guard.check()
-    observed = subprocess.check_output(["python3", "-c", "import sys; print(sys.prefix)"],
-                                       env=guard.environment(), text=True)
+    observed = subprocess.check_output(
+        ["python3", "-c", "import sys; print(sys.prefix)"], env=guard.environment(), text=True
+    )
     guard.check()
     assert observed == expected
     assert guard.tools()["python"]["path"] == str(Path(sys.executable).absolute())
@@ -119,8 +138,9 @@ def test_parent_directory_symlink_retarget_and_restore_is_rejected(tmp_path):
     parent_alias = tmp_path / "parent-alias"
     parent_alias.symlink_to(real.parent, target_is_directory=True)
     rows["cargo"]["path"] = str(parent_alias / "cargo")
-    guard = tool_custody.ToolCustody.create(tmp_path, tmp_path / "private-bin", tools=rows,
-                                           environment=dict(os.environ))
+    guard = tool_custody.ToolCustody.create(
+        tmp_path, tmp_path / "private-bin", tools=rows, environment=dict(os.environ)
+    )
     other = tmp_path / "other"
     other.mkdir()
     parent_alias.unlink()
@@ -151,7 +171,9 @@ def test_metadata_with_wrong_selected_bytes_is_refused_before_alias_creation(tmp
     assert not (tmp_path / "private-bin").exists()
 
 
-@pytest.mark.parametrize("mutation", ["missing_shim", "empty_chain", "bool_stat", "wrong_binding", "malformed_digest"])
+@pytest.mark.parametrize(
+    "mutation", ["missing_shim", "empty_chain", "bool_stat", "wrong_binding", "malformed_digest"]
+)
 def test_offline_validation_refuses_partial_or_malformed_epoch(tmp_path, mutation):
     record = custody(tmp_path).record()
     row = record["tools"]["cargo"]
@@ -219,15 +241,23 @@ def test_exported_function_can_override_real_pinned_bash_but_admission_refuses(t
     with pytest.raises(tool_custody.ToolCustodyError, match="Bash function exports"):
         tool_custody.validate_environment(environment)
     with pytest.raises(tool_custody.ToolCustodyError, match="Bash function exports"):
-        tool_custody.ToolCustody.create(tmp_path, tmp_path / "refused-bin", tools=selected_tools(tmp_path),
-                                       environment=environment)
+        tool_custody.ToolCustody.create(
+            tmp_path,
+            tmp_path / "refused-bin",
+            tools=selected_tools(tmp_path),
+            environment=environment,
+        )
     assert not (tmp_path / "refused-bin").exists()
 
 
-@pytest.mark.parametrize("key", ["BASH_FUNC_cargo%%", "BASH_FUNC_", "BASH_FUNC_%%",
-                                 "BASH_FUNC_cargo", "BASH_FUNC_bad-name%%"])
+@pytest.mark.parametrize(
+    "key",
+    ["BASH_FUNC_cargo%%", "BASH_FUNC_", "BASH_FUNC_%%", "BASH_FUNC_cargo", "BASH_FUNC_bad-name%%"],
+)
 @pytest.mark.parametrize("value", ["", "not-a-function"])
-def test_entire_export_namespace_is_refused_even_empty_or_malformed(tmp_path, monkeypatch, key, value):
+def test_entire_export_namespace_is_refused_even_empty_or_malformed(
+    tmp_path, monkeypatch, key, value
+):
     environment = {"PATH": str(tmp_path), key: value}
     invoked = []
 
@@ -242,7 +272,9 @@ def test_entire_export_namespace_is_refused_even_empty_or_malformed(tmp_path, mo
 
 
 @pytest.mark.parametrize("name", ["ENV", "BASH_ENV"])
-def test_shell_startup_settings_are_refused_before_selection_and_creation(tmp_path, monkeypatch, name):
+def test_shell_startup_settings_are_refused_before_selection_and_creation(
+    tmp_path, monkeypatch, name
+):
     marker = tmp_path / "startup-ran"
     startup = tmp_path / "startup"
     startup.write_text(f"printf hijacked > '{marker}'\n")
@@ -257,8 +289,12 @@ def test_shell_startup_settings_are_refused_before_selection_and_creation(tmp_pa
     with pytest.raises(tool_custody.ToolCustodyError, match="shell startup setting"):
         tool_custody.resolve_tool_paths(tmp_path, environment)
     with pytest.raises(tool_custody.ToolCustodyError, match="shell startup setting"):
-        tool_custody.ToolCustody.create(tmp_path, tmp_path / "refused-bin", tools=selected_tools(tmp_path),
-                                       environment=environment)
+        tool_custody.ToolCustody.create(
+            tmp_path,
+            tmp_path / "refused-bin",
+            tools=selected_tools(tmp_path),
+            environment=environment,
+        )
     assert not invoked and not marker.exists() and not (tmp_path / "refused-bin").exists()
 
 
@@ -266,8 +302,9 @@ def test_empty_shell_startup_settings_preserve_normal_execution(tmp_path):
     environment = dict(os.environ, ENV="", BASH_ENV="")
     tool_custody.validate_environment(environment)
     guard = custody(tmp_path, environment=environment)
-    output = subprocess.check_output([guard.tools()["bash"]["path"], "-c", "cargo"],
-                                     env=guard.environment(), text=True)
+    output = subprocess.check_output(
+        [guard.tools()["bash"]["path"], "-c", "cargo"], env=guard.environment(), text=True
+    )
     guard.check()
     assert output == "selected-cargo\n"
 

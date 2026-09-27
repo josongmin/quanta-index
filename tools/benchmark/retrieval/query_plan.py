@@ -73,8 +73,10 @@ def policy_config_canonical(policy: str, config: dict[str, int] | None = None) -
 def execution_profile(policy: str, config: dict[str, int] | None = None) -> dict:
     if policy not in SUPPORTED_POLICIES:
         raise QueryPlanError(f"unsupported query input policy: {policy}")
-    resolved = dict(DEFAULT_NL_CONFIG) if policy == "natural_language" and config is None else (
-        dict(config) if policy == "natural_language" and config is not None else {}
+    resolved = (
+        dict(DEFAULT_NL_CONFIG)
+        if policy == "natural_language" and config is None
+        else (dict(config) if policy == "natural_language" and config is not None else {})
     )
     return {
         "profile_id": PROFILE_IDS[policy],
@@ -163,9 +165,7 @@ def _validate_indexable_text(raw: str) -> bool:
     return saw_token
 
 
-def plan_lexical_request(
-    policy: str, raw: str, config: dict[str, int] | None = None
-) -> str:
+def plan_lexical_request(policy: str, raw: str, config: dict[str, int] | None = None) -> str:
     """Re-derive the effective lexical request bytes for one query.
 
     Raises ``QueryPlanError`` for an unsupported policy or an empty /
@@ -189,8 +189,7 @@ def plan_lexical_request(
         for token in tokenize_nl(raw):
             if len(token) > resolved["max_token_chars"]:
                 raise QueryPlanError(
-                    f"token of {len(token)} chars exceeds max "
-                    f"{resolved['max_token_chars']}"
+                    f"token of {len(token)} chars exceeds max {resolved['max_token_chars']}"
                 )
             if len(token) < resolved["min_token_chars"]:
                 continue
@@ -202,8 +201,7 @@ def plan_lexical_request(
             raise QueryPlanError("natural-language plan produced no tokens")
         if len(distinct) > resolved["max_tokens"]:
             raise QueryPlanError(
-                f"natural-language plan has {len(distinct)} tokens "
-                f"(max {resolved['max_tokens']})"
+                f"natural-language plan has {len(distinct)} tokens (max {resolved['max_tokens']})"
             )
         request = " OR ".join(literalize(token) for token in distinct)
         if len(request.encode()) > MAX_INPUT_BYTES:

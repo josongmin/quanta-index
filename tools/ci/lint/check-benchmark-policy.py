@@ -119,9 +119,7 @@ def dependency_inversions(metadata: dict) -> list[str]:
                 continue
             path = str(dependency.get("path") or "")
             if BENCHMARK_ROOT in path:
-                inversions.append(
-                    f"{package.get('name')} -> {dependency.get('name')} ({path})"
-                )
+                inversions.append(f"{package.get('name')} -> {dependency.get('name')} ({path})")
     return inversions
 
 
@@ -188,9 +186,7 @@ def check(
         return [f"registry is invalid: {error}"]
 
     legacy = sorted(
-        name
-        for name, family in registry["families"].items()
-        if family["authority"] == "legacy"
+        name for name, family in registry["families"].items() if family["authority"] == "legacy"
     )
     if legacy:
         refusals.append(f"families still in an ambiguous legacy authority: {', '.join(legacy)}")
@@ -213,11 +209,15 @@ def check(
 
     inversions = dependency_inversions(graph)
     if inversions:
-        refusals.append("production crates depend on benchmark-only packages: " + "; ".join(inversions))
+        refusals.append(
+            "production crates depend on benchmark-only packages: " + "; ".join(inversions)
+        )
 
     bypasses = workflow_bypasses(repo_root, registry)
     if bypasses:
-        refusals.append("CI invokes a registered producer/comparator directly: " + "; ".join(bypasses))
+        refusals.append(
+            "CI invokes a registered producer/comparator directly: " + "; ".join(bypasses)
+        )
 
     return refusals
 

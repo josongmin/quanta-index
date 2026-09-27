@@ -220,7 +220,9 @@ def test_execution_does_not_use_whole_output_communicate(tmp_path, monkeypatch):
     assert result.stdout.read_control() == b"fixed"
 
 
-def test_public_execution_passes_reservation_to_guard_without_child_inheritance(tmp_path, monkeypatch):
+def test_public_execution_passes_reservation_to_guard_without_child_inheritance(
+    tmp_path, monkeypatch
+):
     original = execution._execute_owned
     observed = []
 
@@ -239,8 +241,11 @@ def test_public_execution_passes_reservation_to_guard_without_child_inheritance(
             "(os.fstat(fd)) for fd in range(3,256) if os.path.exists('/dev/fd/'+str(fd)))"
         )
         result = execution.execute(
-            [sys.executable, "-c", script, str(lock)], cwd=tmp_path,
-            env=dict(os.environ), timeout=10, log_dir=tmp_path / "execution",
+            [sys.executable, "-c", script, str(lock)],
+            cwd=tmp_path,
+            env=dict(os.environ),
+            timeout=10,
+            log_dir=tmp_path / "execution",
             custody_fds=(fd,),
         )
         assert result.command["exit_code"] == 0
@@ -268,10 +273,12 @@ from producer_execution import execute
 lock=Path({str(lock)!r})
 fd=os.open(lock,os.O_RDWR|os.O_CREAT|os.O_CLOEXEC,0o600)
 fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
-execute([sys.executable,'-c',{producer!r}],cwd=Path({str(tmp_path)!r}),env=dict(os.environ),timeout=30,log_dir=Path({str(tmp_path / 'execution')!r}),custody_fds=(fd,))
+execute([sys.executable,'-c',{producer!r}],cwd=Path({str(tmp_path)!r}),env=dict(os.environ),timeout=30,log_dir=Path({str(tmp_path / "execution")!r}),custody_fds=(fd,))
 """
     process = subprocess.Popen(
-        [sys.executable, "-c", controller], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        [sys.executable, "-c", controller],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
     )
     try:
         deadline = time.monotonic() + 10

@@ -149,6 +149,7 @@ def test_complete_recorded_capture_and_replay_contract(tmp_path, monkeypatch):
     scan = tmp_path / "scan.json"
     scan.write_bytes(scan_bytes())
     root = tmp_path / "evidence"
+
     def fail_source(*_args):
         raise ValueError("source acquisition oracle failure")
 

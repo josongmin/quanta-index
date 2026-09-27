@@ -83,7 +83,9 @@ def git(root: Path, *argv: str) -> bytes:
 def require_complete_git(root: Path) -> None:
     """Git bundles do not retain shallow boundaries or promisor configuration."""
     if git(root, "rev-parse", "--is-shallow-repository").strip() != b"false":
-        raise EvidenceError("corpus requires complete Git history; shallow checkouts cannot produce self-contained bundles")
+        raise EvidenceError(
+            "corpus requires complete Git history; shallow checkouts cannot produce self-contained bundles"
+        )
     # No network fetch is allowed by environment(); missing promised objects
     # must be materialized before capture, never silently omitted from custody.
     git(root, "rev-list", "--objects", "--missing=error", "--quiet", "HEAD")

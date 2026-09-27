@@ -127,7 +127,15 @@ def test_cli_refuses_invalid_evidence_before_writing_green(
     )
     (tmp_path / ".gitignore").write_text("artifacts/\n", encoding="utf-8")
     subprocess.run(
-        ["git", "-C", str(tmp_path), "add", "tools/benchmark/registry.toml", "Justfile", ".gitignore"],
+        [
+            "git",
+            "-C",
+            str(tmp_path),
+            "add",
+            "tools/benchmark/registry.toml",
+            "Justfile",
+            ".gitignore",
+        ],
         check=True,
     )
     subprocess.run(

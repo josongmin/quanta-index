@@ -60,10 +60,20 @@ def _hex64(value: object, label: str) -> str:
     return value
 
 
-def _nextest_counts(path: Path | RawFile | bytes, inventory: Path | RawFile | bytes | None = None) -> tuple[int, int, int, int]:
+def _nextest_counts(
+    path: Path | RawFile | bytes, inventory: Path | RawFile | bytes | None = None
+) -> tuple[int, int, int, int]:
     try:
-        expected = parse_nextest_inventory_bytes(_evidence_bytes(inventory)) if inventory is not None else None
-        evidence = parse_nextest_bytes(path, expected) if isinstance(path, bytes) else parse_nextest(path, expected)
+        expected = (
+            parse_nextest_inventory_bytes(_evidence_bytes(inventory))
+            if inventory is not None
+            else None
+        )
+        evidence = (
+            parse_nextest_bytes(path, expected)
+            if isinstance(path, bytes)
+            else parse_nextest(path, expected)
+        )
     except NextestEvidenceError as error:
         raise SystemExit(f"{error}: {path}") from error
     if not any(
@@ -95,7 +105,10 @@ def build_summary_from_evidence(
         or record["schema_version"] != 5
     ):
         raise SystemExit("runner record must be a v5 object")
-    if type(record.get("span_accounting_version")) is not int or record["span_accounting_version"] != 1:
+    if (
+        type(record.get("span_accounting_version")) is not int
+        or record["span_accounting_version"] != 1
+    ):
         raise SystemExit("current runner record lacks indexed-span protocol")
     captures = record.get("captures")
     routes = record.get("route_provenance")

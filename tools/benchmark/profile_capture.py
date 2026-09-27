@@ -64,7 +64,9 @@ class CaptureEpoch:
     Unobserved identities/terminal states stay absent, not fabricated successes.
     """
 
-    def __init__(self, repo: Path, root: Path, profile: str, *, capture_id=None, monitor_host=False):
+    def __init__(
+        self, repo: Path, root: Path, profile: str, *, capture_id=None, monitor_host=False
+    ):
         self.repo = repo.resolve()
         self.root = root.absolute()
         if self.root.resolve().is_relative_to(self.repo):
@@ -81,13 +83,20 @@ class CaptureEpoch:
         self.failure = self.root / "failures" / f"{self.capture_id}.json"
         self.primary = None
         self.state = {
-            "schema_version": 1, "kind": "capture-diagnostic",
-            "capture_id": self.capture_id, "profile": self.profile,
-            "status": "active", "phase": "admission", "sequence": 0,
-            "started_ns": time.time_ns(), "updated_ns": time.time_ns(),
-            "work_root": str(self.work), "observations": {},
+            "schema_version": 1,
+            "kind": "capture-diagnostic",
+            "capture_id": self.capture_id,
+            "profile": self.profile,
+            "status": "active",
+            "phase": "admission",
+            "sequence": 0,
+            "started_ns": time.time_ns(),
+            "updated_ns": time.time_ns(),
+            "work_root": str(self.work),
+            "observations": {},
             "history": [],
-            "commit_state": "not_started", "error": None,
+            "commit_state": "not_started",
+            "error": None,
         }
 
     def __enter__(self):
@@ -103,10 +112,16 @@ class CaptureEpoch:
     def step(self, phase, **observations):
         self.require_healthy()
         _run_id(phase)
-        self.state.update(phase=phase, sequence=self.state["sequence"] + 1, updated_ns=time.time_ns())
-        self.state["history"].append({
-            "sequence": self.state["sequence"], "phase": phase, "observed_ns": self.state["updated_ns"],
-        })
+        self.state.update(
+            phase=phase, sequence=self.state["sequence"] + 1, updated_ns=time.time_ns()
+        )
+        self.state["history"].append(
+            {
+                "sequence": self.state["sequence"],
+                "phase": phase,
+                "observed_ns": self.state["updated_ns"],
+            }
+        )
         self.state["observations"].update(deepcopy(observations))
         _write_atomic(self.work / "capture.json", canonical_json(self.state).encode())
 
@@ -119,10 +134,13 @@ class CaptureEpoch:
             raise self.primary
 
     def inputs(self, files):
-        self.step("preparation", inputs={
-            name: {"path": str(raw.path), "sha256": raw.sha256, "bytes": raw.size}
-            for name, raw in files.items()
-        })
+        self.step(
+            "preparation",
+            inputs={
+                name: {"path": str(raw.path), "sha256": raw.sha256, "bytes": raw.size}
+                for name, raw in files.items()
+            },
+        )
 
     def execute(self, owner, *args, **kwargs):
         self.require_healthy()
@@ -138,7 +156,9 @@ class CaptureEpoch:
                     raise EvidenceError("monitored producer has an invalid reservation state")
                 if self.host_monitor is None:
                     self.host_monitor = HostMonitor(
-                        self.work / HOST_RAW_NAME, self.capture_id, self.profile,
+                        self.work / HOST_RAW_NAME,
+                        self.capture_id,
+                        self.profile,
                     ).start()
                 self.host_monitor.phase(log_dir.name)
                 kwargs["custody_fds"] = (self.host_monitor.fd,)
@@ -150,17 +170,23 @@ class CaptureEpoch:
             try:
                 raw = RawFile.capture(log_dir / "execution.json")
                 execution["record"] = {
-                    "path": str(raw.path), "sha256": raw.sha256, "bytes": raw.size,
+                    "path": str(raw.path),
+                    "sha256": raw.sha256,
+                    "bytes": raw.size,
                 }
             except (OSError, ValueError) as record_error:
                 execution["record_unavailable"] = str(record_error)[:4096]
             self.state["observations"]["execution"] = deepcopy(execution)
             raise
-        execution.update({
-            "state": "returned", "log_dir": str(log_dir), "command": result[2],
-            "stdout": {"sha256": result[0].sha256, "bytes": result[0].size},
-            "stderr": {"sha256": result[1].sha256, "bytes": result[1].size},
-        })
+        execution.update(
+            {
+                "state": "returned",
+                "log_dir": str(log_dir),
+                "command": result[2],
+                "stdout": {"sha256": result[0].sha256, "bytes": result[0].size},
+                "stderr": {"sha256": result[1].sha256, "bytes": result[1].size},
+            }
+        )
         self.step("preparation", execution=execution)
         return result
 
@@ -178,9 +204,14 @@ class CaptureEpoch:
             if monitor.fd is None:
                 self.host_monitor = None
         self.host_raw = raw
-        self.step("host_observed", host_raw={
-            "path": str(raw.path), "sha256": raw.sha256, "bytes": raw.size,
-        })
+        self.step(
+            "host_observed",
+            host_raw={
+                "path": str(raw.path),
+                "sha256": raw.sha256,
+                "bytes": raw.size,
+            },
+        )
         return raw
 
     def committed(self, document):
@@ -196,37 +227,49 @@ class CaptureEpoch:
                 try:
                     raw = monitor.finish(failed=True)
                     self.state["observations"]["host_monitor"] = {
-                        "status": "failed", "path": str(raw.path),
-                        "sha256": raw.sha256, "bytes": raw.size,
+                        "status": "failed",
+                        "path": str(raw.path),
+                        "sha256": raw.sha256,
+                        "bytes": raw.size,
                     }
                 except BaseException as observed_error:
                     monitor_error = observed_error
                     self.state["observations"]["host_monitor"] = {
-                        "status": "incomplete", "path": str(monitor.path),
+                        "status": "incomplete",
+                        "path": str(monitor.path),
                         "error": str(observed_error)[:4096],
                     }
                 finally:
                     if monitor.fd is None:
                         self.host_monitor = None
                 if self.primary is None and error is None and monitor_error is None:
-                    monitor_error = EvidenceError("monitored capture returned without host publication")
+                    monitor_error = EvidenceError(
+                        "monitored capture returned without host publication"
+                    )
             primary = self.primary or error or monitor_error
             missing_commit = primary is None and self.state["commit_state"] != "returned"
             if missing_commit:
                 primary = EvidenceError("capture returned without a complete profile commit")
             if primary is not None:
                 message = str(primary)
-                self.state.update(status="failed", updated_ns=time.time_ns(), error={
-                    "type": type(primary).__name__, "message": message[:16384],
-                    "message_truncated": len(message) > 16384,
-                })
+                self.state.update(
+                    status="failed",
+                    updated_ns=time.time_ns(),
+                    error={
+                        "type": type(primary).__name__,
+                        "message": message[:16384],
+                        "message_truncated": len(message) > 16384,
+                    },
+                )
                 if error is not None and error is not primary:
                     self.state["error"]["secondary"] = {
-                        "type": type(error).__name__, "message": str(error)[:16384],
+                        "type": type(error).__name__,
+                        "message": str(error)[:16384],
                     }
                 if monitor_error is not None and monitor_error is not primary:
                     self.state["error"]["monitor"] = {
-                        "type": type(monitor_error).__name__, "message": str(monitor_error)[:16384],
+                        "type": type(monitor_error).__name__,
+                        "message": str(monitor_error)[:16384],
                     }
                 try:
                     encoded = canonical_json(self.state).encode()
@@ -238,16 +281,25 @@ class CaptureEpoch:
                         f"retained work: {self.work}"
                     ) from primary
                 primary.add_note(f"capture failure record: {self.failure}")
-                if missing_commit or (monitor_error is not None and error is None and self.primary is None):
+                if missing_commit or (
+                    monitor_error is not None and error is None and self.primary is None
+                ):
                     raise primary
         finally:
             _active_capture.reset(self.token)
         return False
 
 
-def capture_entrypoint(profile=None, *, profile_argument="profile", repo_argument="repo",
-                       root_argument="root", monitor_host=False):
+def capture_entrypoint(
+    profile=None,
+    *,
+    profile_argument="profile",
+    repo_argument="repo",
+    root_argument="root",
+    monitor_host=False,
+):
     """Bind all adapter/CLI entrypoints to one epoch, including nested promotion."""
+
     def decorate(function):
         signature = inspect.signature(function)
 
@@ -264,22 +316,29 @@ def capture_entrypoint(profile=None, *, profile_argument="profile", repo_argumen
                     epoch.reject(error)
                     raise
                 if type(result) is int and result != 0:
-                    epoch.reject(EvidenceError(
-                        f"{function.__name__} returned exit {result} during {epoch.state['phase']}"
-                    ))
+                    epoch.reject(
+                        EvidenceError(
+                            f"{function.__name__} returned exit {result} during {epoch.state['phase']}"
+                        )
+                    )
                 else:
                     epoch.require_healthy()
                 return result
 
             existing = _active_capture.get()
             if existing is not None:
-                if (existing.root != root.absolute() or existing.profile != selected
-                        or existing.repo != repo.resolve()):
+                if (
+                    existing.root != root.absolute()
+                    or existing.profile != selected
+                    or existing.repo != repo.resolve()
+                ):
                     error = EvidenceError("nested publication differs from its capture epoch")
                     existing.reject(error)
                     raise error
                 if monitor_host and not existing.monitor_host:
-                    error = EvidenceError("nested monitored capture lacks host reservation authority")
+                    error = EvidenceError(
+                        "nested monitored capture lacks host reservation authority"
+                    )
                     existing.reject(error)
                     raise error
                 existing.require_healthy()
@@ -288,6 +347,7 @@ def capture_entrypoint(profile=None, *, profile_argument="profile", repo_argumen
                 return invoke(epoch)
 
         return wrapped
+
     return decorate
 
 
@@ -336,19 +396,33 @@ def publish_capture(
     prepared, expected = deepcopy(runs), deepcopy(expected_cases)
     if host_raw is not None:
         for run in prepared:
-            if (not isinstance(run, dict) or not isinstance(run.get("raw_files"), dict)
-                    or HOST_RAW_NAME in run["raw_files"] or not isinstance(run.get("inputs"), list)
-                    or any(item.get("id") == HOST_INPUT_ID for item in run["inputs"] if isinstance(item, dict))
-                    or not isinstance(run.get("host"), dict)):
+            if (
+                not isinstance(run, dict)
+                or not isinstance(run.get("raw_files"), dict)
+                or HOST_RAW_NAME in run["raw_files"]
+                or not isinstance(run.get("inputs"), list)
+                or any(
+                    item.get("id") == HOST_INPUT_ID
+                    for item in run["inputs"]
+                    if isinstance(item, dict)
+                )
+                or not isinstance(run.get("host"), dict)
+            ):
                 raise EvidenceError("prepared run conflicts with capture host observation owner")
             run["raw_files"][HOST_RAW_NAME] = host_raw
-            run["inputs"].append({
-                "id": HOST_INPUT_ID, "availability": "present",
-                "digest": host_raw.sha256, "reason": None,
-            })
+            run["inputs"].append(
+                {
+                    "id": HOST_INPUT_ID,
+                    "availability": "present",
+                    "digest": host_raw.sha256,
+                    "reason": None,
+                }
+            )
             run["host"] = host_from_observations(
-                host_raw, policy=run["host"]["policy"],
-                capture_id=capture_id, profile=profile,
+                host_raw,
+                policy=run["host"]["policy"],
+                capture_id=capture_id,
+                profile=profile,
             )
     actual, ids, source = {}, set(), None
     for run in prepared:
@@ -377,7 +451,12 @@ def publish_capture(
         epoch.step("publication_source", run_id=run["run_id"])
         verify_source()
         epoch.require_healthy()
-        epoch.step("promotion", source=run["source"], inputs=run.get("inputs"), prepared_command=run.get("command"))
+        epoch.step(
+            "promotion",
+            source=run["source"],
+            inputs=run.get("inputs"),
+            prepared_command=run.get("command"),
+        )
         result = promote_native_run(evidence_root=root, **run)
         epoch.step("promoted_load", run_id=result["run_id"])
         record = store.load(result["run_id"])

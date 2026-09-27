@@ -42,9 +42,13 @@ def positive_integer(value: str) -> int:
 
 def check_lock(fd: int, path: Path) -> tuple:
     opened, named = os.fstat(fd), path.lstat()
-    if (not stat.S_ISREG(opened.st_mode) or not stat.S_ISREG(named.st_mode)
-            or opened.st_uid != os.getuid() or opened.st_nlink != 1
-            or (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)):
+    if (
+        not stat.S_ISREG(opened.st_mode)
+        or not stat.S_ISREG(named.st_mode)
+        or opened.st_uid != os.getuid()
+        or opened.st_nlink != 1
+        or (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino)
+    ):
         raise ValueError("resource lock must be an owned, singly linked regular file")
     return opened.st_dev, opened.st_ino, opened.st_uid, opened.st_mode, opened.st_nlink
 
@@ -76,10 +80,16 @@ def run(lock: Path, wait_seconds: int, timeout_seconds: int, command: list[str])
                 time.sleep(min(0.05, remaining))
         if check_lock(fd, lock) != identity:
             raise ValueError("resource lock identity changed during admission")
-        print(f"resource admission: admitted lock={lock} wait_ns={acquired_at - waiting_since}",
-              file=sys.stderr, flush=True)
+        print(
+            f"resource admission: admitted lock={lock} wait_ns={acquired_at - waiting_since}",
+            file=sys.stderr,
+            flush=True,
+        )
         result = _execute_owned(
-            command, cwd=Path.cwd(), env=dict(os.environ), timeout=timeout_seconds,
+            command,
+            cwd=Path.cwd(),
+            env=dict(os.environ),
+            timeout=timeout_seconds,
             sinks=(LiveSink(sys.stdout.buffer), LiveSink(sys.stderr.buffer)),
             custody_fds=(fd,),
         )
@@ -95,11 +105,17 @@ def run(lock: Path, wait_seconds: int, timeout_seconds: int, command: list[str])
         released_at = time.monotonic_ns()
         if acquired_at is not None:
             # Includes child setup and group cleanup, not only child CPU/runtime.
-            print(f"resource admission: released lock={lock} held_ns={released_at - acquired_at}",
-                  file=sys.stderr, flush=True)
+            print(
+                f"resource admission: released lock={lock} held_ns={released_at - acquired_at}",
+                file=sys.stderr,
+                flush=True,
+            )
         else:
-            print(f"resource admission: not-admitted lock={lock} wait_ns={released_at - waiting_since}",
-                  file=sys.stderr, flush=True)
+            print(
+                f"resource admission: not-admitted lock={lock} wait_ns={released_at - waiting_since}",
+                file=sys.stderr,
+                flush=True,
+            )
 
 
 def main(argv=None) -> int:

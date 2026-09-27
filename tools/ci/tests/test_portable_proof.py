@@ -33,11 +33,15 @@ def _paired_context_fixture(fake_execution, rail, *, large_log=False):
     spec = {"receipts": {f"{rail}_execution_context": str(path)}}
     kwargs = {
         "rail": rail,
-        "raw": {name: out / name for name in context["raw_evidence"] if name != "source-closure.json"},
+        "raw": {
+            name: out / name for name in context["raw_evidence"] if name != "source-closure.json"
+        },
     }
     if rail == "sdk":
-        kwargs.update(runner_sha=context["binaries"]["runner"]["sha256"],
-                      searchd_sha=context["binaries"]["searchd"]["sha256"])
+        kwargs.update(
+            runner_sha=context["binaries"]["runner"]["sha256"],
+            searchd_sha=context["binaries"]["searchd"]["sha256"],
+        )
     return out, spec, kwargs
 
 
@@ -49,27 +53,47 @@ def test_paired_context_streams_large_transcripts(fake_execution, monkeypatch, r
 
     def no_whole_reads():
         monkeypatch.setattr(Path, "read_bytes", lambda *_: pytest.fail("whole file read"))
-        monkeypatch.setattr(zipfile.ZipFile, "read", lambda *_a, **_k: pytest.fail("whole ZIP entry read"))
+        monkeypatch.setattr(
+            zipfile.ZipFile, "read", lambda *_a, **_k: pytest.fail("whole ZIP entry read")
+        )
 
     if phase == "freeze":
         no_whole_reads()
     frozen = pairrun.freeze_receipts(spec, stage)
     no_whole_reads()
     result = pairrun._verify_execution_context(
-        Path(frozen[f"{rail}_execution_context"]), out / "source-closure.json",
-        Path(frozen[f"{rail}_execution_logs"]), **kwargs,
+        Path(frozen[f"{rail}_execution_context"]),
+        out / "source-closure.json",
+        Path(frozen[f"{rail}_execution_logs"]),
+        **kwargs,
     )
     assert result["revision"] == "b" * 40
 
 
 @pytest.mark.parametrize("rail", ["contract", "sdk"])
-@pytest.mark.parametrize("mutation", [
-    "missing", "extra", "duplicate", "reordered", "alias", "compressed",
-    "symlink", "crc", "truncated", "payload_limit", "directory_limit", "envelope_limit",
-])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing",
+        "extra",
+        "duplicate",
+        "reordered",
+        "alias",
+        "compressed",
+        "symlink",
+        "crc",
+        "truncated",
+        "payload_limit",
+        "directory_limit",
+        "envelope_limit",
+    ],
+)
 def test_paired_context_archive_refuses_mutants(tmp_path, monkeypatch, rail, mutation):
-    names = sorted(f"{name}.{stream}" for name in pairrun.CONTEXT_COMMAND_NAMES[rail]
-                   for stream in ("stdout", "stderr"))
+    names = sorted(
+        f"{name}.{stream}"
+        for name in pairrun.CONTEXT_COMMAND_NAMES[rail]
+        for stream in ("stdout", "stderr")
+    )
     if mutation == "missing":
         names.pop()
     elif mutation == "extra":
@@ -89,7 +113,9 @@ def test_paired_context_archive_refuses_mutants(tmp_path, monkeypatch, rail, mut
                 entry = zipfile.ZipInfo(name)
                 entry.create_system = 3
                 entry.external_attr = (0o120777 if mutation == "symlink" else 0o100600) << 16
-                entry.compress_type = zipfile.ZIP_DEFLATED if mutation == "compressed" else zipfile.ZIP_STORED
+                entry.compress_type = (
+                    zipfile.ZIP_DEFLATED if mutation == "compressed" else zipfile.ZIP_STORED
+                )
                 archive.writestr(entry, b"transcript")
 
     if mutation == "duplicate":
@@ -105,11 +131,15 @@ def test_paired_context_archive_refuses_mutants(tmp_path, monkeypatch, rail, mut
         monkeypatch.setattr(pairrun, "MAX_CONTEXT_LOG_BYTES", 10 * len(names) - 1)
     elif mutation == "directory_limit":
         monkeypatch.setattr(pairrun, "CONTEXT_ZIP_DIRECTORY_BYTES", 1)
-        monkeypatch.setattr(zipfile, "ZipFile", lambda *_a, **_k: pytest.fail("parsed before metadata admission"))
+        monkeypatch.setattr(
+            zipfile, "ZipFile", lambda *_a, **_k: pytest.fail("parsed before metadata admission")
+        )
     elif mutation == "envelope_limit":
         monkeypatch.setattr(pairrun, "MAX_CONTEXT_LOG_BYTES", 1)
         monkeypatch.setattr(pairrun, "CONTEXT_ZIP_OVERHEAD_BYTES", 1)
-        monkeypatch.setattr(zipfile, "ZipFile", lambda *_a, **_k: pytest.fail("parsed oversized archive"))
+        monkeypatch.setattr(
+            zipfile, "ZipFile", lambda *_a, **_k: pytest.fail("parsed oversized archive")
+        )
     with pytest.raises(pairrun.RunError):
         with pairrun._frozen_context_logs(path, rail):
             pytest.fail("mutated command logs admitted")
@@ -118,8 +148,11 @@ def test_paired_context_archive_refuses_mutants(tmp_path, monkeypatch, rail, mut
 
 @pytest.mark.parametrize("rail", ["contract", "sdk"])
 def test_paired_context_payload_ceiling_is_inclusive(tmp_path, monkeypatch, rail):
-    names = sorted(f"{name}.{stream}" for name in pairrun.CONTEXT_COMMAND_NAMES[rail]
-                   for stream in ("stdout", "stderr"))
+    names = sorted(
+        f"{name}.{stream}"
+        for name in pairrun.CONTEXT_COMMAND_NAMES[rail]
+        for stream in ("stdout", "stderr")
+    )
     path = tmp_path / "logs.zip"
     with zipfile.ZipFile(path, "w") as archive:
         for name in names:
@@ -128,19 +161,27 @@ def test_paired_context_payload_ceiling_is_inclusive(tmp_path, monkeypatch, rail
     with pairrun._frozen_context_logs(path, rail) as logs:
         assert set(logs) == set(names)
         assert sum(log.size for log in logs.values()) == pairrun.MAX_CONTEXT_LOG_BYTES
-        assert {log.sha256 for log in logs.values()} == {"sha256:" + hashlib.sha256(b"ten bytes!").hexdigest()}
+        assert {log.sha256 for log in logs.values()} == {
+            "sha256:" + hashlib.sha256(b"ten bytes!").hexdigest()
+        }
         extracted = next(iter(logs.values())).path
     assert not extracted.exists()
 
 
-@pytest.mark.parametrize("mutation", ["log_symlink", "binary_symlink", "receipt_symlink", "oversized", "source_changed"])
+@pytest.mark.parametrize(
+    "mutation", ["log_symlink", "binary_symlink", "receipt_symlink", "oversized", "source_changed"]
+)
 def test_paired_freeze_refuses_unsafe_or_changed_sources(fake_execution, monkeypatch, mutation):
     out, spec, _ = _paired_context_fixture(fake_execution, "contract")
     context = json.loads((out / "execution-context.json").read_text())
     if mutation.endswith("symlink"):
-        source = (out / "source-closure.stderr" if mutation == "log_symlink" else
-                  Path(next(iter(context["binaries"].values()))["path"]) if mutation == "binary_symlink" else
-                  out / "execution-context.json")
+        source = (
+            out / "source-closure.stderr"
+            if mutation == "log_symlink"
+            else Path(next(iter(context["binaries"].values()))["path"])
+            if mutation == "binary_symlink"
+            else out / "execution-context.json"
+        )
         moved = source.with_name(source.name + "-real")
         source.rename(moved)
         source.symlink_to(moved)
@@ -159,7 +200,9 @@ def test_paired_freeze_refuses_unsafe_or_changed_sources(fake_execution, monkeyp
 
 
 @pytest.mark.parametrize("rail", ["contract", "sdk"])
-@pytest.mark.parametrize("mutation", ["raw", "binary", "context", "closure", "archive", "binary_inventory"])
+@pytest.mark.parametrize(
+    "mutation", ["raw", "binary", "context", "closure", "archive", "binary_inventory"]
+)
 def test_paired_verification_rechecks_committed_inputs(fake_execution, monkeypatch, rail, mutation):
     out, spec, kwargs = _paired_context_fixture(fake_execution, rail)
     frozen = pairrun.freeze_receipts(spec, out.parent / "paired")
@@ -182,7 +225,10 @@ def test_paired_verification_rechecks_committed_inputs(fake_execution, monkeypat
     monkeypatch.setattr(pairrun, "_verify_context_commands", changed)
     with pytest.raises(pairrun.RunError, match="changed during verification"):
         pairrun._verify_execution_context(
-            context_path, out / "source-closure.json", Path(frozen[f"{rail}_execution_logs"]), **kwargs,
+            context_path,
+            out / "source-closure.json",
+            Path(frozen[f"{rail}_execution_logs"]),
+            **kwargs,
         )
 
 
@@ -191,8 +237,11 @@ def test_paired_verification_rechecks_committed_inputs(fake_execution, monkeypat
 def test_paired_context_refuses_oversized_control(fake_execution, monkeypatch, rail, control):
     out, spec, kwargs = _paired_context_fixture(fake_execution, rail)
     context_path = Path(spec["receipts"][f"{rail}_execution_context"])
-    target = context_path if control == "context" else out / (
-        "rust-collection.stdout" if control == "collection" else "rust-build.stdout")
+    target = (
+        context_path
+        if control == "context"
+        else out / ("rust-collection.stdout" if control == "collection" else "rust-build.stdout")
+    )
     target.write_bytes(b" " * (16 * 1024 * 1024 + 1))
     if control == "build":
         context = json.loads(context_path.read_text())
@@ -203,8 +252,10 @@ def test_paired_context_refuses_oversized_control(fake_execution, monkeypatch, r
         frozen = pairrun.freeze_receipts(spec, out.parent / "paired")
         with pytest.raises(pairrun.RunError, match="control document exceeds"):
             pairrun._verify_execution_context(
-                Path(frozen[f"{rail}_execution_context"]), out / "source-closure.json",
-                Path(frozen[f"{rail}_execution_logs"]), **kwargs,
+                Path(frozen[f"{rail}_execution_context"]),
+                out / "source-closure.json",
+                Path(frozen[f"{rail}_execution_logs"]),
+                **kwargs,
             )
     else:
         with pytest.raises(pairrun.RunError, match="control document exceeds"):
@@ -213,14 +264,19 @@ def test_paired_context_refuses_oversized_control(fake_execution, monkeypatch, r
 
 def test_runner_bundle_uses_shared_file_archive_owner(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "read_bytes", lambda *_: pytest.fail("whole source/bundle read"))
-    monkeypatch.setattr(zipfile.ZipFile, "read", lambda *_a, **_k: pytest.fail("whole bundle entry read"))
+    monkeypatch.setattr(
+        zipfile.ZipFile, "read", lambda *_a, **_k: pytest.fail("whole bundle entry read")
+    )
     path = tmp_path / "runner.pyz"
     expected = pairrun.build_runner_bundle(path)
     pairrun.validate_runner_bundle(path, expected)
     assert expected["sha256"] == portable_proof._sha(path)
 
 
-@pytest.mark.parametrize("mutation", ["extra", "bootstrap", "compressed", "crc", "reordered", "metadata", "archive_limit"])
+@pytest.mark.parametrize(
+    "mutation",
+    ["extra", "bootstrap", "compressed", "crc", "reordered", "metadata", "archive_limit"],
+)
 def test_runner_bundle_rejects_rehashed_unadmitted_inputs(tmp_path, monkeypatch, mutation):
     path = tmp_path / "runner.pyz"
     expected = pairrun.build_runner_bundle(path)
@@ -232,24 +288,46 @@ def test_runner_bundle_rejects_rehashed_unadmitted_inputs(tmp_path, monkeypatch,
         members["__main__.py"] = b"raise SystemExit(0)\n"
         for row in expected["manifest"]["members"]:
             if row["path"] == "__main__.py":
-                row.update(sha256=hashlib.sha256(members["__main__.py"]).hexdigest(), size=len(members["__main__.py"]))
+                row.update(
+                    sha256=hashlib.sha256(members["__main__.py"]).hexdigest(),
+                    size=len(members["__main__.py"]),
+                )
         members["bundle-manifest.json"] = pairrun.canonical_bytes(expected["manifest"]) + b"\n"
         expected["manifest_sha256"] = hashlib.sha256(members["bundle-manifest.json"]).hexdigest()
-    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED if mutation == "compressed" else zipfile.ZIP_STORED) as archive:
+    with zipfile.ZipFile(
+        path,
+        "w",
+        compression=zipfile.ZIP_DEFLATED if mutation == "compressed" else zipfile.ZIP_STORED,
+    ) as archive:
         for name in sorted(members, reverse=mutation == "reordered"):
             archive.writestr(name, members[name])
     if mutation == "crc":
-        path.write_bytes(path.read_bytes().replace(b"raise SystemExit(main())", b"raise SystemExit(Main())", 1))
+        path.write_bytes(
+            path.read_bytes().replace(b"raise SystemExit(main())", b"raise SystemExit(Main())", 1)
+        )
     expected["sha256"] = portable_proof._sha(path)
     if mutation in {"metadata", "archive_limit"}:
-        monkeypatch.setattr(pairrun, "RUNNER_BUNDLE_LIMITS", pairrun.raw_archive.ArchiveLimits(
-            max_bytes=1 if mutation == "archive_limit" else 16 * 1024 * 1024,
-            max_entries=6, max_directory_bytes=1 if mutation == "metadata" else 16 * 1024,
-        ))
-        monkeypatch.setattr(zipfile, "ZipFile", lambda *_a, **_k: pytest.fail("ZIP parsed before admission"))
+        monkeypatch.setattr(
+            pairrun,
+            "RUNNER_BUNDLE_LIMITS",
+            pairrun.raw_archive.ArchiveLimits(
+                max_bytes=1 if mutation == "archive_limit" else 16 * 1024 * 1024,
+                max_entries=6,
+                max_directory_bytes=1 if mutation == "metadata" else 16 * 1024,
+            ),
+        )
+        monkeypatch.setattr(
+            zipfile, "ZipFile", lambda *_a, **_k: pytest.fail("ZIP parsed before admission")
+        )
     else:
-        monkeypatch.setattr(zipfile.ZipFile, "read", lambda *_a, **_k: pytest.fail("unadmitted payload materialized"))
-    with pytest.raises(pairrun.RunError, match="prescribed bootstrap" if mutation == "bootstrap" else None):
+        monkeypatch.setattr(
+            zipfile.ZipFile,
+            "read",
+            lambda *_a, **_k: pytest.fail("unadmitted payload materialized"),
+        )
+    with pytest.raises(
+        pairrun.RunError, match="prescribed bootstrap" if mutation == "bootstrap" else None
+    ):
         pairrun.validate_runner_bundle(path, expected)
 
 
@@ -284,7 +362,9 @@ def test_direct_proof_command_retains_large_output_without_control_decode(tmp_pa
 
 
 @pytest.mark.parametrize("rail", ["contract", "sdk"])
-def test_large_nextest_output_survives_production_and_relocated_replay(fake_execution, monkeypatch, rail):
+def test_large_nextest_output_survives_production_and_relocated_replay(
+    fake_execution, monkeypatch, rail
+):
     out, _, _ = fake_execution
     execute = portable_proof.execute
     expected_digest = None
@@ -313,11 +393,16 @@ def test_large_nextest_output_survives_production_and_relocated_replay(fake_exec
     summary = out / ("contract_rust_results.json" if rail == "contract" else "sdk_results.json")
     result = json.loads(summary.read_text())
     assert {key: result[key] for key in ("selected", "executed", "passed", "failed")} == {
-        "selected": 1, "executed": 1, "passed": 1, "failed": 0,
+        "selected": 1,
+        "executed": 1,
+        "passed": 1,
+        "failed": 0,
     }
     relocated = out.parent / "relocated"
     shutil.copytree(out, relocated)
-    monkeypatch.setattr(Path, "read_bytes", lambda *_: pytest.fail("replay materialized whole file"))
+    monkeypatch.setattr(
+        Path, "read_bytes", lambda *_: pytest.fail("replay materialized whole file")
+    )
     context = portable_proof.validate(relocated / receipt.name, execution_root=out)
     assert context["raw_evidence"][name] == expected_digest
 
@@ -335,7 +420,10 @@ def test_direct_proof_command_has_a_finite_execution_timeout(tmp_path, monkeypat
 
     monkeypatch.setattr(portable_proof, "execute", run)
     commands = []
-    assert portable_proof._run("fixture", [sys.executable, "-V"], tmp_path, commands).read_control() == b"complete"
+    assert (
+        portable_proof._run("fixture", [sys.executable, "-V"], tmp_path, commands).read_control()
+        == b"complete"
+    )
     assert len(observed) == 1
     assert type(observed[0]) in (int, float) and 0 < observed[0] <= 7200
 
@@ -1082,9 +1170,7 @@ def test_failed_command_cannot_emit_receipt(
 
 
 @pytest.mark.parametrize("rail", ["contract", "sdk"])
-def test_validator_refuses_mutation_after_file_commitment(
-    fake_execution, monkeypatch, rail
-):
+def test_validator_refuses_mutation_after_file_commitment(fake_execution, monkeypatch, rail):
     out, _, _ = fake_execution
     receipt = portable_proof.produce(rail, out)
     reader = portable_proof.RawFile.capture

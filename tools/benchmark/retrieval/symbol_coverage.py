@@ -1,4 +1,5 @@
 """Validate the current producer census and its source-bound commitments."""
+
 from __future__ import annotations
 
 import hashlib
@@ -22,16 +23,35 @@ except ModuleNotFoundError:  # direct retrieval script invocation
 
 PRODUCER = "source-bound-symbols-v2"
 LANGUAGES = {
-    "rs": "rust", "go": "go", "py": "python", "js": "javascript",
-    "mjs": "javascript", "cjs": "javascript", "jsx": "javascript",
-    "ts": "typescript", "mts": "typescript", "cts": "typescript", "tsx": "typescript_tsx",
+    "rs": "rust",
+    "go": "go",
+    "py": "python",
+    "js": "javascript",
+    "mjs": "javascript",
+    "cjs": "javascript",
+    "jsx": "javascript",
+    "ts": "typescript",
+    "mts": "typescript",
+    "cts": "typescript",
+    "tsx": "typescript_tsx",
 }
-LIMITS = ("max_file_bytes", "max_symbols_per_file", "max_symbols_total",
-          "max_diagnostics_per_file", "max_diagnostics_total")
+LIMITS = (
+    "max_file_bytes",
+    "max_symbols_per_file",
+    "max_symbols_total",
+    "max_diagnostics_per_file",
+    "max_diagnostics_total",
+)
 TIMEOUTS = ("timeout_per_file_ns", "timeout_total_ns")
 ROW_KEYS = {"path", "source_sha256", "language", "coverage", "failure"}
-REPORT_ROW_KEYS = ROW_KEYS | {"failure_detail", "failure_detail_truncated", "diagnostics",
-                             "diagnostics_total", "diagnostics_truncated", "diagnostics_complete"}
+REPORT_ROW_KEYS = ROW_KEYS | {
+    "failure_detail",
+    "failure_detail_truncated",
+    "diagnostics",
+    "diagnostics_total",
+    "diagnostics_truncated",
+    "diagnostics_complete",
+}
 
 
 def exact(value: object, keys: set[str], where: str) -> dict:
@@ -66,9 +86,14 @@ def regular_bytes(path: Path, *, max_bytes: int | None = None) -> bytes:
 
 
 def grammar_identity(root: Path = ROOT) -> str:
-    versions = {"tree-sitter": "0.25.10", "tree-sitter-rust": "0.24.2",
-                "tree-sitter-go": "0.25.0", "tree-sitter-javascript": "0.25.0",
-                "tree-sitter-python": "0.25.0", "tree-sitter-typescript": "0.23.2"}
+    versions = {
+        "tree-sitter": "0.25.10",
+        "tree-sitter-rust": "0.24.2",
+        "tree-sitter-go": "0.25.0",
+        "tree-sitter-javascript": "0.25.0",
+        "tree-sitter-python": "0.25.0",
+        "tree-sitter-typescript": "0.23.2",
+    }
     lock = tomllib.loads(regular_bytes(root / "Cargo.lock").decode())
     for name, version in versions.items():
         rows = [p for p in lock["package"] if p["name"] == name]
@@ -78,7 +103,8 @@ def grammar_identity(root: Path = ROOT) -> str:
             raise ValueError("TypeScript grammar must resolve to the source-bound path dependency")
     manifest = tomllib.loads(regular_bytes(root / "Cargo.toml").decode())
     if manifest["workspace"]["dependencies"]["tree-sitter-typescript"] != {
-        "version": "=0.23.2", "path": "vendor/tree-sitter-typescript"
+        "version": "=0.23.2",
+        "path": "vendor/tree-sitter-typescript",
     }:
         raise ValueError("TypeScript grammar path dependency differs")
     vendor = root / "vendor/tree-sitter-typescript"
@@ -99,8 +125,11 @@ def grammar_identity(root: Path = ROOT) -> str:
         digest.update(name_bytes)
         digest.update(len(data).to_bytes(8, "little"))
         digest.update(data)
-    return ("tree-sitter@0.25.10;rust@0.24.2;go@0.25.0;javascript@0.25.0;python@0.25.0;"
-            "typescript@0.23.2+quanta-typescript-compatibility-1;vendored-source-sha256=" + digest.hexdigest())
+    return (
+        "tree-sitter@0.25.10;rust@0.24.2;go@0.25.0;javascript@0.25.0;python@0.25.0;"
+        "typescript@0.23.2+quanta-typescript-compatibility-1;vendored-source-sha256="
+        + digest.hexdigest()
+    )
 
 
 def policy_digest(policy: dict, root: Path = ROOT) -> str:
@@ -109,13 +138,27 @@ def policy_digest(policy: dict, root: Path = ROOT) -> str:
         raise ValueError("invalid symbol extraction limit")
     for key in TIMEOUTS:
         value = policy[key]
-        if not isinstance(value, str) or re.fullmatch(r"0|[1-9][0-9]{0,38}", value) is None or int(value) >= 2**128:
+        if (
+            not isinstance(value, str)
+            or re.fullmatch(r"0|[1-9][0-9]{0,38}", value) is None
+            or int(value) >= 2**128
+        ):
             raise ValueError("invalid symbol extraction deadline")
     digest = hashlib.sha256()
-    parts = [b"quanta-index:symbol-preflight:v1", PRODUCER.encode(), grammar_identity(root).encode()]
-    parts += [regular_bytes(root / path) for path in (
-        "Cargo.lock", "benchmarks/retrieval/src/symbols.rs",
-        "benchmarks/retrieval/src/symbols/preflight.rs", "benchmarks/retrieval/build.rs")]
+    parts = [
+        b"quanta-index:symbol-preflight:v1",
+        PRODUCER.encode(),
+        grammar_identity(root).encode(),
+    ]
+    parts += [
+        regular_bytes(root / path)
+        for path in (
+            "Cargo.lock",
+            "benchmarks/retrieval/src/symbols.rs",
+            "benchmarks/retrieval/src/symbols/preflight.rs",
+            "benchmarks/retrieval/build.rs",
+        )
+    ]
     for data in parts:
         digest.update(str(len(data)).encode() + b"\0" + data)
     for key in LIMITS:
@@ -127,10 +170,16 @@ def policy_digest(policy: dict, root: Path = ROOT) -> str:
 
 def validate_row(row: dict) -> tuple[str, int | None]:
     path = row["path"]
-    if (not isinstance(path, str) or not path or path.startswith("/") or "\\" in path
-            or len(path.encode("utf-8")) > 4096 or re.match(r"[A-Za-z]:", path)
-            or any(ord(c) < 32 or 0x7f <= ord(c) <= 0x9f for c in path)
-            or any(p in ("", ".", "..") for p in path.split("/"))):
+    if (
+        not isinstance(path, str)
+        or not path
+        or path.startswith("/")
+        or "\\" in path
+        or len(path.encode("utf-8")) > 4096
+        or re.match(r"[A-Za-z]:", path)
+        or any(ord(c) < 32 or 0x7F <= ord(c) <= 0x9F for c in path)
+        or any(p in ("", ".", "..") for p in path.split("/"))
+    ):
         raise ValueError("symbol coverage path is invalid")
     if not is_sha(row["source_sha256"]):
         raise ValueError("symbol coverage source hash is invalid")
@@ -148,7 +197,11 @@ def validate_row(row: dict) -> tuple[str, int | None]:
         return state, coverage["symbol_count"]
     exact(coverage, {"state"}, "incomplete coverage")
     expected_failure = {"unsupported": "unsupported_language", "parse_failed": "syntax_error"}
-    if not isinstance(state, str) or state not in expected_failure or row["failure"] != expected_failure[state]:
+    if (
+        not isinstance(state, str)
+        or state not in expected_failure
+        or row["failure"] != expected_failure[state]
+    ):
         raise ValueError("fatal or unknown symbol coverage cannot be accepted")
     if (state == "unsupported") != (language is None):
         raise ValueError("incomplete symbol coverage grammar mismatch")
@@ -156,8 +209,12 @@ def validate_row(row: dict) -> tuple[str, int | None]:
 
 
 def validate_metrics(metrics: dict, expected_grammar: str) -> None:
-    if (metrics["symbol_producer_identity"] != PRODUCER or metrics["symbol_grammars"] != expected_grammar
-            or not count(metrics["symbol_count"]) or not count(metrics["file_count"])):
+    if (
+        metrics["symbol_producer_identity"] != PRODUCER
+        or metrics["symbol_grammars"] != expected_grammar
+        or not count(metrics["symbol_count"])
+        or not count(metrics["file_count"])
+    ):
         raise ValueError("invalid symbol producer evidence")
     policy = metrics["symbol_coverage_policy"]
     if policy not in ("require-complete", "allow-incomplete"):
@@ -166,7 +223,14 @@ def validate_metrics(metrics: dict, expected_grammar: str) -> None:
         if not is_sha(metrics[key]):
             raise ValueError(f"invalid {key}")
     ref = metrics["symbol_preflight_out"]
-    if not isinstance(ref, str) or not ref or ref in (".", "..") or "/" in ref or "\\" in ref or "\0" in ref:
+    if (
+        not isinstance(ref, str)
+        or not ref
+        or ref in (".", "..")
+        or "/" in ref
+        or "\\" in ref
+        or "\0" in ref
+    ):
         raise ValueError("preflight reference must name a sibling regular artifact")
     coverage = metrics["symbol_coverage"]
     if not isinstance(coverage, list) or len(coverage) != metrics["file_count"]:
@@ -175,7 +239,9 @@ def validate_metrics(metrics: dict, expected_grammar: str) -> None:
     for row in coverage:
         exact(row, ROW_KEYS | {"definition_count"}, "symbol coverage row")
         state, definitions = validate_row(row)
-        if row["definition_count"] != definitions or (definitions is not None and not count(row["definition_count"])):
+        if row["definition_count"] != definitions or (
+            definitions is not None and not count(row["definition_count"])
+        ):
             raise ValueError("symbol coverage count is inconsistent or incomplete")
         paths.append(row["path"])
         total += definitions or 0
@@ -184,7 +250,12 @@ def validate_metrics(metrics: dict, expected_grammar: str) -> None:
             unsupported.append({k: row[k] for k in ROW_KEYS})
     if paths != sorted(set(paths)) or total != metrics["symbol_count"]:
         raise ValueError("symbol coverage is duplicate, reordered, or incomplete")
-    for key in ("symbol_incomplete_files", "symbol_unsupported_files", "symbol_only_scopes", "empty_scopes"):
+    for key in (
+        "symbol_incomplete_files",
+        "symbol_unsupported_files",
+        "symbol_only_scopes",
+        "empty_scopes",
+    ):
         if not count(metrics[key]) or metrics[key] > metrics["file_count"]:
             raise ValueError(f"{key} is outside the admitted file count")
     if metrics["symbol_only_scopes"] + metrics["empty_scopes"] > metrics["file_count"]:
@@ -197,15 +268,21 @@ def validate_metrics(metrics: dict, expected_grammar: str) -> None:
         validate_report_row(row)
     if [{k: row[k] for k in ROW_KEYS} for row in details] != unsupported:
         raise ValueError("unsupported symbol details differ from coverage")
-    if metrics["symbol_incomplete_files"] != incomplete or (policy == "require-complete" and incomplete):
+    if metrics["symbol_incomplete_files"] != incomplete or (
+        policy == "require-complete" and incomplete
+    ):
         raise ValueError("incomplete symbol coverage contradicts the admission policy")
 
 
 def validate_report_row(row: dict) -> None:
     exact(row, REPORT_ROW_KEYS, "symbol file report")
     state, _ = validate_row(row)
-    if (not count(row["diagnostics_total"]) or type(row["diagnostics_truncated"]) is not bool
-            or row["diagnostics_complete"] is not True or type(row["failure_detail_truncated"]) is not bool):
+    if (
+        not count(row["diagnostics_total"])
+        or type(row["diagnostics_truncated"]) is not bool
+        or row["diagnostics_complete"] is not True
+        or type(row["failure_detail_truncated"]) is not bool
+    ):
         raise ValueError("invalid or incomplete diagnostic census")
     detail = row["failure_detail"]
     if detail is not None and (not isinstance(detail, str) or len(detail) > 512):
@@ -213,22 +290,37 @@ def validate_report_row(row: dict) -> None:
     if row["failure_detail_truncated"] and (not isinstance(detail, str) or len(detail) != 512):
         raise ValueError("invalid failure detail truncation")
     diagnostics = row["diagnostics"]
-    if (not isinstance(diagnostics, list) or len(diagnostics) > row["diagnostics_total"]
-            or row["diagnostics_truncated"] != (len(diagnostics) < row["diagnostics_total"])):
+    if (
+        not isinstance(diagnostics, list)
+        or len(diagnostics) > row["diagnostics_total"]
+        or row["diagnostics_truncated"] != (len(diagnostics) < row["diagnostics_total"])
+    ):
         raise ValueError("invalid diagnostic truncation/count")
     keys = []
     for diagnostic in diagnostics:
         exact(diagnostic, {"kind", "byte_start", "byte_end"}, "symbol diagnostic")
         start, end, kind = diagnostic["byte_start"], diagnostic["byte_end"], diagnostic["kind"]
         if state == "parse_failed":
-            if not count(start) or not count(end) or start > end or kind not in ("syntax_error", "missing_syntax"):
+            if (
+                not count(start)
+                or not count(end)
+                or start > end
+                or kind not in ("syntax_error", "missing_syntax")
+            ):
                 raise ValueError("invalid source diagnostic range")
             keys.append((start, end, kind))
-        elif state != "unsupported" or start is not None or end is not None or kind != "unsupported_language":
+        elif (
+            state != "unsupported"
+            or start is not None
+            or end is not None
+            or kind != "unsupported_language"
+        ):
             raise ValueError("diagnostic differs from coverage state")
     if keys != sorted(keys):
         raise ValueError("diagnostics are reordered")
-    if state == "complete" and (row["diagnostics_total"] != 0 or detail is not None or row["failure_detail_truncated"]):
+    if state == "complete" and (
+        row["diagnostics_total"] != 0 or detail is not None or row["failure_detail_truncated"]
+    ):
         raise ValueError("complete coverage carries failure diagnostics")
     if state != "complete" and row["diagnostics_total"] == 0:
         raise ValueError("failed coverage omits diagnostic census")
@@ -243,24 +335,54 @@ def verify_artifact(metrics: dict, phase_path: Path, corpus: dict, root: Path = 
     if hashlib.sha256(raw).hexdigest() != metrics["symbol_preflight_sha256"]:
         raise ValueError("preflight artifact digest mismatch")
     value = parse_json(raw)
-    exact(value, {"symbol_coverage_policy", "repository_commit", "file_universe_sha256", "preflight"}, "preflight envelope")
+    exact(
+        value,
+        {"symbol_coverage_policy", "repository_commit", "file_universe_sha256", "preflight"},
+        "preflight envelope",
+    )
     expected = sorted((row["path"], row["file_sha256"]) for row in corpus["files"])
     if len({path for path, _ in expected}) != len(expected):
         raise ValueError("duplicate admitted source")
-    universe = hashlib.sha256(b"".join(path.encode() + b"\0" + sha.encode() + b"\0" for path, sha in expected)).hexdigest()
-    if (value["repository_commit"] != corpus["repository_commit"] or value["file_universe_sha256"] != universe
-            or value["symbol_coverage_policy"] != metrics["symbol_coverage_policy"]):
+    universe = hashlib.sha256(
+        b"".join(path.encode() + b"\0" + sha.encode() + b"\0" for path, sha in expected)
+    ).hexdigest()
+    if (
+        value["repository_commit"] != corpus["repository_commit"]
+        or value["file_universe_sha256"] != universe
+        or value["symbol_coverage_policy"] != metrics["symbol_coverage_policy"]
+    ):
         raise ValueError("preflight corpus/profile binding mismatch")
-    report = exact(value["preflight"], {"schema", "producer_identity", "grammar_identity", "lockfile_sha256",
-                   "producer_policy_sha256", "policy", "files", "admitted_files", "incomplete_files"}, "preflight report")
-    if (report["schema"] != "symbol-preflight-v1" or report["producer_identity"] != PRODUCER
-            or report["grammar_identity"] != metrics["symbol_grammars"]
-            or report["lockfile_sha256"] != hashlib.sha256(regular_bytes(root / "Cargo.lock")).hexdigest()
-            or report["producer_policy_sha256"] != metrics["symbol_producer_policy_sha256"]
-            or report["producer_policy_sha256"] != policy_digest(report["policy"], root)):
+    report = exact(
+        value["preflight"],
+        {
+            "schema",
+            "producer_identity",
+            "grammar_identity",
+            "lockfile_sha256",
+            "producer_policy_sha256",
+            "policy",
+            "files",
+            "admitted_files",
+            "incomplete_files",
+        },
+        "preflight report",
+    )
+    if (
+        report["schema"] != "symbol-preflight-v1"
+        or report["producer_identity"] != PRODUCER
+        or report["grammar_identity"] != metrics["symbol_grammars"]
+        or report["lockfile_sha256"]
+        != hashlib.sha256(regular_bytes(root / "Cargo.lock")).hexdigest()
+        or report["producer_policy_sha256"] != metrics["symbol_producer_policy_sha256"]
+        or report["producer_policy_sha256"] != policy_digest(report["policy"], root)
+    ):
         raise ValueError("preflight source/grammar/policy commitment mismatch")
     files = report["files"]
-    if not isinstance(files, list) or not count(report["admitted_files"]) or not count(report["incomplete_files"]):
+    if (
+        not isinstance(files, list)
+        or not count(report["admitted_files"])
+        or not count(report["incomplete_files"])
+    ):
         raise ValueError("invalid preflight census counts")
     projected, unsupported, retained = [], [], 0
     for row in files:
@@ -270,19 +392,28 @@ def verify_artifact(metrics: dict, phase_path: Path, corpus: dict, root: Path = 
         if state == "unsupported":
             unsupported.append(row)
         expected_retained = min(
-            row["diagnostics_total"], report["policy"]["max_diagnostics_per_file"],
+            row["diagnostics_total"],
+            report["policy"]["max_diagnostics_per_file"],
             report["policy"]["max_diagnostics_total"] - retained,
         )
         if len(row["diagnostics"]) != expected_retained:
             raise ValueError("diagnostic retention differs from the declared file/global budgets")
         retained += len(row["diagnostics"])
-        if any(d["byte_end"] is not None and d["byte_end"] > report["policy"]["max_file_bytes"] for d in row["diagnostics"]):
+        if any(
+            d["byte_end"] is not None and d["byte_end"] > report["policy"]["max_file_bytes"]
+            for d in row["diagnostics"]
+        ):
             raise ValueError("diagnostic exceeds admitted source budget")
         if definitions is not None and definitions > report["policy"]["max_symbols_per_file"]:
             raise ValueError("per-file symbol budget exceeded")
-    if (retained > report["policy"]["max_diagnostics_total"] or metrics["symbol_count"] > report["policy"]["max_symbols_total"]
-            or projected != metrics["symbol_coverage"] or unsupported != metrics["symbol_unsupported_details"]
-            or report["admitted_files"] != metrics["file_count"] or report["incomplete_files"] != metrics["symbol_incomplete_files"]
-            or [(r["path"], r["source_sha256"]) for r in files] != expected):
+    if (
+        retained > report["policy"]["max_diagnostics_total"]
+        or metrics["symbol_count"] > report["policy"]["max_symbols_total"]
+        or projected != metrics["symbol_coverage"]
+        or unsupported != metrics["symbol_unsupported_details"]
+        or report["admitted_files"] != metrics["file_count"]
+        or report["incomplete_files"] != metrics["symbol_incomplete_files"]
+        or [(r["path"], r["source_sha256"]) for r in files] != expected
+    ):
         raise ValueError("preflight census differs from metrics or admitted corpus")
     return artifact

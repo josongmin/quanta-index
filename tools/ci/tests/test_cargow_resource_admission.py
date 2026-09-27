@@ -13,7 +13,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
 CARGOW = ROOT / "scripts" / "cargow"
-FAKE_CARGO = r'''
+FAKE_CARGO = r"""
 import fcntl
 import json
 import os
@@ -53,7 +53,7 @@ if sys.argv[1:2] == ["build"] and "quanta-index-searchd-runtime" in sys.argv:
     binary.write_text("#!/bin/sh\nexit 0\n")
     binary.chmod(0o755)
 raise SystemExit(int(os.environ.get("FAKE_CARGO_EXIT", "0")))
-'''
+"""
 
 
 @pytest.fixture
@@ -65,27 +65,37 @@ def cargo_env(tmp_path):
     cargo.chmod(0o755)
     env = os.environ.copy()
     for key in (
-        "CI", "QUANTA_INDEX_BUILD_LANE", "QUANTA_INDEX_SEARCHD_BIN",
-        "QUANTA_INDEX_PRESERVE_CARGO_TARGET_DIR", "CARGO_TARGET_DIR",
-        "QUANTA_INDEX_RESOURCE_ADMISSION", "RUSTC_WRAPPER",
+        "CI",
+        "QUANTA_INDEX_BUILD_LANE",
+        "QUANTA_INDEX_SEARCHD_BIN",
+        "QUANTA_INDEX_PRESERVE_CARGO_TARGET_DIR",
+        "CARGO_TARGET_DIR",
+        "QUANTA_INDEX_RESOURCE_ADMISSION",
+        "RUSTC_WRAPPER",
     ):
         env.pop(key, None)
-    env.update({
-        "PATH": f"{binary}:{Path(sys.executable).parent}:{env['PATH']}",
-        "QUANTA_INDEX_CACHE_ROOT": str(tmp_path / "cache"),
-        "QUANTA_INDEX_BUILD_LOGGING": "0",
-        "QUANTA_INDEX_SCCACHE": "0",
-        "QUANTA_INDEX_RESOURCE_WAIT_SECONDS": "1",
-        "QUANTA_INDEX_RESOURCE_TIMEOUT_SECONDS": "10",
-        "FAKE_CARGO_RECORDS": str(tmp_path / "records.jsonl"),
-    })
+    env.update(
+        {
+            "PATH": f"{binary}:{Path(sys.executable).parent}:{env['PATH']}",
+            "QUANTA_INDEX_CACHE_ROOT": str(tmp_path / "cache"),
+            "QUANTA_INDEX_BUILD_LOGGING": "0",
+            "QUANTA_INDEX_SCCACHE": "0",
+            "QUANTA_INDEX_RESOURCE_WAIT_SECONDS": "1",
+            "QUANTA_INDEX_RESOURCE_TIMEOUT_SECONDS": "10",
+            "FAKE_CARGO_RECORDS": str(tmp_path / "records.jsonl"),
+        }
+    )
     return env
 
 
 def run(env, *args):
     return subprocess.run(
-        [str(CARGOW), *args], cwd=ROOT, env=env, capture_output=True,
-        text=True, timeout=15,
+        [str(CARGOW), *args],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=15,
     )
 
 
@@ -93,10 +103,16 @@ def records(env):
     return [json.loads(line) for line in Path(env["FAKE_CARGO_RECORDS"]).read_text().splitlines()]
 
 
-@pytest.mark.parametrize("mode,ci,expected", [
-    (None, None, True), ("auto", "true", False),
-    ("1", "true", True), ("0", None, False), ("auto", "false", True),
-])
+@pytest.mark.parametrize(
+    "mode,ci,expected",
+    [
+        (None, None, True),
+        ("auto", "true", False),
+        ("1", "true", True),
+        ("0", None, False),
+        ("auto", "false", True),
+    ],
+)
 def test_auto_local_ci_and_explicit_modes_have_observable_lock_ownership(
     cargo_env, mode, ci, expected
 ):
@@ -155,15 +171,20 @@ def test_cargo_history_duration_uses_monotonic_clock(cargo_env, tmp_path):
     assert event["ms"] == 500
 
 
-@pytest.mark.parametrize("arguments,admitted", [
-    ([], True),
-    (["--binaries-metadata", "bins.json"], True),
-    (["--cargo-metadata", "cargo.json"], True),
-    (["--", "--skip", "--binaries-metadata", "--skip", "--cargo-metadata", "foo"], True),
-    (["--binaries-metadata", "bins.json", "--cargo-metadata", "cargo.json"], False),
-    (["--binaries-metadata=bins.json", "--cargo-metadata=cargo.json"], False),
-])
-def test_nextest_list_bypasses_only_with_both_reused_metadata_inputs(cargo_env, arguments, admitted):
+@pytest.mark.parametrize(
+    "arguments,admitted",
+    [
+        ([], True),
+        (["--binaries-metadata", "bins.json"], True),
+        (["--cargo-metadata", "cargo.json"], True),
+        (["--", "--skip", "--binaries-metadata", "--skip", "--cargo-metadata", "foo"], True),
+        (["--binaries-metadata", "bins.json", "--cargo-metadata", "cargo.json"], False),
+        (["--binaries-metadata=bins.json", "--cargo-metadata=cargo.json"], False),
+    ],
+)
+def test_nextest_list_bypasses_only_with_both_reused_metadata_inputs(
+    cargo_env, arguments, admitted
+):
     result = run(cargo_env, "nextest", "list", *arguments)
     assert result.returncode == 0, result.stderr
     assert records(cargo_env)[0]["held"] is admitted
@@ -171,10 +192,18 @@ def test_nextest_list_bypasses_only_with_both_reused_metadata_inputs(cargo_env, 
 
 def test_distinct_lanes_share_one_resource_slot_with_a_live_marker_oracle(cargo_env, tmp_path):
     started, release = tmp_path / "first-started", tmp_path / "release"
-    first_env = {**cargo_env, "FAKE_CARGO_STARTED": str(started), "FAKE_CARGO_RELEASE": str(release)}
+    first_env = {
+        **cargo_env,
+        "FAKE_CARGO_STARTED": str(started),
+        "FAKE_CARGO_RELEASE": str(release),
+    }
     first = subprocess.Popen(
-        [str(CARGOW), "--lane", "dev-lane", "build"], cwd=ROOT, env=first_env,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        [str(CARGOW), "--lane", "dev-lane", "build"],
+        cwd=ROOT,
+        env=first_env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
     )
     try:
         deadline = time.monotonic() + 5
@@ -209,7 +238,12 @@ def test_workspace_daemon_preparation_and_main_each_acquire_without_recursion(ca
     observed = records(cargo_env)
     assert len(observed) == 2 and all(row["held"] for row in observed)
     assert observed[0]["argv"] == [
-        "build", "-p", "quanta-index-searchd-runtime", "--bin", "quanta-index-searchd", "--locked"
+        "build",
+        "-p",
+        "quanta-index-searchd-runtime",
+        "--bin",
+        "quanta-index-searchd",
+        "--locked",
     ]
     assert observed[1]["argv"] == ["nextest", "run", "--workspace"]
     assert observed[1]["pin"] == str(Path(observed[1]["target"]) / "debug/quanta-index-searchd")

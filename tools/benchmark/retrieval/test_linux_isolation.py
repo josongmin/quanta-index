@@ -223,7 +223,7 @@ def test_monitored_capture_binds_child_pipe_attestation(tmp_path, monkeypatch):
 def test_linux_policy_never_grants_stage_or_denied_source(tmp_path):
     stage = tmp_path / "capture.staging"
     stage.mkdir()
-    (stage / "runner-tools").mkdir()
+    (stage / "runner-tools.pyz").write_bytes(b"runner bundle")
     corpus = stage / "runner-corpus"
     corpus.mkdir()
     source = tmp_path / "source"
@@ -247,6 +247,7 @@ def test_linux_policy_never_grants_stage_or_denied_source(tmp_path):
     spec = {**files, "repo": str(corpus), "repetitions": 2}
     spec["semble_python"] = str(Path(sys.executable).resolve())
     policy = pairrun._linux_policy(spec, stage, [str(source), str(secret), str(evaluator)])
+    assert str(stage / "runner-tools.pyz") in policy["readonly"]
     assert str(stage) not in policy["readonly"] + policy["writable"]
     assert str(evaluator) not in policy["readonly"] + policy["writable"]
     assert str(stage / "rep-00") in policy["writable"]

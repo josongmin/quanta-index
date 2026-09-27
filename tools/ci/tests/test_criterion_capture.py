@@ -164,27 +164,45 @@ def test_replay_refuses_forged_typed_mean(tmp_path, large_log, monkeypatch):
                     )
             stream.write(content)
     monkeypatch.setattr(host_monitor, "lock_path", lambda: tmp_path / "host-lock")
-    host = {"os": "macos", "arch": "arm64", "cpu_count": 8,
-            "hostname_hash": "sha256:" + "a" * 64}
-    facts = {"load_average": [0.1, 0.2, 0.3], "disk_available_bytes": 100,
-             "process_count": 1, "process_snapshot_sha256": "sha256:" + "b" * 64,
-             "foreign_rust": []}
+    host = {"os": "macos", "arch": "arm64", "cpu_count": 8, "hostname_hash": "sha256:" + "a" * 64}
+    facts = {
+        "load_average": [0.1, 0.2, 0.3],
+        "disk_available_bytes": 100,
+        "process_count": 1,
+        "process_snapshot_sha256": "sha256:" + "b" * 64,
+        "foreign_rust": [],
+    }
     monkeypatch.setattr(host_monitor, "observe", lambda: (host, facts))
-    host_raw = host_monitor.HostMonitor(run / "host-observations.jsonl", "r1", "micro").start().finish()
+    host_raw = (
+        host_monitor.HostMonitor(run / "host-observations.jsonl", "r1", "micro").start().finish()
+    )
     evidence = {
         "run_id": "r1-0",
         "profile": "micro",
         "case_id": "parse/1024",
         "payload": copy.deepcopy(capture.payload(data, "parse/1024")),
         "verdict": {"scope": "diagnostic"},
-        "raw": [{"path": f"raw/{name}"} for name in data] + [{
-            "path": "raw/host-observations.jsonl", "sha256": host_raw.sha256,
-            "bytes": host_raw.size,
-        }],
-        "inputs": [{"id": "benchmark-host-observations", "availability": "present",
-                    "digest": host_raw.sha256, "reason": None}],
+        "raw": [{"path": f"raw/{name}"} for name in data]
+        + [
+            {
+                "path": "raw/host-observations.jsonl",
+                "sha256": host_raw.sha256,
+                "bytes": host_raw.size,
+            }
+        ],
+        "inputs": [
+            {
+                "id": "benchmark-host-observations",
+                "availability": "present",
+                "digest": host_raw.sha256,
+                "reason": None,
+            }
+        ],
         "host": evidence_bridge.host_from_observations(
-            host_raw, policy="local-diagnostic", capture_id="r1", profile="micro",
+            host_raw,
+            policy="local-diagnostic",
+            capture_id="r1",
+            profile="micro",
         ),
         "boundary": {"start_event": "criterion_sample_start"},
         "command": command,

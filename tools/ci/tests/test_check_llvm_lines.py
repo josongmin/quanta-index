@@ -32,12 +32,14 @@ def test_invalid_totals_are_refused(body: str) -> None:
 
 
 def test_complete_total_is_accepted() -> None:
-    assert MODULE.parse_total("Lines Copies Function\n 30000 500 (TOTAL)\n 50 2 function\n") == 30000
+    assert (
+        MODULE.parse_total("Lines Copies Function\n 30000 500 (TOTAL)\n 50 2 function\n") == 30000
+    )
 
 
 @pytest.mark.parametrize(
     "body",
-    ['{"a":1,"a":999999}', '{"a":true}', '{"a":-1}', '{"a":0}', '{"a":1.5}', '{}', '[]'],
+    ['{"a":1,"a":999999}', '{"a":true}', '{"a":-1}', '{"a":0}', '{"a":1.5}', "{}", "[]"],
 )
 def test_invalid_baselines_are_refused(monkeypatch, tmp_path: Path, body: str) -> None:
     path = tmp_path / "baseline.json"

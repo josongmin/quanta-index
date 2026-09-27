@@ -34,15 +34,19 @@ def validate_environment(environment: Mapping[str, str]) -> None:
     """
     functions = sorted(key for key in environment if key.startswith("BASH_FUNC_"))
     if functions:
-        raise ToolCustodyError("inherited Bash function exports are not admitted: " + ", ".join(functions))
+        raise ToolCustodyError(
+            "inherited Bash function exports are not admitted: " + ", ".join(functions)
+        )
     for name in ("ENV", "BASH_ENV"):
         if environment.get(name):
             raise ToolCustodyError(f"inherited shell startup setting is not admitted: {name}")
 
 
 def _stat(value: os.stat_result) -> dict[str, int]:
-    return {name: getattr(value, "st_" + name) for name in
-            ("dev", "ino", "mode", "size", "mtime_ns", "ctime_ns")}
+    return {
+        name: getattr(value, "st_" + name)
+        for name in ("dev", "ino", "mode", "size", "mtime_ns", "ctime_ns")
+    }
 
 
 def _chain(path: Path) -> list[dict]:
@@ -50,11 +54,14 @@ def _chain(path: Path) -> list[dict]:
     entries = []
     for prefix in reversed((path, *path.parents)):
         info = prefix.lstat()
-        entry = {"path": str(prefix), "dev": info.st_dev, "ino": info.st_ino,
-                 "mode": info.st_mode}
+        entry = {"path": str(prefix), "dev": info.st_dev, "ino": info.st_ino, "mode": info.st_mode}
         if stat.S_ISLNK(info.st_mode):
-            entry.update(target=os.readlink(prefix), ctime_ns=info.st_ctime_ns,
-                         mtime_ns=info.st_mtime_ns, size=info.st_size)
+            entry.update(
+                target=os.readlink(prefix),
+                ctime_ns=info.st_ctime_ns,
+                mtime_ns=info.st_mtime_ns,
+                size=info.st_size,
+            )
         entries.append(entry)
     return entries
 
@@ -78,12 +85,21 @@ def _epoch(invocation: Path) -> dict:
             digest.update(chunk)
             remaining -= len(chunk)
         after = os.fstat(stream.fileno())
-    if (_stat(before) != _stat(after) or _stat(resolved.lstat()) != _stat(before)
-            or before_chain != _chain(invocation) or resolved_chain != _chain(resolved)):
+    if (
+        _stat(before) != _stat(after)
+        or _stat(resolved.lstat()) != _stat(before)
+        or before_chain != _chain(invocation)
+        or resolved_chain != _chain(resolved)
+    ):
         raise ToolCustodyError(f"selected tool changed while reading: {invocation}")
-    return {"invocation": str(invocation), "realpath": str(resolved),
-            "sha256": digest.hexdigest(), "stat": _stat(before),
-            "invocation_chain": before_chain, "resolved_chain": resolved_chain}
+    return {
+        "invocation": str(invocation),
+        "realpath": str(resolved),
+        "sha256": digest.hexdigest(),
+        "stat": _stat(before),
+        "invocation_chain": before_chain,
+        "resolved_chain": resolved_chain,
+    }
 
 
 def capture_executable(path: Path) -> dict:
@@ -109,10 +125,18 @@ def resolve_tool_paths(root: Path, environment: Mapping[str, str]) -> dict[str, 
     selector_epoch = _epoch(rustup)
     paths = {"python": Path(sys.executable).absolute()}
     for name in ("cargo", "rustc"):
-        result = subprocess.run([selector_epoch["realpath"], "which", name], cwd=root,
-                                env=env, capture_output=True, check=False, timeout=30)
+        result = subprocess.run(
+            [selector_epoch["realpath"], "which", name],
+            cwd=root,
+            env=env,
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
         if result.returncode:
-            raise ToolCustodyError(f"rustup could not select {name}: {result.stderr.decode(errors='replace')}")
+            raise ToolCustodyError(
+                f"rustup could not select {name}: {result.stderr.decode(errors='replace')}"
+            )
         selected = result.stdout.decode("utf-8").strip()
         if not selected or "\n" in selected or not Path(selected).is_absolute():
             raise ToolCustodyError(f"rustup selected malformed {name} path")
@@ -130,14 +154,19 @@ def resolve_tool_paths(root: Path, environment: Mapping[str, str]) -> dict[str, 
 class ToolCustody:
     """An invocation epoch; call check immediately before and after each execute."""
 
-    def __init__(self, root: Path, bin_dir: Path, tools: dict, environment: dict,
-                 epochs: dict):
+    def __init__(self, root: Path, bin_dir: Path, tools: dict, environment: dict, epochs: dict):
         self.root, self.bin_dir = root, bin_dir
         self._tools, self._environment, self._epochs = tools, environment, epochs
 
     @classmethod
-    def create(cls, root: Path, bin_dir: Path, *, tools: Mapping[str, Mapping[str, str]],
-               environment: Mapping[str, str] | None = None) -> ToolCustody:
+    def create(
+        cls,
+        root: Path,
+        bin_dir: Path,
+        *,
+        tools: Mapping[str, Mapping[str, str]],
+        environment: Mapping[str, str] | None = None,
+    ) -> ToolCustody:
         env = dict(os.environ if environment is None else environment)
         validate_environment(env)
         rows = copy.deepcopy(dict(tools))
@@ -162,8 +191,9 @@ class ToolCustody:
             if name == "python":
                 # Executing a symlink to the resolved base interpreter loses the
                 # original venv. Invoke its original absolute alias instead.
-                content = (f"#!{rows['bash']['realpath']}\n"
-                           f"exec {shlex.quote(str(original))} \"$@\"\n").encode()
+                content = (
+                    f'#!{rows["bash"]["realpath"]}\nexec {shlex.quote(str(original))} "$@"\n'
+                ).encode()
                 with alias.open("xb") as stream:
                     stream.write(content)
                     stream.flush()
@@ -173,9 +203,13 @@ class ToolCustody:
                 alias.symlink_to(row["realpath"])
                 row["path"] = str(alias)
             epochs[str(alias)] = _epoch(alias)
-        env.update(PATH=str(bin_dir) + os.pathsep + env.get("PATH", os.defpath),
-                   RUSTC=rows["rustc"]["realpath"], RUSTC_WRAPPER="",
-                   RUSTC_WORKSPACE_WRAPPER="", QUANTA_INDEX_SCCACHE="0")
+        env.update(
+            PATH=str(bin_dir) + os.pathsep + env.get("PATH", os.defpath),
+            RUSTC=rows["rustc"]["realpath"],
+            RUSTC_WRAPPER="",
+            RUSTC_WORKSPACE_WRAPPER="",
+            QUANTA_INDEX_SCCACHE="0",
+        )
         instance = cls(root.absolute(), bin_dir, rows, env, epochs)
         instance.check()
         return instance
@@ -191,7 +225,8 @@ class ToolCustody:
         if not isinstance(path, Path) or not path.is_absolute():
             raise ToolCustodyError("additional executable path must be absolute")
         if expected_sha256 is not None and (
-            not isinstance(expected_sha256, str) or len(expected_sha256) != 64
+            not isinstance(expected_sha256, str)
+            or len(expected_sha256) != 64
             or any(c not in "0123456789abcdef" for c in expected_sha256)
         ):
             raise ToolCustodyError("invalid expected executable digest")
@@ -208,9 +243,13 @@ class ToolCustody:
         return copy.deepcopy(actual)
 
     def record(self) -> dict:
-        return {"schema_version": 1, "tools": self.tools(), "epochs": copy.deepcopy(self._epochs),
-                "private_bin": str(self.bin_dir),
-                "scope": "local invocation custody; excludes same-UID/kernel isolation and compiler/system libraries"}
+        return {
+            "schema_version": 1,
+            "tools": self.tools(),
+            "epochs": copy.deepcopy(self._epochs),
+            "private_bin": str(self.bin_dir),
+            "scope": "local invocation custody; excludes same-UID/kernel isolation and compiler/system libraries",
+        }
 
     def check(self) -> None:
         for path, expected in self._epochs.items():
@@ -224,9 +263,12 @@ class ToolCustody:
 
 def validate_record(value: object) -> None:
     """Validate archived custody structure without opening producer-host paths."""
-    if not isinstance(value, dict) or set(value) != {
-        "schema_version", "tools", "epochs", "private_bin", "scope"
-    } or type(value["schema_version"]) is not int or value["schema_version"] != 1:
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"schema_version", "tools", "epochs", "private_bin", "scope"}
+        or type(value["schema_version"]) is not int
+        or value["schema_version"] != 1
+    ):
         raise ToolCustodyError("invalid archived tool custody envelope")
     if not isinstance(value["tools"], dict) or set(value["tools"]) != {*TOOL_NAMES, "cargow"}:
         raise ToolCustodyError("invalid archived tool inventory")
@@ -236,8 +278,10 @@ def validate_record(value: object) -> None:
         raise ToolCustodyError("invalid archived private tool directory")
     if not isinstance(value["scope"], str) or not value["scope"]:
         raise ToolCustodyError("missing archived custody scope")
-    aliases = {str(Path(value["private_bin"]) / name) for name in
-               ("python3", "cargo", "rustc", "cargo-nextest", "git", "bash", "just")}
+    aliases = {
+        str(Path(value["private_bin"]) / name)
+        for name in ("python3", "cargo", "rustc", "cargo-nextest", "git", "bash", "just")
+    }
     if not aliases <= set(value["epochs"]):
         raise ToolCustodyError("missing archived private invocation aliases")
     for row in value["tools"].values():
@@ -250,18 +294,37 @@ def validate_record(value: object) -> None:
         if not Path(row["path"]).is_absolute() or not Path(row["realpath"]).is_absolute():
             raise ToolCustodyError("archived tool paths must be absolute references")
         epoch = value["epochs"].get(row["path"])
-        if not isinstance(epoch, dict) or epoch.get("realpath") != row["realpath"] or epoch.get("sha256") != row["sha256"]:
+        if (
+            not isinstance(epoch, dict)
+            or epoch.get("realpath") != row["realpath"]
+            or epoch.get("sha256") != row["sha256"]
+        ):
             raise ToolCustodyError("archived invocation differs from selected tool")
     for path, epoch in value["epochs"].items():
         if not isinstance(path, str) or not Path(path).is_absolute() or not isinstance(epoch, dict):
             raise ToolCustodyError("invalid archived epoch path")
-        if set(epoch) != {"invocation", "realpath", "sha256", "stat", "invocation_chain", "resolved_chain"} or epoch["invocation"] != path:
+        if (
+            set(epoch)
+            != {"invocation", "realpath", "sha256", "stat", "invocation_chain", "resolved_chain"}
+            or epoch["invocation"] != path
+        ):
             raise ToolCustodyError("invalid archived epoch fields")
         if not isinstance(epoch["realpath"], str) or not Path(epoch["realpath"]).is_absolute():
             raise ToolCustodyError("invalid archived resolved path")
-        if not isinstance(epoch["sha256"], str) or len(epoch["sha256"]) != 64 or any(c not in "0123456789abcdef" for c in epoch["sha256"]):
+        if (
+            not isinstance(epoch["sha256"], str)
+            or len(epoch["sha256"]) != 64
+            or any(c not in "0123456789abcdef" for c in epoch["sha256"])
+        ):
             raise ToolCustodyError("invalid archived epoch digest")
-        if not isinstance(epoch["stat"], dict) or set(epoch["stat"]) != {"dev", "ino", "mode", "size", "mtime_ns", "ctime_ns"}:
+        if not isinstance(epoch["stat"], dict) or set(epoch["stat"]) != {
+            "dev",
+            "ino",
+            "mode",
+            "size",
+            "mtime_ns",
+            "ctime_ns",
+        }:
             raise ToolCustodyError("invalid archived tool stat")
         if any(type(v) is not int or v < 0 for v in epoch["stat"].values()):
             raise ToolCustodyError("invalid archived tool stat scalar")
@@ -284,6 +347,7 @@ def validate_record(value: object) -> None:
                     required |= {"target", "ctime_ns", "mtime_ns", "size"}
                     if not isinstance(entry.get("target"), str) or not entry["target"]:
                         raise ToolCustodyError("invalid archived symlink target")
-                if set(entry) != required or any(type(entry[k]) is not int or entry[k] < 0
-                                                  for k in required - {"path", "target"}):
+                if set(entry) != required or any(
+                    type(entry[k]) is not int or entry[k] < 0 for k in required - {"path", "target"}
+                ):
                     raise ToolCustodyError("invalid archived alias metadata")

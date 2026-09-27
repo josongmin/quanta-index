@@ -89,7 +89,11 @@ def main() -> int:
     parser.add_argument("--model-id", choices=[MODEL_ID], default=MODEL_ID)
     args = parser.parse_args()
     inputs = INPUTS if args.inputs_json is None else json.loads(args.inputs_json.read_bytes())
-    if not isinstance(inputs, list) or not 0 < len(inputs) <= 4096 or any(not isinstance(text, str) for text in inputs):
+    if (
+        not isinstance(inputs, list)
+        or not 0 < len(inputs) <= 4096
+        or any(not isinstance(text, str) for text in inputs)
+    ):
         raise ValueError("reference inputs must be 1..4096 strings")
 
     asset_digests = verify_reference_inputs(args.model_dir)
@@ -115,8 +119,7 @@ def main() -> int:
     # are explicitly L2-normalized before the dot product.
     unit = [l2_normalize(vector) for vector in vectors]
     pairwise = [
-        [cosine(unit[i], unit[j]) for j in range(i + 1, len(inputs))]
-        for i in range(len(inputs))
+        [cosine(unit[i], unit[j]) for j in range(i + 1, len(inputs))] for i in range(len(inputs))
     ]
 
     payload = {
@@ -131,7 +134,10 @@ def main() -> int:
             "tokenizer_sha256": asset_digests["tokenizer.json"],
             "config_sha256": asset_digests["config.json"],
         },
-        "policy": {"max_length": None, "normalization": "approx-unit-fp16 (rail L2-normalizes both sides)"},
+        "policy": {
+            "max_length": None,
+            "normalization": "approx-unit-fp16 (rail L2-normalizes both sides)",
+        },
         "inputs": inputs,
         "vectors": vectors,
         "norms": norms,
@@ -141,8 +147,7 @@ def main() -> int:
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n")
     print(
-        f"parity reference written: {args.out} "
-        f"({len(inputs)} inputs x {payload['dimension']} dims)"
+        f"parity reference written: {args.out} ({len(inputs)} inputs x {payload['dimension']} dims)"
     )
     return 0
 

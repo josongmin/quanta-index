@@ -579,8 +579,14 @@ def capture(repo: Path, root: Path, registry: dict, spec_path: Path, timeout: in
 
 @capture_entrypoint(PROFILE)
 def _capture_admitted(
-    repo: Path, root: Path, registry: dict, spec_path: Path, timeout: int,
-    original: bytes, spec: dict, output: Path,
+    repo: Path,
+    root: Path,
+    registry: dict,
+    spec_path: Path,
+    timeout: int,
+    original: bytes,
+    spec: dict,
+    output: Path,
 ) -> dict:
     from benchctl import require_clean_worktree, require_frozen_source, resolve_checkout_head
 
@@ -616,7 +622,8 @@ def _capture_admitted(
     (work / "frozen-spec.json").write_text(canonical_json(frozen), encoding="utf-8")
     if _read_regular_file(spec_path) != original:
         raise EvidenceError("pair spec changed while freezing inputs")
-    _stdout, _stderr, command = current_capture().execute(execute,
+    _stdout, _stderr, command = current_capture().execute(
+        execute,
         [sys.executable, "-m", MODULE, "pair", "--spec", str(work / "frozen-spec.json")],
         cwd=repo,
         env={**os.environ, **GIT_ENV},
@@ -630,7 +637,8 @@ def _capture_admitted(
         raise EvidenceError("pair producer belongs to a different source revision")
     payloads = typed_payloads(output, manifest)
     inventory = bound_inputs(output, manifest, work)
-    current_capture().execute(execute,
+    current_capture().execute(
+        execute,
         [
             "git",
             "-C",
@@ -649,8 +657,13 @@ def _capture_admitted(
     raw = {"native-tree.zip": pack_native(output, spool / "native-tree.zip")}
     # The epoch journal changes during publication and is not immutable input
     # evidence. Keep capture-origin.json and all actual producer inputs bound.
-    raw.update({path.name: RawFile.capture(path) for path in work.iterdir()
-                if path.is_file() and path.name != "capture.json"})
+    raw.update(
+        {
+            path.name: RawFile.capture(path)
+            for path in work.iterdir()
+            if path.is_file() and path.name != "capture.json"
+        }
+    )
     binary_inventory = [{"name": name, "sha256": sha} for name, sha in sorted(binaries.items())]
     bind_runtime(output, manifest, binary_inventory, head)
     toolchain = f"Python {platform.python_version()}"

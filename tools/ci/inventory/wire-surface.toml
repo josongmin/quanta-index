@@ -254,11 +254,11 @@ id = "lexical-sealed-manifest"
 owner = "quanta-index-lexical"
 path = "state_root/indexes/lexical/generation-v1-<sha256(repo,revision)>/g<N>/search-corpus-generation-manifest.cbor"
 reproduction = "producer-rebuild"
-notes = "Seal commitment (QI-BB-030): identity digest, normalizer stamp, Tantivy meta.json (length + sha256), every segment component file the commit references (length + sha256; content proved at seal and by scrub, length at the doors), the text-authority tree, every repo-metadata overlay present, optional source-file coverage, and ranked-key tables. Format 5 added each text document's text-authority doc id indexed and as a fast column (the bitmap restriction of QI-BB-024); format 6 added the ranked page order's columns (candidate id, path, start and end line) as fast columns (the stored-document-free page and projection collectors of QI-BB-005); format 7 commits optional source-file coverage; format 8 commits ranked-key tables. Formats 1-7 are refused typed; rebuild is the migration."
+notes = "Seal commitment (QI-BB-030): identity digest, normalizer stamp, Tantivy meta.json (length + sha256), every segment component file the commit references (length + sha256; content proved at seal and by scrub, length at the doors), the text-authority tree, every repo-metadata overlay present, optional source-file coverage, and ranked-key tables. Format 5 added each text document's text-authority doc id indexed and as a fast column (the bitmap restriction of QI-BB-024); format 6 added the ranked page order's columns (candidate id, path, start and end line) as fast columns (the stored-document-free page and projection collectors of QI-BB-005); format 7 commits optional source-file coverage; format 8 commits ranked-key tables; format 9 commits bounded coverage root/pages. Formats 1-8 are refused typed; rebuild is the migration."
 [[artifact.version_constants]]
 file = "crates/quanta-index-lexical/src/sealed_generation/manifest.rs"
 name = "LEXICAL_SEALED_MANIFEST_FORMAT_VERSION"
-value = 8
+value = 9
 [[artifact.version_constants]]
 file = "crates/quanta-index-lexical/src/sealed_generation/manifest.rs"
 name = "LEXICAL_SEALED_MANIFEST_WHOLE_CORPUS_TEXT_AUTHORITY_VERSION"
@@ -269,11 +269,11 @@ id = "lexical-source-file-coverage"
 owner = "quanta-index-lexical"
 path = "state_root/indexes/lexical/generation-v1-<sha256(repo,revision)>/g<N>/source-file-coverage.cbor"
 reproduction = "producer-rebuild"
-notes = "Optional admitted source-file universe and publication event. Rows preserve duplicates for rejection; the decoder checks exact generation identity, canonical entries and trailing bytes. When present, the sealed manifest commits its bytes. Absence is unavailable capability, never complete coverage; other format versions are refused."
+notes = "Optional admitted source-file universe and publication event in a bounded root and immutable hash-routed pages. The decoder checks exact generation identity, canonical entries, page commitments and trailing bytes. When present, the sealed manifest commits the root and pages. Absence is unavailable capability, never complete coverage; other format versions are refused."
 [[artifact.version_constants]]
-file = "crates/quanta-index-lexical/src/sealed_generation/coverage.rs"
+file = "crates/quanta-index-lexical/src/sealed_generation/coverage_pages.rs"
 name = "COVERAGE_FORMAT"
-value = 1
+value = 2
 
 [[artifact]]
 id = "lexical-scrub-receipts"

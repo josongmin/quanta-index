@@ -139,12 +139,20 @@ def test_product_result_refuses_noncanonical_or_off_view_path(tmp_path, result_p
     expected = {"S01": ("symbol", ["src/answer.go"])}
     path = tmp_path / "rows.jsonl"
     path.write_text(
-        json.dumps({
-            "lane": "symbol_only", "task_id": "S01", "submitted_query": "symbol",
-            "gold_paths": ["src/answer.go"], "http_status": 200, "error": None,
-            "file_paths_top_10": [result_path], "file_hit_at_10": False,
-            "elapsed_ms": 1.0,
-        }) + "\n"
+        json.dumps(
+            {
+                "lane": "symbol_only",
+                "task_id": "S01",
+                "submitted_query": "symbol",
+                "gold_paths": ["src/answer.go"],
+                "http_status": 200,
+                "error": None,
+                "file_paths_top_10": [result_path],
+                "file_hit_at_10": False,
+                "elapsed_ms": 1.0,
+            }
+        )
+        + "\n"
     )
     with pytest.raises(ValueError, match="malformed result paths"):
         product_result("sourcegraph", path, expected, {"src/answer.go"})

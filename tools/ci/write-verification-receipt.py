@@ -43,11 +43,11 @@ def _nextest_evidence_summary(
     try:
         evidence_file = RawFile.capture(evidence) if isinstance(evidence, Path) else evidence
         try:
-            inventory_file = RawFile.capture(inventory) if isinstance(inventory, Path) else inventory
+            inventory_file = (
+                RawFile.capture(inventory) if isinstance(inventory, Path) else inventory
+            )
             expected = (
-                parse_nextest_inventory(inventory_file)
-                if inventory_file is not None
-                else None
+                parse_nextest_inventory(inventory_file) if inventory_file is not None else None
             )
         except (NextestEvidenceError, OSError, EvidenceError):
             # Keep a malformed/failing execution as the primary error; both
@@ -180,7 +180,9 @@ def main() -> int:
         inventory = args.inventory.absolute() if args.inventory is not None else None
         if "workspace-nextest" in args.rail and inventory is None:
             raise SystemExit("workspace nextest receipt requires --inventory")
-        digest, test_event_count, inventory_digest = _nextest_evidence_summary(evidence_file, inventory)
+        digest, test_event_count, inventory_digest = _nextest_evidence_summary(
+            evidence_file, inventory
+        )
         if inventory is not None:
             inventory_file = RawFile.capture(inventory)
             if inventory_file.sha256.removeprefix("sha256:") != inventory_digest:

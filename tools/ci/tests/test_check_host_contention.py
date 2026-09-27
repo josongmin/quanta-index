@@ -175,7 +175,7 @@ def test_overloaded_host_never_receives_clean_status(load, override, expected) -
         {"os": "darwin", "cpu_count": None, "load_average": [1.0, 1.0, 1.0]},
         {"os": "darwin", "cpu_count": 10**400, "load_average": [1.0, 1.0, 1.0]},
         {"os": "darwin", "cpu_count": 16, "load_average": [10**400, 1.0, 1.0]},
-        {"os": "darwin", "cpu_count": 16, "load_average": [-10**400, 1.0, 1.0]},
+        {"os": "darwin", "cpu_count": 16, "load_average": [-(10**400), 1.0, 1.0]},
     ],
 )
 def test_missing_load_authority_is_error(invalid_host) -> None:

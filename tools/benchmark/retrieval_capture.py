@@ -229,7 +229,8 @@ def capture(repo: Path, root: Path, registry: dict, timeout: int) -> dict:
         native = root / "work" / capture_id / family
         native.parent.mkdir(parents=True, exist_ok=True)
         print(f"Retrieval contract capture: {family}", flush=True)
-        stdout, stderr, command = current_capture().execute(execute,
+        stdout, stderr, command = current_capture().execute(
+            execute,
             ["just", producer["recipe"], str(native)],
             cwd=repo,
             env=dict(os.environ),

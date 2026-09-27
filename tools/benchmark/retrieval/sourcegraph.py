@@ -104,8 +104,9 @@ def _files(value: Any, where: str) -> list[dict[str, str]]:
     return result
 
 
-def query_expression(query: str, repository: str, revision: str,
-                     file_paths: list[str] | None = None) -> str:
+def query_expression(
+    query: str, repository: str, revision: str, file_paths: list[str] | None = None
+) -> str:
     """Conservative keyword-term lane, with no caller-provided query syntax."""
     if (
         not isinstance(query, str)
@@ -219,11 +220,15 @@ def validate_capture(
         raise CaptureError("asserted indexed path/SHA universe differs from admitted manifest")
     admitted_by_path = {row["path"]: row["file_sha256"] for row in admitted}
     expected_query = query_expression(
-        request["query"], request["repository"], request["revision"],
+        request["query"],
+        request["repository"],
+        request["revision"],
         [row["path"] for row in admitted] if universe["method"] == "input_manifest_only" else None,
     )
     if request["request_query"] != expected_query:
-        raise CaptureError("sent query differs from the pinned keyword expression and file universe")
+        raise CaptureError(
+            "sent query differs from the pinned keyword expression and file universe"
+        )
 
     events = _events(raw)
     if not events or events[-1] != ("done", {}):

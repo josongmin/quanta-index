@@ -503,7 +503,9 @@ impl LexicalSearcher for TantivySearcher {
         if Self::uses_unindexed_scan(&effective_query.options) {
             Self::ensure_manual_scan_supports_constraints(constraints, "lexical")?;
             self.ensure_manual_language_query_supported(&effective_query)?;
-            let mut regex_cache = super::manual_scan::ManualScanCache::default();
+            let mut regex_cache = super::manual_scan::ManualScanCache::new(
+                self.execution_budget.max_collection_bytes(),
+            )?;
             if !self.manual_doc_matches(
                 &doc,
                 &effective_query,

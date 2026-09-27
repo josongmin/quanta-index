@@ -34,50 +34,97 @@ from tools.ci.tests.test_portable_proof import proof_actor_environment as proof_
 
 def _current_symbol_metrics(metrics):
     """Handwritten complete-state fixtures, separate from producer execution."""
-    metrics.update({
-        "symbol_coverage_policy": "require-complete", "empty_scopes": 0,
-        "symbol_preflight_out": "symbol-preflight.json",
-        "symbol_preflight_sha256": "d" * 64,
-        "symbol_producer_policy_sha256": "e" * 64,
-        "symbol_incomplete_files": 0,
-    })
+    metrics.update(
+        {
+            "symbol_coverage_policy": "require-complete",
+            "empty_scopes": 0,
+            "symbol_preflight_out": "symbol-preflight.json",
+            "symbol_preflight_sha256": "d" * 64,
+            "symbol_producer_policy_sha256": "e" * 64,
+            "symbol_incomplete_files": 0,
+        }
+    )
     metrics["phases_ms"]["symbol_preflight"] = 0.0
     for row in metrics["symbol_coverage"]:
         if row["language"] is None:
-            row.update({"coverage": {"state": "unsupported"}, "failure": "unsupported_language", "definition_count": None})
+            row.update(
+                {
+                    "coverage": {"state": "unsupported"},
+                    "failure": "unsupported_language",
+                    "definition_count": None,
+                }
+            )
         else:
-            row.update({"coverage": {"state": "complete", "symbol_count": row["definition_count"]}, "failure": None})
+            row.update(
+                {
+                    "coverage": {"state": "complete", "symbol_count": row["definition_count"]},
+                    "failure": None,
+                }
+            )
     if any(row["language"] is None for row in metrics["symbol_coverage"]):
         metrics["symbol_coverage_policy"] = "allow-incomplete"
-        metrics["symbol_incomplete_files"] = sum(row["language"] is None for row in metrics["symbol_coverage"])
+        metrics["symbol_incomplete_files"] = sum(
+            row["language"] is None for row in metrics["symbol_coverage"]
+        )
     return metrics
 
 
 def _bind_preflight_fixture(phase_path, repository_commit):
     metrics = _current_symbol_metrics(json.loads(phase_path.read_text()))
-    policy = {"max_file_bytes": 1048576, "max_symbols_per_file": 100000,
-              "max_symbols_total": 1000000, "max_diagnostics_per_file": 32,
-              "max_diagnostics_total": 1024, "timeout_per_file_ns": "10000000000",
-              "timeout_total_ns": "120000000000"}
-    files = [{**{key: row[key] for key in pairrun.symbol_coverage.ROW_KEYS},
-              "failure_detail": None, "failure_detail_truncated": False,
-              "diagnostics": [], "diagnostics_total": 0, "diagnostics_truncated": False,
-              "diagnostics_complete": True} for row in metrics["symbol_coverage"]]
+    policy = {
+        "max_file_bytes": 1048576,
+        "max_symbols_per_file": 100000,
+        "max_symbols_total": 1000000,
+        "max_diagnostics_per_file": 32,
+        "max_diagnostics_total": 1024,
+        "timeout_per_file_ns": "10000000000",
+        "timeout_total_ns": "120000000000",
+    }
+    files = [
+        {
+            **{key: row[key] for key in pairrun.symbol_coverage.ROW_KEYS},
+            "failure_detail": None,
+            "failure_detail_truncated": False,
+            "diagnostics": [],
+            "diagnostics_total": 0,
+            "diagnostics_truncated": False,
+            "diagnostics_complete": True,
+        }
+        for row in metrics["symbol_coverage"]
+    ]
     for row in files:
         if row["language"] is None:
-            row.update({"failure_detail": "unsupported symbol language: " + row["path"],
-                        "diagnostics": [{"kind": "unsupported_language", "byte_start": None, "byte_end": None}], "diagnostics_total": 1})
+            row.update(
+                {
+                    "failure_detail": "unsupported symbol language: " + row["path"],
+                    "diagnostics": [
+                        {"kind": "unsupported_language", "byte_start": None, "byte_end": None}
+                    ],
+                    "diagnostics_total": 1,
+                }
+            )
     metrics["symbol_unsupported_details"] = [row for row in files if row["language"] is None]
     metrics["symbol_unsupported_files"] = len(metrics["symbol_unsupported_details"])
     metrics["symbol_producer_policy_sha256"] = pairrun.symbol_coverage.policy_digest(policy)
-    universe = b"".join(row["path"].encode() + b"\0" + row["source_sha256"].encode() + b"\0" for row in files)
-    report = {"symbol_coverage_policy": metrics["symbol_coverage_policy"], "repository_commit": repository_commit,
-              "file_universe_sha256": hashlib.sha256(universe).hexdigest(), "preflight": {
-        "schema": "symbol-preflight-v1", "producer_identity": pairrun.QUANTA_SYMBOL_PRODUCER_IDENTITY,
-        "grammar_identity": pairrun.QUANTA_SYMBOL_GRAMMARS,
-        "lockfile_sha256": pairrun.sha_file(pairrun.symbol_coverage.ROOT / "Cargo.lock"),
-        "producer_policy_sha256": metrics["symbol_producer_policy_sha256"], "policy": policy,
-        "files": files, "admitted_files": len(files), "incomplete_files": metrics["symbol_incomplete_files"]}}
+    universe = b"".join(
+        row["path"].encode() + b"\0" + row["source_sha256"].encode() + b"\0" for row in files
+    )
+    report = {
+        "symbol_coverage_policy": metrics["symbol_coverage_policy"],
+        "repository_commit": repository_commit,
+        "file_universe_sha256": hashlib.sha256(universe).hexdigest(),
+        "preflight": {
+            "schema": "symbol-preflight-v1",
+            "producer_identity": pairrun.QUANTA_SYMBOL_PRODUCER_IDENTITY,
+            "grammar_identity": pairrun.QUANTA_SYMBOL_GRAMMARS,
+            "lockfile_sha256": pairrun.sha_file(pairrun.symbol_coverage.ROOT / "Cargo.lock"),
+            "producer_policy_sha256": metrics["symbol_producer_policy_sha256"],
+            "policy": policy,
+            "files": files,
+            "admitted_files": len(files),
+            "incomplete_files": metrics["symbol_incomplete_files"],
+        },
+    }
     artifact = phase_path.with_name("symbol-preflight.json")
     artifact.write_text(json.dumps(report) + "\n")
     metrics["symbol_preflight_sha256"] = pairrun.sha_file(artifact)
@@ -85,32 +132,72 @@ def _bind_preflight_fixture(phase_path, repository_commit):
     return artifact
 
 
-
 def test_symbol_preflight_rejects_missing_tampered_stale_and_partial_evidence(tmp_path):
     phase = tmp_path / "phase.json"
-    corpus = {"repository_commit": "a" * 40, "files": [
-        {"path": "a.rs", "file_sha256": "b" * 64},
-        {"path": "b.tsx", "file_sha256": "c" * 64},
-    ]}
-    phase.write_text(json.dumps({
-        "file_count": 2, "symbol_count": 1, "symbol_only_scopes": 0,
-        "symbol_producer_identity": pairrun.QUANTA_SYMBOL_PRODUCER_IDENTITY,
-        "symbol_grammars": pairrun.QUANTA_SYMBOL_GRAMMARS, "phases_ms": {},
-        "symbol_coverage": [
-            {"path": "a.rs", "source_sha256": "b" * 64, "language": "rust", "definition_count": 1},
-            {"path": "b.tsx", "source_sha256": "c" * 64, "language": "typescript_tsx", "definition_count": 0},
+    corpus = {
+        "repository_commit": "a" * 40,
+        "files": [
+            {"path": "a.rs", "file_sha256": "b" * 64},
+            {"path": "b.tsx", "file_sha256": "c" * 64},
         ],
-    }))
+    }
+    phase.write_text(
+        json.dumps(
+            {
+                "file_count": 2,
+                "symbol_count": 1,
+                "symbol_only_scopes": 0,
+                "symbol_producer_identity": pairrun.QUANTA_SYMBOL_PRODUCER_IDENTITY,
+                "symbol_grammars": pairrun.QUANTA_SYMBOL_GRAMMARS,
+                "phases_ms": {},
+                "symbol_coverage": [
+                    {
+                        "path": "a.rs",
+                        "source_sha256": "b" * 64,
+                        "language": "rust",
+                        "definition_count": 1,
+                    },
+                    {
+                        "path": "b.tsx",
+                        "source_sha256": "c" * 64,
+                        "language": "typescript_tsx",
+                        "definition_count": 0,
+                    },
+                ],
+            }
+        )
+    )
     artifact = _bind_preflight_fixture(phase, corpus["repository_commit"])
     metrics = json.loads(phase.read_text())
     raw = artifact.read_bytes()
     verify = pairrun.symbol_coverage.verify_artifact
     assert verify(metrics, phase, corpus) == artifact
-    for mutation in ("missing", "symlink", "bytes", "duplicate_json", "reorder", "partial", "duplicate_row",
-                     "wrong_commit", "wrong_universe", "wrong_hash", "wrong_grammar", "wrong_lock",
-                     "changed_policy", "missing_policy", "unknown_state", "boolean_count", "bool_file_count",
-                     "false_complete", "truncated", "wrong_language", "parent_path", "absolute_path",
-                     "non_string_state", "deep_json"):
+    for mutation in (
+        "missing",
+        "symlink",
+        "bytes",
+        "duplicate_json",
+        "reorder",
+        "partial",
+        "duplicate_row",
+        "wrong_commit",
+        "wrong_universe",
+        "wrong_hash",
+        "wrong_grammar",
+        "wrong_lock",
+        "changed_policy",
+        "missing_policy",
+        "unknown_state",
+        "boolean_count",
+        "bool_file_count",
+        "false_complete",
+        "truncated",
+        "wrong_language",
+        "parent_path",
+        "absolute_path",
+        "non_string_state",
+        "deep_json",
+    ):
         candidate = copy.deepcopy(metrics)
         report = json.loads(raw)
         if mutation == "missing":
@@ -130,57 +217,106 @@ def test_symbol_preflight_rejects_missing_tampered_stale_and_partial_evidence(tm
             candidate["file_count"] = True
         else:
             files = report["preflight"]["files"]
-            if mutation == "reorder": files.reverse()
-            elif mutation == "partial": files.pop()
-            elif mutation == "duplicate_row": files[1] = copy.deepcopy(files[0])
-            elif mutation == "wrong_commit": report["repository_commit"] = "f" * 40
-            elif mutation == "wrong_universe": report["file_universe_sha256"] = "f" * 64
-            elif mutation == "wrong_hash": files[0]["source_sha256"] = "f" * 64
-            elif mutation == "wrong_grammar": report["preflight"]["grammar_identity"] += ";forged"
-            elif mutation == "wrong_lock": report["preflight"]["lockfile_sha256"] = "f" * 64
-            elif mutation == "changed_policy": report["preflight"]["policy"]["max_symbols_total"] += 1
-            elif mutation == "missing_policy": del report["preflight"]["policy"]["max_symbols_total"]
-            elif mutation == "unknown_state": files[0]["coverage"] = {"state": "producer_failed"}
-            elif mutation == "non_string_state": files[0]["coverage"] = {"state": []}
-            elif mutation == "boolean_count": files[0]["coverage"]["symbol_count"] = True
-            elif mutation == "false_complete": files[0]["failure"] = "syntax_error"
-            elif mutation == "truncated": files[0]["diagnostics_complete"] = False
-            elif mutation == "wrong_language": files[1]["language"] = "typescript"
+            if mutation == "reorder":
+                files.reverse()
+            elif mutation == "partial":
+                files.pop()
+            elif mutation == "duplicate_row":
+                files[1] = copy.deepcopy(files[0])
+            elif mutation == "wrong_commit":
+                report["repository_commit"] = "f" * 40
+            elif mutation == "wrong_universe":
+                report["file_universe_sha256"] = "f" * 64
+            elif mutation == "wrong_hash":
+                files[0]["source_sha256"] = "f" * 64
+            elif mutation == "wrong_grammar":
+                report["preflight"]["grammar_identity"] += ";forged"
+            elif mutation == "wrong_lock":
+                report["preflight"]["lockfile_sha256"] = "f" * 64
+            elif mutation == "changed_policy":
+                report["preflight"]["policy"]["max_symbols_total"] += 1
+            elif mutation == "missing_policy":
+                del report["preflight"]["policy"]["max_symbols_total"]
+            elif mutation == "unknown_state":
+                files[0]["coverage"] = {"state": "producer_failed"}
+            elif mutation == "non_string_state":
+                files[0]["coverage"] = {"state": []}
+            elif mutation == "boolean_count":
+                files[0]["coverage"]["symbol_count"] = True
+            elif mutation == "false_complete":
+                files[0]["failure"] = "syntax_error"
+            elif mutation == "truncated":
+                files[0]["diagnostics_complete"] = False
+            elif mutation == "wrong_language":
+                files[1]["language"] = "typescript"
             encoded = json.dumps(report).encode()
             if mutation == "duplicate_json":
-                encoded = b'{"repository_commit":"' + b'a' * 40 + b'",' + encoded[1:]
+                encoded = b'{"repository_commit":"' + b"a" * 40 + b'",' + encoded[1:]
             elif mutation == "deep_json":
                 encoded = b"[" * 10000 + b"0" + b"]" * 10000
             artifact.write_bytes(encoded)
             candidate["symbol_preflight_sha256"] = pairrun.sha_file(artifact)
         with pytest.raises((ValueError, OSError), match="."):
             verify(candidate, phase, corpus)
-        if artifact.is_symlink(): artifact.unlink()
+        if artifact.is_symlink():
+            artifact.unlink()
         artifact.write_bytes(raw)
     assert verify(metrics, phase, corpus) == artifact
 
 
 def _complete_preflight_case(directory, path="a.rs"):
     phase = directory / "phase.json"
-    corpus = {"repository_commit": "a" * 40, "files": [
-        {"path": path, "file_sha256": "b" * 64},
-    ]}
-    phase.write_text(json.dumps({
-        "file_count": 1, "symbol_count": 0, "symbol_only_scopes": 0,
-        "symbol_producer_identity": pairrun.QUANTA_SYMBOL_PRODUCER_IDENTITY,
-        "symbol_grammars": pairrun.QUANTA_SYMBOL_GRAMMARS, "phases_ms": {},
-        "symbol_coverage": [
-            {"path": path, "source_sha256": "b" * 64, "language": "rust", "definition_count": 0},
+    corpus = {
+        "repository_commit": "a" * 40,
+        "files": [
+            {"path": path, "file_sha256": "b" * 64},
         ],
-    }))
+    }
+    phase.write_text(
+        json.dumps(
+            {
+                "file_count": 1,
+                "symbol_count": 0,
+                "symbol_only_scopes": 0,
+                "symbol_producer_identity": pairrun.QUANTA_SYMBOL_PRODUCER_IDENTITY,
+                "symbol_grammars": pairrun.QUANTA_SYMBOL_GRAMMARS,
+                "phases_ms": {},
+                "symbol_coverage": [
+                    {
+                        "path": path,
+                        "source_sha256": "b" * 64,
+                        "language": "rust",
+                        "definition_count": 0,
+                    },
+                ],
+            }
+        )
+    )
     artifact = _bind_preflight_fixture(phase, corpus["repository_commit"])
     return json.loads(phase.read_text()), phase, corpus, artifact
 
 
-@pytest.mark.parametrize("path", ["C:/a.rs", "z:a.rs", "a\x7f.rs", "a\x80.rs", "a\x9f.rs",
-                                  "a" * 4094 + ".rs", "가" * 1365 + ".rs"],
-                         ids=["absolute-drive", "relative-drive", "del", "c1-start", "c1-end",
-                              "ascii-byte-limit", "utf8-byte-limit"])
+@pytest.mark.parametrize(
+    "path",
+    [
+        "C:/a.rs",
+        "z:a.rs",
+        "a\x7f.rs",
+        "a\x80.rs",
+        "a\x9f.rs",
+        "a" * 4094 + ".rs",
+        "가" * 1365 + ".rs",
+    ],
+    ids=[
+        "absolute-drive",
+        "relative-drive",
+        "del",
+        "c1-start",
+        "c1-end",
+        "ascii-byte-limit",
+        "utf8-byte-limit",
+    ],
+)
 def test_symbol_preflight_rejects_paths_outside_producer_contract(tmp_path, path):
     # Rebind every digest and census to the candidate: path syntax itself must
     # match ExactRepoRelativePathV1, independently of matching artifact hashes.
@@ -258,19 +394,34 @@ def test_symbol_preflight_budget_cannot_be_bypassed_by_file_growth(tmp_path, mon
 
 def test_symbol_preflight_enforces_diagnostic_retention_policy(tmp_path):
     phase = tmp_path / "phase.json"
-    corpus = {"repository_commit": "a" * 40, "files": [
-        {"path": "a.txt", "file_sha256": "b" * 64},
-        {"path": "b.txt", "file_sha256": "c" * 64},
-    ]}
-    phase.write_text(json.dumps({
-        "file_count": 2, "symbol_count": 0, "symbol_only_scopes": 0,
-        "symbol_producer_identity": pairrun.QUANTA_SYMBOL_PRODUCER_IDENTITY,
-        "symbol_grammars": pairrun.QUANTA_SYMBOL_GRAMMARS, "phases_ms": {},
-        "symbol_coverage": [
-            {"path": row["path"], "source_sha256": row["file_sha256"], "language": None,
-             "definition_count": None} for row in corpus["files"]
+    corpus = {
+        "repository_commit": "a" * 40,
+        "files": [
+            {"path": "a.txt", "file_sha256": "b" * 64},
+            {"path": "b.txt", "file_sha256": "c" * 64},
         ],
-    }))
+    }
+    phase.write_text(
+        json.dumps(
+            {
+                "file_count": 2,
+                "symbol_count": 0,
+                "symbol_only_scopes": 0,
+                "symbol_producer_identity": pairrun.QUANTA_SYMBOL_PRODUCER_IDENTITY,
+                "symbol_grammars": pairrun.QUANTA_SYMBOL_GRAMMARS,
+                "phases_ms": {},
+                "symbol_coverage": [
+                    {
+                        "path": row["path"],
+                        "source_sha256": row["file_sha256"],
+                        "language": None,
+                        "definition_count": None,
+                    }
+                    for row in corpus["files"]
+                ],
+            }
+        )
+    )
     artifact = _bind_preflight_fixture(phase, corpus["repository_commit"])
     original = json.loads(artifact.read_text())
     metrics = json.loads(phase.read_text())
@@ -348,9 +499,7 @@ def test_parity_reference_refuses_unpinned_assets_and_library(tmp_path, monkeypa
     monkeypatch.setattr(parity_reference, "PINNED_ASSET_SHA256", digests)
     assert parity_reference.verify_reference_inputs(tmp_path) == digests
     for name in names:
-        monkeypatch.setattr(
-            parity_reference, "PINNED_ASSET_SHA256", digests | {name: "0" * 64}
-        )
+        monkeypatch.setattr(parity_reference, "PINNED_ASSET_SHA256", digests | {name: "0" * 64})
         with pytest.raises(ValueError, match="SHA-256 mismatch"):
             parity_reference.verify_reference_inputs(tmp_path)
     monkeypatch.setattr(parity_reference.importlib.metadata, "version", lambda _: "0.9.1")
@@ -359,8 +508,13 @@ def test_parity_reference_refuses_unpinned_assets_and_library(tmp_path, monkeypa
 
 
 def test_parity_reference_rejects_partial_nonfinite_or_zero_vectors():
-    for vector in ([0.0] * 256, [1.0] * 255, [1.0] * 257,
-                   [float("nan")] + [1.0] * 255, [float("inf")] + [1.0] * 255):
+    for vector in (
+        [0.0] * 256,
+        [1.0] * 255,
+        [1.0] * 257,
+        [float("nan")] + [1.0] * 255,
+        [float("inf")] + [1.0] * 255,
+    ):
         with pytest.raises(ValueError, match="reference vector"):
             parity_reference.l2_normalize(vector)
     assert parity_reference.l2_normalize([1.0] * 256) == [0.0625] * 256
@@ -388,9 +542,18 @@ def test_retrieval_diagnostic_v5_binds_actual_server_observation_policy(tmp_path
     for mutate, match in (
         (lambda value: value.pop("server_observation"), "must hold exactly"),
         (lambda value: value["server_observation"].update(config_sha256="0" * 64), "digest/scope"),
-        (lambda value: value["server_observation"].update(query_stages="unknown"), "exactly enabled"),
-        (lambda value: value["results"][0]["response"]["explanation"].update(stage_timings=[]), "unmeasured"),
-        (lambda value: value["results"][0]["response"]["explanation"].update(request_id=0), "transport request"),
+        (
+            lambda value: value["server_observation"].update(query_stages="unknown"),
+            "exactly enabled",
+        ),
+        (
+            lambda value: value["results"][0]["response"]["explanation"].update(stage_timings=[]),
+            "unmeasured",
+        ),
+        (
+            lambda value: value["results"][0]["response"]["explanation"].update(request_id=0),
+            "transport request",
+        ),
     ):
         forged = json.loads(json.dumps(disabled))
         mutate(forged)
@@ -403,34 +566,89 @@ def test_retrieval_diagnostic_v5_binds_actual_server_observation_policy(tmp_path
 
 
 def _diagnostic_ingest_fixture(record):
-    roots = {"row_root_digest": "sha256:" + "a" * 64, "membership_root_digest": "sha256:" + "b" * 64}
-    receipt = {
-        "generation": 7, "manifest_digest": "manifest:fixture", "batch_digest": "c" * 64,
-        "accepted_replace_scopes": 1, "accepted_tombstone_scopes": 0,
-        "accepted_semantic_replace_scopes": 1, "accepted_semantic_tombstone_scopes": 0,
-        "accepted_clear_surfaces": 0, "sealed": True, "applied": True,
-        "durable_sequence": 1, "semantic_content": roots,
+    roots = {
+        "row_root_digest": "sha256:" + "a" * 64,
+        "membership_root_digest": "sha256:" + "b" * 64,
     }
-    scope = {"repo_id": "bench-repo", "revision_id": "bench-rev", "manifest_generation": 7, "manifest_digest": receipt["manifest_digest"]}
-    ack = {"active": {"generation": {
-        "lexical": {**scope, "track": "Lexical"}, "semantic": {**scope, "track": "Semantic"},
+    receipt = {
+        "generation": 7,
+        "manifest_digest": "manifest:fixture",
+        "batch_digest": "c" * 64,
+        "accepted_replace_scopes": 1,
+        "accepted_tombstone_scopes": 0,
+        "accepted_semantic_replace_scopes": 1,
+        "accepted_semantic_tombstone_scopes": 0,
+        "accepted_clear_surfaces": 0,
+        "sealed": True,
+        "applied": True,
+        "durable_sequence": 1,
         "semantic_content": roots,
-    }, "activation_token": {"root_incarnation": [1] * 16, "activation_sequence": 1}}, "previous_sealed_active": None}
-    report = {key: 0 for key in (
-        "owner_scopes", "windows", "semantic_delete_calls", "semantic_delete_commits",
-        "membership_delete_calls", "membership_delete_commits", "semantic_append_calls", "membership_append_calls",
-    )}
-    report["durations"] = {key: 0 for key in (
-        "total", "prepare", "promotion", "clear_surfaces", "stream", "semantic_delete",
-        "membership_delete", "semantic_append", "membership_append", "tombstones", "seal",
-    )}
+    }
+    scope = {
+        "repo_id": "bench-repo",
+        "revision_id": "bench-rev",
+        "manifest_generation": 7,
+        "manifest_digest": receipt["manifest_digest"],
+    }
+    ack = {
+        "active": {
+            "generation": {
+                "lexical": {**scope, "track": "Lexical"},
+                "semantic": {**scope, "track": "Semantic"},
+                "semantic_content": roots,
+            },
+            "activation_token": {"root_incarnation": [1] * 16, "activation_sequence": 1},
+        },
+        "previous_sealed_active": None,
+    }
+    report = {
+        key: 0
+        for key in (
+            "owner_scopes",
+            "windows",
+            "semantic_delete_calls",
+            "semantic_delete_commits",
+            "membership_delete_calls",
+            "membership_delete_commits",
+            "semantic_append_calls",
+            "membership_append_calls",
+        )
+    }
+    report["durations"] = {
+        key: 0
+        for key in (
+            "total",
+            "prepare",
+            "promotion",
+            "clear_surfaces",
+            "stream",
+            "semantic_delete",
+            "membership_delete",
+            "semantic_append",
+            "membership_append",
+            "tombstones",
+            "seal",
+        )
+    }
     report["durations"]["embedding"] = None
-    observation = {"request_id": 9, "repo_id": "bench-repo", "revision_id": "bench-rev", "generation": 7,
-        "batch_digest": receipt["batch_digest"], "status": "executed", "semantic": report,
-        "lexical_build_ns": 0, "finalize_ns": 0, "activation_ns": None}
+    observation = {
+        "request_id": 9,
+        "repo_id": "bench-repo",
+        "revision_id": "bench-rev",
+        "generation": 7,
+        "batch_digest": receipt["batch_digest"],
+        "status": "executed",
+        "semantic": report,
+        "lexical_build_ns": 0,
+        "finalize_ns": 0,
+        "activation_ns": None,
+    }
     for capture in record["captures"].values():
-        capture.update(generation=7, receipt_digest=pairrun.digest(pairrun.canonical_bytes(receipt)),
-                       activation_digest=pairrun.digest(pairrun.canonical_bytes(ack["active"])))
+        capture.update(
+            generation=7,
+            receipt_digest=pairrun.digest(pairrun.canonical_bytes(receipt)),
+            activation_digest=pairrun.digest(pairrun.canonical_bytes(ack["active"])),
+        )
     return {"receipt": receipt, "activation_ack": ack, "observation": observation}
 
 
@@ -462,7 +680,9 @@ def test_retrieval_diagnostic_v5_ingest_rejects_unbound_partial_replayed_or_forg
         lambda x: x["observation"]["semantic"]["durations"].update(stream=float("nan")),
         lambda x: x["observation"]["semantic"].update(windows=2**64),
         lambda x: x["receipt"].update(applied=False),
-        lambda x: x["activation_ack"]["active"]["generation"]["semantic"].update(manifest_generation=8),
+        lambda x: x["activation_ack"]["active"]["generation"]["semantic"].update(
+            manifest_generation=8
+        ),
     ):
         forged = json.loads(json.dumps(raw))
         mutate(forged)
@@ -471,7 +691,9 @@ def test_retrieval_diagnostic_v5_ingest_rejects_unbound_partial_replayed_or_forg
     forged = json.loads(json.dumps(raw))
     forged["activation_ack"]["active"]["activation_token"]["activation_sequence"] = 2
     rebound = json.loads(json.dumps(record))
-    rebound["captures"]["capture"]["activation_digest"] = pairrun.digest(pairrun.canonical_bytes(forged["activation_ack"]["active"]))
+    rebound["captures"]["capture"]["activation_digest"] = pairrun.digest(
+        pairrun.canonical_bytes(forged["activation_ack"]["active"])
+    )
     with pytest.raises(pairrun.RunError, match="sequence must be one"):
         pairrun._validate_ingest_diagnostic(forged, rebound)
     for lane in ("lexical", "semantic"):
@@ -650,13 +872,15 @@ def test_retrieval_diagnostic_v3_replays_typed_window_and_empty_non_exhausted():
         "query_pack_sha256": pack_sha,
         "comparison_contract": {"top_k": 10},
         "route_provenance": {"hybrid": {"capture_id": "capture"}},
-        "results": [{
-            "task_id": "T1",
-            "route": "hybrid",
-            "status": "success",
-            "error": None,
-            "candidates": [{"rank": 1, "path": "src/lib.rs", "start_line": 1, "end_line": 3}],
-        }],
+        "results": [
+            {
+                "task_id": "T1",
+                "route": "hybrid",
+                "status": "success",
+                "error": None,
+                "candidates": [{"rank": 1, "path": "src/lib.rs", "start_line": 1, "end_line": 3}],
+            }
+        ],
     }
     window = {
         "returned": 1,
@@ -665,13 +889,15 @@ def test_retrieval_diagnostic_v3_replays_typed_window_and_empty_non_exhausted():
         "coverage": {
             "examined": {"kind": "exact", "value": 1},
             "exhaustion_proof": {"kind": "exact_count", "total": 1},
-            "lanes": [{
-                "lane": "lexical",
-                "executed": True,
-                "contributed": True,
-                "filtered_out": 0,
-                "candidates": {"kind": "exact", "value": 1},
-            }],
+            "lanes": [
+                {
+                    "lane": "lexical",
+                    "executed": True,
+                    "contributed": True,
+                    "filtered_out": 0,
+                    "candidates": {"kind": "exact", "value": 1},
+                }
+            ],
         },
     }
     diagnostic = {
@@ -681,24 +907,28 @@ def test_retrieval_diagnostic_v3_replays_typed_window_and_empty_non_exhausted():
         "query_pack_sha256": pack_sha,
         "top_k": 10,
         "scope": "returned_window_only",
-        "results": [{
-            "task_id": "T1",
-            "query_sha256": "a" * 64,
-            "route": "hybrid",
-            "status": "success",
-            "error_code": None,
-            "candidates": [{
-                "rank": 1,
-                "candidate_id": "chunk-1",
-                "path": "src/lib.rs",
-                "start_line": 1,
-                "end_line": 3,
-                "score": 0.02,
-                "contributions": [{"lane": "lexical", "rank": 1, "raw_score": 3.0}],
-            }],
-            "response_kind": "returned_window",
-            "response": {"window": window, "explanation": None},
-        }],
+        "results": [
+            {
+                "task_id": "T1",
+                "query_sha256": "a" * 64,
+                "route": "hybrid",
+                "status": "success",
+                "error_code": None,
+                "candidates": [
+                    {
+                        "rank": 1,
+                        "candidate_id": "chunk-1",
+                        "path": "src/lib.rs",
+                        "start_line": 1,
+                        "end_line": 3,
+                        "score": 0.02,
+                        "contributions": [{"lane": "lexical", "rank": 1, "raw_score": 3.0}],
+                    }
+                ],
+                "response_kind": "returned_window",
+                "response": {"window": window, "explanation": None},
+            }
+        ],
         "runner_timing_detail_ms": {
             "clock": "runner_monotonic_wall_v1",
             "daemon_boot_and_readiness": 1.0,
@@ -727,9 +957,19 @@ def test_retrieval_diagnostic_v3_replays_typed_window_and_empty_non_exhausted():
                 "stage": f"hybrid.{name}",
                 "elapsed_ns": 100,
                 "calls": 1,
-                "returned_candidates": (0 if name in ("dense_fetch", "dense_admission") else 1) if name in ("lexical_search", "dense_fetch", "dense_admission", "fusion") else None,
+                "returned_candidates": (0 if name in ("dense_fetch", "dense_admission") else 1)
+                if name in ("lexical_search", "dense_fetch", "dense_admission", "fusion")
+                else None,
             }
-            for name in ("prepare", "read_view", "lexical_search", "embedding", "dense_fetch", "dense_admission", "fusion")
+            for name in (
+                "prepare",
+                "read_view",
+                "lexical_search",
+                "embedding",
+                "dense_fetch",
+                "dense_admission",
+                "fusion",
+            )
         ],
     }
     measured["results"][0]["response"]["explanation"] = explanation
@@ -748,8 +988,12 @@ def test_retrieval_diagnostic_v3_replays_typed_window_and_empty_non_exhausted():
         "engines_touched": ["lexical"],
         "strategy": "lexical",
         "stage_timings": [
-            {"stage": f"lexical.{name}", "elapsed_ns": 100, "calls": 1,
-             "returned_candidates": 1 if name in ("search", "project") else None}
+            {
+                "stage": f"lexical.{name}",
+                "elapsed_ns": 100,
+                "calls": 1,
+                "returned_candidates": 1 if name in ("search", "project") else None,
+            }
             for name in ("prepare", "read_view", "search", "project")
         ],
     }
@@ -757,7 +1001,9 @@ def test_retrieval_diagnostic_v3_replays_typed_window_and_empty_non_exhausted():
     for mutate in (
         lambda value: value["results"][0]["response"]["explanation"]["stage_timings"].pop(2),
         lambda value: value["results"][0]["response"]["explanation"].update(engines_executed=[]),
-        lambda value: value["results"][0]["response"]["explanation"]["stage_timings"][-1].update(returned_candidates=2),
+        lambda value: value["results"][0]["response"]["explanation"]["stage_timings"][-1].update(
+            returned_candidates=2
+        ),
     ):
         tampered = json.loads(json.dumps(lexical))
         mutate(tampered)
@@ -771,8 +1017,12 @@ def test_retrieval_diagnostic_v3_replays_typed_window_and_empty_non_exhausted():
         lambda value: value["results"][0]["response"]["explanation"].update(strategy="rrf"),
         lambda value: value["results"][0]["response"]["explanation"]["stage_timings"].pop(),
         lambda value: value["results"][0]["response"]["explanation"]["stage_timings"].reverse(),
-        lambda value: value["results"][0]["response"]["explanation"]["stage_timings"][-1].update(returned_candidates=2),
-        lambda value: value["results"][0]["response"]["explanation"]["stage_timings"][0].update(elapsed_ns=-1),
+        lambda value: value["results"][0]["response"]["explanation"]["stage_timings"][-1].update(
+            returned_candidates=2
+        ),
+        lambda value: value["results"][0]["response"]["explanation"]["stage_timings"][0].update(
+            elapsed_ns=-1
+        ),
     ):
         tampered = json.loads(json.dumps(measured))
         mutate(tampered)
@@ -786,7 +1036,9 @@ def test_retrieval_diagnostic_v3_replays_typed_window_and_empty_non_exhausted():
 
     tampered = json.loads(json.dumps(diagnostic))
     tampered["results"][0]["response"]["window"]["returned"] = 999
-    with pytest.raises(pairrun.RunError, match="typed window|returned count|exact exhaustion|candidate count"):
+    with pytest.raises(
+        pairrun.RunError, match="typed window|returned count|exact exhaustion|candidate count"
+    ):
         pairrun.validate_retrieval_diagnostic(tampered, record, "b" * 64, pack)
 
     tampered = json.loads(json.dumps(diagnostic))
@@ -803,7 +1055,9 @@ def test_retrieval_diagnostic_v3_replays_typed_window_and_empty_non_exhausted():
         error={"code": "empty_non_exhausted_window", "message": "typed"},
     )
     empty = json.loads(json.dumps(diagnostic))
-    empty["results"][0].update(status="error", error_code="empty_non_exhausted_window", candidates=[])
+    empty["results"][0].update(
+        status="error", error_code="empty_non_exhausted_window", candidates=[]
+    )
     empty_window = empty["results"][0]["response"]["window"]
     empty_window.update(
         returned=0,
@@ -813,13 +1067,15 @@ def test_retrieval_diagnostic_v3_replays_typed_window_and_empty_non_exhausted():
     )
     empty_window["coverage"] = {
         "examined": {"kind": "at_least", "value": 1},
-        "lanes": [{
-            "lane": "lexical",
-            "executed": True,
-            "contributed": False,
-            "filtered_out": 0,
-            "candidates": {"kind": "exact", "value": 0},
-        }],
+        "lanes": [
+            {
+                "lane": "lexical",
+                "executed": True,
+                "contributed": False,
+                "filtered_out": 0,
+                "candidates": {"kind": "exact", "value": 0},
+            }
+        ],
     }
     pairrun.validate_retrieval_diagnostic(empty, empty_record, "b" * 64, pack)
 
@@ -835,9 +1091,7 @@ def test_retrieval_diagnostic_v3_replays_typed_window_and_empty_non_exhausted():
         response=None,
     )
     with pytest.raises(pairrun.RunError, match="SDK failure shape"):
-        pairrun.validate_retrieval_diagnostic(
-            forged_stale, forged_stale_record, "b" * 64, pack
-        )
+        pairrun.validate_retrieval_diagnostic(forged_stale, forged_stale_record, "b" * 64, pack)
 
     rejected_record = json.loads(json.dumps(empty_record))
     rejected_record["captures"] = {"capture": {"generation": 7}}
@@ -873,8 +1127,12 @@ def test_retrieval_diagnostic_v3_replays_typed_window_and_empty_non_exhausted():
 
 def test_retrieval_diagnostic_v4_semantic_stages_bind_execution_and_strategy():
     stages = [
-        {"stage": f"semantic.{name}", "elapsed_ns": 100, "calls": 1,
-         "returned_candidates": 1 if name in ("dense_search", "project") else None}
+        {
+            "stage": f"semantic.{name}",
+            "elapsed_ns": 100,
+            "calls": 1,
+            "returned_candidates": 1 if name in ("dense_search", "project") else None,
+        }
         for name in ("prepare", "read_view", "embedding", "dense_search", "project")
     ]
     explanation = {
@@ -897,10 +1155,15 @@ def test_retrieval_diagnostic_v4_semantic_stages_bind_execution_and_strategy():
             pairrun._validate_explanation(changed, "semantic fixture", "semantic", 4, 1)
 
     scoped = json.loads(json.dumps(explanation))
-    scoped["stage_timings"].insert(2, {
-        "stage": "semantic.lexical_scope", "elapsed_ns": 100, "calls": 1,
-        "returned_candidates": 2,
-    })
+    scoped["stage_timings"].insert(
+        2,
+        {
+            "stage": "semantic.lexical_scope",
+            "elapsed_ns": 100,
+            "calls": 1,
+            "returned_candidates": 2,
+        },
+    )
     scoped["engines_executed"] = ["lexical", "semantic"]
     scoped["engines_touched"] = ["lexical", "semantic"]
     scoped["strategy"] = "semantic_scoped"
@@ -923,7 +1186,8 @@ def test_pair_record_identity_accepts_multi_route_quanta_and_rejects_mixed_captu
         for route in ("lexical", "semantic", "hybrid")
     }
     assert pairrun._record_identity({"captures": captures}, "record") == (
-        "quanta", "fixed_window_strict"
+        "quanta",
+        "fixed_window_strict",
     )
 
     mixed_strategy = json.loads(json.dumps(captures))
@@ -937,10 +1201,15 @@ def test_pair_record_identity_accepts_multi_route_quanta_and_rejects_mixed_captu
         pairrun._record_identity({"captures": mixed_system}, "record")
 
     with pytest.raises(pairrun.RunError, match="one capture"):
-        pairrun._record_identity({"captures": {
-            "a": {"system": "semble", "chunk_strategy": "fixed_window_strict"},
-            "b": {"system": "semble", "chunk_strategy": "fixed_window_strict"},
-        }}, "record")
+        pairrun._record_identity(
+            {
+                "captures": {
+                    "a": {"system": "semble", "chunk_strategy": "fixed_window_strict"},
+                    "b": {"system": "semble", "chunk_strategy": "fixed_window_strict"},
+                }
+            },
+            "record",
+        )
 
 
 def test_symbol_route_records_validate_without_schema_forks(tmp_path):
@@ -2288,8 +2557,7 @@ def _write_stub_semble(root: Path) -> None:
         encoding="utf-8",
     )
     (package / "types.py").write_text(
-        "class ContentType:\n"
-        "    CODE = 'code'\n",
+        "class ContentType:\n    CODE = 'code'\n",
         encoding="utf-8",
     )
     (package / "index_stub.py").write_text(
@@ -2443,7 +2711,9 @@ def test_worker_template_dispatches_profiles_with_lane_isolation(tmp_path, monke
         except semble_adapter.AdapterError:
             requested_profile = None
         spec["execution_profile_sha256"] = (
-            ev.digest(ev.canonical(requested_profile)) if requested_profile is not None else "0" * 64
+            ev.digest(ev.canonical(requested_profile))
+            if requested_profile is not None
+            else "0" * 64
         )
         spec_path.write_text(json.dumps(spec), encoding="utf-8")
         for stale in (native_path,):
@@ -2454,7 +2724,9 @@ def test_worker_template_dispatches_profiles_with_lane_isolation(tmp_path, monke
             text=True,
             timeout=60,
         )
-        return completed, (json.loads(native_path.read_text(encoding="utf-8")) if native_path.exists() else None)
+        return completed, (
+            json.loads(native_path.read_text(encoding="utf-8")) if native_path.exists() else None
+        )
 
     # native-default: both lanes run; actual alpha comes from the pinned
     # resolver (stub: no '?'-free path → 0.5).
@@ -2511,8 +2783,12 @@ def test_worker_template_dispatches_profiles_with_lane_isolation(tmp_path, monke
 
 def test_adapter_rejects_forged_or_mismatched_profile_reports():
     for mode in ([], {}, None, True, 10**400):
-        profile = {"profile_id": "semble-hybrid-no-rerank-v1", "mode": mode,
-                   "alpha": 0.5, "rerank": False}
+        profile = {
+            "profile_id": "semble-hybrid-no-rerank-v1",
+            "mode": mode,
+            "alpha": 0.5,
+            "rerank": False,
+        }
         with pytest.raises(semble_adapter.AdapterError, match="mode"):
             semble_adapter.execution_profile(mode, 0.5)
         with pytest.raises(ev.EvidenceError, match="mode"):
@@ -2521,8 +2797,10 @@ def test_adapter_rejects_forged_or_mismatched_profile_reports():
             pairrun._validate_semble_profile(profile, "profile")
     for alpha in (10**400, -(10**400), float("nan"), float("inf"), -float("inf"), True, None):
         profile = {
-            "profile_id": "semble-hybrid-no-rerank-v1", "mode": "hybrid-no-rerank",
-            "alpha": alpha, "rerank": False,
+            "profile_id": "semble-hybrid-no-rerank-v1",
+            "mode": "hybrid-no-rerank",
+            "alpha": alpha,
+            "rerank": False,
         }
         with pytest.raises(semble_adapter.AdapterError, match="alpha"):
             semble_adapter.execution_profile("hybrid-no-rerank", alpha)
@@ -2569,15 +2847,25 @@ def test_adapter_rejects_forged_or_mismatched_profile_reports():
         value["execution_events_sha256"] = ev.digest(ev.canonical(value["execution_events"]))
         return value
 
-    base = complete({
-        "semble_profile": "lexical-only",
-        "lane_call_counts": {"bm25": 1, "semantic": 0, "encode": 0},
-        "rerank_applied": False,
-        "native": [{"task_id": "T1", "results": []}],
-        "repetitions": 1,
-        "execution_events": [event("lexical-only", None, {"bm25": 1, "semantic": 0}, {"bm25": [5], "semantic": []}, None)],
-        "actual_alpha_by_task": None,
-    })
+    base = complete(
+        {
+            "semble_profile": "lexical-only",
+            "lane_call_counts": {"bm25": 1, "semantic": 0, "encode": 0},
+            "rerank_applied": False,
+            "native": [{"task_id": "T1", "results": []}],
+            "repetitions": 1,
+            "execution_events": [
+                event(
+                    "lexical-only",
+                    None,
+                    {"bm25": 1, "semantic": 0},
+                    {"bm25": [5], "semantic": []},
+                    None,
+                )
+            ],
+            "actual_alpha_by_task": None,
+        }
+    )
     semble_adapter.validate_native_profile_report(dict(base), "lexical-only", None)
     for field in ("rep", "phase_iteration", "call_ordinal"):
         for invalid in (False, 0.0):
@@ -2620,16 +2908,26 @@ def test_adapter_rejects_forged_or_mismatched_profile_reports():
         semble_adapter.validate_native_profile_report(semantic, "semantic-only", 0.5)
 
     # hybrid-no-rerank must echo alpha and report rerank disabled.
-    hybrid = complete({
-        "semble_profile": "hybrid-no-rerank",
-        "lane_call_counts": {"bm25": 1, "semantic": 1, "encode": 1},
-        "requested_alpha": 0.25,
-        "rerank_applied": False,
-        "native": [{"task_id": "T1", "results": []}],
-        "repetitions": 1,
-        "execution_events": [event("hybrid-no-rerank", 0.25, {"bm25": 1, "semantic": 1}, {"bm25": [25], "semantic": [25]}, False)],
-        "actual_alpha_by_task": {"T1": 0.25},
-    })
+    hybrid = complete(
+        {
+            "semble_profile": "hybrid-no-rerank",
+            "lane_call_counts": {"bm25": 1, "semantic": 1, "encode": 1},
+            "requested_alpha": 0.25,
+            "rerank_applied": False,
+            "native": [{"task_id": "T1", "results": []}],
+            "repetitions": 1,
+            "execution_events": [
+                event(
+                    "hybrid-no-rerank",
+                    0.25,
+                    {"bm25": 1, "semantic": 1},
+                    {"bm25": [25], "semantic": [25]},
+                    False,
+                )
+            ],
+            "actual_alpha_by_task": {"T1": 0.25},
+        }
+    )
     semble_adapter.validate_native_profile_report(dict(hybrid), "hybrid-no-rerank", 0.25)
     with pytest.raises(semble_adapter.AdapterError, match="alpha echo"):
         semble_adapter.validate_native_profile_report(dict(hybrid), "hybrid-no-rerank", 0.5)
@@ -2638,19 +2936,27 @@ def test_adapter_rejects_forged_or_mismatched_profile_reports():
         semble_adapter.validate_native_profile_report(reranked, "hybrid-no-rerank", 0.25)
     forged_encode = dict(hybrid, lane_call_counts={"bm25": 1, "semantic": 1, "encode": 9})
     with pytest.raises(semble_adapter.AdapterError, match="semantic and encode"):
-        semble_adapter.validate_native_profile_report(
-            forged_encode, "hybrid-no-rerank", 0.25
-        )
+        semble_adapter.validate_native_profile_report(forged_encode, "hybrid-no-rerank", 0.25)
 
-    native = complete({
-        "semble_profile": "native-default",
-        "lane_call_counts": {"bm25": 1, "semantic": 1, "encode": 1},
-        "rerank_applied": True,
-        "native": [{"task_id": "T1", "results": []}],
-        "repetitions": 1,
-        "execution_events": [event("native-default", None, {"bm25": 1, "semantic": 1}, {"bm25": [25], "semantic": [25]}, True)],
-        "actual_alpha_by_task": {"T1": 0.5},
-    })
+    native = complete(
+        {
+            "semble_profile": "native-default",
+            "lane_call_counts": {"bm25": 1, "semantic": 1, "encode": 1},
+            "rerank_applied": True,
+            "native": [{"task_id": "T1", "results": []}],
+            "repetitions": 1,
+            "execution_events": [
+                event(
+                    "native-default",
+                    None,
+                    {"bm25": 1, "semantic": 1},
+                    {"bm25": [25], "semantic": [25]},
+                    True,
+                )
+            ],
+            "actual_alpha_by_task": {"T1": 0.5},
+        }
+    )
     native["execution_events"][0]["actual_alpha"] = 0.5
     native["execution_events_sha256"] = ev.digest(ev.canonical(native["execution_events"]))
     semble_adapter.validate_native_profile_report(native, "native-default", None)
@@ -2673,11 +2979,22 @@ def test_adapter_rejects_forged_or_mismatched_profile_reports():
     for malformed in (
         dict(base, lane_call_counts={"bm25": 2, "semantic": 0, "encode": 0}),
         dict(base, execution_events=[dict(base["execution_events"][0], candidate_depth=True)]),
-        dict(base, execution_events=[dict(base["execution_events"][0], lane_candidate_depths={"bm25": [], "semantic": []})]),
+        dict(
+            base,
+            execution_events=[
+                dict(
+                    base["execution_events"][0], lane_candidate_depths={"bm25": [], "semantic": []}
+                )
+            ],
+        ),
     ):
-        with pytest.raises(semble_adapter.AdapterError, match="aggregate lane calls|candidate depth"):
+        with pytest.raises(
+            semble_adapter.AdapterError, match="aggregate lane calls|candidate depth"
+        ):
             semble_adapter.validate_native_profile_report(malformed, "lexical-only", None)
-    out_of_range_alpha = dict(native, execution_events=[dict(native["execution_events"][0], actual_alpha=1.5)])
+    out_of_range_alpha = dict(
+        native, execution_events=[dict(native["execution_events"][0], actual_alpha=1.5)]
+    )
     with pytest.raises(semble_adapter.AdapterError, match="actual alpha is invalid"):
         semble_adapter.validate_native_profile_report(out_of_range_alpha, "native-default", None)
 
@@ -2989,17 +3306,19 @@ def test_process_tree_resource_sampler_counts_children_and_kills_timeout(tmp_pat
     # Reap the child before the root exits. An orphaned zombie can retain its
     # process group on macOS and make killpg(0) return EPERM; that is correctly
     # incomplete evidence, not the successful cleanup exercised here.
-    child_code = "\n".join([
-        "import signal, subprocess, sys, time",
-        "child = subprocess.Popen([sys.executable, '-c', "
-        "'import time; x=bytearray(b\"x\"*8_000_000); time.sleep(60)'])",
-        "def terminate(_signal, _frame):",
-        "    child.wait(timeout=5)",
-        "    sys.exit(143)",
-        "signal.signal(signal.SIGTERM, terminate)",
-        "print(child.pid, flush=True)",
-        "time.sleep(60)",
-    ])
+    child_code = "\n".join(
+        [
+            "import signal, subprocess, sys, time",
+            "child = subprocess.Popen([sys.executable, '-c', "
+            "'import time; x=bytearray(b\"x\"*8_000_000); time.sleep(60)'])",
+            "def terminate(_signal, _frame):",
+            "    child.wait(timeout=5)",
+            "    sys.exit(143)",
+            "signal.signal(signal.SIGTERM, terminate)",
+            "print(child.pid, flush=True)",
+            "time.sleep(60)",
+        ]
+    )
     # Start the timeout exercise after one actual positive-RSS child sample.
     # Cold interpreter scheduling is not the timeout oracle. Keep a real 30s
     # readiness bound so missing child evidence still fails instead of hanging.
@@ -3120,7 +3439,9 @@ def test_process_tree_sampler_zero_rss_ownership_is_row_order_independent(monkey
     assert [process["pid"] for process in reversed_sample] == [100, 105]
 
 
-def test_process_tree_sampler_keeps_multi_level_zero_rss_connectors_and_excludes_unrelated(monkeypatch):
+def test_process_tree_sampler_keeps_multi_level_zero_rss_connectors_and_excludes_unrelated(
+    monkeypatch,
+):
     _patch_ps_snapshot(
         monkeypatch,
         "100 50 1024 1.0 S runner\n"
@@ -3140,8 +3461,7 @@ def test_process_tree_sampler_keeps_multi_level_zero_rss_connectors_and_excludes
 def test_process_tree_sampler_zero_rss_root_reports_positive_children_only(monkeypatch):
     _patch_ps_snapshot(
         monkeypatch,
-        "100 50 0 0.0 S runner\n"
-        "101 100 2048 1.5 S searchd\n",
+        "100 50 0 0.0 S runner\n101 100 2048 1.5 S searchd\n",
     )
 
     sample = pairrun._process_tree_sample(100)
@@ -3154,17 +3474,13 @@ def test_process_tree_sampler_zero_rss_root_reports_positive_children_only(monke
 
 def test_process_tree_sampler_rejects_malformed_and_duplicate_pid(monkeypatch):
     _patch_ps_snapshot(
-        monkeypatch,
-        "100 50 1024 1.0 S runner\n"
-        "101 100 not-a-number 1.0 S bad-rss\n"
+        monkeypatch, "100 50 1024 1.0 S runner\n101 100 not-a-number 1.0 S bad-rss\n"
     )
     with pytest.raises(pairrun.RunError, match="malformed ps process row"):
         pairrun._process_tree_sample(100)
     _patch_ps_snapshot(
         monkeypatch,
-        "100 50 1024 1.0 S runner\n"
-        "103 100 4096 2.0 S worker\n"
-        "103 100 512 0.5 S worker-retaken\n",
+        "100 50 1024 1.0 S runner\n103 100 4096 2.0 S worker\n103 100 512 0.5 S worker-retaken\n",
     )
     with pytest.raises(pairrun.RunError, match="duplicate ps process PID"):
         pairrun._process_tree_sample(100)
@@ -3173,8 +3489,7 @@ def test_process_tree_sampler_rejects_malformed_and_duplicate_pid(monkeypatch):
 def test_process_tree_sampler_missing_root_refuses_complete_snapshot(monkeypatch):
     _patch_ps_snapshot(
         monkeypatch,
-        "101 999 2048 1.0 S orphaned-worker\n"
-        "102 1 4096 2.0 S unrelated\n",
+        "101 999 2048 1.0 S orphaned-worker\n102 1 4096 2.0 S unrelated\n",
     )
 
     # An unobserved root may have exited or been reused. The observed child
@@ -3218,13 +3533,15 @@ def _monitored_root_exit_snapshot(tmp_path, monkeypatch, *, group_survives):
         assert root_pid == root.pid
         calls += 1
         if calls == 1:
-            return [{
-                "pid": root_pid,
-                "ppid": 1,
-                "rss_bytes": 1024,
-                "cpu_percent": 0.0,
-                "command": "python",
-            }]
+            return [
+                {
+                    "pid": root_pid,
+                    "ppid": 1,
+                    "rss_bytes": 1024,
+                    "cpu_percent": 0.0,
+                    "command": "python",
+                }
+            ]
         raise pairrun.ProcessRootAbsent("root process is absent from live ps snapshot")
 
     def group_probe(_pgid, sig):
@@ -3356,8 +3673,7 @@ def test_runner_bundle_is_deterministic_closed_and_isolated(tmp_path):
     assert first.read_bytes() == second.read_bytes()
     assert first_proof["sha256"] == second_proof["sha256"]
     pairrun.validate_runner_bundle(first, first_proof)
-    for members in (None, [], [{}], [{"path": []}], [None],
-                    first_proof["manifest"]["members"] * 2):
+    for members in (None, [], [{}], [{"path": []}], [None], first_proof["manifest"]["members"] * 2):
         forged = json.loads(json.dumps(first_proof))
         forged["manifest"]["members"] = members
         with pytest.raises(pairrun.RunError, match="member manifest"):
@@ -3405,17 +3721,8 @@ def test_model_cache_materialization_binds_ref_and_safe_links(tmp_path):
     ref.parent.mkdir(parents=True)
     ref.write_text(revision + "\n", encoding="utf-8")
     destination = tmp_path / "materialized"
-    manifest = semble_adapter.materialize_model_cache(
-        source, destination, model_id, revision
-    )
-    copied = (
-        destination
-        / "hub"
-        / "models--org--model"
-        / "snapshots"
-        / revision
-        / "model.bin"
-    )
+    manifest = semble_adapter.materialize_model_cache(source, destination, model_id, revision)
+    copied = destination / "hub" / "models--org--model" / "snapshots" / revision / "model.bin"
     assert copied.read_bytes() == b"model-bytes"
     assert not copied.is_symlink()
     assert manifest["ref"] == {"name": "main", "revision": revision}
@@ -3437,15 +3744,11 @@ def test_model_cache_materialization_binds_ref_and_safe_links(tmp_path):
     escaped.write_bytes(b"outside")
     (snapshot / "escape.bin").symlink_to(escaped)
     with pytest.raises(semble_adapter.AdapterError, match="escapes model root"):
-        semble_adapter.materialize_model_cache(
-            source, tmp_path / "rejected", model_id, revision
-        )
+        semble_adapter.materialize_model_cache(source, tmp_path / "rejected", model_id, revision)
     (snapshot / "escape.bin").unlink()
     ref.write_text("b" * 40 + "\n", encoding="utf-8")
     with pytest.raises(semble_adapter.AdapterError, match="ref drift"):
-        semble_adapter.materialize_model_cache(
-            source, tmp_path / "drifted", model_id, revision
-        )
+        semble_adapter.materialize_model_cache(source, tmp_path / "drifted", model_id, revision)
 
 
 def test_spec_evidence_content_is_removed_receipts_are_frozen(tmp_path):
@@ -3526,18 +3829,14 @@ def test_normalize_record_proves_spans_and_order(tmp_path):
     assert capture["chunk_strategy"] == "semble_native"
     assert capture["searchd_binary"] is None and capture["generation"] == 0
     assert record["route_provenance"] == {"semble-hybrid": {"capture_id": "cap-1"}}
-    assert capture["execution_profile"] == semble_adapter.execution_profile(
-        "native-default", None
-    )
+    assert capture["execution_profile"] == semble_adapter.execution_profile("native-default", None)
     assert capture["execution_profile_sha256"] == ev.digest(
         ev.canonical(capture["execution_profile"])
     )
     identity = record["results"][0]["query_identity"]
     first_query = pack["tasks"][0]["query"]
     assert identity["original_query_sha256"] == identity["submitted_query_sha256"]
-    assert identity["original_query_sha256"] == hashlib.sha256(
-        first_query.encode()
-    ).hexdigest()
+    assert identity["original_query_sha256"] == hashlib.sha256(first_query.encode()).hexdigest()
     assert identity["original_query_sha256"] == pack["tasks"][0]["query_sha256"]
 
     drifted = build(
@@ -3755,7 +4054,9 @@ def test_merge_combines_disjoint_records_and_scores(tmp_path):
     assert witnessed_merge["span_accounting_version"] == 1
     witnessed_report = ev.evaluate(suite, pack, witnessed_merge, "semble-hybrid", "lexical")
     assert witnessed_report["span_accounting"]["routes"]["lexical"]["status"] == "observed"
-    assert witnessed_report["span_accounting"]["routes"]["semble-hybrid"]["status"] == "not_applicable"
+    assert (
+        witnessed_report["span_accounting"]["routes"]["semble-hybrid"]["status"] == "not_applicable"
+    )
 
 
 def test_v3_rescore_is_deterministic_under_row_order(tmp_path):
@@ -3987,21 +4288,35 @@ def _bound_conditional_results(command, kind, *, matches=True):
         "dependency_sha256": "d" * 64,
     }
     if kind == "model_vectors":
-        raw = {"kind": kind, "rows": [{
-            "case_id": "case-1", "reference_vector": [0.5, -0.25],
-            "observed_vector": [0.5, -0.25] if matches else [0.5, -0.2],
-        }]}
+        raw = {
+            "kind": kind,
+            "rows": [
+                {
+                    "case_id": "case-1",
+                    "reference_vector": [0.5, -0.25],
+                    "observed_vector": [0.5, -0.25] if matches else [0.5, -0.2],
+                }
+            ],
+        }
     else:
-        raw = {"kind": kind, "rows": [{
-            "case_id": "case-1", "fresh_row_ids": ["row-1"],
-            "incremental_row_ids": ["row-1"] if matches else ["row-2"],
-        }]}
+        raw = {
+            "kind": kind,
+            "rows": [
+                {
+                    "case_id": "case-1",
+                    "fresh_row_ids": ["row-1"],
+                    "incremental_row_ids": ["row-1"] if matches else ["row-2"],
+                }
+            ],
+        }
     return {
         "schema_version": 1,
         "command": command,
         "status": "pass" if matches else "fail",
-        "selected": 1, "executed": 1,
-        "passed": int(matches), "failed": int(not matches),
+        "selected": 1,
+        "executed": 1,
+        "passed": int(matches),
+        "failed": int(not matches),
         "identity": identity,
         "raw_proof": raw,
         "execution_receipt": {
@@ -4057,8 +4372,14 @@ def _full_receipts(commit, binary_digest, binary_dir):
             role = "nextest-" + ev.digest(binary_id.encode())
             executable = binary_dir / f"{rail}-{role}"
             executable.write_bytes(binary_id.encode())
-            row.update({"binary-id": binary_id, "binary-path": str(executable.resolve()),
-                        "package-id": f"fixture:{portable_proof.PACKAGE}", "build-platform": "target"})
+            row.update(
+                {
+                    "binary-id": binary_id,
+                    "binary-path": str(executable.resolve()),
+                    "package-id": f"fixture:{portable_proof.PACKAGE}",
+                    "build-platform": "target",
+                }
+            )
         inventories.append(json.dumps(inventory).encode())
     rust_inventory, sdk_inventory = inventories
     (binary_dir / "runner").write_bytes(b"quanta-runner-binary")
@@ -4150,48 +4471,89 @@ def _full_receipts(commit, binary_digest, binary_dir):
         binaries = (
             {
                 "runner": {"path": str((binary_dir / "runner").resolve()), "sha256": binary_digest},
-                "searchd": {"path": str((binary_dir / "searchd").resolve()), "sha256": _fake_sha("searchd")},
+                "searchd": {
+                    "path": str((binary_dir / "searchd").resolve()),
+                    "sha256": _fake_sha("searchd"),
+                },
             }
             if rail == "sdk"
             else {}
         )
         collection_name = "nextest-inventory.json" if rail == "sdk" else "rust-inventory.json"
-        binaries.update({role: {"path": str(path), "sha256": pairrun.sha_file(path)}
-                         for role, path in portable_proof.selected_test_binaries(raw[collection_name]).items()})
+        binaries.update(
+            {
+                role: {"path": str(path), "sha256": pairrun.sha_file(path)}
+                for role, path in portable_proof.selected_test_binaries(
+                    raw[collection_name]
+                ).items()
+            }
+        )
         inherited_environment = {"PATH": "/fixture/inherited/bin"}
         transcripts = (
-            {"rust-collection.stdout": raw["nextest-inventory.json"],
-             "rust-test.stdout": raw["nextest.jsonl"]}
-            if rail == "sdk" else
-            {"rust-collection.stdout": raw["rust-inventory.json"],
-             "rust-test.stdout": raw["rust-nextest.jsonl"]}
+            {
+                "rust-collection.stdout": raw["nextest-inventory.json"],
+                "rust-test.stdout": raw["nextest.jsonl"],
+            }
+            if rail == "sdk"
+            else {
+                "rust-collection.stdout": raw["rust-inventory.json"],
+                "rust-test.stdout": raw["rust-nextest.jsonl"],
+            }
         )
         inventory = json.loads(raw[collection_name])
-        build_fields = {"binary-id", "binary-name", "package-id", "kind", "binary-path", "build-platform"}
+        build_fields = {
+            "binary-id",
+            "binary-name",
+            "package-id",
+            "kind",
+            "binary-path",
+            "build-platform",
+        }
         target_directory = str(binary_dir.resolve())
         build_list = {
             "rust-build-meta": {"target-directory": target_directory},
-            "rust-binaries": {binary_id: {key: suite[key] for key in build_fields}
-                              for binary_id, suite in inventory["rust-suites"].items()},
+            "rust-binaries": {
+                binary_id: {key: suite[key] for key in build_fields}
+                for binary_id, suite in inventory["rust-suites"].items()
+            },
         }
         metadata = {
-            "version": 1, "workspace_root": str(portable_proof.ROOT),
+            "version": 1,
+            "workspace_root": str(portable_proof.ROOT),
             "target_directory": target_directory,
-            "workspace_members": [f"fixture:{portable_proof.PACKAGE}"], "resolve": None,
-            "packages": [{"id": f"fixture:{portable_proof.PACKAGE}", "name": portable_proof.PACKAGE,
-                          "version": "0.1.0", "manifest_path": str(portable_proof.ROOT / "benchmarks/retrieval/Cargo.toml"),
-                          "targets": [{"name": suite["binary-name"], "kind": [suite["kind"]]}
-                                      for suite in inventory["rust-suites"].values()]}],
+            "workspace_members": [f"fixture:{portable_proof.PACKAGE}"],
+            "resolve": None,
+            "packages": [
+                {
+                    "id": f"fixture:{portable_proof.PACKAGE}",
+                    "name": portable_proof.PACKAGE,
+                    "version": "0.1.0",
+                    "manifest_path": str(portable_proof.ROOT / "benchmarks/retrieval/Cargo.toml"),
+                    "targets": [
+                        {"name": suite["binary-name"], "kind": [suite["kind"]]}
+                        for suite in inventory["rust-suites"].values()
+                    ],
+                }
+            ],
         }
-        transcripts.update({"rust-build.stdout": json.dumps(build_list).encode(),
-                            "metadata.stdout": json.dumps(metadata).encode()})
+        transcripts.update(
+            {
+                "rust-build.stdout": json.dumps(build_list).encode(),
+                "metadata.stdout": json.dumps(metadata).encode(),
+            }
+        )
         portable_proof.verify_reused_build(
-            transcripts["rust-build.stdout"], transcripts["metadata.stdout"],
-            transcripts["rust-collection.stdout"], workspace_root=portable_proof.ROOT,
+            transcripts["rust-build.stdout"],
+            transcripts["metadata.stdout"],
+            transcripts["rust-collection.stdout"],
+            workspace_root=portable_proof.ROOT,
         )
         commands = []
         for name, argv, overrides in portable_proof._expected_commands(
-            rail, Path("/proof"), tools, binaries,
+            rail,
+            Path("/proof"),
+            tools,
+            binaries,
             inherited_environment=inherited_environment,
         ):
             commands.append(
@@ -4232,7 +4594,8 @@ def _full_receipts(commit, binary_digest, binary_dir):
         log_buffer = io.BytesIO()
         with zipfile.ZipFile(log_buffer, "w", compression=zipfile.ZIP_STORED) as archive:
             for filename in sorted(
-                f"{name}.{stream}" for name in pairrun.CONTEXT_COMMAND_NAMES[rail]
+                f"{name}.{stream}"
+                for name in pairrun.CONTEXT_COMMAND_NAMES[rail]
                 for stream in ("stdout", "stderr")
             ):
                 archive.writestr(filename, transcripts.get(filename, b""))
@@ -4718,14 +5081,10 @@ def _pair_stage(
             "model_id": "minishlab/potion-code-16M-v2",
             "revision": "b" * 40,
             "ref": {"name": "main", "revision": "b" * 40},
-            "members": [
-                {"path": "model.safetensors", "sha256": _fake_sha("model"), "size": 1}
-            ],
+            "members": [{"path": "model.safetensors", "sha256": _fake_sha("model"), "size": 1}],
             "model_asset_digest": _fake_sha("model"),
         }
-        model_cache_manifest["snapshot_digest"] = ev.digest(
-            ev.canonical(model_cache_manifest)
-        )
+        model_cache_manifest["snapshot_digest"] = ev.digest(ev.canonical(model_cache_manifest))
         model_cache_path = sdir / "model-cache-manifest.json"
         model_cache_path.write_text(json.dumps(model_cache_manifest), encoding="utf-8")
         (sdir / "mapping-proof.json").write_text(json.dumps(mapping), encoding="utf-8")
@@ -4812,8 +5171,14 @@ def _pair_stage(
                             "engines_touched": ["lexical"] if returned else [],
                             "strategy": "lexical",
                             "stage_timings": [
-                                {"stage": f"lexical.{name}", "elapsed_ns": 100, "calls": 1,
-                                 "returned_candidates": returned if name in ("search", "project") else None}
+                                {
+                                    "stage": f"lexical.{name}",
+                                    "elapsed_ns": 100,
+                                    "calls": 1,
+                                    "returned_candidates": returned
+                                    if name in ("search", "project")
+                                    else None,
+                                }
                                 for name in ("prepare", "read_view", "search", "project")
                             ],
                         },
@@ -4831,8 +5196,25 @@ def _pair_stage(
             json.dumps(
                 {
                     "schema_version": diagnostic_version,
-                    **({"hybrid_fetch_policy": pairrun.hybrid_fetch_policy_configuration(hybrid_floor)} if diagnostic_version == 6 else {}),
-                    **({"server_observation": pairrun.server_observation_configuration(query_observation), "ingest": ingest} if diagnostic_version in (5, 6) else {}),
+                    **(
+                        {
+                            "hybrid_fetch_policy": pairrun.hybrid_fetch_policy_configuration(
+                                hybrid_floor
+                            )
+                        }
+                        if diagnostic_version == 6
+                        else {}
+                    ),
+                    **(
+                        {
+                            "server_observation": pairrun.server_observation_configuration(
+                                query_observation
+                            ),
+                            "ingest": ingest,
+                        }
+                        if diagnostic_version in (5, 6)
+                        else {}
+                    ),
                     "kind": "quanta_returned_window_diagnostic",
                     "record_sha256": ev.digest(qpath.read_bytes()),
                     "query_pack_sha256": qrec["query_pack_sha256"],
@@ -5024,11 +5406,18 @@ def _pair_stage(
         development_task["query_family_id"] = "development-excluded"
         dev_file_sha, dev_block_sha, _ = _span_meta(files["excluded.txt"], 1, 1)
         dev_start, dev_end = _byte_span(files["excluded.txt"], 1, 1)
-        development_task["gold"] = [{
-            "path": "excluded.txt", "start_byte": dev_start, "end_byte": dev_end,
-            "start_line": 1, "end_line": 1, "file_sha256": dev_file_sha,
-            "block_sha256": dev_block_sha, "grade": 3,
-        }]
+        development_task["gold"] = [
+            {
+                "path": "excluded.txt",
+                "start_byte": dev_start,
+                "end_byte": dev_end,
+                "start_line": 1,
+                "end_line": 1,
+                "file_sha256": dev_file_sha,
+                "block_sha256": dev_block_sha,
+                "grade": 3,
+            }
+        ]
         development_suite["tasks"] = [development_task]
         development_suite_path = evidence_dir / "development-suite.json"
         development_suite_path.write_text(json.dumps(development_suite), encoding="utf-8")
@@ -5108,8 +5497,21 @@ def _pair_stage(
                 "lock_version": {4: 2, 5: 3, 6: 4}[diagnostic_version],
                 "retrieval_diagnostic_version": diagnostic_version,
                 "symbol_coverage_policy": "allow-incomplete",
-                **({"hybrid_fetch_policy": pairrun.hybrid_fetch_policy_configuration(hybrid_floor)} if diagnostic_version == 6 else {}),
-                **({"server_observation": pairrun.server_observation_configuration(query_observation), "ingest_request_identity": pairrun.ingest_request_identity({})} if diagnostic_version in (5, 6) else {}),
+                **(
+                    {"hybrid_fetch_policy": pairrun.hybrid_fetch_policy_configuration(hybrid_floor)}
+                    if diagnostic_version == 6
+                    else {}
+                ),
+                **(
+                    {
+                        "server_observation": pairrun.server_observation_configuration(
+                            query_observation
+                        ),
+                        "ingest_request_identity": pairrun.ingest_request_identity({}),
+                    }
+                    if diagnostic_version in (5, 6)
+                    else {}
+                ),
                 "rank_metric_k_policy": "declared_top_k_v1",
                 "suite_digest": ev.digest(suite_path.read_bytes()),
                 "query_pack_digest": ev.digest(pack_path.read_bytes()),
@@ -5133,9 +5535,7 @@ def _pair_stage(
                 "query_warmup_passes": 1,
                 "query_repetitions_per_root": measurements,
                 "execution_profiles": spec["execution_profiles"],
-                "execution_profiles_sha256": ev.digest(
-                    ev.canonical(spec["execution_profiles"])
-                ),
+                "execution_profiles_sha256": ev.digest(ev.canonical(spec["execution_profiles"])),
                 "query_protocol_sha256s": [
                     json.loads(Path(layout["query_protocol"]).read_text(encoding="utf-8"))["sha256"]
                     for layout in rep_layouts
@@ -5194,12 +5594,8 @@ def _rebind_semble_native_to_protocol(layout, protocol, pack):
     for iteration, task_ids in enumerate(protocol["warmup_schedules"]):
         schedule.extend((0, "warmup", iteration, task_id) for task_id in task_ids)
     for repetition, task_ids in enumerate(protocol["measurement_schedules"]):
-        schedule.extend(
-            (repetition, "measured", repetition, task_id) for task_id in task_ids
-        )
-    profile_sha = ev.digest(
-        ev.canonical(semble_adapter.execution_profile("native-default", None))
-    )
+        schedule.extend((repetition, "measured", repetition, task_id) for task_id in task_ids)
+    profile_sha = ev.digest(ev.canonical(semble_adapter.execution_profile("native-default", None)))
     native["execution_events"] = [
         {
             "rep": repetition,
@@ -5326,8 +5722,8 @@ def test_verdict_replays_semble_event_order_and_query_identity(tmp_path):
     phase_path.write_text(json.dumps(phase), encoding="utf-8")
     verdict = _stage_verdict(st)
     assert verdict["states"]["PAIR_VALID"] == "fail"
-    assert "semble_native_actual_call_invalid" in (
-        verdict["state_evidence"]["PAIR_VALID"]["reason"]
+    assert (
+        "semble_native_actual_call_invalid" in (verdict["state_evidence"]["PAIR_VALID"]["reason"])
     )
 
     adapter_stage = _pair_stage(tmp_path / "adapter")
@@ -5337,8 +5733,9 @@ def test_verdict_replays_semble_event_order_and_query_identity(tmp_path):
     adapter_path.write_text(json.dumps(adapter), encoding="utf-8")
     adapter_verdict = _stage_verdict(adapter_stage)
     assert adapter_verdict["states"]["PAIR_VALID"] == "fail"
-    assert "adapter_native_actual_call_binding_broken" in (
-        adapter_verdict["state_evidence"]["PAIR_VALID"]["reason"]
+    assert (
+        "adapter_native_actual_call_binding_broken"
+        in (adapter_verdict["state_evidence"]["PAIR_VALID"]["reason"])
     )
 
 
@@ -5353,7 +5750,10 @@ def test_current_protocol_profile_is_bound_on_every_semble_repetition(tmp_path):
     record_path.write_text(json.dumps(record), encoding="utf-8")
     verdict = _stage_verdict(st)
     assert verdict["states"]["PAIR_VALID"] == "fail"
-    assert "execution_profile_record_drift:rep-01:semble" in verdict["state_evidence"]["PAIR_VALID"]["reason"]
+    assert (
+        "execution_profile_record_drift:rep-01:semble"
+        in verdict["state_evidence"]["PAIR_VALID"]["reason"]
+    )
 
 
 def test_model_cache_identity_is_bound_on_every_semble_repetition(tmp_path):
@@ -5366,8 +5766,9 @@ def test_model_cache_identity_is_bound_on_every_semble_repetition(tmp_path):
     cache_path.write_text(json.dumps(manifest), encoding="utf-8")
     verdict = _stage_verdict(st)
     assert verdict["states"]["PAIR_VALID"] == "fail"
-    assert "model cache asset digest differs from adapter" in (
-        verdict["state_evidence"]["PAIR_VALID"]["reason"]
+    assert (
+        "model cache asset digest differs from adapter"
+        in (verdict["state_evidence"]["PAIR_VALID"]["reason"])
     )
 
 
@@ -5376,8 +5777,10 @@ def test_observation_protocol_v3_replays_and_refuses_policy_or_batch_scope_drift
     assert _stage_verdict(st)["states"]["PAIR_VALID"] == "pass"
     lock_path = st["stage"] / "protocol-lock.json"
     lock = json.loads(lock_path.read_text())
-    for key, value in (("server_observation", pairrun.server_observation_configuration("enabled")),
-                       ("ingest_request_identity", {**lock["ingest_request_identity"], "repo_id": "another-repo"})):
+    for key, value in (
+        ("server_observation", pairrun.server_observation_configuration("enabled")),
+        ("ingest_request_identity", {**lock["ingest_request_identity"], "repo_id": "another-repo"}),
+    ):
         changed = json.loads(json.dumps(lock))
         changed[key] = value
         lock_path.write_text(json.dumps(changed))
@@ -5396,7 +5799,9 @@ def test_observation_protocol_v3_replays_and_refuses_policy_or_batch_scope_drift
 
 
 def test_hybrid_fetch_protocol_v4_binds_every_capture_and_refuses_config_aliases(tmp_path):
-    st = _pair_stage(tmp_path, diagnostic_version=6, query_observation="disabled", hybrid_floor="25")
+    st = _pair_stage(
+        tmp_path, diagnostic_version=6, query_observation="disabled", hybrid_floor="25"
+    )
     assert _stage_verdict(st)["states"]["PAIR_VALID"] == "pass"
     lock_path = st["stage"] / "protocol-lock.json"
     lock = json.loads(lock_path.read_text())
@@ -5431,16 +5836,24 @@ def test_hybrid_fetch_protocol_v4_binds_every_capture_and_refuses_config_aliases
 def test_hybrid_initial_fetch_trace_requires_exact_policy_probe_and_unique_plan():
     # Hand oracle: fixed floor, public cap 10000, one-row continuation probe.
     for floor, top_k, expected in (
-        ("25", 1, 25), ("25", 10, 25), ("25", 100, 101),
-        ("50", 1, 50), ("50", 10, 50), ("50", 100, 101),
-        ("100", 1, 100), ("100", 10, 100), ("100", 100, 101),
-        ("25", 10000, 10001), ("100", 10000, 10001),
+        ("25", 1, 25),
+        ("25", 10, 25),
+        ("25", 100, 101),
+        ("50", 1, 50),
+        ("50", 10, 50),
+        ("50", 100, 101),
+        ("100", 1, 100),
+        ("100", 10, 100),
+        ("100", 100, 101),
+        ("25", 10000, 10001),
+        ("100", 10000, 10001),
     ):
         policy = pairrun.hybrid_fetch_policy_configuration(floor)
         trace = [{"stage": "plan", "detail": f"hybrid.internal_top_k={expected}"}]
         pairrun._validate_hybrid_initial_fetch(trace, top_k, policy)
         for mutant in (
-            [], trace + trace,
+            [],
+            trace + trace,
             [{"stage": "plan", "detail": f"hybrid.internal_top_k={expected - 1}"}],
             [{"stage": "parse", "detail": trace[0]["detail"]}],
             [{"stage": "plan", "detail": f"hybrid.internal_top_k=0{expected}"}],
@@ -5540,12 +5953,21 @@ def test_required_inventory_uses_canonical_internal_temporary_path(tmp_path, mon
     authority_ref = "benchmarks/retrieval/proof-required-tests.json"
     committed = subprocess.check_output(["git", "show", f"{revision}:{authority_ref}"], cwd=root)
     authority = json.loads(committed)
-    receipt = {"source_closure": {"revision": revision, "files": [
-        {"path": authority_ref, "sha256": hashlib.sha256(committed).hexdigest()},
-    ]}}
+    receipt = {
+        "source_closure": {
+            "revision": revision,
+            "files": [
+                {"path": authority_ref, "sha256": hashlib.sha256(committed).hexdigest()},
+            ],
+        }
+    }
     inventory = tmp_path / "inventory.json"
-    payload = {"schema_version": 1, "kind": "pytest", "selector": "tools/ci/tests/test_retrieval_benchmark.py",
-               "tests": authority["python"]}
+    payload = {
+        "schema_version": 1,
+        "kind": "pytest",
+        "selector": "tools/ci/tests/test_retrieval_benchmark.py",
+        "tests": authority["python"],
+    }
     inventory.write_text(json.dumps(payload))
     real_temp = tmp_path / "real-temp"
     real_temp.mkdir()
@@ -5591,34 +6013,53 @@ def test_verdict_refuses_bound_execution_context_tampering(tmp_path, rail, state
     context = json.loads(context_path.read_text(encoding="utf-8"))
     if mutation == "argv":
         raw_roles = (
-            {"python-inventory.json": "contract_python_inventory", "rust-inventory.json": "contract_rust_inventory",
-             "python-junit.xml": "contract_python_raw", "rust-nextest.jsonl": "contract_rust_raw"}
-            if rail == "contract" else
-            {"nextest-inventory.json": "sdk_inventory", "nextest.jsonl": "sdk_nextest_raw",
-             "actual-runner-record.json": "sdk_record_raw"}
+            {
+                "python-inventory.json": "contract_python_inventory",
+                "rust-inventory.json": "contract_rust_inventory",
+                "python-junit.xml": "contract_python_raw",
+                "rust-nextest.jsonl": "contract_rust_raw",
+            }
+            if rail == "contract"
+            else {
+                "nextest-inventory.json": "sdk_inventory",
+                "nextest.jsonl": "sdk_nextest_raw",
+                "actual-runner-record.json": "sdk_record_raw",
+            }
         )
         raw_paths = {name: receipt_dir / f"{role}.json" for name, role in raw_roles.items()}
         kwargs = {"rail": rail, "raw": raw_paths}
         if rail == "sdk":
             assert [row["name"] for row in context["commands"]] == [
-                "source-closure", "build-searchd", "rust-build", "metadata", "rust-collection", "rust-test",
+                "source-closure",
+                "build-searchd",
+                "rust-build",
+                "metadata",
+                "rust-collection",
+                "rust-test",
             ]
-            kwargs.update(runner_sha=context["binaries"]["runner"]["sha256"],
-                          searchd_sha=context["binaries"]["searchd"]["sha256"])
+            kwargs.update(
+                runner_sha=context["binaries"]["runner"]["sha256"],
+                searchd_sha=context["binaries"]["searchd"]["sha256"],
+            )
         # Mutants must share the frozen binary custody directory. First admit
         # their unchanged bytes so missing fixture files cannot explain RED.
         mutant_path = receipt_dir / f"{rail}-mutant-context.json"
         mutant_path.write_text(json.dumps(context), encoding="utf-8")
         pairrun._verify_execution_context(
-            mutant_path, receipt_dir / f"{rail}_source_closure.json",
-            receipt_dir / f"{rail}_execution_logs.json", **kwargs)
+            mutant_path,
+            receipt_dir / f"{rail}_source_closure.json",
+            receipt_dir / f"{rail}_execution_logs.json",
+            **kwargs,
+        )
 
         def refuse_context(forged, overrides=None, forged_logs=None, match=None):
             mutant_path.write_text(json.dumps(forged), encoding="utf-8")
             with pytest.raises(pairrun.RunError, match=match):
                 pairrun._verify_execution_context(
-                    mutant_path, receipt_dir / f"{rail}_source_closure.json",
-                    forged_logs or receipt_dir / f"{rail}_execution_logs.json", **{**kwargs, **(overrides or {})},
+                    mutant_path,
+                    receipt_dir / f"{rail}_source_closure.json",
+                    forged_logs or receipt_dir / f"{rail}_execution_logs.json",
+                    **{**kwargs, **(overrides or {})},
                 )
 
         for version in (True, 2.0, 1, 1.0):
@@ -5630,8 +6071,20 @@ def test_verdict_refuses_bound_execution_context_tampering(tmp_path, rail, state
         build_list = json.loads(original_logs["rust-build.stdout"])
         metadata = json.loads(original_logs["metadata.stdout"])
         binary_id = next(iter(build_list["rust-binaries"]))
-        for case in ("workspace", "target", "package-name", "manifest", "missing-package",
-                     "missing-binary", "extra-binary", "binary-path", "kind", "package-id", "binary-name", "build-platform"):
+        for case in (
+            "workspace",
+            "target",
+            "package-name",
+            "manifest",
+            "missing-package",
+            "missing-binary",
+            "extra-binary",
+            "binary-path",
+            "kind",
+            "package-id",
+            "binary-name",
+            "build-platform",
+        ):
             forged = json.loads(json.dumps(context))
             changed_build, changed_metadata = copy.deepcopy(build_list), copy.deepcopy(metadata)
             if case == "workspace":
@@ -5647,11 +6100,15 @@ def test_verdict_refuses_bound_execution_context_tampering(tmp_path, rail, state
             elif case == "missing-binary":
                 del changed_build["rust-binaries"][binary_id]
             elif case == "extra-binary":
-                changed_build["rust-binaries"][binary_id + "-extra"] = dict(changed_build["rust-binaries"][binary_id])
+                changed_build["rust-binaries"][binary_id + "-extra"] = dict(
+                    changed_build["rust-binaries"][binary_id]
+                )
             else:
                 changed_build["rust-binaries"][binary_id][case] = "wrong-value"
-            changed = {"rust-build.stdout": json.dumps(changed_build).encode(),
-                       "metadata.stdout": json.dumps(changed_metadata).encode()}
+            changed = {
+                "rust-build.stdout": json.dumps(changed_build).encode(),
+                "metadata.stdout": json.dumps(changed_metadata).encode(),
+            }
             for command in forged["commands"]:
                 if command["stdout"] in changed:
                     command["stdout_sha256"] = ev.digest(changed[command["stdout"]])
@@ -5685,8 +6142,11 @@ def test_verdict_refuses_bound_execution_context_tampering(tmp_path, rail, state
         unexpected.unlink()
         # Valid collection/JSONL bytes with altered whitespace still parse.
         # Rehashing either side cannot detach it from its paired raw artifact.
-        raw_links = (("rust-collection", "nextest-inventory.json"), ("rust-test", "nextest.jsonl")) if rail == "sdk" else (
-            ("rust-collection", "rust-inventory.json"), ("rust-test", "rust-nextest.jsonl"))
+        raw_links = (
+            (("rust-collection", "nextest-inventory.json"), ("rust-test", "nextest.jsonl"))
+            if rail == "sdk"
+            else (("rust-collection", "rust-inventory.json"), ("rust-test", "rust-nextest.jsonl"))
+        )
         for command_name, raw_name in raw_links:
             forged = json.loads(json.dumps(context))
             changed = b" " + raw_paths[raw_name].read_bytes()
@@ -5701,7 +6161,12 @@ def test_verdict_refuses_bound_execution_context_tampering(tmp_path, rail, state
             with zipfile.ZipFile(receipt_dir / f"{rail}_execution_logs.json") as source_archive:
                 with zipfile.ZipFile(forged_logs, "w", compression=zipfile.ZIP_STORED) as archive:
                     for filename in source_archive.namelist():
-                        archive.writestr(filename, changed if filename == command["stdout"] else source_archive.read(filename))
+                        archive.writestr(
+                            filename,
+                            changed
+                            if filename == command["stdout"]
+                            else source_archive.read(filename),
+                        )
             refuse_context(forged, forged_logs=forged_logs)
         # Fully recompute the inventory/context/log mapping, but reuse one
         # executable path for two distinct selected binary IDs: forbidden.
@@ -5730,12 +6195,19 @@ def test_verdict_refuses_bound_execution_context_tampering(tmp_path, rail, state
         with zipfile.ZipFile(receipt_dir / f"{rail}_execution_logs.json") as source_archive:
             with zipfile.ZipFile(forged_logs, "w", compression=zipfile.ZIP_STORED) as archive:
                 for filename in source_archive.namelist():
-                    archive.writestr(filename, changed if filename == command["stdout"] else source_archive.read(filename))
+                    archive.writestr(
+                        filename,
+                        changed if filename == command["stdout"] else source_archive.read(filename),
+                    )
         refuse_context(forged, {"raw": {**raw_paths, collection_name: forged_raw}}, forged_logs)
         duplicate_file.unlink()
-        for key, value in (("PATH", "/forged/bin"), ("RUSTC", "/forged/rustc"),
-                           ("RUSTC_WRAPPER", "/forged/wrapper"), ("RUSTC_WORKSPACE_WRAPPER", "/forged/workspace-wrapper"),
-                           ("QUANTA_INDEX_SCCACHE", "1")):
+        for key, value in (
+            ("PATH", "/forged/bin"),
+            ("RUSTC", "/forged/rustc"),
+            ("RUSTC_WRAPPER", "/forged/wrapper"),
+            ("RUSTC_WORKSPACE_WRAPPER", "/forged/workspace-wrapper"),
+            ("QUANTA_INDEX_SCCACHE", "1"),
+        ):
             forged = json.loads(json.dumps(context))
             command = forged["commands"][0]
             command["environment"][key] = value
@@ -5749,9 +6221,15 @@ def test_verdict_refuses_bound_execution_context_tampering(tmp_path, rail, state
         if rail == "sdk":
             forged = json.loads(json.dumps(context))
             # A retired raw Just recipe cannot replace the bound SDK command list.
-            legacy = dict(forged["commands"][0], name="sdk-recipe",
-                          argv=[context["tools"]["just"]["path"], "_retrieval-sdk-proof-raw", "/proof"])
-            forged["commands"] = [legacy, next(row for row in forged["commands"] if row["name"] == "metadata")]
+            legacy = dict(
+                forged["commands"][0],
+                name="sdk-recipe",
+                argv=[context["tools"]["just"]["path"], "_retrieval-sdk-proof-raw", "/proof"],
+            )
+            forged["commands"] = [
+                legacy,
+                next(row for row in forged["commands"] if row["name"] == "metadata"),
+            ]
             refuse_context(forged)
             for raw_name in ("nextest-inventory.json", "nextest.jsonl"):
                 forged = json.loads(json.dumps(context))
@@ -5805,15 +6283,22 @@ def test_freeze_receipts_copies_command_transcript_bytes(tmp_path):
     source = tmp_path / "source"
     source.mkdir()
     context = source / "execution-context.json"
-    contents = _full_receipts(pairrun.git_head_sha(Path(__file__).resolve().parents[3]),
-                              ev.digest(b"quanta-runner-binary"), source / "binaries")
+    contents = _full_receipts(
+        pairrun.git_head_sha(Path(__file__).resolve().parents[3]),
+        ev.digest(b"quanta-runner-binary"),
+        source / "binaries",
+    )
     context.write_bytes(contents["contract_execution_context"])
     with zipfile.ZipFile(io.BytesIO(contents["contract_execution_logs"])) as archive:
         transcripts = {name: archive.read(name) for name in archive.namelist()}
     for name in pairrun.CONTEXT_COMMAND_NAMES["contract"]:
         for stream in ("stdout", "stderr"):
             filename = f"{name}.{stream}"
-            payload = transcripts[filename] if name in ("rust-collection", "rust-test") else f"{name}:{stream}".encode()
+            payload = (
+                transcripts[filename]
+                if name in ("rust-collection", "rust-test")
+                else f"{name}:{stream}".encode()
+            )
             (source / filename).write_bytes(payload)
     stage = tmp_path / "stage"
     stage.mkdir()
@@ -6249,7 +6734,9 @@ def test_verdict_host_profile_fingerprint_is_enforced(tmp_path, monkeypatch):
 def test_verdict_rejects_forged_phase_and_process_tree_resources(tmp_path, monkeypatch):
     _allow_minimal_speed_fixture(monkeypatch)
 
-    quanta_stage = _pair_stage(tmp_path / "quanta-resource", scope="qualified", claims={"speed": True})
+    quanta_stage = _pair_stage(
+        tmp_path / "quanta-resource", scope="qualified", claims={"speed": True}
+    )
     quanta_path = (
         quanta_stage["stage"]
         / "rep-00"
@@ -6335,13 +6822,15 @@ def test_verdict_t15_t16_conditionals(tmp_path):
     assert verdict["failure_class"] == "model"
     with pytest.raises(pairrun.RunError, match="must hold exactly"):
         _pair_stage(
-            tmp_path / "summary-only", claims={"same_model": True},
+            tmp_path / "summary-only",
+            claims={"same_model": True},
             receipts={"model_parity_results": _parity_results("parity-cmd")},
         )
     parity_record = _bound_conditional_results("parity-cmd", "model_vectors")
-    assert pairrun._validate_parity_results_shape(
-        parity_record, "model parity", "model_vectors"
-    ) == parity_record
+    assert (
+        pairrun._validate_parity_results_shape(parity_record, "model parity", "model_vectors")
+        == parity_record
+    )
     pairrun._require_conditional_identity(parity_record, **parity_record["identity"])
     for key, forged_value in (
         ("source_revision", "0" * 40),
@@ -6367,18 +6856,17 @@ def test_verdict_t15_t16_conditionals(tmp_path):
     verdict = _stage_verdict(st)
     assert "T15" in verdict["missing_t_ids"]
     assert verdict["failure_class"] == "model"
-    incremental_record = _bound_conditional_results(
-        "incr-cmd", "incremental_rows", matches=False
+    incremental_record = _bound_conditional_results("incr-cmd", "incremental_rows", matches=False)
+    assert (
+        pairrun._validate_parity_results_shape(
+            incremental_record, "incremental", "incremental_rows"
+        )
+        == incremental_record
     )
-    assert pairrun._validate_parity_results_shape(
-        incremental_record, "incremental", "incremental_rows"
-    ) == incremental_record
     duplicate_rows = json.loads(json.dumps(incremental_record))
     duplicate_rows["raw_proof"]["rows"][0]["fresh_row_ids"] = ["row-1", "row-1"]
     with pytest.raises(pairrun.RunError, match="sorted unique row IDs"):
-        pairrun._validate_parity_results_shape(
-            duplicate_rows, "incremental", "incremental_rows"
-        )
+        pairrun._validate_parity_results_shape(duplicate_rows, "incremental", "incremental_rows")
     bad = {"incremental_results": incremental_record}
     st = _pair_stage(tmp_path / "incr", claims={"incremental": True}, receipts=bad)
     verdict = _stage_verdict(st)
@@ -6750,10 +7238,14 @@ def test_protocol_phase_metrics_bind_raw_warm_counts_and_cold_separately():
             "symbol_unsupported_files": 0,
             "symbol_unsupported_details": [],
             "symbol_only_scopes": 0,
-            "symbol_coverage": [{
-                "path": "src/a.rs", "source_sha256": "c" * 64,
-                "language": "rust", "definition_count": 3,
-            }],
+            "symbol_coverage": [
+                {
+                    "path": "src/a.rs",
+                    "source_sha256": "c" * 64,
+                    "language": "rust",
+                    "definition_count": 3,
+                }
+            ],
         }
     )
     _current_symbol_metrics(current)
@@ -6773,10 +7265,13 @@ def test_protocol_phase_metrics_bind_raw_warm_counts_and_cold_separately():
         pairrun._validate_phase_metrics(forged_grammars, "phase")
     incomplete = json.loads(json.dumps(current))
     incomplete["symbol_unsupported_files"] = 1
-    incomplete["symbol_unsupported_details"] = [{
-        "path": "docs/readme.md", "file_sha256": "d" * 64,
-        "reason": "unsupported_language",
-    }]
+    incomplete["symbol_unsupported_details"] = [
+        {
+            "path": "docs/readme.md",
+            "file_sha256": "d" * 64,
+            "reason": "unsupported_language",
+        }
+    ]
     with pytest.raises(pairrun.RunError):
         pairrun._validate_phase_metrics(incomplete, "phase")
     incomplete["symbol_unsupported_details"][0]["file_sha256"] = "bad"
@@ -8032,8 +8527,7 @@ def fixture_v3(tmp_path: Path, *, answerable_only: bool = False, blinding: str =
     # RBR-02: current records are v5 — every result binds the query
     # identity of the single native plan shared by all routes.
     identities = {
-        task["task_id"]: qp.derive_query_identity("native", task["query"])
-        for task in pack["tasks"]
+        task["task_id"]: qp.derive_query_identity("native", task["query"]) for task in pack["tasks"]
     }
 
     def result(task_id, route, status, spans, latency=1.5, error=None):
@@ -8143,24 +8637,37 @@ def test_cross_suite_experiment_custody_rejects_file_family_query_and_digest_lea
     same_file["file_universe_digest"] = development["file_universe_digest"]
     file_sha, block_sha, _ = _span_meta(files["a.txt"], 3, 3)
     byte_start, byte_end = _byte_span(files["a.txt"], 3, 3)
-    same_file["tasks"][0]["gold"] = [{
-        "path": "a.txt", "start_byte": byte_start, "end_byte": byte_end,
-        "start_line": 3, "end_line": 3, "file_sha256": file_sha,
-        "block_sha256": block_sha, "grade": 3,
-    }]
+    same_file["tasks"][0]["gold"] = [
+        {
+            "path": "a.txt",
+            "start_byte": byte_start,
+            "end_byte": byte_end,
+            "start_line": 3,
+            "end_line": 3,
+            "file_sha256": file_sha,
+            "block_sha256": block_sha,
+            "grade": 3,
+        }
+    ]
     with pytest.raises(ev.EvidenceError, match="cross-suite file leakage"):
-        ev.validate_experiment_custody(repo, custody(development, same_file), development, same_file)
+        ev.validate_experiment_custody(
+            repo, custody(development, same_file), development, same_file
+        )
 
     same_family = json.loads(json.dumps(holdout))
     same_family["tasks"][0]["query_family_id"] = development["tasks"][0]["query_family_id"]
     with pytest.raises(ev.EvidenceError, match="cross-suite query family leakage"):
-        ev.validate_experiment_custody(repo, custody(development, same_family), development, same_family)
+        ev.validate_experiment_custody(
+            repo, custody(development, same_family), development, same_family
+        )
 
     same_query = json.loads(json.dumps(holdout))
     same_query["tasks"][0]["query"] = development["tasks"][0]["query"]
     same_query["tasks"][0]["query_sha256"] = development["tasks"][0]["query_sha256"]
     with pytest.raises(ev.EvidenceError, match="query leakage/duplication"):
-        ev.validate_experiment_custody(repo, custody(development, same_query), development, same_query)
+        ev.validate_experiment_custody(
+            repo, custody(development, same_query), development, same_query
+        )
 
     swapped = dict(frozen, development_suite_sha256=frozen["holdout_suite_sha256"])
     with pytest.raises(ev.EvidenceError, match="development suite differs"):
@@ -8210,9 +8717,7 @@ def test_v5_runner_schema_binds_query_identity_and_keeps_v3_v4_historical(tmp_pa
     jsonschema.validate(run, _load_schema("runner.schema.json"))
     loaded_suite, pack, loaded_run = record_v3(repo, suite, run, suite_path, runner_path)
     assert loaded_run["schema_version"] == 5
-    assert loaded_run["captures"]["q0"]["execution_profile"] == qp.execution_profile(
-        "native"
-    )
+    assert loaded_run["captures"]["q0"]["execution_profile"] == qp.execution_profile("native")
 
     # New producer evidence is atomic at record level, including routes with
     # empty candidate lists. Historical v5 artifacts without the marker remain
@@ -8239,8 +8744,16 @@ def test_v5_runner_schema_binds_query_identity_and_keeps_v3_v4_historical(tmp_pa
     assert observed["span_accounting"]["routes"]["lexical"]["status"] == "observed"
     for mutation, match in (
         (lambda r: r.pop("span_accounting_version"), "lacks record protocol"),
-        (lambda r: r["results"][0]["candidates"][0].pop("span_accounting"), "missing published-unit"),
-        (lambda r: r["results"][0]["candidates"][0]["span_accounting"].update(producer_identity="forged"), "producer differs"),
+        (
+            lambda r: r["results"][0]["candidates"][0].pop("span_accounting"),
+            "missing published-unit",
+        ),
+        (
+            lambda r: r["results"][0]["candidates"][0]["span_accounting"].update(
+                producer_identity="forged"
+            ),
+            "producer differs",
+        ),
     ):
         tampered = json.loads(json.dumps(witnessed))
         mutation(tampered)
@@ -8268,9 +8781,7 @@ def test_v5_runner_schema_binds_query_identity_and_keeps_v3_v4_historical(tmp_pa
     historical_v4["runner"]["query_input_policy"] = {
         "policy": "native",
         "config": {},
-        "policy_config_sha256": ev.digest(
-            qp.policy_config_canonical_v4("native").encode()
-        ),
+        "policy_config_sha256": ev.digest(qp.policy_config_canonical_v4("native").encode()),
         "planning_cost_in_latency": False,
     }
     runner_path.write_text(json.dumps(historical_v4), encoding="utf-8")
@@ -8314,16 +8825,50 @@ def test_v5_capture_schema_rejects_zero_generation_and_cross_system_profiles(tmp
 @pytest.mark.parametrize(
     "mutation,match",
     [
-        (lambda s, r, f: r["captures"]["q0"]["execution_profile"].update(policy="natural_language"), "frozen Quanta profile"),
-        (lambda s, r, f: r["captures"]["q0"]["execution_profile"].update(policy="telepathy"), "policy is unknown"),
-        (lambda s, r, f: r["captures"]["q0"].update(execution_profile_sha256="0" * 64), "execution_profile_sha256 mismatch"),
-        (lambda s, r, f: r["captures"]["q0"]["execution_profile"].update(planning_cost_in_latency=True), "frozen Quanta profile"),
-        (lambda s, r, f: r["captures"]["q0"]["execution_profile"].update(config={"max_tokens": 4}), "frozen Quanta profile"),
+        (
+            lambda s, r, f: r["captures"]["q0"]["execution_profile"].update(
+                policy="natural_language"
+            ),
+            "frozen Quanta profile",
+        ),
+        (
+            lambda s, r, f: r["captures"]["q0"]["execution_profile"].update(policy="telepathy"),
+            "policy is unknown",
+        ),
+        (
+            lambda s, r, f: r["captures"]["q0"].update(execution_profile_sha256="0" * 64),
+            "execution_profile_sha256 mismatch",
+        ),
+        (
+            lambda s, r, f: r["captures"]["q0"]["execution_profile"].update(
+                planning_cost_in_latency=True
+            ),
+            "frozen Quanta profile",
+        ),
+        (
+            lambda s, r, f: r["captures"]["q0"]["execution_profile"].update(
+                config={"max_tokens": 4}
+            ),
+            "frozen Quanta profile",
+        ),
         (lambda s, r, f: r["captures"]["q0"].pop("execution_profile"), "missing/unknown fields"),
         (lambda s, r, f: r["results"][0].pop("query_identity"), "missing/unknown fields"),
-        (lambda s, r, f: r["results"][0]["query_identity"].update(effective_lexical_request_sha256="0" * 64), "does not match the independently re-derived plan"),
-        (lambda s, r, f: r["results"][0]["query_identity"].update(original_query_sha256="0" * 64), "does not match the independently re-derived plan"),
-        (lambda s, r, f: r["results"][0]["query_identity"].update(semantic_text_sha256="b" * 64), "does not match the independently re-derived plan"),
+        (
+            lambda s, r, f: r["results"][0]["query_identity"].update(
+                effective_lexical_request_sha256="0" * 64
+            ),
+            "does not match the independently re-derived plan",
+        ),
+        (
+            lambda s, r, f: r["results"][0]["query_identity"].update(
+                original_query_sha256="0" * 64
+            ),
+            "does not match the independently re-derived plan",
+        ),
+        (
+            lambda s, r, f: r["results"][0]["query_identity"].update(semantic_text_sha256="b" * 64),
+            "does not match the independently re-derived plan",
+        ),
     ],
 )
 def test_v5_query_identity_tampering_is_rejected(tmp_path, mutation, match):
@@ -8659,9 +9204,12 @@ def test_v3_spec_accepts_lockfile_path(tmp_path):
     spec_path.write_text(json.dumps(_g0_spec()), encoding="utf-8")
     loaded = pairrun.load_spec(spec_path)
     assert loaded["semble_lockfile"] == "/tmp/semble-lock.txt"
-    assert pairrun.hybrid_fetch_policy_configuration(
-        loaded.get("experimental_hybrid_fetch_floor", "100")
-    )["floor"] == 100
+    assert (
+        pairrun.hybrid_fetch_policy_configuration(
+            loaded.get("experimental_hybrid_fetch_floor", "100")
+        )["floor"]
+        == 100
+    )
     for floor in ("25", "50", "100"):
         observed = {**_g0_spec(), "experimental_hybrid_fetch_floor": floor}
         jsonschema.validate(observed, _load_schema("pair-spec.schema.json"))
@@ -8674,9 +9222,12 @@ def test_v3_spec_accepts_lockfile_path(tmp_path):
             pairrun.load_spec(spec_path)
         with pytest.raises(jsonschema.ValidationError):
             jsonschema.validate(observed, _load_schema("pair-spec.schema.json"))
-    assert pairrun.server_observation_configuration(
-        loaded.get("query_stage_observation", "enabled")
-    )["query_stages"] == "enabled"
+    assert (
+        pairrun.server_observation_configuration(loaded.get("query_stage_observation", "enabled"))[
+            "query_stages"
+        ]
+        == "enabled"
+    )
     for policy in ("enabled", "disabled"):
         observed = {**_g0_spec(), "query_stage_observation": policy}
         jsonschema.validate(observed, _load_schema("pair-spec.schema.json"))
@@ -9160,7 +9711,9 @@ def test_v3_byte_coverage_decides_credit():
     row["candidates"] = [exact]
     exact_report = ev.indexed_span_diagnostics(run, {("T", "q"): row}, tasks)
     for metric in (
-        "rank_only_hit_at_1", "exact_index_span_mrr_at_10", "exact_index_span_recall_at_10"
+        "rank_only_hit_at_1",
+        "exact_index_span_mrr_at_10",
+        "exact_index_span_recall_at_10",
     ):
         assert exact_report["routes"]["q"]["mean"][metric] == report["routes"]["q"]["mean"][metric]
     assert exact_report["per_candidate"][0]["scored_projection_bytes"] == 10
@@ -9393,27 +9946,43 @@ def test_fixture_split_leakage_mutants():
             with pytest.raises(ev.EvidenceError, match="leakage across train/eval split"):
                 ev._check_split_leakage(labels, allowlist)
 
+
 def test_conditional_vector_replay_checks_full_vector_and_batch_permutation():
     # Independent unit oracle: equal unit basis vectors have cosine one.
     inputs = ["first", "second"]
     basis = [1.0] + [0.0] * 255
     observed = {
-        "schema_version": 1, "model_id": "model2vec:minishlab/potion-code-16M-v2",
+        "schema_version": 1,
+        "model_id": "model2vec:minishlab/potion-code-16M-v2",
         "model_revision": "e9d2a44ca6a05ac6685f3b23709ea57eb7352d5b:model2vec-rs-0.3.0:fancy-regex:full-length-v1",
-        "dimension": 256, "normalization": "l2_unit", "max_length": None,
-        "inputs": inputs, "vectors": [basis[:], basis[:]],
+        "dimension": 256,
+        "normalization": "l2_unit",
+        "max_length": None,
+        "inputs": inputs,
+        "vectors": [basis[:], basis[:]],
         "reversed_vectors": [basis[:], basis[:]],
     }
     baseline = {
-        "schema_version": parity_reference.SCHEMA_VERSION, "profile": parity_reference.REFERENCE_PROFILE,
+        "schema_version": parity_reference.SCHEMA_VERSION,
+        "profile": parity_reference.REFERENCE_PROFILE,
         "library": {"model2vec": "0.9.0"},
-        "model": {"id": "minishlab/potion-code-16M-v2", "revision": parity_reference.MODEL_REVISION, "dir_name": "pinned",
+        "model": {
+            "id": "minishlab/potion-code-16M-v2",
+            "revision": parity_reference.MODEL_REVISION,
+            "dir_name": "pinned",
             "safetensors_sha256": parity_reference.PINNED_ASSET_SHA256["model.safetensors"],
             "tokenizer_sha256": parity_reference.PINNED_ASSET_SHA256["tokenizer.json"],
-            "config_sha256": parity_reference.PINNED_ASSET_SHA256["config.json"]},
-        "policy": {"max_length": None, "normalization": "approx-unit-fp16 (rail L2-normalizes both sides)"},
-        "inputs": inputs, "vectors": [basis[:], basis[:]], "norms": [1.0, 1.0],
-        "pairwise_cosine_upper": [[1.0], []], "dimension": 256,
+            "config_sha256": parity_reference.PINNED_ASSET_SHA256["config.json"],
+        },
+        "policy": {
+            "max_length": None,
+            "normalization": "approx-unit-fp16 (rail L2-normalizes both sides)",
+        },
+        "inputs": inputs,
+        "vectors": [basis[:], basis[:]],
+        "norms": [1.0, 1.0],
+        "pairwise_cosine_upper": [[1.0], []],
+        "dimension": 256,
     }
     assert cp.model_rows(observed, baseline, inputs)[1] == 2
     for bad in (True, float("nan"), float("inf"), 10**400, 1.1):
@@ -9443,24 +10012,39 @@ def test_conditional_vector_replay_checks_full_vector_and_batch_permutation():
     bundle = _conditional_vector_context_unit_bundle(observed, baseline)
     assert cp.validate_results(bundle, "model_vectors") == bundle
     for mutate in (
-        lambda records: records.append({"route_provenance": {"semantic": {"capture_id": "wrong"}},
-            "captures": {"wrong": {"system": "quanta", "model": "wrong-model", "model_revision": "wrong"}}}),
+        lambda records: records.append(
+            {
+                "route_provenance": {"semantic": {"capture_id": "wrong"}},
+                "captures": {
+                    "wrong": {"system": "quanta", "model": "wrong-model", "model_revision": "wrong"}
+                },
+            }
+        ),
         lambda records: records[0]["route_provenance"].update(semantic={"capture_id": "missing"}),
         lambda records: records[0].pop("route_provenance"),
         lambda records: records[0]["route_provenance"].update(semantic={"capture_id": True}),
         lambda records: records[0]["route_provenance"].clear(),
-        lambda records: records[0]["route_provenance"].update(semantic={"capture_id": "quanta", "extra": True}),
+        lambda records: records[0]["route_provenance"].update(
+            semantic={"capture_id": "quanta", "extra": True}
+        ),
     ):
         mutant = json.loads(json.dumps(bundle))
         context = mutant["execution_context"]
         records = cp.load(cp.decode(context["records"]))
         mutate(records)
         context["records"] = cp.artifact(cp.canonical(records))
-        identities = sorted(set((capture["system"], capture["model"], capture["model_revision"])
-            for record in records for capture in record["captures"].values()))
+        identities = sorted(
+            set(
+                (capture["system"], capture["model"], capture["model_revision"])
+                for record in records
+                for capture in record["captures"].values()
+            )
+        )
         mutant["identity"]["model_sha256"] = cp.sha(cp.canonical(identities))
-        mutant["execution_receipt"].update(model_sha256=mutant["identity"]["model_sha256"],
-            context_sha256=cp.sha(cp.canonical(context)))
+        mutant["execution_receipt"].update(
+            model_sha256=mutant["identity"]["model_sha256"],
+            context_sha256=cp.sha(cp.canonical(context)),
+        )
         with pytest.raises(ValueError):
             cp.validate_results(mutant, "model_vectors")
     mutant = json.loads(json.dumps(bundle))
@@ -9477,7 +10061,9 @@ def test_conditional_vector_replay_checks_full_vector_and_batch_permutation():
     ):
         mutant = json.loads(json.dumps(bundle))
         mutate(mutant["execution_context"])
-        mutant["execution_receipt"]["context_sha256"] = cp.sha(cp.canonical(mutant["execution_context"]))
+        mutant["execution_receipt"]["context_sha256"] = cp.sha(
+            cp.canonical(mutant["execution_context"])
+        )
         with pytest.raises(ValueError):
             cp.validate_results(mutant, "model_vectors")
     mutant = json.loads(json.dumps(observed))
@@ -9507,52 +10093,132 @@ def test_conditional_vector_replay_checks_full_vector_and_batch_permutation():
 
 def _conditional_incremental_unit_oracle():
     target = {key: "fixed" for key in cp.SEMANTIC_COLUMNS}
-    target.update(embedding_id="target", record_id="record-target", owner_id="target-owner",
-        owner_kind="Chunk", corpus_kind="RawCodeFallback", vector=[1., 0.], generated=False,
-        source_role="RawFallbackText", capability_status="Full", language="rust",
-        start_byte=0, end_byte=14, view_kind="raw_chunk",
-        card_schema_version=0, start_line=1, end_line=1, parent_owner_id=None,
-        package=None, symbol_kind=None, visibility=None, snippet="golden payload")
-    sentinel = {**target, "embedding_id": "sentinel", "record_id": "record-sentinel",
-        "owner_id": "unaffected-owner", "owner_kind": "Module", "corpus_kind": "ModuleCard"}
+    target.update(
+        embedding_id="target",
+        record_id="record-target",
+        owner_id="target-owner",
+        owner_kind="Chunk",
+        corpus_kind="RawCodeFallback",
+        vector=[1.0, 0.0],
+        generated=False,
+        source_role="RawFallbackText",
+        capability_status="Full",
+        language="rust",
+        start_byte=0,
+        end_byte=14,
+        view_kind="raw_chunk",
+        card_schema_version=0,
+        start_line=1,
+        end_line=1,
+        parent_owner_id=None,
+        package=None,
+        symbol_kind=None,
+        visibility=None,
+        snippet="golden payload",
+    )
+    sentinel = {
+        **target,
+        "embedding_id": "sentinel",
+        "record_id": "record-sentinel",
+        "owner_id": "unaffected-owner",
+        "owner_kind": "Module",
+        "corpus_kind": "ModuleCard",
+    }
+
     def scope(records, members=None):
-        return {"scope": {"doc_surface": "Chunk", "repo_relative_path": "fixed"}, "scope_digest": "fixed",
-            "embeddings": records, "cluster_memberships": [] if members is None else [{
-            "cluster_record_id": "record-target", "authority_digest": "fixed", "members": members}]}
+        return {
+            "scope": {"doc_surface": "Chunk", "repo_relative_path": "fixed"},
+            "scope_digest": "fixed",
+            "embeddings": records,
+            "cluster_memberships": []
+            if members is None
+            else [
+                {
+                    "cluster_record_id": "record-target",
+                    "authority_digest": "fixed",
+                    "members": members,
+                }
+            ],
+        }
+
     def batch(generation, scopes, mode="ReplaceGeneration"):
-        return {"generation": generation, "batch_digest": str(generation), "manifest_digest": str(generation),
-            "repo_id": "repo", "revision_id": "rev", "model_contract": {"model_id": "fixed", "model_version": "1",
-                "dimension": 2, "normalization": "L2Unit", "distance_metric": "Cosine",
-                "policy_digest": "fixed-policy", "view_policy_digest": None},
-            "seal": True, "mode": mode, "base_generation": 1 if mode == "Delta" else None,
-            "required_corpora": [], "corpus_policy_digest": None,
-            "replace_scopes": scopes, "tombstone_scopes": [], "clear_surfaces": []}
+        return {
+            "generation": generation,
+            "batch_digest": str(generation),
+            "manifest_digest": str(generation),
+            "repo_id": "repo",
+            "revision_id": "rev",
+            "model_contract": {
+                "model_id": "fixed",
+                "model_version": "1",
+                "dimension": 2,
+                "normalization": "L2Unit",
+                "distance_metric": "Cosine",
+                "policy_digest": "fixed-policy",
+                "view_policy_digest": None,
+            },
+            "seal": True,
+            "mode": mode,
+            "base_generation": 1 if mode == "Delta" else None,
+            "required_corpora": [],
+            "corpus_policy_digest": None,
+            "replace_scopes": scopes,
+            "tombstone_scopes": [],
+            "clear_surfaces": [],
+        }
+
     def golden_state(item):
-        rows = [{key: row[key] for key in cp.SEMANTIC_COLUMNS}
-                for scope in item["replace_scopes"] for row in scope["embeddings"]]
+        rows = [
+            {key: row[key] for key in cp.SEMANTIC_COLUMNS}
+            for scope in item["replace_scopes"]
+            for row in scope["embeddings"]
+        ]
         members = []
         for current in item["replace_scopes"]:
             for replacement in current["cluster_memberships"]:
                 member = replacement["members"][0]
-                members.append({"cluster_record_id": "record-target", "authority_digest": "fixed",
-                    "owner_kind": "Module", "owner_id": "target-owner", "member_symbol_id": member,
-                    "ordinal": 0, "member_count": 1, "membership_content_digest": DIGESTS[member]})
-        return {"semantic": {"count": len(rows), "rows": sorted(rows, key=cp.canonical)},
-                "membership": {"count": len(members), "rows": members}}
-    DIGESTS = {'old-member': 'sha256:aae3fb26226d55e06db18f86f80f816819147f0d38931bb199e529dc80fc9c49', 'new-member': 'sha256:fb585be42421ca046d3ddaddab8a902818db2469bb9cfc9d1352a140b1990383'}
+                members.append(
+                    {
+                        "cluster_record_id": "record-target",
+                        "authority_digest": "fixed",
+                        "owner_kind": "Module",
+                        "owner_id": "target-owner",
+                        "member_symbol_id": member,
+                        "ordinal": 0,
+                        "member_count": 1,
+                        "membership_content_digest": DIGESTS[member],
+                    }
+                )
+        return {
+            "semantic": {"count": len(rows), "rows": sorted(rows, key=cp.canonical)},
+            "membership": {"count": len(members), "rows": members},
+        }
+
+    DIGESTS = {
+        "old-member": "sha256:aae3fb26226d55e06db18f86f80f816819147f0d38931bb199e529dc80fc9c49",
+        "new-member": "sha256:fb585be42421ca046d3ddaddab8a902818db2469bb9cfc9d1352a140b1990383",
+    }
     cases, outputs = [], []
     for kind in sorted(cp.REQUIRED_INCREMENTAL_CASES):
         current = dict(target)
         if kind == "membership_replace":
             current.update(owner_kind="Module", corpus_kind="ClusterCard")
-        before = batch(1, [scope([current, sentinel], ["old-member"] if kind == "membership_replace" else None)])
+        before = batch(
+            1,
+            [scope([current, sentinel], ["old-member"] if kind == "membership_replace" else None)],
+        )
         delta = batch(2, [], "Delta")
         if kind == "append":
-            new = {**current, "embedding_id": "new", "record_id": "record-new", "owner_id": "new-owner"}
+            new = {
+                **current,
+                "embedding_id": "new",
+                "record_id": "record-new",
+                "owner_id": "new-owner",
+            }
             delta["replace_scopes"] = [scope([new])]
             fresh = batch(3, [scope([current, new, sentinel])])
         elif kind == "replace":
-            changed = {**current, "snippet": "replaced payload", "vector": [0., 1.]}
+            changed = {**current, "snippet": "replaced payload", "vector": [0.0, 1.0]}
             delta["replace_scopes"] = [scope([changed])]
             fresh = batch(3, [scope([changed, sentinel])])
         elif kind == "membership_replace":
@@ -9563,26 +10229,70 @@ def _conditional_incremental_unit_oracle():
             if kind == "clear_surface":
                 delta["clear_surfaces"] = ["Chunk"]
             else:
-                delta["tombstone_scopes"] = [{"semantic_scope": {"corpus_kind": current["corpus_kind"],
-                    "owner_kind": current["owner_kind"], "owner_id": current["owner_id"]}}]
+                delta["tombstone_scopes"] = [
+                    {
+                        "semantic_scope": {
+                            "corpus_kind": current["corpus_kind"],
+                            "owner_kind": current["owner_kind"],
+                            "owner_id": current["owner_id"],
+                        }
+                    }
+                ]
         case = {"case_id": kind, "before": before, "fresh": fresh, "delta": delta}
         cases.append(case)
         receipts = {}
         for key in ("fresh", "before", "delta"):
             item = case[key]
-            receipts[key] = {field: item[field] for field in ("generation", "batch_digest", "manifest_digest")}
+            receipts[key] = {
+                field: item[field] for field in ("generation", "batch_digest", "manifest_digest")
+            }
             count = len(item["replace_scopes"])
-            receipts[key].update(windows=count, replace_scopes=count,
-                rows=sum(len(scope["embeddings"]) for scope in item["replace_scopes"]), stages={
-                    "owner_scopes": count, "windows": count,
-                    **dict.fromkeys(["semantic_delete_calls", "semantic_delete_commits", "membership_delete_calls",
-                        "membership_delete_commits", "semantic_append_calls", "membership_append_calls"], 0),
-                    "durations": {**dict.fromkeys(["total", "prepare", "promotion", "clear_surfaces", "stream", "semantic_delete",
-                        "membership_delete", "semantic_append", "membership_append", "tombstones", "seal"], 0), "embedding": None}})
-            receipts[key]["stages"]["semantic_append_calls"] = sum(bool(scope["embeddings"]) for scope in item["replace_scopes"])
+            receipts[key].update(
+                windows=count,
+                replace_scopes=count,
+                rows=sum(len(scope["embeddings"]) for scope in item["replace_scopes"]),
+                stages={
+                    "owner_scopes": count,
+                    "windows": count,
+                    **dict.fromkeys(
+                        [
+                            "semantic_delete_calls",
+                            "semantic_delete_commits",
+                            "membership_delete_calls",
+                            "membership_delete_commits",
+                            "semantic_append_calls",
+                            "membership_append_calls",
+                        ],
+                        0,
+                    ),
+                    "durations": {
+                        **dict.fromkeys(
+                            [
+                                "total",
+                                "prepare",
+                                "promotion",
+                                "clear_surfaces",
+                                "stream",
+                                "semantic_delete",
+                                "membership_delete",
+                                "semantic_append",
+                                "membership_append",
+                                "tombstones",
+                                "seal",
+                            ],
+                            0,
+                        ),
+                        "embedding": None,
+                    },
+                },
+            )
+            receipts[key]["stages"]["semantic_append_calls"] = sum(
+                bool(scope["embeddings"]) for scope in item["replace_scopes"]
+            )
             receipts[key]["stages"]["membership_append_calls"] = sum(
                 any(membership["members"] for membership in scope["cluster_memberships"])
-                for scope in item["replace_scopes"])
+                for scope in item["replace_scopes"]
+            )
             # Hand-counted default resident recipe: every nonempty fixture
             # fits one 1024-owner/32-MiB window, including 2/3-owner scopes.
             # Delta clear/tombstone cases instead issue one native mutation.
@@ -9591,9 +10301,17 @@ def _conditional_incremental_unit_oracle():
             stages["semantic_delete_calls"] = stages["membership_delete_calls"] = 1
             stages["semantic_delete_commits"] = 1
             stages["membership_delete_commits"] = int(
-                kind == "membership_replace" or kind == "clear_surface" and key == "delta")
-        outputs.append({"case_id": kind, "fresh": golden_state(fresh), "before": golden_state(before),
-            "incremental": golden_state(fresh), "receipts": receipts})
+                kind == "membership_replace" or kind == "clear_surface" and key == "delta"
+            )
+        outputs.append(
+            {
+                "case_id": kind,
+                "fresh": golden_state(fresh),
+                "before": golden_state(before),
+                "incremental": golden_state(fresh),
+                "receipts": receipts,
+            }
+        )
     return {"schema_version": 1, "cases": cases}, {"schema_version": 1, "cases": outputs}
 
 
@@ -9604,39 +10322,104 @@ def _conditional_context_unit_bundle(plan, observed):
     # execution evidence and intentionally fails current-source verification.
     revision, repository = "a" * 40, "b" * 40
     files = [{"path": path, "sha256": cp.sha(path.encode())} for path in ("Cargo.lock", "uv.lock")]
-    closure = {"schema_version": source_closure.SCHEMA_VERSION, "profile": "retrieval",
-        "revision": revision, "roots": ["crates"], "files": files}
+    closure = {
+        "schema_version": source_closure.SCHEMA_VERSION,
+        "profile": "retrieval",
+        "revision": revision,
+        "roots": ["crates"],
+        "files": files,
+    }
     closure["digest"] = source_closure._digest(closure)
     records = [{"captures": {"raw": {"system": "quanta", "model": "fixed", "model_revision": "1"}}}]
-    identity = {"source_revision": revision, "repository_commit": repository,
+    identity = {
+        "source_revision": revision,
+        "repository_commit": repository,
         "model_sha256": cp.sha(cp.canonical([("quanta", "fixed", "1")])),
-        "dependency_sha256": cp.sha(b"lock")}
-    custody = {"cwd": str(cp.ROOT), "inherited_environment": {},
+        "dependency_sha256": cp.sha(b"lock"),
+    }
+    custody = {
+        "cwd": str(cp.ROOT),
+        "inherited_environment": {},
         "environment": {"CARGO_NET_OFFLINE": "true"},
-        "environment_sha256": portable_proof._environment_digest({"CARGO_NET_OFFLINE": "true"})}
+        "environment_sha256": portable_proof._environment_digest({"CARGO_NET_OFFLINE": "true"}),
+    }
     binary = str(cp.ROOT / "target/proof-binary")
-    events = [{"reason": "compiler-artifact", "target": {"name": "quanta-index-incremental-proof"}, "executable": binary},
-        {"reason": "build-finished", "success": True}]
-    context = {"source_closure": closure, "cargo_lock_sha256": files[0]["sha256"], "uv_lock_sha256": files[1]["sha256"],
+    events = [
+        {
+            "reason": "compiler-artifact",
+            "target": {"name": "quanta-index-incremental-proof"},
+            "executable": binary,
+        },
+        {"reason": "build-finished", "success": True},
+    ]
+    context = {
+        "source_closure": closure,
+        "cargo_lock_sha256": files[0]["sha256"],
+        "uv_lock_sha256": files[1]["sha256"],
         "suite": cp.artifact(cp.canonical({"repository_commit": repository})),
         "corpus": cp.artifact(cp.canonical({"repository_commit": repository})),
-        "records": cp.artifact(cp.canonical(records)), "semble_lockfile": cp.artifact(b"lock"),
-        "inputs": cp.artifact(cp.canonical(plan)), "reference": None, "observed": cp.artifact(cp.canonical(observed)),
-        "build": {**custody, "argv": [str(cp.ROOT / "scripts/cargow"), "--lane", "test-daemon-lane", "build", "-p",
-            "quanta-index-semantic", "--bin", "quanta-index-incremental-proof", "--features", "proof", "--locked", "--message-format=json"],
-            "exit_code": 0, "stdout": cp.artifact(b"\n".join(cp.canonical(event) for event in events)), "stderr": cp.artifact(b"")},
-        "run": {**custody, "argv": [binary, "/tmp/proof/inputs.json", "/tmp/proof/fresh-state"], "exit_code": 0,
-            "stdout": cp.artifact(cp.canonical(observed)), "stderr": cp.artifact(b""), "executable_sha256": "c" * 64},
-        "reference_run": None, "binary_sha256": "c" * 64, "environment": {"python_version": "3.13.9", "relevant": {}}}
+        "records": cp.artifact(cp.canonical(records)),
+        "semble_lockfile": cp.artifact(b"lock"),
+        "inputs": cp.artifact(cp.canonical(plan)),
+        "reference": None,
+        "observed": cp.artifact(cp.canonical(observed)),
+        "build": {
+            **custody,
+            "argv": [
+                str(cp.ROOT / "scripts/cargow"),
+                "--lane",
+                "test-daemon-lane",
+                "build",
+                "-p",
+                "quanta-index-semantic",
+                "--bin",
+                "quanta-index-incremental-proof",
+                "--features",
+                "proof",
+                "--locked",
+                "--message-format=json",
+            ],
+            "exit_code": 0,
+            "stdout": cp.artifact(b"\n".join(cp.canonical(event) for event in events)),
+            "stderr": cp.artifact(b""),
+        },
+        "run": {
+            **custody,
+            "argv": [binary, "/tmp/proof/inputs.json", "/tmp/proof/fresh-state"],
+            "exit_code": 0,
+            "stdout": cp.artifact(cp.canonical(observed)),
+            "stderr": cp.artifact(b""),
+            "executable_sha256": "c" * 64,
+        },
+        "reference_run": None,
+        "binary_sha256": "c" * 64,
+        "environment": {"python_version": "3.13.9", "relevant": {}},
+    }
     raw, passed = cp.rederive("incremental_rows", context)
     command = "retrieval-conditional-proof-v2:incremental_rows"
-    bundle = {"schema_version": 2, "command": command, "status": "pass", "selected": 5, "executed": 5,
-        "passed": passed, "failed": 5-passed, "identity": identity, "raw_proof": raw, "execution_context": context,
-        "execution_receipt": {"schema_version": 2, "command": command, "exit_code": 0, **identity,
-            "runner_binary_sha256": "c" * 64, "raw_sha256": cp.sha(cp.canonical(raw)), "context_sha256": cp.sha(cp.canonical(context))}}
+    bundle = {
+        "schema_version": 2,
+        "command": command,
+        "status": "pass",
+        "selected": 5,
+        "executed": 5,
+        "passed": passed,
+        "failed": 5 - passed,
+        "identity": identity,
+        "raw_proof": raw,
+        "execution_context": context,
+        "execution_receipt": {
+            "schema_version": 2,
+            "command": command,
+            "exit_code": 0,
+            **identity,
+            "runner_binary_sha256": "c" * 64,
+            "raw_sha256": cp.sha(cp.canonical(raw)),
+            "context_sha256": cp.sha(cp.canonical(context)),
+        },
+    }
     with tempfile.TemporaryDirectory(prefix="qi-conditional-unit-context-") as directory:
         return add_custody_unit_fixture(bundle, Path(directory))
-
 
 
 def _conditional_vector_context_unit_bundle(observed, baseline):
@@ -9653,41 +10436,107 @@ def _conditional_vector_context_unit_bundle(observed, baseline):
         value["vectors"] = [value["vectors"][0]] * len(texts)
     actual["reversed_vectors"] = actual["vectors"]
     reference["norms"] = [1.0] * len(texts)
-    reference["pairwise_cosine_upper"] = [[1.0] * (len(texts)-i-1) for i in range(len(texts))]
-    context["suite"] = cp.artifact(cp.canonical({"repository_commit": bundle["identity"]["repository_commit"],
-        "tasks": [{"query": "frozen query"}]}))
-    models = [("quanta", actual["model_id"], actual["model_revision"]),
-        ("semble", parity_reference.MODEL_ID, parity_reference.MODEL_REVISION)]
-    records = [{"route_provenance": {"semantic": {"capture_id": system}},
-        "captures": {system: {"system": system, "model": model, "model_revision": revision}}}
-        for system, model, revision in models]
+    reference["pairwise_cosine_upper"] = [[1.0] * (len(texts) - i - 1) for i in range(len(texts))]
+    context["suite"] = cp.artifact(
+        cp.canonical(
+            {
+                "repository_commit": bundle["identity"]["repository_commit"],
+                "tasks": [{"query": "frozen query"}],
+            }
+        )
+    )
+    models = [
+        ("quanta", actual["model_id"], actual["model_revision"]),
+        ("semble", parity_reference.MODEL_ID, parity_reference.MODEL_REVISION),
+    ]
+    records = [
+        {
+            "route_provenance": {"semantic": {"capture_id": system}},
+            "captures": {system: {"system": system, "model": model, "model_revision": revision}},
+        }
+        for system, model, revision in models
+    ]
     context["records"] = cp.artifact(cp.canonical(records))
     bundle["identity"]["model_sha256"] = cp.sha(cp.canonical(models))
-    context["inputs"], context["observed"], context["reference"] = [cp.artifact(cp.canonical(value))
-        for value in (texts, actual, reference)]
-    context["build"]["argv"] = [str(cp.ROOT / "scripts/cargow"), "--lane", "test-daemon-lane", "build", "-p",
-        "quanta-index-embed", "--bin", "quanta-index-vector-proof", "--locked", "--message-format=json"]
+    context["inputs"], context["observed"], context["reference"] = [
+        cp.artifact(cp.canonical(value)) for value in (texts, actual, reference)
+    ]
+    context["build"]["argv"] = [
+        str(cp.ROOT / "scripts/cargow"),
+        "--lane",
+        "test-daemon-lane",
+        "build",
+        "-p",
+        "quanta-index-embed",
+        "--bin",
+        "quanta-index-vector-proof",
+        "--locked",
+        "--message-format=json",
+    ]
     binary = context["run"]["argv"][0]
-    context["build"]["stdout"] = cp.artifact(b"\n".join(cp.canonical(event) for event in [
-        {"reason": "compiler-artifact", "target": {"name": "quanta-index-vector-proof"}, "executable": binary},
-        {"reason": "build-finished", "success": True}]))
-    context["run"].update(argv=[binary, "/tmp/model", "/tmp/proof/inputs.json"], stdout=context["observed"])
+    context["build"]["stdout"] = cp.artifact(
+        b"\n".join(
+            cp.canonical(event)
+            for event in [
+                {
+                    "reason": "compiler-artifact",
+                    "target": {"name": "quanta-index-vector-proof"},
+                    "executable": binary,
+                },
+                {"reason": "build-finished", "success": True},
+            ]
+        )
+    )
+    context["run"].update(
+        argv=[binary, "/tmp/model", "/tmp/proof/inputs.json"], stdout=context["observed"]
+    )
     script = "tools/benchmark/retrieval/parity_reference.py"
     closure = context["source_closure"]
     closure["files"].append({"path": script, "sha256": cp.sha(script.encode())})
     closure["files"].sort(key=lambda row: row["path"])
-    closure["digest"] = source_closure._digest({key: value for key, value in closure.items() if key != "digest"})
+    closure["digest"] = source_closure._digest(
+        {key: value for key, value in closure.items() if key != "digest"}
+    )
     context["reference_run"] = {key: context["run"][key] for key in cp.COMMAND_IDENTITY}
-    context["reference_run"].update(argv=["/tmp/python", str(cp.ROOT / script), "--model-dir", "/tmp/model",
-        "--out", "/tmp/proof/reference.json", "--inputs-json", "/tmp/proof/inputs.json", "--model-id", parity_reference.MODEL_ID],
-        exit_code=0, stdout=cp.artifact(b""), stderr=cp.artifact(b""), output_sha256=context["reference"]["sha256"],
-        interpreter_sha256="c" * 64, script_sha256=cp.sha(script.encode()))
+    context["reference_run"].update(
+        argv=[
+            "/tmp/python",
+            str(cp.ROOT / script),
+            "--model-dir",
+            "/tmp/model",
+            "--out",
+            "/tmp/proof/reference.json",
+            "--inputs-json",
+            "/tmp/proof/inputs.json",
+            "--model-id",
+            parity_reference.MODEL_ID,
+        ],
+        exit_code=0,
+        stdout=cp.artifact(b""),
+        stderr=cp.artifact(b""),
+        output_sha256=context["reference"]["sha256"],
+        interpreter_sha256="c" * 64,
+        script_sha256=cp.sha(script.encode()),
+    )
     raw, passed = cp.rederive("model_vectors", context)
     command = "retrieval-conditional-proof-v2:model_vectors"
-    bundle.update(command=command, selected=len(texts), executed=len(texts), passed=passed, failed=len(texts)-passed, raw_proof=raw)
-    bundle["execution_receipt"] = {"schema_version": 2, "command": command, "exit_code": 0, **bundle["identity"],
-        "runner_binary_sha256": context["binary_sha256"], "raw_sha256": cp.sha(cp.canonical(raw)),
-        "context_sha256": cp.sha(cp.canonical(context))}
+    bundle.update(
+        command=command,
+        selected=len(texts),
+        executed=len(texts),
+        passed=passed,
+        failed=len(texts) - passed,
+        raw_proof=raw,
+    )
+    bundle["execution_receipt"] = {
+        "schema_version": 2,
+        "command": command,
+        "exit_code": 0,
+        **bundle["identity"],
+        "runner_binary_sha256": context["binary_sha256"],
+        "raw_sha256": cp.sha(cp.canonical(raw)),
+        "context_sha256": cp.sha(cp.canonical(context)),
+    }
     with tempfile.TemporaryDirectory(prefix="qi-conditional-unit-vector-") as directory:
         return add_custody_unit_fixture(bundle, Path(directory))
 
@@ -9701,27 +10550,40 @@ def test_conditional_incremental_replay_compares_payload_membership_and_empty_st
     # Fifteen small receipts: 13 replacement windows plus one clear and
     # one tombstone. Only the cluster case's three windows and the clear
     # mutation issue membership-table native deletes.
-    stages = [case["receipts"][batch]["stages"] for case in output["cases"]
-              for batch in ("before", "fresh", "delta")]
+    stages = [
+        case["receipts"][batch]["stages"]
+        for case in output["cases"]
+        for batch in ("before", "fresh", "delta")
+    ]
     assert sum(stage["windows"] for stage in stages) == 13
     assert sum(stage["semantic_delete_commits"] for stage in stages) == 15
     assert sum(stage["membership_delete_commits"] for stage in stages) == 4
-    assert all(stage["semantic_delete_calls"] == stage["membership_delete_calls"] == 1
-               for stage in stages)
+    assert all(
+        stage["semantic_delete_calls"] == stage["membership_delete_calls"] == 1 for stage in stages
+    )
     assert cp.incremental_rows(output, plan)[1] == 5
     # Synthetic input/raw substitutions, not native execution evidence:
     # agreeing rows and operation counts cannot override stream admission.
-    for mutation in ("duplicate-clear", "unsorted-clear", "duplicate-tombstone", "duplicate-record_id"):
+    for mutation in (
+        "duplicate-clear",
+        "unsorted-clear",
+        "duplicate-tombstone",
+        "duplicate-record_id",
+    ):
         bad_plan, bad_output = json.loads(json.dumps(plan)), json.loads(json.dumps(output))
         if mutation != "duplicate-record_id":
             kind = "tombstone" if mutation == "duplicate-tombstone" else "clear_surface"
-            index = next(index for index, case in enumerate(bad_plan["cases"]) if case["case_id"] == kind)
+            index = next(
+                index for index, case in enumerate(bad_plan["cases"]) if case["case_id"] == kind
+            )
             delta = bad_plan["cases"][index]["delta"]
             stages = bad_output["cases"][index]["receipts"]["delta"]["stages"]
             if mutation == "duplicate-tombstone":
                 delta["tombstone_scopes"] *= 2
             else:
-                delta["clear_surfaces"] = ["Chunk", "Chunk"] if mutation == "duplicate-clear" else ["Chunk", "File"]
+                delta["clear_surfaces"] = (
+                    ["Chunk", "Chunk"] if mutation == "duplicate-clear" else ["Chunk", "File"]
+                )
                 stages["semantic_delete_commits"] = stages["membership_delete_commits"] = 2
             stages["semantic_delete_calls"] = stages["membership_delete_calls"] = 2
         else:
@@ -9742,15 +10604,20 @@ def test_conditional_incremental_replay_compares_payload_membership_and_empty_st
     # Owner groups may contain multiple distinct records within one scope;
     # the same owner cannot be replaced across different scopes.
     admitted = json.loads(json.dumps(plan["cases"][0]["before"]))
-    record = {**admitted["replace_scopes"][0]["embeddings"][0],
-              "record_id": "record-extra", "embedding_id": "embedding-extra"}
+    record = {
+        **admitted["replace_scopes"][0]["embeddings"][0],
+        "record_id": "record-extra",
+        "embedding_id": "embedding-extra",
+    }
     admitted["replace_scopes"][0]["embeddings"].append(record)
     assert cp.input_state(admitted)["semantic"]["count"] == 3
     repeated = json.loads(json.dumps(plan["cases"][0]["before"]))
     repeated["replace_scopes"].append({**repeated["replace_scopes"][0], "embeddings": [record]})
     with pytest.raises(ValueError, match="repeated replace owners"):
         cp.input_state(repeated)
-    clear_batch = next(case["delta"] for case in plan["cases"] if case["case_id"] == "clear_surface")
+    clear_batch = next(
+        case["delta"] for case in plan["cases"] if case["case_id"] == "clear_surface"
+    )
     for conflict in ("scope", "owner", "tombstone"):
         malformed = json.loads(json.dumps(clear_batch))
         source = json.loads(json.dumps(plan["cases"][0]["before"]["replace_scopes"][0]))
@@ -9761,14 +10628,25 @@ def test_conditional_incremental_replay_compares_payload_membership_and_empty_st
             source["scope"]["doc_surface"] = "File"
             malformed["replace_scopes"] = [source]
         else:
-            malformed["tombstone_scopes"] = [{"semantic_scope": {
-                key: source["embeddings"][0][key] for key in ("corpus_kind", "owner_kind", "owner_id")}}]
+            malformed["tombstone_scopes"] = [
+                {
+                    "semantic_scope": {
+                        key: source["embeddings"][0][key]
+                        for key in ("corpus_kind", "owner_kind", "owner_id")
+                    }
+                }
+            ]
         with pytest.raises(ValueError, match="scope authority"):
             cp.input_state(malformed)
     malformed = json.loads(json.dumps(plan["cases"][0]["before"]))
-    malformed["tombstone_scopes"] = [{"semantic_scope": {
-        key: malformed["replace_scopes"][0]["embeddings"][0][key]
-        for key in ("corpus_kind", "owner_kind", "owner_id")}}]
+    malformed["tombstone_scopes"] = [
+        {
+            "semantic_scope": {
+                key: malformed["replace_scopes"][0]["embeddings"][0][key]
+                for key in ("corpus_kind", "owner_kind", "owner_id")
+            }
+        }
+    ]
     with pytest.raises(ValueError, match="tombstone/replace conflicts"):
         cp.input_state(malformed)
     # Native validated RepoId/RevisionId are not arbitrary text cells. Raw
@@ -9806,8 +10684,21 @@ def test_conditional_incremental_replay_compares_payload_membership_and_empty_st
                 cp.incremental_rows(bad_output, bad_plan)
     for language in ("rust", "c++", "objective-c", "qglang2", "m+v_1", "r" * 4096):
         cp.native_language_code(language)
-    for symbol_kind in (None, "function", "method", "class", "struct", "enum", "trait", "interface",
-                        "variable", "constant", "module", "macro", "type_alias"):
+    for symbol_kind in (
+        None,
+        "function",
+        "method",
+        "class",
+        "struct",
+        "enum",
+        "trait",
+        "interface",
+        "variable",
+        "constant",
+        "module",
+        "macro",
+        "type_alias",
+    ):
         admitted = copy.deepcopy(plan["cases"][0]["before"])
         for row in admitted["replace_scopes"][0]["embeddings"]:
             row["symbol_kind"] = symbol_kind
@@ -9864,7 +10755,9 @@ def test_conditional_incremental_replay_compares_payload_membership_and_empty_st
         with pytest.raises(ValueError, match="native incremental batch"):
             cp.input_state(malformed)
     # Native SemanticTombstoneScopeVisitor rejects an empty owner identity.
-    tombstone_batch = next(case["delta"] for case in plan["cases"] if case["case_id"] == "tombstone")
+    tombstone_batch = next(
+        case["delta"] for case in plan["cases"] if case["case_id"] == "tombstone"
+    )
     for owner_id in (None, "", True, []):
         malformed = json.loads(json.dumps(tombstone_batch))
         malformed["tombstone_scopes"][0]["semantic_scope"]["owner_id"] = owner_id
@@ -9882,8 +10775,12 @@ def test_conditional_incremental_replay_compares_payload_membership_and_empty_st
             cp.input_state(malformed)
     # Consistent raw/input substitution cannot admit a value that native
     # OwnerDocKind or SemanticCorpusKindV1 deserialization would refuse.
-    for field, value in (("owner_kind", "UnknownOwner"), ("corpus_kind", "UnknownCorpus"),
-                         ("source_role", "UnknownRole"), ("capability_status", "UnknownCapability")):
+    for field, value in (
+        ("owner_kind", "UnknownOwner"),
+        ("corpus_kind", "UnknownCorpus"),
+        ("source_role", "UnknownRole"),
+        ("capability_status", "UnknownCapability"),
+    ):
         bad_plan, bad_output = json.loads(json.dumps(plan)), json.loads(json.dumps(output))
         for case in bad_plan["cases"]:
             for batch in ("before", "fresh", "delta"):
@@ -9901,13 +10798,28 @@ def test_conditional_incremental_replay_compares_payload_membership_and_empty_st
     # Rust ClusterMembershipReplaceV1 admits only a bounded, nonempty,
     # sorted unique array of nonempty SymbolIds, attached to a ClusterCard.
     membership_batch = plan["cases"][2]["before"]
-    for members in (None, [], "ab", [7], [True], [{}], [""],
-                    ["a", "a"], ["z", "a"], [f"member-{index:05}" for index in range(4097)]):
+    for members in (
+        None,
+        [],
+        "ab",
+        [7],
+        [True],
+        [{}],
+        [""],
+        ["a", "a"],
+        ["z", "a"],
+        [f"member-{index:05}" for index in range(4097)],
+    ):
         malformed = json.loads(json.dumps(membership_batch))
         malformed["replace_scopes"][0]["cluster_memberships"][0]["members"] = members
         with pytest.raises(ValueError, match="membership"):
             cp.input_state(malformed)
-    for memberships in (None, {}, [], membership_batch["replace_scopes"][0]["cluster_memberships"] * 2):
+    for memberships in (
+        None,
+        {},
+        [],
+        membership_batch["replace_scopes"][0]["cluster_memberships"] * 2,
+    ):
         malformed = json.loads(json.dumps(membership_batch))
         malformed["replace_scopes"][0]["cluster_memberships"] = memberships
         with pytest.raises(ValueError, match="membership"):
@@ -9918,7 +10830,8 @@ def test_conditional_incremental_replay_compares_payload_membership_and_empty_st
         cp.input_state(wrong_corpus)
     canonical_members = json.loads(json.dumps(membership_batch))
     canonical_members["replace_scopes"][0]["cluster_memberships"][0]["members"] = [
-        f"member-{index:05}" for index in range(4096)]
+        f"member-{index:05}" for index in range(4096)
+    ]
     assert cp.input_state(canonical_members)["membership"]["count"] == 4096
     # Empty memberships used to earn 5/5 when full before rows and append
     # counts were forged consistently; native admission forbids that input.
@@ -9931,13 +10844,28 @@ def test_conditional_incremental_replay_compares_payload_membership_and_empty_st
     # Malformed captures are refused before source closure, Rust execution,
     # or creation of a proof output directory, using the consumer's contract.
     from argparse import Namespace
-    suite_path, corpus_path, record_path = [tmp_path / name for name in ("suite.json", "corpus.json", "record.json")]
+
+    suite_path, corpus_path, record_path = [
+        tmp_path / name for name in ("suite.json", "corpus.json", "record.json")
+    ]
     suite_path.write_text("{}")
     corpus_path.write_text("{}")
-    malformed_records = (None, [], {}, {"captures": []}, {"captures": {}},
-                         {"captures": {"raw": None}}, {"captures": {"raw": {"system": 7}}})
-    args = Namespace(kind="incremental_rows", suite=suite_path, corpus=corpus_path,
-                     records=[record_path], out=tmp_path / "proof")
+    malformed_records = (
+        None,
+        [],
+        {},
+        {"captures": []},
+        {"captures": {}},
+        {"captures": {"raw": None}},
+        {"captures": {"raw": {"system": 7}}},
+    )
+    args = Namespace(
+        kind="incremental_rows",
+        suite=suite_path,
+        corpus=corpus_path,
+        records=[record_path],
+        out=tmp_path / "proof",
+    )
     for record in malformed_records:
         record_path.write_bytes(cp.canonical(record))
         with pytest.raises(ValueError, match="typed capture/model"):
@@ -9946,35 +10874,48 @@ def test_conditional_incremental_replay_compares_payload_membership_and_empty_st
     with_empty_scopes = json.loads(json.dumps(plan))
     for case in with_empty_scopes["cases"]:
         for batch in ("before", "fresh", "delta"):
-            case[batch]["replace_scopes"].append({"scope": {"doc_surface": "File", "repo_relative_path": "fixed"},
-                "scope_digest": "fixed", "embeddings": [], "cluster_memberships": []})
+            case[batch]["replace_scopes"].append(
+                {
+                    "scope": {"doc_surface": "File", "repo_relative_path": "fixed"},
+                    "scope_digest": "fixed",
+                    "embeddings": [],
+                    "cluster_memberships": [],
+                }
+            )
     # ResidentScopeSource issues owner groups only; an empty input scope is
     # absent from the execution tally and leaves every full logical row intact.
     assert cp.incremental_rows(output, with_empty_scopes)[1] == 5
-    for field, value in (("dimension", 99), ("dimension", True), ("dimension", 2.0),
-                         ("dimension", 0), ("normalization", "unknown"), ("distance_metric", "Dot"),
-                         ("policy_digest", ""), ("model_version", 1)):
+    for field, value in (
+        ("dimension", 99),
+        ("dimension", True),
+        ("dimension", 2.0),
+        ("dimension", 0),
+        ("normalization", "unknown"),
+        ("distance_metric", "Dot"),
+        ("policy_digest", ""),
+        ("model_version", 1),
+    ):
         bad_plan = json.loads(json.dumps(plan))
         for case in bad_plan["cases"]:
             for batch in ("before", "fresh", "delta"):
                 case[batch]["model_contract"][field] = value
         with pytest.raises(ValueError, match="model|dimension"):
             cp.incremental_rows(output, bad_plan)
-    for vector in ([True, 0.], [1e39, 0.], [10**400, 0.], [0., 0.], [2., 0.], [1.]):
+    for vector in ([True, 0.0], [1e39, 0.0], [10**400, 0.0], [0.0, 0.0], [2.0, 0.0], [1.0]):
         bad_plan = json.loads(json.dumps(plan))
         bad_plan["cases"][0]["before"]["replace_scopes"][0]["embeddings"][0]["vector"] = vector
         with pytest.raises(ValueError, match="vector"):
             cp.incremental_rows(output, bad_plan)
     unconstrained = json.loads(json.dumps(plan["cases"][0]["before"]))
     unconstrained["model_contract"]["normalization"] = "None"
-    unconstrained["replace_scopes"][0]["embeddings"][0]["vector"] = [2., 0.]
+    unconstrained["replace_scopes"][0]["embeddings"][0]["vector"] = [2.0, 0.0]
     assert cp.input_state(unconstrained)["semantic"]["count"] == 2
     wrong_dimension = json.loads(json.dumps(output))
-    wrong_dimension["cases"][0]["incremental"]["semantic"]["rows"][0]["vector"] = [1.]
+    wrong_dimension["cases"][0]["incremental"]["semantic"]["rows"][0]["vector"] = [1.0]
     with pytest.raises(ValueError, match="dimension"):
         cp.incremental_rows(wrong_dimension, plan)
     huge_raw = json.loads(json.dumps(output))
-    huge_raw["cases"][0]["incremental"]["semantic"]["rows"][0]["vector"] = [10**400, 0.]
+    huge_raw["cases"][0]["incremental"]["semantic"]["rows"][0]["vector"] = [10**400, 0.0]
     with pytest.raises(ValueError, match="finite full vector"):
         cp.incremental_rows(huge_raw, plan)
     bundle = _conditional_context_unit_bundle(plan, output)
@@ -9992,7 +10933,9 @@ def test_conditional_incremental_replay_compares_payload_membership_and_empty_st
     ):
         mutant = json.loads(json.dumps(bundle))
         mutant["execution_context"]["build"]["stdout"] = cp.artifact(b"\n".join(events))
-        mutant["execution_receipt"]["context_sha256"] = cp.sha(cp.canonical(mutant["execution_context"]))
+        mutant["execution_receipt"]["context_sha256"] = cp.sha(
+            cp.canonical(mutant["execution_context"])
+        )
         with pytest.raises(ValueError):
             cp.validate_results(mutant, "incremental_rows")
     for case in plan["cases"]:
@@ -10002,7 +10945,9 @@ def test_conditional_incremental_replay_compares_payload_membership_and_empty_st
             cp.operation_oracle(vacuous)
         removed_sentinel = json.loads(json.dumps(case))
         for scope in removed_sentinel["fresh"]["replace_scopes"]:
-            scope["embeddings"] = [row for row in scope["embeddings"] if row["owner_id"] != "unaffected-owner"]
+            scope["embeddings"] = [
+                row for row in scope["embeddings"] if row["owner_id"] != "unaffected-owner"
+            ]
         with pytest.raises(ValueError, match="unaffected-owner"):
             cp.operation_oracle(removed_sentinel)
 
@@ -10010,6 +10955,7 @@ def test_conditional_incremental_replay_compares_payload_membership_and_empty_st
         assert repo == cp.ROOT
         assert closure == bundle["execution_context"]["source_closure"]
         raise source_closure.ClosureError("synthetic fixture is not source evidence")
+
     with monkeypatch.context() as patch:
         patch.setattr(source_closure, "verify_manifest", reject_fixture_source)
         with pytest.raises(ValueError, match="not source evidence"):
@@ -10027,13 +10973,17 @@ def test_conditional_incremental_replay_compares_payload_membership_and_empty_st
         lambda context: context.update(records=cp.artifact(cp.canonical([]))),
         lambda context: context.update(records=cp.artifact(cp.canonical([{"captures": []}]))),
         lambda context: context["build"].update(stdout=cp.artifact(b"[]")),
-        lambda context: context["build"].update(stdout=cp.artifact(b'{"reason":"compiler-artifact","target":[]}')),
+        lambda context: context["build"].update(
+            stdout=cp.artifact(b'{"reason":"compiler-artifact","target":[]}')
+        ),
         lambda context: context["environment"].update(python_version=3),
         lambda context: context["environment"].update(relevant=[]),
     ):
         mutant = json.loads(json.dumps(bundle))
         mutate(mutant["execution_context"])
-        mutant["execution_receipt"]["context_sha256"] = cp.sha(cp.canonical(mutant["execution_context"]))
+        mutant["execution_receipt"]["context_sha256"] = cp.sha(
+            cp.canonical(mutant["execution_context"])
+        )
         with pytest.raises((ValueError, KeyError)):
             cp.validate_results(mutant, "incremental_rows")
     for field, value in (("start_line", True), ("start_line", 1.0), ("generated", 0)):
@@ -10059,8 +11009,12 @@ def test_conditional_incremental_replay_compares_payload_membership_and_empty_st
     receipt = output["cases"][0]["receipts"]["before"]
     # Reject historical per-owner commit counts even when all full rows
     # and logical-call/append receipts remain unchanged and self-consistent.
-    for case_id, batch, legacy_commits in (("append", "before", 2), ("append", "fresh", 3),
-                                           ("membership_replace", "fresh", 2), ("replace", "fresh", 2)):
+    for case_id, batch, legacy_commits in (
+        ("append", "before", 2),
+        ("append", "fresh", 3),
+        ("membership_replace", "fresh", 2),
+        ("replace", "fresh", 2),
+    ):
         mutant = json.loads(json.dumps(output))
         changed = next(case for case in mutant["cases"] if case["case_id"] == case_id)
         changed["receipts"][batch]["stages"]["semantic_delete_commits"] = legacy_commits
@@ -10068,18 +11022,29 @@ def test_conditional_incremental_replay_compares_payload_membership_and_empty_st
             cp.incremental_rows(mutant, plan)
     for case in output["cases"]:
         for batch in ("before", "fresh", "delta"):
-            for field in ("semantic_delete_calls", "semantic_delete_commits",
-                          "membership_delete_calls", "membership_delete_commits"):
+            for field in (
+                "semantic_delete_calls",
+                "semantic_delete_commits",
+                "membership_delete_calls",
+                "membership_delete_commits",
+            ):
                 for difference in (-1, 1):
                     if case["receipts"][batch]["stages"][field] + difference < 0:
                         continue
                     mutant = json.loads(json.dumps(output))
-                    changed = next(item for item in mutant["cases"] if item["case_id"] == case["case_id"])
+                    changed = next(
+                        item for item in mutant["cases"] if item["case_id"] == case["case_id"]
+                    )
                     changed["receipts"][batch]["stages"][field] += difference
                     with pytest.raises(ValueError, match="delete counts"):
                         cp.incremental_rows(mutant, plan)
-    for field, value in (("windows", 0), ("windows", 2), ("semantic_append_calls", 0),
-                         ("semantic_append_calls", 2), ("membership_append_calls", 1)):
+    for field, value in (
+        ("windows", 0),
+        ("windows", 2),
+        ("semantic_append_calls", 0),
+        ("semantic_append_calls", 2),
+        ("membership_append_calls", 1),
+    ):
         mutant = json.loads(json.dumps(output))
         changed = mutant["cases"][0]["receipts"]["before"]
         changed["stages"][field] = value
@@ -10087,9 +11052,17 @@ def test_conditional_incremental_replay_compares_payload_membership_and_empty_st
             changed[field] = value
         with pytest.raises(ValueError, match="execution counts"):
             cp.incremental_rows(mutant, plan)
-    for path in (("windows",), ("replace_scopes",), ("rows",),
-                 *(("stages", key) for key in receipt["stages"] if key != "durations"),
-                 *(("stages", "durations", key) for key in receipt["stages"]["durations"] if key != "embedding")):
+    for path in (
+        ("windows",),
+        ("replace_scopes",),
+        ("rows",),
+        *(("stages", key) for key in receipt["stages"] if key != "durations"),
+        *(
+            ("stages", "durations", key)
+            for key in receipt["stages"]["durations"]
+            if key != "embedding"
+        ),
+    ):
         for value in (False, 0.0, -1, 2**64):
             mutant = json.loads(json.dumps(output))
             target = mutant["cases"][0]["receipts"]["before"]
@@ -10110,7 +11083,9 @@ def test_conditional_incremental_replay_compares_payload_membership_and_empty_st
         lambda value: value["cases"][0]["incremental"]["semantic"].update(count=2),
         lambda value: value["cases"][0]["incremental"]["semantic"]["rows"][0].pop("vector"),
         lambda value: value["cases"][0]["receipts"]["delta"].update(batch_digest="wrong"),
-        lambda value: value["cases"][0]["fresh"]["semantic"]["rows"][0].update(snippet="forged oracle"),
+        lambda value: value["cases"][0]["fresh"]["semantic"]["rows"][0].update(
+            snippet="forged oracle"
+        ),
     ):
         mutant = json.loads(json.dumps(output))
         mutate(mutant)
@@ -10118,7 +11093,9 @@ def test_conditional_incremental_replay_compares_payload_membership_and_empty_st
             cp.incremental_rows(mutant, plan)
     # v1's self-consistent IDs/counts still cannot become v2 execution custody.
     with pytest.raises(ValueError, match="missing or unexpected"):
-        cp.validate_results(_bound_conditional_results("incr-cmd", "incremental_rows"), "incremental_rows")
+        cp.validate_results(
+            _bound_conditional_results("incr-cmd", "incremental_rows"), "incremental_rows"
+        )
 
 
 def test_query_clock_overhead_replay_requires_identical_answers_and_coverage(tmp_path):
@@ -10144,18 +11121,27 @@ def test_query_clock_overhead_replay_requires_identical_answers_and_coverage(tmp
     phases["query_protocol"] = pairrun.build_query_protocol(phases["query_schedule"], 0, 1, 2)
     phases["warm_latencies_ms"] = {}
     for row in record["results"]:
-        phases["warm_latencies_ms"].setdefault(row["route"], {})[row["task_id"]] = [4., 6.]
+        phases["warm_latencies_ms"].setdefault(row["route"], {})[row["task_id"]] = [4.0, 6.0]
     off_phases = json.loads(json.dumps(phases))
     for tasks in off_phases["warm_latencies_ms"].values():
         for task in tasks:
-            tasks[task] = [2., 3.]
+            tasks[task] = [2.0, 3.0]
     for value in (phases, off_phases):
-        value["phases_ms"]["warm_query"] = sum(sum(samples) for tasks in value["warm_latencies_ms"].values() for samples in tasks.values())
+        value["phases_ms"]["warm_query"] = sum(
+            sum(samples)
+            for tasks in value["warm_latencies_ms"].values()
+            for samples in tasks.values()
+        )
         value["total_ms"] = sum(value["phases_ms"].values())
     result = overhead.compare(record, record, phases, off_phases, diagnostic, off, pack)
     assert result["status"] == "diagnostic_unqualified"
-    assert all(row["on_median_ms"] == 5. and row["off_median_ms"] == 2.5
-        and row["delta_ms"] == 2.5 and row["relative_delta"] == 1. for row in result["rows"])
+    assert all(
+        row["on_median_ms"] == 5.0
+        and row["off_median_ms"] == 2.5
+        and row["delta_ms"] == 2.5
+        and row["relative_delta"] == 1.0
+        for row in result["rows"]
+    )
     for invalid in (10**400, -(10**400), float("nan"), float("inf"), -float("inf"), True, None):
         forged = json.loads(json.dumps(off_phases))
         next(iter(next(iter(forged["warm_latencies_ms"].values())).values()))[0] = invalid
@@ -10164,8 +11150,12 @@ def test_query_clock_overhead_replay_requires_identical_answers_and_coverage(tmp
     for mutate in (
         lambda value: value.update(query_schedule="wrong"),
         lambda value: value.update(measurement_repetitions=3),
-        lambda value: next(iter(value["warm_latencies_ms"].values())).pop(next(iter(next(iter(value["warm_latencies_ms"].values()))))),
-        lambda value: next(iter(value["warm_latencies_ms"].values())).__setitem__(record["results"][0]["task_id"], [float("nan"), 2.]),
+        lambda value: next(iter(value["warm_latencies_ms"].values())).pop(
+            next(iter(next(iter(value["warm_latencies_ms"].values()))))
+        ),
+        lambda value: next(iter(value["warm_latencies_ms"].values())).__setitem__(
+            record["results"][0]["task_id"], [float("nan"), 2.0]
+        ),
     ):
         mutant = json.loads(json.dumps(off_phases))
         mutate(mutant)
@@ -10209,7 +11199,9 @@ def test_query_clock_overhead_replay_requires_identical_answers_and_coverage(tmp
     different_ids = json.loads(json.dumps(off))
     for row in different_ids["results"]:
         row["response"]["explanation"]["request_id"] += 100
-    assert overhead.compare(record, record, phases, off_phases, diagnostic, different_ids, pack)["rows"]
+    assert overhead.compare(record, record, phases, off_phases, diagnostic, different_ids, pack)[
+        "rows"
+    ]
     capped_record = json.loads(json.dumps(record))
     capped_record["results"][0]["status"] = "capped"
     capped_on = json.loads(json.dumps(diagnostic))
@@ -10226,16 +11218,26 @@ def test_query_clock_overhead_replay_requires_identical_answers_and_coverage(tmp
     capped_phases["record_sha256"] = capped_on["record_sha256"]
     capped_off_phases = json.loads(json.dumps(off_phases))
     capped_off_phases["record_sha256"] = capped_on["record_sha256"]
-    assert overhead.compare(capped_record, capped_record, capped_phases, capped_off_phases,
-                            capped_on, capped_off, pack)["rows"]
+    assert overhead.compare(
+        capped_record, capped_record, capped_phases, capped_off_phases, capped_on, capped_off, pack
+    )["rows"]
     capped_off["results"][0]["response"]["window"]["outcome"]["continuation"] = False
     with pytest.raises(ValueError, match="observable diagnostic"):
-        overhead.compare(capped_record, capped_record, capped_phases, capped_off_phases,
-                         capped_on, capped_off, pack)
+        overhead.compare(
+            capped_record,
+            capped_record,
+            capped_phases,
+            capped_off_phases,
+            capped_on,
+            capped_off,
+            pack,
+        )
 
 
 @pytest.mark.parametrize("parameter", ["timeout_secs", "cleanup_timeout_secs"])
-@pytest.mark.parametrize("invalid", [10**400, -(10**400), float("inf"), float("nan"), True, 0, -1, None])
+@pytest.mark.parametrize(
+    "invalid", [10**400, -(10**400), float("inf"), float("nan"), True, 0, -1, None]
+)
 def test_native_linux_monitor_numeric_preflight_refuses_without_conversion(parameter, invalid):
     from tools.benchmark.retrieval import linux_process
 
@@ -10244,7 +11246,9 @@ def test_native_linux_monitor_numeric_preflight_refuses_without_conversion(param
         linux_process.run(["fixture"], **kwargs)
 
 
-@pytest.mark.parametrize("invalid", [10**400, -(10**400), float("inf"), float("nan"), True, 0, -1, None])
+@pytest.mark.parametrize(
+    "invalid", [10**400, -(10**400), float("inf"), float("nan"), True, 0, -1, None]
+)
 def test_native_windows_monitor_numeric_preflight_always_closes(invalid):
     from tools.benchmark.retrieval import windows_job
 
@@ -10269,7 +11273,10 @@ def test_native_windows_monitor_numeric_preflight_reports_cleanup_failure():
         raise windows_job.JobError("fixture cleanup failure")
 
     job.close = fail_close
-    with pytest.raises(windows_job.JobError, match="invalid monitor parameters; cleanup failed: fixture cleanup failure"):
+    with pytest.raises(
+        windows_job.JobError,
+        match="invalid monitor parameters; cleanup failed: fixture cleanup failure",
+    ):
         job.monitor(timeout_secs=10**400)
     assert closed == [True]
 
@@ -10280,7 +11287,12 @@ def test_native_linux_monitor_numeric_preflight_accepts_finite_positive(valid, m
 
     sentinel = object()
     monkeypatch.setattr(linux_process, "_run_cgroup", lambda *args, **kwargs: sentinel)
-    assert linux_process.run(["fixture"], timeout_secs=valid, cleanup_timeout_secs=valid, qualified=True) is sentinel
+    assert (
+        linux_process.run(
+            ["fixture"], timeout_secs=valid, cleanup_timeout_secs=valid, qualified=True
+        )
+        is sentinel
+    )
 
 
 @pytest.mark.parametrize("valid", [1, 0.25, sys.float_info.max])

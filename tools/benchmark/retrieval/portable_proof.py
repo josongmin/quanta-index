@@ -719,7 +719,16 @@ def _expected_commands(
         base,
     )
     if rail == "contract":
-        selector = ["-p", PACKAGE, "--lib", "--test", "chunking_contract", "--test", "l5_parser_regressions", *FLAGS]
+        selector = [
+            "-p",
+            PACKAGE,
+            "--lib",
+            "--test",
+            "chunking_contract",
+            "--test",
+            "l5_parser_regressions",
+            *FLAGS,
+        ]
         return [
             source,
             (
@@ -882,7 +891,16 @@ def _produce(rail: str, out: Path, revision: str, tools: dict[str, dict[str, str
         )
         python_inventory = _artifact(out, "python-inventory.json", raw_evidence)
         proof_inventory.verify_inventory_authority(python_inventory, "python")
-        selector = ["-p", PACKAGE, "--lib", "--test", "chunking_contract", "--test", "l5_parser_regressions", *FLAGS]
+        selector = [
+            "-p",
+            PACKAGE,
+            "--lib",
+            "--test",
+            "chunking_contract",
+            "--test",
+            "l5_parser_regressions",
+            *FLAGS,
+        ]
         build_raw = _run(
             "rust-build",
             _cargo(
@@ -908,9 +926,7 @@ def _produce(rail: str, out: Path, revision: str, tools: dict[str, dict[str, str
         _artifact(out, "rust-inventory.json", raw_evidence)
         proof_inventory.verify_inventory_authority(rust_inventory, "rust")
 
-        verify_reused_build(
-            build_raw, metadata_raw, collected, workspace_root=ROOT
-        )
+        verify_reused_build(build_raw, metadata_raw, collected, workspace_root=ROOT)
         binaries = _bind_test_binaries(collected)
         pytest_argv = [
             python,
@@ -1230,7 +1246,8 @@ def validate(
         workspace_root=ROOT,
         required_non_test_binary=(
             Path(binaries["runner"]["path"])
-            if context["rail"] == "sdk" and isinstance(binaries["runner"], dict)
+            if context["rail"] == "sdk"
+            and isinstance(binaries["runner"], dict)
             and isinstance(binaries["runner"].get("path"), str)
             else None
         ),

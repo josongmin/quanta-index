@@ -33,7 +33,16 @@ def test_live_code_search_owners_are_enrolled_in_the_existing_rail() -> None:
             REPO_ROOT, data["rails"][entry["rail"]]["command"], path
         )
         collected = subprocess.run(
-            [sys.executable, "-m", "pytest", path, "--collect-only", "-q", "-p", "no:cacheprovider"],
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                path,
+                "--collect-only",
+                "-q",
+                "-p",
+                "no:cacheprovider",
+            ],
             cwd=REPO_ROOT,
             capture_output=True,
             text=True,
@@ -41,7 +50,9 @@ def test_live_code_search_owners_are_enrolled_in_the_existing_rail() -> None:
             timeout=60,
         )
         assert collected.returncode == 0, collected.stdout + collected.stderr
-        identities = [line for line in collected.stdout.splitlines() if line.startswith(path + "::")]
+        identities = [
+            line for line in collected.stdout.splitlines() if line.startswith(path + "::")
+        ]
         assert identities and len(identities) == len(set(identities)), collected.stdout
 
 

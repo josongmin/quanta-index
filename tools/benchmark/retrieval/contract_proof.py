@@ -69,7 +69,9 @@ def _load_pytest_inventory(path: Path | RawFile | bytes) -> set[str]:
     return set(payload["tests"])
 
 
-def pytest_summary(path: Path | RawFile | bytes, inventory: Path | RawFile | bytes | None = None) -> dict[str, object]:
+def pytest_summary(
+    path: Path | RawFile | bytes, inventory: Path | RawFile | bytes | None = None
+) -> dict[str, object]:
     try:
         expected = _load_pytest_inventory(inventory) if inventory is not None else None
         counts, _ = parse_pytest_junit_bytes(_evidence_bytes(path), expected)
@@ -81,10 +83,20 @@ def pytest_summary(path: Path | RawFile | bytes, inventory: Path | RawFile | byt
     }
 
 
-def nextest_summary(path: Path | RawFile | bytes, inventory: Path | RawFile | bytes | None = None) -> dict[str, object]:
+def nextest_summary(
+    path: Path | RawFile | bytes, inventory: Path | RawFile | bytes | None = None
+) -> dict[str, object]:
     try:
-        expected = parse_nextest_inventory_bytes(_evidence_bytes(inventory)) if inventory is not None else None
-        evidence = parse_nextest_bytes(path, expected) if isinstance(path, bytes) else parse_nextest(path, expected)
+        expected = (
+            parse_nextest_inventory_bytes(_evidence_bytes(inventory))
+            if inventory is not None
+            else None
+        )
+        evidence = (
+            parse_nextest_bytes(path, expected)
+            if isinstance(path, bytes)
+            else parse_nextest(path, expected)
+        )
     except NextestEvidenceError as error:
         raise SystemExit(f"{error}: {path}") from error
     return {

@@ -312,7 +312,9 @@ def test_clean_preflight_runs_exact_profile_recipes(monkeypatch, tmp_path: Path)
 
 
 def test_command_only_native_run_uses_owned_execution_and_retains_nonzero_logs(
-    monkeypatch, tmp_path: Path, capsys,
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
 ) -> None:
     args = _native_profile_fixture(monkeypatch, tmp_path, "systems")
     repo = args["repo_root"]
@@ -473,8 +475,12 @@ def test_dsl_admission_dispatches_both_producers_and_skips_old_baselines(
     )
     commands = []
     monkeypatch.setattr(
-        MODULE, "execute",
-        lambda command, **_kwargs: (commands.append(command), SimpleNamespace(command={"exit_code": 0}))[1],
+        MODULE,
+        "execute",
+        lambda command, **_kwargs: (
+            commands.append(command),
+            SimpleNamespace(command={"exit_code": 0}),
+        )[1],
     )
     admitted = []
     monkeypatch.setattr(MODULE, "admit_dsl_baselines", lambda *args: admitted.append(args))
@@ -882,8 +888,13 @@ def _promote_sample_run(root: Path, run_id: str) -> Path:
         build=sealed["build"],
         inputs=sealed["inputs"],
         host=evidence_bridge.host_identity(
-            policy="canonical-linux", os_name="linux", arch="x86_64",
-            cpu_count=8, hostname="fixture", lease_mode="shared", lease_samples=1,
+            policy="canonical-linux",
+            os_name="linux",
+            arch="x86_64",
+            cpu_count=8,
+            hostname="fixture",
+            lease_mode="shared",
+            lease_samples=1,
         ),
         command=sealed["command"],
         boundary=sealed["boundary"],
@@ -1406,15 +1417,30 @@ def test_promotion_is_scoped_to_the_profile_families(monkeypatch, tmp_path, prof
     assert MODULE.RunStore(root).collect([]) == []
     for run in runs:
         replay = subprocess.run(
-            [sys.executable, str(SCRIPT_PATH), "replay", run["run_id"],
-             "--evidence-root", str(root)],
-            cwd=REPO_ROOT, capture_output=True, text=True, timeout=30,
+            [
+                sys.executable,
+                str(SCRIPT_PATH),
+                "replay",
+                run["run_id"],
+                "--evidence-root",
+                str(root),
+            ],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=30,
         )
         assert replay.returncode == 0, replay.stdout + replay.stderr
-    assert MODULE.validate_promoted_runs(
-        root, profile_name, manifest, source,
-        "sha256:" + hashlib.sha256((repo / "Cargo.lock").read_bytes()).hexdigest(),
-    ) == 0
+    assert (
+        MODULE.validate_promoted_runs(
+            root,
+            profile_name,
+            manifest,
+            source,
+            "sha256:" + hashlib.sha256((repo / "Cargo.lock").read_bytes()).hexdigest(),
+        )
+        == 0
+    )
 
 
 def test_native_capture_keeps_real_failed_producer_logs_and_prior_pointer(monkeypatch, tmp_path):
@@ -1443,11 +1469,22 @@ def test_native_capture_keeps_real_failed_producer_logs_and_prior_pointer(monkey
         return 0
 
     monkeypatch.setattr(MODULE, "preflight", preflight)
-    cli = SimpleNamespace(command="run", profile="systems", evidence_root=root,
-                          admit_baseline=False, cold_samples=None)
+    cli = SimpleNamespace(
+        command="run",
+        profile="systems",
+        evidence_root=root,
+        admit_baseline=False,
+        cold_samples=None,
+    )
     result = MODULE._capture_native_run(
-        repo, root, "systems", args=cli, argv=["run", "systems"],
-        profile={"recipes": ["fixture-producer"]}, manifest=args["manifest"], artifact_profile="systems",
+        repo,
+        root,
+        "systems",
+        args=cli,
+        argv=["run", "systems"],
+        profile={"recipes": ["fixture-producer"]},
+        manifest=args["manifest"],
+        artifact_profile="systems",
     )
     assert result == 2
     assert pointer.read_bytes() == prior
@@ -1462,13 +1499,18 @@ def test_native_capture_keeps_real_failed_producer_logs_and_prior_pointer(monkey
     assert (log_dir / "stdout").read_bytes() == b"native-failure-oracle"
     terminal = json.loads((log_dir / "execution.json").read_text())
     assert terminal["command"]["exit_code"] == 7
-    assert observed["record"]["sha256"] == "sha256:" + hashlib.sha256((log_dir / "execution.json").read_bytes()).hexdigest()
+    assert (
+        observed["record"]["sha256"]
+        == "sha256:" + hashlib.sha256((log_dir / "execution.json").read_bytes()).hexdigest()
+    )
     assert MODULE.RunStore(root).collect([]) == []
     assert failures[0].is_file()
     assert (log_dir / "execution.json").is_file()
 
 
-def test_native_capture_binds_observed_host_through_promotion_and_replay(monkeypatch, tmp_path, capsys):
+def test_native_capture_binds_observed_host_through_promotion_and_replay(
+    monkeypatch, tmp_path, capsys
+):
     import copy
 
     import host_monitor
@@ -1507,27 +1549,50 @@ def test_native_capture_binds_observed_host_through_promotion_and_replay(monkeyp
 
     monkeypatch.setattr(MODULE, "execute", execute_and_refresh)
     monkeypatch.setattr(host_monitor, "lock_path", lambda: tmp_path / "host-lock")
-    host = {"os": "linux", "arch": "x86_64", "cpu_count": 8,
-            "hostname_hash": "sha256:" + "a" * 64}
-    facts = {"load_average": [0.1, 0.2, 0.3], "disk_available_bytes": 100,
-             "process_count": 1, "process_snapshot_sha256": "sha256:" + "b" * 64,
-             "foreign_rust": []}
+    host = {"os": "linux", "arch": "x86_64", "cpu_count": 8, "hostname_hash": "sha256:" + "a" * 64}
+    facts = {
+        "load_average": [0.1, 0.2, 0.3],
+        "disk_available_bytes": 100,
+        "process_count": 1,
+        "process_snapshot_sha256": "sha256:" + "b" * 64,
+        "foreign_rust": [],
+    }
     monkeypatch.setattr(host_monitor, "observe", lambda: (host, facts))
-    cli = SimpleNamespace(command="run", profile="systems", evidence_root=root,
-                          admit_baseline=False, cold_samples=None)
-    assert MODULE._capture_native_run(
-        repo, root, "systems", args=cli, argv=["run", "systems"],
-        profile={"recipes": ["fixture-producer"], "families": ["freshness", "open-loop"]},
-        manifest=args["manifest"], artifact_profile="systems",
-    ) == 0
+    cli = SimpleNamespace(
+        command="run",
+        profile="systems",
+        evidence_root=root,
+        admit_baseline=False,
+        cold_samples=None,
+    )
+    assert (
+        MODULE._capture_native_run(
+            repo,
+            root,
+            "systems",
+            args=cli,
+            argv=["run", "systems"],
+            profile={"recipes": ["fixture-producer"], "families": ["freshness", "open-loop"]},
+            manifest=args["manifest"],
+            artifact_profile="systems",
+        )
+        == 0
+    )
     store = MODULE.RunStore(root)
     runs = [store.load(path.name) for path in (root / "runs").iterdir()]
     assert len(runs) == 2
     assert {run["family"] for run in runs} == {"freshness", "open-loop"}
     capture_id = runs[0]["run_id"].removeprefix(runs[0]["family"] + "-").rsplit("-", 1)[0]
-    assert load_capture(root, profile="systems", registry_digest=MODULE.registry_digest(
-        MODULE.load_registry(repo / "tools/benchmark/registry.toml")
-    ))["capture_id"] == capture_id
+    assert (
+        load_capture(
+            root,
+            profile="systems",
+            registry_digest=MODULE.registry_digest(
+                MODULE.load_registry(repo / "tools/benchmark/registry.toml")
+            ),
+        )["capture_id"]
+        == capture_id
+    )
     for run in runs:
         assert run["host"]["lease"]["mode"] == "exclusive"
         assert run["host"]["lease"]["observed_samples"] >= 3
@@ -1542,7 +1607,10 @@ def test_native_capture_binds_observed_host_through_promotion_and_replay(monkeyp
         record = copy.deepcopy(original_load(self, run_id))
         raw = RawFile.capture(self.run_dir(run_id) / "raw/host-observations.jsonl")
         record["host"] = evidence_bridge.host_from_observations(
-            raw, policy="canonical-linux", capture_id=capture_id, profile="systems",
+            raw,
+            policy="canonical-linux",
+            capture_id=capture_id,
+            profile="systems",
         )
         return record
 
@@ -1561,12 +1629,26 @@ def test_native_preflight_nonzero_retains_actual_reason(monkeypatch, tmp_path):
     monkeypatch.setattr(MODULE, "resolve_checkout_head", lambda *_: args["initial_head"])
     monkeypatch.setattr(MODULE, "preflight", lambda *_: 7)
     root = args["evidence_root"]
-    cli = SimpleNamespace(command="run", profile="systems", evidence_root=root,
-                          admit_baseline=False, cold_samples=None)
-    assert MODULE._capture_native_run(
-        args["repo_root"], root, "systems", args=cli, argv=["run", "systems"],
-        profile={"recipes": ["must-not-run"]}, manifest=args["manifest"], artifact_profile="systems",
-    ) == 7
+    cli = SimpleNamespace(
+        command="run",
+        profile="systems",
+        evidence_root=root,
+        admit_baseline=False,
+        cold_samples=None,
+    )
+    assert (
+        MODULE._capture_native_run(
+            args["repo_root"],
+            root,
+            "systems",
+            args=cli,
+            argv=["run", "systems"],
+            profile={"recipes": ["must-not-run"]},
+            manifest=args["manifest"],
+            artifact_profile="systems",
+        )
+        == 7
+    )
     failure = json.loads(next((root / "failures").glob("*.json")).read_text())
     assert failure["phase"] == "preflight"
     assert "local timing preflight returned exit 7; receipt path:" in failure["error"]["message"]

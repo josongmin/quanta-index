@@ -87,8 +87,9 @@ def test_changed_reuse_input_is_refused_before_child_launch(tmp_path, monkeypatc
     (tmp_path / name).write_bytes(b"foreign build selection")
     monkeypatch.setattr(portable_proof, "_run", lambda *_a, **_k: pytest.fail("child launched"))
     with pytest.raises(ValueError, match="nextest reuse input"):
-        portable_proof._run_reused_nextest("/wrapper", tmp_path, [], build, metadata,
-                                           env_overrides={})
+        portable_proof._run_reused_nextest(
+            "/wrapper", tmp_path, [], build, metadata, env_overrides={}
+        )
 
 
 def test_live_tool_environment_reaches_real_child(tmp_path):
@@ -284,6 +285,7 @@ def test_command_digests_bind_execute_bytes_instead_of_reopened_paths(tmp_path, 
     import hashlib
 
     stdout, stderr = b"actual executed output", b"actual executed errors"
+
     def execute(*_args, **kwargs):
         return (
             write_raw_file(kwargs["log_dir"] / "stdout", [stdout]),
@@ -320,9 +322,13 @@ def test_pythonpath_cannot_select_external_pytest_producer(tmp_path, monkeypatch
     )
     # The runner's canonical dot path is also forbidden for the producer;
     # opt-in positive fixtures cannot weaken this admission boundary.
-    for key, value in (("PYTHONPATH", "."), ("PYTHONPATH", str(tmp_path)),
-                       ("PYTHONHOME", str(tmp_path)), ("PYTEST_ADDOPTS", "-k injected"),
-                       ("PYTEST_PLUGINS", "injected")):
+    for key, value in (
+        ("PYTHONPATH", "."),
+        ("PYTHONPATH", str(tmp_path)),
+        ("PYTHONHOME", str(tmp_path)),
+        ("PYTEST_ADDOPTS", "-k injected"),
+        ("PYTEST_PLUGINS", "injected"),
+    ):
         with monkeypatch.context() as actor:
             actor.delenv("PYTHONPATH", raising=False)
             actor.setenv(key, value)
@@ -350,9 +356,13 @@ def test_sdk_binds_both_native_executables_before_test(fake_execution, monkeypat
         if argv[3:5] == ["nextest", "run"]:
             bound = {path for path, digest in seen if digest is not None}
             expected_tests = portable_proof.selected_test_binaries(
-                (out / "rust-collection.stdout").read_bytes())
-            assert bound == {str(runner), str(runner.with_name("quanta-index-searchd")),
-                             *(str(path) for path in expected_tests.values())}
+                (out / "rust-collection.stdout").read_bytes()
+            )
+            assert bound == {
+                str(runner),
+                str(runner.with_name("quanta-index-searchd")),
+                *(str(path) for path in expected_tests.values()),
+            }
         return execute(argv, **kwargs)
 
     monkeypatch.setattr(portable_proof, "execute", observe_test)

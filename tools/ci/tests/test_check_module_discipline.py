@@ -234,7 +234,9 @@ def test_workspace_glob_is_expanded_and_duplicates_refused(monkeypatch, tmp_path
         MODULE.collect_facade_files()
 
 
-def test_invalid_inventory_returns_failure_without_green_message(monkeypatch, tmp_path: Path, capsys):
+def test_invalid_inventory_returns_failure_without_green_message(
+    monkeypatch, tmp_path: Path, capsys
+):
     configure_workspace(monkeypatch, tmp_path, "[]")
     monkeypatch.setattr(sys, "argv", [str(SCRIPT_PATH)])
     assert MODULE.main() == 2

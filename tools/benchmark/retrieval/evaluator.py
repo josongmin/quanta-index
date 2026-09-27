@@ -252,21 +252,36 @@ def validate_execution_profile(value: Any, system: str, where: str) -> dict[str,
     mode = profile["mode"]
     require(isinstance(mode, str), f"{where}.mode must be a string")
     if mode == "hybrid-no-rerank":
-        require(profile["profile_id"] == "semble-hybrid-no-rerank-v1", f"{where}.profile_id mismatch")
+        require(
+            profile["profile_id"] == "semble-hybrid-no-rerank-v1", f"{where}.profile_id mismatch"
+        )
         alpha = profile["alpha"]
         require(is_finite_json_number(alpha) and 0 <= alpha <= 1, f"{where}.alpha is invalid")
         require(profile["rerank"] is False, f"{where}.rerank must be false")
     else:
         require(mode in modes, f"{where}.mode is unknown")
         expected_id, alpha, rerank = modes[mode]
-        require(profile == {"profile_id": expected_id, "mode": mode, "alpha": alpha, "rerank": rerank}, f"{where} differs from the frozen Semble profile")
+        require(
+            profile == {"profile_id": expected_id, "mode": mode, "alpha": alpha, "rerank": rerank},
+            f"{where} differs from the frozen Semble profile",
+        )
     return profile
 
 
-def validate_capture(value: Any, where: str, version: int = RUNNER_SCHEMA_VERSION) -> dict[str, Any]:
+def validate_capture(
+    value: Any, where: str, version: int = RUNNER_SCHEMA_VERSION
+) -> dict[str, Any]:
     fields = [
-        "system", "chunk_strategy", "chunk_config", "runner_binary", "searchd_binary",
-        "generation", "receipt_digest", "activation_digest", "model", "model_revision",
+        "system",
+        "chunk_strategy",
+        "chunk_config",
+        "runner_binary",
+        "searchd_binary",
+        "generation",
+        "receipt_digest",
+        "activation_digest",
+        "model",
+        "model_revision",
     ]
     if version == 5:
         fields.extend(["execution_profile", "execution_profile_sha256"])
@@ -301,7 +316,9 @@ def validate_capture(value: Any, where: str, version: int = RUNNER_SCHEMA_VERSIO
     string(capture["model"], where + ".model")
     string(capture["model_revision"], where + ".model_revision")
     if version == 5:
-        profile = validate_execution_profile(capture["execution_profile"], system, where + ".execution_profile")
+        profile = validate_execution_profile(
+            capture["execution_profile"], system, where + ".execution_profile"
+        )
         require(
             sha(capture["execution_profile_sha256"], where + ".execution_profile_sha256")
             == digest(canonical(profile)),
@@ -470,15 +487,25 @@ def block(
             accounting = object_keys(
                 item["span_accounting"],
                 [
-                    "unit_kind", "unit_id", "producer_identity", "indexed_start_byte",
-                    "indexed_end_byte", "sdk_start_line", "sdk_end_line", "extra_context_bytes",
+                    "unit_kind",
+                    "unit_id",
+                    "producer_identity",
+                    "indexed_start_byte",
+                    "indexed_end_byte",
+                    "sdk_start_line",
+                    "sdk_end_line",
+                    "extra_context_bytes",
                 ],
                 where + ".span_accounting",
             )
-            require(accounting["unit_kind"] in ("chunk", "symbol"), where + " has unknown unit kind")
+            require(
+                accounting["unit_kind"] in ("chunk", "symbol"), where + " has unknown unit kind"
+            )
             string(accounting["unit_id"], where + ".unit_id")
             string(accounting["producer_identity"], where + ".producer_identity")
-            indexed_start = nonnegative_int(accounting["indexed_start_byte"], where + ".indexed_start_byte")
+            indexed_start = nonnegative_int(
+                accounting["indexed_start_byte"], where + ".indexed_start_byte"
+            )
             indexed_end = positive_int(accounting["indexed_end_byte"], where + ".indexed_end_byte")
             require(
                 start_byte <= indexed_start < indexed_end <= end_byte,
@@ -754,8 +781,11 @@ def validate_experiment_custody(
     record = object_keys(
         manifest,
         [
-            "schema_version", "source_revision", "repository_commit",
-            "development_suite_sha256", "holdout_suite_sha256",
+            "schema_version",
+            "source_revision",
+            "repository_commit",
+            "development_suite_sha256",
+            "holdout_suite_sha256",
         ],
         "experiment custody",
     )
@@ -775,9 +805,14 @@ def validate_experiment_custody(
     )
     dev_suite, _dev_pack, _dev_source = validate_suite(repo, development)
     holdout_suite, _holdout_pack, _holdout_source = validate_suite(repo, holdout)
-    require(dev_suite["suite_id"] != holdout_suite["suite_id"], "development and holdout suite IDs coincide")
     require(
-        dev_suite["repository_commit"] == holdout_suite["repository_commit"] == record["repository_commit"],
+        dev_suite["suite_id"] != holdout_suite["suite_id"],
+        "development and holdout suite IDs coincide",
+    )
+    require(
+        dev_suite["repository_commit"]
+        == holdout_suite["repository_commit"]
+        == record["repository_commit"],
         "cross-suite repository commit mismatch",
     )
     require(
@@ -804,7 +839,9 @@ def validate_experiment_custody(
         f"cross-suite query family leakage: {sorted(dev_families & holdout_families)}",
     )
     dev_blocks = {gold["block_sha256"] for task in dev_suite["tasks"] for gold in task["gold"]}
-    holdout_blocks = {gold["block_sha256"] for task in holdout_suite["tasks"] for gold in task["gold"]}
+    holdout_blocks = {
+        gold["block_sha256"] for task in holdout_suite["tasks"] for gold in task["gold"]
+    }
     require(
         not (dev_blocks & holdout_blocks),
         "cross-suite gold definition content leakage",
@@ -824,13 +861,13 @@ def _validate_run(
 ) -> dict[str, Any]:
     version = run["schema_version"]
     require(
-        type(version) is int
-        and version in (RUNNER_SCHEMA_VERSION, *RUNNER_LEGACY_SCHEMA_VERSIONS),
+        type(version) is int and version in (RUNNER_SCHEMA_VERSION, *RUNNER_LEGACY_SCHEMA_VERSIONS),
         "unsupported runner schema",
     )
     span_protocol = run.get("span_accounting_version")
     require(
-        span_protocol is None or (version == RUNNER_SCHEMA_VERSION and type(span_protocol) is int and span_protocol == 1),
+        span_protocol is None
+        or (version == RUNNER_SCHEMA_VERSION and type(span_protocol) is int and span_protocol == 1),
         "unsupported span accounting protocol",
     )
     require(
@@ -965,7 +1002,11 @@ def _validate_run(
             if version == 4:
                 identity = object_keys(
                     result["query_identity"],
-                    ["original_query_sha256", "effective_lexical_request_sha256", "semantic_text_sha256"],
+                    [
+                        "original_query_sha256",
+                        "effective_lexical_request_sha256",
+                        "semantic_text_sha256",
+                    ],
                     f"query_identity for {key}",
                 )
                 expected_identity = query_plan_contract.derive_query_identity_v4(
@@ -978,7 +1019,11 @@ def _validate_run(
                 if capture["system"] == "quanta":
                     identity = object_keys(
                         result["query_identity"],
-                        ["original_query_sha256", "effective_lexical_request_sha256", "semantic_text_sha256"],
+                        [
+                            "original_query_sha256",
+                            "effective_lexical_request_sha256",
+                            "semantic_text_sha256",
+                        ],
                         f"query_identity for {key}",
                     )
                     expected_identity = query_plan_contract.derive_query_identity(
@@ -1080,8 +1125,7 @@ def load_evidence(
     payload = read_json(runner_path)
     version = payload.get("schema_version") if isinstance(payload, dict) else None
     require(
-        type(version) is int
-        and version in (RUNNER_SCHEMA_VERSION, *RUNNER_LEGACY_SCHEMA_VERSIONS),
+        type(version) is int and version in (RUNNER_SCHEMA_VERSION, *RUNNER_LEGACY_SCHEMA_VERSIONS),
         "unsupported runner schema",
     )
     run = object_keys_optional(
@@ -1190,34 +1234,40 @@ def indexed_span_diagnostics(
                     span = item["span_accounting"]
                     indexed_bytes = span["indexed_end_byte"] - span["indexed_start_byte"]
                     scored_bytes = item["end_byte"] - item["start_byte"]
-                    require(indexed_bytes > 0 and scored_bytes >= indexed_bytes,
-                            f"invalid candidate span accounting: {task_id}/{route}")
+                    require(
+                        indexed_bytes > 0 and scored_bytes >= indexed_bytes,
+                        f"invalid candidate span accounting: {task_id}/{route}",
+                    )
                     sdk_start = span["sdk_start_line"]
                     sdk_end = span["sdk_end_line"]
                     require(
-                        (sdk_start == sdk_end == 0)
-                        or (sdk_start > 0 and sdk_start <= sdk_end),
+                        (sdk_start == sdk_end == 0) or (sdk_start > 0 and sdk_start <= sdk_end),
                         f"invalid SDK line span: {task_id}/{route}",
                     )
                     sdk_bytes = scored_bytes if sdk_start > 0 else None
-                    candidate_rows.append({
-                        "task_id": task_id,
-                        "route": route,
-                        "rank": item["rank"],
-                        "unit_id": span["unit_id"],
-                        "indexed_bytes": indexed_bytes,
-                        "sdk_line_span_bytes": sdk_bytes,
-                        "scored_projection_bytes": scored_bytes,
-                        "scored_projection_tokens": item["tokens"],
-                        "scored_to_indexed_expansion_ratio": scored_bytes / indexed_bytes,
-                        "sdk_to_indexed_expansion_ratio": (
-                            sdk_bytes / indexed_bytes if sdk_bytes is not None else None
-                        ),
-                    })
+                    candidate_rows.append(
+                        {
+                            "task_id": task_id,
+                            "route": route,
+                            "rank": item["rank"],
+                            "unit_id": span["unit_id"],
+                            "indexed_bytes": indexed_bytes,
+                            "sdk_line_span_bytes": sdk_bytes,
+                            "scored_projection_bytes": scored_bytes,
+                            "scored_projection_tokens": item["tokens"],
+                            "scored_to_indexed_expansion_ratio": scored_bytes / indexed_bytes,
+                            "sdk_to_indexed_expansion_ratio": (
+                                sdk_bytes / indexed_bytes if sdk_bytes is not None else None
+                            ),
+                        }
+                    )
         if not answerable:
             routes[route] = {"status": "not_applicable", "reason": "no_answerable_tasks"}
             continue
-        if any(_result_status(results[(task_id, route)]) not in SCORED_STATUSES for task_id in answerable):
+        if any(
+            _result_status(results[(task_id, route)]) not in SCORED_STATUSES
+            for task_id in answerable
+        ):
             routes[route] = {"status": "not_run", "reason": "incomplete_answerable_observation"}
             continue
         sums = {
@@ -1233,20 +1283,29 @@ def indexed_span_diagnostics(
             labels = tasks[task_id]["gold"]
             top = _ordered_candidates(results[(task_id, route)])[:10]
             metrics = {
-                "rank_only_hit_at_1": float(bool(top) and any(indexed_covers(top[0], label) for label in labels)),
+                "rank_only_hit_at_1": float(
+                    bool(top) and any(indexed_covers(top[0], label) for label in labels)
+                ),
                 "exact_index_span_mrr_at_10": next(
-                    (1.0 / rank for rank, item in enumerate(top, start=1)
-                     if any(indexed_covers(item, label) for label in labels)),
+                    (
+                        1.0 / rank
+                        for rank, item in enumerate(top, start=1)
+                        if any(indexed_covers(item, label) for label in labels)
+                    ),
                     0.0,
                 ),
                 "exact_index_span_recall_at_10": sum(
                     any(indexed_covers(item, label) for item in top) for label in labels
-                ) / len(labels),
-                "scored_context_bytes_at_10": sum(item["end_byte"] - item["start_byte"] for item in top),
+                )
+                / len(labels),
+                "scored_context_bytes_at_10": sum(
+                    item["end_byte"] - item["start_byte"] for item in top
+                ),
                 "scored_context_tokens_at_10": sum(item["tokens"] for item in top),
                 "indexed_bytes_at_10": sum(
                     item["span_accounting"]["indexed_end_byte"]
-                    - item["span_accounting"]["indexed_start_byte"] for item in top
+                    - item["span_accounting"]["indexed_start_byte"]
+                    for item in top
                 ),
                 "extra_context_bytes_at_10": sum(
                     item["span_accounting"]["extra_context_bytes"] for item in top
@@ -1266,7 +1325,9 @@ def indexed_span_diagnostics(
         "scope": "diagnostic_not_primary_ndcg",
         "routes": routes,
         "per_query": rows,
-        "per_candidate": sorted(candidate_rows, key=lambda row: (row["task_id"], row["route"], row["rank"])),
+        "per_candidate": sorted(
+            candidate_rows, key=lambda row: (row["task_id"], row["route"], row["rank"])
+        ),
     }
 
 

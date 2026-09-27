@@ -138,10 +138,14 @@ def test_shallow_corpus_refuses_before_clone_and_incomplete_bundle_refuses_repla
     (source / "a.txt").write_text("a second commit\n")
     subprocess.run(["git", "-C", str(source), "add", "a.txt"], check=True)
     subprocess.run(["git", "-C", str(source), "commit", "-qm", "shallow fixture"], check=True)
-    commit = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
+    commit = subprocess.check_output(
+        ["git", "-C", str(source), "rev-parse", "HEAD"], text=True
+    ).strip()
     shallow = tmp_path / "shallow"
-    subprocess.run(["git", "clone", "--quiet", "--no-local", "--depth", "1",
-                    "--", str(source), str(shallow)], check=True)
+    subprocess.run(
+        ["git", "clone", "--quiet", "--no-local", "--depth", "1", "--", str(source), str(shallow)],
+        check=True,
+    )
     clone = tmp_path / "refused-clone"
     with pytest.raises(bridge.EvidenceError, match="complete Git history"):
         bridge.clone_corpus(shallow, clone, commit, 60)
@@ -149,6 +153,7 @@ def test_shallow_corpus_refuses_before_clone_and_incomplete_bundle_refuses_repla
     bundle = tmp_path / "shallow.bundle"
     subprocess.run(["git", "-C", str(shallow), "bundle", "create", str(bundle), "HEAD"], check=True)
     from producer_execution import ProducerExecutionError
+
     with pytest.raises(ProducerExecutionError, match="necessary objects"):
         bridge.restore_corpus(bundle, tmp_path / "restored", 60)
 
@@ -622,7 +627,9 @@ def test_capture_roots_allow_disjoint_external_roots(tmp_path):
 
 @pytest.mark.parametrize("nested_pair", [(0, 1), (0, 2), (1, 2)])
 @pytest.mark.parametrize("reverse", [False, True])
-def test_capture_entrypoint_rejects_overlap_before_epoch_writes(tmp_path, monkeypatch, nested_pair, reverse):
+def test_capture_entrypoint_rejects_overlap_before_epoch_writes(
+    tmp_path, monkeypatch, nested_pair, reverse
+):
     paths = [tmp_path / "evidence", tmp_path / "output", tmp_path / "corpus"]
     parent, child = nested_pair[::-1] if reverse else nested_pair
     paths[child] = paths[parent] / "nested"

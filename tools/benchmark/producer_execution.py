@@ -152,10 +152,7 @@ def _wait_for_terminal(
     otherwise a replacement group could reuse its identity.
     """
     deadline = time.monotonic() + timeout
-    output = {
-        stream.fileno(): (stream, sink)
-        for stream, sink in _output_streams(process, sinks)
-    }
+    output = {stream.fileno(): (stream, sink) for stream, sink in _output_streams(process, sinks)}
     with selectors.DefaultSelector() as watch:
         for fd in (terminal, *output):
             watch.register(fd, selectors.EVENT_READ)
@@ -258,7 +255,12 @@ def _cleanup(process: subprocess.Popen, sinks: tuple) -> str | None:
 
 
 def _execute_owned(
-    argv: list[str], *, cwd: Path, env: dict[str, str], timeout: int, sinks: tuple,
+    argv: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str],
+    timeout: int,
+    sinks: tuple,
     custody_fds: tuple[int, ...] = (),
 ) -> dict:
     if os.name != "posix" or not hasattr(os, "killpg"):
@@ -271,9 +273,11 @@ def _execute_owned(
         raise ProducerExecutionError("producer timeout must be a positive integer")
     if len(sinks) != 2:
         raise ProducerExecutionError("owned execution requires exactly two output sinks")
-    if (type(custody_fds) is not tuple
-            or any(type(fd) is not int or fd < 3 for fd in custody_fds)
-            or len(set(custody_fds)) != len(custody_fds)):
+    if (
+        type(custody_fds) is not tuple
+        or any(type(fd) is not int or fd < 3 for fd in custody_fds)
+        or len(set(custody_fds)) != len(custody_fds)
+    ):
         raise ProducerExecutionError("custody descriptors must be distinct open nonstandard FDs")
     for fd in custody_fds:
         os.fstat(fd)
@@ -372,7 +376,12 @@ def _execute_owned(
 
 
 def execute(
-    argv: list[str], *, cwd: Path, env: dict[str, str], timeout: int, log_dir: Path,
+    argv: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str],
+    timeout: int,
+    log_dir: Path,
     custody_fds: tuple[int, ...] = (),
 ) -> ExecutionResult:
     """Retain bounded file-backed output for every launched execution epoch.
@@ -393,7 +402,11 @@ def execute(
         command, primary = None, None
         try:
             command = _execute_owned(
-                argv, cwd=cwd, env=env, timeout=timeout, sinks=sinks,
+                argv,
+                cwd=cwd,
+                env=env,
+                timeout=timeout,
+                sinks=sinks,
                 custody_fds=custody_fds,
             )
         except BaseException as error:

@@ -255,11 +255,15 @@ def capture(repo: Path, root: Path, registry: dict, spec_path: Path, timeout: in
     if any(path.resolve().is_relative_to(repo.resolve()) for path in (spec_path, *paths.values())):
         raise EvidenceError("lexical spec and observations must stay outside the checkout")
     _directories(root)
-    return _capture_admitted(repo, root, registry, spec_path, timeout, original, selection, paths, release)
+    return _capture_admitted(
+        repo, root, registry, spec_path, timeout, original, selection, paths, release
+    )
 
 
 @capture_entrypoint(PROFILE)
-def _capture_admitted(repo, root, registry, spec_path, timeout, original, selection, paths, release):
+def _capture_admitted(
+    repo, root, registry, spec_path, timeout, original, selection, paths, release
+):
     from benchctl import require_clean_worktree, require_frozen_source, resolve_checkout_head
 
     current_capture().step("source")
@@ -295,7 +299,8 @@ def _capture_admitted(repo, root, registry, spec_path, timeout, original, select
         encoding="utf-8",
     )
     python_digest = RawFile.capture(Path(sys.executable).resolve()).sha256
-    stdout, stderr, command = current_capture().execute(execute,
+    stdout, stderr, command = current_capture().execute(
+        execute,
         [
             sys.executable,
             "-m",
@@ -318,8 +323,11 @@ def _capture_admitted(repo, root, registry, spec_path, timeout, original, select
     typed = payloads(summary, owner._read(native / "input-query_pack"))
     if any(file_digest(raw.path) != (raw.sha256, raw.size) for raw in frozen.values()):
         raise EvidenceError("lexical frozen inputs changed during scoring")
-    raw = {path.name: RawFile.capture(path) for path in native.iterdir()
-           if path.name not in {"capture.json", "execution"}}
+    raw = {
+        path.name: RawFile.capture(path)
+        for path in native.iterdir()
+        if path.name not in {"capture.json", "execution"}
+    }
     spool = root / "work" / capture_id / "prepared"
     toolchain = f"Python {platform.python_version()}"
     raw.update(

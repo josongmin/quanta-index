@@ -20,9 +20,13 @@ def test_bootstrap_matches_frozen_preoptimization_golden():
     deltas = [0.25, -0.25, 0.5, -0.75]
     strata = [("T1", "a"), ("T2", "a"), ("T3", "b"), ("T4", "b")]
     expected = {
-        "lower_95": -0.5, "upper_95": 0.375, "mean": -0.0625,
-        "method": "paired_stratified_bootstrap_percentile_v1", "resamples": 10000,
-        "sample_count": 4, "strata": {"a": 2, "b": 2},
+        "lower_95": -0.5,
+        "upper_95": 0.375,
+        "mean": -0.0625,
+        "method": "paired_stratified_bootstrap_percentile_v1",
+        "resamples": 10000,
+        "sample_count": 4,
+        "strata": {"a": 2, "b": 2},
         "seed_sha256": "fcf1aa0d64a7f777b198bf597449d04e1494a5659827d55edb2f1c47140e6205",
     }
     assert ev.mean_ci(deltas, strata) == expected
@@ -38,7 +42,9 @@ def test_constant_strata_need_no_random_draws(monkeypatch):
     result = ev.mean_ci([1.0, 1.0], [("T1", "a"), ("T2", "a")])
     assert result["lower_95"] == result["upper_95"] == result["mean"] == 1.0
     assert result["resamples"] == 10000
-    assert result["seed_sha256"] == "5f68f123e873036ece00e61ca44adb9289d1f3e38d970bdc4f778b494c12b6b2"
+    assert (
+        result["seed_sha256"] == "5f68f123e873036ece00e61ca44adb9289d1f3e38d970bdc4f778b494c12b6b2"
+    )
 
 
 def test_cached_bounds_cannot_be_mutated_through_result():
@@ -62,7 +68,10 @@ def test_cache_key_preserves_signed_zero_and_all_pair_identities():
     ]
     assert len({row["seed_sha256"] for row in outputs}) == 5
     assert ev._bootstrap_bounds.cache_info().misses == 5
-    assert outputs[0]["seed_sha256"] == "b5e0ac35c513c29224d35710bab163b8f6e07a4b7e1081c34a2381444ddeedbf"
+    assert (
+        outputs[0]["seed_sha256"]
+        == "b5e0ac35c513c29224d35710bab163b8f6e07a4b7e1081c34a2381444ddeedbf"
+    )
 
 
 def test_cache_hit_never_bypasses_validation_or_sample_threshold(monkeypatch):
@@ -97,6 +106,8 @@ def test_constant_strata_preserve_original_grouped_float_addition_order():
 def test_constant_strata_preserve_percentile_interpolation_rounding():
     # Fixed preoptimization oracle: even equal endpoints can round by one ULP.
     result = ev.mean_ci([1 / 61] * 20, [(str(i), "same") for i in range(20)])
-    assert result["seed_sha256"] == "1417a52d700ce2114848ef06f0c3701cc198bdd6286e15ca2dd01d4ff70de3ec"
+    assert (
+        result["seed_sha256"] == "1417a52d700ce2114848ef06f0c3701cc198bdd6286e15ca2dd01d4ff70de3ec"
+    )
     assert result["lower_95"] == 0.01639344262295082
     assert result["upper_95"] == 0.016393442622950824

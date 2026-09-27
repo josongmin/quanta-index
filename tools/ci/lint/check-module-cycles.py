@@ -59,7 +59,7 @@ DEFINITION_RE = re.compile(
 )
 MACRO_RE = re.compile(r"^[ \t]*macro_rules!\s+(" + IDENT + r")", re.M)
 MOD_DECL_RE = re.compile(r"^[ \t]*(?:pub(?:\([a-z ]+\))?\s+)?mod\s+(" + IDENT + r")\s*;", re.M)
-PATH_MOD_DECL_RE = re.compile(r'#\[path\s*=\s*"([^"\n]+)"\]\s*mod\s+(' + IDENT + r')\s*;')
+PATH_MOD_DECL_RE = re.compile(r'#\[path\s*=\s*"([^"\n]+)"\]\s*mod\s+(' + IDENT + r")\s*;")
 
 
 def blank_non_code(text: str) -> str:
@@ -298,11 +298,15 @@ def load_crate(crate_dir: Path, root_file: str | None = None) -> Crate:
                 continue
             target = (file.parent / match.group(1)).resolve()
             if not target.is_relative_to(src.resolve()) or not target.is_file():
-                raise ValueError(f"declared Rust path module has no source: {file}:{match.group(1)}")
+                raise ValueError(
+                    f"declared Rust path module has no source: {file}:{match.group(1)}"
+                )
             source_key = module_path_of(src, target)
             child = f"{parent}::{match.group(2)}" if parent else match.group(2)
             if source_key is None or source_key not in raw:
-                raise ValueError(f"declared Rust path module has no source: {file}:{match.group(1)}")
+                raise ValueError(
+                    f"declared Rust path module has no source: {file}:{match.group(1)}"
+                )
             if child != source_key:
                 if child in raw:
                     raise ValueError(f"duplicate Rust path module source: {crate.name}::{child}")
@@ -329,7 +333,7 @@ def load_crate(crate_dir: Path, root_file: str | None = None) -> Crate:
     # A deleted declared module must not disappear from the measured graph.
     for module, code in crate.modules.items():
         for declaration in MOD_DECL_RE.finditer(code):
-            prefix = code[:declaration.start()]
+            prefix = code[: declaration.start()]
             if prefix.count("{") != prefix.count("}"):
                 continue
             child = f"{module}::{declaration.group(1)}" if module else declaration.group(1)
@@ -430,8 +434,10 @@ def cycles(edges: dict[str, set[str]]) -> list[list[str]]:
 def workspace_crates() -> list[Path]:
     data = tomllib.loads(WORKSPACE_TOML.read_text(encoding="utf-8"))
     members = data.get("workspace", {}).get("members")
-    if not isinstance(members, list) or not members or any(
-        not isinstance(member, str) or not member for member in members
+    if (
+        not isinstance(members, list)
+        or not members
+        or any(not isinstance(member, str) or not member for member in members)
     ):
         raise ValueError("workspace.members must be a nonempty list of paths")
     crate_dirs: list[Path] = []
@@ -446,7 +452,6 @@ def workspace_crates() -> list[Path]:
                 raise ValueError(f"duplicate workspace member: {member}")
             crate_dirs.append(directory)
     return crate_dirs
-
 
 
 @dataclass(frozen=True)
@@ -468,7 +473,9 @@ def find_cycles(crate_dirs: list[Path]) -> list[Cycle]:
         src = crate_dir / "src"
         if not src.is_dir() or not any(src.rglob("*.rs")):
             raise ValueError(f"missing Rust source inventory for {crate_dir}")
-        root_files = [name for name in ("lib.rs", "main.rs") if (crate_dir / "src" / name).is_file()]
+        root_files = [
+            name for name in ("lib.rs", "main.rs") if (crate_dir / "src" / name).is_file()
+        ]
         if not root_files:
             raise ValueError(f"missing Rust crate root for {crate_dir}")
         for root_file in root_files:
@@ -482,7 +489,9 @@ def find_cycles(crate_dirs: list[Path]) -> list[Cycle]:
                 cycle = Cycle(crate.name, tuple(component), links)
                 previous = found.get(cycle.key)
                 if previous is not None:
-                    cycle = Cycle(crate.name, cycle.modules, tuple(sorted(set(previous.links) | set(links))))
+                    cycle = Cycle(
+                        crate.name, cycle.modules, tuple(sorted(set(previous.links) | set(links)))
+                    )
                 found[cycle.key] = cycle
     return sorted(found.values(), key=lambda cycle: cycle.key)
 

@@ -162,7 +162,8 @@ def main() -> int:
         print(f"invalid timing evidence: {error}", file=sys.stderr)
         return 2
     if (baseline_evidence.profile, baseline_evidence.rustc) != (
-        current_evidence.profile, current_evidence.rustc
+        current_evidence.profile,
+        current_evidence.rustc,
     ):
         print("timing profile or compiler identity differs from baseline", file=sys.stderr)
         return 2
@@ -175,7 +176,10 @@ def main() -> int:
 
     reduced = sorted(name for name in baseline if current[name].units < baseline[name].units)
     if reduced:
-        print(f"current timing evidence omits compiled crate units: {', '.join(reduced)}", file=sys.stderr)
+        print(
+            f"current timing evidence omits compiled crate units: {', '.join(reduced)}",
+            file=sys.stderr,
+        )
         return 2
 
     all_crates = sorted(set(baseline) | set(current))

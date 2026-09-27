@@ -86,7 +86,9 @@ def test_one_preparation_preserves_original_selection_and_reuses_both_commands(
         ]
 
 
-@pytest.mark.parametrize("mutation", ["missing", "wrong_package", "wrong_path", "wrong_kind", "extra"])
+@pytest.mark.parametrize(
+    "mutation", ["missing", "wrong_package", "wrong_path", "wrong_kind", "extra"]
+)
 def test_sdk_runner_must_be_in_selected_native_build(fake_execution, mutation):
     out, runner, _ = fake_execution
     portable_proof.produce("sdk", out)
@@ -94,8 +96,11 @@ def test_sdk_runner_must_be_in_selected_native_build(fake_execution, mutation):
     metadata = (out / "metadata.stdout").read_bytes()
     collection = (out / "rust-collection.stdout").read_bytes()
     assert portable_proof.verify_reused_build(
-        json.dumps(build).encode(), metadata, collection,
-        workspace_root=portable_proof.ROOT, required_non_test_binary=runner,
+        json.dumps(build).encode(),
+        metadata,
+        collection,
+        workspace_root=portable_proof.ROOT,
+        required_non_test_binary=runner,
     )
     entries = build["rust-build-meta"]["non-test-binaries"]
     if mutation == "missing":
@@ -110,8 +115,11 @@ def test_sdk_runner_must_be_in_selected_native_build(fake_execution, mutation):
         entries["fixture-retrieval-package"].append(entries["fixture-retrieval-package"][0])
     with pytest.raises(ValueError, match="SDK runner is absent"):
         portable_proof.verify_reused_build(
-            json.dumps(build).encode(), metadata, collection,
-            workspace_root=portable_proof.ROOT, required_non_test_binary=runner,
+            json.dumps(build).encode(),
+            metadata,
+            collection,
+            workspace_root=portable_proof.ROOT,
+            required_non_test_binary=runner,
         )
 
 
@@ -171,17 +179,22 @@ def test_collection_refuses_changed_input_before_launch(tmp_path, monkeypatch, n
 
 
 @pytest.mark.parametrize("value", ["4", "", "-1"])
-@pytest.mark.parametrize("key", [
-    "CARGO_BUILD_JOBS", "QUANTA_INDEX_RESOURCE_ADMISSION",
-    "QUANTA_INDEX_RESOURCE_WAIT_SECONDS", "QUANTA_INDEX_RESOURCE_TIMEOUT_SECONDS",
-])
-def test_explicit_resource_control_is_part_of_recorded_environment(fake_execution, monkeypatch, key, value):
+@pytest.mark.parametrize(
+    "key",
+    [
+        "CARGO_BUILD_JOBS",
+        "QUANTA_INDEX_RESOURCE_ADMISSION",
+        "QUANTA_INDEX_RESOURCE_WAIT_SECONDS",
+        "QUANTA_INDEX_RESOURCE_TIMEOUT_SECONDS",
+    ],
+)
+def test_explicit_resource_control_is_part_of_recorded_environment(
+    fake_execution, monkeypatch, key, value
+):
     out, _, _ = fake_execution
     monkeypatch.setenv(key, value)
     context = json.loads(portable_proof.produce("sdk", out).read_bytes())
-    assert all(
-        row["inherited_environment"][key] == value for row in context["commands"]
+    assert all(row["inherited_environment"][key] == value for row in context["commands"])
+    assert portable_proof._environment_digest({key: value}) != portable_proof._environment_digest(
+        {}
     )
-    assert portable_proof._environment_digest(
-        {key: value}
-    ) != portable_proof._environment_digest({})

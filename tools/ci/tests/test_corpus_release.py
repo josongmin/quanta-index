@@ -330,8 +330,20 @@ def test_shallow_history_refuses_before_release_publication(source, tmp_path):
     revision = git(original, "rev-parse", "HEAD").decode().strip()
     shallow_root = tmp_path / "shallow-checkouts"
     shallow_root.mkdir()
-    subprocess.run(["git", "clone", "--quiet", "--no-local", "--depth", "1",
-                    "--", str(original), str(shallow_root / "fixture")], check=True)
+    subprocess.run(
+        [
+            "git",
+            "clone",
+            "--quiet",
+            "--no-local",
+            "--depth",
+            "1",
+            "--",
+            str(original),
+            str(shallow_root / "fixture"),
+        ],
+        check=True,
+    )
     spec = json.loads(recipe.read_text())
     spec["repositories"][0]["revision"] = revision
     recipe.write_text(json.dumps(spec))

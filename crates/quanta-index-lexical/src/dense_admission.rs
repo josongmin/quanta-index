@@ -76,7 +76,8 @@ impl TantivySearcher {
             Self::ensure_manual_scan_supports_constraints(constraints, "lexical")?;
             self.ensure_manual_language_query_supported(&effective_query)?;
             let mut admitted = BTreeSet::new();
-            let mut regex_cache = ManualScanCache::default();
+            let mut regex_cache =
+                ManualScanCache::new(self.execution_budget.max_collection_bytes())?;
             for candidate_id in candidate_ids {
                 budget.checkpoint(ADMISSION_STAGE)?;
                 let Some((_address, doc)) =

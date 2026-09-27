@@ -928,13 +928,13 @@ shell-lint:
     bash scripts/run-shellcheck.sh
 
 python-lint:
-    source scripts/quanta-index-env.sh && python3 -m ruff check .
+    source scripts/quanta-index-env.sh && uv run --frozen --extra dev python -m ruff check .
 
 python-format-check:
-    source scripts/quanta-index-env.sh && python3 -m ruff format --check .
+    source scripts/quanta-index-env.sh && uv run --frozen --extra dev python -m ruff format --check .
 
 python-test:
-    bash scripts/run-tooling-tests.sh
+    uv run --frozen --extra dev bash scripts/run-tooling-tests.sh
 
 agent-output-validate output:
     source scripts/quanta-index-env.sh && python3 tools/ci/agent/validate_agent_output.py {{output}}

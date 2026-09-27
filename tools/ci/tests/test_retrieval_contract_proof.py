@@ -101,6 +101,7 @@ def test_proof_recipes_capture_source_once_before_execution(tmp_path: Path) -> N
         "rust-test",
     ]
 
+
 @pytest.mark.parametrize("rail", ["contract", "sdk"])
 def test_proof_recipe_passes_output_as_data(tmp_path: Path, rail: str) -> None:
     tools = tmp_path / "bin"
