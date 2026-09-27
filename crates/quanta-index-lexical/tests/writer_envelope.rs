@@ -18,7 +18,7 @@ use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
     BatchIngestMode, ChunkId, ChunkRecord, LQ_VERSION_TAG, LqExpr, LqLeaf, LqOptions, LqQuery,
     LqSpan, ManifestGeneration, RepoId, RepoRelativePath, RevisionId, SearchCorpusIngestBatch,
-    SearchCorpusReplaceScope, SearchScopeKey, SearchScopeSurface, UpsertChunk,
+    UpsertChunk,
 };
 use quanta_index_core::{
     GenerationStorageKeyV1, LEXICAL_WRITER_HEAP_BYTES_MIN, LexicalExecutionBudgetV1,
@@ -27,6 +27,9 @@ use quanta_index_core::{
 };
 use quanta_index_lexical::LexicalAdapter;
 use quanta_index_lexical::regex::RegexPolicy;
+
+#[path = "support/current_source_fixture.rs"]
+mod current_source_fixture;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -243,7 +246,18 @@ fn a_seal_releases_its_generations_writer_and_the_index_stays_readable() -> Test
     let dir = tempfile::tempdir()?;
     let adapter = adapter(dir.path().to_path_buf(), LexicalWriterPolicy::DEFAULT);
     let generation = ManifestGeneration::new(7);
-    adapter.build_batch(&SearchCorpusIngestBatch {
+    let body = format!("envelope marker generation {}", generation.get());
+    let replacement = current_source_fixture::text_scope(
+        &repo(),
+        &revision(),
+        "src/g7.rs",
+        LanguageCode::new("text")
+            .map_err(|err| -> Box<dyn Error> { format!("language: {err}").into() })?,
+        &body,
+        vec![chunk(7)?],
+    )?;
+    let mut batch = SearchCorpusIngestBatch {
+        source_event: current_source_fixture::empty_event(),
         repo_id: repo(),
         revision_id: revision(),
         generation,
@@ -253,20 +267,14 @@ fn a_seal_releases_its_generations_writer_and_the_index_stays_readable() -> Test
         mode: BatchIngestMode::ReplaceGeneration,
         bundle_payload: None,
         clear_surfaces: Vec::new(),
-        replace_scopes: vec![SearchCorpusReplaceScope {
-            scope: SearchScopeKey {
-                doc_surface: SearchScopeSurface::Chunk,
-                repo_relative_path: RepoRelativePath::new("src/g7.rs"),
-            },
-            scope_digest: "scope:7".to_string(),
-            chunks: vec![chunk(7)?],
-            symbols: Vec::new(),
-        }],
+        replace_scopes: vec![replacement],
         tombstone_scopes: Vec::new(),
         semantic_replace_scopes: Vec::new(),
         semantic_tombstone_scopes: Vec::new(),
         seal: true,
-    })?;
+    };
+    current_source_fixture::finish_batch(&mut batch)?;
+    adapter.build_batch(&batch)?;
     let stats = adapter.writer_cache_stats()?;
     if stats.open_writers != 0 || stats.seal_releases != 1 || stats.allocated_heap_bytes != 0 {
         return Err(format!("a sealed generation holds no writer: {stats:?}").into());

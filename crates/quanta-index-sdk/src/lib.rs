@@ -90,8 +90,9 @@ pub use quanta_index_contract::{
     SearchPlaneRuntimeMetadataQueryResponse, SearchPlaneSearchCorpusActivationCasAck,
     SearchPlaneSearchCorpusRollbackCasAck, SearchPlaneStructuralQueryResponse,
     SearchPlaneTrackKind, SearchScopeKey, SearchScopeSurface, SeedCandidate, SeedContribution,
-    SeedLane, SemanticQueryResponse, StructuralCursorV1, StructuralReplaceScope,
-    StructuralTombstoneScope, StructuralTreeRecord, SymbolCandidate, SymbolId, SymbolQueryResponse,
+    SeedLane, SemanticQueryResponse, SourceFileCoverage, SourceFileKey, SourceFileRevision,
+    SourcePublicationEvent, StructuralCursorV1, StructuralReplaceScope, StructuralTombstoneScope,
+    StructuralTreeRecord, SymbolCandidate, SymbolCoverage, SymbolId, SymbolQueryResponse,
     TextQueryResponse, TextQuerySyntax, TrackReadinessRecord,
 };
 

@@ -1,0 +1,175 @@
+{
+  "checks": [
+    {
+      "receipt": "overlap-20260927/owner",
+      "receipt_sha256": "1702c29ba804e8a0aa33eca8f2195d2a57fa920b4e35ba0ecf71649c292da712",
+      "fields": {
+        "exit_zero": true,
+        "snapshot_before": true,
+        "snapshot_after": true,
+        "external_before": true,
+        "external_after": true,
+        "snapshot_digest": true,
+        "log_digest": true,
+        "summaries_equal": true,
+        "test_selection": true
+      },
+      "selected_executed_passed": 309,
+      "valid": true
+    },
+    {
+      "receipt": "overlap-20260927/sdk",
+      "receipt_sha256": "cf61c71a65f8f555af8f4fdea76de6c1cb36f0e08bc84fedd9565e53b7f6331d",
+      "fields": {
+        "exit_zero": true,
+        "snapshot_before": true,
+        "snapshot_after": true,
+        "external_before": true,
+        "external_after": true,
+        "snapshot_digest": true,
+        "log_digest": true,
+        "summaries_equal": true,
+        "test_selection": true
+      },
+      "selected_executed_passed": 7,
+      "valid": true
+    },
+    {
+      "receipt": "overlap-20260927/format",
+      "receipt_sha256": "0e64b27538516e486ce9f77f2f43fce393ec2dbd2ff3a498a55853e07b1223fa",
+      "fields": {
+        "exit_zero": true,
+        "snapshot_before": true,
+        "snapshot_after": true,
+        "external_before": true,
+        "external_after": true,
+        "snapshot_digest": true,
+        "log_digest": true,
+        "summaries_equal": true,
+        "test_selection": true
+      },
+      "selected_executed_passed": null,
+      "valid": true
+    },
+    {
+      "receipt": "overlap-20260927/owner-lint",
+      "receipt_sha256": "04d0c1b510ea3f4e48589a871abd96c8c7fdda040ce0d8605838b598f7ff3c3b",
+      "fields": {
+        "exit_zero": true,
+        "snapshot_before": true,
+        "snapshot_after": true,
+        "external_before": true,
+        "external_after": true,
+        "snapshot_digest": true,
+        "log_digest": true,
+        "summaries_equal": true,
+        "test_selection": true
+      },
+      "selected_executed_passed": null,
+      "valid": true
+    },
+    {
+      "receipt": "overlap-20260927/sdk-lint",
+      "receipt_sha256": "65837e66f1d308d02c61f6536d4a30d0b0d99c7b03461048965abb82d589b362",
+      "fields": {
+        "exit_zero": true,
+        "snapshot_before": true,
+        "snapshot_after": true,
+        "external_before": true,
+        "external_after": true,
+        "snapshot_digest": true,
+        "log_digest": true,
+        "summaries_equal": true,
+        "test_selection": true
+      },
+      "selected_executed_passed": null,
+      "valid": true
+    },
+    {
+      "receipt": "hardening-20260927/admitted-overlap",
+      "receipt_sha256": "0c20da827fa9addb921e6faeb3bb1a05b33f5182a89b383dc4b486c0b0d61bb8",
+      "fields": {
+        "exit_zero": true,
+        "snapshot_before": true,
+        "snapshot_after": true,
+        "external_before": true,
+        "external_after": true,
+        "snapshot_digest": true,
+        "log_digest": true,
+        "summaries_equal": true,
+        "test_selection": true
+      },
+      "selected_executed_passed": 205,
+      "valid": true
+    },
+    {
+      "receipt": "hardening-20260927/normalizer-regex",
+      "receipt_sha256": "52248c9015bf623ad401c728e56558ddae1c8f6dec38d99ee613cb22585d459b",
+      "fields": {
+        "exit_zero": true,
+        "snapshot_before": true,
+        "snapshot_after": true,
+        "external_before": true,
+        "external_after": true,
+        "snapshot_digest": true,
+        "log_digest": true,
+        "summaries_equal": true,
+        "test_selection": true
+      },
+      "selected_executed_passed": 104,
+      "valid": true
+    },
+    {
+      "receipt": "hardening-20260927/sdk-current",
+      "receipt_sha256": "865a1de8ad810e10d24eb29e1cdbfb24c40e9aa7424a4c4aff2fa8fb142294e4",
+      "fields": {
+        "exit_zero": true,
+        "snapshot_before": true,
+        "snapshot_after": true,
+        "external_before": true,
+        "external_after": true,
+        "snapshot_digest": true,
+        "log_digest": true,
+        "summaries_equal": true,
+        "test_selection": true
+      },
+      "selected_executed_passed": 7,
+      "valid": true
+    },
+    {
+      "receipt": "hardening-20260927/format-admitted",
+      "receipt_sha256": "a68ced137225280e7a8d895db2468882e35fa4b80a5b6a2a0563bd53519dec98",
+      "fields": {
+        "exit_zero": true,
+        "snapshot_before": true,
+        "snapshot_after": true,
+        "external_before": true,
+        "external_after": true,
+        "snapshot_digest": true,
+        "log_digest": true,
+        "summaries_equal": true,
+        "test_selection": true
+      },
+      "selected_executed_passed": null,
+      "valid": true
+    },
+    {
+      "receipt": "hardening-20260927/lexical-lint",
+      "receipt_sha256": "bef7579599a64fa77a0b99e6bd7c9ef72142b33dc88d621d20f650f1cb1c20f7",
+      "fields": {
+        "exit_zero": true,
+        "snapshot_before": true,
+        "snapshot_after": true,
+        "external_before": true,
+        "external_after": true,
+        "snapshot_digest": true,
+        "log_digest": true,
+        "summaries_equal": true,
+        "test_selection": true
+      },
+      "selected_executed_passed": null,
+      "valid": true
+    }
+  ],
+  "all_valid": true
+}

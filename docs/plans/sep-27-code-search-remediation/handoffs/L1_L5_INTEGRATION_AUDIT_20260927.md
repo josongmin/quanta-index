@@ -1,17 +1,22 @@
-# L1–L5 current-source integration audit — 2026-09-27
+# L1–L5 integration audit — 2026-09-27
 
-Status: **partial**. Selected lexical behavior is **VERIFIED** on the bound
-dirty source below. `just rust-policy`, format, and the additional public API,
-module tree, and LLVM-line snapshot gates exit 0 after the recorded repairs.
-Aggregate regex heap admission is **BLOCKED**. Current-source whole-workspace
-CI, daemon/process qualification across all five lanes, retrieval benchmark
-validity, release, and deployment are **NOT_RUN**.
+Status: **partial**. Selected lexical behavior and the whole-workspace
+all-targets/all-features compile check executed successfully on the recorded
+source profiles below. These commands do not constitute full workspace test
+qualification. Aggregate regex heap admission remains **BLOCKED**. Full
+workspace tests, retrieval benchmark validity, release, and deployment are
+**NOT_RUN**.
 
 ## Source and ownership
 
-- HEAD `3887fac3d090e9af86d1508ed2ba4125bf55bcbb`, shared dirty checkout.
-  Concurrent benchmark/L4 planning and evidence files were left untouched.
-  No commit, push, reset, agent dispatch, task message, or task polling was used.
+- The selected lexical, contract and L5 Rust tests below ran while HEAD was
+  `3887fac3d090e9af86d1508ed2ba4125bf55bcbb`, with dirty source captured
+  in their individual input manifests. Concurrent work subsequently committed
+  that source in `31a0eef6`, then the lockfile and an additional L4 regression
+  in `0e99f25a`. At the later integration check, HEAD was
+  `0e99f25ab3e6928eaf294a8336d5456730fb3435`; an unrelated L4 proof
+  directory remained untracked. No commit, push, reset, agent dispatch, task
+  message, or task polling was used by this audit.
 - The lexical verification bound 818 Git-visible Rust/config/vendor input files.
   Its before and after canonical file-hash-map digest was identical:
   `0af1558c1c4763c678546ebdea6f8c7c7d357c9eaedf8781584215ca4afc2721`.
@@ -30,11 +35,11 @@ validity, release, and deployment are **NOT_RUN**.
 
 | Lane | Current-source execution | Excluded or unresolved claim |
 | --- | --- | --- |
-| L1 query/domain/window | **VERIFIED**, 18 lexical integration tests | Current daemon/SDK and whole-product semantic quality **NOT_RUN**; prior process receipt binds an older frozen source. |
-| L2 file mutation/coverage | **VERIFIED**, 23 lexical integration tests | Current daemon restart, crash cuts and cross-stream activation **NOT_RUN**; prior process receipt binds an older frozen source. |
-| L3 exact source/budget | **VERIFIED**, 6 integration tests plus selected common budget/cancellation tests | Whole lexical/query dispatcher and process qualification **NOT_RUN**. `index:no` explicit language filtering remains typed unavailable by design. |
-| L4 anchored preview/witness | **VERIFIED**, 12 integration tests plus lexical library regressions | Aggregate compiler and retained-cache heap ceiling **BLOCKED**; logical charges do not enforce physical allocation. Current daemon/SDK restart **NOT_RUN**. |
-| L5 parser/producer coverage | **VERIFIED** current-source Rust owner: 87 library + 26 parser integration tests, 113 passed; separate clean-HEAD Python consumer command exited 0 with 552 passed. | Current-source combined producer/consumer claim **BLOCKED**. The shared Python environment was inventoried only after the earlier run; current-source Python and process/benchmark proof **NOT_RUN**. |
+| L1 query/domain/window | **VERIFIED** on the recorded Rust profile, 18 lexical integration tests | Final-head daemon/SDK and whole-product semantic quality **NOT_RUN**; prior process receipt binds an older frozen source. |
+| L2 file mutation/coverage | **VERIFIED** on the recorded Rust profile, 23 lexical integration tests; the scan-experiment consumer now compiles and its adapter query test passes | Final-head crash cuts and cross-stream activation **NOT_RUN**; prior process receipt binds an older frozen source. |
+| L3 exact source/budget | **VERIFIED** on the recorded Rust profile, 6 integration tests plus selected common budget/cancellation tests | Whole lexical/query dispatcher and process qualification **NOT_RUN**. `index:no` explicit language filtering remains typed unavailable by design. |
+| L4 anchored preview/witness | **VERIFIED** on the recorded Rust profile, 12 integration tests plus lexical library regressions | Aggregate compiler and retained-cache heap ceiling **BLOCKED**; logical charges do not enforce physical allocation. Final-head daemon/SDK restart **NOT_RUN**. |
+| L5 parser/producer coverage | **VERIFIED** on the recorded Rust profile: 87 library + 26 parser integration tests, 113 passed; separate clean-HEAD Python consumer command exited 0 with 552 passed. | Final-head combined producer/consumer claim **BLOCKED**. The shared Python environment was inventoried only after the earlier run; final-head Python and process/benchmark proof **NOT_RUN**. |
 
 The current lexical command was:
 
@@ -120,6 +125,43 @@ workspace test suite.
    L1–L5 contract, including L2's `SourceFileCoverage`/source-event API.
    The public API diff removes old scope/digest setters and adds the new typed
    coverage/publication surfaces. The snapshots were reviewed before update.
+6. The first all-targets workspace check exposed an actual stale consumer:
+   `scan_vs_index` still constructed pre-L2 `SearchCorpusReplaceScope` fields
+   and omitted `SearchCorpusIngestBatch.source_event`. It now builds canonical
+   file coverage and a source publication event, stamps the IPC-owned batch
+   digest, validates the mutation set before building, and tests a sealed
+   generation through an indexed query. `quanta-index-ipc`, `sha2`, and the
+   test's `tempfile` dependency are recorded in the crate manifest and lockfile.
+7. The next all-targets check exposed seven more lexical integration targets
+   and a core resource-policy target still constructing pre-L2 file scopes.
+   Those fixtures now bind authored source bytes, file identity, unit-set hash
+   and source-publication identity. The lexical test helper generates the
+   direct-adapter batch token without importing the IPC adapter across the
+   hexagonal boundary. The two old tests that staged `seal=false` source
+   batches were changed to exercise the current fail-closed publication
+   contract; staged partial publication is no longer a valid test setup.
+8. The following all-targets checks exposed three more stale consumers:
+   `quanta-index-sdk` lacked public reexports of the five L2 coverage and
+   source-publication types used by its runtime tests; a runtime explain
+   fixture omitted the new candidate source and preview fields; and the
+   SCV2 semantic-source wire test built a batch without a source event. The
+   SDK baseline and fixtures now match the canonical contract. The final
+   all-targets/all-features workspace check exits 0.
+9. A sealed generation's raw mutation was refused by the coverage boundary
+   before the typed `GENERATION_IMMUTABLE` door. `build_ops` now checks the
+   immutable generation before the independent-raw-mutation guard, preserving
+   the specific typed refusal and preventing mutation. The sealed-manifest
+   regression passes. The damaged-base-shard regression now asserts the
+   stronger observed result: the delta creates no target directory and its
+   open returns `NotFound`.
+10. QI-BB-006's index-byte oracle previously charged the new
+    `source-file-coverage.cbor` full snapshot as index data. It now reports
+    that sidecar separately and keeps the inherited-index byte budget
+    unchanged. This is a scope correction, not a claim that delta storage is
+    cheap: in the 400-filler fixture the delta rewrote 169,994 coverage bytes
+    and 398,643 bytes in its touched text-authority shard. The full snapshot
+    is tied to generation identity and publication, so its rewrite cost
+    remains a distinct production cost gap.
 
 `just rust-policy`, `just fmt-check`, `just rust-public-api`,
 `just rust-cargo-modules`, `just rust-llvm-lines`, `git diff --check`, and
@@ -146,8 +188,13 @@ binary size, or the acceptability of the growth. The
   16 MiB reservation. Current state-proportional logical charging mitigates
   request work but does not bind the allocator. See
   [L4_REGEX_BUDGET_RESIDUAL.md](L4_REGEX_BUDGET_RESIDUAL.md).
-- **NOT_RUN:** one final-source daemon/SDK and crash/restart suite for L1–L4,
-  current-source L5 Python consumers, whole-workspace CI, relevance/latency
-  benchmarks, proof-manifest aggregation, and release/deployment activation.
+- **BLOCKED:** delta coverage persistence rewrites a generation-wide snapshot
+  for a one-file update; the observed 169,994 fresh bytes are outside the
+  index-byte oracle. No storage-amplification ceiling or shard/inheritance
+  design has been qualified. Touched text-authority shards are likewise
+  rewritten; the separate shard test measures their cost.
+- **NOT_RUN:** full workspace test CI, exhaustive final-source daemon/SDK and
+  crash/restart suite for L1–L4, relevance/latency benchmarks,
+  proof-manifest aggregation, and release/deployment activation.
   Earlier owner receipts are useful regression evidence, not composable with
   this new source digest.

@@ -1,0 +1,23 @@
+./scripts/cargow --lane all-targets-lane check --workspace --all-targets --all-features --locked
+resource admission: waiting lock=/Users/songmin/Library/Caches/quanta-index/resource-admission/build-test.lock
+resource admission: admitted lock=/Users/songmin/Library/Caches/quanta-index/resource-admission/build-test.lock wait_ns=67667
+    Checking quanta-index-contract v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-contract)
+    Checking quanta-index-lq-regex v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lq-regex)
+    Checking quanta-index-lq-obs v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lq-obs)
+    Checking quanta-index-lq-trigram v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lq-trigram)
+    Checking quanta-index-lq-positions v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lq-positions)
+    Checking quanta-index-lq-structural v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lq-structural)
+    Checking quanta-index-embed v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-embed)
+    Checking quanta-index-catalog v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-catalog)
+    Checking quanta-index-search-plane v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-search-plane)
+    Checking quanta-index-repomap v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-repomap)
+    Checking quanta-index-semantic v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-semantic)
+    Checking quanta-index-lexical v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical)
+    Checking quanta-index-ipc v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-ipc)
+    Checking quanta-index-sdk v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-sdk)
+    Checking quanta-index-core v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-core)
+    Checking quanta-index-bench-protocol v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/benchmarks/bench-protocol)
+    Checking quanta-index-lq-text-normalizer v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lq-text-normalizer)
+    Checking quanta-index-contract-base v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-contract-base)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 15.91s
+resource admission: released lock=/Users/songmin/Library/Caches/quanta-index/resource-admission/build-test.lock held_ns=16354202125

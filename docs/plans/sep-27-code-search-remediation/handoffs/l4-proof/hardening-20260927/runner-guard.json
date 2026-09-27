@@ -1,0 +1,131 @@
+{
+  "results": [
+    {
+      "runner": "docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/overlap-20260927/run.py",
+      "runner_sha256": "b4fa0132be2006e859079c7049487506cc63e23e6c960bbd6741e01f16618c47",
+      "cases": [
+        {
+          "case": "stale_source",
+          "exit_code": 2,
+          "status": "BLOCKED",
+          "command_executed": false,
+          "ok": true
+        },
+        {
+          "case": "stale_external",
+          "exit_code": 2,
+          "status": "BLOCKED",
+          "command_executed": false,
+          "ok": true
+        },
+        {
+          "case": "missing_source",
+          "exit_code": 2,
+          "status": "BLOCKED",
+          "command_executed": false,
+          "ok": true
+        },
+        {
+          "case": "missing_external",
+          "exit_code": 2,
+          "status": "BLOCKED",
+          "command_executed": false,
+          "ok": true
+        },
+        {
+          "case": "post_run_tamper",
+          "exit_code": 2,
+          "status": "BLOCKED",
+          "command_executed": true,
+          "ok": true
+        },
+        {
+          "case": "valid",
+          "exit_code": 0,
+          "status": "VERIFIED",
+          "command_executed": true,
+          "ok": true
+        },
+        {
+          "case": "command_error",
+          "exit_code": 1,
+          "status": "NOT_RUN",
+          "command_executed": false,
+          "ok": true
+        },
+        {
+          "case": "invalid_snapshot",
+          "exit_code": 1,
+          "status": "NOT_RUN",
+          "command_executed": false,
+          "ok": true
+        }
+      ],
+      "all_ok": true
+    },
+    {
+      "runner": "docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/hardening-20260927/run.py",
+      "runner_sha256": "b4fa0132be2006e859079c7049487506cc63e23e6c960bbd6741e01f16618c47",
+      "cases": [
+        {
+          "case": "stale_source",
+          "exit_code": 2,
+          "status": "BLOCKED",
+          "command_executed": false,
+          "ok": true
+        },
+        {
+          "case": "stale_external",
+          "exit_code": 2,
+          "status": "BLOCKED",
+          "command_executed": false,
+          "ok": true
+        },
+        {
+          "case": "missing_source",
+          "exit_code": 2,
+          "status": "BLOCKED",
+          "command_executed": false,
+          "ok": true
+        },
+        {
+          "case": "missing_external",
+          "exit_code": 2,
+          "status": "BLOCKED",
+          "command_executed": false,
+          "ok": true
+        },
+        {
+          "case": "post_run_tamper",
+          "exit_code": 2,
+          "status": "BLOCKED",
+          "command_executed": true,
+          "ok": true
+        },
+        {
+          "case": "valid",
+          "exit_code": 0,
+          "status": "VERIFIED",
+          "command_executed": true,
+          "ok": true
+        },
+        {
+          "case": "command_error",
+          "exit_code": 1,
+          "status": "NOT_RUN",
+          "command_executed": false,
+          "ok": true
+        },
+        {
+          "case": "invalid_snapshot",
+          "exit_code": 1,
+          "status": "NOT_RUN",
+          "command_executed": false,
+          "ok": true
+        }
+      ],
+      "all_ok": true
+    }
+  ],
+  "all_ok": true
+}

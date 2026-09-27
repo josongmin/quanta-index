@@ -30,13 +30,16 @@ use quanta_index_contract::{
     BatchIngestMode, ChunkId, ChunkRecord, GenerationSnapshot, LQ_VERSION_TAG, LqExpr, LqLeaf,
     LqOptions, LqQuery, LqSpan, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
     SearchCorpusIngestBatch, SearchCorpusReplaceScope, SearchCorpusTombstoneScope,
-    SearchPlaneTrackKind, SearchScopeKey, SearchScopeSurface,
+    SearchPlaneTrackKind,
 };
 use quanta_index_core::{
     CoreError, GenerationIdentityValidatePort, GenerationStorageKeyV1, LexicalIndexOpenPort,
     RequestBudgetV1, SearchCorpusBatchBuildPort,
 };
 use quanta_index_lexical::LexicalAdapter;
+
+#[path = "support/current_source_fixture.rs"]
+mod current_source_fixture;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -112,13 +115,13 @@ fn scope(index: usize, body: &str) -> Result<SearchCorpusReplaceScope, Box<dyn E
     let language = LanguageCode::new("rust")
         .map_err(|err| -> Box<dyn Error> { format!("language code: {err}").into() })?;
     let path = scope_path(index);
-    Ok(SearchCorpusReplaceScope {
-        scope: SearchScopeKey {
-            doc_surface: SearchScopeSurface::File,
-            repo_relative_path: RepoRelativePath::new(&path),
-        },
-        scope_digest: format!("scope:{path}:{body}"),
-        chunks: vec![ChunkRecord {
+    current_source_fixture::text_scope(
+        &repo(),
+        &revision(),
+        &path,
+        language.clone(),
+        body,
+        vec![ChunkRecord {
             chunk_id: ChunkId::new(scope_chunk(index)),
             repo_relative_path: RepoRelativePath::new(&path),
             language,
@@ -131,8 +134,7 @@ fn scope(index: usize, body: &str) -> Result<SearchCorpusReplaceScope, Box<dyn E
             parent_chunk_id: None,
             source_repo_id: None,
         }],
-        symbols: Vec::new(),
-    })
+    )
 }
 
 fn batch(
@@ -141,15 +143,18 @@ fn batch(
     replace_scopes: Vec<SearchCorpusReplaceScope>,
     tombstone_paths: &[usize],
     seal: bool,
-) -> SearchCorpusIngestBatch {
+) -> Result<SearchCorpusIngestBatch, Box<dyn Error>> {
     let mut replace_scopes = replace_scopes;
     replace_scopes.sort_by(|left, right| {
-        left.scope
+        left.coverage
+            .source
+            .file
             .repo_relative_path
             .as_str()
-            .cmp(right.scope.repo_relative_path.as_str())
+            .cmp(right.coverage.source.file.repo_relative_path.as_str())
     });
-    SearchCorpusIngestBatch {
+    let mut batch = SearchCorpusIngestBatch {
+        source_event: current_source_fixture::empty_event(),
         repo_id: repo(),
         revision_id: revision(),
         generation,
@@ -167,8 +172,8 @@ fn batch(
         tombstone_scopes: tombstone_paths
             .iter()
             .map(|index| SearchCorpusTombstoneScope {
-                scope: SearchScopeKey {
-                    doc_surface: SearchScopeSurface::File,
+                file: quanta_index_contract::SourceFileKey {
+                    source_repo_id: repo(),
                     repo_relative_path: RepoRelativePath::new(scope_path(*index)),
                 },
             })
@@ -176,7 +181,9 @@ fn batch(
         semantic_replace_scopes: Vec::new(),
         semantic_tombstone_scopes: Vec::new(),
         seal,
-    }
+    };
+    current_source_fixture::finish_batch(&mut batch)?;
+    Ok(batch)
 }
 
 /// The first `docs` scopes of the fixture corpus as one sealed base.
@@ -188,7 +195,7 @@ fn base_batch(
     for index in 0..docs {
         scopes.push(scope(index, &scope_body(index))?);
     }
-    Ok(batch(generation, None, scopes, &[], true))
+    batch(generation, None, scopes, &[], true)
 }
 
 fn identity(generation: ManifestGeneration) -> GenerationSnapshot {
@@ -315,7 +322,7 @@ fn one_scope_delta_rewrites_touched_shards_and_links_the_rest() -> TestResult {
         vec![scope(replaced, "fn replaced() { replacedsentinel }")?],
         &[],
         true,
-    ))?;
+    )?)?;
     let after = adapter.text_authority_update_stats()?;
     let delta_files = text_authority_files(&generation_dir(&root, g2))?;
     let delta_shards = shard_files(&delta_files);
@@ -451,7 +458,7 @@ fn boundary_documents_answer_like_an_independent_rebuild() -> TestResult {
         ],
         &[EDGE_HIGH],
         true,
-    ))?;
+    )?)?;
 
     // Oracle: the same final corpus, built fresh with no base.
     let mut scopes = Vec::with_capacity(DOCS);
@@ -467,7 +474,7 @@ fn boundary_documents_answer_like_an_independent_rebuild() -> TestResult {
         scopes.push(scope(index, &body)?);
     }
     scopes.push(scope(new_index, new_body)?);
-    adapter.build_batch(&batch(g9, None, scopes, &[], true))?;
+    adapter.build_batch(&batch(g9, None, scopes, &[], true)?)?;
 
     let mut probes: Vec<(String, LqLeaf)> = Vec::new();
     for marker in [
@@ -559,7 +566,7 @@ fn small_batch(
     for index in indexes {
         scopes.push(scope(*index, &scope_body(*index))?);
     }
-    Ok(batch(generation, base, scopes, &[], seal))
+    batch(generation, base, scopes, &[], seal)
 }
 
 fn typed_code(result: Result<(), CoreError>) -> Result<String, Box<dyn Error>> {
@@ -612,10 +619,10 @@ fn write_manifest_row(generation_dir: &Path, row: &ManifestRow) -> TestResult {
 /// disowns the index's documents, a shard whose digest is not the listed
 /// one, another format or normalizer — each is refused typed at the seal,
 /// and the generation never opens. Each fault is injected into a fresh
-/// unsealed generation so the manifest itself is the thing under test, not
-/// the seal's tree digest.
+/// sealed generation so both the sidecar parser and the generation commitment
+/// have a chance to reject it.
 #[test]
-fn a_text_authority_that_disagrees_with_its_manifest_never_seals_or_opens() -> TestResult {
+fn a_text_authority_that_disagrees_with_its_manifest_never_opens() -> TestResult {
     type Fault = fn(&Path, &mut ManifestRow) -> TestResult;
     let cases: Vec<(&str, &str, Fault)> = vec![
         (
@@ -702,32 +709,21 @@ fn a_text_authority_that_disagrees_with_its_manifest_never_seals_or_opens() -> T
         let root = temp.path().to_path_buf();
         let adapter = LexicalAdapter::with_state_root(root.clone());
         let g1 = ManifestGeneration::new(1);
-        adapter.build_batch(&small_batch(g1, None, &[0, 1, 2], false)?)?;
+        adapter.build_batch(&small_batch(g1, None, &[0, 1, 2], true)?)?;
         let dir = generation_dir(&root, g1);
         let mut row = read_manifest_row(&dir)?;
         fault(&dir, &mut row)?;
         write_manifest_row(&dir, &row)?;
 
-        // The seal is the first door: it reads the manifest and measures the
-        // tree, and must refuse under the typed code.
-        let seal = adapter.build_batch(&small_batch(g1, None, &[], true)?);
-        let code = typed_code(seal)
-            .map_err(|err| -> Box<dyn Error> { format!("{label}: seal: {err}").into() })?;
-        if code != expected_code {
-            return Err(
-                format!("{label}: seal refused with {code}, expected {expected_code}").into(),
-            );
+        // A sealed identity commits the sidecar. The format gate may reject
+        // before or after the commitment check, but neither door may admit it.
+        let validate = typed_code(adapter.validate_generation_identity(&identity(g1)))?;
+        if validate != expected_code && validate != "GENERATION_SIDECAR_CORRUPT" {
+            return Err(format!("{label}: validator refused with {validate}").into());
         }
-        // Never sealed, so never opened: the identity was never written.
-        if open_code(&adapter, g1).as_deref() != Some("GENERATION_IDENTITY_INCOMPLETE") {
-            return Err(
-                format!("{label}: a refused seal must leave the generation unopenable").into(),
-            );
-        }
-        if adapter.validate_generation_identity(&identity(g1)).is_ok() {
-            return Err(
-                format!("{label}: the validator must not admit an unsealed generation").into(),
-            );
+        let open = open_code(&adapter, g1).ok_or("open admitted tampered authority")?;
+        if open != expected_code && open != "GENERATION_SIDECAR_CORRUPT" {
+            return Err(format!("{label}: open refused with {open}").into());
         }
     }
     Ok(())
@@ -773,125 +769,47 @@ fn a_delta_refuses_to_build_on_a_shard_whose_digest_changed() -> TestResult {
             format!("the delta refused with {code}, expected GENERATION_SIDECAR_CORRUPT").into(),
         );
     }
-    if open_code(&adapter, g2).as_deref() != Some("GENERATION_IDENTITY_INCOMPLETE") {
-        return Err("a refused delta must leave its generation unopenable".into());
+    if generation_dir(&root, g2).exists() {
+        return Err("a refused delta created a generation directory".into());
+    }
+    let opened = adapter.open(&repo(), &revision(), g2);
+    if !matches!(opened, Err(CoreError::NotFound(_))) {
+        return Err(format!(
+            "a refused delta left unexpected open result: {:?}",
+            opened.map(|_| ())
+        )
+        .into());
     }
     Ok(())
 }
 
-/// One file of the text-authority directory: its name and bytes.
-type NamedFileBytes = (String, Vec<u8>);
-
-/// Every file of the text-authority directory, by name.
-fn snapshot_text_authority(generation_dir: &Path) -> Result<Vec<NamedFileBytes>, Box<dyn Error>> {
-    let mut files = Vec::new();
-    for entry in std::fs::read_dir(generation_dir.join(TEXT_AUTHORITY_DIR))? {
-        let entry = entry?;
-        files.push((
-            entry.file_name().to_string_lossy().into_owned(),
-            std::fs::read(entry.path())?,
-        ));
-    }
-    files.sort();
-    Ok(files)
-}
-
-fn restore_text_authority(generation_dir: &Path, files: &[(String, Vec<u8>)]) -> TestResult {
-    let dir = generation_dir.join(TEXT_AUTHORITY_DIR);
-    for entry in std::fs::read_dir(&dir)? {
-        std::fs::remove_file(entry?.path())?;
-    }
-    for (name, bytes) in files {
-        std::fs::write(dir.join(name), bytes)?;
-    }
-    Ok(())
-}
-
-/// A publish that crashed after its index commit is caught up by the
-/// next batch's rebuild.
-///
-/// The crash leaves the index ahead of the authority; the next batch that
-/// retires one of the unlisted documents catches up by a full derivation,
-/// continues doc ids past what the index stores, and the generation seals
-/// consistent. The crash is staged by publishing twice and restoring the first
-/// publish's `text-authority/` files over the second's.
+/// Canonical source publication refuses a partial unsealed batch before it
+/// creates an index or text-authority sidecar. A later sealed publication owns
+/// the complete generation and answers only its admitted files.
 #[test]
-fn a_publish_that_crashed_after_its_commit_is_caught_up_by_a_rebuild() -> TestResult {
+fn an_unsealed_source_batch_cannot_leave_index_authority_skew() -> TestResult {
     let temp = tempfile::tempdir()?;
     let root = temp.path().to_path_buf();
     let adapter = LexicalAdapter::with_state_root(root.clone());
     let g1 = ManifestGeneration::new(1);
     let dir = generation_dir(&root, g1);
 
-    adapter.build_batch(&small_batch(g1, None, &[0, 1, 2], false)?)?;
-    let first_publish = snapshot_text_authority(&dir)?;
-    // Scopes 3 and 4 take doc ids 4 and 5; then their publish "never
-    // happened".
-    adapter.build_batch(&small_batch(g1, None, &[3, 4], false)?)?;
-    restore_text_authority(&dir, &first_publish)?;
-    let before = adapter.text_authority_update_stats()?;
-
-    // Replacing scope 3 names doc 4 for retirement, which the restored
-    // authority never listed.
-    adapter.build_batch(&batch(
-        g1,
-        None,
-        vec![scope(3, "fn replaced() { caughtupsentinel }")?],
-        &[],
-        true,
-    ))?;
-    let after = adapter.text_authority_update_stats()?;
-    if after.rebuilds.saturating_sub(before.rebuilds) != 1
-        || after.incremental_updates != before.incremental_updates
-    {
-        return Err(format!(
-            "an index ahead of its authority must be caught up by exactly one rebuild: before={before:?} after={after:?}"
-        )
-        .into());
+    let refused = adapter.build_batch(&small_batch(g1, None, &[0, 1, 2], false)?);
+    if !matches!(refused, Err(CoreError::InvalidContract(_))) {
+        return Err(format!("unsealed source batch was not rejected: {refused:?}").into());
     }
-    // Every live document answers, the unlisted survivor included, and the
-    // retired text is gone.
-    for (label, leaf, expected) in [
-        (
-            "unlisted survivor",
-            LqLeaf::Regex("quartz_00004".to_string()),
-            vec![scope_chunk(4)],
-        ),
-        (
-            "replacement",
-            LqLeaf::Regex("caughtupsentinel".to_string()),
-            vec![scope_chunk(3)],
-        ),
-        (
-            "retired text",
-            LqLeaf::Regex("quartz_00003".to_string()),
-            Vec::new(),
-        ),
-        (
-            "phrase over every live document",
-            LqLeaf::Phrase("ipsum dolor sit".to_string()),
-            vec![
-                scope_chunk(0),
-                scope_chunk(1),
-                scope_chunk(2),
-                scope_chunk(4),
-            ],
-        ),
-        (
-            "everything",
-            LqLeaf::Regex("quartz_0000[0-9]".to_string()),
-            vec![
-                scope_chunk(0),
-                scope_chunk(1),
-                scope_chunk(2),
-                scope_chunk(4),
-            ],
-        ),
-    ] {
-        let observed = leaf_hit_ids(&adapter, g1, leaf)?;
-        if observed != expected {
-            return Err(format!("{label}: expected {expected:?}, got {observed:?}").into());
-        }
+    if dir.exists() {
+        return Err("rejected source batch created a generation directory".into());
+    }
+
+    adapter.build_batch(&small_batch(g1, None, &[0, 1, 2], true)?)?;
+    let observed = leaf_hit_ids(&adapter, g1, LqLeaf::Regex("quartz_00000".to_string()))?;
+    if observed != vec![scope_chunk(0)] {
+        return Err(format!("sealed source batch returned {observed:?}").into());
+    }
+    let absent = leaf_hit_ids(&adapter, g1, LqLeaf::Regex("quartz_00004".to_string()))?;
+    if !absent.is_empty() {
+        return Err(format!("rejected source leaked rows: {absent:?}").into());
     }
     Ok(())
 }

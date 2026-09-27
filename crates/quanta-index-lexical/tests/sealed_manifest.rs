@@ -34,7 +34,7 @@ use quanta_index_contract::{
     RepoCommitRecencyEntry, RepoCommitRecencyIngestBatch, RepoDescriptionEntry,
     RepoDescriptionIngestBatch, RepoId, RepoMetaEntry, RepoMetaIngestBatch, RepoRelativePath,
     RepoTopicEntry, RepoTopicIngestBatch, RevisionId, SearchCorpusIngestBatch,
-    SearchCorpusReplaceScope, SearchPlaneTrackKind, SearchScopeKey, SearchScopeSurface,
+    SearchCorpusReplaceScope, SearchPlaneTrackKind,
 };
 use quanta_index_core::{
     CoreError, DoorFindingOutcome, DoorFindingQuarantinePort, FileContributorIngestPort,
@@ -47,6 +47,9 @@ use quanta_index_core::{
     SealedGenerationReclaimPort, SealedGenerationScanPort, SearchCorpusBatchBuildPort,
 };
 use quanta_index_lexical::LexicalAdapter;
+
+#[path = "support/current_source_fixture.rs"]
+mod current_source_fixture;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -92,13 +95,13 @@ fn scope(
 ) -> Result<SearchCorpusReplaceScope, Box<dyn Error>> {
     let language = LanguageCode::new("rust")
         .map_err(|err| -> Box<dyn Error> { format!("language code: {err}").into() })?;
-    Ok(SearchCorpusReplaceScope {
-        scope: SearchScopeKey {
-            doc_surface: SearchScopeSurface::File,
-            repo_relative_path: RepoRelativePath::new(path),
-        },
-        scope_digest: format!("scope:{path}:{chunk_id}"),
-        chunks: vec![ChunkRecord {
+    current_source_fixture::text_scope(
+        &repo(),
+        &revision(),
+        path,
+        language.clone(),
+        body,
+        vec![ChunkRecord {
             chunk_id: ChunkId::new(chunk_id),
             repo_relative_path: RepoRelativePath::new(path),
             language,
@@ -111,15 +114,15 @@ fn scope(
             parent_chunk_id: None,
             source_repo_id: None,
         }],
-        symbols: Vec::new(),
-    })
+    )
 }
 
 fn sealed_batch(
     generation: ManifestGeneration,
     body: &str,
 ) -> Result<SearchCorpusIngestBatch, Box<dyn Error>> {
-    Ok(SearchCorpusIngestBatch {
+    let mut batch = SearchCorpusIngestBatch {
+        source_event: current_source_fixture::empty_event(),
         repo_id: repo(),
         revision_id: revision(),
         generation,
@@ -134,7 +137,9 @@ fn sealed_batch(
         semantic_replace_scopes: Vec::new(),
         semantic_tombstone_scopes: Vec::new(),
         seal: true,
-    })
+    };
+    current_source_fixture::finish_batch(&mut batch)?;
+    Ok(batch)
 }
 
 fn identity(generation: ManifestGeneration) -> GenerationSnapshot {
@@ -1371,6 +1376,7 @@ fn a_generation_that_indexed_nothing_seals_openable() -> TestResult {
     let generation = ManifestGeneration::new(1);
     let mut empty = sealed_batch(generation, "unused")?;
     empty.replace_scopes.clear();
+    current_source_fixture::finish_batch(&mut empty)?;
     adapter.build_batch(&empty)?;
     let doors = knock(&adapter, generation);
     if let Err(err) = doors.validate {

@@ -5,7 +5,8 @@ use std::collections::BTreeSet;
 use quanta_index_contract::{
     BatchIngestMode, CapabilityStatusV1, ManifestGeneration, OwnerDocKind, RawFallbackReasonV1,
     RepoId, RepoRelativePath, RevisionId, SearchCorpusIngestBatch, SemanticCorpusKindV1,
-    SemanticSourceRecordV1, SemanticSourceReplaceScopeV1, SemanticSourceScopeKeyV1, SourceRoleV1,
+    SemanticSourceRecordV1, SemanticSourceReplaceScopeV1, SemanticSourceScopeKeyV1,
+    SourcePublicationEvent, SourceRoleV1, source_event_payload_sha256,
     validate_semantic_source_record_v1,
 };
 use serde_json::json;
@@ -84,15 +85,22 @@ fn fixture_semantic_source_record() -> SemanticSourceRecordV1 {
     clippy::expect_used,
     reason = "static fixture IDs provably satisfy the canonical ID policy"
 )]
-fn fixture_search_corpus_batch() -> SearchCorpusIngestBatch {
-    SearchCorpusIngestBatch {
+fn fixture_search_corpus_batch() -> Result<SearchCorpusIngestBatch, Box<dyn std::error::Error>> {
+    let mut batch = SearchCorpusIngestBatch {
+        source_event: SourcePublicationEvent {
+            stream_id: "semantic-source-wire-fixture".to_string(),
+            event_id: "semantic-source-wire-g7".to_string(),
+            expected_base_event_id: None,
+            payload_sha256: [0; 32],
+        },
         repo_id: RepoId::new("repo-1").expect("static fixture ID satisfies canonical policy"),
         revision_id: RevisionId::new("rev-1")
             .expect("static fixture ID satisfies canonical policy"),
         generation: ManifestGeneration::new(7),
         base_generation: None,
         manifest_digest: "manifest:lex".to_string(),
-        batch_digest: "batch:lex".to_string(),
+        // This contract test enters below IPC's batch-digest verifier.
+        batch_digest: "0".repeat(64),
         mode: BatchIngestMode::ReplaceGeneration,
         bundle_payload: None,
         clear_surfaces: Vec::new(),
@@ -106,12 +114,14 @@ fn fixture_search_corpus_batch() -> SearchCorpusIngestBatch {
         }],
         semantic_tombstone_scopes: vec![fixture_scope_key("symbol-2")],
         seal: true,
-    }
+    };
+    batch.source_event.payload_sha256 = source_event_payload_sha256(&batch)?;
+    Ok(batch)
 }
 
 #[test]
 fn old_batch_json_and_cbor_without_semantic_fields_are_refused() -> TestRes {
-    let batch = fixture_search_corpus_batch();
+    let batch = fixture_search_corpus_batch()?;
     for field in ["semantic_replace_scopes", "semantic_tombstone_scopes"] {
         let mut json_value = serde_json::to_value(&batch)?;
         let removed = json_value

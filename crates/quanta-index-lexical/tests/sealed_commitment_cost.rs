@@ -22,8 +22,7 @@ use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
     BatchIngestMode, ChunkId, ChunkRecord, LQ_VERSION_TAG, LqExpr, LqLeaf, LqOptions, LqQuery,
     LqSpan, ManifestGeneration, RepoId, RepoMetaEntry, RepoMetaIngestBatch, RepoRelativePath,
-    RevisionId, SearchCorpusIngestBatch, SearchCorpusReplaceScope, SearchScopeKey,
-    SearchScopeSurface,
+    RevisionId, SearchCorpusIngestBatch, SearchCorpusReplaceScope,
 };
 use quanta_index_core::{
     GenerationStorageKeyV1, LexicalIndexOpenPort, RepoMetaIngestPort, RequestBudgetV1,
@@ -31,12 +30,16 @@ use quanta_index_core::{
 };
 use quanta_index_lexical::{LexicalAdapter, LexicalSealCommitmentStats};
 
+#[path = "support/current_source_fixture.rs"]
+mod current_source_fixture;
+
 type TestResult = Result<(), Box<dyn Error>>;
 
 /// Enough documents for several text-authority shards, so the untouched
 /// shards and the base segment are the bulk of what a delta inherits.
 const DOCS: usize = 3 * 2048 + 50;
 const TEXT_AUTHORITY_DIR: &str = "text-authority";
+const SOURCE_FILE_COVERAGE: &str = "source-file-coverage.cbor";
 const TANTIVY_META: &str = "meta.json";
 const OVERLAY_FILES: [&str; 7] = [
     "repo-metadata.cbor",
@@ -80,13 +83,13 @@ fn scope(index: usize, body: &str) -> Result<SearchCorpusReplaceScope, Box<dyn E
     let language = LanguageCode::new("rust")
         .map_err(|err| -> Box<dyn Error> { format!("language code: {err}").into() })?;
     let path = scope_path(index);
-    Ok(SearchCorpusReplaceScope {
-        scope: SearchScopeKey {
-            doc_surface: SearchScopeSurface::File,
-            repo_relative_path: RepoRelativePath::new(&path),
-        },
-        scope_digest: format!("scope:{path}:{body}"),
-        chunks: vec![ChunkRecord {
+    current_source_fixture::text_scope(
+        &repo(),
+        &revision(),
+        &path,
+        language.clone(),
+        body,
+        vec![ChunkRecord {
             chunk_id: ChunkId::new(scope_chunk(index)),
             repo_relative_path: RepoRelativePath::new(&path),
             language,
@@ -99,22 +102,24 @@ fn scope(index: usize, body: &str) -> Result<SearchCorpusReplaceScope, Box<dyn E
             parent_chunk_id: None,
             source_repo_id: None,
         }],
-        symbols: Vec::new(),
-    })
+    )
 }
 
 fn batch(
     generation: ManifestGeneration,
     base: Option<ManifestGeneration>,
     mut replace_scopes: Vec<SearchCorpusReplaceScope>,
-) -> SearchCorpusIngestBatch {
+) -> Result<SearchCorpusIngestBatch, Box<dyn Error>> {
     replace_scopes.sort_by(|left, right| {
-        left.scope
+        left.coverage
+            .source
+            .file
             .repo_relative_path
             .as_str()
-            .cmp(right.scope.repo_relative_path.as_str())
+            .cmp(right.coverage.source.file.repo_relative_path.as_str())
     });
-    SearchCorpusIngestBatch {
+    let mut batch = SearchCorpusIngestBatch {
+        source_event: current_source_fixture::empty_event(),
         repo_id: repo(),
         revision_id: revision(),
         generation,
@@ -133,7 +138,9 @@ fn batch(
         semantic_replace_scopes: Vec::new(),
         semantic_tombstone_scopes: Vec::new(),
         seal: true,
-    }
+    };
+    current_source_fixture::finish_batch(&mut batch)?;
+    Ok(batch)
 }
 
 fn base_batch(generation: ManifestGeneration) -> Result<SearchCorpusIngestBatch, Box<dyn Error>> {
@@ -141,7 +148,7 @@ fn base_batch(generation: ManifestGeneration) -> Result<SearchCorpusIngestBatch,
     for index in 0..DOCS {
         scopes.push(scope(index, &scope_body(index))?);
     }
-    Ok(batch(generation, None, scopes))
+    batch(generation, None, scopes)
 }
 
 fn generation_dir(root: &Path, generation: ManifestGeneration) -> PathBuf {
@@ -182,7 +189,7 @@ struct CommittedFile {
 /// sees it.
 ///
 /// The Tantivy commit, every segment component file, every file under
-/// `text-authority/` and every overlay present. Tantivy's managed list and
+/// `text-authority/`, file coverage and every overlay present. Tantivy's managed list and
 /// lock files, the seal's own manifest and identity and the delta marker
 /// are not query content and are not committed.
 fn committed_files(generation_dir: &Path) -> Result<Vec<CommittedFile>, Box<dyn Error>> {
@@ -212,7 +219,11 @@ fn committed_files(generation_dir: &Path) -> Result<Vec<CommittedFile>, Box<dyn 
         let is_segment_file = name.split_once('.').is_some_and(|(stem, _)| {
             stem.len() == 32 && stem.chars().all(|ch| ch.is_ascii_hexdigit())
         });
-        if name == TANTIVY_META || is_segment_file || OVERLAY_FILES.contains(&name.as_str()) {
+        if name == TANTIVY_META
+            || name == SOURCE_FILE_COVERAGE
+            || is_segment_file
+            || OVERLAY_FILES.contains(&name.as_str())
+        {
             files.push(CommittedFile {
                 name,
                 bytes: metadata.len(),
@@ -319,7 +330,7 @@ fn a_delta_seal_reads_only_what_the_delta_wrote() -> TestResult {
         g2,
         Some(g1),
         vec![scope(replaced, "fn replaced() { replacedsentinel }")?],
-    ))?;
+    )?)?;
     let delta_seal = delta_stats(before_delta, adapter.seal_commitment_stats()?);
     let delta_files = committed_files(&generation_dir(&root, g2))?;
     let (linked, written): (Vec<&CommittedFile>, Vec<&CommittedFile>) = delta_files

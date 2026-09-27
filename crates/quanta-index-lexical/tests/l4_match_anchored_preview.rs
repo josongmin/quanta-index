@@ -198,7 +198,15 @@ fn indexed_and_manual_preserve_fixed_original_focus_after_checkout_drift() -> Te
 fn indexed_and_manual_preserve_overlapping_raw_witnesses() -> TestResult {
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
-    let batch = batch(1, None, vec![file_scope("overlap.rs", "ababa")?])?;
+    let overflow = "a".repeat(35);
+    let batch = batch(
+        1,
+        None,
+        vec![
+            file_scope("overlap.rs", "ababa")?,
+            file_scope("overflow.rs", &overflow)?,
+        ],
+    )?;
     adapter.build_batch(&batch)?;
     let view = adapter.open(&batch.repo_id, &batch.revision_id, batch.generation)?;
     for index_mode in [None, Some(LqYesNoOnly::No)] {
@@ -219,6 +227,25 @@ fn indexed_and_manual_preserve_overlapping_raw_witnesses() -> TestResult {
         );
         assert_eq!(hit.snippet_hit_offset, Some(0));
         hit.validate_source_metadata().map_err(str::to_owned)?;
+
+        q.expr = LqExpr::Leaf(LqLeaf::RawString("aaa".into()));
+        let overflow_hits = view.search(&q, 1, &request)?;
+        assert_eq!(overflow_hits.len(), 1, "optional refusal removed the hit");
+        let overflow_hit = overflow_hits.first().ok_or("overflow hit missing")?;
+        assert_eq!(overflow_hit.repo_relative_path.as_str(), "overflow.rs");
+        assert!(overflow_hit.snippet.is_empty());
+        assert!(overflow_hit.highlights.is_empty());
+        assert_eq!(
+            overflow_hit
+                .preview
+                .as_ref()
+                .ok_or("overflow preview missing")?
+                .unavailable_reason,
+            Some(PreviewUnavailableReason::WorkBudget)
+        );
+        overflow_hit
+            .validate_source_metadata()
+            .map_err(str::to_owned)?;
     }
     Ok(())
 }

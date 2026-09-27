@@ -1,0 +1,21 @@
+resource admission: waiting lock=/Users/songmin/Library/Caches/quanta-index/resource-admission/build-test.lock
+resource admission: admitted lock=/Users/songmin/Library/Caches/quanta-index/resource-admission/build-test.lock wait_ns=35956716417
+   Compiling quanta-index-lq-norm v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lq-norm)
+   Compiling quanta-index-contract-base v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-contract-base)
+   Compiling quanta-index-contract v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-contract)
+   Compiling quanta-index-core v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 13.76s
+     Running tests/ingest_resource_policy.rs (/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-fast-lane/debug/deps/ingest_resource_policy-4c60e6a2a01b1907)
+
+running 7 tests
+test chunk_only_batches_do_not_request_embedding ... ok
+test every_ceiling_admits_at_the_bound_and_refuses_one_over ... ok
+test an_empty_batch_fits_the_smallest_policy ... ok
+test typed_sources_are_the_embedded_set_when_present ... ok
+test a_wider_dimension_multiplies_the_vector_footprint ... ok
+test an_out_of_range_dimension_is_an_invalid_contract ... ok
+test zero_ceilings_are_refused_at_construction ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+resource admission: released lock=/Users/songmin/Library/Caches/quanta-index/resource-admission/build-test.lock held_ns=14917620708

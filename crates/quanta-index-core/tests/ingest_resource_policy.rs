@@ -13,27 +13,39 @@ use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
     BatchIngestMode, CapabilityStatusV1, ChunkId, ChunkRecord, ManifestGeneration, OwnerDocKind,
     RepoId, RepoRelativePath, RevisionId, SearchCorpusIngestBatch, SearchCorpusReplaceScope,
-    SearchScopeKey, SearchScopeSurface, SemanticCorpusKindV1, SemanticSourceRecordV1,
-    SemanticSourceReplaceScopeV1, SemanticSourceScopeKeyV1, SourceRoleV1,
+    SemanticCorpusKindV1, SemanticSourceRecordV1, SemanticSourceReplaceScopeV1,
+    SemanticSourceScopeKeyV1, SourceFileCoverage, SourceFileKey, SourceFileRevision,
+    SourcePublicationEvent, SourceRoleV1, SymbolCoverage, source_event_payload_sha256,
+    source_file_unit_set_sha256,
 };
 use quanta_index_core::{
     CoreError, INGEST_RESOURCE_BUDGET_EXCEEDED_CODE, IngestResourcePolicy, MAX_EMBEDDING_DIMENSION,
 };
+use sha2::{Digest as _, Sha256};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 const DIMENSION: usize = 8;
 
-fn chunk(index: usize, text: &str) -> Result<ChunkRecord, Box<dyn std::error::Error>> {
+fn chunk(
+    index: usize,
+    text: &str,
+    start_byte: u32,
+) -> Result<ChunkRecord, Box<dyn std::error::Error>> {
+    let line = u32::try_from(index)?
+        .checked_add(1)
+        .ok_or("line overflow")?;
     Ok(ChunkRecord {
         chunk_id: ChunkId::new(format!("chunk-{index}")),
         repo_relative_path: RepoRelativePath::new("src/lib.rs"),
         language: LanguageCode::new("rust")
             .map_err(|err| -> Box<dyn std::error::Error> { format!("language: {err}").into() })?,
-        start_byte: 0,
-        end_byte: u32::try_from(text.len())?,
-        start_line: 1,
-        end_line: 1,
+        start_byte,
+        end_byte: start_byte
+            .checked_add(u32::try_from(text.len())?)
+            .ok_or("chunk end overflow")?,
+        start_line: line,
+        end_line: line,
         text: text.to_string().into_boxed_str(),
         structural: None,
         parent_chunk_id: None,
@@ -75,20 +87,39 @@ fn batch(
     chunk_texts: &[&str],
     source_texts: &[&str],
 ) -> Result<SearchCorpusIngestBatch, Box<dyn std::error::Error>> {
-    let chunks = chunk_texts
-        .iter()
-        .enumerate()
-        .map(|(index, text)| chunk(index, text))
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut raw_source = String::new();
+    let mut chunks = Vec::with_capacity(chunk_texts.len());
+    for (index, text) in chunk_texts.iter().enumerate() {
+        if index != 0 {
+            raw_source.push('\n');
+        }
+        let start_byte = u32::try_from(raw_source.len())?;
+        raw_source.push_str(text);
+        chunks.push(chunk(index, text, start_byte)?);
+    }
+    let repo_id = RepoId::new("repo").expect("static fixture ID satisfies canonical policy");
+    let revision_id = RevisionId::new("rev").expect("static fixture ID satisfies canonical policy");
     let replace_scopes = if chunks.is_empty() {
         Vec::new()
     } else {
         vec![SearchCorpusReplaceScope {
-            scope: SearchScopeKey {
-                doc_surface: SearchScopeSurface::File,
-                repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+            coverage: SourceFileCoverage {
+                source: SourceFileRevision {
+                    file: SourceFileKey {
+                        source_repo_id: repo_id.clone(),
+                        repo_relative_path: RepoRelativePath::new("src/lib.rs"),
+                    },
+                    revision_id: revision_id.clone(),
+                    source_sha256: Sha256::digest(raw_source.as_bytes()).into(),
+                },
+                language: LanguageCode::new("rust").map_err(
+                    |err| -> Box<dyn std::error::Error> { format!("language: {err}").into() },
+                )?,
+                producer_policy_sha256: Sha256::digest(b"ingest-resource-policy-fixture-v1").into(),
+                unit_set_sha256: source_file_unit_set_sha256(&chunks, &[])?,
+                text_admitted: true,
+                symbols: SymbolCoverage::NotRequested,
             },
-            scope_digest: "scope:src/lib.rs".to_string(),
             chunks,
             symbols: Vec::new(),
         }]
@@ -107,13 +138,20 @@ fn batch(
             cluster_memberships: Vec::new(),
         })
         .collect();
-    Ok(SearchCorpusIngestBatch {
-        repo_id: RepoId::new("repo").expect("static fixture ID satisfies canonical policy"),
-        revision_id: RevisionId::new("rev").expect("static fixture ID satisfies canonical policy"),
+    let mut batch = SearchCorpusIngestBatch {
+        source_event: SourcePublicationEvent {
+            stream_id: "ingest-resource-policy-fixture".to_string(),
+            event_id: "ingest-resource-policy-g1".to_string(),
+            expected_base_event_id: None,
+            payload_sha256: [0; 32],
+        },
+        repo_id,
+        revision_id,
         generation: ManifestGeneration::new(1),
         base_generation: None,
         manifest_digest: "manifest:1".to_string(),
-        batch_digest: "batch:1".to_string(),
+        // The policy test is below IPC's batch-digest verification.
+        batch_digest: "0".repeat(64),
         mode: BatchIngestMode::ReplaceGeneration,
         bundle_payload: None,
         clear_surfaces: Vec::new(),
@@ -122,7 +160,9 @@ fn batch(
         semantic_replace_scopes,
         semantic_tombstone_scopes: Vec::new(),
         seal: true,
-    })
+    };
+    batch.source_event.payload_sha256 = source_event_payload_sha256(&batch)?;
+    Ok(batch)
 }
 
 fn is_envelope_refusal(err: &CoreError) -> bool {

@@ -1,0 +1,18 @@
+resource admission: waiting lock=/Users/songmin/Library/Caches/quanta-index/resource-admission/build-test.lock
+resource admission: admitted lock=/Users/songmin/Library/Caches/quanta-index/resource-admission/build-test.lock wait_ns=197208
+   Compiling quanta-index-contract v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-contract)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.18s
+     Running tests/scv2_01_semantic_source_wire.rs (/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-fast-lane/debug/deps/scv2_01_semantic_source_wire-8e7311034b73f301)
+
+running 7 tests
+test raw_code_fallback_without_parent_owner_id_fails ... ok
+test invalid_symbol_card_body_role_fails_validation ... ok
+test raw_code_fallback_without_reason_fails ... ok
+test unknown_corpus_kind_wire_value_fails ... ok
+test semantic_source_record_has_no_vector_field ... ok
+test semantic_source_record_round_trips ... ok
+test old_batch_json_and_cbor_without_semantic_fields_are_refused ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+resource admission: released lock=/Users/songmin/Library/Caches/quanta-index/resource-admission/build-test.lock held_ns=8264256875

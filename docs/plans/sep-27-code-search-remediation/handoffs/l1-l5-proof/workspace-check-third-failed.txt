@@ -1,0 +1,33 @@
+./scripts/cargow --lane all-targets-lane check --workspace --all-targets --all-features --locked
+resource admission: waiting lock=/Users/songmin/Library/Caches/quanta-index/resource-admission/build-test.lock
+resource admission: admitted lock=/Users/songmin/Library/Caches/quanta-index/resource-admission/build-test.lock wait_ns=950099217083
+    Checking quanta-index-retrieval-bench v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/benchmarks/retrieval)
+    Checking quanta-index-searchd-runtime v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-searchd-runtime)
+error[E0432]: unresolved imports `quanta_index_sdk::SourceFileKey`, `quanta_index_sdk::SourcePublicationEvent`
+  --> crates/quanta-index-searchd-runtime/tests/composite_generation_authority_restart.rs:27:61
+   |
+27 |     SearchCorpusGenerationIdentityV1, SearchPlaneTrackKind, SourceFileKey, SourcePublicationEvent,
+   |                                                             ^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^ no `SourcePublicationEvent` in the root
+   |                                                             |
+   |                                                             no `SourceFileKey` in the root
+   |
+   = help: consider importing this struct instead:
+           quanta_index_contract::SourceFileKey
+   = help: consider importing this struct instead:
+           quanta_index_contract::SourcePublicationEvent
+
+    Checking quanta-index-searchd-harness v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-searchd-harness)
+    Checking quanta-index-scan-experiment v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-scan-experiment)
+For more information about this error, try `rustc --explain E0432`.
+error: could not compile `quanta-index-searchd-runtime` (test "runtime_extended_suite") due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error[E0063]: missing fields `preview`, `source` and `source_repo_id` in initializer of `LexicalCandidate`
+   --> crates/quanta-index-searchd-runtime/tests/explain.rs:281:27
+    |
+281 |     let stale_candidate = LexicalCandidate {
+    |                           ^^^^^^^^^^^^^^^^ missing `preview`, `source` and `source_repo_id`
+
+For more information about this error, try `rustc --explain E0063`.
+error: could not compile `quanta-index-searchd-runtime` (test "runtime_risk_suite") due to 1 previous error
+resource admission: released lock=/Users/songmin/Library/Caches/quanta-index/resource-admission/build-test.lock held_ns=12108327833
+error: recipe `rust-check` failed on line 126 with exit code 101

@@ -279,6 +279,9 @@ fn explain_rejects_generation_mismatch() -> TestResult {
 
     // Construct a candidate whose manifest_generation differs from the pin.
     let stale_candidate = LexicalCandidate {
+        source_repo_id: repo(),
+        source: None,
+        preview: None,
         candidate_id: "c-mismatch".to_string(),
         repo_id: repo(),
         revision_id: revision(),

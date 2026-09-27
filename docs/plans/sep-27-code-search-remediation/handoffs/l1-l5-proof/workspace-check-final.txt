@@ -1,0 +1,10 @@
+./scripts/cargow --lane all-targets-lane check --workspace --all-targets --all-features --locked
+resource admission: waiting lock=/Users/songmin/Library/Caches/quanta-index/resource-admission/build-test.lock
+resource admission: admitted lock=/Users/songmin/Library/Caches/quanta-index/resource-admission/build-test.lock wait_ns=69541
+    Checking quanta-index-lexical v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical)
+    Checking quanta-index-searchd-runtime v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-searchd-runtime)
+    Checking quanta-index-search-plane v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-search-plane)
+    Checking quanta-index-searchd-harness v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-searchd-harness)
+    Checking quanta-index-scan-experiment v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-scan-experiment)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 14.87s
+resource admission: released lock=/Users/songmin/Library/Caches/quanta-index/resource-admission/build-test.lock held_ns=15652304042

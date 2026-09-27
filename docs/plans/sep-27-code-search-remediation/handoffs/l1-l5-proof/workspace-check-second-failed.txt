@@ -1,0 +1,79 @@
+./scripts/cargow --lane all-targets-lane check --workspace --all-targets --all-features --locked
+resource admission: waiting lock=/Users/songmin/Library/Caches/quanta-index/resource-admission/build-test.lock
+resource admission: admitted lock=/Users/songmin/Library/Caches/quanta-index/resource-admission/build-test.lock wait_ns=1078284608625
+    Checking quanta-index-lexical v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical)
+    Checking quanta-index-retrieval-bench v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/benchmarks/retrieval)
+    Checking quanta-index-corpus-smoke v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-corpus-smoke)
+    Checking quanta-index-contract v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-contract)
+    Checking quanta-index-lq-regex v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lq-regex)
+    Checking quanta-index-searchd-runtime v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-searchd-runtime)
+    Checking quanta-index-search-plane v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-search-plane)
+    Checking quanta-index-searchd-harness v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-searchd-harness)
+error[E0560]: struct `SearchCorpusReplaceScope` has no field named `scope`
+  --> crates/quanta-index-lexical/tests/sealed_commitment_cost.rs:84:9
+   |
+84 |         scope: SearchScopeKey {
+   |         ^^^^^ `SearchCorpusReplaceScope` does not have this field
+   |
+   = note: available fields are: `coverage`
+
+error[E0560]: struct `SearchCorpusReplaceScope` has no field named `scope_digest`
+  --> crates/quanta-index-lexical/tests/sealed_commitment_cost.rs:88:9
+   |
+88 |         scope_digest: format!("scope:{path}:{body}"),
+   |         ^^^^^^^^^^^^ `SearchCorpusReplaceScope` does not have this field
+   |
+   = note: available fields are: `coverage`
+
+error[E0609]: no field `scope` on type `&SearchCorpusReplaceScope`
+   --> crates/quanta-index-lexical/tests/sealed_commitment_cost.rs:112:14
+    |
+112 |         left.scope
+    |              ^^^^^ unknown field
+    |
+    = note: available fields are: `coverage`, `chunks`, `symbols`
+
+error[E0609]: no field `scope` on type `&SearchCorpusReplaceScope`
+   --> crates/quanta-index-lexical/tests/sealed_commitment_cost.rs:115:24
+    |
+115 |             .cmp(right.scope.repo_relative_path.as_str())
+    |                        ^^^^^ unknown field
+    |
+    = note: available fields are: `coverage`, `chunks`, `symbols`
+
+error[E0063]: missing field `source_event` in initializer of `SearchCorpusIngestBatch`
+   --> crates/quanta-index-lexical/tests/sealed_commitment_cost.rs:117:5
+    |
+117 |     SearchCorpusIngestBatch {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^ missing `source_event`
+
+Some errors have detailed explanations: E0063, E0560, E0609.
+For more information about an error, try `rustc --explain E0063`.
+error: could not compile `quanta-index-lexical` (test "sealed_commitment_cost") due to 5 previous errors
+warning: build failed, waiting for other jobs to finish...
+error[E0560]: struct `SearchCorpusReplaceScope` has no field named `scope`
+   --> crates/quanta-index-lexical/tests/writer_envelope.rs:257:13
+    |
+257 |             scope: SearchScopeKey {
+    |             ^^^^^ `SearchCorpusReplaceScope` does not have this field
+    |
+    = note: available fields are: `coverage`
+
+error[E0560]: struct `SearchCorpusReplaceScope` has no field named `scope_digest`
+   --> crates/quanta-index-lexical/tests/writer_envelope.rs:261:13
+    |
+261 |             scope_digest: "scope:7".to_string(),
+    |             ^^^^^^^^^^^^ `SearchCorpusReplaceScope` does not have this field
+    |
+    = note: available fields are: `coverage`
+
+error[E0063]: missing field `source_event` in initializer of `SearchCorpusIngestBatch`
+   --> crates/quanta-index-lexical/tests/writer_envelope.rs:246:26
+    |
+246 |     adapter.build_batch(&SearchCorpusIngestBatch {
+    |                          ^^^^^^^^^^^^^^^^^^^^^^^ missing `source_event`
+
+Some errors have detailed explanations: E0063, E0560.
+error: could not compile `quanta-index-lexical` (test "writer_envelope") due to 3 previous errors
+resource admission: released lock=/Users/songmin/Library/Caches/quanta-index/resource-admission/build-test.lock held_ns=7024602167
+error: recipe `rust-check` failed on line 126 with exit code 101

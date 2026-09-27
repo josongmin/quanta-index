@@ -1,0 +1,87 @@
+resource admission: waiting lock=/Users/songmin/Library/Caches/quanta-index/resource-admission/build-test.lock
+resource admission: admitted lock=/Users/songmin/Library/Caches/quanta-index/resource-admission/build-test.lock wait_ns=139708
+   Compiling quanta-index-lexical v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 6.25s
+     Running tests/boot_inventory.rs (/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-fast-lane/debug/deps/boot_inventory-661a254d4412399e)
+
+running 2 tests
+test a_missing_root_inventories_nothing ... ok
+test inventory_quarantines_untrusted_directories_and_never_reads_content ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.35s
+
+     Running tests/generation_delta_base_carryforward.rs (/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-fast-lane/debug/deps/generation_delta_base_carryforward-126351fa53ac5aff)
+
+running 6 tests
+test delta_generation_inherits_unmutated_base_scopes ... ok
+test delta_generation_does_not_mutate_base_text_authority_sidecars ... ok
+test delta_generation_inherits_base_when_a_sidecar_authority_lands_first ... ok
+QI-BB-006-EVIDENCE base_bytes=664041 base_text_authority_bytes=398481 base_coverage_bytes=169941 delta_fresh_bytes=582300 delta_fresh_coverage_bytes=169994 delta_fresh_entries=text-authority/shard-00000000-c6464af3778d2a24.cbor:398643,source-file-coverage.cbor:169994,meta.json:7582,search-corpus-generation-manifest.cbor:1815,0c86eeebfea9494f84e2ec68bdb06a82.term:1783,.managed.json:545,0c86eeebfea9494f84e2ec68bdb06a82.fast:476,0c86eeebfea9494f84e2ec68bdb06a82.store:349,0c86eeebfea9494f84e2ec68bdb06a82.idx:310,0c86eeebfea9494f84e2ec68bdb06a82.fieldnorm:232,0c86eeebfea9494f84e2ec68bdb06a82.pos:196,c42a4fd46f684ce79f913d2815c085c3.810.del:154,search-corpus-generation-identity.cbor:131,text-authority/manifest.cbor:89,search-corpus-delta-base.cbor:1,.tantivy-meta.lock:0,.tantivy-writer.lock:0
+test delta_generation_does_not_rewrite_unchanged_index_bytes ... ok
+test delta_generation_text_authority_matches_independent_full_rebuild ... ok
+QI-BB-006-EVIDENCE scopes=1502 text_authority_bytes=1645405 delta_docs_derived=1 full_docs_derived=1502 delta_one_scope_ms=2567 full_rebuild_ms=3503
+test delta_text_authority_update_derives_only_the_changed_scope ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 11.21s
+
+     Running tests/resident_bytes.rs (/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-fast-lane/debug/deps/resident_bytes-19962972884664f6)
+
+running 2 tests
+test the_estimate_counts_the_decoded_authority_not_its_cbor ... ok
+test a_hard_linked_delta_counts_shared_inodes_once ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.49s
+
+     Running tests/sealed_commitment_cost.rs (/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-fast-lane/debug/deps/sealed_commitment_cost-eebfe8f65ff1c6d1)
+
+running 1 test
+QI-BB-006-SEAL-EVIDENCE docs=6194 base_files=26 base_bytes=7851023 base_seal_bytes_hashed=7851023 delta_files=33 delta_written_bytes=3893120 delta_linked_bytes=3961960 delta_seal_bytes_hashed=3893120 delta_seal_bytes_inherited=3961960 delta_written=de26af55eff84510ab91bf861071f24c.fast,de26af55eff84510ab91bf861071f24c.fieldnorm,de26af55eff84510ab91bf861071f24c.idx,de26af55eff84510ab91bf861071f24c.pos,de26af55eff84510ab91bf861071f24c.store,de26af55eff84510ab91bf861071f24c.term,ef5b7e210c1a4983af41fd7418ca81db.12396.del,meta.json,source-file-coverage.cbor,text-authority/manifest.cbor,text-authority/shard-00000000-12d6001f33930f9e.cbor,text-authority/shard-00000003-23355f980f39e92d.cbor
+test a_delta_seal_reads_only_what_the_delta_wrote ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 17.39s
+
+     Running tests/sealed_manifest.rs (/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-fast-lane/debug/deps/sealed_manifest-6c1f013d5084999c)
+
+running 15 tests
+test a_generation_that_indexed_nothing_seals_openable ... ok
+test a_sealed_identity_without_a_manifest_is_refused_by_both_doors ... ok
+test a_same_length_flip_is_found_by_the_scrub_and_quarantines_the_generation ... ok
+test both_doors_refuse_an_index_commit_other_than_the_sealed_one ... ok
+test a_scrub_resumed_over_a_reclaimed_generation_is_refused_not_quarantined ... ok
+test an_intact_generation_scrubs_in_bounded_resumable_steps ... ok
+test an_identity_that_does_not_match_the_manifest_is_refused ... ok
+test a_sealed_generation_refuses_every_mutation_and_keeps_its_bytes ... ok
+test an_interrupted_overlay_publish_leaves_nothing_the_seal_commits_to ... ok
+test segment_files_are_length_proved_at_the_doors ... ok
+test an_interrupted_reclaim_is_out_of_the_namespace_and_finished_once ... ok
+test both_doors_refuse_a_sidecar_that_does_not_match_the_manifest ... ok
+test a_door_finding_is_quarantined_only_by_the_adapters_re_proof ... ok
+test both_doors_refuse_an_overlay_the_seal_did_not_commit_to ... ok
+test both_doors_refuse_an_overlay_that_does_not_match_the_manifest ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.68s
+
+     Running tests/text_authority_shards.rs (/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-fast-lane/debug/deps/text_authority_shards-3d4d83241b93e0e4)
+
+running 6 tests
+test an_unsealed_source_batch_cannot_leave_index_authority_skew ... ok
+test a_delta_refuses_to_build_on_a_shard_whose_digest_changed ... ok
+test a_whole_corpus_layout_generation_is_refused_by_text_authority_format ... ok
+test a_text_authority_that_disagrees_with_its_manifest_never_opens ... ok
+QI-BB-006-SHARD-EVIDENCE docs=6194 base_bytes=5727748 delta_new_bytes=1903903 shards=4 touched=2 linked=2 written_shards=shard-00000000-0fa8ba2e2a3d2a6d.cbor,shard-00000003-1995322fbb8c6e17.cbor
+test one_scope_delta_rewrites_touched_shards_and_links_the_rest ... ok
+test boundary_documents_answer_like_an_independent_rebuild has been running for over 60 seconds
+test boundary_documents_answer_like_an_independent_rebuild ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 82.17s
+
+     Running tests/writer_envelope.rs (/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-fast-lane/debug/deps/writer_envelope-b70eff09adacb52b)
+
+running 3 tests
+test a_seal_releases_its_generations_writer_and_the_index_stays_readable ... ok
+test the_envelope_bounds_open_writers_and_their_heap_and_releases_the_oldest_committed ... ok
+test an_idle_writer_is_committed_and_released_on_the_next_sweep ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.38s
+
+resource admission: released lock=/Users/songmin/Library/Caches/quanta-index/resource-admission/build-test.lock held_ns=133122865750

@@ -23,13 +23,16 @@ use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
     BatchIngestMode, ChunkId, ChunkRecord, GenerationSnapshot, ManifestGeneration, RepoId,
     RepoRelativePath, RevisionId, SearchCorpusIngestBatch, SearchCorpusReplaceScope,
-    SearchPlaneTrackKind, SearchScopeKey, SearchScopeSurface,
+    SearchPlaneTrackKind,
 };
 use quanta_index_core::{
     CoreError, GenerationIdentityValidatePort, GenerationQuarantineReasonV1,
     GenerationStorageKeyV1, SealedGenerationScanPort, SearchCorpusBatchBuildPort,
 };
 use quanta_index_lexical::LexicalAdapter;
+
+#[path = "support/current_source_fixture.rs"]
+mod current_source_fixture;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -57,13 +60,13 @@ fn revision() -> RevisionId {
 fn scope(body: &str) -> Result<SearchCorpusReplaceScope, Box<dyn Error>> {
     let language = LanguageCode::new("rust")
         .map_err(|err| -> Box<dyn Error> { format!("language code: {err}").into() })?;
-    Ok(SearchCorpusReplaceScope {
-        scope: SearchScopeKey {
-            doc_surface: SearchScopeSurface::File,
-            repo_relative_path: RepoRelativePath::new("src/lib.rs"),
-        },
-        scope_digest: "scope:src/lib.rs".to_string(),
-        chunks: vec![ChunkRecord {
+    current_source_fixture::text_scope(
+        &repo(),
+        &revision(),
+        "src/lib.rs",
+        language.clone(),
+        body,
+        vec![ChunkRecord {
             chunk_id: ChunkId::new("chunk-lib"),
             repo_relative_path: RepoRelativePath::new("src/lib.rs"),
             language,
@@ -76,12 +79,12 @@ fn scope(body: &str) -> Result<SearchCorpusReplaceScope, Box<dyn Error>> {
             parent_chunk_id: None,
             source_repo_id: None,
         }],
-        symbols: Vec::new(),
-    })
+    )
 }
 
 fn sealed_batch(generation: ManifestGeneration) -> Result<SearchCorpusIngestBatch, Box<dyn Error>> {
-    Ok(SearchCorpusIngestBatch {
+    let mut batch = SearchCorpusIngestBatch {
+        source_event: current_source_fixture::empty_event(),
         repo_id: repo(),
         revision_id: revision(),
         generation,
@@ -96,7 +99,9 @@ fn sealed_batch(generation: ManifestGeneration) -> Result<SearchCorpusIngestBatc
         semantic_replace_scopes: Vec::new(),
         semantic_tombstone_scopes: Vec::new(),
         seal: true,
-    })
+    };
+    current_source_fixture::finish_batch(&mut batch)?;
+    Ok(batch)
 }
 
 fn identity(generation: ManifestGeneration) -> GenerationSnapshot {

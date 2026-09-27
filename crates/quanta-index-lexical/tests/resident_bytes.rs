@@ -19,11 +19,13 @@ use std::path::{Path, PathBuf};
 use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
     BatchIngestMode, ChunkId, ChunkRecord, ManifestGeneration, RepoId, RepoRelativePath,
-    RevisionId, SearchCorpusIngestBatch, SearchCorpusReplaceScope, SearchScopeKey,
-    SearchScopeSurface,
+    RevisionId, SearchCorpusIngestBatch, SearchCorpusReplaceScope,
 };
 use quanta_index_core::{GenerationStorageKeyV1, LexicalIndexOpenPort, SearchCorpusBatchBuildPort};
 use quanta_index_lexical::LexicalAdapter;
+
+#[path = "support/current_source_fixture.rs"]
+mod current_source_fixture;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -48,13 +50,13 @@ fn revision() -> RevisionId {
 fn scope(path: &str, body: &str) -> Result<SearchCorpusReplaceScope, Box<dyn Error>> {
     let language = LanguageCode::new("rust")
         .map_err(|err| -> Box<dyn Error> { format!("language code: {err}").into() })?;
-    Ok(SearchCorpusReplaceScope {
-        scope: SearchScopeKey {
-            doc_surface: SearchScopeSurface::File,
-            repo_relative_path: RepoRelativePath::new(path),
-        },
-        scope_digest: format!("scope:{path}"),
-        chunks: vec![ChunkRecord {
+    current_source_fixture::text_scope(
+        &repo(),
+        &revision(),
+        path,
+        language.clone(),
+        body,
+        vec![ChunkRecord {
             chunk_id: ChunkId::new(format!("chunk:{path}")),
             repo_relative_path: RepoRelativePath::new(path),
             language,
@@ -67,16 +69,16 @@ fn scope(path: &str, body: &str) -> Result<SearchCorpusReplaceScope, Box<dyn Err
             parent_chunk_id: None,
             source_repo_id: None,
         }],
-        symbols: Vec::new(),
-    })
+    )
 }
 
 fn batch(
     generation: u64,
     base: Option<u64>,
     scopes: Vec<SearchCorpusReplaceScope>,
-) -> SearchCorpusIngestBatch {
-    SearchCorpusIngestBatch {
+) -> Result<SearchCorpusIngestBatch, Box<dyn Error>> {
+    let mut batch = SearchCorpusIngestBatch {
+        source_event: current_source_fixture::empty_event(),
         repo_id: repo(),
         revision_id: revision(),
         generation: ManifestGeneration::new(generation),
@@ -95,7 +97,9 @@ fn batch(
         semantic_replace_scopes: Vec::new(),
         semantic_tombstone_scopes: Vec::new(),
         seal: true,
-    }
+    };
+    current_source_fixture::finish_batch(&mut batch)?;
+    Ok(batch)
 }
 
 fn generation_dir(root: &Path, generation: u64) -> PathBuf {
@@ -169,7 +173,7 @@ fn the_estimate_counts_the_decoded_authority_not_its_cbor() -> TestResult {
         1,
         None,
         vec![scope("src/a.rs", &body(1))?, scope("src/b.rs", &body(2))?],
-    ))?;
+    )?)?;
     let dir = generation_dir(&root, 1);
     let (mapped, _inodes) = inode_set_bytes(&dir, TEXT_AUTHORITY_DIR)?;
     let authority_cbor = text_authority_disk_bytes(&dir)?;
@@ -197,8 +201,8 @@ fn a_hard_linked_delta_counts_shared_inodes_once() -> TestResult {
     let temp = tempfile::tempdir()?;
     let root = temp.path().join("indexes").join("lexical");
     let adapter = LexicalAdapter::with_state_root(root.clone());
-    adapter.build_batch(&batch(1, None, vec![scope("src/a.rs", &body(1))?]))?;
-    adapter.build_batch(&batch(2, Some(1), vec![scope("src/b.rs", &body(2))?]))?;
+    adapter.build_batch(&batch(1, None, vec![scope("src/a.rs", &body(1))?])?)?;
+    adapter.build_batch(&batch(2, Some(1), vec![scope("src/b.rs", &body(2))?])?)?;
     let base = generation_dir(&root, 1);
     let delta = generation_dir(&root, 2);
     let (_base_bytes, base_inodes) = inode_set_bytes(&base, TEXT_AUTHORITY_DIR)?;

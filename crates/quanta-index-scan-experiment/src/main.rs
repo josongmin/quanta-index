@@ -557,9 +557,10 @@ mod tests {
         };
         let generation = ManifestGeneration::new(1);
         let batch = ingest_batch(&corpus, generation)?;
+        let expected_source_sha256: [u8; 32] = Sha256::digest(body.as_bytes()).into();
         assert_eq!(
             batch.replace_scopes[0].coverage.source.source_sha256,
-            Sha256::digest(body.as_bytes()).into()
+            expected_source_sha256
         );
         assert!(matches!(
             quanta_index_ipc::verify_batch_digest_v1(&mut batch.clone())?,

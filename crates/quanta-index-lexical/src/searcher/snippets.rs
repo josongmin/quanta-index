@@ -897,12 +897,13 @@ mod l4_witness_regressions {
         assert!(saturated.snippet.is_empty());
         assert!(saturated.highlights.is_empty());
 
-        // Thirty-four `a` scalars contain thirty-three overlapping `aa`
-        // occurrences. A non-overlapping iterator would miss the overflow
-        // and publish an incomplete highlight set as if it were complete.
+        // Thirty-five `a` scalars contain thirty-three overlapping `aaa`
+        // occurrences. This three-byte needle is admitted by the public raw
+        // substring planner; a non-overlapping iterator would miss the
+        // overflow and publish an incomplete highlight set as complete.
         let overlapping = render(
-            &LqExpr::Leaf(LqLeaf::RawString("aa".into())),
-            &"a".repeat(34),
+            &LqExpr::Leaf(LqLeaf::RawString("aaa".into())),
+            &"a".repeat(35),
         )?;
         assert_eq!(
             overlapping.preview.unavailable_reason,

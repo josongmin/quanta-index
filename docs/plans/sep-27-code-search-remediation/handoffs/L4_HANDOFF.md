@@ -2,8 +2,12 @@
 
 Latest audit: [L4_REAUDIT_20260927.md](L4_REAUDIT_20260927.md) records the
 observed regex preview admission undercount, its policy-charge mitigation,
-and a real daemon-process restart SDK regression. Its latest follow-up fixes a
-reproduced overlapping raw-substring witness omission: `aa` in `aaa` now retains
+and a real daemon-process restart SDK regression. Session hardening adds a
+planner-admitted 33-overlap budget edge in owner and indexed/manual adapter
+tests; 193 + 12 selected tests and seven real-process SDK tests passed on its
+own frozen dirty source. The
+earlier follow-up fixed a reproduced overlapping raw-substring witness omission:
+`aa` in `aaa` now retains
 both `[0,2)` and `[1,3)` rather than only the first span. A frozen-source owner
 run passed 309 tests and its matching SDK process run passed seven tests.
 Read its exact receipts and remaining claims before treating a selected test

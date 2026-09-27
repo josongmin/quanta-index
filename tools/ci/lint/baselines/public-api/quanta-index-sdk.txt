@@ -96,11 +96,16 @@ pub use quanta_index_sdk::SeedCandidate
 pub use quanta_index_sdk::SeedContribution
 pub use quanta_index_sdk::SeedLane
 pub use quanta_index_sdk::SemanticQueryResponse
+pub use quanta_index_sdk::SourceFileCoverage
+pub use quanta_index_sdk::SourceFileKey
+pub use quanta_index_sdk::SourceFileRevision
+pub use quanta_index_sdk::SourcePublicationEvent
 pub use quanta_index_sdk::StructuralCursorV1
 pub use quanta_index_sdk::StructuralReplaceScope
 pub use quanta_index_sdk::StructuralTombstoneScope
 pub use quanta_index_sdk::StructuralTreeRecord
 pub use quanta_index_sdk::SymbolCandidate
+pub use quanta_index_sdk::SymbolCoverage
 pub use quanta_index_sdk::SymbolId
 pub use quanta_index_sdk::SymbolKindCode
 pub use quanta_index_sdk::SymbolKindFamily

@@ -1,0 +1,78 @@
+{
+  "contract-migrated-final.txt": [
+    {
+      "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-fast-lane/debug/deps/scv2_01_semantic_source_wire-8e7311034b73f301",
+      "sha256": "13878721de3876568bbc16b6b205a09a698777ac53e40a27cd4aebeaf90838f6"
+    }
+  ],
+  "core-migrated-final.txt": [
+    {
+      "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-fast-lane/debug/deps/ingest_resource_policy-4c60e6a2a01b1907",
+      "sha256": "8dcd2a7c83ddf2c91d4ac1430211a92236c7250d37efa7bbb2e1d2fd3ae2e9b3"
+    }
+  ],
+  "lexical-migrated-final.txt": [
+    {
+      "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-fast-lane/debug/deps/boot_inventory-661a254d4412399e",
+      "sha256": "efa861b269a6495ed63115de06061a608652ea7281373214358afcd6ea92f22b"
+    },
+    {
+      "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-fast-lane/debug/deps/generation_delta_base_carryforward-126351fa53ac5aff",
+      "sha256": "e3fe3db79ac9446f5c8171f51b605169c7ac19ffad1a565d831125b963194827"
+    },
+    {
+      "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-fast-lane/debug/deps/resident_bytes-19962972884664f6",
+      "sha256": "4df3d8f88710f03b4427cd3429c39085261b26741560c6fef54006122e5f54bc"
+    },
+    {
+      "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-fast-lane/debug/deps/sealed_commitment_cost-eebfe8f65ff1c6d1",
+      "sha256": "82a56ad5ebabd5ed35a8fecd86f25a3d211d185e34a1eed84e0c89dfb9ed4c2b"
+    },
+    {
+      "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-fast-lane/debug/deps/sealed_manifest-6c1f013d5084999c",
+      "sha256": "d6b1416b03c71ddd9d2dadf8d9ce3240a774d1df80ac672496baa0850be4f8ae"
+    },
+    {
+      "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-fast-lane/debug/deps/text_authority_shards-3d4d83241b93e0e4",
+      "sha256": "904a11e0249e58c0788e819ebeb2de1f4ade79381b38813e219e39c2c8952818"
+    },
+    {
+      "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-fast-lane/debug/deps/writer_envelope-b70eff09adacb52b",
+      "sha256": "191c4137bf8d6635cf30d879d13845ac49113a9509dc793bef7c7502b98a0927"
+    }
+  ],
+  "selected-lexical-final.txt": [
+    {
+      "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-fast-lane/debug/deps/quanta_index_lexical-9b5383bc62ce9483",
+      "sha256": "0255358cde4d49ec1248828eaadbbc433ec6cb312546966565ca8f8639eb930a"
+    },
+    {
+      "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-fast-lane/debug/deps/cancellation_inside_search-ced663f13dd1c810",
+      "sha256": "5173b28741e1e0ad9f22114cd9a7e61f694fb407d4044e5307769e07e294f641"
+    },
+    {
+      "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-fast-lane/debug/deps/execution_budget-56a3426f0649626b",
+      "sha256": "e55c17071238e4433ba3b4a2792963a26b4c4c709afa6d523520ec4e16888e24"
+    },
+    {
+      "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-fast-lane/debug/deps/l1_query_domain_window-dbd650b8da1d3110",
+      "sha256": "90d5f0135a50f12ea3ab2a59dd5ba9db9f1f1e5e94f23e00b368ee11442bf067"
+    },
+    {
+      "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-fast-lane/debug/deps/l2_file_mutation-4f9b26556023a724",
+      "sha256": "3ecaafc9d49f1b31d2ce37c9a0209c56655d73596a43a4cd20ba1738f594687f"
+    },
+    {
+      "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-fast-lane/debug/deps/l3_exact_source-60aaaa993226033f",
+      "sha256": "a771ec0f080086968c9c34e5d5b1d589b2d19547f193c605046079b0b74dad02"
+    },
+    {
+      "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-fast-lane/debug/deps/l4_match_anchored_preview-817990d8e09348e4",
+      "sha256": "293297731940f42b69f4c77c2d666bf6688f459a5d2a58e24e218b71b7f297fd"
+    },
+    {
+      "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-fast-lane/debug/deps/ranked_pages-283ed70bf9633ac8",
+      "sha256": "9f926fba00e5356dcd47a44e8124c6ade608231e4648bf903470fbd9914e6121"
+    }
+  ]
+}

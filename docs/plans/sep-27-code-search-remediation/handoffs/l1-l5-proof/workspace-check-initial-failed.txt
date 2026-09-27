@@ -1,0 +1,78 @@
+./scripts/cargow --lane all-targets-lane check --workspace --all-targets --all-features --locked
+resource admission: waiting lock=/Users/songmin/Library/Caches/quanta-index/resource-admission/build-test.lock
+resource admission: admitted lock=/Users/songmin/Library/Caches/quanta-index/resource-admission/build-test.lock wait_ns=79083
+    Checking quanta-index-lq-text-normalizer v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lq-text-normalizer)
+    Checking quanta-index-contract-base v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-contract-base)
+    Checking quanta-index-lq-trigram v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lq-trigram)
+    Checking quanta-index-lq-positions v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lq-positions)
+    Checking quanta-index-lq-norm v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lq-norm)
+    Checking quanta-index-lq-regex v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lq-regex)
+    Checking tantivy-sstable v0.3.0 (https://github.com/josongmin/quanta-tantivy-sstable.git?rev=22b3c0e3b554faa8de7a55f917f90c90f2af7050#22b3c0e3)
+    Checking quanta-index-lq-obs v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lq-obs)
+   Compiling typenum v1.20.1
+    Checking tantivy-columnar v0.3.0
+    Checking quanta-index-corpus-smoke v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-corpus-smoke)
+   Compiling cpufeatures v0.2.17
+   Compiling cfg-if v1.0.4
+   Compiling tree-sitter-typescript v0.23.2 (/Users/songmin/Documents/code-new/quanta-index/vendor/tree-sitter-typescript)
+    Checking quanta-index-contract v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-contract)
+   Compiling generic-array v0.14.7
+    Checking tantivy v0.22.1
+   Compiling block-buffer v0.10.4
+   Compiling crypto-common v0.1.7
+   Compiling digest v0.10.7
+    Checking quanta-index-bench-protocol v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/benchmarks/bench-protocol)
+   Compiling sha2 v0.10.9
+   Compiling quanta-index-retrieval-bench v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/benchmarks/retrieval)
+    Checking quanta-index-core v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-core)
+    Checking quanta-index-lq-bridge v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lq-bridge)
+    Checking quanta-index-lq-structural v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lq-structural)
+    Checking quanta-index-ipc v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-ipc)
+    Checking quanta-index-semantic v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-semantic)
+    Checking quanta-index-search-plane v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-search-plane)
+    Checking quanta-index-lexical v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical)
+    Checking quanta-index-catalog v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-catalog)
+    Checking quanta-index-embed v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-embed)
+    Checking quanta-index-repomap v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-repomap)
+    Checking quanta-index-sdk v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-sdk)
+    Checking quanta-index-searchd v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-searchd)
+    Checking quanta-index-searchctl v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-searchctl)
+    Checking quanta-index-searchd-runtime v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-searchd-runtime)
+    Checking quanta-index-searchd-harness v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-searchd-harness)
+    Checking quanta-index-scan-experiment v0.1.0 (/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-scan-experiment)
+error[E0560]: struct `SearchCorpusReplaceScope` has no field named `scope`
+   --> crates/quanta-index-scan-experiment/src/main.rs:284:9
+    |
+284 |         scope: SearchScopeKey {
+    |         ^^^^^ `SearchCorpusReplaceScope` does not have this field
+    |
+    = note: available fields are: `coverage`
+
+error[E0560]: struct `SearchCorpusReplaceScope` has no field named `scope_digest`
+   --> crates/quanta-index-scan-experiment/src/main.rs:288:9
+    |
+288 |         scope_digest: framed_digest(
+    |         ^^^^^^^^^^^^ `SearchCorpusReplaceScope` does not have this field
+    |
+    = note: available fields are: `coverage`
+
+error[E0609]: no field `scope_digest` on type `&SearchCorpusReplaceScope`
+   --> crates/quanta-index-scan-experiment/src/main.rs:307:28
+    |
+307 |         .map(|scope| scope.scope_digest.as_bytes())
+    |                            ^^^^^^^^^^^^ unknown field
+    |
+    = note: available fields are: `coverage`, `chunks`, `symbols`
+
+error[E0063]: missing field `source_event` in initializer of `SearchCorpusIngestBatch`
+   --> crates/quanta-index-scan-experiment/src/main.rs:311:8
+    |
+311 |     Ok(SearchCorpusIngestBatch {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^ missing `source_event`
+
+Some errors have detailed explanations: E0063, E0560, E0609.
+For more information about an error, try `rustc --explain E0063`.
+error: could not compile `quanta-index-scan-experiment` (bin "scan_vs_index" test) due to 4 previous errors
+warning: build failed, waiting for other jobs to finish...
+resource admission: released lock=/Users/songmin/Library/Caches/quanta-index/resource-admission/build-test.lock held_ns=24799504417
+error: recipe `rust-check` failed on line 126 with exit code 101

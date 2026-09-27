@@ -603,6 +603,9 @@ impl LexicalAdapter {
             generation,
         };
         let mutates_index = source_batch || ops.iter().any(op_mutates_index);
+        if ops.iter().any(op_writes_generation) {
+            ensure_unsealed(&self.index_path(&key), generation, "an index or overlay op")?;
+        }
         if !source_batch && mutates_index {
             let base = declared_delta_base_generation(ops)?;
             let mut checked = vec![self.index_path(&key)];
@@ -620,9 +623,6 @@ impl LexicalAdapter {
                     Err(error) => return Err(CoreError::Storage(format!("lexical: inspect coverage binding: {error}"))),
                 }
             }
-        }
-        if ops.iter().any(op_writes_generation) {
-            ensure_unsealed(&self.index_path(&key), generation, "an index or overlay op")?;
         }
         self.prepare_generation_for_ops(&key, ops)?;
         if !mutates_index {
