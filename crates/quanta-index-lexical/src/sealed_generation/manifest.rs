@@ -16,7 +16,7 @@
 //!   them and hashing a corpus-sized index at every cold open is the cost
 //!   QI-BB-017 removes. The section stamps that policy explicitly;
 //! - **ranked keys** — one immutable, digest-proved key table per segment;
-//!   a query ranks by these tables without decoding SSTable strings;
+//!   a query ranks by these tables without decoding `SSTable` strings;
 //! - **text authority** — `None` for a generation built without one, or the
 //!   `text-authority/` manifest and every shard it lists. A door reads each
 //!   file once, hashing it as it decodes it;

@@ -24,9 +24,10 @@
 //! repo-metadata overlays (the crate-private `sealed_generation::overlay`
 //! families): whole-snapshot files the aux ingest routes publish before the
 //! seal. The seal writes a manifest that names every file a query opens —
-//! the Tantivy commit and the segment files it references, the
-//! text-authority tree, the overlays — with length and digest, and nothing
-//! may land in a sealed generation afterwards: an index-mutating op and an
+//! the Tantivy commit and the segment files it references, the immutable
+//! ranked-key tables, the text-authority tree, and the overlays — each with
+//! length and digest. Nothing may land in a sealed generation afterwards:
+//! an index-mutating op and an
 //! overlay publish alike are refused typed. The activation validator and
 //! the query open walk that manifest through one function, so activation
 //! can only admit a generation a query can open (QI-BB-030).

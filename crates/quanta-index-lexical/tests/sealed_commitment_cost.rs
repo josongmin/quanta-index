@@ -40,6 +40,7 @@ type TestResult = Result<(), Box<dyn Error>>;
 const DOCS: usize = 3 * 2048 + 50;
 const TEXT_AUTHORITY_DIR: &str = "text-authority";
 const TANTIVY_META: &str = "meta.json";
+const SOURCE_FILE_COVERAGE: &str = "source-file-coverage.cbor";
 const OVERLAY_FILES: [&str; 7] = [
     "repo-metadata.cbor",
     "repo-commit-recency.cbor",
@@ -237,6 +238,7 @@ fn committed_files(generation_dir: &Path) -> Result<Vec<CommittedFile>, Box<dyn 
         });
         let is_ranked_keys = name.starts_with("ranked-keys-") && name.ends_with(".bin");
         if name == TANTIVY_META
+            || name == SOURCE_FILE_COVERAGE
             || is_segment_file
             || is_ranked_keys
             || OVERLAY_FILES.contains(&name.as_str())

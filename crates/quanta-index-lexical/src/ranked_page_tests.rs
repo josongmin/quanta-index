@@ -38,9 +38,9 @@ fn l3_ranked_keys_avoid_query_time_sstable_decode() -> TestResult {
     let segment = &searcher.segment_readers()[0];
     let encoded = crate::ranked_keys::encode(segment)?;
     let table = crate::ranked_keys::SegmentKeys::decode(encoded, segment)?;
-    assert_eq!(table.get(1, 0), Some(long.as_str()));
-    assert_eq!(table.get(1, 1), Some("b.rs"));
-    assert_eq!(table.get(1, 2), None);
+    assert_eq!(table.get(1, 0)?, long.as_str());
+    assert_eq!(table.get(1, 1)?, "b.rs");
+    assert!(table.get(1, 2).is_err());
     let resources = LexicalCollectionBudget::new(100, 1_024)?;
     let ledger = CollectionBudget::new(LexicalExecutionBudgetV1::new(10)?, resources.clone());
     let query = TermQuery::new(

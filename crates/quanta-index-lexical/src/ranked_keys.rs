@@ -1,7 +1,7 @@
 //! Immutable, segment-bound ranked-order keys. The seal derives these from
-//! Tantivy's dictionaries once; collectors never decode an SSTable key.
+//! Tantivy's dictionaries once; collectors never decode an `SSTable` key.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -21,6 +21,7 @@ const COLUMNS: [&str; 3] = [
     RANKED_CANDIDATE_ID_COLUMN,
 ];
 /// This resident table is separate from the per-request collection budget.
+///
 /// A generation larger than this is refused at seal/open, not served with an
 /// unbounded fallback. The snapshot registry separately admits the full
 /// generation estimate, including these bytes and the Tantivy index.
@@ -95,7 +96,7 @@ pub(crate) fn encode(reader: &SegmentReader) -> Result<Vec<u8>, CoreError> {
             )));
         }
         let terms = u64::try_from(dictionary.num_terms())
-            .map_err(|_| corrupt(&name, "term count overflow"))?;
+            .map_err(|_error| corrupt(&name, "term count overflow"))?;
         append(&mut out, &terms.to_le_bytes(), &name)?;
         let length_at = out.len();
         append(&mut out, &0_u64.to_le_bytes(), &name)?;
@@ -116,22 +117,26 @@ pub(crate) fn encode(reader: &SegmentReader) -> Result<Vec<u8>, CoreError> {
             if std::str::from_utf8(key).is_err() {
                 return Err(corrupt(&name, &format!("{column_name} is not UTF-8")));
             }
-            if prior
-                .as_ref()
-                .is_some_and(|range| &out[range.clone()] >= key)
-            {
-                return Err(corrupt(
-                    &name,
-                    &format!("{column_name} is not strictly ordered"),
-                ));
+            if let Some(range) = &prior {
+                let previous = out
+                    .get(range.clone())
+                    .ok_or_else(|| corrupt(&name, "previous key range is missing"))?;
+                if previous >= key {
+                    return Err(corrupt(
+                        &name,
+                        &format!("{column_name} is not strictly ordered"),
+                    ));
+                }
             }
             let start = out.len();
             append(&mut out, key, &name)?;
             prior = Some(start..out.len());
-            offsets.push(
-                u64::try_from(out.len() - data_at)
-                    .map_err(|_| corrupt(&name, "offset overflow"))?,
-            );
+            let data_len = out
+                .len()
+                .checked_sub(data_at)
+                .ok_or_else(|| corrupt(&name, "data length underflow"))?;
+            offsets
+                .push(u64::try_from(data_len).map_err(|_error| corrupt(&name, "offset overflow"))?);
         }
         if offsets.len() != dictionary.num_terms().saturating_add(1) {
             return Err(corrupt(
@@ -139,9 +144,18 @@ pub(crate) fn encode(reader: &SegmentReader) -> Result<Vec<u8>, CoreError> {
                 &format!("{column_name} term count disagrees with dictionary"),
             ));
         }
-        let data_len = u64::try_from(out.len() - data_at)
-            .map_err(|_| corrupt(&name, "data length overflow"))?;
-        out[length_at..length_at + 8].copy_from_slice(&data_len.to_le_bytes());
+        let data_len = out
+            .len()
+            .checked_sub(data_at)
+            .ok_or_else(|| corrupt(&name, "data length underflow"))?;
+        let data_len =
+            u64::try_from(data_len).map_err(|_error| corrupt(&name, "data length overflow"))?;
+        let length_end = length_at
+            .checked_add(8)
+            .ok_or_else(|| corrupt(&name, "length offset overflow"))?;
+        out.get_mut(length_at..length_end)
+            .ok_or_else(|| corrupt(&name, "missing length slot"))?
+            .copy_from_slice(&data_len.to_le_bytes());
         for offset in offsets {
             append(&mut out, &offset.to_le_bytes(), &name)?;
         }
@@ -168,12 +182,12 @@ fn read_u64(bytes: &[u8], at: usize, name: &str) -> Result<u64, CoreError> {
     let end = at
         .checked_add(8)
         .ok_or_else(|| corrupt(name, "offset overflow"))?;
-    let raw: [u8; 8] = bytes
+    let raw = bytes
         .get(at..end)
-        .ok_or_else(|| corrupt(name, "truncated integer"))?
-        .try_into()
-        .map_err(|_| corrupt(name, "truncated integer"))?;
-    Ok(u64::from_le_bytes(raw))
+        .ok_or_else(|| corrupt(name, "truncated integer"))?;
+    let mut value = [0_u8; 8];
+    value.copy_from_slice(raw);
+    Ok(u64::from_le_bytes(value))
 }
 
 impl SegmentKeys {
@@ -189,11 +203,15 @@ impl SegmentKeys {
         let mut fields = Vec::with_capacity(3);
         for column_name in COLUMNS {
             let terms = usize::try_from(read_u64(&bytes, at, &name)?)
-                .map_err(|_| corrupt(&name, "term count overflow"))?;
-            at += 8;
+                .map_err(|_error| corrupt(&name, "term count overflow"))?;
+            at = at
+                .checked_add(8)
+                .ok_or_else(|| corrupt(&name, "header offset overflow"))?;
             let data_len = usize::try_from(read_u64(&bytes, at, &name)?)
-                .map_err(|_| corrupt(&name, "data length overflow"))?;
-            at += 8;
+                .map_err(|_error| corrupt(&name, "data length overflow"))?;
+            at = at
+                .checked_add(8)
+                .ok_or_else(|| corrupt(&name, "header offset overflow"))?;
             let data_end = at
                 .checked_add(data_len)
                 .ok_or_else(|| corrupt(&name, "data overflow"))?;
@@ -226,15 +244,27 @@ impl SegmentKeys {
                 ));
             }
             let mut previous: Option<&[u8]> = None;
-            for index in 0..terms {
-                let start = usize::try_from(read_u64(&bytes, data_end + index * 8, &name)?)
-                    .map_err(|_| corrupt(&name, "key offset overflow"))?;
-                let end = usize::try_from(read_u64(&bytes, data_end + (index + 1) * 8, &name)?)
-                    .map_err(|_| corrupt(&name, "key offset overflow"))?;
+            let mut offset_at = data_end;
+            for _index in 0..terms {
+                let start = usize::try_from(read_u64(&bytes, offset_at, &name)?)
+                    .map_err(|_error| corrupt(&name, "key offset overflow"))?;
+                offset_at = offset_at
+                    .checked_add(8)
+                    .ok_or_else(|| corrupt(&name, "key offset position overflow"))?;
+                let end = usize::try_from(read_u64(&bytes, offset_at, &name)?)
+                    .map_err(|_error| corrupt(&name, "key offset overflow"))?;
                 if start > end || end > data_len {
                     return Err(corrupt(&name, "key offset outside data"));
                 }
-                let key = &bytes[at + start..at + end];
+                let key_start = at
+                    .checked_add(start)
+                    .ok_or_else(|| corrupt(&name, "key start overflow"))?;
+                let key_end = at
+                    .checked_add(end)
+                    .ok_or_else(|| corrupt(&name, "key end overflow"))?;
+                let key = bytes
+                    .get(key_start..key_end)
+                    .ok_or_else(|| corrupt(&name, "key outside data"))?;
                 if std::str::from_utf8(key).is_err() {
                     return Err(corrupt(&name, "key is not UTF-8"));
                 }
@@ -243,10 +273,13 @@ impl SegmentKeys {
                 }
                 previous = Some(key);
             }
+            let last_offset = offset_end
+                .checked_sub(8)
+                .ok_or_else(|| corrupt(&name, "offset sentinel underflow"))?;
             if read_u64(&bytes, data_end, &name)? != 0
-                || read_u64(&bytes, offset_end - 8, &name)?
+                || read_u64(&bytes, last_offset, &name)?
                     != u64::try_from(data_len)
-                        .map_err(|_| corrupt(&name, "data length overflow"))?
+                        .map_err(|_error| corrupt(&name, "data length overflow"))?
             {
                 return Err(corrupt(&name, "offset sentinels disagree with data"));
             }
@@ -258,7 +291,7 @@ impl SegmentKeys {
         }
         let fields: [FieldTable; 3] = fields
             .try_into()
-            .map_err(|_| corrupt(&name, "field count"))?;
+            .map_err(|_error| corrupt(&name, "field count"))?;
         Ok(Self {
             id: reader.segment_id(),
             bytes: Arc::new(bytes),
@@ -266,30 +299,42 @@ impl SegmentKeys {
         })
     }
 
-    pub(crate) fn get(&self, column: usize, ord: u64) -> Option<&str> {
-        let field = self.fields.get(column)?;
-        let index = usize::try_from(ord).ok()?;
+    pub(crate) fn get(&self, column: usize, ord: u64) -> Result<&str, CoreError> {
+        let field = self
+            .fields
+            .get(column)
+            .ok_or_else(|| corrupt("ranked key", "unknown column"))?;
+        let index =
+            usize::try_from(ord).map_err(|_error| corrupt("ranked key", "ordinal overflow"))?;
         if index >= field.terms {
-            return None;
+            return Err(corrupt("ranked key", "ordinal outside table"));
         }
-        let start = usize::try_from(
-            read_u64(&self.bytes, field.offsets.start + index * 8, "ranked key").ok()?,
-        )
-        .ok()?;
-        let end = usize::try_from(
-            read_u64(
-                &self.bytes,
-                field.offsets.start + (index + 1) * 8,
-                "ranked key",
-            )
-            .ok()?,
-        )
-        .ok()?;
-        std::str::from_utf8(
-            self.bytes
-                .get(field.data.start + start..field.data.start + end)?,
-        )
-        .ok()
+        let offset = index
+            .checked_mul(8)
+            .and_then(|bytes| field.offsets.start.checked_add(bytes))
+            .ok_or_else(|| corrupt("ranked key", "offset position overflow"))?;
+        let next_offset = offset
+            .checked_add(8)
+            .ok_or_else(|| corrupt("ranked key", "offset position overflow"))?;
+        let start = usize::try_from(read_u64(&self.bytes, offset, "ranked key")?)
+            .map_err(|_error| corrupt("ranked key", "offset overflow"))?;
+        let end = usize::try_from(read_u64(&self.bytes, next_offset, "ranked key")?)
+            .map_err(|_error| corrupt("ranked key", "offset overflow"))?;
+        let key_start = field
+            .data
+            .start
+            .checked_add(start)
+            .ok_or_else(|| corrupt("ranked key", "key start overflow"))?;
+        let key_end = field
+            .data
+            .start
+            .checked_add(end)
+            .ok_or_else(|| corrupt("ranked key", "key end overflow"))?;
+        let key = self
+            .bytes
+            .get(key_start..key_end)
+            .ok_or_else(|| corrupt("ranked key", "key outside table"))?;
+        std::str::from_utf8(key).map_err(|error| corrupt("ranked key", &error.to_string()))
     }
 
     pub(crate) fn id(&self) -> SegmentId {
@@ -320,7 +365,10 @@ impl RankedKeyTables {
                 .capacity()
                 .checked_add(std::mem::size_of::<SegmentKeys>())
                 .and_then(|value| value.checked_add(std::mem::size_of::<Vec<u8>>()))
-                .and_then(|value| value.checked_add(word * 4))
+                .and_then(|value| {
+                    word.checked_mul(4)
+                        .and_then(|header| value.checked_add(header))
+                })
                 .ok_or_else(|| {
                     CoreError::Storage("lexical: ranked-key heap estimate overflow".into())
                 })?;
@@ -328,8 +376,9 @@ impl RankedKeyTables {
                 CoreError::Storage("lexical: ranked-key heap estimate overflow".into())
             })
         })?;
-        u64::try_from(bytes)
-            .map_err(|_| CoreError::Storage("lexical: ranked-key heap estimate overflow".into()))
+        u64::try_from(bytes).map_err(|_error| {
+            CoreError::Storage("lexical: ranked-key heap estimate overflow".into())
+        })
     }
     pub(crate) fn rebind(&self, readers: &[SegmentReader]) -> Result<Self, CoreError> {
         Self::bind(self.segments.clone(), readers)
@@ -341,12 +390,9 @@ impl RankedKeyTables {
         if segments.len() != readers.len() {
             return Err(corrupt("generation", "ranked-key segment count mismatch"));
         }
-        let mut by_id = HashMap::new();
-        by_id.try_reserve(segments.len()).map_err(|error| {
-            CoreError::Storage(format!("lexical: reserve ranked-key bindings: {error}"))
-        })?;
+        let mut by_id = BTreeMap::new();
         for table in segments {
-            if by_id.insert(table.id(), table).is_some() {
+            if by_id.insert(table.id().uuid_string(), table).is_some() {
                 return Err(corrupt(
                     "generation",
                     "duplicate ranked-key segment identity",
@@ -361,7 +407,7 @@ impl RankedKeyTables {
         })?;
         for reader in readers {
             let table = by_id
-                .remove(&reader.segment_id())
+                .remove(&reader.segment_id().uuid_string())
                 .ok_or_else(|| corrupt("generation", "ranked-key segment identity missing"))?;
             ordered.push(table);
         }

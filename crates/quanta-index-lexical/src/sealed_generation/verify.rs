@@ -135,6 +135,9 @@ fn verify_ranked_keys(
         .map(|artifact| (artifact.name.as_str(), artifact))
         .collect();
     let mut total = 0_u64;
+    let resident_limit = u64::try_from(MAX_RANKED_KEYS_BYTES).map_err(|error| {
+        CoreError::Storage(format!("lexical: ranked-key limit overflow: {error}"))
+    })?;
     let mut tables = Vec::new();
     for segment in searcher.segment_readers() {
         let name = ranked_keys::file_name(segment);
@@ -144,7 +147,7 @@ fn verify_ranked_keys(
         total = total.checked_add(commitment.bytes).ok_or_else(|| {
             CoreError::Storage("lexical: ranked-key resident bytes overflow".into())
         })?;
-        if total > MAX_RANKED_KEYS_BYTES as u64 {
+        if total > resident_limit {
             return Err(crate::index_store::sidecar_corrupt(
                 generation_dir,
                 &name,

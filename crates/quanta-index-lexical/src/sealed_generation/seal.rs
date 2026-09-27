@@ -304,9 +304,11 @@ pub(crate) fn seal_generation(
     Ok(measurer.stats)
 }
 
-/// Build only new segment tables; a delta inherits the exact inode and
-/// commitment of an unchanged segment's table. Remove tables for merged or
-/// deleted segments so an unlisted sidecar cannot masquerade as authority.
+/// Build only new segment tables.
+///
+/// A delta inherits the exact inode and commitment of an unchanged segment's
+/// table. Remove tables for merged or deleted segments so an unlisted sidecar
+/// cannot masquerade as authority. The bytes are capped at open.
 fn commit_ranked_keys(
     index: &Index,
     measurer: &mut Measurer,
@@ -326,7 +328,11 @@ fn commit_ranked_keys(
         .map(|segment| (ranked_keys::file_name(segment), segment))
         .collect();
     segments.sort_by(|left, right| left.0.cmp(&right.0));
-    if segments.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+    if segments.windows(2).any(|pair| {
+        pair.first()
+            .zip(pair.get(1))
+            .is_some_and(|(left, right)| left.0 == right.0)
+    }) {
         return Err(CoreError::Storage(
             "lexical: duplicate ranked-key segment".into(),
         ));
@@ -351,6 +357,9 @@ fn commit_ranked_keys(
     }
     let mut commitments = Vec::new();
     let mut total = 0_u64;
+    let resident_limit = u64::try_from(MAX_RANKED_KEYS_BYTES).map_err(|error| {
+        CoreError::Storage(format!("lexical: ranked-key limit overflow: {error}"))
+    })?;
     for (name, segment) in segments {
         let path = measurer.generation_dir.join(&name);
         let existing = match std::fs::symlink_metadata(&path) {
@@ -388,7 +397,7 @@ fn commit_ranked_keys(
         total = total
             .checked_add(commitment.bytes)
             .ok_or_else(|| CoreError::Storage("lexical: ranked-key table size overflow".into()))?;
-        if total > MAX_RANKED_KEYS_BYTES as u64 {
+        if total > resident_limit {
             return Err(CoreError::Storage(
                 "lexical: ranked-key tables exceed resident limit".into(),
             ));

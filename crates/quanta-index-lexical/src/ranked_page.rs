@@ -182,11 +182,9 @@ impl RankedRowColumns {
         name: &str,
         collection: Option<&CollectionBudget>,
     ) -> tantivy::Result<(String, Option<LexicalMemoryReservation>)> {
-        let Some(key) = self.keys.get(column, ord) else {
-            return Err(TantivyError::InternalError(format!(
-                "`{name}` ordinal {ord} names no term"
-            )));
-        };
+        let key = self.keys.get(column, ord).map_err(|error| {
+            TantivyError::InternalError(format!("`{name}` ordinal {ord}: {error}"))
+        })?;
         let memory = if key.is_empty() {
             None
         } else {
@@ -236,8 +234,8 @@ impl RankedRowColumns {
         let path = Self::ord(&self.path, doc, RANKED_PATH_COLUMN)?;
         let candidate_id = Self::ord(&self.candidate_id, doc, RANKED_CANDIDATE_ID_COLUMN)?;
         let get = |column, ord, name| {
-            self.keys.get(column, ord).ok_or_else(|| {
-                TantivyError::InternalError(format!("`{name}` ordinal {ord} names no term"))
+            self.keys.get(column, ord).map_err(|error| {
+                TantivyError::InternalError(format!("`{name}` ordinal {ord}: {error}"))
             })
         };
         Ok(LexicalRowOrderKey {
