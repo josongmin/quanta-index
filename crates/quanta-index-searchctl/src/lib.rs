@@ -709,9 +709,9 @@ fn parse_request_events(
             }
             "--limit" if limit.is_none() => {
                 let raw = take_value(rest, "--limit")?;
-                let parsed = raw
-                    .parse::<u16>()
-                    .map_err(|_| CliError::usage(format!("invalid event limit `{raw}`")))?;
+                let parsed = raw.parse::<u16>().map_err(|error| {
+                    CliError::usage(format!("invalid event limit `{raw}`: {error}"))
+                })?;
                 if parsed == 0 || parsed > quanta_index_contract::MAX_PROCESS_REQUEST_EVENTS_V1 {
                     return Err(CliError::usage("event limit must be 1..=1024".to_owned()));
                 }
@@ -3999,6 +3999,10 @@ mod tests {
         ] {
             assert!(ParsedCommand::parse(args).is_err());
         }
+        let invalid = ParsedCommand::parse(["events", "--plane", "query", "--limit", "abc"])
+            .expect_err("non-numeric limit");
+        assert_eq!(invalid.exit_code, EXIT_USAGE);
+        assert!(invalid.message.contains("invalid digit found in string"));
     }
 
     #[test]
