@@ -31,10 +31,6 @@ members = [
 exclude = ["vendor/tree-sitter-typescript"]
 resolver = "2"
 
-[patch.crates-io]
-tantivy-sstable = { git = "https://github.com/josongmin/quanta-tantivy-sstable.git", rev = "22b3c0e3b554faa8de7a55f917f90c90f2af7050" }
-
-
 [workspace.package]
 edition = "2024"
 license = "UNLICENSED"

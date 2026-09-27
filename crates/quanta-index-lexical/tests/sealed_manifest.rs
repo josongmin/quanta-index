@@ -128,7 +128,7 @@ fn sealed_batch(
         generation,
         base_generation: None,
         manifest_digest: format!("manifest-digest:{}", generation.get()),
-        batch_digest: format!("batch-digest:{}", generation.get()),
+        batch_digest: "0".repeat(64),
         mode: BatchIngestMode::ReplaceGeneration,
         bundle_payload: None,
         clear_surfaces: Vec::new(),
@@ -737,6 +737,94 @@ fn both_doors_refuse_an_overlay_that_does_not_match_the_manifest() -> TestResult
     Ok(())
 }
 
+#[test]
+fn both_doors_refuse_missing_changed_or_uncommitted_ranked_keys() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().to_path_buf();
+    let adapter = LexicalAdapter::with_state_root(root.clone());
+    let generation = ManifestGeneration::new(1);
+    adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
+    let dir = generation_dir(&root, generation);
+    let entries = std::fs::read_dir(&dir)?.collect::<Result<Vec<_>, _>>()?;
+    let tables: Vec<_> = entries
+        .into_iter()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("ranked-keys-")
+        })
+        .map(|entry| entry.path())
+        .collect();
+    if tables.len() != 1 {
+        return Err(format!("expected one ranked-key table, found {}", tables.len()).into());
+    }
+    let path = tables.first().ok_or("ranked-key table missing")?;
+    let original = std::fs::read(path)?;
+    expect_admitted(&knock(&adapter, generation), "intact ranked keys")?;
+    std::fs::remove_file(path)?;
+    expect_refused(
+        &knock(&adapter, generation),
+        "missing ranked keys",
+        "GENERATION_SIDECAR_CORRUPT",
+    )?;
+    let shortened = original
+        .get(
+            ..original
+                .len()
+                .checked_sub(1)
+                .ok_or("empty ranked-key table")?,
+        )
+        .ok_or("ranked-key truncation range missing")?;
+    std::fs::write(path, shortened)?;
+    expect_refused(
+        &knock(&adapter, generation),
+        "truncated ranked keys",
+        "GENERATION_SIDECAR_CORRUPT",
+    )?;
+    let mut flipped = original.clone();
+    *flipped.get_mut(40).ok_or("ranked-key payload missing")? ^= 1;
+    std::fs::write(path, &flipped)?;
+    expect_refused(
+        &knock(&adapter, generation),
+        "changed ranked keys",
+        "GENERATION_SIDECAR_CORRUPT",
+    )?;
+    std::fs::write(path, &original)?;
+    expect_admitted(&knock(&adapter, generation), "restored ranked keys")?;
+    let extra = dir.join("ranked-keys-ffffffffffffffffffffffffffffffff.bin");
+    std::fs::write(&extra, &original)?;
+    expect_refused(
+        &knock(&adapter, generation),
+        "uncommitted ranked keys",
+        "GENERATION_SIDECAR_CORRUPT",
+    )?;
+    std::fs::remove_file(extra)?;
+    expect_admitted(
+        &knock(&adapter, generation),
+        "uncommitted ranked keys removed",
+    )?;
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::ffi::OsStringExt;
+
+        let invalid_name = std::ffi::OsString::from_vec(b"ranked-keys-\xff.bin".to_vec());
+        let invalid_extra = dir.join(invalid_name);
+        std::fs::write(&invalid_extra, &original)?;
+        expect_refused(
+            &knock(&adapter, generation),
+            "uncommitted non-UTF-8 ranked key",
+            "GENERATION_SIDECAR_CORRUPT",
+        )?;
+        std::fs::remove_file(invalid_extra)?;
+        expect_admitted(
+            &knock(&adapter, generation),
+            "uncommitted non-UTF-8 ranked key removed",
+        )?;
+    }
+    Ok(())
+}
+
 /// An overlay file the seal did not commit to is refused when it appears:
 /// a generation sealed without an overlay family says so in its manifest,
 /// and a file that shows up later is not silently decoded.
@@ -853,13 +941,9 @@ fn segment_files(generation_dir: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>> 
 /// Every segment file the commit references is proved by length at the
 /// doors.
 ///
-/// A length change or a missing file is refused by every door. A
-/// same-length flip passes them — the doors prove these bytes by length,
-/// never by content, because a query maps them instead of decoding them —
-/// and is the scrub's to find (next test). The flipped file is not mapped
-/// here: Tantivy panics rather than errors on a corrupted segment
-/// component, which is exactly the exposure the scrub exists to close
-/// before a query reaches it.
+/// A length change or missing file is refused by every door. A same-length
+/// flip may be caught early when the ranked-key verifier opens a fast field;
+/// other components remain the scrub's to hash (next test).
 #[test]
 fn segment_files_are_length_proved_at_the_doors() -> TestResult {
     let temp = tempfile::tempdir()?;
@@ -909,11 +993,13 @@ fn segment_files_are_length_proved_at_the_doors() -> TestResult {
             *byte ^= 0x01;
         }
         std::fs::write(&path, &flipped)?;
-        if let Err(err) = adapter.validate_generation_identity(&identity(generation)) {
-            return Err(format!(
-                "{name} flipped: the validator, which proves segment files by length, refused: {err}"
-            )
-            .into());
+        match adapter.validate_generation_identity(&identity(generation)) {
+            Ok(())
+            | Err(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
+                ..
+            }) => {}
+            Err(err) => return Err(format!("{name} flipped: unexpected verdict: {err}").into()),
         }
 
         std::fs::write(&path, &original)?;
@@ -941,8 +1027,11 @@ fn a_same_length_flip_is_found_by_the_scrub_and_quarantines_the_generation() -> 
     let dir = generation_dir(&root, generation);
     let segment = segment_files(&dir)?
         .into_iter()
-        .next()
-        .ok_or("a sealed generation has segment files")?;
+        .find(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "store")
+        })
+        .ok_or("a sealed generation has a stored-field segment component")?;
     let original = std::fs::read(&segment)?;
     let mut flipped = original.clone();
     let middle = flipped.len().div_euclid(2);

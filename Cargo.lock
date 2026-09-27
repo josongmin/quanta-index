@@ -5967,7 +5967,8 @@ dependencies = [
 [[package]]
 name = "tantivy-sstable"
 version = "0.3.0"
-source = "git+https://github.com/josongmin/quanta-tantivy-sstable.git?rev=22b3c0e3b554faa8de7a55f917f90c90f2af7050#22b3c0e3b554faa8de7a55f917f90c90f2af7050"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c69578242e8e9fc989119f522ba5b49a38ac20f576fc778035b96cc94f41f98e"
 dependencies = [
  "tantivy-bitpacker",
  "tantivy-common",

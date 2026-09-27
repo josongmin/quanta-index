@@ -263,7 +263,8 @@ fn a_seal_releases_its_generations_writer_and_the_index_stays_readable() -> Test
         generation,
         base_generation: None,
         manifest_digest: "manifest:7".to_string(),
-        batch_digest: "batch:7".to_string(),
+        // Adapter admission checks token shape; IPC owns body-digest proof.
+        batch_digest: "0".repeat(64),
         mode: BatchIngestMode::ReplaceGeneration,
         bundle_payload: None,
         clear_surfaces: Vec::new(),

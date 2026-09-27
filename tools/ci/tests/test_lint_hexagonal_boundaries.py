@@ -127,6 +127,33 @@ def test_cfg_test_path_module_is_not_a_production_transport_leak(tmp_path: Path)
     assert production.resolve() not in lint.test_only_path_modules(tmp_path)
 
 
+def test_tantivy_segment_reader_call_does_not_hide_other_transport_leaks(
+    tmp_path: Path, monkeypatch
+) -> None:
+    lint = _load_lint()
+    crates = tmp_path / "crates"
+    lexical = crates / "quanta-index-lexical" / "src"
+    searchd = crates / "quanta-index-searchd" / "src"
+    lexical.mkdir(parents=True)
+    searchd.mkdir(parents=True)
+    ranked_keys = lexical / "ranked_keys.rs"
+    ranked_keys.write_text("fn id(reader: &SegmentReader) { reader.segment_id(); }\n")
+    other = searchd / "ingest.rs"
+    other.write_text("fn ingest() { let segment_id = 1; }\n")
+    monkeypatch.setattr(lint, "CRATES", crates)
+
+    violations = lint.check_channel_backend_isolation()
+    assert [(v.path, v.message) for v in violations] == [
+        (other, "transport-specific token 'segment_id' leaked outside channel backend")
+    ]
+
+    ranked_keys.write_text(
+        "fn id(reader: &SegmentReader) { reader.segment_id(); let segment_id = 1; }\n"
+    )
+    violations = lint.check_channel_backend_isolation()
+    assert [v.path for v in violations] == [ranked_keys, other]
+
+
 def test_core_vendor_alias_cannot_bypass_dependency_boundary(tmp_path: Path, monkeypatch) -> None:
     lint = _load_lint()
     core = tmp_path / "crates" / "quanta-index-core"

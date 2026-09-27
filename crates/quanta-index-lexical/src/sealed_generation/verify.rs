@@ -23,13 +23,15 @@
 
 use std::collections::BTreeSet;
 use std::path::Path;
+use std::sync::Arc;
 
 use quanta_index_contract::{GenerationSnapshot, SourcePublicationEvent};
 use quanta_index_core::CoreError;
 use quanta_index_core::domains::generation::SealedArtifactCommitmentV1;
-use tantivy::Index;
+use tantivy::{Index, IndexReader, ReloadPolicy};
 
 use crate::overlay_codec::OverlayFamily;
+use crate::ranked_keys::{self, MAX_RANKED_KEYS_BYTES, RankedKeyTables, SegmentKeys};
 use crate::sealed_generation::coverage::{
     CoverageArtifact, CoverageSnapshot, SOURCE_FILE_COVERAGE_FILE_NAME, decode_coverage,
 };
@@ -70,6 +72,7 @@ pub(crate) struct VerifiedGeneration {
     /// The index, opened from the sealed commit with the tokenizers
     /// registered.
     pub(crate) index: Index,
+    pub(crate) ranked_keys: Arc<RankedKeyTables>,
     /// Decoded from this generation's committed artifact; None is unavailable.
     pub(crate) coverage: Option<CoverageSnapshot>,
     pub(crate) source_publication: Option<SourcePublicationEvent>,
@@ -87,6 +90,7 @@ pub(crate) fn walk_sealed_generation<V: SealedGenerationVisitor>(
     let _meta_bytes = read_committed(generation_dir, &manifest.index_meta)?;
     let index = crate::index_store::open_sealed_index(generation_dir)?;
     verify_index_segments(generation_dir, &index, &manifest.index_segments)?;
+    let ranked_keys = verify_ranked_keys(generation_dir, &index, &manifest.ranked_keys)?;
     verify_overlays(generation_dir, &manifest, visitor)?;
     verify_text_authority(generation_dir, manifest.text_authority.as_deref(), visitor)?;
     let coverage =
@@ -97,9 +101,81 @@ pub(crate) fn walk_sealed_generation<V: SealedGenerationVisitor>(
     Ok(VerifiedGeneration {
         manifest,
         index,
+        ranked_keys,
         coverage,
         source_publication,
     })
+}
+
+fn verify_ranked_keys(
+    generation_dir: &Path,
+    index: &Index,
+    commitments: &[SealedArtifactCommitmentV1],
+) -> Result<Arc<RankedKeyTables>, CoreError> {
+    let reader: IndexReader = index
+        .reader_builder()
+        .reload_policy(ReloadPolicy::Manual)
+        .try_into()
+        .map_err(|error| {
+            CoreError::Storage(format!("lexical: ranked-key verifier reader: {error}"))
+        })?;
+    reader.reload().map_err(|error| {
+        CoreError::Storage(format!("lexical: ranked-key verifier reload: {error}"))
+    })?;
+    let searcher = reader.searcher();
+    if commitments.len() != searcher.segment_readers().len() {
+        return Err(crate::index_store::sidecar_corrupt(
+            generation_dir,
+            "ranked keys",
+            "segment count mismatch",
+        ));
+    }
+    let by_name: std::collections::BTreeMap<&str, &SealedArtifactCommitmentV1> = commitments
+        .iter()
+        .map(|artifact| (artifact.name.as_str(), artifact))
+        .collect();
+    let mut total = 0_u64;
+    let resident_limit = u64::try_from(MAX_RANKED_KEYS_BYTES).map_err(|error| {
+        CoreError::Storage(format!("lexical: ranked-key limit overflow: {error}"))
+    })?;
+    let mut tables = Vec::new();
+    for segment in searcher.segment_readers() {
+        let name = ranked_keys::file_name(segment);
+        let commitment = by_name.get(name.as_str()).copied().ok_or_else(|| {
+            crate::index_store::sidecar_corrupt(generation_dir, &name, "missing commitment")
+        })?;
+        total = total.checked_add(commitment.bytes).ok_or_else(|| {
+            CoreError::Storage("lexical: ranked-key resident bytes overflow".into())
+        })?;
+        if total > resident_limit {
+            return Err(crate::index_store::sidecar_corrupt(
+                generation_dir,
+                &name,
+                "resident table exceeds limit",
+            ));
+        }
+        let bytes = read_committed(generation_dir, commitment)?;
+        tables.push(Arc::new(SegmentKeys::decode(bytes, segment)?));
+    }
+    let tables = RankedKeyTables::bind(tables, searcher.segment_readers())?;
+    // A stale or uncommitted table is never silently ignored.
+    for entry in std::fs::read_dir(generation_dir).map_err(|error| {
+        CoreError::Storage(format!("lexical: list ranked-key directory: {error}"))
+    })? {
+        let entry = entry.map_err(|error| {
+            CoreError::Storage(format!("lexical: read ranked-key directory: {error}"))
+        })?;
+        let file_name = entry.file_name();
+        let name = file_name.to_string_lossy();
+        if ranked_keys::is_ranked_key_entry(&name) && !by_name.contains_key(name.as_ref()) {
+            return Err(crate::index_store::sidecar_corrupt(
+                generation_dir,
+                &name,
+                "uncommitted ranked-key file",
+            ));
+        }
+    }
+    Ok(Arc::new(tables))
 }
 
 /// Verify and decode the same bytes. A missing committed artifact or an
@@ -157,6 +233,23 @@ fn read_committed(
     artifact: &SealedArtifactCommitmentV1,
 ) -> Result<Vec<u8>, CoreError> {
     let path = generation_dir.join(&artifact.name);
+    let metadata = std::fs::symlink_metadata(&path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            crate::index_store::sidecar_corrupt(generation_dir, &artifact.name, "missing")
+        } else {
+            CoreError::Storage(format!(
+                "lexical: inspect committed file {}: {error}",
+                path.display()
+            ))
+        }
+    })?;
+    if !metadata.is_file() || metadata.len() != artifact.bytes {
+        return Err(crate::index_store::sidecar_corrupt(
+            generation_dir,
+            &artifact.name,
+            "not a regular file at the committed length",
+        ));
+    }
     let bytes = std::fs::read(&path).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
             crate::index_store::sidecar_corrupt(generation_dir, &artifact.name, "missing")

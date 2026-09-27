@@ -125,7 +125,7 @@ fn batch(
         generation,
         base_generation: base,
         manifest_digest: format!("cost-manifest:{}", generation.get()),
-        batch_digest: format!("cost-batch:{}:{}", generation.get(), replace_scopes.len()),
+        batch_digest: "0".repeat(64),
         mode: if base.is_some() {
             BatchIngestMode::Delta
         } else {
@@ -188,8 +188,8 @@ struct CommittedFile {
 /// Every file the seal commits to, as an independent walk of the directory
 /// sees it.
 ///
-/// The Tantivy commit, every segment component file, every file under
-/// `text-authority/`, file coverage and every overlay present. Tantivy's managed list and
+/// The Tantivy commit, every segment component and ranked-key file, every
+/// file under `text-authority/` and every overlay present. Tantivy's managed list and
 /// lock files, the seal's own manifest and identity and the delta marker
 /// are not query content and are not committed.
 fn committed_files(generation_dir: &Path) -> Result<Vec<CommittedFile>, Box<dyn Error>> {
@@ -219,9 +219,11 @@ fn committed_files(generation_dir: &Path) -> Result<Vec<CommittedFile>, Box<dyn 
         let is_segment_file = name.split_once('.').is_some_and(|(stem, _)| {
             stem.len() == 32 && stem.chars().all(|ch| ch.is_ascii_hexdigit())
         });
+        let is_ranked_keys = name.starts_with("ranked-keys-") && name.ends_with(".bin");
         if name == TANTIVY_META
             || name == SOURCE_FILE_COVERAGE
             || is_segment_file
+            || is_ranked_keys
             || OVERLAY_FILES.contains(&name.as_str())
         {
             files.push(CommittedFile {
@@ -343,6 +345,15 @@ fn a_delta_seal_reads_only_what_the_delta_wrote() -> TestResult {
         ("docs", DOCS.to_string()),
         ("base_files", base_files.len().to_string()),
         ("base_bytes", base_bytes.to_string()),
+        (
+            "base_ranked_key_bytes",
+            total_bytes(
+                base_files
+                    .iter()
+                    .filter(|file| file.name.starts_with("ranked-keys-")),
+            )
+            .to_string(),
+        ),
         ("base_seal_bytes_hashed", base_seal.bytes_hashed.to_string()),
         ("delta_files", delta_files.len().to_string()),
         ("delta_written_bytes", written_bytes.to_string()),
@@ -413,6 +424,12 @@ fn a_delta_seal_reads_only_what_the_delta_wrote() -> TestResult {
         .any(|file| !file.name.starts_with(TEXT_AUTHORITY_DIR) && file.name != "repo-meta.cbor")
     {
         return Err("no segment file was inherited; the base index was rewritten".into());
+    }
+    if !linked
+        .iter()
+        .any(|file| file.name.starts_with("ranked-keys-"))
+    {
+        return Err("an unchanged segment did not inherit its ranked-key table".into());
     }
     // The delta's read is a fraction of the base: the budget the ticket
     // names, on this fixture, is well under half.

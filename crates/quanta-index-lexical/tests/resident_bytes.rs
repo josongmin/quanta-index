@@ -84,7 +84,7 @@ fn batch(
         generation: ManifestGeneration::new(generation),
         base_generation: base.map(ManifestGeneration::new),
         manifest_digest: format!("manifest-digest:{generation}"),
-        batch_digest: format!("batch-digest:{generation}"),
+        batch_digest: "0".repeat(64),
         mode: if base.is_some() {
             BatchIngestMode::Delta
         } else {

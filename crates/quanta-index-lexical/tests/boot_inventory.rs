@@ -90,7 +90,9 @@ fn sealed_batch(generation: ManifestGeneration) -> Result<SearchCorpusIngestBatc
         generation,
         base_generation: None,
         manifest_digest: format!("manifest-digest:{}", generation.get()),
-        batch_digest: format!("batch-digest:{}", generation.get()),
+        // This adapter fixture bypasses IPC digest recomputation; admission
+        // still requires the canonical token shape.
+        batch_digest: "0".repeat(64),
         mode: BatchIngestMode::ReplaceGeneration,
         bundle_payload: None,
         clear_surfaces: Vec::new(),

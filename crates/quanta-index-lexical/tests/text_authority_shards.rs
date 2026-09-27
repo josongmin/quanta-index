@@ -160,7 +160,8 @@ fn batch(
         generation,
         base_generation: base,
         manifest_digest: format!("shard-manifest:{}", generation.get()),
-        batch_digest: format!("shard-batch:{}:{}", generation.get(), replace_scopes.len()),
+        // The adapter validates shape here; IPC owns body-digest proof.
+        batch_digest: "0".repeat(64),
         mode: if base.is_some() {
             BatchIngestMode::Delta
         } else {
@@ -613,16 +614,15 @@ fn write_manifest_row(generation_dir: &Path, row: &ManifestRow) -> TestResult {
     Ok(())
 }
 
-/// The refusal oracle: a text authority whose manifest lies never seals.
+/// The refusal oracle: a sealed text authority cannot change on disk.
 ///
 /// A duplicate shard, a listed shard without its file, a manifest that
-/// disowns the index's documents, a shard whose digest is not the listed
-/// one, another format or normalizer — each is refused typed at the seal,
-/// and the generation never opens. Each fault is injected into a fresh
-/// sealed generation so both the sidecar parser and the generation commitment
-/// have a chance to reject it.
+/// disowns the index's documents, a shard whose digest is not the listed one,
+/// and format or normalizer changes all break the sealed commitment. The
+/// unsealed multi-publish path is no longer admitted by the source-event
+/// contract; inner manifest-shape refusals are covered in unit tests.
 #[test]
-fn a_text_authority_that_disagrees_with_its_manifest_never_opens() -> TestResult {
+fn a_sealed_text_authority_that_changes_is_refused_at_both_doors() -> TestResult {
     type Fault = fn(&Path, &mut ManifestRow) -> TestResult;
     let cases: Vec<(&str, &str, Fault)> = vec![
         (
@@ -681,7 +681,7 @@ fn a_text_authority_that_disagrees_with_its_manifest_never_opens() -> TestResult
         ),
         (
             "another text-authority format",
-            "GENERATION_TEXT_AUTHORITY_FORMAT_UNSUPPORTED",
+            "GENERATION_SIDECAR_CORRUPT",
             |_dir, row| {
                 row.0 = row.0.wrapping_add(1);
                 Ok(())
@@ -689,7 +689,7 @@ fn a_text_authority_that_disagrees_with_its_manifest_never_opens() -> TestResult
         ),
         (
             "another shard size",
-            "GENERATION_TEXT_AUTHORITY_FORMAT_UNSUPPORTED",
+            "GENERATION_SIDECAR_CORRUPT",
             |_dir, row| {
                 row.1 = row.1.wrapping_mul(2);
                 Ok(())
@@ -697,7 +697,7 @@ fn a_text_authority_that_disagrees_with_its_manifest_never_opens() -> TestResult
         ),
         (
             "another normalizer",
-            "GENERATION_NORMALIZER_UNSUPPORTED",
+            "GENERATION_SIDECAR_CORRUPT",
             |_dir, row| {
                 row.2 = (row.2.0.wrapping_add(7), row.2.1);
                 Ok(())
@@ -715,15 +715,16 @@ fn a_text_authority_that_disagrees_with_its_manifest_never_opens() -> TestResult
         fault(&dir, &mut row)?;
         write_manifest_row(&dir, &row)?;
 
-        // A sealed identity commits the sidecar. The format gate may reject
-        // before or after the commitment check, but neither door may admit it.
-        let validate = typed_code(adapter.validate_generation_identity(&identity(g1)))?;
-        if validate != expected_code && validate != "GENERATION_SIDECAR_CORRUPT" {
-            return Err(format!("{label}: validator refused with {validate}").into());
+        let validate = typed_code(adapter.validate_generation_identity(&identity(g1)))
+            .map_err(|err| -> Box<dyn Error> { format!("{label}: validate: {err}").into() })?;
+        if validate != expected_code {
+            return Err(format!(
+                "{label}: validate refused with {validate}, expected {expected_code}"
+            )
+            .into());
         }
-        let open = open_code(&adapter, g1).ok_or("open admitted tampered authority")?;
-        if open != expected_code && open != "GENERATION_SIDECAR_CORRUPT" {
-            return Err(format!("{label}: open refused with {open}").into());
+        if open_code(&adapter, g1).as_deref() != Some(expected_code) {
+            return Err(format!("{label}: open did not refuse with {expected_code}").into());
         }
     }
     Ok(())

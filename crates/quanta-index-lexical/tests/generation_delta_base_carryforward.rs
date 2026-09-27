@@ -54,6 +54,7 @@ const BETA_RETIRED_WORD: &str = "retiredsentinel";
 /// Only present in the replacement body.
 const BETA_FRESH_WORD: &str = "freshsentinel";
 const BETA_MARKER_V2: &str = "gamma_replacement";
+const SOURCE_COVERAGE_FILE: &str = "source-file-coverage.cbor";
 /// Untouched scopes in the cost fixture's base. Large enough that inherited
 /// data dominates per-generation bookkeeping, small enough to stay a unit-speed
 /// test.
@@ -153,7 +154,8 @@ fn base_batch_with_filler(
         generation,
         base_generation: None,
         manifest_digest: format!("carryforward-manifest:{}", generation.get()),
-        batch_digest: format!("carryforward-batch:{}", generation.get()),
+        // Adapter admission checks token shape; IPC owns body-digest proof.
+        batch_digest: "0".repeat(64),
         mode: BatchIngestMode::ReplaceGeneration,
         bundle_payload: None,
         clear_surfaces: Vec::new(),
@@ -179,7 +181,8 @@ fn delta_batch(
         generation,
         base_generation: Some(base),
         manifest_digest: format!("carryforward-manifest:{}", generation.get()),
-        batch_digest: format!("carryforward-batch:{}", generation.get()),
+        // Adapter admission checks token shape; IPC owns body-digest proof.
+        batch_digest: "0".repeat(64),
         mode: BatchIngestMode::Delta,
         bundle_payload: None,
         clear_surfaces: Vec::new(),
@@ -317,7 +320,6 @@ fn delta_generation_inherits_base_when_a_sidecar_authority_lands_first() -> Test
 /// The generation-local directory holding the text authority: its manifest
 /// and its shard files.
 const TEXT_AUTHORITY_DIR: &str = "text-authority";
-const SOURCE_FILE_COVERAGE_FILE: &str = "source-file-coverage.cbor";
 
 /// The text-authority files under `root`, sorted, with their sizes.
 fn text_authority_files(root: &Path) -> Result<Vec<(std::path::PathBuf, u64)>, Box<dyn Error>> {
@@ -452,10 +454,10 @@ fn delta_generation_does_not_rewrite_unchanged_index_bytes() -> TestResult {
     assert_hits(&adapter, g2, BETA_MARKER_V2, &["chunk-beta"], "delta")?;
 
     let base_sidecar_bytes = text_authority_bytes(&base_dir)?;
-    let base_coverage_bytes = std::fs::metadata(base_dir.join(SOURCE_FILE_COVERAGE_FILE))?.len();
+    let base_coverage_bytes = std::fs::metadata(base_dir.join(SOURCE_COVERAGE_FILE))?.len();
     let fresh_coverage_bytes = fresh_entries
         .iter()
-        .find(|(name, _)| name == SOURCE_FILE_COVERAGE_FILE)
+        .find(|(name, _)| name == SOURCE_COVERAGE_FILE)
         .map(|(_, len)| *len)
         .ok_or("delta coverage artifact did not get its own generation-bound storage")?;
     let breakdown: Vec<String> = fresh_entries
@@ -477,18 +479,18 @@ fn delta_generation_does_not_rewrite_unchanged_index_bytes() -> TestResult {
     if base_bytes == 0 {
         return Err("base generation wrote no bytes; the measurement is vacuous".into());
     }
-    // Scope: indexed data only. The text-authority half has its own inode
-    // oracle. The full coverage snapshot's rewrite is a separate cost gap.
+    // Scope: the indexed-data half of QI-BB-006. The source-coverage
+    // publication and text-authority shards are separate artifacts; a delta
+    // writes its own coverage event even when it reuses index segments.
     let index_fresh_bytes: u64 = fresh_entries
         .iter()
-        .filter(|(name, _)| {
-            !name.starts_with(TEXT_AUTHORITY_DIR) && name != SOURCE_FILE_COVERAGE_FILE
-        })
-        .fold(0_u64, |total, (_, len)| total.saturating_add(*len));
+        .filter(|(name, _)| !name.starts_with(TEXT_AUTHORITY_DIR) && name != SOURCE_COVERAGE_FILE)
+        .try_fold(0_u64, |total, (_, len)| total.checked_add(*len))
+        .ok_or("fresh index byte count overflow")?;
     let index_base_bytes = base_bytes
         .checked_sub(base_sidecar_bytes)
         .and_then(|bytes| bytes.checked_sub(base_coverage_bytes))
-        .ok_or("base index accounting exceeds total generation bytes")?;
+        .ok_or("base index byte count underflow")?;
 
     if index_base_bytes == 0 {
         return Err("base generation wrote no index bytes; the measurement is vacuous".into());

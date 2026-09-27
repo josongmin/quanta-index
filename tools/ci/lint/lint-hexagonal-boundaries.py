@@ -223,9 +223,7 @@ _TRANSPORT_LEAK_TOKENS = (
     re.compile(r"\bsegment_id\b"),
 )
 
-_TEST_PATH_MODULE = re.compile(
-    r'#\[cfg\(test\)\]\s*#\[path\s*=\s*"([^"\n]+)"\]\s*mod\s+\w+\s*;'
-)
+_TEST_PATH_MODULE = re.compile(r'#\[cfg\(test\)\]\s*#\[path\s*=\s*"([^"\n]+)"\]\s*mod\s+\w+\s*;')
 
 
 def test_only_path_modules(scope: Path) -> set[Path]:
@@ -238,6 +236,7 @@ def test_only_path_modules(scope: Path) -> set[Path]:
             if target.is_file() and target.is_relative_to(scope.resolve()):
                 targets.add(target)
     return targets
+
 
 DOMAIN_USE_RE = re.compile(r"\b(?:crate::domains::|domains::)(?P<target>lexical|semantic|hybrid)\b")
 
@@ -482,6 +481,11 @@ def check_channel_backend_isolation() -> list[Violation]:
             if "tests" in rust_file.parts or rust_file.resolve() in test_only_sources:
                 continue
             text = rust_file.read_text(encoding="utf-8")
+            # The lexical adapter binds Tantivy segment files at seal/open.
+            # This concrete storage API is unrelated to the channel backend's
+            # transport identifier; keep every other segment_id use checked.
+            if scope.name == "quanta-index-lexical" and rust_file.name == "ranked_keys.rs":
+                text = re.sub(r"\breader\.segment_id\s*\(\s*\)", "", text)
             for token in _TRANSPORT_LEAK_TOKENS:
                 m = token.search(text)
                 if m is not None:
