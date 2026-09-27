@@ -15,18 +15,22 @@
 )]
 
 use std::error::Error;
+use std::os::unix::fs::PermissionsExt as _;
 use std::sync::Arc;
 use std::time::Duration;
 
 use quanta_index_catalog::SqliteCatalog;
 use quanta_index_contract::{
-    FileId, ManifestGeneration, RepoId, RepoMapActivateGenerationRequestV2,
-    RepoMapExactnessSummary, RepoMapFileNode, RepoMapGraphCoverage, RepoMapGraphCoverageClass,
-    RepoMapItemIndexAvailability, RepoMapNode, RepoMapPublishBundleRequestV2, RepoMapQueryRequest,
-    RepoMapRedactionState, RepoMapSourceBundle, RepoRelativePath, RevisionId,
+    CandidateObjectDigestV1, FileId, LogicalGenerationIdentityV1, ManifestGeneration,
+    QuarantinePayloadDigestV1, RepoId, RepoMapActivateGenerationRequestV2, RepoMapExactnessSummary,
+    RepoMapFileNode, RepoMapGraphCoverage, RepoMapGraphCoverageClass, RepoMapItemIndexAvailability,
+    RepoMapNode, RepoMapPublishBundleRequestV2, RepoMapQueryRequest, RepoMapRedactionState,
+    RepoMapSourceBundle, RepoRelativePath, RepositoryRevisionIdentityV1, RevisionId,
 };
 use quanta_index_core::CoreError;
-use quanta_index_repomap::RepoMapGenerationStore;
+use quanta_index_repomap::{
+    CandidateObjectAddressV1, RepoMapGenerationStore, RepoMapGraphCompiler,
+};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -131,6 +135,136 @@ fn find_objects(root: &std::path::Path) -> Result<Vec<std::path::PathBuf>, Box<d
     }
     collect_files(&objects, &mut out)?;
     Ok(out)
+}
+
+/// One canonical candidate envelope for `generation`, built from the
+/// compiler the store itself uses, without any store or catalog.
+fn canonical_envelope(
+    generation: u64,
+    marker: &str,
+) -> Result<quanta_index_contract::RepoMapCandidateEnvelopeV1, Box<dyn Error>> {
+    let source = bundle(generation, marker);
+    let candidate = RepoMapGraphCompiler::with_default_budget()
+        .compile(&source)
+        .map_err(|refusal| format!("the fixture bundle compiles: {refusal}"))?;
+    let identity = LogicalGenerationIdentityV1::new(
+        RepositoryRevisionIdentityV1::new(source.repo_id.clone(), source.revision_id.clone()),
+        source.manifest_generation.get(),
+    );
+    Ok(candidate.envelope(identity)?)
+}
+
+fn object_relative_path(address: CandidateObjectDigestV1) -> String {
+    CandidateObjectAddressV1::new(address)
+        .relative_path()
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// Write `bytes` at their own content address and seal a catalog row that
+/// claims them.
+///
+/// This is the one shape the publish path cannot produce: it is how a
+/// hand-written (or importer-written) object and a disagreeing row reach
+/// the owner, so the owner's reconcile can be asked what it does with
+/// each disagreement.
+fn seal_object_bytes(
+    root: &std::path::Path,
+    generation: u64,
+    bytes: &[u8],
+    commitment: &[u8; 32],
+) -> Result<CandidateObjectDigestV1, Box<dyn Error>> {
+    let catalog = SqliteCatalog::open(root, CATALOG_BUSY_BUDGET)?;
+    let address = CandidateObjectDigestV1::for_canonical_envelope(bytes);
+    let relative = object_relative_path(address);
+    let path = root.join("repo-map").join(&relative);
+    // The layout's own modes: the root and every fanout directory 0700, the
+    // object 0600 — what the store's security context verifies on each read.
+    let layout_root = root.join("repo-map");
+    std::fs::create_dir_all(&layout_root)?;
+    std::fs::set_permissions(&layout_root, std::fs::Permissions::from_mode(0o700))?;
+    let mut current = layout_root;
+    let components = std::path::Path::new(&relative)
+        .components()
+        .collect::<Vec<_>>();
+    for component in components
+        .split_last()
+        .map(|(_leaf, directories)| directories)
+        .unwrap_or_default()
+    {
+        current.push(component);
+        if !current.exists() {
+            std::fs::create_dir(&current)?;
+            std::fs::set_permissions(&current, std::fs::Permissions::from_mode(0o700))?;
+        }
+    }
+    std::fs::write(&path, bytes)?;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    let _sealed = catalog.seal_repomap_candidate(
+        repo().as_str(),
+        revision().as_str(),
+        generation,
+        commitment,
+        address.as_bytes(),
+        &[3_u8; 32],
+        u64::try_from(bytes.len())?,
+        "{}",
+    )?;
+    Ok(address)
+}
+
+#[test]
+fn a_quarantine_incident_names_the_defect_not_only_that_the_object_failed() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().to_path_buf();
+    let canonical = canonical_envelope(1, "g1")?.encode_canonical()?;
+    // Generation 1: the canonical bytes plus one trailing byte. The payload
+    // is exactly what its own address claims, so the defect is the
+    // encoding (contract reason 2), never a swap.
+    let mut non_canonical = canonical.clone();
+    non_canonical.push(0);
+    let non_canonical_address = seal_object_bytes(&root, 1, &non_canonical, &[7_u8; 32])?;
+    // Generation 2: canonical bytes at their own address, with only the
+    // catalog row's commitment disagreeing (contract reason 4).
+    let canonical_address = seal_object_bytes(&root, 2, &canonical, &[8_u8; 32])?;
+    assert_ne!(non_canonical_address, canonical_address);
+
+    let (catalog, _store) = open(&root)?;
+    let mut listed: Vec<(String, String)> = catalog
+        .repomap_quarantine_incidents()?
+        .into_iter()
+        .map(|incident| (incident.source_path, incident.reason_code))
+        .collect();
+    listed.sort();
+    let mut expected = vec![
+        (
+            object_relative_path(non_canonical_address),
+            "quarantine-reason-2".to_string(),
+        ),
+        (
+            object_relative_path(canonical_address),
+            "quarantine-reason-4".to_string(),
+        ),
+    ];
+    expected.sort();
+    assert_eq!(listed, expected);
+    // Each incident kept the payload it read — the plain digest of the
+    // bytes on disk — so an operator can tell a swapped object from a
+    // non-canonical one without the bytes themselves.
+    let incidents = catalog.repomap_quarantine_incidents()?;
+    assert_eq!(incidents.len(), 2);
+    for incident in &incidents {
+        let payload = if incident.source_path == object_relative_path(non_canonical_address) {
+            &non_canonical
+        } else {
+            &canonical
+        };
+        assert_eq!(
+            incident.payload_digest,
+            *QuarantinePayloadDigestV1::for_payload(payload).as_bytes()
+        );
+    }
+    Ok(())
 }
 
 fn collect_files(

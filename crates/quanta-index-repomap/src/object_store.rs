@@ -303,6 +303,12 @@ impl RepoMapObjectStore {
                 observed_byte_size,
             });
         }
+        // Past that check the payload is exactly what its address claims,
+        // which is what the evidence contract's reason priority needs: a
+        // decode or identity defect here is the object's own defect
+        // (`NonCanonicalEnvelope`, `EnvelopeDecodeFailed`,
+        // `LogicalIdentityMismatch`), never the address mismatch that was
+        // already ruled out.
         let envelope =
             RepoMapCandidateEnvelopeV1::decode_canonical(raw_bytes.as_slice()).map_err(|err| {
                 ObjectVerificationFailureV1 {
@@ -312,7 +318,7 @@ impl RepoMapObjectStore {
                             QuarantineReasonCodeV1::NonCanonicalEnvelope
                         }
                         CanonicalRepoMapCodecErrorV1::ArtifactBindingMismatch => {
-                            QuarantineReasonCodeV1::AddressDigestMismatch
+                            QuarantineReasonCodeV1::LogicalIdentityMismatch
                         }
                         CanonicalRepoMapCodecErrorV1::UnexpectedEnd
                         | CanonicalRepoMapCodecErrorV1::WrongType(_)
@@ -331,18 +337,20 @@ impl RepoMapObjectStore {
                 }
             })?;
         // `decode_canonical` enforces decode → exact re-encode equality
-        // internally, so the payload identity check is the commitment.
+        // internally, so the payload identity check is the commitment. A
+        // decoded envelope already hashes to its address, so a disagreement
+        // with the catalog row is the row's logical identity.
         let commitment = envelope
             .commitment()
             .map_err(|err| ObjectVerificationFailureV1 {
-                reason: QuarantineReasonCodeV1::AddressDigestMismatch,
+                reason: QuarantineReasonCodeV1::LogicalIdentityMismatch,
                 detail: err.to_string(),
                 raw_bytes: Some(raw_bytes.clone()),
                 observed_byte_size,
             })?;
         if commitment.as_bytes() != expected_commitment {
             return Err(ObjectVerificationFailureV1 {
-                reason: QuarantineReasonCodeV1::AddressDigestMismatch,
+                reason: QuarantineReasonCodeV1::LogicalIdentityMismatch,
                 detail: format!(
                     "sealed object commitment {commitment} does not match the catalog row commitment"
                 ),
@@ -350,6 +358,13 @@ impl RepoMapObjectStore {
                 observed_byte_size,
             });
         }
+        // The envelope's own address is the plain digest of its canonical
+        // bytes, and `decode_canonical` already proved those bytes are the
+        // ones on disk, which the address check above proved hash to the
+        // address they were read from. So this disagreement cannot happen;
+        // if a refactor ever makes it reachable, the evidence contract
+        // refuses `AddressDigestMismatch` for address-consistent bytes and
+        // the refusal is loud rather than a mislabelled quarantine.
         let object_digest =
             envelope
                 .object_digest()
