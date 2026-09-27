@@ -1,8 +1,0 @@
-{
-  "capture_wrapper": "/tmp/quanta-l1-audit.touy8xnn/capture-bin/cargo",
-  "capture_wrapper_sha256": "47fd0ff8a9be6ce8aa50fe5dca526c5ab7ad69e9f0201d740c99905282202164",
-  "purpose": "Task-local PATH wrapper snapshots after canonical resource admission and before actual Cargo; no source/cache/lock mutation or bypass. Non-building metadata forwards directly. Same Cargo arguments and exit code. Environment is inherited from cargow.",
-  "python": "/Applications/Xcode.app/Contents/Developer/usr/bin/python3",
-  "real_cargo": "/Users/songmin/.cargo/bin/cargo",
-  "real_cargo_proxy_sha256": "ec1b9233e7f72990ecd8e62063fa7f6c3dfc2bec8e97f88bff165f9100ac696a"
-}

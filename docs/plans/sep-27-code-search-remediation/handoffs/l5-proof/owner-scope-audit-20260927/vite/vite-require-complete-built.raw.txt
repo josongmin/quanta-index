@@ -1,1 +1,0 @@
-ERROR: chunk packages/vite/src/node/ssr/__tests__/fixtures/errors/syntax-error.ts: symbol preflight refused: 1 incomplete files of 256; state=ParseFailed; reason=Some("syntax_error"); source_sha256=a773ffa899847fa969e63794cdd6155da5dbd5ef5cfb82f7fd8b7a6ae222cb7c

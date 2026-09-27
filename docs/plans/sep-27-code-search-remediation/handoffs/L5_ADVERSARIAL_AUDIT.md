@@ -1,5 +1,7 @@
 # L5 adversarial follow-up audit
 
+> Historical report: one-off evidence files were removed from the repository. This report alone is not current verification.
+
 Status: **VERIFIED for the bounded scope below**. Four reproduced P2 defects were
 fixed. No confirmed finding remains open in that scope. This is not a proof that
 the whole repository has no defects.
@@ -40,12 +42,12 @@ bound to its first snapshot. No commit or push was made.
   Rust test authority remain identical to the successful Rust snapshot.
 
 Commands, source identities, raw failures before fixes, terminal outputs and
-SHA-256 digests are in [L5_ADVERSARIAL_AUDIT.json](L5_ADVERSARIAL_AUDIT.json) and
-[the evidence directory](l5-proof/adversarial-20260927).
+SHA-256 digests are in L5_ADVERSARIAL_AUDIT.json and
+the evidence directory.
 
 The initial broad Python run was interrupted after exposing the shared temporary-path
 regression. It is not successful evidence; the final full selection above was rerun.
-The previous [completion](L5_COMPLETION.json) retains its original snapshot meaning.
+The previous completion retains its original snapshot meaning.
 Fresh SDK/daemon and fresh Vite process runs were **NOT_RUN** in this follow-up;
 the existing raw Vite replay is consumer verification. Repository-wide CI, clean
 commit/release and performance qualification remain outside this audit.

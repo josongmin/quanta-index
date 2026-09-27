@@ -1,5 +1,7 @@
 # L5 final code audit
 
+> Historical report: one-off evidence files were removed from the repository. This report alone is not current verification.
+
 Status: **VERIFIED for the bounded scope below**. All five reproduced P2 findings
 are fixed. No confirmed finding remains open in that scope.
 
@@ -21,8 +23,8 @@ verification; final Rust/Vite and 16 integration cases were rerun against that s
   retain separate source identities; no whole-product qualification is inferred.
 
 Commands, environment, source identities and raw failures/results:
-[L5_FINAL_CODE_AUDIT.json](L5_FINAL_CODE_AUDIT.json), SHA-256
-`c59c230cb0fd2704500685416bb7fda5c2266e0eb66d44b9a1fb5c7124a70f07`. Raw evidence is in [l5-proof/final-code-audit-20260927](l5-proof/final-code-audit-20260927).
+L5_FINAL_CODE_AUDIT.json, SHA-256
+`c59c230cb0fd2704500685416bb7fda5c2266e0eb66d44b9a1fb5c7124a70f07`. Raw evidence is in l5-proof/final-code-audit-20260927.
 
 This audit covers the L5 named-definition extractor and its Python preflight
 consumers. It is not whole-repository or release qualification.

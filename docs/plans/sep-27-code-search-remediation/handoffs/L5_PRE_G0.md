@@ -1,5 +1,7 @@
 # L5_PRE_G0 — Parser and producer preparation
 
+> Historical report: one-off evidence files were removed from the repository. This report alone is not current verification.
+
 Historical preparation snapshot. Superseded by [L5_HANDOFF](L5_HANDOFF.md).
 The statements below describe the pre-G0 snapshot only; its source receipt is
 not current implementation evidence.
@@ -31,7 +33,7 @@ fail-fast. Prepared assertions are not a demonstrated behavioral RED.
 ## Executed evidence
 
 Exact source/artifact hashes, commands and dirty state:
-[`L5_PRE_G0.source.json`](L5_PRE_G0.source.json).
+`L5_PRE_G0.source.json`.
 
 - `rustfmt --edition 2024 --check benchmarks/retrieval/tests/l5_parser_regressions.rs`:
   exit 0; syntax/formatting only, no Rust typecheck or behavior execution.

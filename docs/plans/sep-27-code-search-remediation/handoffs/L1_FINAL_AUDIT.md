@@ -1,5 +1,7 @@
 # L1 final code-first audit — semantic lexical scope
 
+> Historical report: one-off evidence files were removed from the repository. This report alone is not current verification.
+
 Status: **VERIFIED** for the exercised L1 implementation and actual daemon/SDK
 path at the frozen process source. This does not qualify the concurrent shared
 checkout, whole-repository CI, learned semantic relevance, performance, or
@@ -65,9 +67,9 @@ observed product defect; its failure remains separate from the successful run.
 
 Raw JSONL/stderr, input manifests, isolated patch, process receipt, executable
 hash, and deterministic compressed evidence are in
-[`l1-proof/final-semantic-scope-20260927/`](l1-proof/final-semantic-scope-20260927/).
+`l1-proof/final-semantic-scope-20260927/`.
 The machine-readable command/status and artifact-digest index is
-[`L1_FINAL_AUDIT.json`](L1_FINAL_AUDIT.json).
+`L1_FINAL_AUDIT.json`.
 The 342 MiB executable remains at `/tmp/qi-l1-final-process3/searchd-proof-bin`;
 it is not copied into the repository.
 

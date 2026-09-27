@@ -1,6 +1,0 @@
-{
-  "path": "benchmarks/retrieval/src/symbols.rs",
-  "before_sha256": "8890a27fc4918778a374322e4b765271b1fc8b37652f4876f9d49b3c6f2b2051",
-  "after_sha256": "8d5d8792057bb1ad7cedc68dd9aa719508c615b58eb494cb6eb8f8c3e8ebcb7b",
-  "reason": "rustfmt only; final Rust and Vite receipts must be rerun"
-}

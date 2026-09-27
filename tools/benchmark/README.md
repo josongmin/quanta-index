@@ -300,10 +300,11 @@ the selected Git-derived view's commit, ordered complete file universe and
 digest. Capture retains the recipe/release/Git bundles and binding; replay
 reconstructs the view without original mutable paths. This is input binding,
 not proof of a product's indexed universe. Capsules above 256 MiB refuse.
-For fresh external rows, `python -m tools.benchmark.retrieval.live_lexical_external`
+For fresh external rows, `benchctl code-search external --spec ...`
 issues Sourcegraph/OpenGrok HTTP requests and cs processes against the selected
 release view. It retains native responses and emits the three row files; it is
-a standalone exploratory producer, not a registered `benchctl` profile. The
+an exploratory producer composed by `benchctl code-search run --spec ...` with
+the live SDK pair, existing lexical scorer, validation and replay. The
 [operator runbook](CODE_SEARCH_RUNBOOK.md#b-score-five-recorded-lexical-products)
 gives the spec example and execution sequence.
 

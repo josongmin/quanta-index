@@ -6,7 +6,7 @@ The older execution totals below remain bound to the original completion snapsho
 Status: **VERIFIED for the L5 producer and shared integration scope** on the
 frozen dirty snapshot at `98601a66d8cab9c86232b3e62ce490c8b43b71b6`.
 Exact source identities, commands and raw evidence are in
-[L5_COMPLETION.json](../handoffs/L5_COMPLETION.json) and the
+L5_COMPLETION.json and the
 [handoff](../handoffs/L5_HANDOFF.md). Whole-repository CI and clean-source release
 qualification are **NOT_RUN**. External production producers are outside this scope.
 Category: producer compatibility. Findings: F05/F06.

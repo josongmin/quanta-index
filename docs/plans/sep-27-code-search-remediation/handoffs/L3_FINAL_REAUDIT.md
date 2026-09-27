@@ -1,10 +1,12 @@
 # L3 final adversarial code audit — 2026-09-27
 
+> Historical report: one-off evidence files were removed from the repository. This report alone is not current verification.
+
 **VERIFIED for the selected lexical source and seven test suites only.** HEAD
 `2102966246866398f01833bebf71396831377149` on dirty `main`; no commit,
 push, reset, agent dispatch, or inter-task message. The exact dirty-path list,
 source/config/dependency hashes, command, environment, test binaries, and raw
-results are in [source-closure-current.json](l3-proof/final-reaudit/source-closure-current.json).
+results are in source-closure-current.json.
 Older receipts in this directory refer to earlier source and do not qualify the
 current checkout.
 
@@ -82,12 +84,12 @@ and admission code, and toolchain. `Justfile` is excluded because this command
 invokes `scripts/cargow` directly. The external checkout identity and dirty
 state are recorded in the closure JSON.
 
-- [Raw terminal log](l3-proof/final-reaudit/final-audit-current-final5.log): SHA-256
+- Raw terminal log: SHA-256
   `1725e41bc4e7ff29a70f3d1d91b6f97f48803fac2f32099e860ebfb7862fa5be`.
-- [Result and binary hashes](l3-proof/final-reaudit/final-audit-current-final5-result.json),
-  [pre-admission boundary](l3-proof/final-reaudit/final-audit-current-final5-waiting-boundary.json),
-  and [source closure](l3-proof/final-reaudit/source-closure-current.json).
-- [Static checks](l3-proof/final-reaudit/final-audit-current-final5-static.log):
+- Result and binary hashes,
+  pre-admission boundary,
+  and source closure.
+- Static checks:
   `rustfmt --check --edition 2024` on the modified lexical files and
   `git diff --check`, both exit 0.
 

@@ -144,6 +144,12 @@ def parse_args(
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--repo-root", type=Path, default=repo_root, help="checkout to operate on")
     subparsers = parser.add_subparsers(dest="command", required=True)
+    code_search = subparsers.add_parser("code-search", help="live five-product workflow over one frozen corpus view")
+    workflow_modes = code_search.add_subparsers(dest="code_search_action", required=True)
+    for action in ("run", "verify", "external", "external-verify"):
+        mode = workflow_modes.add_parser(action)
+        mode.add_argument("--spec" if action in {"run", "external"} else "--capture",
+                          type=Path, required=True)
     corpus = subparsers.add_parser(
         "corpus", help="create or validate an immutable external corpus release"
     )
@@ -1405,6 +1411,29 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     args = parse_args(argv, profiles, repo_root=repo_root)
     repo_root = args.repo_root.resolve()
+    if args.command == "code-search":
+        try:
+            if repo_root != ROOT:
+                raise EvidenceError("workflow driver must come from the requested checkout")
+            from code_search_workflow import capture as capture_code_search
+            from code_search_workflow import verify as verify_code_search
+
+            from tools.benchmark.retrieval import live_lexical_external
+
+            if args.code_search_action == "run":
+                result = capture_code_search(repo_root, args.spec)
+            elif args.code_search_action == "verify":
+                result = verify_code_search(repo_root, args.capture)
+            elif args.code_search_action == "external":
+                require_clean_worktree(repo_root)
+                result = live_lexical_external.capture(args.spec)
+            else:
+                result = live_lexical_external.verify(args.capture)
+        except (ValueError, RuntimeError, OSError, UnicodeError, StopIteration) as error:
+            print(f"ERROR: code-search workflow refused: {error}", file=sys.stderr)
+            return 2
+        print(json.dumps(result, sort_keys=True, indent=2))
+        return 0
     if args.command == "corpus":
         import corpus_release
 

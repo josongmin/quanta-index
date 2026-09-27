@@ -1,5 +1,7 @@
 # L4 adversarial audit — strict stored authority IDs
 
+> Historical report: one-off evidence files were removed from the repository. This report alone is not current verification.
+
 **Fixed: one reproduced P2 defect.** A stored text document containing two
 `text_authority_doc_id` values was accepted by selecting the first. The same
 ambiguous row survived actual Tantivy serialization and full authority rebuild.
@@ -33,7 +35,7 @@ that the entire repository contains no P0–P2.
 
 ## Current proof
 
-[Evidence index](l4-proof/authority-id/receipt.json) binds raw output, exact
+Evidence index binds raw output, exact
 commands, file manifests, toolchain/environment, test binary hashes and live
 source comparison. Receipt SHA-256: `31f630f69b177f16f213493665eb1692b51a7c89a1bdd8ea854f39478265a6e5`.
 
@@ -70,7 +72,7 @@ The reconstruction receipt checks every resulting file against the final manifes
 At closeout, shared HEAD was `2102966246866398f01833bebf71396831377149`, with dirty concurrent work.
 All selected dependency-package and build/configuration inputs match the final
 frozen manifest. Other shared-tree changes remain outside this selected proof.
-Exact paths and hashes are in [live-closeout.json](l4-proof/authority-id/live-closeout.json).
+Exact paths and hashes are in live-closeout.json.
 This audit performed no task coordination, task messages/reads/polling,
 delegation, commit, push or reset.
 

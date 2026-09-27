@@ -1,3 +1,0 @@
-searchd: umask set to 077 (inherited 022)
-searchd: WARNING: semantic embedder profile `hash-dev` is a development/test embedder (hash slots, no learned semantics); name `openai` for a learned provider
-searchd: lexical writer gate disabled: no QUANTA_INDEX_PROCESS_RSS_CEILING_BYTES configured

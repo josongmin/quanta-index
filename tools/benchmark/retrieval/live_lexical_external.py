@@ -69,6 +69,15 @@ def _sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _source_hashes() -> dict[str, str]:
+    sources = {
+        "producer": Path(__file__), "sourcegraph_adapter": Path(sourcegraph.__file__),
+        "lexical_scorer": Path(lexical.__file__), "corpus_binding": Path(corpus_binding.__file__),
+        "corpus_release": Path(corpus_release.__file__),
+    }
+    return {name: _sha(path.read_bytes()) for name, path in sources.items()}
+
+
 def _write(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("xb") as stream:
@@ -375,13 +384,7 @@ def capture(spec_path: Path) -> dict:
     if code != 0 or stderr or not version.strip():
         raise ValueError("cs version command failed")
     binary_sha = _sha(binary.read_bytes())
-    source_files = {
-        "producer": Path(__file__), "sourcegraph_adapter": Path(sourcegraph.__file__),
-        "lexical_scorer": Path(lexical.__file__),
-        "corpus_binding": Path(corpus_binding.__file__),
-        "corpus_release": Path(corpus_release.__file__),
-    }
-    source_hashes = {name: _sha(path.read_bytes()) for name, path in source_files.items()}
+    source_hashes = _source_hashes()
     stage.mkdir(parents=True)
     _write(stage / "spec.json", _read_control_file(spec_path))
     _write(stage / "binding.json", json.dumps(binding, sort_keys=True).encode() + b"\n")
@@ -407,7 +410,7 @@ def capture(spec_path: Path) -> dict:
             or _read_control_file(Path(spec["suite"])) != suite_raw
             or _read_control_file(Path(spec["query_pack"])) != pack_raw
             or _sha(binary.read_bytes()) != binary_sha
-            or {name: _sha(path.read_bytes()) for name, path in source_files.items()} != source_hashes):
+            or _source_hashes() != source_hashes):
         raise ValueError("release, live spec, suite, pack, cs binary or producer source changed during capture")
     summary = {
         "schema_version": 1, "status": "diagnostic_unqualified", "release_digest": document["digest"],
@@ -438,7 +441,8 @@ def verify(root: Path) -> dict:
     spec = _spec(root / "spec.json")
     summary = _json(_read_control_file(root / "capture.json"))
     if (summary.get("schema_version") != 1 or summary.get("status") != "diagnostic_unqualified"
-            or summary.get("indexed_universe_attested") is not False):
+            or summary.get("indexed_universe_attested") is not False
+            or summary.get("producer_sources_sha256") != _source_hashes()):
         raise ValueError("external capture has unsupported claim or schema")
     suite_raw = _read_control_file(root / "suite.json")
     pack_raw = _read_control_file(root / "query-pack.json")

@@ -1,5 +1,7 @@
 # L4_HANDOFF — matcher-aligned source previews
 
+> Historical report: one-off evidence files were removed from the repository. This report alone is not current verification.
+
 Latest audit: [L4_REAUDIT_20260927.md](L4_REAUDIT_20260927.md) records the
 observed regex preview admission undercount, its policy-charge mitigation,
 and a real daemon-process restart SDK regression. Session hardening adds a
@@ -109,7 +111,7 @@ was exercised twice in the latest audit, below installed/release proof.
 
 ## Historical p02 proof
 
-[Final receipt](l4-proof/p02/receipt.json) binds exact commands/environment,
+Final receipt binds exact commands/environment,
 source/config/dependency inputs, toolchain, raw logs, binary hashes, dirty state
 and historical revalidation. The verification copy is a filesystem snapshot,
 not a new branch or commit. All 338 bound inputs were unchanged during those
@@ -161,7 +163,7 @@ and the new long-sequence regression. No historical result is promoted as final.
   has a demonstrated aggregate upper-bound proof. Source-pattern bytes
   and retained executor count are bounded; this does not qualify a 64 MiB total
   preview heap ceiling. The source inspection and exact dependency-file digests are in
-  [dependency-audit.json](l4-proof/p02/dependency-audit.json); no
+  dependency-audit.json; no
   runtime memory overrun was reproduced by that inspection.
 - Logical reservations do not prove process RSS, latency, ranking quality,
   candidate identity memory accounting, arbitrary DTO clone lifetime, release,

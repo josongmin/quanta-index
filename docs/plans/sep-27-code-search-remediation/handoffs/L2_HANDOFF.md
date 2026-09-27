@@ -1,7 +1,9 @@
 # L2 handoff — code repairs and native daemon recovery audit
 
+> Historical report: one-off evidence files were removed from the repository. This report alone is not current verification.
+
 Latest closeout: [L2_REAUDIT_20260927.md](L2_REAUDIT_20260927.md) and
-[machine-readable source/custody](L2_REAUDIT_20260927.json). A new P1,
+machine-readable source/custody. A new P1,
 RR-15, was reproduced after the earlier process audit: a later producer stream
 could seal g2 while g1 was unresolved, leaving g1 impossible to activate. The
 retention/admission and activation repair is described in the new audit.

@@ -1,9 +1,0 @@
-{
-  "CARGO_TARGET_DIR": "/Users/songmin/Library/Caches/quanta-index/target/680b0f1c0f9e2e20/test-daemon-lane",
-  "CARGO_BUILD_JOBS": "4",
-  "RUSTC_WRAPPER": "/opt/homebrew/bin/sccache",
-  "SCCACHE_DIR": "/Users/songmin/Library/Caches/quanta-index/sccache",
-  "SCCACHE_BASEDIRS": "/Users/songmin/.codex/worktrees/l5-definition-final/quanta-index",
-  "SCCACHE_SERVER_PORT": "54436",
-  "QUANTA_INDEX_BUILD_LANE": "test-daemon-lane"
-}

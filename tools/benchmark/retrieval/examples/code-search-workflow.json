@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "pair_spec": "/external/pair-spec.json",
+  "external_spec": "/external/live-external-spec.json",
+  "output_root": "/external/fresh-five-product-run",
+  "timeout_secs": 7200
+}

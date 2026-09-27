@@ -1,5 +1,14 @@
 # L1–L5 integration audit — 2026-09-27
 
+> Historical report: one-off evidence files were removed from the repository. This report alone is not current verification.
+
+Latest remaining-work audit after the format-8 merge:
+[CS-INT-01](../rfcs/CS-INT-01-integration-and-qualification.md#current-remaining-work-audit--2026-09-27).
+The execution records below are historical source-scoped receipts. Fresh static
+audit found the `ranked_keys`/`ranked_page` module cycle and reproduced BENCH-02's
+native/normalized scoring mismatch; required combined-source execution remains
+NOT_RUN. Earlier compilation/selected passes do not override these outcomes.
+
 Status: **partial**. Selected lexical behavior and the whole-workspace
 all-targets/all-features compile check executed successfully on the recorded
 source profiles below. These commands do not constitute full workspace test
@@ -23,18 +32,18 @@ workspace tests, retrieval benchmark validity, release, and deployment are
 - The lexical verification bound 818 Git-visible Rust/config/vendor input files.
   Its before and after canonical file-hash-map digest was identical:
   `0af1558c1c4763c678546ebdea6f8c7c7d357c9eaedf8781584215ca4afc2721`.
-  [Pre](l1-l5-proof/lexical-source-pre.json) and
-  [post](l1-l5-proof/lexical-source-post.json) file manifests retain the exact
+  Pre and
+  post file manifests retain the exact
   dirty inventory and individual hashes. The manifest covers the selected
   Rust input profile, not every mutable planning or Python file in the checkout.
 - Rust toolchain: `rustc 1.92.0 (ded5c06cf)`,
   `aarch64-apple-darwin`, LLVM 21.1.3; `Cargo.lock` SHA-256
   `58dda6f980fd3d2ad4975b3be18c74e60351be045d78206728f88475a6ba6bbc`.
-  [Selected test binary hashes](l1-l5-proof/lexical-binaries.json) bind all
+  Selected test binary hashes bind all
   eight executed binaries. The raw test outcomes are in the terminal output of
   the command below; a manually transcribed count is not independent evidence.
 
-## Lane disposition
+## Historical lane disposition
 
 | Lane | Current-source execution | Excluded or unresolved claim |
 | --- | --- | --- |
@@ -63,13 +72,13 @@ The separate clean-HEAD L5 Python consumer command ran from
 python -m pytest -q tools/ci/tests/test_retrieval_benchmark.py tools/ci/tests/test_retrieval_contract_proof.py tools/ci/tests/test_retrieval_sdk_proof.py tools/ci/tests/test_portable_proof.py tools/ci/tests/test_benchmark_source_closure.py --tb=short
 ```
 
-Its [JUnit](l1-l5-proof/l5-frozen-python.junit.xml) records 552 selected and
+Its JUnit records 552 selected and
 executed, zero failed/error/skipped; SHA-256
 `3ccb9615337c467d7250fd60a782691063bfe264bf25dc27ae10100`. The
 worktree was clean at `3887fac3` when rechecked. This is a consumer-only
 frozen-source result, not a current shared-tree or Rust producer result.
 The shared interpreter was Python 3.13.9; its post-run
-[90-package freeze](l1-l5-proof/python-freeze.txt) has SHA-256
+90-package freeze has SHA-256
 `473fc8b212c34913bbb93b1eea738ac8adc3bacc2774b15ddecdb6f35975cc91`.
 That post-run inventory is diagnostic; it does not independently prove the
 installed package set was unchanged during the earlier 12-minute run.
@@ -80,12 +89,12 @@ The current-source L5 Rust command was:
 QUANTA_INDEX_RESOURCE_WAIT_SECONDS=3600 ./scripts/cargow --lane test-fast-lane test -p quanta-index-retrieval-bench --lib --test l5_parser_regressions --locked
 ```
 
-Its [raw log](l1-l5-proof/l5-rust.log) records exit 0, 87 library and 26
+Its raw log records exit 0, 87 library and 26
 integration tests executed, zero failed/ignored. The 846-file Rust/vendor/
-benchmark input [pre](l1-l5-proof/l5-rust-source-pre.json) and
-[post](l1-l5-proof/l5-rust-source-post.json) maps both digest to
+benchmark input pre and
+post maps both digest to
 `4e0a4e6dd84d6a2de765a5cbae1065b5df8dc85269d37335e7b2f6f158ad73cc`;
-the [two test binary hashes](l1-l5-proof/l5-rust-binaries.json) bind execution.
+the two test binary hashes bind execution.
 This does not compose with the earlier Python run's different source.
 
 The DTO/hash owner command used the same build lane:
@@ -94,12 +103,12 @@ The DTO/hash owner command used the same build lane:
 QUANTA_INDEX_RESOURCE_WAIT_SECONDS=3600 ./scripts/cargow --lane test-fast-lane test -p quanta-index-contract-base -p quanta-index-contract --lib --locked
 ```
 
-Its [raw log](l1-l5-proof/contract-rust.log) records contract 163 and base 53,
+Its raw log records contract 163 and base 53,
 **216 executed, 0 failed/ignored**. The 818-file input
-[pre](l1-l5-proof/contract-source-pre.json) and
-[post](l1-l5-proof/contract-source-post.json) maps have the same
+pre and
+post maps have the same
 `0af1558c1c4763c678546ebdea6f8c7c7d357c9eaedf8781584215ca4afc2721`
-digest as the selected lexical run; [binary hashes](l1-l5-proof/contract-rust-binaries.json)
+digest as the selected lexical run; binary hashes
 bind the two test executables. Across these three selected Rust commands,
 **596 tests passed**, with no failures or ignored tests. This is not a full
 workspace test suite.
@@ -169,7 +178,7 @@ workspace test suite.
 `just rust-policy`, `just fmt-check`, `just rust-public-api`,
 `just rust-cargo-modules`, `just rust-llvm-lines`, `git diff --check`, and
 202 focused Python policy tests passed; raw result and JUnit are in
-[l1-l5-proof](l1-l5-proof/). `rust-policy`'s proof-authority step
+l1-l5-proof. `rust-policy`'s proof-authority step
 reported `REGISTRY_ONLY`: 25 registrations and **zero** execution manifests.
 The benchmark-artifact step found 17 absent artifacts and validated none.
 
@@ -181,7 +190,7 @@ monomorphization dominating the total. The baseline was reset to the measured
 current release-profile values, and `just rust-llvm-lines` then exited 0.
 This resets a future regression guard; it does **not** qualify cold build time,
 binary size, or the acceptability of the growth. The
-[raw LLVM listings and guard outputs](l1-l5-proof/) are retained here.
+raw LLVM listings and guard outputs are retained here.
 
 ## Late integration execution
 
@@ -191,12 +200,12 @@ The final pre-commit source map and a later stable rehash both bind HEAD
 `10787c9d9c8a642ab2312b60e51d45482b4d49db5f25ad5cddb340a1a7f2f972`,
 and source digest
 `f58a440d36797eb25ee09e41a1348dd6eed8cb8603cb6ba83bc72011d9302fff`.
-See [pre](l1-l5-proof/final-rust-source-pre.json),
-[stable rehash](l1-l5-proof/final-rust-source-stable-after.json), and the
-[capture script](l1-l5-proof/source-capture-script.txt). The shared checkout
+See pre,
+stable rehash, and the
+capture script. The shared checkout
 subsequently moved to `a7f28123` and three L4 test/proof inputs changed; the
-[later map](l1-l5-proof/final-rust-source-mid.json) is a drift diagnostic, not
-part of the earlier result. A still later [live observation](l1-l5-proof/live-final-observation.json)
+later map is a drift diagnostic, not
+part of the earlier result. A still later live observation
 bound HEAD `a7f28123` plus dirty inputs to source digest
 `6c3f954d48a6ec7ccba0bc50fca3dc9b5ab02df7d804aaa422533e468cac19c5`:
 12 local source/proof-script files differ from the frozen `f58a440d…` map,
@@ -206,25 +215,25 @@ work, not a completed qualification rail.
 - **VERIFIED, compile scope:** `QUANTA_INDEX_RESOURCE_WAIT_SECONDS=3600 just rust-check`
   exited 0 on the stable profile; its underlying command was
   `./scripts/cargow --lane all-targets-lane check --workspace --all-targets --all-features --locked`.
-  [Raw log](l1-l5-proof/workspace-check-final.txt), SHA-256
+  Raw log, SHA-256
   `fdff45b5319401a34e700c94a21f34f5559fcf4e1d2254af9f0b2788d489fd97`.
   This is compilation only.
 - **VERIFIED, selected lexical execution:** the command above was rerun after
   the integration repairs and exited 0 with 193 library plus 74 integration
-  tests, **267 executed, 0 failed/ignored**. [Raw log](l1-l5-proof/selected-lexical-final.txt),
+  tests, **267 executed, 0 failed/ignored**. Raw log,
   SHA-256 `02a5cba10e21ef9bad013ff641976abf6c71c4ec62d92d05e53a51b946a9303a`.
   The seven migrated lexical targets also exited 0 with 40 tests; their
-  [raw log](l1-l5-proof/lexical-migrated-final.txt), SHA-256
+  raw log, SHA-256
   `95212c96ccde80bd189c283ac9fa74fe3d42c8642bbf399cbb7f8541424fbb6d`.
   Formatting of one migrated test file changed during that command; the six
   text-authority tests were subsequently rerun after formatting. Do not
   promote the 40-test aggregate to a single unchanged-source receipt.
-  [Executed binary hashes](l1-l5-proof/final-selected-binaries.json) are
+  Executed binary hashes are
   recorded separately.
 - **VERIFIED, formatted text-authority target:**
   `./scripts/cargow --lane test-fast-lane test -p quanta-index-lexical --test text_authority_shards --locked`
   reran the six tests after the final formatting edit and exited 0. The
-  [raw log](l1-l5-proof/text-shards-final-formatted.txt) has SHA-256
+  raw log has SHA-256
   `498c66c2e4959f758eb02c771cda3a91e4fd37d6ffef817fd42431d971b65897`.
 - **VERIFIED, selected process/integration paths before later L4 edits:**
   `runtime_extended_suite composite_generation_authority_restart` passed 8,
@@ -234,10 +243,10 @@ work, not a completed qualification rail.
   `runtime_risk_suite e2e_exact_count_window` passed 4. All commands used
   `./scripts/cargow --lane test-fast-lane test -p quanta-index-searchd-runtime
   --test <target> <selector> --locked`, with no selector for `l4_preview_sdk`.
-  Their [restart](l1-l5-proof/runtime-restart-final.txt),
-  [explain](l1-l5-proof/runtime-explain-final.txt),
-  [L4 SDK](l1-l5-proof/runtime-l4-final.txt), and
-  [window](l1-l5-proof/runtime-window-final.txt) raw logs have SHA-256
+  Their restart,
+  explain,
+  L4 SDK, and
+  window raw logs have SHA-256
   `31700f7c535db661e7135e8b152e1956d6dea7129d6dc2cf7cce896ff2843617`,
   `04c319dc809cd79bbb6b54f39b36ceaa52e8d53c0bebc961570bdc99129e70c5`,
   `e9ef4fcbc52152f340e1cceb7d9ea8b60f04928e1fcaafffbe50aaef86deab89`,
@@ -246,8 +255,8 @@ work, not a completed qualification rail.
 - **VERIFIED, corrected contract fixtures:**
   `./scripts/cargow --lane test-fast-lane test -p quanta-index-core --test ingest_resource_policy --locked`
   passed 7, and the equivalent `-p quanta-index-contract --test scv2_01_semantic_source_wire`
-  command passed 7. [Core](l1-l5-proof/core-migrated-final.txt) and
-  [contract](l1-l5-proof/contract-migrated-final.txt) logs have SHA-256
+  command passed 7. Core and
+  contract logs have SHA-256
   `39ac447fc9ec66648eaf898c76ee59528ee95e50e5c072b0728b4b0eb6330529`
   and `b24f1ed0f466750f7bf1c4dc6e7379f22f041b9762cc3e3fb2d3b62d50a2c20a`.
 - **VERIFIED, frozen Python consumer scope:** on a detached filesystem
@@ -262,25 +271,27 @@ work, not a completed qualification rail.
   tools/ci/tests/test_benchmark_source_closure.py
   --junitxml=/Users/songmin/Documents/code-new/quanta-index/docs/plans/sep-27-code-search-remediation/handoffs/l1-l5-proof/l5-python-frozen-final.junit.xml
   --tb=short` from `/tmp/qi-l1-l5-frozen-final`.
-  [Pre](l1-l5-proof/l5-python-frozen-final-source-pre.json) and
-  [post](l1-l5-proof/l5-python-frozen-final-source-post.json) source maps are
+  Pre and
+  post source maps are
   identical; pre/post `uv pip freeze` SHA-256 is identically
   `473fc8b212c34913bbb93b1eea738ac8adc3bacc2774b15ddecdb6f35975cc91`.
-  [JUnit](l1-l5-proof/l5-python-frozen-final.junit.xml) SHA-256 is
+  JUnit SHA-256 is
   `657634687041d2493f20a2a1c87017e2f244034e91b75eefe860a560eee25c64`;
-  [raw log](l1-l5-proof/l5-python-frozen-final.txt) SHA-256 is
+  raw log SHA-256 is
   `e5fadc9ba477589339703d53080c8accc0f682f8430e606656702e6bd2eaa592`.
   This qualifies those consumer tests on the frozen source, not the later
   shared-tree HEAD or an installed deployment.
 - **VERIFIED, static gates on the pre-commit source:** `just rust-policy`,
   `just fmt-check`, `just rust-public-api`, and `git diff --check` exited 0.
-  [Policy](l1-l5-proof/rust-policy-final-current.txt),
-  [format](l1-l5-proof/fmt-final-current.txt), and
-  [API](l1-l5-proof/public-api-final-current.txt) logs are retained. The
+  Policy,
+  format, and
+  API logs are retained. The
   policy step reports registry-only proof authority and 17 absent benchmark
   artifacts; it does not supply execution or benchmark qualification.
 
-## Remaining closure
+## Remaining closure at the historical execution boundary
+
+Current ticket dispositions in CS-INT-01 supersede this historical inventory.
 
 - **BLOCKED:** enforce or prove an aggregate L4 regex allocation ceiling across
   AST/HIR planning, automata compilation, retained engines and search caches.
@@ -288,10 +299,13 @@ work, not a completed qualification rail.
   16 MiB reservation. Current state-proportional logical charging mitigates
   request work but does not bind the allocator. See
   [L4_REGEX_BUDGET_RESIDUAL.md](L4_REGEX_BUDGET_RESIDUAL.md).
-- **BLOCKED:** delta coverage persistence rewrites a generation-wide snapshot
+- **VERIFIED source cost mechanism; cost qualification NOT_RUN:** delta coverage
+  persistence rewrites a generation-wide snapshot
   for a one-file update; the observed 169,994 fresh bytes are outside the
   index-byte oracle. No storage-amplification ceiling or shard/inheritance
-  design has been qualified. Touched text-authority shards are likewise
+  design has been qualified. This is a scalability/cost issue, not a demonstrated
+  source-freshness or atomicity defect. The sample is pre-format-8 and needs a
+  new measurement after the merge. Touched text-authority shards are likewise
   rewritten; the separate shard test measures their cost.
 - **NOT_RUN:** full workspace test CI, exhaustive final-source daemon/SDK and
   crash/restart suite for L1–L4, relevance/latency benchmarks,

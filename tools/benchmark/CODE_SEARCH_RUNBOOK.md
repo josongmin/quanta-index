@@ -12,13 +12,33 @@ contracts. Neither an old report nor a successful `plan` is a new benchmark.
 | Check retrieval code while editing | `just retrieval-contract-local` | Focused Python/Rust contract tests | Dirty-checkout diagnostic; no search quality or speed |
 | Capture current-source SDK/contract proof | `benchctl run retrieval-contract` | Real daemon SDK proof and contract tests | Typed correctness proof; no relevance or speed |
 | Compare Quanta with Semble | `benchctl run retrieval-diagnostic --pair-spec ...` | Both products search the frozen repo/query pack | Exploratory paired diagnostic; not qualified quality or speed |
-| Capture the three external lexical products | `python -m tools.benchmark.retrieval.live_lexical_external --spec ...` | Live Sourcegraph/OpenGrok HTTP requests and cs processes; retains native responses | Fresh external recorded diagnostic; indexed-universe attestation remains absent |
+| Run all five lexical products | `benchctl code-search run --spec ...` | External live capture, live SDK pair, five-product score, validation and replay | Fresh five-product diagnostic; no qualified quality or speed |
+| Capture the three external lexical products | `benchctl code-search external --spec ...` | Live Sourcegraph/OpenGrok HTTP requests and cs processes; retains native responses | Fresh external recorded diagnostic; indexed-universe attestation remains absent |
 | Score five lexical products | `benchctl run lexical-diagnostic --lexical-spec ...` | Re-scores **recorded** Quanta, Semble, Sourcegraph, OpenGrok and cs observations | Corpus-bound recorded file-recall diagnostic; **no live product search** |
 
-There is no registered one-command **live five-product** profile. A fresh
-five-product diagnostic is the live pair, the standalone live external capture,
-and then the recorded scorer, all over one frozen corpus view and query pack.
+The `code-search` workflow composes the existing registered pair and lexical
+profiles with live external collection over one frozen corpus view and query pack.
 `lexical-diagnostic` itself never starts or calls Sourcegraph, OpenGrok or cs.
+
+## One-command live workflow
+
+Use the [workflow spec example](retrieval/examples/code-search-workflow.json)
+after preparing the pair and external specs below. The workflow refuses unequal
+suite/pack bytes, a different release manifest, hybrid profiles, dirty source
+and an existing output root. It captures external products first so authentication,
+revision and result-envelope failures are discovered before the SDK pair.
+
+```sh
+uv run --frozen --extra dev python tools/benchmark/benchctl.py code-search run \
+  --spec /absolute/external/code-search-workflow.json
+uv run --frozen --extra dev python tools/benchmark/benchctl.py code-search verify \
+  --capture /absolute/external/fresh-five-product-run
+```
+
+`workflow.json` is published only after all five products, both profile validations,
+both replays and the native external replay succeed. A failed run retains
+`failure.json` and per-stage execution logs; start a fresh root after repair.
+External replay re-derives result rows from the retained HTTP/process bytes.
 
 ## Shared preparation
 
@@ -140,16 +160,21 @@ timing for query latency, and keep failures/timeouts in the denominator.
 Run the live external collector with the same selected release view, suite and
 blind pack as the pair. Sourcegraph and OpenGrok must already serve that view;
 the spec pins their HTTP(S) origins, repository/project names and
-operator-supplied image digests. Put required bearer credentials in external
+operator-supplied image digests. Put required credentials in external
 `token_file` paths; the collector reads them without writing token bytes into
-the capture. cs must be an executable binary. The collector
+the capture. Sourcegraph uses its `token` scheme; OpenGrok uses `Bearer`.
+Sourcegraph's Git origin must contain the selected original commit; a new
+synthetic snapshot commit is refused. Its request includes an exact selected-view
+file filter. cs must be an executable binary. The collector
 retains each raw HTTP response and cs stdout/stderr, checks terminal results,
 and emits exactly one `symbol_only` row per task and product. Failed or partial
 captures stay in `.staging` and do not publish the final output root:
 
 ```sh
-uv run --frozen --extra dev python -m tools.benchmark.retrieval.live_lexical_external \
+uv run --frozen --extra dev python tools/benchmark/benchctl.py code-search external \
   --spec /absolute/external/live-external-spec.json
+uv run --frozen --extra dev python tools/benchmark/benchctl.py code-search external-verify \
+  --capture /absolute/external/fresh-external-capture
 ```
 
 Inspect its `capture.json`, raw response files and three `*_rows.jsonl` files.

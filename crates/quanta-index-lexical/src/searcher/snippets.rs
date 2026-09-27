@@ -716,7 +716,7 @@ mod l4_selected_preview_regressions {
 mod l4_witness_regressions {
     use super::RenderedPreview;
     use super::l4_selected_preview_regressions::render;
-    use quanta_index_contract::{LqExpr, LqLeaf, PreviewUnavailableReason};
+    use quanta_index_contract::{HighlightSpan, LqExpr, LqLeaf, PreviewUnavailableReason};
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 

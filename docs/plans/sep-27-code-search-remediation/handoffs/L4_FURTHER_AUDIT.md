@@ -1,5 +1,7 @@
 # L4 further adversarial audit — cancellation, regex memory, SDK preview
 
+> Historical report: one-off evidence files were removed from the repository. This report alone is not current verification.
+
 Status: **partial**. The source-bound selected checks below passed. Aggregate
 regex compiler/retained heap admission remains **BLOCKED**; a fresh installed
 daemon/process, whole-workspace qualification, latency and RSS are **NOT_RUN**.
@@ -16,7 +18,7 @@ those claims.
   over 1,172 tracked and untracked non-plan input files. The 25 pinned external
   SSTable input files are hashed separately. The exact manifest, toolchain,
   before/after inputs, commands, binaries and raw logs are in
-  [further-audit-20260927](l4-proof/further-audit-20260927/).
+  further-audit-20260927.
 - The copied tree is immutable during each recorded run. It is an owner-local
   verification snapshot, not a clean Git commit or whole-repository receipt.
 - At closeout, all 11 selected L4/SDK/harness files still matched the copied
@@ -25,7 +27,7 @@ those claims.
   budget integration test and L1/search-plane files. Thus this receipt does
   not qualify the entire current shared checkout. The per-file comparison,
   exact drift list, artifact hashes and `git diff --check` result are in
-  [closeout.json](l4-proof/further-audit-20260927/closeout.json).
+  closeout.json.
 
 ## Reproduced findings and changes
 

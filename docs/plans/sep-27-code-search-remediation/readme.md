@@ -1,10 +1,12 @@
 # SEP-27 — Code search remediation RFCs
 
-Status: **PROPOSED packet; current implementation evidence is scoped per RFC**.
-L5 producer/parser and its shared integration are verified on the exact dirty
-snapshot recorded in [L5_HANDOFF](handoffs/L5_HANDOFF.md). This does not qualify
-the other RFCs or whole-repository CI/release.
-Prepared: 2026-09-27. Source baseline:
+Status: **PARTIAL IMPLEMENTATION; FINAL QUALIFICATION OPEN**.
+L1–L5 repairs and source-scoped owner/process executions are present. Latest
+remaining-work audit: [CS-INT-01](rfcs/CS-INT-01-integration-and-qualification.md#current-remaining-work-audit--2026-09-27).
+Policy and native-normalization rejection checks are **FAILED**; aggregate regex
+heap proof is **BLOCKED**; final combined-source CI/process/benchmark/release
+qualification is **NOT_RUN**.
+Prepared: 2026-09-27. Historical proposal baseline:
 `main@66cee47efdda7c5f3886ac58690aa645f44f691f`, clean before these documentation edits.
 
 **Engine re-audit, 2026-09-27:** [engine-audit.md](engine-audit.md) supersedes the
@@ -13,14 +15,16 @@ counterexamples, preserves the existing grouped collector and snapshot cursors,
 and specifies semantic snippet witnesses. This re-audit ran in the concurrently
 dirty checkout; pinned-binary/component evidence is not current-build qualification.
 
-This packet turns the code-search RCA into separately owned engine, producer,
-benchmark and integration proposals. It records what must change, why, how to
-verify it and which claims remain unproved. It does not implement a ranker,
-change an accepted ADR, publish a new corpus or qualify a benchmark.
+This packet owns the code-search RCA, implementation boundaries and remaining
+acceptance per RFC. Historical findings describe their recorded source, while
+the current disposition distinguishes implemented fixes, reproduced failures,
+cost issues and unrun qualification. No corpus release, quality gain or deployed
+fix follows from updating these documents.
 
 ## 1. Read order and authority
 
-1. Read the [final engine audit](engine-audit.md), then the original
+1. Read the [current remaining-work audit](rfcs/CS-INT-01-integration-and-qualification.md#current-remaining-work-audit--2026-09-27),
+   then the historical [engine audit](engine-audit.md) and original
    [evidence register](evidence.md) for diagnostic context and proof scope.
 2. Select an RFC from the table below; each owns its detailed proposal and DoD.
 3. Use [CS-INT-01](rfcs/CS-INT-01-integration-and-qualification.md) for dependencies,
@@ -64,13 +68,24 @@ choice and test it; do not use an unbound proposal as a qualification contract.
 | Benchmark measurement | [CS-BENCH-04](rfcs/CS-BENCH-04-comparators-performance-and-incremental.md) | Local comparators, equivalent work, latency, resources and updates | BENCH-01/02/03; shared MISC execution prerequisites |
 | Integration | [CS-INT-01](rfcs/CS-INT-01-integration-and-qualification.md) | Coordinated cutover, serial integration and final proof | Required scope of the nine RFCs above |
 
-All ten RFCs originated as proposals. Current implementation and regression
-status is recorded in each RFC and its source-bound handoff; the L5 update is in
-[CS-PROD-01](rfcs/CS-PROD-01-parser-coverage-and-vite.md). Packet-wide final
-qualification is **NOT_RUN**. Existing failed diagnostics are identified
-individually in the evidence register.
+All ten RFCs originated as proposals. Each now separates implementation from
+historical execution and current acceptance. Outstanding work: INT-C1 (new
+ranked-key module cycle), BENCH-02/F08 (native scoring authority), L4-R1 (physical
+regex allocation admission), L2-C1 (coverage update cost), INT-R1 (final-source
+combined execution), INT-D1 (four historical proof links), MISC-04's new test
+enrollment, and independent benchmark/rollout acceptance. Packet-wide final
+qualification is **NOT_RUN**. Do not treat old findings/checklists as ten
+unimplemented tickets.
 
 ## 3. Findings-to-work traceability
+
+The following findings are historical diagnostic evidence. Current disposition:
+F01, F05/F06 and the engine correctness portions of F03/F04 have source repairs
+and historical regression evidence; their combined-source rerun is INT-R1.
+F02 ranking promotion and F07/F09 independent/equivalent benchmark admission
+remain unrun. F08 is freshly reproduced at the comparator boundary and remains
+open under BENCH-02. G01 has owner/daemon recovery receipts but no final merged-
+source or measured incremental qualification; G02 remains unrun.
 
 | ID | Finding | Evidence class | Primary RFC | Supporting RFC |
 | --- | --- | --- | --- | --- |
@@ -113,11 +128,12 @@ individually in the evidence register.
 
 ## 5. Sequencing and parallel ownership
 
-Start ENG-01, BENCH-01 and BENCH-02 as independent lanes. Parser compatibility
-probes in PROD-01 may proceed independently. Agree the ENG-02 capability payload
-before changing producer and publication consumers. Ranking/snippet work can be
-implemented after the engine contracts stabilize; tuning waits for independent
-development labels and metric contracts. The holdout is sealed before tuning.
+For remaining work, repair the ranked-key cycle and native scoring rejection;
+resolve L4 allocation admission, measure L2 update cost and enroll the new Python
+tests. Then freeze the combined source for INT-R1. Retain implemented L1–L5
+contracts. Tuning waits for independent development labels and metric contracts,
+with holdout sealed before tuning. This dependency design does not authorize
+agent dispatch.
 
 One integrator resolves shared contract, SDK and evaluator boundaries. Final
 native runs use a single frozen combined source. Reuse one compatible capture

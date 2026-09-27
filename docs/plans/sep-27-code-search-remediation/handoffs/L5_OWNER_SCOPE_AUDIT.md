@@ -1,5 +1,7 @@
 # L5 owner and namespace audit
 
+> Historical report: one-off evidence files were removed from the repository. This report alone is not current verification.
+
 Status: **VERIFIED for the bounded scope** on `2102966246866398f01833bebf71396831377149` plus a three-file
 L5 overlay at `/Users/songmin/.codex/worktrees/l5-owner-scope-audit/quanta-index`. Those three files match the shared checkout at closeout.
 Other shared dirty inputs are not part of this snapshot's qualification.
@@ -31,9 +33,9 @@ run and is not presented as red proof.
 - **Format VERIFIED:** rustfmt and changed-file whitespace checks passed.
 
 The exact commands, environment, source and raw output digests are in
-[L5_OWNER_SCOPE_AUDIT.json](L5_OWNER_SCOPE_AUDIT.json), SHA-256 `2cb968a25136cb39ebf162ada0e6368619a978537fda0442245e5c5b4a9ba6f2`.
+L5_OWNER_SCOPE_AUDIT.json, SHA-256 `2cb968a25136cb39ebf162ada0e6368619a978537fda0442245e5c5b4a9ba6f2`.
 Raw logs are stored as `.raw.txt` under
-[l5-proof/owner-scope-audit-20260927](l5-proof/owner-scope-audit-20260927).
+l5-proof/owner-scope-audit-20260927.
 
 Whole-repository CI, fresh daemon/SDK queries, the full Python consumer suite,
 clean-source release and deployment are **NOT_RUN** on this snapshot. The earlier

@@ -1,5 +1,7 @@
 # L5 — Parser and source-fact remediation
 
+> Historical report: one-off evidence files were removed from the repository. This report alone is not current verification.
+
 Latest audit: [L5_OWNER_SCOPE_AUDIT](L5_OWNER_SCOPE_AUDIT.md) records two
 additional TS owner/name fixes on frozen `21029662` plus its L5 overlay.
 Earlier receipts below retain their original source and scope.
@@ -61,7 +63,7 @@ message was sent to L0.
 
 All final rails exited 0 with identical before/after source inputs. Exact commands,
 raw outputs, input hashes, environment and artifact digests are in
-[L5_COMPLETION.json](L5_COMPLETION.json) and [l5-proof/current](l5-proof/current).
+L5_COMPLETION.json and l5-proof/current.
 
 | Rail | Result | Scope |
 | --- | --- | --- |

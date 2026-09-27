@@ -1,7 +1,28 @@
 # CS-BENCH-02 — Native-derived normalization and evidence rejection
 
-Status: **PROPOSED**. Implementation and new rejection proof: **NOT_RUN**.
+Status: **OPEN — native/normalized rejection invariant FAILED** on the
+`b42a9b5d` dirty audit source. A fresh fixed-native cs probe reproduces F08;
+complete native-bound scoring/replay qualification is **NOT_RUN**.
 Category: benchmark evidence correctness. Finding: F08; supports F01/F09.
+
+## Current remaining work
+
+`lexical_file_comparison.py::product_result` validates normalized task/query/gold,
+paths and hit-flag consistency, but does not load/rederive the retained native cs
+stdout. The new exploratory producer retains native bytes/digests; that does not
+bind them at the scorer. A fixed native `other.rs` response scores zero against
+`answer.rs` gold. Mutating only normalized `paths` and `file_hit_at_10` scores one
+while native bytes and `stdout_sha256` remain unchanged. The required refusal
+was not observed. The fixture uses an independent fixed native oracle and does
+not allege actual capture tampering.
+
+Reproduction command, raw result and source identity:
+[CS-INT-01](CS-INT-01-integration-and-qualification.md#current-remaining-work-audit--2026-09-27).
+The Sourcegraph validator and exploratory live producer are partial implementation;
+do not label all native adapters absent or their exploratory output qualified.
+Complete one shared acquisition/replay decoder per admitted product, bind native
+bytes/request/source to evaluation, and execute the negative matrix below before
+using these rows for comparative quality qualification.
 
 ## Purpose and RCA
 

@@ -6,6 +6,11 @@ the benchmark Python overlay and concurrent Rust/proof work are not a frozen
 qualification source. A commit, a file's presence or an owner-local test run
 does not establish whole-source, installed-product or performance qualification.
 
+The [code-search ticket refresh](../../sep-27-code-search-remediation/rfcs/CS-INT-01-integration-and-qualification.md#current-remaining-work-audit--2026-09-27)
+also observed the subsequent `a6a39cb3` commit and retained both source profiles.
+It adds two reproduced acceptance failures below; historical MISC execution
+counts remain scoped to their recorded inputs.
+
 This is the single work/acceptance contract for the former SEP-27 four-agent
 handoff union and RB/BM/RBR/TOPT work. Requirements, RCA, file/function owners,
 logic, negative controls, dependencies and acceptance criteria are inline.
@@ -33,19 +38,28 @@ not a request to reimplement already retained publication/monitor/I/O code.
 
 | Priority / owner | Current evidence / RCA | Remaining work and acceptance |
 | --- | --- | --- |
+| P2 ENG-03 / INT-C1 | `just rust-policy` fails on the new `ranked_keys → ranked_page → ranked_keys` cycle after the format-8 merge. Shared column-name constants reside in the collector that consumes table types. | Move shared constants to a lower owner without changing wire/index names; execute cycle/static and ranked regressions. Detailed acceptance and source-bound command evidence are owned by [CS-INT-01](../../sep-27-code-search-remediation/rfcs/CS-INT-01-integration-and-qualification.md#current-remaining-work-audit--2026-09-27). |
+| P2 BENCH-02 / native result authority | Current `product_result` accepts a cs normalized-path/hit mutation that changes score 0→1 while a fixed native response remains `other.rs`. Rejection invariant `FAILED`; no actual capture tampering is alleged. | Native-bound acquisition/replay/scoring rejection is [BENCH-02-owned](../../sep-27-code-search-remediation/rfcs/CS-BENCH-02-native-response-validation.md). Raw retention/streaming alone cannot close it; keep common custody/I/O ownership here. |
 | P1 MISC-05 / regex allocation | `crates/quanta-index-lexical/src/searcher/candidates.rs::SelectedPreviewContext::prepare_leaf` reserves 16 MiB plus 256 bytes per estimated state; `crates/quanta-index-lq-regex/src/executor.rs::prepare/compile_prepared` still delegates allocating planning/compilation and caches to the public regex wrapper. The code explicitly disclaims an allocator-enforced ceiling. Capture removal and state charging are implemented mitigations, not aggregate allocation admission. | Aggregate-bound claim `BLOCKED`; coordinated implementation/qualification `NOT_RUN`. Admit AST/HIR temporaries, compilation, retained engines and search caches before their expensive allocations, with correct reservation lifetimes. Preserve one canonical truth/range matcher, Unicode/capture-heavy differential cases, cancellation and typed optional-preview refusal without changing selected IDs/order. No current runtime overrun is established by this audit; the older 20,035,301-byte compiler probe is not a measurement of today's mitigated request. |
 | P1 MISC-05 / delta coverage amplification | `crates/quanta-index-lexical/src/sealed_generation/coverage.rs::apply_file_coverage` clones the base map; `write_staged_coverage` collects and serializes every row into a new CBOR buffer. `adapter_ingest.rs` invokes it for the candidate generation before index mutation. A one-file delta therefore still rewrites generation-wide coverage; text-authority touched shards are a separate cost. | Bounded incremental storage/heap claim `BLOCKED`; structural repair/qualification `NOT_RUN`. Use generation-bound immutable partitions/inheritance or bounded deltas with an explicit compaction rule, coordinated with seal/verify/open/GC rather than a second authority. Preserve empty/failed coverage, tombstones, source-event binding, old-reader ownership and corruption refusal. Measure changed, inherited, coverage and text-shard bytes separately across growing file counts; declare storage/heap ceilings and test crash/reopen. Do not exclude coverage bytes and call total incremental cost bounded. |
 | P1 MISC-04 / external lexical test enrollment | New `tools/ci/tests/test_live_lexical_external.py` has two owner tests, but is absent from `Justfile::benchmark-control-contract-local`, `tools/ci/test-authority.toml` and explicit test roots in `tools/ci/source_closure.py`. The producer is already under the directory-bound `tools/benchmark/retrieval`; its test file is not. Authority lint passes because Python registration is opt-in, not exhaustive discovery. | Missing selection/custody is a current control-plane gap; repair `NOT_RUN`. Register the test to `live_lexical_external.py`, the existing PR rail and capture scope; enroll it in the existing selector and affected closures. Add omission/duplicate/nonempty-collection and test-mutation invalidation guards. Run both tests; the HTTP/process fixture test was not executed by this refresh. Keep this diagnostic producer unqualified: operator-supplied image identity/input manifest is not indexed-universe attestation. |
 | P1 MISC-04/05 / final integrated source | The frozen L5 consumer source map binds `0e99f25a…`, source digest `f58a440d…`, and the removed private SSTable dependency. Its 552-case terminal and identical pre/post identities are real historical evidence. Current HEAD contains the sealed ranked-key migration; 32 entries of that local file map differ, including Cargo manifests/lockfile, lexical authority and Python comparator inputs. | Transfer of that receipt to current source is `BLOCKED`; fresh integrated execution `NOT_RUN`. Finish active owners, freeze current dependencies/config/overlay and rebuild once. Execute affected Python control-plane, bench-protocol Rust/canonical fixtures, migrated lexical/core/contract targets and required daemon/SDK/restart scopes, then actual native/Criterion capture and relocated fresh Python/Rust consumption/replay. Record exact selected/executed/ignored counts, binary/input identities and terminal artifacts. Run ignored process cases explicitly when their claim requires them. Hosted/full-workspace/installed/platform claims remain separate. Do not rerun unrelated historical targets blindly or edit old receipts. |
 | P2 MISC-03 / IO-5 resource matrix | Generic 8/128 MiB publication/load/replay RSS evidence exists; it does not cover every adapter, failure log, archive cardinality or actual producer. Existing streaming code is retained. | Adapter acceptance `NOT_RUN`: whole preparation/execute/publish/load/replay with large successful and failed output, many-entry archives/metadata, interruption/corruption, an independent raw byte/digest oracle and fresh-process RSS. Declare retained-metadata limits separately from raw-byte scaling. Fix only a reproduced owner violation, not a parallel buffering API. |
-| P2 MISC-04 / documentation gate | Current `lint-doc-paths.py` exits 1 on four paths in two digest-bound L3/L4 proof documents. Their preimage hashes still match the consumer overlay / authority receipt. | Gate `FAILED`. Correct navigation plus reissue affected evidence, or define an explicit provenance-preserving archival lint treatment. Do not alter sealed preimages to fabricate unchanged proof, and do not suppress the repository gate globally. Exact files/hashes are inline below. |
 | P2 MISC-06/07 / execution and measurement | Live external producer/scorer code is present, but an executable adapter, fake-service test or old pair is not a current same-corpus live experiment. Lexical file-hit/order, semantic relevance, hybrid quality and symbol spans are different strata. | Fresh admitted live pilot, profile inventory and measurements `NOT_RUN`. Use external corpus releases and the same admitted query pack; report native order, exact searchable/indexed universe, completeness, faults and raw responses. Separate cold/warm/time-to-searchable, query on/off, micro/system/test-cost denominators. Report diagnostic results without quality/performance promotion when inputs do not support it. Manual licensing/gold/host provisioning stays outside the code work list; missing inputs block only their dependent qualified claims. |
 
 Execution dependency: structural resource owners and coverage enrollment → one
 current-source integration freeze → IO-5/actual-producer acceptance → admitted
-pilot/measurements. Proof-document repair/reissue can be prepared independently;
-it must precede a clean documentation gate. Do not run competing heavy Cargo or
-timing jobs against the shared host.
+pilot/measurements. Do not run competing heavy Cargo or timing jobs against
+the shared host.
+
+Cleanup update: one-off handoff proof directories and root-level machine
+reports were removed from the repository at the user's request. Historical
+terminals remain historical observations, not current-source qualification.
+Do not recreate receipts, snapshots, probes or proof-navigation/reissue work
+merely to satisfy routine verification. The `hellgate-corrected-20260927`
+directory was also removed after its six other-task runners stopped. Removed
+files, including dirty contents, are recoverable outside the checkout at
+`/Users/songmin/Library/Caches/quanta-index/evidence-cleanup-20260927.mUF8BM`.
 
 Current audit evidence is external, not a second task specification:
 `/private/tmp/qi-remaining-audit-20260927.9608H0/receipt.json`, SHA-256
@@ -60,7 +74,7 @@ The documentation update is subsequent to that observation, not test promotion.
 | `python3 tools/ci/lint/check-benchmark-policy.py` | `VERIFIED` for current policy checks, exit 0; the live external test omission is outside existing guards. |
 | `python3 tools/prompt-manager/pm.py lint` | `VERIFIED` for five generated targets in sync, exit 0. |
 | `git diff --check` | `VERIFIED` for observed whitespace scope, exit 0. |
-| `python3 tools/ci/lint/lint-doc-paths.py` | `FAILED`, exit 1, four broken paths listed below. |
+| `python3 tools/ci/lint/lint-doc-paths.py` | `VERIFIED` for remaining documentation paths after cleanup, exit 0. The earlier four-path failure came from removed disposable proof documents; no proof reissue is required for this cleanup. |
 | Pinned `uv run --frozen --extra dev python -m pytest tools/ci/tests/test_lexical_file_comparison.py tools/benchmark/retrieval/test_sourcegraph.py tools/ci/tests/test_live_lexical_external.py::test_cs_process_refuses_excessive_output_and_timeout -q -p no:cacheprovider --junitxml=/private/tmp/qi-remaining-audit-20260927.9608H0/diagnostics.xml` | Raw terminal: 56 passed, zero failure/error/skip, exit 0, 4.87 s; one JUnit `record_property` warning. Current-source qualification `BLOCKED`: `live_lexical_external.py` changed between the audit's pre/post observations. This is a diagnostic execution, not a frozen receipt. JUnit SHA-256 `f8e2a5ecdefd35215b6546f3369f4ce60d193754618b4eb3e7eeb5c47e792d7e`. |
 | Historical frozen L5 JUnit | 552 executed, zero failure/error/skip; raw JUnit SHA-256 `657634687041d2493f20a2a1c87017e2f244034e91b75eefe860a560eee25c64`, pre/post source identities equal. Receipt transfer to current source `BLOCKED`; this audit does not requalify that older environment or removed dependency. |
 
@@ -126,124 +140,14 @@ active journal and only a complete old/new pointer. CLI refusal paths preserve
 their observed reason/status without inventing a producer terminal. All use
 the existing publication/execution owners; no second transaction was added.
 
-### IO-4 owner-local proof, provenance failure and integration blockers
+### Historical regression results
 
-Command: `uv run --frozen --extra dev python /private/tmp/qi-misc-final-audit.SzqYJZ/audit.py`.
-The driver runs pytest over `test_benchctl`, `test_benchmark_profile_capture`,
-`test_benchmark_evidence_bridge`, `test_recorded_capture`, `test_retrieval_capture`,
-`test_criterion_capture`, `test_pair_capture`, and `test_lexical_capture` under
-`tools/ci/tests/` (all `.py`), with `-q -p no:cacheprovider -o
-junit_family=legacy` and external JUnit. At historical dirty
-`main@2102966246866398f01833bebf71396831377149`, that selection
-executed 359, with **358 pass/1 fail**, zero error/skip, exit 1, 117.12
-seconds. One deliberate duplicate-ZIP fixture warning. Failure:
-`test_pair_capture.py::test_capture_complete_profile_and_replay_with_original_corpus_changed`;
-`pair_capture.derive` reported `native pair verdict differs from raw owner
-recomputation`. An independent diagnostic comparison of the retained native
-verdict against rederived raw showed `PAIR_VALID=pass` recorded versus `fail`
-current, with `phase_metrics_invalid:preflight source/grammar/policy commitment
-mismatch` and missing T12. The relevant verifier is
-`tools/benchmark/retrieval/symbol_coverage.py::policy_digest`, which hashes
-`benchmarks/retrieval/src/symbols.rs`, preflight source, build source,
-`Cargo.lock`, grammar and limits. `symbols.rs` had filesystem modification time
-2026-09-27 09:08:20 KST, inside the latest test window. The same case passed
-alone in 75.67 seconds earlier. This supports concurrent producer-policy
-source drift as the failure mechanism; the audit did not capture before/after
-hashes for that Rust file, so exact causality is an inference, not verified.
-Do not weaken the provenance comparison or call this an implementation
-regression without a frozen-source reproduction. The full owner claim is
-`FAILED` for this run; stop and repeat after the active writer freezes all
-source, including symbol policy inputs. The overall dirty status changed
-concurrently; this is not a whole-tree or current-source qualification receipt.
-At that historical point, `host_monitor.py` was not imported by a capture path.
-The current wired implementation supersedes that source fact; the 358/359
-terminal remains a failed historical run, not current proof.
-
-Historical owner-local executions after EXEC-1 wiring (not current HEAD proof):
-
-- Seven modules (`test_benchctl`, profile capture, evidence bridge, Criterion,
-  producer notifications, benchmark policy, source closure): 344/344 passed,
-  exit 0. External JUnit `/private/tmp/qi-misc-exec1-owner-rerun-20260927.xml`,
-  SHA-256 `77dc91b8203d12ecddc198157ab4cf90901edd0b0d0b9b20d46a4986574a4765`.
-  Observed HEAD `3887fac3`; selected `symbols.rs` and changed Python file
-  hashes were equal before/after, but the entire dirty closure was not frozen.
-- Eight capture modules (the original eight-module selection): 376 passed,
-  one failed, zero skipped, exit 1 in 261.26 seconds. External JUnit
-  `/private/tmp/qi-misc-exec1-eight-20260927.xml`, SHA-256
-  `4a9ebbf0c955f2ecd8eeb15c86383baeddcc2311793b8a86bd2aa2757ae9c5dd`.
-  Failure was `test_complete_recorded_capture_and_replay_contract`: generic
-  replay policy comparison incorrectly treated a recorded import's *importer*
-  host as the original `scan-vs-index` measurement host. The code now requires
-  `any` for the recorded profile and the registered family policy for actual
-  capture profiles. Recorded and native replay focused cases passed after
-  that edit (2/2). The subsequent eight-module post-fix rerun passed 379/379,
-  exit 0 in 385.54 seconds; JUnit
-  `/private/tmp/qi-misc-exec1-eight-postfix-20260927.xml`, SHA-256
-  `eebf6a7a0dfda48998b5f9d40f8c80035a83769db015ae7c7157343b8da5f4fd`.
-  `symbols.rs`, Python symbol coverage, this SSOT, benchctl and selected test
-  hashes remained equal before/after, but
-  `benchmarks/retrieval/src/symbols/preflight.rs` changed from
-  `c0df942640a30ba5d2075075bcbb5261a56480c8ef812404d7bca3fa6ece9095` to
-  `8be1dee0a60c122bc349856c592bd245d4dfc0428915830ce69c049fe437ade2`.
-  The run proves selected tests passed, not a frozen-source pair or release.
-- The actual `uv run --frozen --extra dev just benchmark-control-contract-local`
-  selector passed 1256/1256, exit 0 in 676.36 seconds, with two warnings from
-  intentionally duplicated ZIP entries in negative fixtures. This includes
-  C5's pair replay workspace and Cargo preparation modules; it does not run
-  Rust/product/host measurements. Observed HEAD `3887fac3`; checked
-  `symbols/preflight.rs`, this SSOT and `benchctl.py` hashes matched before
-  and after. Concurrent unrelated Rust edits mean no whole-tree freeze or
-  hosted CI identity. This Just invocation emitted terminal pytest output but
-  no separate JUnit/receipt artifact.
-
-External audit root: `/private/tmp/qi-misc-final-audit.SzqYJZ`.
-Latest `receipt.json` SHA-256:
-`649c40da5133a29dd8929bebd1588d879b6c99597513c848a6c09af392be592c`;
-`owners.xml` SHA-256:
-`bf322d4bf467a1d21fef1f8b254ef8fd0a6c70b12a71cd800bda80ceb078bb3f`;
-`owners.log` SHA-256:
-`f059971d5ee2b3108639e03831ab72a573804ed5451edebddaeff0d2766b31b7`.
-The focused one-case `pair-focused.xml` SHA-256 is
-`1fddc26286fd9a0ce37c704f0ae3949f4a5e5104736729b3aa488005f4be7b05`.
-The driver records argv, before/after bounded hashes (including this SSOT),
-platform/Python identity, relevant environment and raw-log digests. It does
-not bind the changing Rust policy source, actual producer binaries, host
-quietness or a complete product source closure. The final documentation edit
-changes this SSOT digest after the test; it cannot upgrade the failed run.
-
-| Executed check | Status | Exact remaining condition |
-| --- | --- | --- |
-| `python tools/ci/lint/lint-doc-paths.py` | `FAILED` | Four broken paths in active engine evidence/templates, listed below; no new-SSOT link failure reported. |
-| `python tools/ci/lint/check-test-authority.py` | `VERIFIED` in catalog scope | Concurrent Rust owners registered the five targets; current terminal exit 0. L1/L2 SDK tests are `#[ignore]`, so workspace discovery/compilation is not their runtime execution. |
-| `python tools/ci/lint/check-benchmark-policy.py` | `VERIFIED` in policy scope | Exit 0; not producer or performance evidence. |
-| `python tools/prompt-manager/pm.py lint` | `VERIFIED` in generated-document scope | Exit 0. |
-| `git diff --check` | `VERIFIED` in whitespace scope | Exit 0 at the checked snapshot. |
-| Ruff on current `host_monitor.py` | `VERIFIED` in lint scope | Import order corrected; exit 0. This does not execute the monitor. |
-| `./scripts/cargow --lane bench-lane test -p quanta-index-bench-protocol --all-features --locked` | `NOT_RUN` in Rust test scope | Resource admission reported `not-admitted` after 27.77 seconds waiting on the shared build-test lock; this caller was interrupted with exit 143 before Cargo/test execution. No other writer's process or lock was changed. Retry only after the owning build/test lane drains. |
-| Full final-source gate | `NOT_RUN` | Monitor is wired; execute after the final code/doc freeze, including actual producers and consumers. |
-
-The two path-lint targets below remain live (`lint-doc-paths.py`: four broken
-paths). Preserve their writers' work:
-
-- `docs/plans/sep-27-code-search-remediation/handoffs/l3-proof/adversarial/prior-L3_HANDOFF.md:3,5`
-  has broken `L3_FOLLOWUP_AUDIT.md` and `L3_FOLLOWUP.source.json` relative paths.
-  It is hashed as
-  `61c8ca817c7bb45f0b0ded386431c643ed12485a59e5be18ae88d2aefaab2223`
-  in the L5 frozen/consumer overlays. Do not edit the preimage to silence the
-  linter. The owning proof must choose a provenance-preserving archival lint
-  policy or reissue the dependent evidence after a truthful navigation fix.
-- `docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/authority-id/report-template.md:36,72`
-  has broken `l4-proof/authority-id/receipt.json` and
-  `l4-proof/authority-id/live-closeout.json` relative paths. The file is
-  pinned as `438b3ff78be710d4cbde50e2eb46c949376ad101721490ae02d1eeecb19e3a2d`
-  by `l4-proof/authority-id/receipt.json`; the L4 owner must reissue affected
-  proof if it corrects the template. Do not generate a false receipt. The
-  previous missing L1 adversarial-report path is now present.
-The five formerly orphaned Rust integration targets
-(`l4_preview_emission`, `l4_preview_wire`, `l1_daemon_query_contract`,
-`l2_daemon_publication`, `l4_preview_sdk`) are now cataloged by their Rust
-owners; `check-test-authority.py` exits 0. This resolves catalog registration,
-not execution of ignored L1/L2 daemon cases or their installed-product proof.
+Owner-local runs demonstrated the IO-4 and recorded-import repairs on their
+recorded older source. Keep the implementation and tests; do not transfer old
+passes to the current source or rebuild a per-run evidence tree. Relevant
+current checks can be reported from their terminal output under the relaxed
+verification contract. Full Rust, actual producer/consumer and product claims
+still require the checks appropriate to their scope.
 
 ### Retained decisions: do not reopen without a reproduced regression
 
@@ -311,7 +215,7 @@ benchctl + registry: select declared profile and route commands
 | MISC-01 | `profile_capture.py`, `custody.py`, Rust run store | Retain atomic inventory/pointer/GC implementation; final integrated execution is MISC-04, not another gate. |
 | MISC-02 | `benchctl.py`, `producer_execution.py`, `host_monitor.py`, `evidence_bridge.py` | Retain implemented EXEC-1 and parent-death/join-failure regressions; remaining actual-producer acceptance is owned once by MISC-04. |
 | MISC-03 | `evidence.py`, `raw_archive.py`, capture adapters, portable proof | Retain repaired IO-4 and IO-1–3 regressions; execute IO-5 whole-capture resource proof. |
-| MISC-04 | Shared CLI/bridge, Just, test authority, source closures | Retain implemented C5; enroll the new external lexical owner test and its regression guards, repair/reissue proof navigation, then freeze once and integrate producer/consumer/replay evidence. |
+| MISC-04 | Shared CLI/bridge, Just, test authority, source closures | Retain implemented C5; enroll the new external lexical owner test and its regression guards, then integrate producer/consumer/replay evidence. Routine checks do not require one-off proof files. |
 | MISC-05 | Runtime/SDK/core/platform owner tests; canonical regex/resource and sealed coverage owners | Resolve aggregate regex allocation and delta coverage amplification without parallel authority; then qualify retained invariants, full Rust/daemon, installed ingest and supported platforms. |
 | MISC-06 | Existing test/query/ingest/micro/system measurement owners | Measure distinct workloads only after correctness, host and input admission. |
 | MISC-07 | Registry/domain adapters/retrieval evaluator | Complete real profile execution inventory, live comparator pilot and separately admitted quality/performance claims. |

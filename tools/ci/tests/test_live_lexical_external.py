@@ -104,6 +104,11 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(tmp_path, lex
         rows = (root / f"{name}_rows.jsonl").read_text().splitlines()
         assert len(rows) == 20
         assert sum(json.loads(row)["file_hit_at_10"] for row in rows) == 1
+    assert live.verify(root) == result
     assert (root / "sourcegraph" / "S00.stream").exists()
     assert (root / "opengrok" / "S00.json").exists()
     assert (root / "cs" / "S00.json").exists()
+    raw_path = root / "sourcegraph/S00.stream"
+    raw_path.write_bytes(raw_path.read_bytes().replace(b"src/0.go", b"src/1.go"))
+    with pytest.raises(ValueError, match="native bytes differ"):
+        live.verify(root)

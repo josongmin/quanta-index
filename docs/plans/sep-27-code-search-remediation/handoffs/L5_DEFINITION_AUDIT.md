@@ -1,5 +1,7 @@
 # L5 named-definition code audit
 
+> Historical report: one-off evidence files were removed from the repository. This report alone is not current verification.
+
 Status: **VERIFIED for the bounded producer/consumer scope below**. Five additional
 inventory/ownership regressions were reproduced on the original source and repaired.
 
@@ -40,9 +42,9 @@ fresh checkout-scoped Cargo target, fresh copied mtimes, and a source-policy che
 against the actual CLI binary. No failed, interrupted or stale run is promoted.
 
 Commands, source/environment identities, raw outputs and digests:
-[L5_DEFINITION_AUDIT.json](L5_DEFINITION_AUDIT.json), SHA-256 `76b6f610bbb9f9009af22319589fd5f95d808b9d6714ece27793aa62928adb5b`.
+L5_DEFINITION_AUDIT.json, SHA-256 `76b6f610bbb9f9009af22319589fd5f95d808b9d6714ece27793aa62928adb5b`.
 Raw logs are retained as `.raw.txt` files under
-[l5-proof/definition-audit-20260927](l5-proof/definition-audit-20260927).
+l5-proof/definition-audit-20260927.
 
 This proves the supported named-definition forms exercised here, not a complete
 language semantic symbol table. Variable/field/enum-member inventories, computed

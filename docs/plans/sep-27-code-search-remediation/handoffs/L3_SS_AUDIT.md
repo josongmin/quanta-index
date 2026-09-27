@@ -1,5 +1,7 @@
 # L3 structural completion audit
 
+> Historical report: one-off evidence files were removed from the repository. This report alone is not current verification.
+
 **VERIFIED within the original L3 A/B/C scope. Known unresolved findings: P0 0,
 P1 0, P2 0.** One additional P2 cancellation defect was reproduced and repaired.
 This is an owner implementation/audit result, not whole-engine or release qualification.
@@ -41,7 +43,7 @@ wall-clock bound for an individual engine operation or sort is claimed.
 
 ## Original requirements and omission review
 
-[L3_REQUIREMENT_AUDIT.json](L3_REQUIREMENT_AUDIT.json) maps 13 requirement groups
+L3_REQUIREMENT_AUDIT.json maps 13 requirement groups
 to terminal passing tests in this run and identifies lifecycle exclusions.
 
 - **A — VERIFIED:** exact local/qualified fields, NFC/case, overloads, nested and
@@ -86,7 +88,7 @@ passes owned-file rustfmt and whitespace checks.
 
 - Selected input SHA256: `3494250c48902998da96c8b4fdb5576779786ab1e2e517c2acf61028cd7f6258`.
 - Final raw log SHA256: `535a130850fee7f408f7358e06bee2d8d12430a94abe6a2ca5aaf42244114174`.
-- Receipt: [L3_SS.source.json](L3_SS.source.json), SHA256 `52ca29f67446f89f2e2ada2f947dfb31ece3ebbe647d6f861c95ccd2fc591db5`.
+- Receipt: L3_SS.source.json, SHA256 `52ca29f67446f89f2e2ada2f947dfb31ece3ebbe647d6f861c95ccd2fc591db5`.
 - Raw logs, source/dirty manifests, resolved dependencies, owned-source copies,
   patch, commands and binary hashes: `l3-proof/ss/`.
 

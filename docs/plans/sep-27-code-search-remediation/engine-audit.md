@@ -1,8 +1,10 @@
 # Final engine audit — 2026-09-27
 
-Status: **audit completed for the bounded scope below; remediation NOT_RUN**.
+Status: **historical baseline audit**; remediation was NOT_RUN at this snapshot.
 This document corrects the initial engine inventory and links the final proposed
 solutions. It is not current-build, whole-engine or performance qualification.
+Current implementation and outstanding work supersede historical dispositions
+here: [CS-INT-01](rfcs/CS-INT-01-integration-and-qualification.md#current-remaining-work-audit--2026-09-27).
 
 ## 1. Source and proof boundaries
 

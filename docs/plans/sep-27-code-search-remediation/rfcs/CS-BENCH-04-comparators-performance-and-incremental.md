@@ -1,8 +1,18 @@
 # CS-BENCH-04 — Local comparators, performance and incremental measurement
 
-Status: **PROPOSED**. Equivalent-work performance and new incremental comparison:
-**NOT_RUN**. Category: benchmark measurement. Findings: F09; gaps: G01/G02.
+Status: acceptance **OPEN**. An exploratory external lexical producer is present;
+equivalent-work performance and qualified incremental comparison are **NOT_RUN**
+in the current remaining-work audit. Category: benchmark measurement. Findings:
+F09; gaps: G01/G02.
 Depends on BENCH-01/02/03 and shared MISC execution/custody prerequisites.
+
+`live_lexical_external.py` explicitly labels its output diagnostic/unqualified,
+retains raw responses and excludes backend indexed-universe attestation,
+independent gold and qualified speed. Do not promote that producer's presence to
+a completed comparison. Add L2 coverage/ranked-sidecar total update cost to the
+measurement scope; the older index-only fresh-byte sample excludes coverage.
+Actual workload/host admission and final source execution remain required:
+[CS-INT-01](CS-INT-01-integration-and-qualification.md#current-remaining-work-audit--2026-09-27).
 
 ## Purpose and existing limitation
 

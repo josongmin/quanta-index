@@ -1,5 +1,7 @@
 # L2 final native-process audit
 
+> Historical report: one-off evidence files were removed from the repository. This report alone is not current verification.
+
 Historical snapshot: [L2_REAUDIT_20260927.md](L2_REAUDIT_20260927.md)
 supersedes the no-new-P0/P1 conclusion below after a cross-stream source
 publication defect was reproduced and repaired.
@@ -18,9 +20,9 @@ and external producer cutover. Release installation and physical power loss are
 
 Recorded source: shared dirty `main`, HEAD
 `2102966246866398f01833bebf71396831377149`.
-The [machine-readable report](L2_PROCESS_AUDIT.json) binds commands, terminal
+The machine-readable report binds commands, terminal
 counts, raw logs, source changes, platform/toolchain, configuration and retained
-state files. [L2_PROCESS.source.json](L2_PROCESS.source.json) inventories current
+state files. L2_PROCESS.source.json inventories current
 L2 source. Whole-file hashes include preserved concurrent changes.
 
 ## Actual process coverage

@@ -1,1 +1,0 @@
-ERROR: config: --out already exists: /private/tmp/quanta-index-l5-owner-scope-audit-20260927/vite/vite-allow-incomplete.json

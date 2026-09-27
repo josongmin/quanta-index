@@ -1,7 +1,15 @@
 # CS-BENCH-03 — Task tracks, metric units and statistical admission
 
-Status: **PROPOSED**. New metric-contract execution and holdout: **NOT_RUN**.
+Status: acceptance **OPEN**. Existing metric helpers and separate timing-layer
+labels are present; independently admitted task-track/statistical/holdout
+execution is **NOT_RUN** in the current remaining-work audit.
 Category: benchmark evaluation. Findings: F04/F09; depends on BENCH-01/02.
+
+Current `lexical_file_comparison` reports hit rate and macro file recall
+separately. This does not establish native-derived result authority, independent
+gold or equivalent work. Close BENCH-02 before qualification scoring; then run
+the declared track units, statistical admission and ablation. Latest boundary:
+[CS-INT-01](CS-INT-01-integration-and-qualification.md#current-remaining-work-audit--2026-09-27).
 
 ## Purpose
 

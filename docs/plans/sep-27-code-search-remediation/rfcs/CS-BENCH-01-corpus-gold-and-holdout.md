@@ -1,7 +1,13 @@
 # CS-BENCH-01 — Shared corpus releases, independent gold and holdout
 
-Status: **PROPOSED**. New release, corrected gold and holdout: **NOT_RUN**.
+Status: acceptance **OPEN**. Independent corrected definition gold, fresh release
+and sealed holdout execution: **NOT_RUN** in the current remaining-work audit.
 Category: benchmark inputs. Finding: F07; supports F02/F04 and G02.
+
+Existing release/binding and symbol-coverage helpers remain implemented; this
+status does not claim those owners are missing. The current benchmark overlay is
+not an independently audited gold/holdout release. Remaining input/acceptance
+boundary: [CS-INT-01](CS-INT-01-integration-and-qualification.md#current-remaining-work-audit--2026-09-27).
 
 ## Purpose and RCA
 

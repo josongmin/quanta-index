@@ -1,5 +1,7 @@
 # L4 additional audit — preview admission and wire-local consistency
 
+> Historical report: one-off evidence files were removed from the repository. This report alone is not current verification.
+
 The deeper audit reproduced and fixed two additional P2 defect groups. This is
 selected L4 native/contract evidence, not whole-workspace qualification. Shared
 checkout mutations and the aggregate regex allocation proof remain separate.
@@ -58,7 +60,7 @@ after each run. Diagnostic RED results remain distinct from final proof.
 
 ## Executed proof
 
-[Final evidence index](l4-proof/deeper/receipt.json) records exact commands,
+Final evidence index records exact commands,
 environment, selected inputs, full snapshots, raw logs, binary digests, expected
 regression names and live-tree comparison. Index SHA-256:
 `68eaec3c64507a92c24e963e9935551dc071354f8f7332e12f2f7e4527ff8958`.
@@ -86,14 +88,14 @@ Final core/native/lint selected-source digest:
 Fuzz and public-API receipts additionally bind the entire copied input set, so
 their source digests differ from selected native manifests. The five files
 changed between phases are all in core, outside the wire/fuzz dependency
-closures; see [phase-boundary.json](l4-proof/deeper/phase-boundary.json).
+closures; see phase-boundary.json.
 These results are not combined into a product or live-tree qualification.
 
 At closeout, shared HEAD was `5571132655a83824731e7909b0e310951edad52b` and remained dirty.
 All 16 touched source/test files match the final frozen composition. Other
 changes include Cargo configuration/dependencies, SSTable vendor removal and
 lexical ingest/tests. Exact paths and hashes are in
-[live-closeout.json](l4-proof/deeper/live-closeout.json).
+live-closeout.json.
 
 The admission and wire RED failures are retained as diagnostic evidence. Failed
 lint attempts, the interrupted admission waiter and invalidated stale-binary

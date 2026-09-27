@@ -85,6 +85,27 @@ def test_primary_rule_targets_include_verification_contract():
     assert "## Verification Contract" not in catalog.stdout
 
 
+def test_verification_contract_keeps_routine_checks_lightweight():
+    result = run("preview", "--target", "agents")
+    assert result.returncode == 0, result.stderr
+    text = " ".join(result.stdout.split())
+    assert "Terminal output is sufficient" in text
+    assert "no saved log, snapshot, receipt, digest, environment inventory or clean checkout is required by default" in text
+    assert "unrelated dirty work does not invalidate a focused result" in text
+    assert "`VERIFIED` requires all of the following" not in text
+
+
+def test_verification_contract_does_not_authorize_evidence_file_proliferation():
+    result = run("preview", "--target", "agents")
+    assert result.returncode == 0, result.stderr
+    text = " ".join(result.stdout.split())
+    assert "inside the repository unless explicitly requested" in text
+    assert "put disposable output outside the checkout" in text
+    assert "Verification does not itself authorize new evidence files" in text
+    assert "Formal replay, release or qualified benchmark claims" in text
+    assert "Do not invent success" in text
+
+
 def test_deprecated_and_inert_prompt_surfaces_are_absent():
     for relative in [
         ".codex/CODEX-RULES.md",

@@ -1,8 +1,10 @@
 # Current L3 handoff
 
+> Historical report: one-off evidence files were removed from the repository. This report alone is not current verification.
+
 Current completion audit: [L3_SS_AUDIT.md](L3_SS_AUDIT.md).
-Requirement evidence: [L3_REQUIREMENT_AUDIT.json](L3_REQUIREMENT_AUDIT.json).
-Source and raw proof binding: [L3_SS.source.json](L3_SS.source.json).
+Requirement evidence: L3_REQUIREMENT_AUDIT.json.
+Source and raw proof binding: L3_SS.source.json.
 
 Original L3 A/B/C scope: VERIFIED. Known unresolved P0/P1/P2 findings: 0/0/0.
 Final selected lexical run: 200 passed, 0 failed, 0 ignored, with stable inputs.

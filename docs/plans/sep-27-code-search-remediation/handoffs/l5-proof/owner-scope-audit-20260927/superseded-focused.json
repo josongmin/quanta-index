@@ -1,6 +1,0 @@
-{
-  "status": "NOT_RUN",
-  "reason": "queued focused run superseded by exact-source isolated full owner run",
-  "signalled_pid": 62665,
-  "verified_command": "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/Resources/Python.app/Contents/MacOS/Python /Users/songmin/Documents/code-new/quanta-index/scripts/../tools/ci/resource_admission.py --lock /Users/songmin/Library/Caches/quanta-index/resource-admission/build-test.lock --wait-seconds 900 --timeout-seconds 7200 -- cargo test -p quanta-index-retrieval-bench --test l5_parser_regressions dotted_namespaces_use_ast_segments_not_raw_spacing_or_comments --all-features --locked -- --nocapture"
-}

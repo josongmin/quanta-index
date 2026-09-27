@@ -1,1 +1,0 @@
-./scripts/cargow --lane fmt-lane fmt --all -- --check

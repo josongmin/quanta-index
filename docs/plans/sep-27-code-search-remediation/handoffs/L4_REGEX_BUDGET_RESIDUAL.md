@@ -1,5 +1,7 @@
 # L4 residual — aggregate regex allocation admission
 
+> Historical report: one-off evidence files were removed from the repository. This report alone is not current verification.
+
 Status: **BLOCKED for aggregate heap qualification**. A standalone allocator
 probe reproduced a valid regex compilation exceeding the previous 16 MiB
 preview reservation. The current source adds a state-proportional logical
@@ -33,7 +35,7 @@ use a receipt bound to the current source for executed behavior.
   handles. The state-proportional charge is a mitigation, not a proof that
   every accepted pattern fits it.
 
-The [allocator probe](l4-proof/regex-memory-probe-20260927/provenance.json)
+The allocator probe
 used the pinned pre-remediation regex rlib and a single-thread `System`
 allocator high-water counter. `\w{120}` compiled with a 20,033,383-byte peak;
 `needle\w{120}` (with a mandatory prefilter literal) peaked at 20,035,301
@@ -43,7 +45,7 @@ bound. The probe's source and raw TSV outputs are archived alongside its
 provenance. `\w{150}` exceeds the existing NFA state cap and was rejected.
 
 Exact dependency/source digests and the limited inspection claim are recorded
-in [dependency-audit.json](l4-proof/p02/dependency-audit.json).
+in dependency-audit.json.
 
 ## Required coordinated change
 

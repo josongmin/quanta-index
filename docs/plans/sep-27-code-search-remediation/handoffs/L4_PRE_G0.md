@@ -1,5 +1,7 @@
 # L4_HANDOFF — pre-G0 owner work
 
+> Historical report: one-off evidence files were removed from the repository. This report alone is not current verification.
+
 Historical pre-G0 receipt. **Superseded for current implementation status**:
 L0 (`01a0dea8-aa8e-7d73-857f-b174f7be64fe`) has since supplied G0-L4 preview/source
 DTOs, integrity policy, separate canonical preview ledger policy, normalizer
@@ -39,7 +41,7 @@ executor reuse needs L0 compiler wiring, not a fictitious existing pattern cache
 
 ## Native proof
 
-See [machine receipt](l4-proof/receipt.json) for all bound file digests, dirty
+See machine receipt for all bound file digests, dirty
 state, toolchain, binary digest, commands and raw log digests.
 
 Bound regex/trigram source/config digest:

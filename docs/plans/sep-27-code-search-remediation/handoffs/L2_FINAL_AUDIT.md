@@ -1,5 +1,7 @@
 # L2 final code audit — owner snapshot
 
+> Historical report: one-off evidence files were removed from the repository. This report alone is not current verification.
+
 Superseded process/lint status: [L2_PROCESS_AUDIT.md](L2_PROCESS_AUDIT.md) records
 the subsequent native SDK/daemon crash matrix and successful current lint rails.
 The results below describe their own earlier frozen snapshots.
@@ -15,9 +17,9 @@ Recorded HEAD: `5571132655a83824731e7909b0e310951edad52b`, dirty shared `main`.
 Another worker advanced HEAD during the audit. L2 did not commit, push, reset,
 spawn agents, alter other owners' changes or update gate baselines.
 
-The [machine-readable audit](L2_FINAL_AUDIT.json) binds commands, source snapshots,
+The machine-readable audit binds commands, source snapshots,
 dirty state, toolchain/environment, terminal counts, binary hashes and raw log
-digests. [L2_FINAL.source.json](L2_FINAL.source.json) contains the 50-path owner
+digests. L2_FINAL.source.json contains the 50-path owner
 inventory. Whole-file snapshots may contain preserved concurrent edits.
 At closeout, the recorded receipts/logs still matched their hashes, but concurrent
 `core/domains/lexical/coverage.rs` edits changed an inventoried source after the

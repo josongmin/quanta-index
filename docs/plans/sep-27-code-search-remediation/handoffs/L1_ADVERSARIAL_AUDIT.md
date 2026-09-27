@@ -1,5 +1,7 @@
 # L1 adversarial RCA follow-up
 
+> Historical report: one-off evidence files were removed from the repository. This report alone is not current verification.
+
 Status: **VERIFIED** for the repaired query-admission boundary. No remaining
 reproduced P0–P2 is known in this exercised scope. This is not a claim that the
 whole repository or every preventive RFC matrix cell is qualified.
@@ -127,4 +129,4 @@ this repair. Existing source corruption checks were not weakened.
 | `audit-public-sdk-3` | 0 passed / 1 failed / 0 ignored; exit 101 | FAILED |
 | `audit-public-sdk-4` | 1 passed / 0 failed / 0 ignored; exit 0 | VERIFIED |
 
-Exact commands, raw log hashes, source manifests, binary identities and daemon environment: [L1_ADVERSARIAL_AUDIT.json](L1_ADVERSARIAL_AUDIT.json), archived under `l1-proof/adversarial/`.
+Exact commands, raw log hashes, source manifests, binary identities and daemon environment: L1_ADVERSARIAL_AUDIT.json, archived under `l1-proof/adversarial/`.
