@@ -6,160 +6,25 @@
 )]
 
 use crate::{SNIPPET_LEAD_BYTES, SNIPPET_WINDOW_BYTES};
-use quanta_index_contract::{HighlightSpan, LqExpr, LqLeaf};
+use quanta_index_contract::{HighlightSpan, LqLeaf};
 
 use crate::searcher::match_sets::PositiveWitness;
 use core::ops::Range;
 use quanta_index_contract::{
-    LqOptions, PreviewByteRange, PreviewKind, PreviewMetadata, PreviewUnavailableReason,
-    SearchPlaneErrorCodeV2, SourceFileRevision,
+    PreviewByteRange, PreviewKind, PreviewMetadata, PreviewUnavailableReason, SourceFileRevision,
 };
-use quanta_index_core::{
-    CoreError, LexicalCollectionBudget, LexicalMemoryReservation, RequestBudgetV1,
-};
+use quanta_index_core::{CoreError, LexicalMemoryReservation};
 use quanta_index_lq_regex::RegexExecutor;
-use quanta_index_lq_text_normalizer::{self as normalize, CaseMode, MappedText, MappingError};
+use quanta_index_lq_text_normalizer::{self as normalize, CaseMode, MappedText};
 use sha2::{Digest, Sha256};
 
-// Each result lease also admits its slot in the request-retained guard vector.
-// Four slots cover even the allocator's small-vector minimum capacity.
 const OUTPUT_LEASE_OVERHEAD_BYTES: usize =
     core::mem::size_of::<LexicalMemoryReservation>().saturating_mul(4);
 
-/// Local dimensions backed by the caller's one request-scoped preview ledger.
-#[derive(Clone, Copy)]
-pub(crate) struct SnippetLimits {
-    pub(crate) source_bytes: usize,
-    pub(crate) transformed_bytes: usize,
-    pub(crate) map_entries: usize,
-    pub(crate) witnesses: usize,
-}
-
-impl Default for SnippetLimits {
-    fn default() -> Self {
-        Self {
-            source_bytes: 65_536,
-            transformed_bytes: 131_072,
-            map_entries: 262_144,
-            witnesses: 32,
-        }
-    }
-}
-
-/// Prepared semantics plus a preview ledger separate from mandatory collection.
-pub(crate) struct SnippetContext<'a> {
-    pub(crate) expr: &'a LqExpr,
-    pub(crate) filters: &'a [quanta_index_contract::LqFilter],
-    pub(crate) options: &'a LqOptions,
-    pub(crate) limits: SnippetLimits,
-    pub(crate) ledger: &'a LexicalCollectionBudget,
-    pub(crate) request: &'a RequestBudgetV1,
-}
-
-/// All bytes must be obtained from the selected row's immutable read view.
-///
-/// The expected digest is publication authority, never recomputed by the reader
-/// from these same bytes and passed back as an independent oracle.
-pub(crate) struct SelectedSnippetSource<'a> {
-    pub(crate) raw: Option<&'a str>,
-    pub(crate) indexed_nfc: Option<&'a str>,
-    pub(crate) path: &'a str,
-    pub(crate) kind: PreviewKind,
-    pub(crate) source: Option<&'a SourceFileRevision>,
-    pub(crate) chunk_start_byte: Option<u64>,
-    pub(crate) expected_raw_sha256: Option<[u8; 32]>,
-}
-
-/// Owner output and its retained-memory lease. The caller must keep the lease
-/// while the returned strings/highlights/metadata remain in flight.
-pub(crate) struct RenderedPreview {
-    pub(crate) snippet: String,
-    pub(crate) snippet_hit_offset: Option<u32>,
-    pub(crate) highlights: Vec<HighlightSpan>,
-    pub(crate) preview: PreviewMetadata,
-    pub(crate) reservation: Option<LexicalMemoryReservation>,
-}
-
-pub(crate) enum PreviewStop {
-    Unavailable(PreviewUnavailableReason),
-    Mandatory(CoreError),
-}
-
-pub(crate) type PreviewResult<T> = Result<T, PreviewStop>;
-
-pub(crate) fn integrity(message: &str) -> CoreError {
-    CoreError::Typed {
-        code: SearchPlaneErrorCodeV2::SearchPreviewIntegrity,
-        message: format!("lexical preview: {message}"),
-    }
-}
-
-impl SnippetContext<'_> {
-    pub(crate) fn checkpoint(&self) -> PreviewResult<()> {
-        self.request
-            .checkpoint("lexical:preview")
-            .map_err(PreviewStop::Mandatory)
-    }
-
-    pub(crate) fn charge(&self, work: usize) -> PreviewResult<()> {
-        self.checkpoint()?;
-        let work = u64::try_from(work)
-            .map_err(|_overflow| PreviewStop::Unavailable(PreviewUnavailableReason::WorkBudget))?;
-        self.ledger.charge_work(work).map_err(ledger_error)
-    }
-
-    pub(crate) fn reserve(&self, bytes: usize) -> PreviewResult<LexicalMemoryReservation> {
-        self.checkpoint()?;
-        let bytes = u64::try_from(bytes)
-            .map_err(|_overflow| PreviewStop::Unavailable(PreviewUnavailableReason::WorkBudget))?;
-        self.ledger.reserve_bytes(bytes).map_err(ledger_error)
-    }
-
-    pub(crate) fn mapping_error(&self, error: MappingError) -> PreviewStop {
-        match error {
-            MappingError::ByteLimit
-            | MappingError::EntryLimit
-            | MappingError::AllocationRefused => {
-                PreviewStop::Unavailable(PreviewUnavailableReason::WorkBudget)
-            }
-            MappingError::Interrupted => PreviewStop::Mandatory(
-                self.request
-                    .interrupted_at("lexical:preview-normalize")
-                    .unwrap_or_else(|| integrity("normalizer reported unobserved interruption")),
-            ),
-            MappingError::SourceMismatch | MappingError::InvalidSpan => {
-                PreviewStop::Mandatory(integrity("source/NFC provenance mismatch"))
-            }
-        }
-    }
-}
-
-fn ledger_error(error: CoreError) -> PreviewStop {
-    if matches!(
-        error,
-        CoreError::Typed {
-            code: SearchPlaneErrorCodeV2::LexicalCollectionBudgetExceeded,
-            ..
-        }
-    ) {
-        PreviewStop::Unavailable(PreviewUnavailableReason::WorkBudget)
-    } else {
-        PreviewStop::Mandatory(error)
-    }
-}
-
-pub(crate) fn token_allocation_bound(bytes: usize) -> PreviewResult<usize> {
-    bytes
-        .checked_mul(
-            core::mem::size_of::<normalize::Token>()
-                .saturating_mul(2)
-                .saturating_add(16),
-        )
-        .and_then(|bytes| bytes.checked_add(2048))
-        .ok_or(PreviewStop::Unavailable(
-            PreviewUnavailableReason::WorkBudget,
-        ))
-}
+pub(crate) use super::preview_types::{
+    PreviewResult, PreviewStop, RenderedPreview, SelectedSnippetSource, SnippetContext,
+    SnippetLimits, integrity, token_allocation_bound,
+};
 
 /// Render only a final selected row.
 ///
@@ -506,34 +371,6 @@ pub(crate) fn snippet_offset_u32(within: usize) -> u32 {
     within as u32
 }
 
-/// Filter the planner's typed-unavailable list against adapter state.
-///
-/// The planner is stateless — it does not know which producers this
-/// particular `TantivySearcher` actually has wired. The
-/// repo-metadata-dependent codes (FORK/ARCHIVED/VISIBILITY/CONTEXT) drop
-/// out of the typed-unavailable surface when the adapter has loaded a
-/// repo metadata from the bundle payload, because the live
-/// `repo_filter_matches` path then handles those filters correctly.
-///
-/// The `HISTORY_PRODUCER_UNAVAILABLE` and `REV_UNAVAILABLE` codes are
-/// never suppressed: no commit/diff/repo producer or history producer is
-/// wired on any current configuration of the lexical rail.
-pub(crate) fn is_unavailable_suppressed_by_metadata(
-    code: quanta_index_contract::SearchPlaneErrorCodeV2,
-    has_repo_metadata: bool,
-) -> bool {
-    if !has_repo_metadata {
-        return false;
-    }
-    matches!(
-        code,
-        crate::filters::codes::FORK_UNAVAILABLE
-            | crate::filters::codes::ARCHIVED_UNAVAILABLE
-            | crate::filters::codes::VISIBILITY_UNAVAILABLE
-            | crate::filters::codes::CONTEXT_UNAVAILABLE
-    )
-}
-
 #[cfg(test)]
 #[expect(
     clippy::panic_in_result_fn,
@@ -542,7 +379,11 @@ pub(crate) fn is_unavailable_suppressed_by_metadata(
 )]
 mod l4_selected_preview_regressions {
     use super::*;
-    use quanta_index_contract::{RepoId, RepoRelativePath, RevisionId, SourceFileKey};
+    use quanta_index_contract::{
+        LqExpr, LqOptions, RepoId, RepoRelativePath, RevisionId, SearchPlaneErrorCodeV2,
+        SourceFileKey,
+    };
+    use quanta_index_core::{LexicalCollectionBudget, RequestBudgetV1};
     use std::collections::BTreeMap;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;

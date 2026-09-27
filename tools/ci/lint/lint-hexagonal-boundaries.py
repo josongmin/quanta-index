@@ -47,6 +47,13 @@ TEST_SUPPORT_CRATES = frozenset(
     }
 )
 
+# The search-plane's test-only opener contract is exercised against the real
+# lexical adapter. This edge is forbidden in production dependencies and is
+# admitted only for that composition test.
+DEV_INTEGRATION_DEPS = {
+    "quanta-index-search-plane": frozenset({"quanta-index-lexical"}),
+}
+
 ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
     "quanta-index-contract-base": frozenset(),
     # The contract re-exports the base DTOs it is split from.
@@ -137,6 +144,8 @@ ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
         {
             "quanta-index-contract",
             "quanta-index-core",
+            # Direct batch producers must stamp the one IPC-owned digest.
+            "quanta-index-ipc",
             "quanta-index-lexical",
             "quanta-index-searchd-harness",
         }
@@ -213,6 +222,22 @@ _TRANSPORT_LEAK_TOKENS = (
     re.compile(r"\bwal_mmap\b"),
     re.compile(r"\bsegment_id\b"),
 )
+
+_TEST_PATH_MODULE = re.compile(
+    r'#\[cfg\(test\)\]\s*#\[path\s*=\s*"([^"\n]+)"\]\s*mod\s+\w+\s*;'
+)
+
+
+def test_only_path_modules(scope: Path) -> set[Path]:
+    """Identify out-of-line Rust modules compiled only under cfg(test)."""
+    targets: set[Path] = set()
+    for source in scope.rglob("*.rs"):
+        text = source.read_text(encoding="utf-8")
+        for match in _TEST_PATH_MODULE.finditer(text):
+            target = (source.parent / match.group(1)).resolve()
+            if target.is_file() and target.is_relative_to(scope.resolve()):
+                targets.add(target)
+    return targets
 
 DOMAIN_USE_RE = re.compile(r"\b(?:crate::domains::|domains::)(?P<target>lexical|semantic|hybrid)\b")
 
@@ -292,7 +317,7 @@ def check_crate_dependency_matrix() -> list[Violation]:
                         f"{name} must not depend on {dep} (allowed: {sorted(allowed)})",
                     )
                 )
-        dev_allowed = allowed | TEST_SUPPORT_CRATES
+        dev_allowed = allowed | TEST_SUPPORT_CRATES | DEV_INTEGRATION_DEPS.get(name, frozenset())
         for dep in sorted(path_dependencies(cargo_toml, DEV_SECTIONS)):
             if dep.startswith("quanta-index-") and dep not in dev_allowed and dep != name:
                 violations.append(
@@ -452,8 +477,9 @@ def check_channel_backend_isolation() -> list[Violation]:
     for scope in leak_scopes:
         if not scope.is_dir():
             continue
+        test_only_sources = test_only_path_modules(scope)
         for rust_file in sorted(scope.rglob("*.rs")):
-            if "tests" in rust_file.parts:
+            if "tests" in rust_file.parts or rust_file.resolve() in test_only_sources:
                 continue
             text = rust_file.read_text(encoding="utf-8")
             for token in _TRANSPORT_LEAK_TOKENS:

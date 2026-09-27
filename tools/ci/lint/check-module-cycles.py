@@ -59,6 +59,7 @@ DEFINITION_RE = re.compile(
 )
 MACRO_RE = re.compile(r"^[ \t]*macro_rules!\s+(" + IDENT + r")", re.M)
 MOD_DECL_RE = re.compile(r"^[ \t]*(?:pub(?:\([a-z ]+\))?\s+)?mod\s+(" + IDENT + r")\s*;", re.M)
+PATH_MOD_DECL_RE = re.compile(r'#\[path\s*=\s*"([^"\n]+)"\]\s*mod\s+(' + IDENT + r')\s*;')
 
 
 def blank_non_code(text: str) -> str:
@@ -283,6 +284,29 @@ def load_crate(crate_dir: Path, root_file: str | None = None) -> Crate:
             raise ValueError(f"duplicate Rust module source for {crate_dir.name}::{path}")
         code = blank_non_code(file.read_text(encoding="utf-8"))
         raw[path] = raw.get(path, "") + "\n" + code
+    # Rust's #[path] names a module by the declaration, not by the target
+    # filename. Preserve that ownership in the graph instead of treating the
+    # declared child as missing or silently dropping its edges.
+    for file in sorted(src.rglob("*.rs")):
+        parent = module_path_of(src, file)
+        if parent is None:
+            continue
+        source = file.read_text(encoding="utf-8")
+        code = blank_non_code(source)
+        for match in PATH_MOD_DECL_RE.finditer(source):
+            if code[match.start() : match.start() + 2] != "#[":
+                continue
+            target = (file.parent / match.group(1)).resolve()
+            if not target.is_relative_to(src.resolve()) or not target.is_file():
+                raise ValueError(f"declared Rust path module has no source: {file}:{match.group(1)}")
+            source_key = module_path_of(src, target)
+            child = f"{parent}::{match.group(2)}" if parent else match.group(2)
+            if source_key is None or source_key not in raw:
+                raise ValueError(f"declared Rust path module has no source: {file}:{match.group(1)}")
+            if child != source_key:
+                if child in raw:
+                    raise ValueError(f"duplicate Rust path module source: {crate.name}::{child}")
+                raw[child] = raw.pop(source_key)
     # modules declared under #[cfg(test)] are test code, with their subtree
     test_modules: set[str] = set()
     for path, code in raw.items():

@@ -1,5 +1,6 @@
 """Child terminal status uses notifications without relaxing process custody."""
 
+import fcntl
 import hashlib
 import json
 import os
@@ -8,6 +9,7 @@ import signal
 import struct
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -245,6 +247,59 @@ def test_public_execution_passes_reservation_to_guard_without_child_inheritance(
         assert observed == [(fd,)]
     finally:
         os.close(fd)
+
+
+def test_parent_death_releases_reservation_only_after_nested_group_cleanup(tmp_path):
+    lock, ready, late = (tmp_path / name for name in ("reservation", "ready", "late"))
+    nested = (
+        "import time; from pathlib import Path; "
+        f"time.sleep(2); Path({str(late)!r}).write_text('survived')"
+    )
+    producer = (
+        "import os,subprocess,sys,time; from pathlib import Path; "
+        f"subprocess.Popen([sys.executable,'-c',{nested!r}]); "
+        f"Path({str(ready)!r}).write_text(str(os.getpgrp())); time.sleep(60)"
+    )
+    controller = f"""
+import fcntl,os,sys
+from pathlib import Path
+sys.path.insert(0,{str(Path(execution.__file__).parent)!r})
+from producer_execution import execute
+lock=Path({str(lock)!r})
+fd=os.open(lock,os.O_RDWR|os.O_CREAT|os.O_CLOEXEC,0o600)
+fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+execute([sys.executable,'-c',{producer!r}],cwd=Path({str(tmp_path)!r}),env=dict(os.environ),timeout=30,log_dir=Path({str(tmp_path / 'execution')!r}),custody_fds=(fd,))
+"""
+    process = subprocess.Popen(
+        [sys.executable, "-c", controller], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not ready.exists() and process.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert ready.exists(), "nested producer did not reach its ready marker"
+        probe = os.open(lock, os.O_RDWR)
+        try:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            process.kill()
+            process.communicate(timeout=10)
+            deadline = time.monotonic() + 10
+            while True:
+                try:
+                    fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    assert time.monotonic() < deadline, "orphan guard retained the reservation"
+                    time.sleep(0.02)
+        finally:
+            os.close(probe)
+        time.sleep(2.2)
+        assert not late.exists(), "nested producer survived controller death"
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.communicate(timeout=10)
 
 
 def test_execution_peak_rss_is_payload_independent(tmp_path, record_property):

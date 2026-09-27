@@ -27,7 +27,7 @@ use quanta_index_lq_trigram::{
 use roaring::RoaringBitmap;
 use std::sync::Arc;
 
-use crate::searcher::snippets::{
+use crate::searcher::preview_types::{
     PreviewResult, PreviewStop, SelectedSnippetSource, SnippetContext, integrity,
     token_allocation_bound,
 };

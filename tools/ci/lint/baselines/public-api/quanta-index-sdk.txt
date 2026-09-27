@@ -1008,7 +1008,7 @@ pub fn quanta_index_sdk::SearchCorpusBatch<SEALED>::clear_surfaces(&self) -> &[q
 pub const fn quanta_index_sdk::SearchCorpusBatch<SEALED>::generation(&self) -> quanta_index_contract_base::ids::ManifestGeneration
 pub fn quanta_index_sdk::SearchCorpusBatch<SEALED>::manifest_digest(&self) -> &str
 pub const fn quanta_index_sdk::SearchCorpusBatch<SEALED>::mode(&self) -> quanta_index_sdk::BatchMode
-pub fn quanta_index_sdk::SearchCorpusBatch<SEALED>::replace_scope(self, scope: quanta_index_contract::ipc::ingest::SearchScopeKey, scope_digest: impl core::convert::Into<alloc::string::String>, chunks: alloc::vec::Vec<quanta_index_contract::channel::records::ChunkRecord>, symbols: alloc::vec::Vec<quanta_index_contract::lex::symbol::SymbolRecord>) -> Self
+pub fn quanta_index_sdk::SearchCorpusBatch<SEALED>::replace_scope(self, coverage: quanta_index_contract::source_coverage::SourceFileCoverage, chunks: alloc::vec::Vec<quanta_index_contract::channel::records::ChunkRecord>, symbols: alloc::vec::Vec<quanta_index_contract::lex::symbol::SymbolRecord>) -> Self
 pub fn quanta_index_sdk::SearchCorpusBatch<SEALED>::replace_scopes(&self) -> &[quanta_index_contract::ipc::ingest::SearchCorpusReplaceScope]
 pub fn quanta_index_sdk::SearchCorpusBatch<SEALED>::replace_semantic_scope(self, scope: quanta_index_contract::ipc::semantic_source::SemanticSourceScopeKeyV1, scope_digest: impl core::convert::Into<alloc::string::String>, sources: alloc::vec::Vec<quanta_index_contract::ipc::semantic_source::SemanticSourceRecordV1>, cluster_memberships: alloc::vec::Vec<quanta_index_contract::ipc::semantic_source::ClusterMembershipReplaceV1>) -> Self
 pub const fn quanta_index_sdk::SearchCorpusBatch<SEALED>::repo_id(&self) -> &quanta_index_contract_base::ids::RepoId
@@ -1016,7 +1016,8 @@ pub const fn quanta_index_sdk::SearchCorpusBatch<SEALED>::revision_id(&self) -> 
 pub const fn quanta_index_sdk::SearchCorpusBatch<SEALED>::seal_requested(&self) -> bool
 pub fn quanta_index_sdk::SearchCorpusBatch<SEALED>::semantic_replace_scopes(&self) -> &[quanta_index_contract::ipc::semantic_source::SemanticSourceReplaceScopeV1]
 pub fn quanta_index_sdk::SearchCorpusBatch<SEALED>::semantic_tombstone_scopes(&self) -> &[quanta_index_contract::ipc::semantic_source::SemanticSourceScopeKeyV1]
-pub fn quanta_index_sdk::SearchCorpusBatch<SEALED>::tombstone_scope(self, scope: quanta_index_contract::ipc::ingest::SearchScopeKey) -> Self
+pub fn quanta_index_sdk::SearchCorpusBatch<SEALED>::source_event(self, event: quanta_index_contract::source_coverage::SourcePublicationEvent) -> Self
+pub fn quanta_index_sdk::SearchCorpusBatch<SEALED>::tombstone_scope(self, file: quanta_index_contract_base::source_file::SourceFileKey) -> Self
 pub fn quanta_index_sdk::SearchCorpusBatch<SEALED>::tombstone_scopes(&self) -> &[quanta_index_contract::ipc::ingest::SearchCorpusTombstoneScope]
 pub fn quanta_index_sdk::SearchCorpusBatch<SEALED>::tombstone_semantic_scope(self, scope: quanta_index_contract::ipc::semantic_source::SemanticSourceScopeKeyV1) -> Self
 pub fn quanta_index_sdk::SearchCorpusBatch<SEALED>::without_seal(self) -> quanta_index_sdk::SearchCorpusBatch<false>

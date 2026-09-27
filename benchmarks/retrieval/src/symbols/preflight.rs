@@ -10,6 +10,7 @@ use quanta_index_contract::{
     source_file_unit_set_sha256,
 };
 use serde::Serialize;
+use serde::ser::SerializeStruct;
 use sha2::{Digest, Sha256};
 
 use super::{
@@ -49,7 +50,7 @@ pub struct SymbolPreflightOptions<'a> {
 }
 
 /// Exact extraction limits needed to interpret and reproduce the policy hash.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SymbolPreflightPolicy {
     pub max_file_bytes: usize,
     pub max_symbols_per_file: usize,
@@ -58,6 +59,23 @@ pub struct SymbolPreflightPolicy {
     pub max_diagnostics_total: usize,
     pub timeout_per_file_ns: String,
     pub timeout_total_ns: String,
+}
+
+impl Serialize for SymbolPreflightPolicy {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut state = serializer.serialize_struct("SymbolPreflightPolicy", 7)?;
+        state.serialize_field("max_file_bytes", &self.max_file_bytes)?;
+        state.serialize_field("max_symbols_per_file", &self.max_symbols_per_file)?;
+        state.serialize_field("max_symbols_total", &self.max_symbols_total)?;
+        state.serialize_field("max_diagnostics_per_file", &self.max_diagnostics_per_file)?;
+        state.serialize_field("max_diagnostics_total", &self.max_diagnostics_total)?;
+        state.serialize_field("timeout_per_file_ns", &self.timeout_per_file_ns)?;
+        state.serialize_field("timeout_total_ns", &self.timeout_total_ns)?;
+        state.end()
+    }
 }
 
 impl From<&SymbolPreflightOptions<'_>> for SymbolPreflightPolicy {
@@ -125,14 +143,27 @@ impl ExtractionControl<'_> {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug)]
 pub struct SymbolFileDiagnostic {
     pub kind: &'static str,
     pub byte_start: Option<usize>,
     pub byte_end: Option<usize>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+impl Serialize for SymbolFileDiagnostic {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut state = serializer.serialize_struct("SymbolFileDiagnostic", 3)?;
+        state.serialize_field("kind", &self.kind)?;
+        state.serialize_field("byte_start", &self.byte_start)?;
+        state.serialize_field("byte_end", &self.byte_end)?;
+        state.end()
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct SymbolFileReport {
     pub path: String,
     pub source_sha256: String,
@@ -147,7 +178,28 @@ pub struct SymbolFileReport {
     pub diagnostics_complete: bool,
 }
 
-#[derive(Debug, Serialize)]
+impl Serialize for SymbolFileReport {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut state = serializer.serialize_struct("SymbolFileReport", 11)?;
+        state.serialize_field("path", &self.path)?;
+        state.serialize_field("source_sha256", &self.source_sha256)?;
+        state.serialize_field("language", &self.language)?;
+        state.serialize_field("coverage", &self.coverage)?;
+        state.serialize_field("failure", &self.failure)?;
+        state.serialize_field("failure_detail", &self.failure_detail)?;
+        state.serialize_field("failure_detail_truncated", &self.failure_detail_truncated)?;
+        state.serialize_field("diagnostics", &self.diagnostics)?;
+        state.serialize_field("diagnostics_total", &self.diagnostics_total)?;
+        state.serialize_field("diagnostics_truncated", &self.diagnostics_truncated)?;
+        state.serialize_field("diagnostics_complete", &self.diagnostics_complete)?;
+        state.end()
+    }
+}
+
+#[derive(Debug)]
 pub struct SymbolPreflightReport {
     pub schema: &'static str,
     pub producer_identity: &'static str,
@@ -158,6 +210,25 @@ pub struct SymbolPreflightReport {
     pub files: Vec<SymbolFileReport>,
     pub admitted_files: usize,
     pub incomplete_files: usize,
+}
+
+impl Serialize for SymbolPreflightReport {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut state = serializer.serialize_struct("SymbolPreflightReport", 9)?;
+        state.serialize_field("schema", &self.schema)?;
+        state.serialize_field("producer_identity", &self.producer_identity)?;
+        state.serialize_field("grammar_identity", &self.grammar_identity)?;
+        state.serialize_field("lockfile_sha256", &self.lockfile_sha256)?;
+        state.serialize_field("producer_policy_sha256", &self.producer_policy_sha256)?;
+        state.serialize_field("policy", &self.policy)?;
+        state.serialize_field("files", &self.files)?;
+        state.serialize_field("admitted_files", &self.admitted_files)?;
+        state.serialize_field("incomplete_files", &self.incomplete_files)?;
+        state.end()
+    }
 }
 
 /// Only constructed from verified source bytes. It intentionally has no

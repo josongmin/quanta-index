@@ -6,7 +6,6 @@
 )]
 
 use crate::query_errors::map_phrase_plan_error;
-use crate::searcher::snippets::is_unavailable_suppressed_by_metadata;
 use quanta_index_contract::{LqExpr, LqQuery};
 use quanta_index_core::CoreError;
 
@@ -168,4 +167,32 @@ pub(crate) fn map_planner_error(err: &crate::planner::LexicalPlannerError) -> Co
             CoreError::InvalidContract(format!("lexical: planner: {err}"))
         }
     }
+}
+
+/// Filter the planner's typed-unavailable list against adapter state.
+///
+/// The planner is stateless — it does not know which producers this
+/// particular `TantivySearcher` actually has wired. The
+/// repo-metadata-dependent codes (FORK/ARCHIVED/VISIBILITY/CONTEXT) drop
+/// out of the typed-unavailable surface when the adapter has loaded a
+/// repo metadata from the bundle payload, because the live
+/// `repo_filter_matches` path then handles those filters correctly.
+///
+/// The `HISTORY_PRODUCER_UNAVAILABLE` and `REV_UNAVAILABLE` codes are
+/// never suppressed: no commit/diff/repo producer or history producer is
+/// wired on any current configuration of the lexical rail.
+pub(crate) fn is_unavailable_suppressed_by_metadata(
+    code: quanta_index_contract::SearchPlaneErrorCodeV2,
+    has_repo_metadata: bool,
+) -> bool {
+    if !has_repo_metadata {
+        return false;
+    }
+    matches!(
+        code,
+        crate::filters::codes::FORK_UNAVAILABLE
+            | crate::filters::codes::ARCHIVED_UNAVAILABLE
+            | crate::filters::codes::VISIBILITY_UNAVAILABLE
+            | crate::filters::codes::CONTEXT_UNAVAILABLE
+    )
 }

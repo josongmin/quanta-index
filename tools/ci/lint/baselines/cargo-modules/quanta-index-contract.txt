@@ -266,14 +266,16 @@ crate quanta_index_contract
 │   │   ├── struct StructuralTombstoneScopeVisitor: pub(self)
 │   │   │   └── type Value: pub(self)
 │   │   ├── struct StructuralTreeRecord: pub
-│   │   └── struct StructuralTreeRecordVisitor: pub(self)
-│   │       └── type Value: pub(self)
+│   │   ├── struct StructuralTreeRecordVisitor: pub(self)
+│   │   │   └── type Value: pub(self)
+│   │   └── mod payload_digest: pub(self)
 │   ├── mod ingest_observation: pub(self)
 │   │   ├── enum IngestObservationStatus: pub
 │   │   ├── struct IngestStageDurations: pub
 │   │   ├── struct IngestStageReport: pub
 │   │   ├── struct SearchCorpusIngestObservation: pub
-│   │   └── struct SearchCorpusPublishOutcome: pub
+│   │   ├── struct SearchCorpusPublishOutcome: pub
+│   │   └── struct SourcePublicationBinding: pub
 │   ├── mod metrics: pub(self)
 │   │   ├── struct MetricBucketV1: pub
 │   │   ├── struct MetricBucketVisitor: pub(self)
@@ -699,16 +701,23 @@ crate quanta_index_contract
 │       ├── struct TextQueryResponse: pub
 │       └── struct TextQueryResponseVisitor: pub(self)
 │           └── type Value: pub(self)
-└── mod semantic_kinds: pub(crate)
-    ├── enum CapabilityStatusV1: pub
-    ├── struct CapabilityStatusV1Visitor: pub(self)
-    │   └── type Value: pub(self)
-    ├── enum OwnerDocKind: pub
-    ├── struct OwnerDocKindVisitor: pub(self)
-    │   └── type Value: pub(self)
-    ├── enum SemanticCorpusKindV1: pub
-    ├── struct SemanticCorpusKindV1Visitor: pub(self)
-    │   └── type Value: pub(self)
-    ├── enum SourceRoleV1: pub
-    └── struct SourceRoleV1Visitor: pub(self)
-        └── type Value: pub(self)
+├── mod semantic_kinds: pub(crate)
+│   ├── enum CapabilityStatusV1: pub
+│   ├── struct CapabilityStatusV1Visitor: pub(self)
+│   │   └── type Value: pub(self)
+│   ├── enum OwnerDocKind: pub
+│   ├── struct OwnerDocKindVisitor: pub(self)
+│   │   └── type Value: pub(self)
+│   ├── enum SemanticCorpusKindV1: pub
+│   ├── struct SemanticCorpusKindV1Visitor: pub(self)
+│   │   └── type Value: pub(self)
+│   ├── enum SourceRoleV1: pub
+│   └── struct SourceRoleV1Visitor: pub(self)
+│       └── type Value: pub(self)
+└── mod source_coverage: pub(crate)
+    ├── struct DigestWriter: pub(self)
+    ├── type FileCoverageSnapshot: pub
+    ├── enum SourceCoverageError: pub
+    ├── struct SourceFileCoverage: pub
+    ├── struct SourcePublicationEvent: pub
+    └── enum SymbolCoverage: pub

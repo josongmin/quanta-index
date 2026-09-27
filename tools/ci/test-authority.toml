@@ -565,6 +565,18 @@ owner = "quanta-index-sdk"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
+id = "sdk-l1-daemon-query-contract"
+path = "crates/quanta-index-sdk/tests/l1_daemon_query_contract.rs"
+owner = "quanta-index-sdk"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "sdk-l2-daemon-publication"
+path = "crates/quanta-index-sdk/tests/l2_daemon_publication.rs"
+owner = "quanta-index-sdk"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
 id = "query-truth-owner-v1"
 path = "crates/quanta-index-contract-base/tests/query_truth_owner_v1.rs"
 owner = "quanta-index-contract-base"
@@ -595,6 +607,12 @@ owner = "quanta-index-contract-base"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
+id = "contract-base-l4-preview-emission"
+path = "crates/quanta-index-contract-base/tests/l4_preview_emission.rs"
+owner = "quanta-index-contract-base"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
 id = "contract-repomap-layout-v3-contract"
 path = "crates/quanta-index-contract/tests/repomap_layout_v3_contract.rs"
 owner = "quanta-index-contract"
@@ -615,6 +633,12 @@ rail = "pr-workspace-nextest"
 [[integration_targets]]
 id = "contract-ipc-query-result-v2"
 path = "crates/quanta-index-contract/tests/ipc_query_result_v2_contract.rs"
+owner = "quanta-index-contract"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "contract-l4-preview-wire"
+path = "crates/quanta-index-contract/tests/l4_preview_wire.rs"
 owner = "quanta-index-contract"
 rail = "pr-workspace-nextest"
 
@@ -1116,6 +1140,13 @@ id = "searchd-runtime-dsl-scenarios"
 path = "crates/quanta-index-searchd-runtime/tests/dsl_scenarios.rs"
 owner = "quanta-index-searchd-runtime"
 target = "runtime_risk_suite"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "searchd-runtime-l4-preview-sdk"
+path = "crates/quanta-index-searchd-runtime/tests/l4_preview_sdk.rs"
+owner = "quanta-index-searchd-runtime"
+target = "l4_preview_sdk"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]

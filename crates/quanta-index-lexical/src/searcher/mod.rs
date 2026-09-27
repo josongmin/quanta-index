@@ -11,6 +11,7 @@ pub(crate) mod port;
 pub(crate) mod predicate_plan;
 pub(crate) mod predicates;
 pub(crate) mod prepare;
+pub(crate) mod preview_types;
 pub(crate) mod query_rewrite;
 pub(crate) mod restrictions;
 pub(crate) mod snippets;

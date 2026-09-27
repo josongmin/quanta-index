@@ -1,0 +1,10 @@
+{
+  "cancellation_inside_search-ced663f13dd1c810": "df2a50b2e96ebc1558ff703052fe50679ad9d1fc4f293ff025e26b41e647a26c",
+  "execution_budget-56a3426f0649626b": "bd66d01ae9ea1d3ae323066e2f504f8eaeeac0b171db5f58533359e7d3ec796f",
+  "l1_query_domain_window-dbd650b8da1d3110": "ee40a9a7a704389893d0e9610a7428a358a1d3792a3125b14fcac98595c571dd",
+  "l2_file_mutation-4f9b26556023a724": "a55494bc9a7645c086ea705a536eb18f3eb47980eaf10de5fcf031bcc9074d0d",
+  "l3_exact_source-60aaaa993226033f": "1e0dbcd9774943ed003d5f154788ec5b19019774a41aca658923a02979e3bbfc",
+  "l4_match_anchored_preview-817990d8e09348e4": "db2d9b8816fd3e262bfbaed3caa132d06278a8bb15e4604fcc115ec6413bed0b",
+  "quanta_index_lexical-9b5383bc62ce9483": "2cf4e4a02fc79f67cddbcb90d11a9bbe2a24f9c65bc51daf97f237de0d39129b",
+  "ranked_pages-283ed70bf9633ac8": "a6802e9e6059000c582c885061d026b0d504d907ade7a5acd367a70e5813e71c"
+}

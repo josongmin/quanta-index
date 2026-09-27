@@ -1,12 +1,11 @@
-//! Logical producer payload identity, independent of target generation and
-//! transport idempotency. Order is deliberately committed: changing any supplied
-//! mutation order is not an identical event replay.
+//! Logical producer payload identity commits supplied mutation order.
 
 use std::io::Write;
 
 use sha2::{Digest as _, Sha256};
 
-use crate::{SearchCorpusIngestBatch, SourceCoverageError};
+use super::SearchCorpusIngestBatch;
+use crate::SourceCoverageError;
 
 /// Hash the complete source mutation payload, not its materialization target.
 ///

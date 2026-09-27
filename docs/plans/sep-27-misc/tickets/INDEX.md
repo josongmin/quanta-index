@@ -1,11 +1,10 @@
 # SEP-27 benchmark / retrieval / test-optimization — execution SSOT
 
-Status: `ACTIVE`. Final code/document audit: 2026-09-27 KST.
-Audit source: shared dirty `main@2102966246866398f01833bebf71396831377149`.
-This refresh owns only this SSOT; existing Python/Rust implementation and
-active engine documents are preserved. The untracked `host_monitor.py` is
-unfinished code, not an active capture facility. A commit, a file's presence
-or a focused owner run does not establish whole-source qualification.
+Status: `ACTIVE`. Code/document re-audit: 2026-09-27 KST.
+Observed source: shared dirty `main@3887fac3d090e9af86d1508ed2ba4125bf55bcbb`;
+the benchmark Python overlay and unrelated concurrent work are not a frozen
+qualification source. A commit, a file's presence or an owner-local test run
+does not establish whole-source, installed-product or performance qualification.
 
 This is the single work/acceptance contract for the former SEP-27 four-agent
 handoff union and RB/BM/RBR/TOPT work. Requirements, RCA, file/function owners,
@@ -25,10 +24,10 @@ are separate claims. The audit result is **not repository qualification**.
 | Boundary | Current source fact | Remaining action / claim status |
 | --- | --- | --- |
 | MISC-01 publication/GC | `profile_capture.publish_capture` is the shared complete-profile owner; `commit_capture` is the pointer commit; Rust `RunStore::collect` takes custody before checking the capture marker. | Retain implementation. Actual producers, both consumers and fresh final-source replay: `NOT_RUN` in this audit, owned once by MISC-04. |
-| MISC-02 / EXEC-1 | Native immutable capture uses `current_capture().execute(execute, ...)`; the no-evidence-root branch still calls `subprocess.run`. Promotion assigns `shared/1` without a transcript. `host_monitor.py` exists but has no production caller, no owner tests and no capture/replay binding. | Complete the existing monitor and connect lifecycle, descriptor custody, raw derivation and fresh replay in one cutover. Do not reimplement migrated immutable dispatch. Integrated acceptance: `NOT_RUN`. |
-| MISC-03 / IO-1–3 | Shared `RawFile`/`RawWriter`, process log owner, bounded controls/JSONL, streamed archives, portable receipts/replay and paired command ZIP are present. | Retain the contracts below; no blanket whole-repository bounded-memory claim. IO-5 whole-capture resource acceptance: `NOT_RUN`. |
-| MISC-03 / IO-4 | The epoch spans native plus five adapters. Nested nonzero/exception/refusal is sticky; source/replay callbacks cannot publish after recording failure. Native primary refusal reasons and the positive fresh-replay test boundary are repaired. | Current eight-module selection: `FAILED`, 358/359 pass. Pair replay correctly refused a changed symbol preflight policy commitment while another writer edited its source. The focused case passed separately, but does not replace the full selection. Frozen-source rerun remains required. |
-| MISC-04 / C5 | `test_pair_replay_workspace.py` and `test_cargo_preparation.py` are in the Just command and affected closure paths. Neither has a `python_targets` entry. Explicit collection/owner/mutation guards do not cover both. | Register owner/scope and extend guards; do not repeat existing command/closure additions. Acceptance: `NOT_RUN`. |
+| MISC-02 / EXEC-1 | Native/Criterion capture now start a cooperative monitor at the first owned producer, carry its FD through the process-group guard, and bind a validated raw transcript before publication. Native command-only mode also uses owned execution, without a capture pointer. Detached replay rederives host facts; standalone artifact import is `none/0`. | Owner-local positive/negative, parent-death nested-child lease, join-timeout and primary-plus-monitor-error tests ran; eight capture modules passed 379/379 under a changing Rust preflight source. Actual native/Criterion producers and qualified quiet-host acceptance remain `NOT_RUN`. Cooperative observations are diagnostic, not host isolation. |
+| MISC-03 / IO-1–3/5 | Shared `RawFile`/`RawWriter`, process log owner, bounded controls/JSONL, streamed archives, portable receipts/replay and paired command ZIP are present. | Generic full publication/load/replay RSS probe passed for 8/128 MiB raw; adapter-specific large failure output, many-entry archive and actual producer resource acceptance remain `NOT_RUN`. No blanket whole-repository bounded-memory claim. |
+| MISC-03 / IO-4 | The epoch spans native plus five adapters. Nested nonzero/exception/refusal is sticky; source/replay callbacks cannot publish after recording failure. Native primary refusal and fresh-replay boundaries remain covered. | Post-fix eight-module selection: 379/379 passed, exit 0. `symbols/preflight.rs` changed during execution, so this is owner regression evidence, not frozen-source pair/product qualification. |
+| MISC-04 / C5 | Both Python modules are selected by the existing Just command, registered to exact owner/scope/PR rail and affected closures, and guarded for collection and mutation. | Focused C5 guards 9/9; seven related owner modules 344/344; actual `benchmark-control-contract-local` selector 1256/1256. Shared checkout/closure was not frozen; this is not hosted CI or product qualification. |
 | MISC-05 | Existing TOPT/retrieval invariants are qualification obligations, not presumed new bugs. Active SDK/engine changes are outside this edit. | Re-audit and run focused/full/installed/platform scopes after final freeze; `NOT_RUN` here. |
 | MISC-06/07 | Timing, product pilot, independent quality and qualified pair each have distinct prerequisites and denominators. | No fresh measurement/pair executed here: `NOT_RUN`. Missing admitted inputs block only their dependent claims. |
 
@@ -89,8 +88,8 @@ The driver runs pytest over `test_benchctl`, `test_benchmark_profile_capture`,
 `test_benchmark_evidence_bridge`, `test_recorded_capture`, `test_retrieval_capture`,
 `test_criterion_capture`, `test_pair_capture`, and `test_lexical_capture` under
 `tools/ci/tests/` (all `.py`), with `-q -p no:cacheprovider -o
-junit_family=legacy` and external JUnit. At dirty
-`main@2102966246866398f01833bebf71396831377149`, the latest selection
+junit_family=legacy` and external JUnit. At historical dirty
+`main@2102966246866398f01833bebf71396831377149`, that selection
 executed 359, with **358 pass/1 fail**, zero error/skip, exit 1, 117.12
 seconds. One deliberate duplicate-ZIP fixture warning. Failure:
 `test_pair_capture.py::test_capture_complete_profile_and_replay_with_original_corpus_changed`;
@@ -111,8 +110,46 @@ regression without a frozen-source reproduction. The full owner claim is
 `FAILED` for this run; stop and repeat after the active writer freezes all
 source, including symbol policy inputs. The overall dirty status changed
 concurrently; this is not a whole-tree or current-source qualification receipt.
-The untracked `host_monitor.py` is among the hashed files but is not imported
-by a capture path or tested by this selection. EXEC-1 remains `NOT_RUN`.
+At that historical point, `host_monitor.py` was not imported by a capture path.
+The current wired implementation supersedes that source fact; the 358/359
+terminal remains a failed historical run, not current proof.
+
+Current owner-local executions after EXEC-1 wiring:
+
+- Seven modules (`test_benchctl`, profile capture, evidence bridge, Criterion,
+  producer notifications, benchmark policy, source closure): 344/344 passed,
+  exit 0. External JUnit `/private/tmp/qi-misc-exec1-owner-rerun-20260927.xml`,
+  SHA-256 `77dc91b8203d12ecddc198157ab4cf90901edd0b0d0b9b20d46a4986574a4765`.
+  Observed HEAD `3887fac3`; selected `symbols.rs` and changed Python file
+  hashes were equal before/after, but the entire dirty closure was not frozen.
+- Eight capture modules (the original eight-module selection): 376 passed,
+  one failed, zero skipped, exit 1 in 261.26 seconds. External JUnit
+  `/private/tmp/qi-misc-exec1-eight-20260927.xml`, SHA-256
+  `4a9ebbf0c955f2ecd8eeb15c86383baeddcc2311793b8a86bd2aa2757ae9c5dd`.
+  Failure was `test_complete_recorded_capture_and_replay_contract`: generic
+  replay policy comparison incorrectly treated a recorded import's *importer*
+  host as the original `scan-vs-index` measurement host. The code now requires
+  `any` for the recorded profile and the registered family policy for actual
+  capture profiles. Recorded and native replay focused cases passed after
+  that edit (2/2). The subsequent eight-module post-fix rerun passed 379/379,
+  exit 0 in 385.54 seconds; JUnit
+  `/private/tmp/qi-misc-exec1-eight-postfix-20260927.xml`, SHA-256
+  `eebf6a7a0dfda48998b5f9d40f8c80035a83769db015ae7c7157343b8da5f4fd`.
+  `symbols.rs`, Python symbol coverage, this SSOT, benchctl and selected test
+  hashes remained equal before/after, but
+  `benchmarks/retrieval/src/symbols/preflight.rs` changed from
+  `c0df942640a30ba5d2075075bcbb5261a56480c8ef812404d7bca3fa6ece9095` to
+  `8be1dee0a60c122bc349856c592bd245d4dfc0428915830ce69c049fe437ade2`.
+  The run proves selected tests passed, not a frozen-source pair or release.
+- The actual `uv run --frozen --extra dev just benchmark-control-contract-local`
+  selector passed 1256/1256, exit 0 in 676.36 seconds, with two warnings from
+  intentionally duplicated ZIP entries in negative fixtures. This includes
+  C5's pair replay workspace and Cargo preparation modules; it does not run
+  Rust/product/host measurements. Observed HEAD `3887fac3`; checked
+  `symbols/preflight.rs`, this SSOT and `benchctl.py` hashes matched before
+  and after. Concurrent unrelated Rust edits mean no whole-tree freeze or
+  hosted CI identity. This Just invocation emitted terminal pytest output but
+  no separate JUnit/receipt artifact.
 
 External audit root: `/private/tmp/qi-misc-final-audit.SzqYJZ`.
 Latest `receipt.json` SHA-256:
@@ -132,36 +169,36 @@ changes this SSOT digest after the test; it cannot upgrade the failed run.
 | Executed check | Status | Exact remaining condition |
 | --- | --- | --- |
 | `python tools/ci/lint/lint-doc-paths.py` | `FAILED` | Four broken paths in active engine evidence/templates, listed below; no new-SSOT link failure reported. |
-| `python tools/ci/lint/check-test-authority.py` | `FAILED` | Five orphan Rust integration targets at the last audit, listed below. This is separate from the two C5 Python gaps. |
+| `python tools/ci/lint/check-test-authority.py` | `VERIFIED` in catalog scope | Concurrent Rust owners registered the five targets; current terminal exit 0. L1/L2 SDK tests are `#[ignore]`, so workspace discovery/compilation is not their runtime execution. |
 | `python tools/ci/lint/check-benchmark-policy.py` | `VERIFIED` in policy scope | Exit 0; not producer or performance evidence. |
 | `python tools/prompt-manager/pm.py lint` | `VERIFIED` in generated-document scope | Exit 0. |
 | `git diff --check` | `VERIFIED` in whitespace scope | Exit 0 at the checked snapshot. |
 | Ruff on current `host_monitor.py` | `VERIFIED` in lint scope | Import order corrected; exit 0. This does not execute the monitor. |
-| Full final-source gate | `NOT_RUN` | The monitor is unfinished and not wired. Run after coordinated EXEC-1 edits. |
+| `./scripts/cargow --lane bench-lane test -p quanta-index-bench-protocol --all-features --locked` | `NOT_RUN` in Rust test scope | Resource admission reported `not-admitted` after 27.77 seconds waiting on the shared build-test lock; this caller was interrupted with exit 143 before Cargo/test execution. No other writer's process or lock was changed. Retry only after the owning build/test lane drains. |
+| Full final-source gate | `NOT_RUN` | Monitor is wired; execute after the final code/doc freeze, including actual producers and consumers. |
 
-MISC-04 integration owner must resolve the following live targets, preserving
-their writers' work. They are repair targets, not external ticket dependencies:
+The two path-lint targets below remain live (`lint-doc-paths.py`: four broken
+paths). Preserve their writers' work:
 
 - `docs/plans/sep-27-code-search-remediation/handoffs/l3-proof/adversarial/prior-L3_HANDOFF.md:3,5`
   has broken `L3_FOLLOWUP_AUDIT.md` and `L3_FOLLOWUP.source.json` relative paths.
-  Preserve provenance if it is an immutable evidence preimage; use an explicit
-  archival validation policy or truthful navigation correction, not deletion
-  of active proof to silence the gate.
+  It is hashed as
+  `61c8ca817c7bb45f0b0ded386431c643ed12485a59e5be18ae88d2aefaab2223`
+  in the L5 frozen/consumer overlays. Do not edit the preimage to silence the
+  linter. The owning proof must choose a provenance-preserving archival lint
+  policy or reissue the dependent evidence after a truthful navigation fix.
 - `docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/authority-id/report-template.md:36,72`
   has broken `l4-proof/authority-id/receipt.json` and
-  `l4-proof/authority-id/live-closeout.json` relative paths. Correct the live
-  template's path semantics without generating a false receipt. The previous
-  missing L1 adversarial-report path is now present and no longer an open item.
-- `crates/quanta-index-contract-base/tests/l4_preview_emission.rs`,
-  `crates/quanta-index-contract/tests/l4_preview_wire.rs`,
-  `crates/quanta-index-sdk/tests/l1_daemon_query_contract.rs`,
-  `crates/quanta-index-sdk/tests/l2_daemon_publication.rs`, and
-  newly appearing
-  `crates/quanta-index-searchd-runtime/tests/l4_preview_sdk.rs` have no
-  catalog entry at the last audit.
-  Register exact target/package/features/owner and intended rail in
-  `tools/ci/test-authority.toml`; check live selection and closure binding.
-  Do not remove the tests or add a blanket gate exemption.
+  `l4-proof/authority-id/live-closeout.json` relative paths. The file is
+  pinned as `438b3ff78be710d4cbde50e2eb46c949376ad101721490ae02d1eeecb19e3a2d`
+  by `l4-proof/authority-id/receipt.json`; the L4 owner must reissue affected
+  proof if it corrects the template. Do not generate a false receipt. The
+  previous missing L1 adversarial-report path is now present.
+The five formerly orphaned Rust integration targets
+(`l4_preview_emission`, `l4_preview_wire`, `l1_daemon_query_contract`,
+`l2_daemon_publication`, `l4_preview_sdk`) are now cataloged by their Rust
+owners; `check-test-authority.py` exits 0. This resolves catalog registration,
+not execution of ignored L1/L2 daemon cases or their installed-product proof.
 
 ### Retained decisions: do not reopen without a reproduced regression
 
@@ -227,15 +264,15 @@ benchctl + registry: select declared profile and route commands
 | Ticket | Single owner boundary | Work to perform next |
 | --- | --- | --- |
 | MISC-01 | `profile_capture.py`, `custody.py`, Rust run store | Retain atomic inventory/pointer/GC implementation; final integrated execution is MISC-04, not another gate. |
-| MISC-02 | `benchctl.py`, `producer_execution.py`, `host_monitor.py`, `evidence_bridge.py` | Complete EXEC-1 observed host lifecycle and native dispatch disposition. |
+| MISC-02 | `benchctl.py`, `producer_execution.py`, `host_monitor.py`, `evidence_bridge.py` | Retain implemented EXEC-1; close parent-death/join-failure regressions and actual-producer acceptance. |
 | MISC-03 | `evidence.py`, `raw_archive.py`, capture adapters, portable proof | Retain repaired IO-4 and IO-1–3 regressions; execute IO-5 whole-capture resource proof. |
-| MISC-04 | Shared CLI/bridge, Just, test authority, source closures | Finish C5; freeze once and integrate actual producer/consumer/replay and governance evidence. |
+| MISC-04 | Shared CLI/bridge, Just, test authority, source closures | Retain implemented C5; freeze once and integrate actual producer/consumer/replay and governance evidence. |
 | MISC-05 | Runtime/SDK/core/platform owner tests | Qualify retained invariants, full Rust/daemon, installed ingest and supported platforms. |
 | MISC-06 | Existing test/query/ingest/micro/system measurement owners | Measure distinct workloads only after correctness, host and input admission. |
 | MISC-07 | Registry/domain adapters/retrieval evaluator | Complete real profile execution inventory, live comparator pilot and separately admitted quality/performance claims. |
 
-Order: retain IO-4 owner proof → complete EXEC-1 and C5
-(disjoint files may proceed independently) → IO-5 → finish docs and freeze once →
+Order: retain IO-4/EXEC-1/C5 owner implementations → close their missing
+negative controls → IO-5 → finish docs and freeze once →
 serial MISC-04/05 runtime batch → admitted MISC-06/07 measurements.
 One integrator owns overlapping `benchctl.py`, `evidence_bridge.py`, selectors
 and source-closure edits. Do not run competing heavy gates or duplicate one
@@ -332,10 +369,22 @@ Exact regression owners also include `test_bench_protocol_conformance.py`,
 under `tools/ci/tests/`. Exact selection/authority/closure must be checked;
 a similar filename is not coverage.
 
-IO-5 remains separate: measure complete capture/replay peak RSS with larger
-payloads, large failure output and many-file metadata, in fresh processes with
-declared platform/tolerance. Component tests or finite admission ceilings alone
-cannot establish whole-capture memory bounds or a performance improvement.
+IO-5 generic capture proof now runs `test_complete_publication_and_reload_peak_rss_is_payload_independent`
+in fresh subprocesses on 8 MiB and 128 MiB sparse zero inputs. It rederives
+the exact SHA-256 and byte count at the source, promoted raw and replay reader,
+then reloads the complete profile. On macOS the child peak RSS values were
+28,229,632 and 27,951,104 bytes respectively (threshold: less than 48 MiB
+growth for 120 MiB more input). Focused case: 1/1 in 3.31 seconds; external
+JUnit `/private/tmp/qi-misc-io5-generic-20260927.xml`, SHA-256
+`03b233dc136601ae04e6296b52d7f02f56559f7c993104a219ab62a67da29faa`.
+Profile-capture, policy and source-closure owner modules: 145/145 in 71.19
+seconds; JUnit `/private/tmp/qi-misc-io5-owner-20260927.xml`, SHA-256
+`eb28e6072a1b29a2a9e73d7797a1ff61fba9c0ff8e680dbcaa43b2ea6aae37c6`.
+This test was added after the 1256-case Just selector run; that older total is
+not a current exact collection count. Large failure output, many-file metadata,
+adapter-specific whole-capture paths and actual-producer resource measurements
+still need separate fresh-process proof. Neither component tests nor this one
+generic capture probe establishes a performance improvement.
 
 ### Superseded-document deletion boundary
 
@@ -431,40 +480,40 @@ Owners: `tools/ci/tests/test_benchctl.py`,
 
 ### RCA and owners
 
-- `tools/benchmark/benchctl.py`: immutable capture already uses shared execution.
-  Route the remaining no-evidence-root native producer branch through the same
-  execution owner with external diagnostic log custody. Preserve its command
+- `tools/benchmark/benchctl.py`: immutable and no-evidence-root native producers
+  now use the same owned execution path with external diagnostic log custody.
+  Preserve its command
   semantics, including baseline admission; command diagnostics are not an
   immutable profile capture and must not invent a capture pointer. Retain the
-  existing refusal of incompatible baseline/evidence-root options. Remove
-  invented one-sample host evidence together with observed inputs and replay
-  validation. Do not replace unrelated short Git/toolchain probes.
+  existing refusal of incompatible baseline/evidence-root options. Standalone
+  artifact import emits `none/0`; monitored runs derive the lease from raw.
+  Do not replace unrelated short Git/toolchain probes.
 - `tools/benchmark/producer_execution.py`: retain private session, parent
   lifeline, actual terminal record, unreaped group identity, bounded cleanup
   and signal handling. Exit zero alone does not establish descendants exited.
 - `tools/benchmark/criterion_capture.py`: bind observations to observed build,
   listing, smoke and measure command boundaries. Criterion warmup occurs inside
   its measure process; do not invent a separately observed warmup interval.
-- Existing unfinished `tools/benchmark/host_monitor.py`: own capture-time observations and
+- Existing `tools/benchmark/host_monitor.py`: owns capture-time observations and
   cooperative local reservation; `evidence_bridge.py` derives typed host facts
   from the validated observations instead of caller-supplied summary constants.
 - `tools/ci/source_closure.py`: enroll new module/tests in the affected closures.
 
 ### Final implementation split: one lifecycle, no patch-on-patch adapter
 
-All rows below are remaining work, not claims that these APIs already exist.
-They share one EXEC-1 acceptance boundary; do not introduce another transaction,
+The rows below distinguish implemented code from unproved acceptance. They
+share one EXEC-1 acceptance boundary; do not introduce another transaction,
 success marker, producer runner or permissive replay parser.
 
-| Step | Current code / root cause | Exact change and refusal boundary |
+| Step | Current implementation | Remaining acceptance / refusal boundary |
 | --- | --- | --- |
-| E1: descriptor custody | `producer_execution._execute_owned` already accepts `custody_fds`, but public `execute` does not forward them. Controller-only reservation can end before guarded child cleanup. | Extend the current public owner to forward validated reservation descriptors to the existing guard. Producer children must not inherit them. Test controller death while a nested child exists; a second participating capture must remain excluded until cleanup completes. |
-| E2: epoch lifecycle | `CaptureEpoch.execute/__exit__`, `capture_entrypoint` and `publish_capture` do not reference `HostMonitor`. A new module alone creates no observation. | Admit native/Criterion monitoring explicitly. Start before the first admitted producer, record actual phases, finalize after producer cleanup and before publication. Monitor failure is sticky, refuses publication, retains partial raw/failure diagnostics and preserves primary plus cleanup errors. Specify whether failure cancels the active producer or is detected at its next boundary; never claim immediate cancellation without implementing it. |
-| E3: transcript custody | The draft validates sequence/time/facts, but `validate` accepts any five nonnegative lock-identity integers. `finish` raises on join timeout before its cleanup `finally`. | Validate regular-file mode and single-link invariant without pretending replay proves a live local lock. Give every start/poll/phase/finish/close failure an explicit bounded custody state. A live observer must not write through closed/reused descriptors; a timeout cannot be reported as successful release. Test malformed headers, bool aliases, changed reservation, missing end, excess gaps, clock jumps and failed cleanup. |
-| E4: canonical host derivation | `evidence_bridge.host_identity` accepts caller lease summaries. Native promotion hardcodes `shared/1`; Criterion currently honestly emits `none/0`. | Derive host identity/count from validated `host-observations.jsonl`; bind its exact digest and capture/profile identity in existing raw/input fields. Bind expected capture identity independently of the transcript, including detached replay. Standalone artifact import has no observed producer: emit honest `none/0`, not a fabricated lease. A missing required transcript cannot fall back to unobserved success. |
-| E5: all readers together | `profile_capture.load_capture`, `benchctl.replay_command` and `criterion_capture.replay_run` do not rederive monitor facts. Native replay treats every raw file as a native JSON artifact. | Recheck the reserved host transcript in publication, capture loading and fresh replay. Separate only a validated reserved host raw from native artifact cardinality/parsing; arbitrary extra JSONL must still refuse. Reject removed/duplicate/replaced transcript, mismatched commitment, wrong capture/profile and forged host summaries even after envelope digests are recomputed. |
-| E6: remaining dispatch | `benchctl._native_tail` has a direct `subprocess.run` branch when no evidence root is selected. | Route that actual producer through `producer_execution.execute` with external diagnostic logs; retain timeout, exit status and baseline-admission semantics. No immutable capture/pointer claim for command-only mode. Leave unrelated Git/rustc probes alone. |
-| E7: authority and proof | There is no monitor test module/caller to confer coverage. `source_closure.py` lists individual benchmark Python owners and does not include `host_monitor.py`; file existence is not enrollment. | Enroll the new owner in benchmark-control and derived closures, and add tests to existing capture/bridge/criterion/producer owners or register a single new test owner. Verify live command selection, exact source closure and mutation invalidation. Run common-owner regressions once after integration, followed by actual native/Criterion execution and relocated fresh replay. |
+| E1: descriptor custody | Public `execute` forwards `custody_fds` to the existing private guard; the producer child does not inherit them. Direct FD non-inheritance and controller-death/nested-child reservation tests passed. | This proves only the participating local lock domain; it is not quiet-host or hostile-process isolation. |
+| E2: epoch lifecycle | Native/Criterion entrypoints explicitly monitor. The epoch starts at first owned producer, marks phases and finalizes before publication. Monitor failure is sticky and retains diagnostics. Injected primary-plus-monitor-error proof passed. | A failure during a long-running producer is detected at the next phase/finalization, not immediate cancellation. |
+| E3: transcript custody | Validator now requires a singly linked regular lock identity and strict sequence/time/facts. `finish` refuses join timeout while retaining the live observer/FD; it cannot report successful release. Malformed/partial raw, observation-failure and injected join-timeout/cleanup tests pass. | Replay validates a transcript, not a live lock. |
+| E4: canonical host derivation | `host_from_observations` derives identity/count from validated raw; publication binds its digest, capture/profile and input. Standalone import emits `none/0`; required monitored boundaries without raw refuse. | Keep diagnostic scope; actual producer proof and performance admission are separate. |
+| E5: all readers together | Publication, capture loading, native replay and Criterion replay rederive the reserved host raw. Native artifact parsing excludes only that reserved name. Replay validates family policy for actual captures; recorded imports retain explicit `any` importer policy. | Eight-module owner selection passed 379/379 with concurrent Rust source drift; fresh-process actual-producer replay remains `NOT_RUN`, and cooperative observations never yield performance verdicts. |
+| E6: remaining dispatch | Command-only native producer uses `producer_execution.execute` with external diagnostic logs, retains a real nonzero exit and does not publish a pointer. Diagnostic-root allocation failure returns refusal. | Actual command-only baseline admission beyond mocked dispatch is `NOT_RUN`; unrelated probes stay unchanged. |
+| E7: authority and proof | Monitor is enrolled in benchmark-control and derived closures; existing capture/bridge/criterion/producer tests cover it. Policy/closure guard cases and the seven-module owner selection passed. | Full final-source gate, actual native/Criterion execution and relocated fresh replay remain `NOT_RUN`. |
 
 Lock separation is intentional: `tools/ci/resource_admission.py` guards leaf
 build/test admission. Do not hold that same lock across a native recipe whose
@@ -537,9 +586,9 @@ retrieval, query-parity, macOS resource or test-authority behavior.
 | `tools/benchmark/evidence_bridge.py::sha256_file/sha256_hex_file` | Implemented bounded hashing through the same pinned reader; preserve tests. |
 | `tools/benchmark/raw_archive.py`, `pair_capture.py::pack_native/unpack_native/tree_files/capture/replay_run` | IO-2 implemented: shared streamed ZIP mechanics, fixed metadata, bounded directory parsing, commitment-only replay cache and streamed workspace/binary hashes. Retain the exact archive/refusal regressions in section 3. |
 | `tools/benchmark/corpus_binding.py::capture/replay/_replay` | IO-2 implemented: same file-backed archive owner; retain capsule size ceiling, lexical input digests and exact release/bundle reconstruction. |
-| `tools/benchmark/producer_execution.py::_wait_for_terminal/execute/_cleanup` | IO-1 implemented; retain file-backed normal/failure drains and bounded tails. Native immutable dispatch uses this owner; remaining legacy dispatch/host work is EXEC-1. |
-| `tools/benchmark/evidence.py::RawFile.consume_lines`, recorded/Criterion/native/lexical/portable capture and domain readers | IO-3 implemented: bounded JSONL/retained metadata/control JSON, file-backed preparation, canonical receipt production/replay and paired-verdict command-log ZIP. Retain owner regressions and final-input rechecks; whole-capture RSS remains IO-5. |
-| Adapter preparation/execution and `profile_capture.py::CaptureEpoch/publish_capture` | IO-4 owner implementation and the misplaced native test tail are repaired. Retain section 3's phase/failure matrix and the 359-case owner proof; final integrated qualification remains MISC-04. |
+| `tools/benchmark/producer_execution.py::_wait_for_terminal/execute/_cleanup` | IO-1 implemented; retain file-backed normal/failure drains and bounded tails. Native immutable and command-only dispatch use this owner; actual-producer/host qualification is still separate. |
+| `tools/benchmark/evidence.py::RawFile.consume_lines`, recorded/Criterion/native/lexical/portable capture and domain readers | IO-3 implemented: bounded JSONL/retained metadata/control JSON, file-backed preparation, canonical receipt production/replay and paired-verdict command-log ZIP. Generic complete-profile RSS now has one measured owner proof; adapter-specific RSS remains IO-5. |
+| Adapter preparation/execution and `profile_capture.py::CaptureEpoch/publish_capture` | IO-4 owner implementation and misplaced native test tail are repaired. Retain the phase/failure matrix, 344-case selected owner pass and 379-case eight-module post-fix pass. The latter crossed a concurrent Rust source change; final qualification remains MISC-04. |
 
 Coordinated callers: `criterion_capture.py`, `retrieval_capture.py`,
 `lexical_capture.py`, `pair_capture.py`, `recorded_capture.py`, `corpus_release.py`, `corpus_binding.py`
@@ -595,23 +644,15 @@ Owners: `tools/ci/tests/test_bench_protocol_conformance.py`,
 
 ## 7. MISC-04 — serial integration and source-bound closeout
 
-- Finish C5 before accepting archive/reuse-build owner proof as canonical:
-  retain the concurrent additions of `tools/ci/tests/test_pair_replay_workspace.py` and
-  `tools/ci/tests/test_cargo_preparation.py` to
-  `Justfile::benchmark-control-contract-local` and the affected source closures.
-  Register their exact owners
-  (`tools/benchmark/pair_capture.py` and
-  `tools/benchmark/retrieval/portable_proof.py`) in
-  `tools/ci/test-authority.toml`'s `python_targets` and
-  `python_scopes.benchmark-control-capture`. Preserve both in the benchmark
-  source closure and preparation in retrieval closure;
-  derived micro/retrieval closures must inherit the union. Extend
-  `test_benchmark_policy.py` and `test_benchmark_source_closure.py` guards to
-  require unique selection, correct owner/scope, actual nonempty collection,
-  mutation invalidation and rejection when either module is omitted. Existing
-  C4 owner/collection guards protect their declared three-module set; mutation
-  guards additionally cover the resource-admission modules, not both C5 modules. Do not close C5
-  with another explicitly selected ad hoc run or a fixed expected case count.
+- C5 code/control-plane wiring is implemented: the existing Just command and
+  affected closures select `test_pair_replay_workspace.py` and
+  `test_cargo_preparation.py`; `python_targets`/`benchmark-control-capture`
+  bind them to `tools/benchmark/pair_capture.py` and
+  `tools/benchmark/retrieval/portable_proof.py` on the PR rail. Policy and
+  source-closure tests guard exact owner/scope, live nonempty collection,
+  omission and mutation invalidation. The focused C5 guard selection passed
+  9/9 and the actual Just selector passed 1256/1256. Do not substitute these
+  local results for final hosted CI execution or a fixed case count.
 - C4 is implemented; preserve its regression guards before final qualification.
   `Justfile::benchmark-control-contract-local` now selects
   `tools/ci/tests/test_producer_notifications.py`,

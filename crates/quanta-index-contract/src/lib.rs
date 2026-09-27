@@ -23,8 +23,6 @@ mod bounded_cluster_members;
 pub mod canonical_order;
 mod semantic_kinds;
 mod source_coverage;
-mod source_event_payload;
-pub use source_event_payload::source_event_payload_sha256;
 
 pub use quanta_index_contract_base::{
     PreviewByteRange, PreviewKind, PreviewMetadata, PreviewUnavailableReason, SourceFileKey,

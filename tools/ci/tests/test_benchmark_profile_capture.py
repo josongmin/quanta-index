@@ -135,6 +135,70 @@ def test_host_monitor_failure_retains_partial_raw_and_refuses_success(tmp_path, 
     assert monitor.fd is None
 
 
+def test_host_monitor_join_timeout_retains_live_custody_until_observer_stops(tmp_path, monkeypatch):
+    host = {"os": "macos", "arch": "arm64", "cpu_count": 8,
+            "hostname_hash": "sha256:" + "a" * 64}
+    facts = {"load_average": [0.1, 0.2, 0.3], "disk_available_bytes": 100,
+             "process_count": 1, "process_snapshot_sha256": "sha256:" + "b" * 64,
+             "foreign_rust": []}
+    monkeypatch.setattr(host_monitor, "lock_path", lambda: tmp_path / "lock")
+    monkeypatch.setattr(host_monitor, "observe", lambda: (host, facts))
+    monitor = host_monitor.HostMonitor(tmp_path / "join.jsonl", "capture", "profile").start()
+    actual_thread = monitor.thread
+    monitor.stop_event.set()
+    actual_thread.join(timeout=5)
+    assert not actual_thread.is_alive()
+
+    class StuckObserver:
+        def join(self, *, timeout):
+            assert timeout == 5
+
+        def is_alive(self):
+            return True
+
+    monitor.thread = StuckObserver()
+    with pytest.raises(evidence.EvidenceError, match="retained raw"):
+        monitor.finish()
+    assert monitor.fd is not None
+    with pytest.raises(evidence.EvidenceError, match="cannot release a live host observer"):
+        monitor.close()
+    monitor.thread = actual_thread
+    raw = monitor.finish(failed=True)
+    assert raw.path.is_file()
+    assert monitor.fd is None
+
+
+def test_capture_failure_preserves_primary_and_monitor_finalization_error(tmp_path, monkeypatch):
+    host = {"os": "macos", "arch": "arm64", "cpu_count": 8,
+            "hostname_hash": "sha256:" + "a" * 64}
+    facts = {"load_average": [0.1, 0.2, 0.3], "disk_available_bytes": 100,
+             "process_count": 1, "process_snapshot_sha256": "sha256:" + "b" * 64,
+             "foreign_rust": []}
+    monkeypatch.setattr(host_monitor, "lock_path", lambda: tmp_path / "lock")
+    monkeypatch.setattr(host_monitor, "observe", lambda: (host, facts))
+    root = tmp_path / "evidence"
+    with pytest.raises(ValueError, match="primary oracle"):
+        with capture.CaptureEpoch(tmp_path / "repo", root, "profile", capture_id="failed",
+                                  monitor_host=True) as epoch:
+            epoch.host_monitor = host_monitor.HostMonitor(
+                epoch.work / "host-observations.jsonl", "failed", "profile",
+            ).start()
+            original_finish = epoch.host_monitor.finish
+
+            def fail_after_close(*, failed=False):
+                original_finish(failed=failed)
+                raise RuntimeError("monitor finalization oracle")
+
+            monkeypatch.setattr(epoch.host_monitor, "finish", fail_after_close)
+            raise ValueError("primary oracle")
+    failure = json.loads((root / "failures/failed.json").read_text())
+    assert failure["error"]["message"] == "primary oracle"
+    assert failure["error"]["monitor"] == {
+        "type": "RuntimeError", "message": "monitor finalization oracle",
+    }
+    assert not (root / "profiles").exists()
+
+
 @pytest.mark.parametrize("error_type", [ValueError, KeyboardInterrupt])
 def test_capture_epoch_retains_early_failure_without_inventing_observations(tmp_path, error_type):
     root = tmp_path / "evidence"
@@ -624,6 +688,62 @@ def test_declared_monitored_boundary_cannot_publish_without_observations(tmp_pat
                 replay=lambda *_: None, verify_source=lambda: None,
             )
     assert not (root / "profiles/profile.json").exists()
+
+
+def test_complete_publication_and_reload_peak_rss_is_payload_independent(tmp_path, record_property):
+    """Measure the complete generic capture path, not only raw copy helpers."""
+    import hashlib
+    import subprocess
+
+    script = """
+import hashlib,json,resource,sys
+from pathlib import Path
+sys.path.insert(0,sys.argv[1])
+import evidence,profile_capture
+base=Path(sys.argv[2]); size=int(sys.argv[3]); root=base/'evidence'
+source=base/'input.bin'
+with source.open('wb') as output: output.truncate(size)
+expected=hashlib.sha256()
+for _ in range(size//65536): expected.update(bytes(65536))
+digest='sha256:'+expected.hexdigest()
+raw=evidence.RawFile.capture(source)
+assert raw.sha256==digest and raw.size==size
+sample=evidence.sample_evidence()
+prepared={key:sample[key] for key in ('created_utc','payload','source','build','inputs','host','command','boundary','verdict')}
+prepared.update(run_id='run',family='family',profile='profile',case_id='case',raw_files={'input.bin':raw})
+registry=evidence.digest_bytes(b'registry')
+def replay(store,record):
+    ref=next(item for item in record['raw'] if item['path']=='raw/input.bin')
+    observed=evidence.RawFile.capture(store.run_dir('run')/ref['path'])
+    assert (observed.sha256,observed.size)==(digest,size)
+with profile_capture.CaptureEpoch(base/'repo',root,'profile',capture_id='capture'):
+    document=profile_capture.publish_capture(root,capture_id='capture',profile='profile',registry_digest=registry,expected_cases={'family':['case']},runs=[prepared],replay=replay,verify_source=lambda:None)
+assert profile_capture.load_capture(root,profile='profile',registry_digest=registry)==document
+replay(evidence.RunStore(root),evidence.RunStore(root).load('run'))
+peak=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+if sys.platform!='darwin': peak*=1024
+print(json.dumps({'digest':digest,'bytes':size,'peak_bytes':peak}))
+"""
+    measurements = []
+    for size in (8 * 1024 * 1024, 128 * 1024 * 1024):
+        base = tmp_path / str(size)
+        base.mkdir()
+        completed = subprocess.run(
+            [sys.executable, "-I", "-c", script,
+             str(Path(__file__).resolve().parents[3] / "tools/benchmark"), str(base), str(size)],
+            capture_output=True, text=True, check=True, timeout=90,
+        )
+        result = json.loads(completed.stdout)
+        expected = hashlib.sha256()
+        for _ in range(size // 65536):
+            expected.update(bytes(65536))
+        assert result["digest"] == "sha256:" + expected.hexdigest()
+        assert result["bytes"] == size
+        assert result["peak_bytes"] > 0
+        record_property(f"complete_capture_{size}_peak_bytes", result["peak_bytes"])
+        measurements.append(result)
+    # A 120 MiB input increase must not introduce a payload-sized allocation.
+    assert measurements[1]["peak_bytes"] - measurements[0]["peak_bytes"] < 48 * 1024 * 1024
 
 
 def publish_prepared(root, **overrides):

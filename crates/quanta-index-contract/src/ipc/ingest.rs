@@ -54,6 +54,9 @@ use super::{
 };
 use crate::semantic_kinds::SemanticCorpusKindV1;
 
+mod payload_digest;
+pub use payload_digest::source_event_payload_sha256;
+
 // =============================================================================
 // Batch mode
 // =============================================================================

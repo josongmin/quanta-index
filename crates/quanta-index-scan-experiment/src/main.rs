@@ -40,15 +40,19 @@ use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
     BatchIngestMode, ChunkId, ChunkRecord, LQ_VERSION_TAG, LqExpr, LqLeaf, LqOptions, LqQuery,
     LqSpan, ManifestGeneration, RepoId, RepoRelativePath, RevisionId, SearchCorpusIngestBatch,
-    SearchCorpusReplaceScope, SearchScopeKey, SearchScopeSurface,
+    SearchCorpusReplaceScope, SourceFileCoverage, SourceFileKey, SourceFileRevision,
+    SourcePublicationEvent, SymbolCoverage, source_event_payload_sha256,
+    source_file_unit_set_sha256,
 };
 use quanta_index_core::{LexicalIndexOpenPort, RequestBudgetV1, SearchCorpusBatchBuildPort};
+use quanta_index_ipc::stamp_batch_digest_v1;
 use quanta_index_lexical::LexicalAdapter;
 use quanta_index_searchd_harness::artifact::{
     BenchArtifactV1, BenchMode, BenchProvenanceV1, BenchRowV1, BenchSyntax, DiskAmplificationV1,
     GitHeadV1, HostV1, LatencySummary, PhaseDurationsV1, ResourceUsageV1, ResultShape, RouteFamily,
     config_digest, corpus_digest, directory_bytes, framed_digest,
 };
+use sha2::{Digest as _, Sha256};
 
 const DIMENSION: &str = "scan-vs-index";
 
@@ -58,7 +62,6 @@ const EXPERIMENT_REPO: &str = "exp-repo";
 const EXPERIMENT_REVISION: &str = "exp-rev";
 const DIGEST_DOMAIN_SCOPE: &str = "quanta-index:scan-experiment:scope:v1";
 const DIGEST_DOMAIN_MANIFEST: &str = "quanta-index:scan-experiment:manifest:v1";
-const DIGEST_DOMAIN_BATCH: &str = "quanta-index:scan-experiment:batch:v1";
 
 #[expect(
     clippy::print_stdout,
@@ -279,19 +282,31 @@ fn write_scan_corpus(out_dir: &Path, corpus: &Corpus) -> Result<()> {
     Ok(())
 }
 
-fn replace_scope(file: &CorpusFile) -> SearchCorpusReplaceScope {
-    SearchCorpusReplaceScope {
-        scope: SearchScopeKey {
-            doc_surface: SearchScopeSurface::File,
-            repo_relative_path: RepoRelativePath::new(&file.repo_relative_path),
+fn replace_scope(
+    file: &CorpusFile,
+    repo_id: &RepoId,
+    revision_id: &RevisionId,
+    language: &LanguageCode,
+) -> Result<SearchCorpusReplaceScope> {
+    Ok(SearchCorpusReplaceScope {
+        coverage: SourceFileCoverage {
+            source: SourceFileRevision {
+                file: SourceFileKey {
+                    source_repo_id: repo_id.clone(),
+                    repo_relative_path: RepoRelativePath::new(&file.repo_relative_path),
+                },
+                revision_id: revision_id.clone(),
+                source_sha256: Sha256::digest(file.body.as_bytes()).into(),
+            },
+            language: language.clone(),
+            producer_policy_sha256: Sha256::digest(b"scan-experiment-synthetic-source-v1").into(),
+            unit_set_sha256: source_file_unit_set_sha256(&file.chunks, &[])?,
+            text_admitted: !file.chunks.is_empty(),
+            symbols: SymbolCoverage::NotRequested,
         },
-        scope_digest: framed_digest(
-            DIGEST_DOMAIN_SCOPE,
-            &[file.repo_relative_path.as_bytes(), file.body.as_bytes()],
-        ),
         chunks: file.chunks.clone(),
         symbols: Vec::new(),
-    }
+    })
 }
 
 /// One sealed `ReplaceGeneration` batch carrying every corpus file as its own
@@ -300,21 +315,42 @@ fn ingest_batch(
     corpus: &Corpus,
     generation: ManifestGeneration,
 ) -> Result<SearchCorpusIngestBatch> {
-    let replace_scopes: Vec<SearchCorpusReplaceScope> =
-        corpus.files.iter().map(replace_scope).collect();
-    let scope_digests: Vec<&[u8]> = replace_scopes
+    let repo_id = RepoId::new(EXPERIMENT_REPO)?;
+    let revision_id = RevisionId::new(EXPERIMENT_REVISION)?;
+    let language = LanguageCode::new("rust").map_err(|error| anyhow!("language code: {error}"))?;
+    let replace_scopes: Vec<SearchCorpusReplaceScope> = corpus
+        .files
         .iter()
-        .map(|scope| scope.scope_digest.as_bytes())
+        .map(|file| replace_scope(file, &repo_id, &revision_id, &language))
+        .collect::<Result<_>>()?;
+    let scope_digests: Vec<String> = corpus
+        .files
+        .iter()
+        .map(|file| {
+            framed_digest(
+                DIGEST_DOMAIN_SCOPE,
+                &[file.repo_relative_path.as_bytes(), file.body.as_bytes()],
+            )
+        })
         .collect();
-    let manifest_digest = framed_digest(DIGEST_DOMAIN_MANIFEST, &scope_digests);
-    let batch_digest = framed_digest(DIGEST_DOMAIN_BATCH, &[manifest_digest.as_bytes()]);
-    Ok(SearchCorpusIngestBatch {
-        repo_id: RepoId::new(EXPERIMENT_REPO)?,
-        revision_id: RevisionId::new(EXPERIMENT_REVISION)?,
+    let digest_refs: Vec<&[u8]> = scope_digests
+        .iter()
+        .map(|digest| digest.as_bytes())
+        .collect();
+    let manifest_digest = framed_digest(DIGEST_DOMAIN_MANIFEST, &digest_refs);
+    let mut batch = SearchCorpusIngestBatch {
+        source_event: SourcePublicationEvent {
+            stream_id: "scan-experiment-source-v1".to_string(),
+            event_id: format!("scan-experiment-g{}-{manifest_digest}", generation.get()),
+            expected_base_event_id: None,
+            payload_sha256: [0; 32],
+        },
+        repo_id,
+        revision_id,
         generation,
         base_generation: None,
         manifest_digest,
-        batch_digest,
+        batch_digest: String::new(),
         mode: BatchIngestMode::ReplaceGeneration,
         bundle_payload: None,
         clear_surfaces: Vec::new(),
@@ -323,7 +359,12 @@ fn ingest_batch(
         semantic_replace_scopes: Vec::new(),
         semantic_tombstone_scopes: Vec::new(),
         seal: true,
-    })
+    };
+    batch.source_event.payload_sha256 = source_event_payload_sha256(&batch)?;
+    stamp_batch_digest_v1(&mut batch)?;
+    batch.validate_v1()?;
+    batch.validate_surface_mutations_v1()?;
+    Ok(batch)
 }
 
 fn make_query() -> LqQuery {
@@ -491,5 +532,45 @@ fn main() -> ExitCode {
             emit_stderr(&format!("scan_vs_index: {err:#}"));
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use quanta_index_ipc::BatchDigestVerdictV1;
+
+    #[test]
+    fn current_source_batch_builds_and_answers_an_indexed_hit() -> Result<()> {
+        let language = LanguageCode::new("rust").map_err(|error| anyhow!("language: {error}"))?;
+        let text = chunk_text(96, true);
+        let path = "src/part-000000.rs";
+        let body = format!("{text}\n");
+        let corpus = Corpus {
+            bytes: body.len(),
+            files: vec![CorpusFile {
+                repo_relative_path: path.to_string(),
+                scan_file_name: "part-000000.txt".to_string(),
+                body: body.clone(),
+                chunks: vec![chunk_record(0, path, &text, &language)],
+            }],
+        };
+        let generation = ManifestGeneration::new(1);
+        let batch = ingest_batch(&corpus, generation)?;
+        assert_eq!(
+            batch.replace_scopes[0].coverage.source.source_sha256,
+            Sha256::digest(body.as_bytes()).into()
+        );
+        assert!(matches!(
+            quanta_index_ipc::verify_batch_digest_v1(&mut batch.clone())?,
+            BatchDigestVerdictV1::Verified(_)
+        ));
+
+        let root = tempfile::tempdir()?;
+        let adapter = LexicalAdapter::with_state_root(root.path().join("index"));
+        adapter.build_batch(&batch)?;
+        let searcher = adapter.open(&batch.repo_id, &batch.revision_id, generation)?;
+        assert_eq!(measure_query(searcher.as_ref(), 1)?.hits, 1);
+        Ok(())
     }
 }

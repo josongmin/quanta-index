@@ -73,6 +73,11 @@ crate quanta_index_core
 │   │   ├── trait IntegrityScrubPort: pub
 │   │   └── struct IntegrityScrubReportV1: pub
 │   ├── mod lexical: pub
+│   │   ├── mod collection_budget: pub(self)
+│   │   │   ├── struct CollectionState: pub(self)
+│   │   │   ├── struct LexicalCollectionBudget: pub
+│   │   │   └── struct LexicalMemoryReservation: pub
+│   │   ├── mod coverage: pub(self)
 │   │   ├── mod history_text: pub(self)
 │   │   │   ├── type HistoryTextAdmitFn: pub
 │   │   │   ├── enum HistoryTextBuildV1: pub
@@ -106,7 +111,12 @@ crate quanta_index_core
 │   │   │   ├── trait RepoMetaIngestPort: pub
 │   │   │   ├── trait RepoTopicIngestPort: pub
 │   │   │   ├── trait SearchCorpusBatchBuildPort: pub
-│   │   │   └── trait SearchCorpusIngestPort: pub
+│   │   │   ├── trait SearchCorpusIngestPort: pub
+│   │   │   └── type SymbolSearchPageV1: pub
+│   │   ├── mod query_plan: pub(self)
+│   │   │   ├── enum LexicalEndpoint: pub
+│   │   │   ├── enum LexicalPlanKind: pub
+│   │   │   └── struct ValidatedLexicalPlan: pub
 │   │   └── mod service: pub(self)
 │   │       ├── struct LexicalExecutionBudgetV1: pub
 │   │       ├── struct LexicalPolicy: pub
@@ -223,6 +233,12 @@ crate quanta_index_core
 │   │       ├── struct SemanticWindowLeaseV1: pub
 │   │       ├── enum SemanticWindowPlacementV1: pub
 │   │       └── struct SemanticWindowResidencyV1: pub
+│   ├── mod source_publication: pub
+│   │   ├── struct SourceEventBindingV1: pub
+│   │   ├── enum SourceEventPhaseV1: pub
+│   │   ├── struct SourceEventRecordV1: pub
+│   │   ├── enum SourceEventReservationV1: pub
+│   │   └── trait SourcePublicationCatalogPort: pub
 │   └── mod structural: pub
 │       ├── mod inbound: pub(self)
 │       │   ├── struct StructuralQueryRequest: pub
@@ -250,6 +266,7 @@ crate quanta_index_core
 │   ├── struct CancelSharedV1: pub(self)
 │   ├── struct CancelWaiterGuardV1: pub
 │   ├── struct CancelWaiterSetV1: pub(self)
+│   ├── struct LexicalPreviewRetention: pub(self)
 │   ├── struct RequestBudgetV1: pub
 │   ├── struct RequestCorrelationV1: pub
 │   ├── enum RequestProviderStageV1: pub

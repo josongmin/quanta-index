@@ -473,9 +473,8 @@ def test_dsl_admission_dispatches_both_producers_and_skips_old_baselines(
     )
     commands = []
     monkeypatch.setattr(
-        MODULE.subprocess,
-        "run",
-        lambda command, **_kwargs: (commands.append(command), SimpleNamespace(returncode=0))[1],
+        MODULE, "execute",
+        lambda command, **_kwargs: (commands.append(command), SimpleNamespace(command={"exit_code": 0}))[1],
     )
     admitted = []
     monkeypatch.setattr(MODULE, "admit_dsl_baselines", lambda *args: admitted.append(args))
@@ -882,7 +881,10 @@ def _promote_sample_run(root: Path, run_id: str) -> Path:
         source=sealed["source"],
         build=sealed["build"],
         inputs=sealed["inputs"],
-        host=sealed["host"],
+        host=evidence_bridge.host_identity(
+            policy="canonical-linux", os_name="linux", arch="x86_64",
+            cpu_count=8, hostname="fixture", lease_mode="shared", lease_samples=1,
+        ),
         command=sealed["command"],
         boundary=sealed["boundary"],
         verdict=sealed["verdict"],
@@ -1464,6 +1466,90 @@ def test_native_capture_keeps_real_failed_producer_logs_and_prior_pointer(monkey
     assert MODULE.RunStore(root).collect([]) == []
     assert failures[0].is_file()
     assert (log_dir / "execution.json").is_file()
+
+
+def test_native_capture_binds_observed_host_through_promotion_and_replay(monkeypatch, tmp_path, capsys):
+    import copy
+
+    import host_monitor
+    from evidence_bridge import verify_host_binding
+    from profile_capture import load_capture
+
+    args = _native_profile_fixture(monkeypatch, tmp_path, "systems")
+    repo, root = args["repo_root"], args["evidence_root"]
+    tools = tmp_path / "fixture-tools"
+    tools.mkdir()
+    just = tools / "just"
+    just.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    just.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tools) + os.pathsep + os.environ["PATH"])
+    monkeypatch.setattr(MODULE, "require_declared_baselines", lambda *_: None)
+    monkeypatch.setattr(MODULE, "require_clean_worktree", lambda *_: None)
+    monkeypatch.setattr(MODULE, "resolve_checkout_head", lambda *_: args["initial_head"])
+    monkeypatch.setattr(MODULE, "require_frozen_source", lambda *_: None)
+    monkeypatch.setattr(MODULE, "validate", lambda *_: 0)
+    monkeypatch.setattr(MODULE, "compare", lambda *_: 0)
+    receipt_bytes = args["receipt"].read_bytes()
+
+    def preflight(_repo, _profile, receipt, _manifest):
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        receipt.write_bytes(receipt_bytes)
+        return 0
+
+    monkeypatch.setattr(MODULE, "preflight", preflight)
+    original_execute = MODULE.execute
+
+    def execute_and_refresh(*command_args, **command_kwargs):
+        result = original_execute(*command_args, **command_kwargs)
+        for path in args["validated_artifacts"]:
+            os.utime(repo / path, None)
+        return result
+
+    monkeypatch.setattr(MODULE, "execute", execute_and_refresh)
+    monkeypatch.setattr(host_monitor, "lock_path", lambda: tmp_path / "host-lock")
+    host = {"os": "linux", "arch": "x86_64", "cpu_count": 8,
+            "hostname_hash": "sha256:" + "a" * 64}
+    facts = {"load_average": [0.1, 0.2, 0.3], "disk_available_bytes": 100,
+             "process_count": 1, "process_snapshot_sha256": "sha256:" + "b" * 64,
+             "foreign_rust": []}
+    monkeypatch.setattr(host_monitor, "observe", lambda: (host, facts))
+    cli = SimpleNamespace(command="run", profile="systems", evidence_root=root,
+                          admit_baseline=False, cold_samples=None)
+    assert MODULE._capture_native_run(
+        repo, root, "systems", args=cli, argv=["run", "systems"],
+        profile={"recipes": ["fixture-producer"], "families": ["freshness", "open-loop"]},
+        manifest=args["manifest"], artifact_profile="systems",
+    ) == 0
+    store = MODULE.RunStore(root)
+    runs = [store.load(path.name) for path in (root / "runs").iterdir()]
+    assert len(runs) == 2
+    assert {run["family"] for run in runs} == {"freshness", "open-loop"}
+    capture_id = runs[0]["run_id"].removeprefix(runs[0]["family"] + "-").rsplit("-", 1)[0]
+    assert load_capture(root, profile="systems", registry_digest=MODULE.registry_digest(
+        MODULE.load_registry(repo / "tools/benchmark/registry.toml")
+    ))["capture_id"] == capture_id
+    for run in runs:
+        assert run["host"]["lease"]["mode"] == "exclusive"
+        assert run["host"]["lease"]["observed_samples"] >= 3
+        verify_host_binding(store, run, capture_id=capture_id)
+        assert MODULE.replay_command(repo, run["run_id"], root) == 0
+    original_load = MODULE.RunStore.load
+
+    def forged_policy(self, run_id):
+        import evidence_bridge
+        from evidence import RawFile
+
+        record = copy.deepcopy(original_load(self, run_id))
+        raw = RawFile.capture(self.run_dir(run_id) / "raw/host-observations.jsonl")
+        record["host"] = evidence_bridge.host_from_observations(
+            raw, policy="canonical-linux", capture_id=capture_id, profile="systems",
+        )
+        return record
+
+    with monkeypatch.context() as changed:
+        changed.setattr(MODULE.RunStore, "load", forged_policy)
+        assert MODULE.replay_command(repo, runs[0]["run_id"], root) == 2
+    assert "host policy differs" in capsys.readouterr().err
 
 
 def test_native_preflight_nonzero_retains_actual_reason(monkeypatch, tmp_path):

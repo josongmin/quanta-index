@@ -27,7 +27,8 @@
 //!
 //! ## Guarantees
 //!
-//! - Vendor pin: `regex = "=1.10.6"`, `regex-syntax = "=0.8.5"`.
+//! - Dependency identity: `Cargo.lock` resolves the workspace's `regex` and
+//!   `regex-syntax` requirements; do not infer exact versions from this API.
 //! - NFA budget: `100_000` states.
 //! - D18: wire shapes use hand-rolled `impl serde::Serialize`.
 //! - No silent failure / no silent fallback / no

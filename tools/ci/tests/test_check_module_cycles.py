@@ -144,6 +144,43 @@ def test_a_module_and_its_submodules_are_one_owner(tmp_path: Path):
     assert keys(root) == []
 
 
+def test_path_module_is_resolved_under_declaring_module(tmp_path: Path):
+    root = crate(
+        tmp_path,
+        {
+            "lib.rs": "mod owner;\nmod peer;\n",
+            "owner.rs": '#[path = "rows.rs"]\nmod rows;\n',
+            "rows.rs": "pub(crate) fn edge() -> crate::peer::Peer { crate::peer::Peer }\n",
+            "peer.rs": "pub(crate) struct Peer;\npub(crate) fn edge() { crate::owner::rows::edge(); }\n",
+        },
+    )
+    assert keys(root) == ["demo: owner::rows, peer"]
+
+
+def test_cfg_test_path_module_does_not_add_production_edge(tmp_path: Path):
+    root = crate(
+        tmp_path,
+        {
+            "lib.rs": "mod owner;\nmod peer;\n",
+            "owner.rs": '#[cfg(test)]\n#[path = "owner_tests.rs"]\nmod tests;\n',
+            "owner_tests.rs": "fn check() { crate::peer::edge(); }\n",
+            "peer.rs": "pub(crate) fn edge() {}\n",
+        },
+    )
+    assert keys(root) == []
+
+
+def test_commented_path_module_does_not_require_a_source(tmp_path: Path):
+    root = crate(
+        tmp_path,
+        {
+            "lib.rs": "mod owner;\n",
+            "owner.rs": '// #[path = "missing.rs"] mod ghost;\n/* #[path = "missing.rs"] mod phantom; */\n',
+        },
+    )
+    assert keys(root) == []
+
+
 def test_the_baseline_tolerates_exactly_its_cycles(tmp_path: Path):
     root = crate(
         tmp_path,

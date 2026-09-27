@@ -762,6 +762,15 @@ def replay_command(repo_root: Path, reference: str, evidence_root: Path | None) 
     if not isinstance(profile, dict) or evidence["family"] not in profile["families"]:
         print("ERROR: replay run family is not registered in its profile", file=sys.stderr)
         return 2
+    # Recorded imports describe the importing host, not the original
+    # experiment host. They cannot inherit a live family's measurement policy.
+    expected_host_policy = (
+        "any" if evidence["profile"] == "recorded"
+        else registry["families"][evidence["family"]]["host_policy"]
+    )
+    if evidence["host"]["policy"] != expected_host_policy:
+        print("ERROR: replay host policy differs from registered family", file=sys.stderr)
+        return 2
     native_families = load_manifest(registry_path, repo_root=repo_root)["families"]
     artifact_oracle = "not_applicable"
     if evidence["profile"] == "retrieval-diagnostic":
@@ -1983,7 +1992,11 @@ def _native_tail(args, argv, repo_root, profile, manifest, artifact_profile):
             diagnostic_parent = Path(tempfile.gettempdir()).resolve()
             if diagnostic_parent == repo_root.resolve() or diagnostic_parent.is_relative_to(repo_root.resolve()):
                 return refuse_capture("command diagnostic root must stay outside the checkout")
-            command_logs = Path(tempfile.mkdtemp(prefix="quanta-native-command-", dir=diagnostic_parent))
+            try:
+                command_logs = Path(tempfile.mkdtemp(prefix="quanta-native-command-", dir=diagnostic_parent))
+            except OSError as exc:
+                print(f"ERROR: cannot create command diagnostic root: {exc}", file=sys.stderr)
+                return 2
         for index, recipe in enumerate(recipes):
             assert isinstance(recipe, str)
             command = ["just", recipe]

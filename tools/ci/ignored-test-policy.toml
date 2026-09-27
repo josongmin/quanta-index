@@ -88,3 +88,35 @@ reason = "requires the pinned 33 MB upstream model assets"
 owner = "quanta-index-searchd"
 cadence = "quarterly"
 review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-sdk/tests/l1_daemon_query_contract.rs"
+test = "l1_real_daemon_sdk_domain_primitives_and_symbol_windows"
+reason = "requires a fresh daemon: set QUANTA_INDEX_L1_TEST_STATE_ROOT and run --ignored"
+owner = "quanta-index-sdk"
+cadence = "release"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-sdk/tests/l2_daemon_publication.rs"
+test = "original_binding_delta_lineage_and_restart_through_real_daemon"
+reason = "requires freshly built daemon: set QUANTA_INDEX_L2_TEST_BINARY and run --ignored"
+owner = "quanta-index-sdk"
+cadence = "release"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-sdk/tests/l2_daemon_publication.rs"
+test = "unresolved_cross_stream_publication_orders_activation_after_restart"
+reason = "requires freshly built daemon: set QUANTA_INDEX_L2_TEST_BINARY and run --ignored"
+owner = "quanta-index-sdk"
+cadence = "release"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-sdk/tests/l2_daemon_publication.rs"
+test = "delta_recovers_across_named_crash_cuts_with_rolled_back_active_head"
+reason = "requires debug daemon crash hooks: set QUANTA_INDEX_L2_TEST_BINARY and run --ignored"
+owner = "quanta-index-sdk"
+cadence = "release"
+review_by = "2026-12-31"

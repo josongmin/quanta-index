@@ -645,9 +645,9 @@ def test_promoted_real_artifact_fixture_replays_through_the_artifact_oracle(
             }
         ],
         host=bridge.host_identity(
-            policy="local-diagnostic",
-            os_name="macos",
-            arch="aarch64",
+            policy="canonical-linux",
+            os_name="linux",
+            arch="x86_64",
             cpu_count=10,
             hostname="host-a",
             lease_mode="shared",

@@ -92,6 +92,41 @@ quanta-index-corpus-smoke = { version = "0.1.0", path = "../quanta-index-corpus-
     ]
 
 
+def test_search_plane_real_adapter_is_test_only(tmp_path: Path, monkeypatch) -> None:
+    lint = _load_lint()
+    plane = tmp_path / "crates" / "quanta-index-search-plane"
+    plane.mkdir(parents=True)
+    manifest = plane / "Cargo.toml"
+    manifest.write_text(
+        '[package]\nname = "quanta-index-search-plane"\n'
+        '[dev-dependencies]\nquanta-index-lexical = { path = "../quanta-index-lexical" }\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(lint, "CRATES", tmp_path / "crates")
+    assert lint.check_crate_dependency_matrix() == []
+
+    manifest.write_text(
+        '[package]\nname = "quanta-index-search-plane"\n'
+        '[dependencies]\nquanta-index-lexical = { path = "../quanta-index-lexical" }\n',
+        encoding="utf-8",
+    )
+    messages = [violation.message for violation in lint.check_crate_dependency_matrix()]
+    assert len(messages) == 1
+    assert "must not depend on quanta-index-lexical" in messages[0]
+
+
+def test_cfg_test_path_module_is_not_a_production_transport_leak(tmp_path: Path) -> None:
+    lint = _load_lint()
+    source = tmp_path / "owner.rs"
+    tests = tmp_path / "owner_tests.rs"
+    production = tmp_path / "production.rs"
+    source.write_text('#[cfg(test)]\n#[path = "owner_tests.rs"]\nmod tests;\n')
+    tests.write_text("fn uses_engine_segment_id() {}\n")
+    production.write_text("fn leaks_segment_id() {}\n")
+    assert lint.test_only_path_modules(tmp_path) == {tests.resolve()}
+    assert production.resolve() not in lint.test_only_path_modules(tmp_path)
+
+
 def test_core_vendor_alias_cannot_bypass_dependency_boundary(tmp_path: Path, monkeypatch) -> None:
     lint = _load_lint()
     core = tmp_path / "crates" / "quanta-index-core"
