@@ -250,9 +250,9 @@ fn collection(cap: usize, segments: usize) -> Result<CollectionBudget, CoreError
     ))
 }
 
-fn assert_budget_error<T>(result: Result<T, CoreError>) {
+fn assert_budget_error<T>(result: &Result<T, CoreError>) {
     assert!(matches!(result, Err(CoreError::Typed { code, .. })
-        if code == LEXICAL_EXAMINED_BUDGET_EXCEEDED_CODE));
+        if *code == LEXICAL_EXAMINED_BUDGET_EXCEEDED_CODE));
 }
 
 #[test]
@@ -269,7 +269,7 @@ fn l3_group_limit_stops_native_walk_before_materializing_excess() -> TestResult 
         1.0,
         ledger.clone(),
     );
-    assert_budget_error(budgeted_collection(
+    assert_budget_error(&budgeted_collection(
         &searcher,
         &query,
         &collector,
@@ -300,7 +300,7 @@ fn l3_one_group_does_not_hide_excess_walk_work() -> TestResult {
         let ledger = collection(2, searcher.segment_readers().len())?;
         let collector =
             GroupedPageCollector::new(test_keys(&searcher)?, group, 1.0, ledger.clone());
-        assert_budget_error(budgeted_collection(
+        assert_budget_error(&budgeted_collection(
             &searcher,
             &query,
             &collector,
@@ -328,7 +328,7 @@ fn l3_budget_is_shared_across_segments_and_stops_before_later_segments() -> Test
         1.0,
         ledger.clone(),
     );
-    assert_budget_error(budgeted_collection(
+    assert_budget_error(&budgeted_collection(
         &searcher,
         &query,
         &collector,
@@ -396,7 +396,7 @@ fn l3_whole_set_limit_stops_native_walk_too() -> TestResult {
     let ledger = collection(2, searcher.segment_readers().len())?;
     let collector = RankedPageCollector::new(test_keys(&searcher)?, 2, None, 1.0, true)
         .with_collection_budget(ledger.clone());
-    assert_budget_error(budgeted_collection(
+    assert_budget_error(&budgeted_collection(
         &searcher,
         &query,
         &collector,
@@ -881,7 +881,7 @@ impl tantivy::collector::SegmentCollector for HarvestResultSegment {
     type Fruit = tantivy::Result<usize>;
 
     fn collect(&mut self, _: DocId, _: Score) {
-        self.count += 1;
+        self.count = self.count.saturating_add(1);
     }
 
     fn harvest(self) -> Self::Fruit {
@@ -917,9 +917,11 @@ impl Collector for HarvestResultCollector {
 
     fn merge_fruits(&self, fruits: Vec<tantivy::Result<usize>>) -> tantivy::Result<usize> {
         let _prior = self.merges.fetch_add(1, Ordering::Relaxed);
-        fruits
-            .into_iter()
-            .try_fold(0, |sum, fruit| Ok(sum + fruit?))
+        fruits.into_iter().try_fold(0_usize, |sum, fruit| {
+            sum.checked_add(fruit?).ok_or_else(|| {
+                tantivy::TantivyError::InternalError("harvest count overflow".into())
+            })
+        })
     }
 }
 
@@ -981,8 +983,11 @@ fn l3_direct_group_merge_rejects_first_error_before_spending_resources() -> Test
         let collector = GroupedPageCollector::new(test_keys(&searcher)?, group, 1.0, ledger);
         // Native weight: only the single harvest decode charges work.
         let weight = query.weight(EnableScoring::enabled_from_searcher(&searcher))?;
-        let fruit =
-            collector.collect_segment(weight.as_ref(), 0, &searcher.segment_readers()[0])??;
+        let segment = searcher
+            .segment_readers()
+            .first()
+            .ok_or("single segment missing")?;
+        let fruit = collector.collect_segment(weight.as_ref(), 0, segment)??;
         assert_eq!(resources.used_work(), 1);
         let result = collector.merge_fruits(vec![
             Ok(fruit),
@@ -1442,7 +1447,7 @@ fn l3_best_hit_in_last_visited_segment_replaces_earlier_group_representative() -
     assert_eq!(fruit.matched, 3);
     assert_eq!(fruit.representatives.len(), 1);
     let row = fruit.representatives.first().expect("representative");
-    assert_eq!(row.key.score, 10.0);
+    assert_eq!(row.key.score.to_bits(), 10.0_f32.to_bits());
     assert_eq!(row.address.segment_ord, 2);
     assert_eq!(row.key.repo_relative_path, "same.rs");
     Ok(())

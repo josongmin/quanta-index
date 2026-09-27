@@ -1,6 +1,7 @@
 //! The old tests use compact operation constructors to author units. Convert
-//! those fixture inputs into complete source files before invoking production
-//! ingestion. No raw index state is subsequently relabeled as covered.
+//! those fixture inputs into complete source files before ingestion.
+//!
+//! No raw index state is subsequently relabeled as covered.
 //!
 //! Each file's bytes are the authored chunk literals and symbol names separated
 //! by newlines. Byte spans are rebased; existing line metadata remains the test's

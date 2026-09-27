@@ -776,7 +776,7 @@ fn both_doors_refuse_missing_changed_or_uncommitted_ranked_keys() -> TestResult 
     if tables.len() != 1 {
         return Err(format!("expected one ranked-key table, found {}", tables.len()).into());
     }
-    let path = &tables[0];
+    let path = tables.first().ok_or("ranked-key table missing")?;
     let original = std::fs::read(path)?;
     expect_admitted(&knock(&adapter, generation), "intact ranked keys")?;
     std::fs::remove_file(path)?;
@@ -785,14 +785,22 @@ fn both_doors_refuse_missing_changed_or_uncommitted_ranked_keys() -> TestResult 
         "missing ranked keys",
         "GENERATION_SIDECAR_CORRUPT",
     )?;
-    std::fs::write(path, &original[..original.len() - 1])?;
+    let shortened = original
+        .get(
+            ..original
+                .len()
+                .checked_sub(1)
+                .ok_or("empty ranked-key table")?,
+        )
+        .ok_or("ranked-key truncation range missing")?;
+    std::fs::write(path, shortened)?;
     expect_refused(
         &knock(&adapter, generation),
         "truncated ranked keys",
         "GENERATION_SIDECAR_CORRUPT",
     )?;
     let mut flipped = original.clone();
-    flipped[40] ^= 1;
+    *flipped.get_mut(40).ok_or("ranked-key payload missing")? ^= 1;
     std::fs::write(path, &flipped)?;
     expect_refused(
         &knock(&adapter, generation),

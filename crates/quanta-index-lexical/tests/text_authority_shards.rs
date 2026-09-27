@@ -794,9 +794,10 @@ fn a_delta_refuses_to_build_on_a_shard_whose_digest_changed() -> TestResult {
 }
 
 /// The current source-event contract refuses a multi-publish unsealed batch
-/// before staging a generation. Crash recovery inside one sealed build needs
-/// a process fault-injection test; it cannot use the former public unsealed
-/// multi-publish fixture.
+/// before staging a generation.
+///
+/// Crash recovery inside one sealed build needs a process fault-injection test;
+/// it cannot use the former public unsealed multi-publish fixture.
 #[test]
 fn an_unsealed_source_event_cannot_stage_a_generation() -> TestResult {
     let temp = tempfile::tempdir()?;
