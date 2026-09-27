@@ -35,7 +35,10 @@ fn l3_ranked_keys_avoid_query_time_sstable_decode() -> TestResult {
     let long = "a".repeat(3_000);
     let index = index_with(&[&[&long, "b.rs"]])?;
     let searcher = index.reader()?.searcher();
-    let segment = &searcher.segment_readers()[0];
+    let segment = searcher
+        .segment_readers()
+        .first()
+        .ok_or("missing segment")?;
     let encoded = crate::ranked_keys::encode(segment)?;
     let table = crate::ranked_keys::SegmentKeys::decode(encoded, segment)?;
     assert_eq!(table.get(1, 0)?, long.as_str());
@@ -57,7 +60,15 @@ fn l3_ranked_keys_avoid_query_time_sstable_decode() -> TestResult {
         ledger,
         "test:prepared-keys",
     )?;
-    assert_eq!(fruit.rows[0].key.repo_relative_path, "b.rs");
+    assert_eq!(
+        fruit
+            .rows
+            .first()
+            .ok_or("missing ranked row")?
+            .key
+            .repo_relative_path,
+        "b.rs"
+    );
     assert!(resources.peak_bytes() <= 1_024);
     drop(fruit);
     assert_eq!(resources.resident_bytes(), 0);
@@ -68,23 +79,39 @@ fn l3_ranked_keys_avoid_query_time_sstable_decode() -> TestResult {
 fn l3_ranked_key_table_rejects_corruption_and_wrong_segment() -> TestResult {
     let index = index_with(&[&["a.rs", "b.rs"], &["c.rs"]])?;
     let searcher = index.reader()?.searcher();
-    let first = &searcher.segment_readers()[0];
-    let other = &searcher.segment_readers()[1];
+    let first = searcher
+        .segment_readers()
+        .first()
+        .ok_or("missing first segment")?;
+    let other = searcher
+        .segment_readers()
+        .get(1)
+        .ok_or("missing second segment")?;
     let encoded = crate::ranked_keys::encode(first)?;
     assert!(crate::ranked_keys::SegmentKeys::decode(encoded.clone(), other).is_err());
     let mut bad_magic = encoded.clone();
-    bad_magic[0] ^= 1;
+    *bad_magic.first_mut().ok_or("empty ranked-key table")? ^= 1;
     assert!(crate::ranked_keys::SegmentKeys::decode(bad_magic, first).is_err());
     let mut bad_offset = encoded.clone();
-    let last = bad_offset.len() - 1;
-    bad_offset[last] ^= 0xff;
+    *bad_offset.last_mut().ok_or("empty ranked-key table")? ^= 0xff;
     assert!(crate::ranked_keys::SegmentKeys::decode(bad_offset, first).is_err());
     let mut trailing = encoded.clone();
     trailing.push(0);
     assert!(crate::ranked_keys::SegmentKeys::decode(trailing, first).is_err());
     assert!(
-        crate::ranked_keys::SegmentKeys::decode(encoded[..encoded.len() - 1].to_vec(), first)
-            .is_err()
+        crate::ranked_keys::SegmentKeys::decode(
+            encoded
+                .get(
+                    ..encoded
+                        .len()
+                        .checked_sub(1)
+                        .ok_or("empty ranked-key table")?
+                )
+                .ok_or("invalid ranked-key table length")?
+                .to_vec(),
+            first,
+        )
+        .is_err()
     );
     Ok(())
 }
