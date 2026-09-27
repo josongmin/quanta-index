@@ -22,7 +22,9 @@ use crate::query_dispatcher::semantic_query::{
     prefix_semantic_query_error, resolve_semantic_request_selection,
 };
 use crate::query_dispatcher::stage_timing::StageTimings;
-use crate::query_dispatcher::window::{probe_top_k_v1, semantic_window_v2, top_k_limit};
+use crate::query_dispatcher::window::{
+    probe_top_k_v1, semantic_empty_scope_window_v2, semantic_window_v2, top_k_limit,
+};
 
 /// The lexical scope of a semantic query, lowered before anything is
 /// acquired: its candidate cap and its prepared plan.
@@ -55,6 +57,7 @@ impl SearchPlaneDispatcher {
             sem_searcher.index_model_revision(),
             plane,
         )?;
+        sem_searcher.validate_query_vector(&query_vector)?;
         Ok(query_vector)
     }
 
@@ -154,6 +157,35 @@ impl SearchPlaneDispatcher {
             budget,
         )?;
         stage_timings.record_elapsed(QueryStageKindV1::SemanticEmbedding, embed_started, 1, None);
+        // Embedding still admits the semantic input and checks model identity.
+        // An empty lexical allowlist never issues a dense backend call, whether
+        // constraints or an executed lexical search proved it empty.
+        if scope_candidate_ids.is_some_and(BTreeSet::is_empty) {
+            budget.checkpoint("semantic:project")?;
+            let project_started = self.query_stage_observation.start();
+            let mut explanation = build_semantic_response_explanation(
+                scope.as_ref(),
+                0,
+                None,
+                &searcher.dense_lane(),
+                &execution.summary(),
+                budget.response_request_id(),
+            );
+            attach_read_view_trace(&mut explanation, view.identity());
+            stage_timings.record_elapsed(
+                QueryStageKindV1::SemanticProject,
+                project_started,
+                1,
+                Some(0),
+            );
+            explanation.stage_timings = stage_timings.finish();
+            return Ok(SemanticQueryResponse {
+                generation: pin,
+                results: Vec::new(),
+                window: semantic_empty_scope_window_v2(&execution.summary())?,
+                explanation,
+            });
+        }
         let probe_top_k = probe_top_k_v1(request.top_k)?;
         budget.checkpoint("semantic:search")?;
         let search_started = self.query_stage_observation.start();
@@ -174,6 +206,16 @@ impl SearchPlaneDispatcher {
                 budget,
             )?
         };
+        if let Some(scope_ids) = scope_candidate_ids
+            && let Some(outside) = results
+                .iter()
+                .find(|candidate| !scope_ids.contains(&candidate.candidate_id))
+        {
+            return Err(CoreError::InvalidContract(format!(
+                "semantic: scoped adapter returned candidate outside lexical allowlist: {}",
+                outside.candidate_id
+            )));
+        }
         stage_timings.record_elapsed(
             QueryStageKindV1::SemanticDenseSearch,
             search_started,
@@ -184,21 +226,23 @@ impl SearchPlaneDispatcher {
         let project_started = self.query_stage_observation.start();
         let observed = results.len();
         results.truncate(top_k_limit(request.top_k));
-        // Contribution, same rule the builder used to apply inline: the
-        // lexical scope contributed iff it narrowed to candidates; the
-        // semantic lane iff it returned rows.
-        if scope
-            .as_ref()
-            .is_some_and(|scope| !scope.candidate_ids.is_empty())
-        {
+        // A scope contributes to the response only when one of its
+        // candidates survives the dense search. An executed scope with no
+        // final rows is still recorded as executed, not contributed.
+        if scope.is_some() && !results.is_empty() {
             execution.record_lexical_contribution();
         }
         if !results.is_empty() {
             execution.record_semantic_contribution();
         }
         let summary = execution.summary();
-        let window_v2 =
-            semantic_window_v2(request.top_k, observed, &searcher.dense_lane(), &summary)?;
+        let window_v2 = semantic_window_v2(
+            request.top_k,
+            observed,
+            scope_candidate_ids.map(BTreeSet::len),
+            &searcher.dense_lane(),
+            &summary,
+        )?;
         let early_stop_reason = scope_candidate_ids.and_then(|scope_ids| {
             let limit = top_k_limit(request.top_k);
             if scope_ids.len() > results.len() && results.len() == limit {

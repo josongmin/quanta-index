@@ -1,0 +1,6 @@
+literal-word-120	13	OK	6735313	20035301	8559121	20035301	false
+word-150	7	ERR	PLAN_LIMIT_EXCEEDED[dimension=regex-nfa-states]: repetition body 798 * max 150 = 119700 exceeds cap 100000	7136
+word-200	7	ERR	PLAN_LIMIT_EXCEEDED[dimension=regex-nfa-states]: repetition body 798 * max 200 = 159600 exceeds cap 100000	7136
+letter-120	10	OK	5819514	19382735	7538506	19382735	true
+letter-150	10	ERR	PLAN_LIMIT_EXCEEDED[dimension=regex-nfa-states]: repetition body 679 * max 150 = 101850 exceeds cap 100000	6241
+letter-200	10	ERR	PLAN_LIMIT_EXCEEDED[dimension=regex-nfa-states]: repetition body 679 * max 200 = 135800 exceeds cap 100000	6241

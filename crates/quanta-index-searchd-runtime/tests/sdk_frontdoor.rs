@@ -30,8 +30,8 @@ use quanta_index_contract::{
     RuntimeSnapshotRecord, SearchCorpusActiveHeadV1, SearchCorpusGenerationIdentityV1,
     SearchPlaneErrorCodeV2, SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope,
     SearchPlaneIngestIpcResponse, SearchPlaneIngestIpcResponseEnvelope, SearchPlaneTrackKind,
-    SemanticQueryRequest, StructuralQueryRequest, SymbolId, SymbolQueryRequest, TextQueryRequest,
-    TextQuerySyntax,
+    SemanticQueryRequest, SourceFileKey, SourcePublicationEvent, StructuralQueryRequest, SymbolId,
+    SymbolQueryRequest, TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_ipc::send_request;
 use quanta_index_sdk::{
@@ -41,7 +41,9 @@ use quanta_index_sdk::{
     RepoTopicBatch, SdkError, SearchCorpusBatch, SearchScopeKey, SearchScopeSurface,
     StructuralBatch,
 };
-use quanta_index_searchd_harness::{E2eRuntime, semantic_source_scopes_for_chunk_records};
+use quanta_index_searchd_harness::{
+    E2eRuntime, fixture_source_scope_v1, semantic_source_scopes_for_chunk_records,
+};
 
 use crate::fail_closed_wait::{
     RealTicker, UnexpectedSuccess, WaitError, WaitTicker, wait_for, wait_for_terminal_error,
@@ -247,136 +249,130 @@ fn history_commit_only_batch() -> quanta_index_sdk::HistoryBatch {
 fn lexical_batch() -> Result<SearchCorpusBatch, Box<dyn Error>> {
     let batch =
         SearchCorpusBatch::replace_generation(repo(), revision(), generation(), "manifest:lexical")
-            .replace_scope(
-                SearchScopeKey {
-                    doc_surface: SearchScopeSurface::File,
-                    repo_relative_path: RepoRelativePath::new("src/lib.rs"),
-                },
-                "scope:lexical-lib",
-                vec![
-                    lexical_chunk(
-                        "chunk-dirty",
-                        "src/lib.rs",
-                        "todo!()",
-                        "text:digest",
-                        "shape:digest",
-                        12,
-                    )?,
-                    lexical_chunk(
-                        "chunk-tree",
-                        "src/lib.rs",
-                        "fn main() {}",
-                        "text:tree",
-                        "shape:tree",
-                        12,
-                    )?,
-                ],
-                vec![symbol_record()?],
-            )
-            .replace_scope(
-                SearchScopeKey {
-                    doc_surface: SearchScopeSurface::File,
-                    repo_relative_path: RepoRelativePath::new("src/alpha.rs"),
-                },
-                "scope:lexical-alpha",
-                vec![lexical_chunk(
-                    "alpha",
-                    "src/alpha.rs",
-                    "sphinx of quartz",
-                    "text:alpha",
-                    "shape:alpha",
-                    16,
-                )?],
-                Vec::new(),
-            )
-            .replace_scope(
-                SearchScopeKey {
-                    doc_surface: SearchScopeSurface::File,
-                    repo_relative_path: RepoRelativePath::new("src/beta.rs"),
-                },
-                "scope:lexical-beta",
-                vec![lexical_chunk(
-                    "beta",
-                    "src/beta.rs",
-                    "sphinx riddles",
-                    "text:beta",
-                    "shape:beta",
-                    14,
-                )?],
-                Vec::new(),
-            );
+            .source_event(lexical_event("fixture:sdk-lexical-v1", None));
+    let batch = replace_fixture_file(
+        batch,
+        repo(),
+        revision(),
+        "src/lib.rs",
+        vec![
+            lexical_chunk(
+                "chunk-dirty",
+                "src/lib.rs",
+                "todo!()",
+                "text:digest",
+                "shape:digest",
+                12,
+            )?,
+            lexical_chunk(
+                "chunk-tree",
+                "src/lib.rs",
+                "fn main() {}",
+                "text:tree",
+                "shape:tree",
+                12,
+            )?,
+        ],
+        vec![symbol_record()?],
+    )?;
+    let batch = replace_fixture_file(
+        batch,
+        repo(),
+        revision(),
+        "src/alpha.rs",
+        vec![lexical_chunk(
+            "alpha",
+            "src/alpha.rs",
+            "sphinx of quartz",
+            "text:alpha",
+            "shape:alpha",
+            16,
+        )?],
+        Vec::new(),
+    )?;
+    let batch = replace_fixture_file(
+        batch,
+        repo(),
+        revision(),
+        "src/beta.rs",
+        vec![lexical_chunk(
+            "beta",
+            "src/beta.rs",
+            "sphinx riddles",
+            "text:beta",
+            "shape:beta",
+            14,
+        )?],
+        Vec::new(),
+    )?;
     Ok(with_semantic_sources_from_chunks(batch))
 }
 
 fn lexical_frontdoor_matrix_batch() -> Result<SearchCorpusBatch, Box<dyn Error>> {
-    Ok(lexical_batch()?
-        .replace_scope(
-            SearchScopeKey {
-                doc_surface: SearchScopeSurface::File,
-                repo_relative_path: RepoRelativePath::new("src/file_contains.rs"),
-            },
-            "scope:lexical-file-contains",
-            vec![lexical_chunk(
-                "chunk-file-contains",
-                "src/file_contains.rs",
-                "foo oo_ba file_contains_needle",
-                "text:file-contains",
-                "shape:file-contains",
-                29,
-            )?],
-            Vec::new(),
-        )
-        .replace_scope(
-            SearchScopeKey {
-                doc_surface: SearchScopeSurface::File,
-                repo_relative_path: RepoRelativePath::new("src/recency_a.rs"),
-            },
-            "scope:lexical-recency-a",
-            vec![lexical_chunk_with_source_repo(
-                "chunk-recency-a",
-                "src/recency_a.rs",
-                "shared_oracle_needle corp-a branch",
-                "text:recency-a",
-                "shape:recency-a",
-                33,
-                Some("corp-a"),
-            )?],
-            Vec::new(),
-        )
-        .replace_scope(
-            SearchScopeKey {
-                doc_surface: SearchScopeSurface::File,
-                repo_relative_path: RepoRelativePath::new("src/recency_gate.rs"),
-            },
-            "scope:lexical-recency-gate",
-            vec![lexical_chunk_with_source_repo(
-                "chunk-recency-a-gate",
-                "src/recency_gate.rs",
-                "shared_oracle_needle gate-a only",
-                "text:recency-gate",
-                "shape:recency-gate",
-                32,
-                Some("corp-a"),
-            )?],
-            Vec::new(),
-        )
-        .replace_scope(
-            SearchScopeKey {
-                doc_surface: SearchScopeSurface::File,
-                repo_relative_path: RepoRelativePath::new("src/recency_b.rs"),
-            },
-            "scope:lexical-recency-b",
-            vec![lexical_chunk_with_source_repo(
-                "chunk-recency-b",
-                "src/recency_b.rs",
-                "shared_oracle_needle corp-b branch",
-                "text:recency-b",
-                "shape:recency-b",
-                33,
-                Some("corp-b"),
-            )?],
-            Vec::new(),
-        ))
+    let batch = lexical_batch()?;
+    let batch = replace_fixture_file(
+        batch,
+        repo(),
+        revision(),
+        "src/file_contains.rs",
+        vec![lexical_chunk(
+            "chunk-file-contains",
+            "src/file_contains.rs",
+            "foo oo_ba file_contains_needle",
+            "text:file-contains",
+            "shape:file-contains",
+            29,
+        )?],
+        Vec::new(),
+    )?;
+    let batch = replace_fixture_file(
+        batch,
+        RepoId::new("corp-a")?,
+        revision(),
+        "src/recency_a.rs",
+        vec![lexical_chunk_with_source_repo(
+            "chunk-recency-a",
+            "src/recency_a.rs",
+            "shared_oracle_needle corp-a branch",
+            "text:recency-a",
+            "shape:recency-a",
+            33,
+            Some("corp-a"),
+        )?],
+        Vec::new(),
+    )?;
+    let batch = replace_fixture_file(
+        batch,
+        RepoId::new("corp-a")?,
+        revision(),
+        "src/recency_gate.rs",
+        vec![lexical_chunk_with_source_repo(
+            "chunk-recency-a-gate",
+            "src/recency_gate.rs",
+            "shared_oracle_needle gate-a only",
+            "text:recency-gate",
+            "shape:recency-gate",
+            32,
+            Some("corp-a"),
+        )?],
+        Vec::new(),
+    )?;
+    replace_fixture_file(
+        batch,
+        RepoId::new("corp-b")?,
+        revision(),
+        "src/recency_b.rs",
+        vec![lexical_chunk_with_source_repo(
+            "chunk-recency-b",
+            "src/recency_b.rs",
+            "shared_oracle_needle corp-b branch",
+            "text:recency-b",
+            "shape:recency-b",
+            33,
+            Some("corp-b"),
+        )?],
+        Vec::new(),
+    )
 }
 
 fn lexical_batch_two() -> Result<SearchCorpusBatch, Box<dyn Error>> {
@@ -386,12 +382,15 @@ fn lexical_batch_two() -> Result<SearchCorpusBatch, Box<dyn Error>> {
         generation_two(),
         "manifest:lexical-v2",
     )
-    .replace_scope(
-        SearchScopeKey {
-            doc_surface: SearchScopeSurface::File,
-            repo_relative_path: RepoRelativePath::new("src/lib.rs"),
-        },
-        "scope:lexical-lib-v2",
+    .source_event(lexical_event(
+        "fixture:sdk-lexical-v2",
+        Some("fixture:sdk-lexical-v1"),
+    ));
+    let batch = replace_fixture_file(
+        batch,
+        repo(),
+        revision(),
+        "src/lib.rs",
         vec![
             lexical_chunk(
                 "chunk-dirty-v2",
@@ -411,13 +410,12 @@ fn lexical_batch_two() -> Result<SearchCorpusBatch, Box<dyn Error>> {
             )?,
         ],
         vec![symbol_record()?],
-    )
-    .replace_scope(
-        SearchScopeKey {
-            doc_surface: SearchScopeSurface::File,
-            repo_relative_path: RepoRelativePath::new("src/gamma.rs"),
-        },
-        "scope:lexical-gamma",
+    )?;
+    let batch = replace_fixture_file(
+        batch,
+        repo(),
+        revision(),
+        "src/gamma.rs",
         vec![lexical_chunk(
             "gamma",
             "src/gamma.rs",
@@ -427,8 +425,37 @@ fn lexical_batch_two() -> Result<SearchCorpusBatch, Box<dyn Error>> {
             14,
         )?],
         Vec::new(),
-    );
+    )?;
     Ok(with_semantic_sources_from_chunks(batch))
+}
+
+fn lexical_event(event_id: &str, expected_base_event_id: Option<&str>) -> SourcePublicationEvent {
+    SourcePublicationEvent {
+        stream_id: "fixture:sdk-frontdoor".to_string(),
+        event_id: event_id.to_string(),
+        expected_base_event_id: expected_base_event_id.map(str::to_string),
+        payload_sha256: [0; 32], // The SDK stamps the committed payload.
+    }
+}
+
+fn replace_fixture_file(
+    batch: SearchCorpusBatch,
+    source_repo_id: RepoId,
+    revision_id: RevisionId,
+    path: &str,
+    chunks: Vec<ChunkRecord>,
+    symbols: Vec<SymbolRecord>,
+) -> Result<SearchCorpusBatch, Box<dyn Error>> {
+    let scope = fixture_source_scope_v1(
+        SourceFileKey {
+            source_repo_id,
+            repo_relative_path: RepoRelativePath::new(path),
+        },
+        revision_id,
+        chunks,
+        symbols,
+    )?;
+    Ok(batch.replace_scope(scope.coverage, scope.chunks, scope.symbols))
 }
 
 fn with_semantic_sources_from_chunks(mut batch: SearchCorpusBatch) -> SearchCorpusBatch {
@@ -653,22 +680,24 @@ fn rev_at_time_head_pin() -> GenerationPin {
 fn rev_at_time_lexical_batch(
     revision_id: RevisionId,
     generation: ManifestGeneration,
+    event_id: &str,
+    expected_base_event_id: Option<&str>,
     path: &str,
     candidate_id: &str,
     snippet: &str,
 ) -> Result<SearchCorpusBatch, Box<dyn Error>> {
-    Ok(SearchCorpusBatch::replace_generation(
+    let batch = SearchCorpusBatch::replace_generation(
         repo(),
-        revision_id,
+        revision_id.clone(),
         generation,
         format!("manifest:rev-at-time:{}:{}", path, generation.get()),
     )
-    .replace_scope(
-        SearchScopeKey {
-            doc_surface: SearchScopeSurface::File,
-            repo_relative_path: RepoRelativePath::new(path),
-        },
-        format!("scope:rev-at-time:{path}"),
+    .source_event(lexical_event(event_id, expected_base_event_id));
+    replace_fixture_file(
+        batch,
+        repo(),
+        revision_id,
+        path,
         vec![lexical_chunk(
             candidate_id,
             path,
@@ -680,7 +709,7 @@ fn rev_at_time_lexical_batch(
             })?,
         )?],
         Vec::new(),
-    ))
+    )
 }
 
 fn rev_at_time_history_batch() -> Result<quanta_index_sdk::HistoryBatch, Box<dyn Error>> {
@@ -2951,6 +2980,8 @@ fn sdk_text_frontdoor_rebinds_rev_at_time_generation_truth() -> TestResult {
     let ancestor_batch = rev_at_time_lexical_batch(
         rev_at_time_ancestor_revision(),
         rev_at_time_ancestor_generation(),
+        "fixture:rev-at-time:ancestor",
+        None,
         "src/legacy.rs",
         "chunk-rev-at-time-ancestor",
         "needle_token legacy_choice",
@@ -2959,6 +2990,8 @@ fn sdk_text_frontdoor_rebinds_rev_at_time_generation_truth() -> TestResult {
     let head_batch = rev_at_time_lexical_batch(
         rev_at_time_head_revision(),
         rev_at_time_head_generation(),
+        "fixture:rev-at-time:head",
+        Some("fixture:rev-at-time:ancestor"),
         "src/head.rs",
         "chunk-rev-at-time-head",
         "needle_token head_choice",
@@ -3779,8 +3812,8 @@ fn sdk_tombstone_only_generation_replaces_active_composite_and_removes_both_quer
                     .any(|candidate| candidate.candidate_id == "alpha")
         },
     )?;
-    let removed_scope = SearchScopeKey {
-        doc_surface: SearchScopeSurface::File,
+    let removed_scope = SourceFileKey {
+        source_repo_id: repo(),
         repo_relative_path: RepoRelativePath::new("src/alpha.rs"),
     };
     let tombstone_only = SearchCorpusBatch::delta(
@@ -3790,6 +3823,10 @@ fn sdk_tombstone_only_generation_replaces_active_composite_and_removes_both_quer
         generation(),
         "manifest:lexical-tombstone-only",
     )
+    .source_event(lexical_event(
+        "fixture:sdk-lexical-tombstone-v2",
+        Some("fixture:sdk-lexical-v1"),
+    ))
     .tombstone_scope(removed_scope)
     .tombstone_semantic_scope(
         first_generation

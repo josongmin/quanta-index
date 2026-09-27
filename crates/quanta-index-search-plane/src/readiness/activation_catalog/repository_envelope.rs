@@ -1,6 +1,7 @@
-//! One durable replacement contains all roots and source-event lineage for a
-//! repository. Counts and bytes are bounded; retained event identities never
-//! expire or get evicted to make room for a new publication.
+//! One durable replacement binds repository roots and source-event lineage.
+//!
+//! Counts and bytes are bounded; retained event identities never expire or get
+//! evicted to make room for a new publication.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -416,12 +417,14 @@ pub(super) fn read_bounded(path: &Path) -> Result<Vec<u8>, CoreError> {
     if !metadata.is_file() {
         return Err(corrupt("nonregular envelope"));
     }
-    if metadata.len() > MAX_ENVELOPE_BYTES as u64 {
+    if metadata.len()
+        > u64::try_from(MAX_ENVELOPE_BYTES).map_err(|error| corrupt(error.to_string()))?
+    {
         return Err(capacity("persisted byte limit"));
     }
     let mut bytes = Vec::new();
     let _read = file
-        .take((MAX_ENVELOPE_BYTES + 1) as u64)
+        .take(u64::try_from(MAX_ENVELOPE_BYTES + 1).map_err(|error| corrupt(error.to_string()))?)
         .read_to_end(&mut bytes)
         .map_err(|error| corrupt(error.to_string()))?;
     if bytes.len() > MAX_ENVELOPE_BYTES {

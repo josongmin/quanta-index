@@ -29,12 +29,10 @@ use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
     BatchIngestMode, ChunkId, ChunkRecord, ManifestGeneration, RepoRelativePath,
     SearchPlaneErrorCodeV2, SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcResponse,
-    SearchScopeKey, SearchScopeSurface,
 };
 use quanta_index_core::{
     BATCH_DIGEST_MISMATCH_CODE, INGEST_RESOURCE_BUDGET_EXCEEDED_CODE, IngestResourcePolicy,
 };
-use quanta_index_ipc::stamp_batch_digest_v1;
 use quanta_index_sdk::{ConnectOptions, QuantaIndex, SdkError, SearchCorpusBatch};
 use quanta_index_searchd_harness::{self as e2e_harness, semantic_source_scopes_for_chunk_records};
 
@@ -187,20 +185,20 @@ fn every_preflight_refusal_over_raw_ipc_changes_nothing() -> TestResult {
     // Shape: ReplaceGeneration names a base.
     let mut replace_with_base = good.clone();
     replace_with_base.base_generation = Some(ManifestGeneration::new(0));
-    stamp_batch_digest_v1(&mut replace_with_base)?;
+    rt.issue_fixture_source_event(&mut replace_with_base)?;
     refused_with_one_frozen_row(&mut rt, "replace+base", replace_with_base, SHAPE_INVALID)?;
 
     // Shape: Delta names no base.
     let mut delta_without_base = good.clone();
     delta_without_base.mode = BatchIngestMode::Delta;
-    stamp_batch_digest_v1(&mut delta_without_base)?;
+    rt.issue_fixture_source_event(&mut delta_without_base)?;
     refused_with_one_frozen_row(&mut rt, "delta-no-base", delta_without_base, SHAPE_INVALID)?;
 
     // Shape: the base cannot precede its target.
     let mut base_not_older = good.clone();
     base_not_older.mode = BatchIngestMode::Delta;
     base_not_older.base_generation = Some(good.generation);
-    stamp_batch_digest_v1(&mut base_not_older)?;
+    rt.issue_fixture_source_event(&mut base_not_older)?;
     refused_with_one_frozen_row(&mut rt, "base>=target", base_not_older, SHAPE_INVALID)?;
 
     // Cross-track preflight: a delta on a base nothing ever sealed.
@@ -208,7 +206,7 @@ fn every_preflight_refusal_over_raw_ipc_changes_nothing() -> TestResult {
     unsealed_base.generation = ManifestGeneration::new(good.generation.get().saturating_add(1));
     unsealed_base.mode = BatchIngestMode::Delta;
     unsealed_base.base_generation = Some(good.generation);
-    stamp_batch_digest_v1(&mut unsealed_base)?;
+    rt.issue_fixture_source_event(&mut unsealed_base)?;
     refused_with_one_frozen_row(
         &mut rt,
         "unsealed-base",
@@ -241,7 +239,7 @@ fn every_preflight_refusal_over_raw_ipc_changes_nothing() -> TestResult {
     // The daemon is unharmed: the well-formed batch applies and is recorded.
     let applied = rt.ingest_once(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(good))?;
     match &applied {
-        SearchPlaneIngestIpcResponse::SearchCorpusReceipt(receipt) if receipt.applied => {}
+        SearchPlaneIngestIpcResponse::SearchCorpusReceipt(outcome) if outcome.receipt.applied => {}
         SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
         | SearchPlaneIngestIpcResponse::Error(_)
         | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
@@ -288,7 +286,7 @@ fn sdk_batch(
     base_generation: Option<u64>,
     path: &str,
     text: &str,
-) -> Result<SearchCorpusBatch<false>, Box<dyn Error>> {
+) -> Result<SearchCorpusBatch<true>, Box<dyn Error>> {
     let manifest_digest = format!("manifest:sdk-preflight:{generation}");
     let batch = match base_generation {
         Some(base) => SearchCorpusBatch::delta(
@@ -319,17 +317,19 @@ fn sdk_batch(
         source_repo_id: None,
     };
     let semantic_scopes = semantic_source_scopes_for_chunk_records(std::slice::from_ref(&chunk));
+    let scope = rt.fixture_source_scope(
+        quanta_index_contract::SourceFileKey {
+            source_repo_id: rt.repo(),
+            repo_relative_path: RepoRelativePath::new(path),
+        },
+        rt.revision(),
+        vec![chunk],
+        Vec::new(),
+    )?;
     let mut batch = batch
-        .replace_scope(
-            SearchScopeKey {
-                doc_surface: SearchScopeSurface::File,
-                repo_relative_path: RepoRelativePath::new(path),
-            },
-            format!("scope:{path}"),
-            vec![chunk],
-            Vec::new(),
-        )
-        .without_seal();
+        .source_event(rt.text_search_corpus_batch(path, text)?.source_event)
+        .replace_scope(scope.coverage, scope.chunks, scope.symbols);
+
     for scope in semantic_scopes {
         batch = batch.replace_semantic_scope(
             scope.scope,
@@ -406,16 +406,22 @@ fn sdk_publishes_carry_the_canonical_digest_and_refusals_record_nothing() -> Tes
     };
     let semantic_scopes =
         semantic_source_scopes_for_chunk_records(std::slice::from_ref(&extra_chunk));
+    let extra_scope = rt.fixture_source_scope(
+        quanta_index_contract::SourceFileKey {
+            source_repo_id: rt.repo(),
+            repo_relative_path: RepoRelativePath::new("src/sdk_big_two.rs"),
+        },
+        rt.revision(),
+        vec![extra_chunk],
+        Vec::new(),
+    )?;
     let mut oversized = sdk_batch(&rt, 1, None, "src/sdk_big.rs", "fn sdk_big() {}")?
         .replace_scope(
-            SearchScopeKey {
-                doc_surface: SearchScopeSurface::File,
-                repo_relative_path: RepoRelativePath::new("src/sdk_big_two.rs"),
-            },
-            "scope:sdk_big_two",
-            vec![extra_chunk],
-            Vec::new(),
+            extra_scope.coverage,
+            extra_scope.chunks,
+            extra_scope.symbols,
         );
+
     for scope in semantic_scopes {
         oversized = oversized.replace_semantic_scope(
             scope.scope,

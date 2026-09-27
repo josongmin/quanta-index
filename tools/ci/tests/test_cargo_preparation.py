@@ -71,8 +71,8 @@ def test_one_preparation_preserves_original_selection_and_reuses_both_commands(
         if row["name"] in {"rust-build", "metadata", "rust-collection"}
     ] == ["rust-build", "metadata", "rust-collection"]
     if rail == "sdk":
-        # Cargo unifies dependency features across selected packages; retain
-        # independent commands until joint-build equivalence is established.
+        # Searchd remains a separate build because a joint build changes its
+        # dependency feature graph. The selected test build supplies the runner.
         builds = [argv[3:] for argv, _ in calls if argv[3:4] == ["build"]]
         assert builds == [
             [
@@ -83,15 +83,36 @@ def test_one_preparation_preserves_original_selection_and_reuses_both_commands(
                 "quanta-index-searchd",
                 "--locked",
             ],
-            [
-                "build",
-                "-p",
-                "quanta-index-retrieval-bench",
-                "--bin",
-                "quanta-index-retrieval-bench",
-                "--locked",
-            ],
         ]
+
+
+@pytest.mark.parametrize("mutation", ["missing", "wrong_package", "wrong_path", "wrong_kind", "extra"])
+def test_sdk_runner_must_be_in_selected_native_build(fake_execution, mutation):
+    out, runner, _ = fake_execution
+    portable_proof.produce("sdk", out)
+    build = json.loads((out / "rust-build.stdout").read_bytes())
+    metadata = (out / "metadata.stdout").read_bytes()
+    collection = (out / "rust-collection.stdout").read_bytes()
+    assert portable_proof.verify_reused_build(
+        json.dumps(build).encode(), metadata, collection,
+        workspace_root=portable_proof.ROOT, required_non_test_binary=runner,
+    )
+    entries = build["rust-build-meta"]["non-test-binaries"]
+    if mutation == "missing":
+        del build["rust-build-meta"]["non-test-binaries"]
+    elif mutation == "wrong_package":
+        entries["other-package"] = entries.pop("fixture-retrieval-package")
+    elif mutation == "wrong_path":
+        entries["fixture-retrieval-package"][0]["path"] = "debug/other-runner"
+    elif mutation == "wrong_kind":
+        entries["fixture-retrieval-package"][0]["kind"] = "test"
+    else:
+        entries["fixture-retrieval-package"].append(entries["fixture-retrieval-package"][0])
+    with pytest.raises(ValueError, match="SDK runner is absent"):
+        portable_proof.verify_reused_build(
+            json.dumps(build).encode(), metadata, collection,
+            workspace_root=portable_proof.ROOT, required_non_test_binary=runner,
+        )
 
 
 @pytest.mark.parametrize("name", ["rust-build.stdout", "metadata.stdout"])

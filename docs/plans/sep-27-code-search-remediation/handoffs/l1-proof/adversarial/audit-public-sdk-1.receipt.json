@@ -1,0 +1,62 @@
+{
+  "after": "/tmp/quanta-l1-rca.h1y4pja7/audit-public-sdk-1.after.json",
+  "artifacts": [
+    {
+      "features": [],
+      "fresh": false,
+      "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-sdk#0.1.0",
+      "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-integration-lane/debug/deps/l1_daemon_query_contract-07fb004ef35c4dcd",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 1,
+        "opt_level": "0",
+        "overflow_checks": true,
+        "test": true
+      },
+      "sha256": "ea9e99103c3cef6dc1b43c6471c8e706e72cc3ea1125701301e6d0f30e562949",
+      "target": {
+        "crate_types": [
+          "bin"
+        ],
+        "doc": false,
+        "doctest": false,
+        "edition": "2024",
+        "kind": [
+          "test"
+        ],
+        "name": "l1_daemon_query_contract",
+        "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-sdk/tests/l1_daemon_query_contract.rs",
+        "test": true
+      }
+    }
+  ],
+  "before": "/tmp/quanta-l1-rca.h1y4pja7/audit-public-sdk-1.before.json",
+  "classification": "UNCLASSIFIED: inspect execution count, outcome, inputs and source drift before promoting evidence",
+  "command": [
+    "./scripts/cargow",
+    "test",
+    "--locked",
+    "-j",
+    "2",
+    "-p",
+    "quanta-index-sdk",
+    "--test",
+    "l1_daemon_query_contract",
+    "--message-format=json",
+    "--",
+    "--ignored"
+  ],
+  "ended_unix": 1790463896.11266,
+  "executed_result_lines": [
+    "running 1 test",
+    "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.88s"
+  ],
+  "exit_code": 101,
+  "head_changed": false,
+  "log": "/tmp/quanta-l1-rca.h1y4pja7/audit-public-sdk-1.log",
+  "log_sha256": "7bab04045a12dfc0108ee306e5ac385ba688c9cc0f4ed76fe73a159d57782ba5",
+  "source_changed": [
+    "crates/quanta-index-sdk/tests/l1_daemon_query_contract.rs"
+  ],
+  "started_unix": 1790463852.783456
+}

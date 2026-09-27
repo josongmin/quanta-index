@@ -1,0 +1,817 @@
+--- a/crates/quanta-index-lexical/src/query_admission.rs
++++ b/crates/quanta-index-lexical/src/query_admission.rs
+@@ -46,8 +46,11 @@
+             )]
+             match filter {
+                 LqFilter::Content { leaf } => admit_leaf(query, leaf, regex_policy, budget)?,
+-                LqFilter::Repo { pattern, .. } | LqFilter::File { pattern, .. } => {
+-                    admit_scope_regex(pattern)?;
++                LqFilter::Repo { pattern, .. } => {
++                    admit_query_scope_regex(query, pattern, "repo")?;
++                }
++                LqFilter::File { pattern, .. } => {
++                    admit_query_scope_regex(query, pattern, "file")?;
+                 }
+                 // Remaining filters have no content primitive. Their scalar
+                 // contracts are validated by domain/filter planning above.
+@@ -203,8 +206,17 @@
+     Ok(())
+ }
+ 
++fn admit_query_scope_regex(query: &LqQuery, source: &str, name: &str) -> Result<(), CoreError> {
++    if TantivySearcher::uses_unindexed_scan(&query.options) {
++        let _executor = TantivySearcher::manual_filter_regex(source, name)?;
++        Ok(())
++    } else {
++        admit_scope_regex(source)
++    }
++}
++
+ fn admit_scope_regex(source: &str) -> Result<(), CoreError> {
+-    // Scope execution uses Tantivy's regex grammar. The field ordinal does not
++    // Indexed scope execution uses Tantivy's grammar. The field ordinal does not
+     // affect compilation and this constructs no index or reader.
+     let _query =
+         tantivy::query::RegexQuery::from_pattern(source, tantivy::schema::Field::from_field_id(0))
+--- a/crates/quanta-index-lexical/src/searcher/manual_scan.rs
++++ b/crates/quanta-index-lexical/src/searcher/manual_scan.rs
+@@ -95,7 +95,6 @@
+     }
+ 
+     pub(crate) fn manual_filter_regex(
+-        &self,
+         pattern: &str,
+         filter_name: &str,
+     ) -> Result<RegexExecutor, CoreError> {
+@@ -227,7 +226,7 @@
+         scope: LqFileScope,
+         repo_relative_path: &str,
+     ) -> Result<bool, CoreError> {
+-        let executor = self.manual_filter_regex(pattern, "file")?;
++        let executor = Self::manual_filter_regex(pattern, "file")?;
+         Ok(Self::file_filter_scope_matches(
+             &executor,
+             scope,
+@@ -509,7 +508,7 @@
+                             .to_string(),
+                     });
+                 }
+-                let executor = self.manual_filter_regex(pattern, "repo")?;
++                let executor = Self::manual_filter_regex(pattern, "repo")?;
+                 Ok(executor.verify(source_repo_id.as_bytes()))
+             }
+             LqFilter::File { pattern, scope } => {
+--- a/crates/quanta-index-lexical/src/searcher/prepare.rs
++++ b/crates/quanta-index-lexical/src/searcher/prepare.rs
+@@ -49,13 +49,13 @@
+                                 .into(),
+                         });
+                     }
+-                    scope_filters.push(CoverageScopeFilter::Repo(
+-                        self.manual_filter_regex(pattern, "repo")?,
+-                    ));
++                    scope_filters.push(CoverageScopeFilter::Repo(Self::manual_filter_regex(
++                        pattern, "repo",
++                    )?));
+                 }
+                 LqFilter::File { pattern, scope } => {
+                     scope_filters.push(CoverageScopeFilter::File(
+-                        self.manual_filter_regex(pattern, "file")?,
++                        Self::manual_filter_regex(pattern, "file")?,
+                         *scope,
+                     ));
+                 }
+--- a/crates/quanta-index-lexical/tests/l1_query_domain_window.rs
++++ b/crates/quanta-index-lexical/tests/l1_query_domain_window.rs
+@@ -183,6 +183,39 @@
+         directives: Vec::new(),
+         source_span: LqSpan::eof(0),
+     }
++}
++
++#[test]
++fn l1_manual_scope_admission_preserves_supported_regex_grammar() -> TestResult {
++    let (_dir, searcher) = fixture()?;
++    for pattern in [r"^src/file_00\.rs$", r"\bsrc/file_00\.rs\b"] {
++        let mut request = query("needle", true, false);
++        request.filters.push(LqFilter::File {
++            pattern: pattern.into(),
++            scope: quanta_index_contract::LqFileScope::PathOnly,
++        });
++        let rows = searcher.search(&request, 10, &RequestBudgetV1::unbounded())?;
++        if rows.len() != 1
++            || rows
++                .first()
++                .is_none_or(|row| row.repo_relative_path.as_str() != "src/file_00.rs")
++        {
++            return Err(format!("manual scope {pattern:?} lost its fixture row: {rows:?}").into());
++        }
++    }
++    for manual in [false, true] {
++        let mut request = query("needle", manual, false);
++        request.filters.push(LqFilter::File {
++            pattern: "[".into(),
++            scope: quanta_index_contract::LqFileScope::PathOnly,
++        });
++        require_code(
++            searcher.search(&request, 10, &RequestBudgetV1::unbounded()),
++            SearchPlaneErrorCodeV2::InvalidRequest,
++            "malformed scope regex",
++        )?;
++    }
++    Ok(())
+ }
+ 
+ fn require_code<T: Debug>(
+--- a/crates/quanta-index-search-plane/src/query_dispatcher/planning.rs
++++ b/crates/quanta-index-search-plane/src/query_dispatcher/planning.rs
+@@ -8,8 +8,8 @@
+     SearchPlaneTrackKind, TextQueryRequest,
+ };
+ use quanta_index_core::{
+-    CoreError, LexicalEndpoint, LexicalPolicy, QueryRouteV1, ReadDomainV1, RequestBudgetV1,
+-    RequiredDomainsV1, declare_required_domains_v1,
++    CoreError, HybridFilterPlanV1, LexicalEndpoint, LexicalPolicy, QueryRouteV1, ReadDomainV1,
++    RequestBudgetV1, RequiredDomainsV1, declare_required_domains_v1,
+ };
+ 
+ use crate::lower_lexical_text_query;
+@@ -21,6 +21,31 @@
+ use crate::query_dispatcher::selection::resolve_lexical_request_pin;
+ 
+ impl SearchPlaneDispatcher {
++    /// Admit the original lexical request before composing language constraints.
++    /// Composite routes must not erase invalid primitives through a contradiction.
++    pub(super) fn prepare_lexical_language_query(
++        &self,
++        query: LqQuery,
++        constraints: &QueryConstraintSetV1,
++        budget: &RequestBudgetV1,
++    ) -> Result<PreparedLanguageQueryV1, CoreError> {
++        let plan = LexicalPolicy::plan_query(&query, constraints, LexicalEndpoint::Text)?;
++        self.lex_opener.preflight_query_primitives(&plan, budget)?;
++        prepare_language_query_v1(query, constraints)
++    }
++
++    /// Shared lexical plan for hybrid search, seed search and hybrid explain.
++    pub(super) fn plan_hybrid_lexical_query(
++        &self,
++        request: &TextQueryRequest,
++        budget: &RequestBudgetV1,
++    ) -> Result<(HybridFilterPlanV1, PreparedLanguageQueryV1), CoreError> {
++        let query = lower_lexical_text_query(request)?;
++        let filters = HybridFilterPlanV1::plan(&query)?;
++        let prepared = self.prepare_lexical_language_query(query, &request.constraints, budget)?;
++        Ok((filters, prepared))
++    }
++
+     /// Lower a text request into the one executable lexical plan: lowered
+     /// query, composed constraints, the generation it runs against and the
+     /// domains it declares.
+--- a/crates/quanta-index-search-plane/src/query_dispatcher/routes/explain.rs
++++ b/crates/quanta-index-search-plane/src/query_dispatcher/routes/explain.rs
+@@ -18,16 +18,13 @@
+ };
+ use quanta_index_core::{
+     CoreError, ExplainQueryPort, HybridFilterPlanV1, HybridOrchestratorPolicy,
+-    LexicalCandidateExplanationV1, LexicalPageSpec, LexicalPolicy, LexicalScoreEngineV1,
+-    LexicalScoreTraceV1, LexicalSearcher, QueryRouteV1, RequestBudgetV1, SemanticSearcher,
+-    validate_query_top_k,
++    LexicalCandidateExplanationV1, LexicalPageSpec, LexicalScoreEngineV1, LexicalScoreTraceV1,
++    LexicalSearcher, QueryRouteV1, RequestBudgetV1, SemanticSearcher, validate_query_top_k,
+ };
+ 
+-use crate::lower_lexical_text_query;
+ use crate::query_dispatcher::dense_admission::admit_dense_lane_v1;
+ use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
+ use crate::query_dispatcher::execution_trace::{LaneExecutionRecorderV1, LaneExecutionSummaryV1};
+-use crate::query_dispatcher::planning::prepare_language_query_v1;
+ use crate::query_dispatcher::ranking::stabilize_ranked_candidates;
+ use crate::query_dispatcher::read_view::{ReadViewRequestV1, attach_read_view_trace};
+ use crate::query_dispatcher::window::hybrid_probe_top_k_v1;
+@@ -166,7 +163,7 @@
+                             .to_string(),
+                     ));
+                 };
+-                let lanes = HybridLanePlanV1::prepare(&pinned_query, self.hybrid_fetch_floor)?;
++                let lanes = HybridLanePlanV1::prepare(self, &pinned_query, budget)?;
+                 let view = self.acquire_read_view(
+                     &ReadViewRequestV1::declare(
+                         "explain",
+@@ -245,9 +242,8 @@
+ /// The two lanes' plan exactly as the hybrid route prepares it.
+ ///
+ /// See `routes/hybrid.rs`: the lowered text query, its filter
+-/// classification for the dense lane, and the language-prepared query and
+-/// constraints both lanes run under. Kept step for step with the route so
+-/// the lanes an explain re-runs are the lanes the hybrid ran.
++/// classification for the dense lane, and the admitted query and constraints.
++/// The same planner serves every hybrid entry point.
+ struct HybridLanePlanV1 {
+     filter_plan: HybridFilterPlanV1,
+     query: quanta_index_contract::LqQuery,
+@@ -258,19 +254,17 @@
+ 
+ impl HybridLanePlanV1 {
+     fn prepare(
++        dispatcher: &SearchPlaneDispatcher,
+         text_query: &TextQueryRequest,
+-        fetch_floor: quanta_index_core::HybridFetchFloorPolicy,
++        budget: &RequestBudgetV1,
+     ) -> Result<Self, CoreError> {
+-        let lexical_query = lower_lexical_text_query(text_query)?;
+-        let filter_plan = HybridFilterPlanV1::plan(&lexical_query)?;
+-        let prepared = prepare_language_query_v1(lexical_query, &text_query.constraints)?;
+-        LexicalPolicy::validate_query(&prepared.query)?;
++        let (filter_plan, prepared) = dispatcher.plan_hybrid_lexical_query(text_query, budget)?;
+         Ok(Self {
+             filter_plan,
+             query: prepared.query,
+             constraints: prepared.constraints,
+             force_empty: prepared.force_empty,
+-            fetch_floor,
++            fetch_floor: dispatcher.hybrid_fetch_floor,
+         })
+     }
+ }
+--- a/crates/quanta-index-search-plane/src/query_dispatcher/routes/hybrid.rs
++++ b/crates/quanta-index-search-plane/src/query_dispatcher/routes/hybrid.rs
+@@ -8,15 +8,13 @@
+     TextQueryRequest,
+ };
+ use quanta_index_core::{
+-    CoreError, HybridFilterPlanV1, HybridOrchestratorPolicy, HybridQueryPort, LexicalPageSpec,
+-    LexicalPolicy, QueryRouteV1, RequestBudgetV1,
++    CoreError, HybridOrchestratorPolicy, HybridQueryPort, LexicalPageSpec, QueryRouteV1,
++    RequestBudgetV1,
+ };
+ 
+-use crate::lower_lexical_text_query;
+ use crate::query_dispatcher::dense_admission::admit_dense_lane_v1;
+ use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
+ use crate::query_dispatcher::execution_trace::{LaneExecutionRecorderV1, LaneExecutionSummaryV1};
+-use crate::query_dispatcher::planning::prepare_language_query_v1;
+ use crate::query_dispatcher::ranking::stabilize_ranked_candidates;
+ use crate::query_dispatcher::read_view::{ReadViewRequestV1, attach_read_view_trace};
+ use crate::query_dispatcher::selection::SemanticSelection;
+@@ -90,10 +88,8 @@
+         let pin = selection.pin.clone();
+         let mut stage_timings = StageTimings::new(self.query_stage_observation, 7);
+         let prepare_started = self.query_stage_observation.start();
+-        let lexical_query = lower_lexical_text_query(text_query)?;
+-        let filter_plan = HybridFilterPlanV1::plan(&lexical_query)?;
+-        let prepared_language = prepare_language_query_v1(lexical_query, &text_query.constraints)?;
+-        LexicalPolicy::validate_query(&prepared_language.query)?;
++        let (filter_plan, prepared_language) =
++            self.plan_hybrid_lexical_query(text_query, budget)?;
+         stage_timings.record_elapsed(QueryStageKindV1::HybridPrepare, prepare_started, 1, None);
+         let view_started = self.query_stage_observation.start();
+         let view = self.acquire_read_view(
+--- a/crates/quanta-index-search-plane/src/query_dispatcher/routes/hybrid_seed.rs
++++ b/crates/quanta-index-search-plane/src/query_dispatcher/routes/hybrid_seed.rs
+@@ -6,15 +6,13 @@
+     CandidateCountV1, EarlyStopReason, HybridSeedQueryRequest, HybridSeedQueryResponse, LaneTraceV1,
+ };
+ use quanta_index_core::{
+-    CoreError, DenseAdmissionOutcomeV1, HybridFilterPlanV1, HybridOrchestratorPolicy,
+-    LexicalPageSpec, LexicalPolicy, QueryRouteV1, RequestBudgetV1, SemanticSearchHitV1,
+-};
+-
+-use crate::lower_lexical_text_query;
++    CoreError, DenseAdmissionOutcomeV1, HybridOrchestratorPolicy, LexicalPageSpec, QueryRouteV1,
++    RequestBudgetV1, SemanticSearchHitV1,
++};
++
+ use crate::query_dispatcher::dense_admission::admit_dense_lane_v1;
+ use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
+ use crate::query_dispatcher::execution_trace::LaneExecutionRecorderV1;
+-use crate::query_dispatcher::planning::prepare_language_query_v1;
+ use crate::query_dispatcher::ranking::{
+     stabilize_ranked_candidates, stabilize_semantic_seed_hits_v1,
+ };
+@@ -45,11 +43,8 @@
+         let selection =
+             resolve_hybrid_seed_request_selection(self.activation_catalog.as_ref(), request)?;
+         let pin = selection.pin.clone();
+-        let lexical_query = lower_lexical_text_query(&request.text_query)?;
+-        let filter_plan = HybridFilterPlanV1::plan(&lexical_query)?;
+-        let prepared_language =
+-            prepare_language_query_v1(lexical_query, &request.text_query.constraints)?;
+-        LexicalPolicy::validate_query(&prepared_language.query)?;
++        let (filter_plan, prepared_language) =
++            self.plan_hybrid_lexical_query(&request.text_query, budget)?;
+         let view = self.acquire_read_view(
+             &ReadViewRequestV1::declare(
+                 "hybrid seed",
+--- a/crates/quanta-index-search-plane/src/query_dispatcher/routes/semantic.rs
++++ b/crates/quanta-index-search-plane/src/query_dispatcher/routes/semantic.rs
+@@ -7,14 +7,14 @@
+     SemanticQueryResponse,
+ };
+ use quanta_index_core::{
+-    CoreError, LexicalPageSpec, LexicalPolicy, QueryRouteV1, RequestBudgetV1, SemanticPolicy,
+-    SemanticQueryPort, SemanticSearcher, validate_query_top_k,
++    CoreError, LexicalPageSpec, QueryRouteV1, RequestBudgetV1, SemanticPolicy, SemanticQueryPort,
++    SemanticSearcher, validate_query_top_k,
+ };
+ 
+ use crate::lower_lexical_text_query;
+ use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
+ use crate::query_dispatcher::execution_trace::LaneExecutionRecorderV1;
+-use crate::query_dispatcher::planning::{PreparedLanguageQueryV1, prepare_language_query_v1};
++use crate::query_dispatcher::planning::PreparedLanguageQueryV1;
+ use crate::query_dispatcher::ranking::stabilize_ranked_candidates;
+ use crate::query_dispatcher::read_view::{ReadViewRequestV1, attach_read_view_trace};
+ use crate::query_dispatcher::semantic_query::{
+@@ -71,7 +71,7 @@
+         let mut stage_timings = StageTimings::new(self.query_stage_observation, 6);
+         let prepare_started = self.query_stage_observation.start();
+         let scope_plan = match request.lexical_scope.as_ref() {
+-            Some(scope) => Some(plan_semantic_scope(request, scope)?),
++            Some(scope) => Some(plan_semantic_scope(self, request, scope, budget)?),
+             None => None,
+         };
+         let effective_constraints: QueryConstraintSetV1 = scope_plan.as_ref().map_or_else(
+@@ -236,8 +236,10 @@
+ /// under the shared public gate, constraints equal to the outer request's,
+ /// and the plan the lexical lane will run.
+ fn plan_semantic_scope(
++    dispatcher: &SearchPlaneDispatcher,
+     request: &SemanticQueryRequest,
+     scope: &quanta_index_contract::TextQueryRequest,
++    budget: &RequestBudgetV1,
+ ) -> Result<SemanticScopePlan, CoreError> {
+     let cap = validate_query_top_k(scope.top_k)?;
+     if scope.constraints != request.constraints {
+@@ -246,8 +248,8 @@
+         ));
+     }
+     let lowered_scope = lower_lexical_text_query(scope)?;
+-    let prepared = prepare_language_query_v1(lowered_scope, &request.constraints)?;
+-    LexicalPolicy::validate_query(&prepared.query)?;
++    let prepared =
++        dispatcher.prepare_lexical_language_query(lowered_scope, &request.constraints, budget)?;
+     Ok(SemanticScopePlan { cap, prepared })
+ }
+ 
+--- a/crates/quanta-index-search-plane/src/query_dispatcher/tests/execution_truth.rs
++++ b/crates/quanta-index-search-plane/src/query_dispatcher/tests/execution_truth.rs
+@@ -478,6 +478,63 @@
+     })
+ }
+ 
++// CASE-COVERS: CS-ENG-01 — every lexical lane admits primitives before a
++// language contradiction can erase execution, including composite routes.
++#[test]
++fn l1_composite_routes_admit_primitives_before_language_shortcut() -> TestResult {
++    let mut failures = Vec::new();
++    for constraints in [QueryConstraintSetV1::unconstrained(), rust_constraints()] {
++        for primitive in ["...", "\"!!!\"", "content:!!!"] {
++            let query = format!("lang:python {primitive}");
++            let requests = [
++                ("hybrid", hybrid_request(&query, constraints.clone())),
++                (
++                    "seed",
++                    seed_request(&query, constraints.clone(), Vec::new()),
++                ),
++                (
++                    "semantic scope",
++                    semantic_request(
++                        Some(text_query(&query, constraints.clone())),
++                        constraints.clone(),
++                    ),
++                ),
++                (
++                    "hybrid explain",
++                    explain_request(
++                        ExplainCandidateV1::Hybrid(hybrid_candidate_for("alpha")),
++                        Some(text_query(&query, constraints.clone())),
++                        Some("needle"),
++                    ),
++                ),
++            ];
++            for (route, request) in requests {
++                let lanes = truth_dispatcher(Vec::new(), Vec::new())?;
++                let response = lanes
++                    .dispatcher
++                    .dispatch(request, &RequestBudgetV1::unbounded());
++                let lexical = lanes.lexical.lock().map_err(|err| err.to_string())?;
++                if !matches!(
++                    &response,
++                    SearchPlaneQueryIpcResponse::Error(error)
++                        if error.code == quanta_index_contract::SearchPlaneErrorCodeV2::LexTextQueryNoTokens
++                ) || !lexical.opened_pins.is_empty()
++                    || lexical.primitive_queries.len() != 1
++                {
++                    failures.push(format!(
++                        "{route} {query:?} {constraints:?}: response={response:?}, opens={}, admissions={}",
++                        lexical.opened_pins.len(), lexical.primitive_queries.len(),
++                    ));
++                }
++            }
++        }
++    }
++    if !failures.is_empty() {
++        return Err(failures.join("\n").into());
++    }
++    Ok(())
++}
++
+ // CASE-COVERS: W10-R1 — the recorder counts invocations, never plans.
+ #[test]
+ fn recorder_counts_backend_calls_and_nothing_else() {
+--- a/crates/quanta-index-search-plane/src/query_dispatcher/tests/hybrid_filters.rs
++++ b/crates/quanta-index-search-plane/src/query_dispatcher/tests/hybrid_filters.rs
+@@ -294,7 +294,7 @@
+         Some(&[]),
+     )?;
+     let response = hybrid_response(lanes.dispatcher.dispatch(
+-        hybrid_request("repo:^other$ needle", 10),
++        hybrid_request("repo:other needle", 10),
+         &RequestBudgetV1::unbounded(),
+     ))?;
+     if !response.results.is_empty() {
+@@ -327,7 +327,7 @@
+     if calls.len() != 1
+         || !matches!(
+             calls.first().map(|(plan, _)| plan.filters.as_slice()),
+-            Some([LqFilter::Repo { pattern, .. }]) if pattern == "^other$"
++            Some([LqFilter::Repo { pattern, .. }]) if pattern == "other"
+         )
+     {
+         return Err(format!("the repo filter must reach the admission plan: {calls:?}").into());
+--- a/crates/quanta-index-sdk/tests/l1_daemon_query_contract.rs
++++ b/crates/quanta-index-sdk/tests/l1_daemon_query_contract.rs
+@@ -0,0 +1,300 @@
++//! CS-ENG-01 public query contract against an explicitly started, fresh daemon.
++//! Run with --ignored and QUANTA_INDEX_L1_TEST_STATE_ROOT set to its state root.
++//! Missing configuration fails; this test never substitutes a scripted peer.
++
++use std::collections::BTreeSet;
++use std::error::Error;
++
++use quanta_index_contract::lex::{
++    LanguageCode, SymbolKindCode, SymbolRecord, SymbolRelationship, SymbolSpan,
++};
++use quanta_index_contract::{
++    CandidateCountV1, ChunkId, ChunkRecord, GenerationPin, HybridQueryRequest,
++    HybridSeedQueryRequest, ManifestGeneration, QueryConstraintSetV1, RepoId, RepoRelativePath,
++    RevisionId, SearchPlaneErrorCodeV2, SemanticQueryRequest, SourceFileCoverage, SourceFileKey,
++    SourceFileRevision, SourcePublicationEvent, SymbolCoverage, SymbolId, SymbolQueryRequest,
++    TextQueryRequest, TextQuerySyntax, source_file_unit_set_sha256,
++};
++use quanta_index_sdk::{ConnectOptions, QuantaIndex, SdkError, SearchCorpusBatch};
++
++type TestResult = Result<(), Box<dyn Error>>;
++
++fn text(pin: &GenerationPin, query: &str, syntax: TextQuerySyntax) -> TextQueryRequest {
++    TextQueryRequest {
++        syntax,
++        query_text: query.into(),
++        constraints: QueryConstraintSetV1::unconstrained(),
++        generation: Some(pin.clone()),
++        generation_selector: None,
++        top_k: 10,
++        cursor: None,
++    }
++}
++
++fn symbol(request: TextQueryRequest) -> SymbolQueryRequest {
++    SymbolQueryRequest {
++        syntax: request.syntax,
++        query_text: request.query_text,
++        constraints: request.constraints,
++        generation: request.generation,
++        generation_selector: request.generation_selector,
++        top_k: request.top_k,
++        cursor: request.cursor,
++    }
++}
++
++fn remote<T: std::fmt::Debug>(
++    result: Result<T, SdkError>,
++    expected: SearchPlaneErrorCodeV2,
++) -> TestResult {
++    match result {
++        Err(SdkError::Remote { code, .. }) if code == expected => Ok(()),
++        other => Err(format!("expected remote {expected:?}, observed {other:?}").into()),
++    }
++}
++
++fn corpus(pin: &GenerationPin) -> Result<SearchCorpusBatch, Box<dyn Error>> {
++    let mut batch = SearchCorpusBatch::replace_generation(
++        pin.repo_id.clone(),
++        pin.revision_id.clone(),
++        pin.manifest_generation,
++        "l1-query-contract",
++    )
++    .source_event(SourcePublicationEvent {
++        stream_id: "l1-query-contract".into(),
++        event_id: "initial".into(),
++        expected_base_event_id: None,
++        payload_sha256: [0; 32],
++    });
++    for index in 0..3 {
++        let path = format!("src/item{index}.rs");
++        let language = LanguageCode::new("rust").map_err(str::to_string)?;
++        let chunks = vec![ChunkRecord {
++            chunk_id: ChunkId::new(format!("chunk-{index}")),
++            repo_relative_path: RepoRelativePath::new(&path),
++            language: language.clone(),
++            start_byte: 0,
++            end_byte: 14,
++            start_line: 1,
++            end_line: 1,
++            text: "fn needle() {}".into(),
++            structural: None,
++            parent_chunk_id: None,
++            source_repo_id: None,
++        }];
++        let symbols = vec![SymbolRecord {
++            symbol_id: SymbolId::new(format!("symbol-{index}")),
++            repo_relative_path: RepoRelativePath::new(&path),
++            language: language.clone(),
++            symbol_kind: SymbolKindCode::new("function").map_err(str::to_string)?,
++            symbol_kind_family: None,
++            local_name: "needle".into(),
++            qualified_name: "needle".into(),
++            signature: None,
++            visibility: None,
++            definition_span: SymbolSpan {
++                path: path.clone().into_boxed_str(),
++                byte_start: 0,
++                byte_end: 14,
++                line_start: 1,
++                line_end: 1,
++            },
++            container_qualified_name: None,
++            relationship: SymbolRelationship::Def,
++        }];
++        batch = batch.replace_scope(
++            SourceFileCoverage {
++                source: SourceFileRevision {
++                    file: SourceFileKey {
++                        source_repo_id: pin.repo_id.clone(),
++                        repo_relative_path: RepoRelativePath::new(path),
++                    },
++                    revision_id: pin.revision_id.clone(),
++                    // Fixed SHA-256 of the literal source above, independent of query execution.
++                    source_sha256: [
++                        21, 83, 55, 63, 254, 189, 205, 78, 236, 17, 93, 109, 224, 252, 133, 48, 83,
++                        142, 184, 81, 141, 228, 183, 111, 109, 93, 181, 104, 192, 232, 245, 85,
++                    ],
++                },
++                language,
++                producer_policy_sha256: [0x11; 32],
++                unit_set_sha256: source_file_unit_set_sha256(&chunks, &symbols)?,
++                text_admitted: true,
++                symbols: SymbolCoverage::Complete { symbol_count: 1 },
++            },
++            chunks,
++            symbols,
++        );
++    }
++    Ok(batch)
++}
++
++#[test]
++#[ignore = "requires a fresh daemon: set QUANTA_INDEX_L1_TEST_STATE_ROOT and run --ignored"]
++fn l1_real_daemon_sdk_domain_primitives_and_symbol_windows() -> TestResult {
++    let root = std::env::var_os("QUANTA_INDEX_L1_TEST_STATE_ROOT")
++        .ok_or("QUANTA_INDEX_L1_TEST_STATE_ROOT is required")?;
++    let client = QuantaIndex::connect(ConnectOptions::from_state_root(root))?;
++    let pin = GenerationPin::new(
++        RepoId::new("l1-public")?,
++        RevisionId::new("v1")?,
++        ManifestGeneration::new(1),
++    );
++    if client
++        .generations()
++        .active_head(pin.repo_id.clone(), pin.revision_id.clone())?
++        .is_some()
++    {
++        return Err("L1 process proof requires an unpublished fixture namespace".into());
++    }
++    let _published = client
++        .search_corpus()
++        .publish_and_activate(&corpus(&pin)?, None)?;
++    let expected_ids = BTreeSet::from([
++        "symbol-0".to_string(),
++        "symbol-1".to_string(),
++        "symbol-2".to_string(),
++    ]);
++    for syntax in [TextQuerySyntax::Native, TextQuerySyntax::Sourcegraph] {
++        let manual_scope = client.lexical().query_request(text(
++            &pin,
++            "index:no file:^src/item0.rs$ needle",
++            syntax,
++        ))?;
++        if manual_scope.results.len() != 1
++            || manual_scope
++                .results
++                .first()
++                .is_none_or(|row| row.candidate_id != "chunk-0")
++        {
++            return Err(format!("manual scope lost its source row: {manual_scope:?}").into());
++        }
++        for manual in ["", "index:no "] {
++            for sensitive in ["", "case:yes "] {
++                for projection in ["select:file", "select:path", "select:content", "type:file"] {
++                    remote(
++                        client.symbol().query_request(symbol(text(
++                            &pin,
++                            &format!("{manual}{sensitive}{projection} needle"),
++                            syntax,
++                        ))),
++                        SearchPlaneErrorCodeV2::InvalidRequest,
++                    )?;
++                }
++            }
++            let mut request = symbol(text(&pin, &format!("{manual}count:1 needle"), syntax));
++            let mut seen = BTreeSet::new();
++            for page in 0..3 {
++                let response = client.symbol().query_request(request.clone())?;
++                if response.results.len() != 1
++                    || response.window.candidate_count() != CandidateCountV1::Exact(3 - page)
++                    || response.window.has_more() != Some(page < 2)
++                {
++                    return Err(format!("invalid bounded Symbol window: {response:?}").into());
++                }
++                for row in response.results {
++                    if !seen.insert(row.candidate_id) {
++                        return Err("duplicate Symbol page row".into());
++                    }
++                }
++                if page == 0 {
++                    let mut wrong = request.clone();
++                    wrong.query_text.push_str(" case:yes");
++                    wrong.cursor = response.next_cursor.clone();
++                    remote(
++                        client.symbol().query_request(wrong),
++                        SearchPlaneErrorCodeV2::CursorContextMismatch,
++                    )?;
++                }
++                if (page < 2) != response.next_cursor.is_some() {
++                    return Err("incorrect Symbol continuation".into());
++                }
++                request.cursor = response.next_cursor;
++            }
++            if seen != expected_ids {
++                return Err(format!("Symbol page membership: {seen:?}").into());
++            }
++
++            let rust = QueryConstraintSetV1::from_languages([
++                LanguageCode::new("rust").map_err(str::to_string)?
++            ]);
++            let control = client.search().hybrid_request(HybridQueryRequest {
++                text_query: text(&pin, &format!("{manual}needle"), syntax),
++                semantic_query_text: "needle".into(),
++                generation: Some(pin.clone()),
++                generation_selector: None,
++                top_k: 10,
++            })?;
++            let hybrid_candidate = control
++                .results
++                .into_iter()
++                .next()
++                .ok_or("positive hybrid query returned no row")?;
++            for primitive in ["...", "\"!!!\"", "content:!!!"] {
++                let mut request = text(&pin, &format!("{manual}lang:python {primitive}"), syntax);
++                request.constraints = rust.clone();
++                let expected = SearchPlaneErrorCodeV2::LexTextQueryNoTokens;
++                remote(client.lexical().query_request(request.clone()), expected)?;
++                if primitive == "..." {
++                    remote(
++                        client.symbol().query_request(symbol(request.clone())),
++                        expected,
++                    )?;
++                }
++                remote(
++                    client.search().hybrid_request(HybridQueryRequest {
++                        text_query: request.clone(),
++                        semantic_query_text: "needle".into(),
++                        generation: Some(pin.clone()),
++                        generation_selector: None,
++                        top_k: 10,
++                    }),
++                    expected,
++                )?;
++                remote(
++                    client.search().hybrid_seed_request(HybridSeedQueryRequest {
++                        text_query: request.clone(),
++                        semantic_query_text: "needle".into(),
++                        generation: Some(pin.clone()),
++                        generation_selector: None,
++                        top_k: 10,
++                        dense_corpora: Vec::new(),
++                    }),
++                    expected,
++                )?;
++                remote(
++                    client.semantic().query_request(SemanticQueryRequest {
++                        query_text: "needle".into(),
++                        constraints: rust.clone(),
++                        generation: Some(pin.clone()),
++                        generation_selector: None,
++                        lexical_scope: Some(request.clone()),
++                        top_k: 10,
++                    }),
++                    expected,
++                )?;
++                remote(
++                    client.search().explain_hybrid_under_queries(
++                        pin.clone(),
++                        hybrid_candidate.clone(),
++                        request,
++                        "needle",
++                    ),
++                    expected,
++                )?;
++            }
++            let mut request = text(&pin, &format!("{manual}lang:python needle"), syntax);
++            request.constraints = rust;
++            let response = client.lexical().query_request(request)?;
++            if !response.results.is_empty()
++                || !response.explanation.engines_executed.is_empty()
++                || response.window.candidate_count() != CandidateCountV1::Exact(0)
++            {
++                return Err(
++                    format!("valid contradiction lost logical-empty truth: {response:?}").into(),
++                );
++            }
++        }
++    }
++    Ok(())
++}
+--- a/docs/adr/SEP-26-001-retrieval-query-publication-and-result-proof.md
++++ b/docs/adr/SEP-26-001-retrieval-query-publication-and-result-proof.md
+@@ -29,6 +29,23 @@
+ Unsupported Phrase, RawString, Regex, regexp-keyword and per-result content-filter combinations on the current symbol
+ route return `LEX_PLANNER_UNSUPPORTED_FILTER_COMBO`. They cannot become empty exhaustive success or silently fall
+ back to chunk search. Repository and file predicates remain chunk-owned constraints.
++
++Every lexical lane validates its domain and all query primitives before language
++intersection or result-dependent empty shortcuts. This includes lexical and
++Symbol search, semantic lexical scopes, hybrid search, hybrid seed search, and
++query-based explanations. Hybrid search, seed and explain use one lexical
++planning owner. Primitive admission uses the adapter's execution policy without
++opening a generation; source capability checks still require the pinned reader.
++Top-level repo/file regex admission uses the actual execution grammar: Tantivy
++for indexed search and the manual regex executor for `index:no`. A valid manual
++anchor or word boundary must not be rejected by the indexed grammar.
++
++Symbol result endpoints reject text projections with `INVALID_REQUEST` before
++acquiring a search view. Bounded `count:N` limits rows, not the match universe:
++producer count evidence and continuation survive both the count cap and response
++clipping. A continuation page counts the remaining matches after its cursor
++boundary. A valid language contradiction carries logical-empty proof and no
++executed search lane. Changed cursor context returns `CURSOR_CONTEXT_MISMATCH`.
+ 
+ ### Publication authority
+ 
+--- a/crates/quanta-index-sdk/src/binding.rs
++++ b/crates/quanta-index-sdk/src/binding.rs
+@@ -1469,12 +1469,12 @@
+         outcome
+             .publication
+             .validate_receipt(requested, *sealed, &outcome.receipt)
+-            .map_err(|_| {
++            .map_err(|error| {
+                 binding_error(
+                     route,
+                     ResponseBindingAxis::BatchCommitment,
+                     "the requested source event and its original publication",
+-                    "an inconsistent source publication receipt",
++                    &format!("an inconsistent source publication receipt: {error}"),
+                 )
+             })?;
+     }
+--- a/docs/plans/sep-27-code-search-remediation/rfcs/CS-ENG-01-query-domain-and-result-contract.md
++++ b/docs/plans/sep-27-code-search-remediation/rfcs/CS-ENG-01-query-domain-and-result-contract.md
+@@ -1,6 +1,9 @@
+ # CS-ENG-01 — Query domain and result contract
+ 
+-Status: **PROPOSED**. Implementation and new regression execution: **NOT_RUN**.
++Status: **IMPLEMENTED** for the repaired L1 query/domain/window boundary.
++Owner regressions and changed real-daemon SDK paths: **VERIFIED** in
++[L1 adversarial RCA evidence](../handoffs/L1_ADVERSARIAL_AUDIT.md).
++Repository qualification and the remaining preventive matrix are not implied.
+ Category: engine correctness. Findings: F01; preventive coverage for related plans.
+ Baseline and reproduced requests: [evidence](../evidence.md).
+ 
+@@ -163,6 +166,15 @@
+ - [ ] Source-bound real-daemon SDK receipt covers the changed public path.
+ - [ ] Affected ADR/API documentation reflects the accepted behavior.
+ 
++Current proof coverage: native L1 domain/window matrix, dispatcher routes and
++actual daemon/SDK projection errors, count continuation, cursor mismatch,
++primitive refusal and valid logical emptiness are recorded in the linked audit.
++The SDK process test is explicitly opt-in and executed with `--ignored`; its final
++run executed one test with zero ignored. This follow-up does not claim the entire
++preventive stored-row corruption/property matrix, so the original aggregate DoD
++checklist is not promoted wholesale. Accepted API behavior is documented in
++[SEP-26-001](../../../adr/SEP-26-001-retrieval-query-publication-and-result-proof.md).
++
+ ## Dependencies and alternatives
+ 
+ No ranking or corpus expansion prerequisite. Can run in parallel with BENCH-01

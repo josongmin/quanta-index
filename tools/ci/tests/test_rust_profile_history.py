@@ -8,6 +8,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPT_PATH = REPO_ROOT / "tools" / "ci" / "timing" / "rust_profile_history.py"
 
@@ -22,6 +24,40 @@ def _load_module():
 
 
 MODULE = _load_module()
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        '{"v":2,"ts":"now","k":"cargo","lane":"dev","rc":0}',
+        '{"v":2,"ts":"now","k":"cargo","lane":"dev","ms":1}',
+        '{"v":2,"ts":"now","k":"cargo","lane":"dev","ms":1,"rc":"0"}',
+        '{"v":2,"ts":"now","k":"cargo","lane":"dev","ms":-1,"rc":0}',
+        '{"v":2,"ts":"now","k":"unknown","lane":"dev","ms":1,"rc":0}',
+        '{"v":2,"ts":"now","k":"cargo","lane":"dev","ms":1,"rc":0,"rc":1}',
+        '{"v":2,"ts":"now","k":"cargo","lane":"dev","ms":NaN,"rc":0}',
+        '{"schema_version":1,"recorded_at_utc":"now","event_kind":"profile","profile":"dev","duration_ms":1}',
+        "",
+        "{",
+    ],
+)
+def test_history_summary_refuses_missing_or_malformed_measurement(
+    tmp_path, monkeypatch, capsys, line
+):
+    state_root = tmp_path / "state"
+    monkeypatch.setenv("QUANTA_INDEX_STATE_ROOT", str(state_root))
+    log_path = state_root / "build-profile" / "history.jsonl"
+    log_path.parent.mkdir(parents=True)
+    log_path.write_text(line + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="history line"):
+        MODULE.handle_summary(argparse.Namespace(command="summary", json=True, failure_limit=5))
+    assert capsys.readouterr().out == ""
+
+
+@pytest.mark.parametrize("exit_code,duration_ms", [(-1, 1), (0, -1), (True, 1), (0, False)])
+def test_history_append_refuses_invalid_measurement(exit_code, duration_ms):
+    with pytest.raises(ValueError):
+        MODULE.build_common_event(exit_code, duration_ms)
 
 
 def test_handle_append_profile_writes_jsonl(tmp_path, monkeypatch):

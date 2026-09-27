@@ -1,0 +1,67 @@
+{
+  "after": "/tmp/quanta-l1-rca.h1y4pja7/audit-composite-red-1.after.json",
+  "artifacts": [
+    {
+      "features": [],
+      "fresh": false,
+      "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-search-plane#0.1.0",
+      "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-workspace-lane/debug/deps/quanta_index_search_plane-e705f3e83e1e2656",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 1,
+        "opt_level": "0",
+        "overflow_checks": true,
+        "test": true
+      },
+      "sha256": "37ff42213167899b40c37c1f554eb3a18424f692d2d663889d9541ed7d2951e9",
+      "target": {
+        "crate_types": [
+          "lib"
+        ],
+        "doc": true,
+        "doctest": true,
+        "edition": "2024",
+        "kind": [
+          "lib"
+        ],
+        "name": "quanta_index_search_plane",
+        "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-search-plane/src/lib.rs",
+        "test": true
+      }
+    }
+  ],
+  "before": "/tmp/quanta-l1-rca.h1y4pja7/audit-composite-red-1.before.json",
+  "classification": "UNCLASSIFIED: inspect execution count, outcome, inputs and source drift before promoting evidence",
+  "command": [
+    "./scripts/cargow",
+    "test",
+    "--locked",
+    "-j",
+    "2",
+    "-p",
+    "quanta-index-search-plane",
+    "--lib",
+    "--message-format=json",
+    "l1_composite_routes_admit_primitives_before_language_shortcut"
+  ],
+  "ended_unix": 1790463569.5366778,
+  "executed_result_lines": [
+    "running 1 test",
+    "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 465 filtered out; finished in 0.54s"
+  ],
+  "exit_code": 101,
+  "head_changed": false,
+  "log": "/tmp/quanta-l1-rca.h1y4pja7/audit-composite-red-1.log",
+  "log_sha256": "1377fdcb4de0d27eb3b06f088a421757c23502936c8c84303817aa2a95f15490",
+  "source_changed": [
+    "crates/quanta-index-core/src/request_budget.rs",
+    "crates/quanta-index-lexical/src/budgeted_search.rs",
+    "crates/quanta-index-lexical/src/ranked_page.rs",
+    "crates/quanta-index-lexical/src/ranked_page_tests.rs",
+    "crates/quanta-index-search-plane/src/ingest_dispatcher/search_corpus.rs",
+    "crates/quanta-index-search-plane/src/ingest_dispatcher/tests/search_corpus.rs",
+    "crates/quanta-index-search-plane/src/query_dispatcher/tests/execution_truth.rs",
+    "tools/ci/resource_admission.py"
+  ],
+  "started_unix": 1790463282.1776042
+}

@@ -11,13 +11,12 @@
 use anyhow::{Result as AnyResult, ensure};
 use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
-    BatchIngestMode, CapabilityStatusV1, ChunkId, ChunkRecord, FileContributorEntry,
-    FileContributorIdentityEntry, FileContributorIngestBatch, FileOwnershipEntry,
-    FileOwnershipIngestBatch, OwnerDocKind, RepoDescriptionEntry, RepoDescriptionIngestBatch,
-    RepoId, RepoMetaEntry, RepoMetaIngestBatch, RepoRelativePath, RepoTopicEntry,
-    RepoTopicIngestBatch, SearchCorpusIngestBatch, SearchCorpusReplaceScope, SearchScopeKey,
-    SearchScopeSurface, SemanticCorpusKindV1, SemanticSourceRecordV1, SemanticSourceReplaceScopeV1,
-    SemanticSourceScopeKeyV1, SourceRoleV1, TextQuerySyntax,
+    CapabilityStatusV1, ChunkId, ChunkRecord, FileContributorEntry, FileContributorIdentityEntry,
+    FileContributorIngestBatch, FileOwnershipEntry, FileOwnershipIngestBatch, OwnerDocKind,
+    RepoDescriptionEntry, RepoDescriptionIngestBatch, RepoId, RepoMetaEntry, RepoMetaIngestBatch,
+    RepoRelativePath, RepoTopicEntry, RepoTopicIngestBatch, SemanticCorpusKindV1,
+    SemanticSourceRecordV1, SemanticSourceReplaceScopeV1, SemanticSourceScopeKeyV1, SourceRoleV1,
+    TextQuerySyntax,
 };
 use quanta_index_searchd_harness as e2e_harness;
 
@@ -27,13 +26,6 @@ struct FixtureIds {
     alpha_shared: String,
     beta_shared: String,
     gamma_target: String,
-}
-
-fn file_scope(path: &str) -> SearchScopeKey {
-    SearchScopeKey {
-        doc_surface: SearchScopeSurface::File,
-        repo_relative_path: RepoRelativePath::new(path),
-    }
 }
 
 fn chunk(id: &str, path: &str, text: &str, source_repo_id: &str) -> AnyResult<ChunkRecord> {
@@ -131,57 +123,33 @@ fn boot_fixture() -> AnyResult<(E2eRuntime, FixtureIds)> {
     let alpha_shared = "predicate-boolean-alpha".to_string();
     let beta_shared = "predicate-boolean-beta".to_string();
     let gamma_target = "predicate-boolean-gamma".to_string();
-    let generation = rt.current_generation();
-    rt.publish_search_corpus_batch(SearchCorpusIngestBatch {
-        repo_id: rt.repo(),
-        revision_id: rt.revision(),
-        generation,
-        base_generation: None,
-        manifest_digest: "predicate-boolean:corpus".to_string(),
-        batch_digest: "predicate-boolean:corpus-batch".to_string(),
-        mode: BatchIngestMode::ReplaceGeneration,
-        bundle_payload: None,
-        clear_surfaces: Vec::new(),
-        replace_scopes: vec![
-            SearchCorpusReplaceScope {
-                scope: file_scope("src/shared.rs"),
-                scope_digest: "predicate-boolean:shared".to_string(),
-                chunks: vec![
-                    chunk(
-                        &alpha_shared,
-                        "src/shared.rs",
-                        "authority_boolean_needle alpha shared\n",
-                        "corp-alpha",
-                    )?,
-                    chunk(
-                        &beta_shared,
-                        "src/shared.rs",
-                        "authority_boolean_needle beta shared\n",
-                        "corp-beta",
-                    )?,
-                ],
-                symbols: Vec::new(),
-            },
-            SearchCorpusReplaceScope {
-                scope: file_scope("src/target.rs"),
-                scope_digest: "predicate-boolean:target".to_string(),
-                chunks: vec![chunk(
-                    &gamma_target,
-                    "src/target.rs",
-                    "authority_boolean_needle gamma target\n",
-                    "corp-gamma",
-                )?],
-                symbols: Vec::new(),
-            },
+    rt.stage_corpus_fixture(
+        vec![
+            chunk(
+                &alpha_shared,
+                "src/shared.rs",
+                "authority_boolean_needle alpha shared\n",
+                "corp-alpha",
+            )?,
+            chunk(
+                &beta_shared,
+                "src/shared.rs",
+                "authority_boolean_needle beta shared\n",
+                "corp-beta",
+            )?,
+            chunk(
+                &gamma_target,
+                "src/target.rs",
+                "authority_boolean_needle gamma target\n",
+                "corp-gamma",
+            )?,
         ],
-        tombstone_scopes: Vec::new(),
-        semantic_replace_scopes: vec![
+        Vec::new(),
+        vec![
             semantic_scope("src/shared.rs"),
             semantic_scope("src/target.rs"),
         ],
-        semantic_tombstone_scopes: Vec::new(),
-        seal: false,
-    })?;
+    )?;
 
     rt.publish_repo_meta_batch(RepoMetaIngestBatch {
         repo_id: rt.repo(),

@@ -24,9 +24,9 @@ use quanta_index_core::{CoreError, GenerationStorageKeyV1};
 use quanta_index_sdk::{
     ChunkId, ChunkRecord, ConnectOptions, GenerationPin, LanguageCode, ManifestGeneration,
     QuantaIndex, RepoId, RepoRelativePath, RevisionId, SdkError, SearchCorpusBatch,
-    SearchCorpusGenerationIdentityV1, SearchPlaneTrackKind, SearchScopeKey, SearchScopeSurface,
+    SearchCorpusGenerationIdentityV1, SearchPlaneTrackKind, SourceFileKey, SourcePublicationEvent,
 };
-use quanta_index_searchd_harness::E2eRuntime;
+use quanta_index_searchd_harness::{E2eRuntime, fixture_source_scope_v1};
 
 use crate::searchd_binary_process::SearchdBinaryProcess;
 use crate::searchd_lease_probe;
@@ -106,27 +106,38 @@ fn generation(raw: u64) -> ManifestGeneration {
     ManifestGeneration::new(raw)
 }
 
-fn batch(raw_generation: u64, digest: &str) -> Result<SearchCorpusBatch, Box<dyn Error>> {
+fn fixture_event_v1(
+    repo_id: &str,
+    raw_generation: u64,
+    source_parent_v1: Option<u64>,
+) -> SourcePublicationEvent {
+    SourcePublicationEvent {
+        stream_id: format!("fixture:composite-restart:{repo_id}"),
+        event_id: format!("fixture:composite-restart:{repo_id}:{raw_generation}"),
+        expected_base_event_id: source_parent_v1
+            .map(|prior_v1| format!("fixture:composite-restart:{repo_id}:{prior_v1}")),
+        payload_sha256: [0; 32],
+    }
+}
+
+fn batch(
+    raw_generation: u64,
+    digest: &str,
+    source_parent_v1: Option<u64>,
+) -> Result<SearchCorpusBatch, Box<dyn Error>> {
     let path = format!("src/generation_{raw_generation}.rs");
     let text = format!("fn generation_{raw_generation}() {{}}");
     let end_byte = u32::try_from(text.len())?;
-    let language = LanguageCode::new("rust")?;
-    Ok(SearchCorpusBatch::replace_generation(
-        repo(),
-        revision(),
-        generation(raw_generation),
-        digest,
-    )
-    .replace_scope(
-        SearchScopeKey {
-            doc_surface: SearchScopeSurface::File,
+    let scope_v1 = fixture_source_scope_v1(
+        SourceFileKey {
+            source_repo_id: repo(),
             repo_relative_path: RepoRelativePath::new(path.clone()),
         },
-        format!("scope:composite-restart:{raw_generation}"),
+        revision(),
         vec![ChunkRecord {
             chunk_id: ChunkId::new(format!("chunk-generation-{raw_generation}")),
             repo_relative_path: RepoRelativePath::new(path),
-            language,
+            language: LanguageCode::new("rust")?,
             start_byte: 0,
             end_byte,
             start_line: 1,
@@ -137,7 +148,15 @@ fn batch(raw_generation: u64, digest: &str) -> Result<SearchCorpusBatch, Box<dyn
             source_repo_id: None,
         }],
         Vec::new(),
-    ))
+    )?;
+    Ok(SearchCorpusBatch::replace_generation(
+        repo(),
+        revision(),
+        generation(raw_generation),
+        digest,
+    )
+    .source_event(fixture_event_v1(REPO, raw_generation, source_parent_v1))
+    .replace_scope(scope_v1.coverage, scope_v1.chunks, scope_v1.symbols))
 }
 
 fn batch_for(
@@ -145,27 +164,23 @@ fn batch_for(
     revision_id: &str,
     raw_generation: u64,
     digest: &str,
+    source_parent_v1: Option<u64>,
 ) -> Result<SearchCorpusBatch, Box<dyn Error>> {
     let path = format!("src/{repo_id}_generation_{raw_generation}.rs");
     let text = format!("fn generation_{raw_generation}() {{}}");
     let end_byte = u32::try_from(text.len())?;
-    let language = LanguageCode::new("rust")?;
-    Ok(SearchCorpusBatch::replace_generation(
-        RepoId::new(repo_id).expect("test fixture ID satisfies canonical policy"),
-        RevisionId::new(revision_id).expect("test fixture ID satisfies canonical policy"),
-        generation(raw_generation),
-        digest,
-    )
-    .replace_scope(
-        SearchScopeKey {
-            doc_surface: SearchScopeSurface::File,
+    let source_repo_v1 = RepoId::new(repo_id)?;
+    let revision_v1 = RevisionId::new(revision_id)?;
+    let scope_v1 = fixture_source_scope_v1(
+        SourceFileKey {
+            source_repo_id: source_repo_v1.clone(),
             repo_relative_path: RepoRelativePath::new(path.clone()),
         },
-        format!("scope:composite-restart:{raw_generation}"),
+        revision_v1.clone(),
         vec![ChunkRecord {
             chunk_id: ChunkId::new(format!("chunk-generation-{raw_generation}")),
             repo_relative_path: RepoRelativePath::new(path),
-            language,
+            language: LanguageCode::new("rust")?,
             start_byte: 0,
             end_byte,
             start_line: 1,
@@ -176,7 +191,15 @@ fn batch_for(
             source_repo_id: None,
         }],
         Vec::new(),
-    ))
+    )?;
+    Ok(SearchCorpusBatch::replace_generation(
+        source_repo_v1,
+        revision_v1,
+        generation(raw_generation),
+        digest,
+    )
+    .source_event(fixture_event_v1(repo_id, raw_generation, source_parent_v1))
+    .replace_scope(scope_v1.coverage, scope_v1.chunks, scope_v1.symbols))
 }
 
 /// The identities the daemon activated, roots included (QI-BB-028).
@@ -198,9 +221,16 @@ fn publish_generation(
     digest: &str,
     expected_active: Option<SearchCorpusActiveHeadV1>,
 ) -> Result<SearchCorpusActiveHeadV1, Box<dyn Error>> {
-    let (receipt, activation) = client
-        .search_corpus()
-        .publish_and_activate(&batch(raw_generation, digest)?, expected_active)?;
+    let (receipt, activation) = client.search_corpus().publish_and_activate(
+        &batch(
+            raw_generation,
+            digest,
+            expected_active
+                .as_ref()
+                .map(|head_v1| head_v1.generation.lexical.manifest_generation.get()),
+        )?,
+        expected_active,
+    )?;
     let expected_tracks = composite_identity_for(REPO, REVISION, raw_generation, digest);
     if activation.active.generation.lexical != expected_tracks.lexical
         || activation.active.generation.semantic != expected_tracks.semantic
@@ -359,7 +389,15 @@ fn publish_and_activate_for(
     expected_active: Option<SearchCorpusActiveHeadV1>,
 ) -> Result<SearchCorpusActiveHeadV1, Box<dyn Error>> {
     let (receipt, activation) = client.search_corpus().publish_and_activate(
-        &batch_for(repo_id, revision_id, raw_generation, digest)?,
+        &batch_for(
+            repo_id,
+            revision_id,
+            raw_generation,
+            digest,
+            expected_active
+                .as_ref()
+                .map(|head_v1| head_v1.generation.lexical.manifest_generation.get()),
+        )?,
         expected_active,
     )?;
     let expected = composite_identity_for(repo_id, revision_id, raw_generation, digest);

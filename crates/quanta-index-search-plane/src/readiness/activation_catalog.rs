@@ -739,6 +739,7 @@ impl ActivationCatalog {
         current.roots.extend(next.roots);
         let _prior = current.histories.remove(repo);
         current.histories.extend(next.histories);
+        drop(current);
         Ok(())
     }
 
@@ -757,6 +758,28 @@ impl ActivationCatalog {
 }
 
 impl ActiveSearchCorpusPinReadPort for ActivationCatalog {
+    fn unresolved_source_targets_for_pair_v1(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+    ) -> Result<Vec<GenerationSnapshot>, CoreError> {
+        self.ensure_durability_certain_v1()?;
+        let entries = self.entries.read().map_err(|error| {
+            CoreError::Storage(format!("search-plane activation catalog poisoned: {error}"))
+        })?;
+        Ok(entries
+            .histories
+            .get(repo_id)
+            .into_iter()
+            .flat_map(|history| history.records.values())
+            .filter(|record| {
+                record.phase != quanta_index_core::SourceEventPhaseV1::Active
+                    && record.binding.target.revision_id == *revision_id
+            })
+            .map(|record| record.binding.target.clone())
+            .collect())
+    }
+
     fn active_search_corpus_under_guard_v1(
         &self,
         guard: &SearchCorpusPairMutationGuard<'_>,

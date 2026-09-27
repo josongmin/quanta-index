@@ -9,9 +9,9 @@ use quanta_index_contract::lex::{
     LanguageCode, SymbolKindCode, SymbolKindFamily, SymbolRecord, SymbolRelationship, SymbolSpan,
 };
 use quanta_index_contract::{
-    BatchIngestMode, ChunkId, ChunkRecord, LQ_VERSION_TAG, LqExpr, LqLeaf, LqOptions, LqQuery,
-    LqSpan, LqYesNoOnly, ManifestGeneration, PreviewKind, PreviewUnavailableReason, RepoId,
-    RepoRelativePath, RevisionId, SearchCorpusIngestBatch, SearchCorpusReplaceScope,
+    BatchIngestMode, ChunkId, ChunkRecord, LQ_VERSION_TAG, LqCase, LqExpr, LqLeaf, LqOptions,
+    LqQuery, LqSpan, LqYesNoOnly, ManifestGeneration, PreviewKind, PreviewUnavailableReason,
+    RepoId, RepoRelativePath, RevisionId, SearchCorpusIngestBatch, SearchCorpusReplaceScope,
     SourceFileCoverage, SourceFileKey, SourceFileRevision, SourcePublicationEvent, SymbolCoverage,
     SymbolId, source_event_payload_sha256, source_file_unit_set_sha256,
 };
@@ -444,5 +444,80 @@ fn l4_preview_admission_oversized_row_does_not_refuse_other_selected_rows() -> T
             }
         }
     }
+    Ok(())
+}
+
+#[test]
+fn l4_unicode_regex_compilation_is_charged_before_selected_preview() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let raw = format!("needle{}", "a".repeat(120));
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+    let batch = batch(1, None, vec![file_scope("source.rs", &raw)?])?;
+    adapter.build_batch(&batch)?;
+    let view = adapter.open(&batch.repo_id, &batch.revision_id, batch.generation)?;
+
+    let mut present = query("unused");
+    present.expr = LqExpr::Leaf(LqLeaf::Regex(r"needle\w{120}".into()));
+    present.options.case = Some(LqCase::Sensitive);
+    let request = RequestBudgetV1::unbounded();
+    let ledger = request.lexical_preview_budget(10_000_000, 64 * 1024 * 1024)?;
+    let hits = view.search(&present, 1, &request)?;
+    let hit = hits.first().ok_or("selected regex hit missing")?;
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hit.snippet, raw);
+    assert_eq!(
+        hit.preview
+            .as_ref()
+            .ok_or("regex preview missing")?
+            .original_focus,
+        Some(quanta_index_contract::PreviewByteRange { start: 0, end: 126 })
+    );
+    // The pinned engine probe exceeded 16 MiB peak for this valid pattern.
+    // This asserts the extra charge is admitted before engine compilation;
+    // it is not a claim that the logical charge caps process RSS.
+    assert!(ledger.peak_bytes() >= 16 * 1024 * 1024 + 95_760 * 256);
+    Ok(())
+}
+
+#[test]
+fn l4_distinct_complex_regex_leaves_refuse_only_optional_preview() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let raw = format!("needle{}", "a".repeat(120));
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+    let batch = batch(1, None, vec![file_scope("source.rs", &raw)?])?;
+    adapter.build_batch(&batch)?;
+    let view = adapter.open(&batch.repo_id, &batch.revision_id, batch.generation)?;
+
+    let first = LqLeaf::Regex(r"needle\w{120}".into());
+    let second = LqLeaf::Regex(r"needle\p{L}{120}".into());
+    let mut repeated = query("unused");
+    repeated.options.case = Some(LqCase::Sensitive);
+    repeated.expr = LqExpr::Any(vec![
+        LqExpr::Leaf(first.clone()),
+        LqExpr::Leaf(first.clone()),
+    ]);
+    let repeated_request = RequestBudgetV1::unbounded();
+    let repeated_ledger = repeated_request.lexical_preview_budget(10_000_000, 64 * 1024 * 1024)?;
+    let repeated_hits = view.search(&repeated, 1, &repeated_request)?;
+    let repeated_hit = repeated_hits.first().ok_or("repeated regex hit missing")?;
+    assert_eq!(repeated_hits.len(), 1);
+    assert_eq!(repeated_hit.snippet, raw);
+    assert!(repeated_ledger.peak_bytes() < 64 * 1024 * 1024);
+
+    let mut distinct = repeated;
+    distinct.expr = LqExpr::Any(vec![LqExpr::Leaf(first), LqExpr::Leaf(second)]);
+    let request = RequestBudgetV1::unbounded();
+    let hits = view.search(&distinct, 1, &request)?;
+    let hit = hits.first().ok_or("distinct regex hit missing")?;
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hit.candidate_id, repeated_hit.candidate_id);
+    assert_eq!(
+        hit.preview
+            .as_ref()
+            .ok_or("preview metadata missing")?
+            .unavailable_reason,
+        Some(PreviewUnavailableReason::WorkBudget)
+    );
+    assert!(hit.snippet.is_empty());
     Ok(())
 }

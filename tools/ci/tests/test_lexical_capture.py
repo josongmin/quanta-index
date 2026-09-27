@@ -159,6 +159,20 @@ def synthetic_admission(monkeypatch):
     return source
 
 
+@pytest.mark.parametrize("relationship", ["equal", "evidence-under-corpus", "corpus-under-evidence"])
+def test_capture_overlap_refuses_before_epoch_writes(tmp_path, monkeypatch, relationship):
+    release = tmp_path / "corpus"
+    root = release if relationship == "equal" else release / "evidence" if relationship == "evidence-under-corpus" else tmp_path
+    spec = tmp_path / "spec.json"
+    spec.write_text("{}")
+    monkeypatch.setattr(capture.corpus_binding, "read_spec", lambda *_: ({"release_path": str(release)}, {}))
+    with pytest.raises(ValueError, match="roots overlap"):
+        capture.capture(capture.ROOT, root, load_registry(capture.ROOT / "tools/benchmark/registry.toml"), spec, 1)
+    assert not (root / "work").exists()
+    assert not (root / "failures").exists()
+    assert not release.exists()
+
+
 def test_complete_profile_executes_owner_and_replays_frozen_observations(
     tmp_path, lexical_release_seed, synthetic_admission, capsys
 ):

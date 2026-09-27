@@ -3,21 +3,21 @@
 use std::cmp::Ordering;
 use std::ops::Deref;
 
-use quanta_index_core::{LexicalCollectionBudget, LexicalMemoryReservation};
+use quanta_index_core::LexicalMemoryReservation;
 use tantivy::TantivyError;
 
-use super::RankedRow;
+use super::{CollectionBudget, RankedRow};
 
 /// Keep guards outside map elements, which drop before their containing nodes.
 /// Declare this before a local map or after the map field in its owning struct.
 pub(crate) struct CollectionMemory {
     guards: Vec<LexicalMemoryReservation>,
     buffer: Option<LexicalMemoryReservation>,
-    budget: LexicalCollectionBudget,
+    budget: CollectionBudget,
 }
 
 impl CollectionMemory {
-    pub(crate) fn new(budget: LexicalCollectionBudget) -> Self {
+    pub(crate) fn new(budget: CollectionBudget) -> Self {
         Self {
             guards: Vec::new(),
             buffer: None,
@@ -41,15 +41,7 @@ impl CollectionMemory {
                 .ok_or_else(|| {
                     TantivyError::InvalidArgument("collection guard buffer overflow".to_string())
                 })?;
-            let bytes = u64::try_from(bytes).map_err(|error| {
-                TantivyError::InvalidArgument(format!(
-                    "collection guard byte size overflow: {error}"
-                ))
-            })?;
-            let replacement = self
-                .budget
-                .reserve_bytes(bytes)
-                .map_err(|error| TantivyError::InvalidArgument(error.to_string()))?;
+            let replacement = self.budget.reserve_bytes(bytes)?;
             let additional = capacity.checked_sub(self.guards.len()).ok_or_else(|| {
                 TantivyError::InternalError("collection guard capacity shrank".to_string())
             })?;
@@ -70,13 +62,13 @@ pub(crate) struct RankedRows {
     // Declaration order matters: release the buffer before its reservation.
     rows: Vec<RankedRow>,
     memory: Option<LexicalMemoryReservation>,
-    budget: Option<LexicalCollectionBudget>,
+    budget: Option<CollectionBudget>,
 }
 
 impl RankedRows {
     pub(crate) fn with_capacity(
         capacity: usize,
-        budget: Option<LexicalCollectionBudget>,
+        budget: Option<CollectionBudget>,
     ) -> tantivy::Result<Self> {
         let memory = reserve_rows(budget.as_ref(), capacity)?;
         let mut rows = Vec::new();
@@ -170,7 +162,7 @@ impl Iterator for RankedRowsIntoIter {
 impl ExactSizeIterator for RankedRowsIntoIter {}
 
 fn reserve_rows(
-    budget: Option<&LexicalCollectionBudget>,
+    budget: Option<&CollectionBudget>,
     count: usize,
 ) -> tantivy::Result<Option<LexicalMemoryReservation>> {
     let Some(budget) = budget else {
@@ -181,11 +173,5 @@ fn reserve_rows(
         .ok_or_else(|| {
             TantivyError::InvalidArgument("ranked row buffer size overflow".to_string())
         })?;
-    let bytes = u64::try_from(bytes).map_err(|error| {
-        TantivyError::InvalidArgument(format!("ranked row byte size overflow: {error}"))
-    })?;
-    budget
-        .reserve_bytes(bytes)
-        .map(Some)
-        .map_err(|error| TantivyError::InvalidArgument(error.to_string()))
+    budget.reserve_bytes(bytes).map(Some)
 }

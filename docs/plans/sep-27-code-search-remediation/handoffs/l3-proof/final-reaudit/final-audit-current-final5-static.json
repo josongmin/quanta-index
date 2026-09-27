@@ -1,0 +1,37 @@
+{
+  "checks": [
+    {
+      "command": [
+        "rustfmt",
+        "--check",
+        "--edition",
+        "2024",
+        "crates/quanta-index-lexical/src/budgeted_search.rs",
+        "crates/quanta-index-lexical/src/dense_admission.rs",
+        "crates/quanta-index-lexical/src/documents.rs",
+        "crates/quanta-index-lexical/src/ranked_page.rs",
+        "crates/quanta-index-lexical/src/ranked_page_tests.rs",
+        "crates/quanta-index-lexical/src/ranked_rows.rs",
+        "crates/quanta-index-lexical/src/searcher/candidates.rs",
+        "crates/quanta-index-lexical/src/searcher/manual_scan.rs",
+        "crates/quanta-index-lexical/src/searcher/predicates.rs",
+        "crates/quanta-index-lexical/src/searcher/prepare.rs",
+        "crates/quanta-index-lexical/src/searcher/restrictions.rs",
+        "crates/quanta-index-lexical/src/searcher/snippets.rs",
+        "crates/quanta-index-lexical/src/text_docs.rs",
+        "crates/quanta-index-lexical/tests/execution_budget.rs",
+        "crates/quanta-index-lexical/tests/tantivy_smoke.rs"
+      ],
+      "exit_code": 0
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit_code": 0
+    }
+  ],
+  "log_sha256": "164737de2de923bc1261b93f5a1e8bc975c0554b5e4f9043135272d962d9facc"
+}

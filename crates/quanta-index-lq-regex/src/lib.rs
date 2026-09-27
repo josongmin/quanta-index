@@ -44,6 +44,6 @@ pub use dialect::dialect_filter;
 pub use dialect_ast_walk::ast_walk_filter;
 pub use errors::{ForbiddenKind, LimitDimension, RegexError, RegexErrorCode};
 pub use estimator::{MAX_NFA_STATES, estimate_nfa_states};
-pub use executor::RegexExecutor;
+pub use executor::{RegexCompilationPlan, RegexExecutor};
 pub use literal_extract::extract_prefilter_literal_alternation;
 pub use quanta_index_lq_trigram::{DocId, DocResolver};

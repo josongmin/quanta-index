@@ -21,8 +21,9 @@ use std::error::Error;
 use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
     ChunkId, ChunkRecord, LQ_VERSION_TAG, LqCountBound, LqExpr, LqFilter, LqLeaf, LqOptions,
-    LqQuery, LqSelect, LqSpan, LqType, LqYesNoOnly, ManifestGeneration, QueryConstraintSetV1,
-    RepoId, RepoRelativePath, RevisionId, SearchCorpusIngestBatch, SearchCorpusReplaceScope,
+    LqPredicateArg, LqQuery, LqSelect, LqSpan, LqType, LqYesNoOnly, ManifestGeneration,
+    QueryConstraintSetV1, RepoId, RepoRelativePath, RevisionId, SearchCorpusIngestBatch,
+    SearchCorpusReplaceScope, SearchPlaneErrorCodeV2,
 };
 use quanta_index_core::{
     CoreError, LEXICAL_EXAMINED_BUDGET_EXCEEDED_CODE, LexicalExecutionBudgetV1,
@@ -133,6 +134,46 @@ fn seeded(budget: usize) -> Result<(tempfile::TempDir, LexicalAdapter), Box<dyn 
     let adapter = adapter_with_budget(dir.path().to_path_buf(), budget)?;
     adapter.build_batch(&sealed_batch()?)?;
     Ok((dir, adapter))
+}
+
+#[test]
+fn predicate_scope_refuses_materialization_past_the_examined_budget() -> TestResult {
+    let scoped = query(
+        LqExpr::All(vec![
+            LqExpr::Leaf(LqLeaf::Predicate {
+                name: "repo.has.file".to_string(),
+                args: vec![LqPredicateArg::Filter {
+                    name: "path".to_string(),
+                    value: "src/file_.*".to_string(),
+                }],
+            }),
+            needle(),
+        ]),
+        Vec::new(),
+    );
+    let (_dir, adapter) = seeded(BUDGET)?;
+    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let refused = searcher.search_constrained(
+        &scoped,
+        &QueryConstraintSetV1::unconstrained(),
+        &LexicalPageSpec::first(2),
+        &RequestBudgetV1::unbounded(),
+    );
+    assert!(
+        matches!(&refused, Err(error) if is_budget_refusal(error)),
+        "predicate scope must refuse a partial gate: {refused:?}"
+    );
+
+    let (_dir, adapter) = seeded(usize::try_from(DOCS)?)?;
+    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let page = searcher.search_constrained(
+        &scoped,
+        &QueryConstraintSetV1::unconstrained(),
+        &LexicalPageSpec::first(2),
+        &RequestBudgetV1::unbounded(),
+    )?;
+    assert_eq!(page.candidates.len(), 2);
+    Ok(())
 }
 
 /// A page and an exact total both stay within budget; a projection over the
@@ -322,6 +363,59 @@ fn unindexed_scans_over_the_budget_are_refused_before_scanning() -> TestResult {
         )
         .into()),
     }
+}
+
+#[test]
+fn unindexed_scan_obeys_native_collection_byte_limit() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root_and_policies(
+        dir.path().to_path_buf(),
+        RegexPolicy::defaults(),
+        LexicalExecutionBudgetV1::new_with_collection_bytes(usize::try_from(DOCS)?, 1)?,
+        RegexMatchCachePolicy::DEFAULT,
+        LexicalWriterPolicy::DEFAULT,
+    );
+    adapter.build_batch(&sealed_batch()?)?;
+    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let mut scan = query(needle(), Vec::new());
+    scan.options.index_mode = Some(LqYesNoOnly::No);
+    let refused = searcher.search_constrained(
+        &scan,
+        &QueryConstraintSetV1::unconstrained(),
+        &LexicalPageSpec::first(2),
+        &RequestBudgetV1::unbounded(),
+    );
+    assert!(
+        matches!(
+            &refused,
+            Err(CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::LexicalCollectionBudgetExceeded,
+                ..
+            })
+        ),
+        "index:no scan bypassed its retained-byte limit: {refused:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn dense_admission_refuses_candidate_set_over_examined_limit() -> TestResult {
+    let (_dir, adapter) = seeded(BUDGET)?;
+    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let candidate_ids = (1..=DOCS)
+        .map(|id| format!("candidate-{id}"))
+        .collect::<std::collections::BTreeSet<_>>();
+    let refused = searcher.admitted_candidates(
+        &query(LqExpr::Empty, Vec::new()),
+        &QueryConstraintSetV1::unconstrained(),
+        &candidate_ids,
+        &RequestBudgetV1::unbounded(),
+    );
+    assert!(
+        matches!(&refused, Err(error) if is_budget_refusal(error)),
+        "dense admission accepted more candidates than the examined limit: {refused:?}"
+    );
+    Ok(())
 }
 
 /// A zero budget is a configuration defect, not a disabled cap.

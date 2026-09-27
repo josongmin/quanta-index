@@ -1,4 +1,8 @@
-# L2 final code audit
+# L2 final code audit — owner snapshot
+
+Superseded process/lint status: [L2_PROCESS_AUDIT.md](L2_PROCESS_AUDIT.md) records
+the subsequent native SDK/daemon crash matrix and successful current lint rails.
+The results below describe their own earlier frozen snapshots.
 
 Five source-backed defects were reproduced and repaired. The final selected
 search-plane command executed **261 passed, 0 failed, 0 ignored, 205 filtered**

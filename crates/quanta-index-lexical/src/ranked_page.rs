@@ -434,12 +434,7 @@ impl RankedPageSegment {
                 "ranked collection exceeded its examined-candidate budget".to_string(),
             ));
         }
-        let mut rows = RankedRows::with_capacity(
-            self.heap.len(),
-            self.collection
-                .as_ref()
-                .map(|collection| collection.resources.clone()),
-        )?;
+        let mut rows = RankedRows::with_capacity(self.heap.len(), self.collection.clone())?;
         for latest in self.heap {
             rows.push(latest.0)?;
         }
@@ -511,12 +506,7 @@ impl Collector for RankedPageCollector {
         if let Some(collection) = &self.collection {
             collection.checkpoint()?;
         }
-        let mut rows = RankedRows::with_capacity(
-            capacity,
-            self.collection
-                .as_ref()
-                .map(|collection| collection.resources.clone()),
-        )?;
+        let mut rows = RankedRows::with_capacity(capacity, self.collection.clone())?;
         let mut matched = 0_u64;
         for fruit in segment_fruits {
             let fruit = fruit?;
@@ -706,7 +696,7 @@ impl GroupedPageSegment {
             ));
         }
         let mut representatives =
-            RankedRows::with_capacity(self.bests.len(), Some(self.collection.resources.clone()))?;
+            RankedRows::with_capacity(self.bests.len(), Some(self.collection.clone()))?;
         for best in self.bests.into_values() {
             self.collection.charge_work(1)?;
             representatives.push(RankedRow {
@@ -760,7 +750,7 @@ impl Collector for GroupedPageCollector {
             group: self.group,
             boost: self.boost,
             bests: BTreeMap::new(),
-            map_memory: CollectionMemory::new(self.collection.resources.clone()),
+            map_memory: CollectionMemory::new(self.collection.clone()),
             matched: 0,
             error: None,
             collection: self.collection.clone(),
@@ -781,7 +771,7 @@ impl Collector for GroupedPageCollector {
             return segment_fruits.swap_remove(failed);
         }
         self.collection.checkpoint()?;
-        let mut map_memory = CollectionMemory::new(self.collection.resources.clone());
+        let mut map_memory = CollectionMemory::new(self.collection.clone());
         let mut groups: BTreeMap<(String, String), RankedRow> = BTreeMap::new();
         let mut matched = 0_u64;
         for fruit in segment_fruits {
@@ -826,7 +816,7 @@ impl Collector for GroupedPageCollector {
         }
         self.collection.checkpoint()?;
         let mut representatives =
-            RankedRows::with_capacity(groups.len(), Some(self.collection.resources.clone()))?;
+            RankedRows::with_capacity(groups.len(), Some(self.collection.clone()))?;
         for row in groups.into_values() {
             representatives.push(row)?;
         }

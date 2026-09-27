@@ -1,5 +1,13 @@
 # L5 — Parser and source-fact remediation
 
+Latest audit: [L5_OWNER_SCOPE_AUDIT](L5_OWNER_SCOPE_AUDIT.md) records two
+additional TS owner/name fixes on frozen `21029662` plus its L5 overlay.
+Earlier receipts below retain their original source and scope.
+
+Previous audit: [L5_DEFINITION_AUDIT](L5_DEFINITION_AUDIT.md) records five further
+producer inventory/ownership fixes, Rust 138, Python 16 and a fresh Vite census
+at `681dc3f0` plus its frozen overlay. Earlier receipts below keep their own scope.
+
 Current follow-up: [L5_FINAL_CODE_AUDIT](L5_FINAL_CODE_AUDIT.md) records five
 additional reproduced defects, fixes and source-bound verification. Earlier
 completion and audit receipts below remain bound to their original snapshots.

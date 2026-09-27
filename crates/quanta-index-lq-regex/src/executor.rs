@@ -51,6 +51,25 @@ pub struct RegexExecutor {
     compiled: regex::bytes::Regex,
 }
 
+/// Validated regex input before the engine allocates its automata.
+///
+/// Callers with an optional resource ledger can inspect the estimated state
+/// count and refuse compilation while keeping the original query result.
+pub struct RegexCompilationPlan {
+    pattern: Box<str>,
+    hir: Hir,
+    execution_pattern: Box<str>,
+    estimated_states: u64,
+}
+
+impl RegexCompilationPlan {
+    /// The dialect estimator's state count, not an aggregate byte bound.
+    #[must_use]
+    pub const fn estimated_states(&self) -> u64 {
+        self.estimated_states
+    }
+}
+
 /// A bounded prefix of this executor's non-overlapping byte matches.
 ///
 /// Empty ranges retain the engine's zero-width semantics. Consumers must not
@@ -93,6 +112,11 @@ impl RegexExecutor {
     /// - [`RegexErrorCode::ExecutionInternal`] — `regex::Regex::new`
     ///   internal-budget overshoot despite the planner-time estimator.
     pub fn compile(pattern: &str) -> Result<Self, RegexError> {
+        Self::compile_prepared(Self::prepare(pattern)?)
+    }
+
+    /// Validate and plan without allocating the regex engine's automata.
+    pub fn prepare(pattern: &str) -> Result<RegexCompilationPlan, RegexError> {
         // Precise AST-level rejection of `(?>...)`, `\k<name>`, and
         // mid-pattern `(?i)` MUST run before `parse_hir`: the first two
         // surface as generic `FlagUnrecognized` / `EscapeUnrecognized`
@@ -102,21 +126,31 @@ impl RegexExecutor {
         ast_walk_filter(pattern)?;
         let hir = parse_hir(pattern)?;
         dialect_filter(&hir)?;
-        let _estimated: u64 = estimate_nfa_states(&hir)?;
+        let estimated_states = estimate_nfa_states(&hir)?;
         // Only boolean truth and whole-match ranges escape this executor.
         // Backreferences are forbidden, so explicit capture storage cannot
         // affect either result. Keeping it grows the engine's per-state cache
         // with every capture, even when the actual source focus is tiny.
         let execution_pattern = without_explicit_captures(pattern, &hir)?;
-        let compiled = regex::bytes::Regex::new(&execution_pattern).map_err(|e| {
+        Ok(RegexCompilationPlan {
+            pattern: pattern.into(),
+            hir,
+            execution_pattern: execution_pattern.into_owned().into_boxed_str(),
+            estimated_states,
+        })
+    }
+
+    /// Compile an already validated plan without repeating dialect parsing.
+    pub fn compile_prepared(plan: RegexCompilationPlan) -> Result<Self, RegexError> {
+        let compiled = regex::bytes::Regex::new(&plan.execution_pattern).map_err(|e| {
             RegexError::new(
                 RegexErrorCode::ExecutionInternal,
                 format!("regex::Regex::new rejected pattern: {e}"),
             )
         })?;
         Ok(Self {
-            pattern: pattern.into(),
-            hir,
+            pattern: plan.pattern,
+            hir: plan.hir,
             compiled,
         })
     }
@@ -212,7 +246,7 @@ impl RegexExecutor {
     }
 
     /// [`RegexExecutor::execute_with_budget`] that also asks `interrupted`
-    /// before every candidate and stops with
+    /// before every candidate and before returning a complete set, and stops with
     /// [`RegexErrorCode::Interrupted`] once it answers `true`.
     ///
     /// The check is the caller's request budget (a peer that left, a
@@ -231,7 +265,9 @@ impl RegexExecutor {
         } else {
             Some(Duration::from_millis(budget_ms))
         };
-        let mut out: Vec<DocId> = Vec::with_capacity(candidates.len());
+        // Prefilter hits are only candidates. Reserving their entire count
+        // amplifies memory even when none of them pass exact verification.
+        let mut out: Vec<DocId> = Vec::new();
         for (index, cand) in candidates.iter().enumerate() {
             if interrupted() {
                 return Err(RegexError::new(
@@ -249,6 +285,12 @@ impl RegexExecutor {
                 )
             })?;
             if self.verify(bytes) {
+                out.try_reserve(1).map_err(|error| {
+                    RegexError::new(
+                        RegexErrorCode::ExecutionInternal,
+                        format!("regex verified-result allocation refused: {error}"),
+                    )
+                })?;
                 out.push(*cand);
             }
             if let Some(b) = budget {
@@ -264,6 +306,18 @@ impl RegexExecutor {
                     ));
                 }
             }
+        }
+        // The final resolver or matcher may observe cancellation after its
+        // preceding check. Do not publish a complete set without checking the
+        // request once more; this also covers an empty candidate list.
+        if interrupted() {
+            return Err(RegexError::new(
+                RegexErrorCode::Interrupted,
+                format!(
+                    "regex verify interrupted before publishing {} candidate results",
+                    candidates.len()
+                ),
+            ));
         }
         Ok(out)
     }
@@ -753,6 +807,46 @@ mod tests {
             Ok(v) => assert_eq!(v, vec![DocId(1), DocId(2)]),
             Err(e) => assert!(false, "{e}"),
         }
+    }
+
+    #[test]
+    fn l4_final_candidate_interruption_discards_verified_prefix()
+    -> Result<(), Box<dyn std::error::Error>> {
+        struct CancelOnResolve(std::cell::Cell<bool>);
+
+        impl DocResolver for CancelOnResolve {
+            fn resolve(&self, _: DocId) -> Option<&[u8]> {
+                self.0.set(true);
+                Some(b"needle")
+            }
+        }
+
+        let executor = RegexExecutor::compile("needle")?;
+        let resolver = CancelOnResolve(std::cell::Cell::new(false));
+        let result =
+            executor.execute_interruptible(&[DocId(1)], &resolver, 0, &|| resolver.0.get());
+        assert!(
+            matches!(result, Err(ref error) if error.code == RegexErrorCode::Interrupted),
+            "a cancellation during the last candidate must discard its match: {result:?}"
+        );
+        assert!(resolver.0.get());
+
+        let already_cancelled = executor.execute_interruptible(&[], &resolver, 0, &|| true);
+        assert!(
+            matches!(already_cancelled, Err(ref error) if error.code == RegexErrorCode::Interrupted)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn l4_unmatched_prefilter_does_not_reserve_verified_output()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let executor = RegexExecutor::compile("unmatched-pattern")?;
+        let candidates = [DocId(1), DocId(2), DocId(3), DocId(4)];
+        let verified = executor.execute_with_budget(&candidates, &fixture(), 0)?;
+        assert!(verified.is_empty());
+        assert_eq!(verified.capacity(), 0);
+        Ok(())
     }
 
     #[test]

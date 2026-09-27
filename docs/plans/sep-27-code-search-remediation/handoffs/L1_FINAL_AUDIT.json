@@ -1,0 +1,445 @@
+{
+  "artifacts": {
+    "build-artifact.json": {
+      "bytes": 814,
+      "path": "l1-proof/final-semantic-scope-20260927/build-artifact.json",
+      "sha256": "3114b31baeacec6f7648d2f73a075d9a537b8f7673344c424cf84615cf6c2eb8"
+    },
+    "clippy-baseline-failed.jsonl.gz": {
+      "bytes": 32830,
+      "decompressed_sha256": "0751de771a1e5dd64e5cbb404a4820588fe174d47747a29d8b9b1e544089e878",
+      "path": "l1-proof/final-semantic-scope-20260927/clippy-baseline-failed.jsonl.gz",
+      "sha256": "3a1e142e918b4cf2f8e130ed44ca64611593a3f4332bf84407396b9f34417aa6"
+    },
+    "clippy-broad-l2-failed.jsonl.gz": {
+      "bytes": 35661,
+      "decompressed_sha256": "e6f438b79cfba68d1c3bf7c990c0cfc21734073a32cff2c6aa812f8af16575bc",
+      "path": "l1-proof/final-semantic-scope-20260927/clippy-broad-l2-failed.jsonl.gz",
+      "sha256": "c9f4c64022c412e058863fbca2d21258094bc161af3b1231230345cb27dcf5eb"
+    },
+    "clippy-broad-l2-failed.stderr.gz": {
+      "bytes": 475,
+      "decompressed_sha256": "65ad60498fb72bc62632d3a851590be791c7cb7a3fcc12bd10aba26f4110954b",
+      "path": "l1-proof/final-semantic-scope-20260927/clippy-broad-l2-failed.stderr.gz",
+      "sha256": "0620e9337cd68f13988fe121fdf0367591bc1676dbcd04dd7e93fedc5e44c808"
+    },
+    "clippy-libs.jsonl.gz": {
+      "bytes": 28721,
+      "decompressed_sha256": "697985db071d09b05f1cbc5b785289782e3a38d7ac98a15103ec71f493d52b9e",
+      "path": "l1-proof/final-semantic-scope-20260927/clippy-libs.jsonl.gz",
+      "sha256": "0fb7a4494f35af218a71e0edf877b8c00b9c319ac618244c1799ab7645fb804e"
+    },
+    "clippy-libs.stderr.gz": {
+      "bytes": 1087,
+      "decompressed_sha256": "d6002c93bc79419dd351fb64c50386839a57a452c0e0d478d252d162aa8a8750",
+      "path": "l1-proof/final-semantic-scope-20260927/clippy-libs.stderr.gz",
+      "sha256": "9396c3866eedfb540cd38ae4d4e424227901392d927921fc54c00ef449d3ed4b"
+    },
+    "clippy-owner-tests-failed.jsonl.gz": {
+      "bytes": 42097,
+      "decompressed_sha256": "1c4f20d9e49200fb4ad0d3a456829c944d788c991333859dd50db8b360e7ac40",
+      "path": "l1-proof/final-semantic-scope-20260927/clippy-owner-tests-failed.jsonl.gz",
+      "sha256": "cf691ee9ebe75b6e5182a5921b0ad525540c1e811e60914feefbfe76de88caa5"
+    },
+    "clippy-owner-tests-failed.stderr.gz": {
+      "bytes": 479,
+      "decompressed_sha256": "c9b6f371e423c5ebfc19dfba152bb2cc72c10580e8957e02a01c9932d6f84a57",
+      "path": "l1-proof/final-semantic-scope-20260927/clippy-owner-tests-failed.stderr.gz",
+      "sha256": "474aae5cd50b67bf17e0a60dc11c82fe89770afbfab64cbe30a4aae6a31d3314"
+    },
+    "clippy-sdk-l1.jsonl.gz": {
+      "bytes": 3949,
+      "decompressed_sha256": "5480bc0f28a3acad9b9df748abe093a667974ca2d1d90f9259fc80edfc674bc7",
+      "path": "l1-proof/final-semantic-scope-20260927/clippy-sdk-l1.jsonl.gz",
+      "sha256": "8f67106d3e93a9cd0f7712854356672b27e80918bbf961bd23a6c9bb8c2d492a"
+    },
+    "clippy-sdk-l1.stderr.gz": {
+      "bytes": 502,
+      "decompressed_sha256": "1c6578e5e753923d5fb05cdbb10d7e2e3eb92cf92fd80069e6a4372eddb3d8f8",
+      "path": "l1-proof/final-semantic-scope-20260927/clippy-sdk-l1.stderr.gz",
+      "sha256": "1fec50da1137d5cb33dfcedd0dbd64e6ba4c845ff90ab68d1597197d3951a245"
+    },
+    "clippy-test-indexing-failed.jsonl.gz": {
+      "bytes": 31612,
+      "decompressed_sha256": "c6909b3d5f70db2e02a4ca9157bb8db6ee50461a0f9c34b93050344c9912f35e",
+      "path": "l1-proof/final-semantic-scope-20260927/clippy-test-indexing-failed.jsonl.gz",
+      "sha256": "1999f2257600b4b1fb4203309f847c3d516985b29c2581cd69f7f723a026bb2b"
+    },
+    "clippy-test-method-failed.jsonl.gz": {
+      "bytes": 31624,
+      "decompressed_sha256": "50bea5fd8f8eab2436b8b7355240675b8f59f7f0191354ee18b56ae829ab387d",
+      "path": "l1-proof/final-semantic-scope-20260927/clippy-test-method-failed.jsonl.gz",
+      "sha256": "ac2bab1e7a0d60865a4d0812b089be6b3728d459f745e9e6af13227c4134fbdf"
+    },
+    "daemon-build.jsonl.gz": {
+      "bytes": 35081,
+      "decompressed_sha256": "679411832f6a43b9e929dab5d7702227eb5850675e5ac3b525362f7687631a93",
+      "path": "l1-proof/final-semantic-scope-20260927/daemon-build.jsonl.gz",
+      "sha256": "c5769c8e19fa8ef8b6bcd3ab3a7ef74cb91a0c676ec1cd1be8fac91f476ad823"
+    },
+    "daemon-build.stderr.gz": {
+      "bytes": 303,
+      "decompressed_sha256": "55b9b48c509c51ccd7b35d4bfe883068e76ed83765fa160d8bb5727d7e93fa90",
+      "path": "l1-proof/final-semantic-scope-20260927/daemon-build.stderr.gz",
+      "sha256": "6cc1bf49f172432cf7273fe88d38fd4051f481134ff357db52dbc0fe2f6f045a"
+    },
+    "daemon.log.gz": {
+      "bytes": 235,
+      "decompressed_sha256": "8532af95e87cf0fa1ceed5ae7537e79aa1526cf3bec34b8bc9ca9858aa52c859",
+      "path": "l1-proof/final-semantic-scope-20260927/daemon.log.gz",
+      "sha256": "5788301f493928e044bdb8182544b9f468c17737a517cb3b86af2274aee134f9"
+    },
+    "dispatcher-470.jsonl.gz": {
+      "bytes": 21609,
+      "decompressed_sha256": "f7d62589fb7e80946c7b5fc57e44387f2a0d1eb618a82208d02988d8140ca4f7",
+      "path": "l1-proof/final-semantic-scope-20260927/dispatcher-470.jsonl.gz",
+      "sha256": "76953484e6fcff12e805773fd3cec02f9fece310839db47c8fdb5a7dc0be5896"
+    },
+    "dispatcher-470.stderr.gz": {
+      "bytes": 391,
+      "decompressed_sha256": "440f8e0acfefffa35ce5931427dd95f2e1190a25f3f2c7f3926b3add6883b265",
+      "path": "l1-proof/final-semantic-scope-20260927/dispatcher-470.stderr.gz",
+      "sha256": "872a3b714cfbb4075c874c4bf458baf23a860a533f365963fd022f66d445dbcd"
+    },
+    "empty-scope-red.jsonl.gz": {
+      "bytes": 11303,
+      "decompressed_sha256": "7c5a27044d3db4116a39014c6e9907adfa2d616559a180f568f9076c949f8d8b",
+      "path": "l1-proof/final-semantic-scope-20260927/empty-scope-red.jsonl.gz",
+      "sha256": "8606b0a20f2670f1db84bcf098db75c7b362a9caeb96a20b5347584e2a38e677"
+    },
+    "empty-scope-red.stderr.gz": {
+      "bytes": 413,
+      "decompressed_sha256": "a1e83a39ebbc09a969bdb7b329959721566a1350240ce7e2aabd9643bf737a62",
+      "path": "l1-proof/final-semantic-scope-20260927/empty-scope-red.stderr.gz",
+      "sha256": "17a99f988ce6a116f9e9db7997a69210c8cb5bee39132c3a0581b4f6e8b10bd3"
+    },
+    "isolated-delta.patch": {
+      "bytes": 51434,
+      "path": "l1-proof/final-semantic-scope-20260927/isolated-delta.patch",
+      "sha256": "9236b2d443b95fc2cf95863c0048d00bf4264244fc6456ae50174d8006298b9a"
+    },
+    "isolated-inputs-final.json": {
+      "bytes": 4537,
+      "path": "l1-proof/final-semantic-scope-20260927/isolated-inputs-final.json",
+      "sha256": "4279fc093161b2e2d0da688934db3ec1889ecc9b624536ee129c43b5aab1b9af"
+    },
+    "isolated-inputs-lint.json": {
+      "bytes": 4537,
+      "path": "l1-proof/final-semantic-scope-20260927/isolated-inputs-lint.json",
+      "sha256": "4279fc093161b2e2d0da688934db3ec1889ecc9b624536ee129c43b5aab1b9af"
+    },
+    "isolated-inputs-process.json": {
+      "bytes": 3778,
+      "path": "l1-proof/final-semantic-scope-20260927/isolated-inputs-process.json",
+      "sha256": "403be90c13028cc90679619c47f9daed702e25de1cd9dcc4f117da1ffa080232"
+    },
+    "native-l1.jsonl.gz": {
+      "bytes": 10785,
+      "decompressed_sha256": "4bf3953f3c564aefaecb6c3888f88d6fa745b9e6bbac61a73a0bcf01aa0afb35",
+      "path": "l1-proof/final-semantic-scope-20260927/native-l1.jsonl.gz",
+      "sha256": "98739dca76f59326c55bbf0a73dfaec8b74eddd419fadb541c1a8d6f85857593"
+    },
+    "native-l1.stderr.gz": {
+      "bytes": 362,
+      "decompressed_sha256": "6756227b2f32391615e0c4a779cc7514046f733f1d118caa632bf35c50b66b89",
+      "path": "l1-proof/final-semantic-scope-20260927/native-l1.stderr.gz",
+      "sha256": "0b02b822d237c2433237ddbf2f531452cd499a12f2b1b2ea5eec5f5bec4e1441"
+    },
+    "process.json": {
+      "bytes": 1424,
+      "path": "l1-proof/final-semantic-scope-20260927/process.json",
+      "sha256": "6b0e7ee9e56ce9f19145960829e02f12704f319cca281061191677e1c757ffcb"
+    },
+    "scope-lanes-green-pre-count.jsonl.gz": {
+      "bytes": 11264,
+      "decompressed_sha256": "f781844360f5e8100ecde54795870c35101b06bff6ecbee552b3225eef1876de",
+      "path": "l1-proof/final-semantic-scope-20260927/scope-lanes-green-pre-count.jsonl.gz",
+      "sha256": "60f2a3cc8b7b6486054da31a2f7c3cc6caf4c46deaadcf57af5f680b304ee3b0"
+    },
+    "scope-lanes-green-pre-count.stderr.gz": {
+      "bytes": 358,
+      "decompressed_sha256": "26dab527ffd423a88ce30b74f1b3c9a8009d0007cf8e1d77e54623691671bc10",
+      "path": "l1-proof/final-semantic-scope-20260927/scope-lanes-green-pre-count.stderr.gz",
+      "sha256": "b1715427f6427a3c4aa98f611a1f806aa6288f21043abbec44703598b363c402"
+    },
+    "scope-lanes-red.jsonl.gz": {
+      "bytes": 11327,
+      "decompressed_sha256": "9a74396161f2ac5a6a3f16362d58c430b2e837fcc0c04316eb24fc0211ef0cf9",
+      "path": "l1-proof/final-semantic-scope-20260927/scope-lanes-red.jsonl.gz",
+      "sha256": "d05de8bb40f713bce94699bb259f55d9af348e87620d3630ce06bcab67d88d7e"
+    },
+    "scope-lanes-red.stderr.gz": {
+      "bytes": 393,
+      "decompressed_sha256": "129e7db0c86270fdd90a769ae3e550023730741e9774de2536b96c53eede2cff",
+      "path": "l1-proof/final-semantic-scope-20260927/scope-lanes-red.stderr.gz",
+      "sha256": "41fc549eb2d65db887e597aa6b1e40477711afb4f186253afc7c81061c9e3a2f"
+    },
+    "sdk-process.jsonl.gz": {
+      "bytes": 4474,
+      "decompressed_sha256": "28241fc90bcb8f36c36a011220d90f24bd3a590ecff38f3d4ad5303fe0b1c726",
+      "path": "l1-proof/final-semantic-scope-20260927/sdk-process.jsonl.gz",
+      "sha256": "e4668369e6236fc4cb37874138044ae6a8900ac3f543ec1f4b8d88501927dbd7"
+    },
+    "searchd-lib-92.jsonl.gz": {
+      "bytes": 34504,
+      "decompressed_sha256": "1c672958669dbc068b7d3bb1f250ef06935dc776a15ceb6487f3c31708df06cc",
+      "path": "l1-proof/final-semantic-scope-20260927/searchd-lib-92.jsonl.gz",
+      "sha256": "b7da88d962ea745f315bb99eeb8ae742372fbc6be3171a2ae2a40c2a88689d71"
+    },
+    "searchd-lib-92.stderr.gz": {
+      "bytes": 302,
+      "decompressed_sha256": "b0649418415194ecccdaf10902088419c22d6b91a6fbc2d4618dc711001acfcb",
+      "path": "l1-proof/final-semantic-scope-20260927/searchd-lib-92.stderr.gz",
+      "sha256": "6ef69daccb3b33259e794b59d4eddbfac9246935bafee1ff44c8b09e8ad0357e"
+    },
+    "searchd-lib-norun.jsonl.gz": {
+      "bytes": 31981,
+      "decompressed_sha256": "a121df11fb54c59d76fb706d195a83096987a1eeca8174d9a99c53f1ae143a20",
+      "path": "l1-proof/final-semantic-scope-20260927/searchd-lib-norun.jsonl.gz",
+      "sha256": "fab0df7a6030a7c81393bcf44642536d6aa9862b8708f745d8294c19c79bd897"
+    },
+    "searchd-lib-norun.stderr.gz": {
+      "bytes": 2843,
+      "decompressed_sha256": "835e9a4be0b9f54ccfeee1f3e04836b751325886888315ff2285d38ef09e1c67",
+      "path": "l1-proof/final-semantic-scope-20260927/searchd-lib-norun.stderr.gz",
+      "sha256": "4104a265f8db37ebec2f8f1de548d59631fbee4a971e4eff96040422f2dd86e1"
+    },
+    "static-checks.json": {
+      "bytes": 1595,
+      "path": "l1-proof/final-semantic-scope-20260927/static-checks.json",
+      "sha256": "fa9ffc9cf05d8d48dbd35dcc1672ce58d5ac9344e846653d712dd00c17e4b2fd"
+    }
+  },
+  "binary": {
+    "path": "/tmp/qi-l1-final-process3/searchd-proof-bin",
+    "sha256": "d4005f208060189689d189858d3fbe3161c09cda7f6311893f5eebd40d4677df"
+  },
+  "captured_unix": 1790473511.406927,
+  "claim": {
+    "covered": "L1 semantic lexical-scope execution truth, membership, vector admission, window facts, and actual daemon/SDK query path at the process input",
+    "excluded": [
+      "concurrent shared-checkout aggregate",
+      "whole-repository CI",
+      "learned semantic relevance",
+      "performance",
+      "release and deployment"
+    ],
+    "status": "VERIFIED"
+  },
+  "head": "2102966246866398f01833bebf71396831377149",
+  "runs": {
+    "broad_clippy": {
+      "exit_code": 101,
+      "failure_class": "unrelated SDK L2 test lint, stale core ingest test contract, and ingest test lint",
+      "log": "clippy-broad-l2-failed.jsonl.gz",
+      "status": "FAILED"
+    },
+    "daemon_build": {
+      "binary_sha256": "d4005f208060189689d189858d3fbe3161c09cda7f6311893f5eebd40d4677df",
+      "command": [
+        "./scripts/cargow",
+        "build",
+        "--locked",
+        "-j",
+        "2",
+        "-p",
+        "quanta-index-searchd-runtime",
+        "--bin",
+        "quanta-index-searchd",
+        "--message-format=json"
+      ],
+      "exit_code": 0,
+      "log": "daemon-build.jsonl.gz",
+      "status": "VERIFIED"
+    },
+    "daemon_sdk_process": {
+      "command": [
+        "./scripts/cargow",
+        "test",
+        "--locked",
+        "-j",
+        "2",
+        "-p",
+        "quanta-index-sdk",
+        "--test",
+        "l1_daemon_query_contract",
+        "--message-format=json",
+        "--",
+        "--ignored"
+      ],
+      "environment": {
+        "QUANTA_INDEX_EMBEDDER": "hash-dev",
+        "QUANTA_INDEX_L1_TEST_STATE_ROOT": "/private/tmp/qi-l1-final-state-fhdn9g_0",
+        "QUANTA_INDEX_RESOURCE_WAIT_SECONDS": "3600",
+        "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_BYTES": "16777216",
+        "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_GENERATIONS": "8",
+        "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_REVISION_PAIRS": "128",
+        "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_TOTAL_BYTES": "268435456"
+      },
+      "exit_code": 0,
+      "log": "sdk-process.jsonl.gz",
+      "process_receipt": "process.json",
+      "result": "1 passed; 0 failed; 0 ignored",
+      "state_root": "/private/tmp/qi-l1-final-state-fhdn9g_0",
+      "status": "VERIFIED"
+    },
+    "dispatcher_lib": {
+      "command": [
+        "./scripts/cargow",
+        "test",
+        "--locked",
+        "-j",
+        "2",
+        "-p",
+        "quanta-index-search-plane",
+        "--lib",
+        "--message-format=json"
+      ],
+      "exit_code": 0,
+      "log": "dispatcher-470.jsonl.gz",
+      "result": "470 passed; 0 failed; 0 ignored",
+      "source_manifest": "isolated-inputs-process.json",
+      "status": "VERIFIED"
+    },
+    "empty_scope_red": {
+      "exit_code": 101,
+      "log": "empty-scope-red.jsonl.gz",
+      "result": "0 passed; 1 failed",
+      "status": "FAILED"
+    },
+    "native_l1_historical": {
+      "exit_code": 0,
+      "log": "native-l1.jsonl.gz",
+      "result": "18 passed; 0 failed",
+      "scope": "earlier shared source; see L1_ADVERSARIAL_AUDIT.json for source receipt",
+      "status": "VERIFIED"
+    },
+    "product_lib_clippy": {
+      "command": [
+        "./scripts/cargow",
+        "clippy",
+        "--locked",
+        "-j",
+        "2",
+        "-p",
+        "quanta-index-core",
+        "-p",
+        "quanta-index-semantic",
+        "-p",
+        "quanta-index-search-plane",
+        "--lib",
+        "--no-deps",
+        "--message-format=json",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "log": "clippy-libs.jsonl.gz",
+      "source_manifest": "isolated-inputs-lint.json",
+      "status": "VERIFIED"
+    },
+    "scope_lane_red": {
+      "exit_code": 101,
+      "log": "scope-lanes-red.jsonl.gz",
+      "result": "0 passed; 1 failed",
+      "status": "FAILED"
+    },
+    "sdk_l1_clippy": {
+      "command": [
+        "./scripts/cargow",
+        "clippy",
+        "--locked",
+        "-j",
+        "2",
+        "-p",
+        "quanta-index-sdk",
+        "--lib",
+        "--test",
+        "l1_daemon_query_contract",
+        "--no-deps",
+        "--message-format=json",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 0,
+      "log": "clippy-sdk-l1.jsonl.gz",
+      "source_manifest": "isolated-inputs-lint.json",
+      "status": "VERIFIED"
+    },
+    "searchd_lib_compile": {
+      "command": [
+        "./scripts/cargow",
+        "test",
+        "--locked",
+        "-j",
+        "2",
+        "-p",
+        "quanta-index-searchd",
+        "--lib",
+        "--no-run",
+        "--message-format=json"
+      ],
+      "exit_code": 0,
+      "log": "searchd-lib-norun.jsonl.gz",
+      "source_manifest": "isolated-inputs-lint.json",
+      "status": "VERIFIED"
+    },
+    "searchd_lib_tests": {
+      "command": [
+        "./scripts/cargow",
+        "test",
+        "--locked",
+        "-j",
+        "2",
+        "-p",
+        "quanta-index-searchd",
+        "--lib",
+        "--message-format=json"
+      ],
+      "exit_code": 0,
+      "log": "searchd-lib-92.jsonl.gz",
+      "result": "92 passed; 0 failed; 1 ignored",
+      "scope": "test-only SemanticSearcher implementation compiled and ran; ignored test excluded",
+      "source_manifest": "isolated-inputs-lint.json",
+      "status": "VERIFIED"
+    },
+    "static_checks": {
+      "exit_code": 0,
+      "receipt": "static-checks.json",
+      "status": "VERIFIED"
+    },
+    "whole_repo_ci": {
+      "status": "NOT_RUN"
+    }
+  },
+  "schema": "l1-final-code-audit.v1",
+  "source": {
+    "behavior_to_lint_changed_files": [
+      "crates/quanta-index-core/src/domains/lexical/collection_budget.rs",
+      "crates/quanta-index-core/src/domains/source_publication.rs",
+      "crates/quanta-index-sdk/tests/l1_daemon_query_contract.rs",
+      "crates/quanta-index-search-plane/src/query_dispatcher/tests/execution_truth.rs",
+      "crates/quanta-index-semantic/src/build.rs"
+    ],
+    "cargo_lock_sha256": "58dda6f980fd3d2ad4975b3be18c74e60351be045d78206728f88475a6ba6bbc",
+    "isolated_lint_baseline_fixes": [
+      "crates/quanta-index-lexical/src/text_docs.rs",
+      "crates/quanta-index-lexical/src/budgeted_search.rs",
+      "crates/quanta-index-search-plane/src/ingest_dispatcher/search_corpus.rs",
+      "crates/quanta-index-search-plane/src/readiness/activation_catalog.rs",
+      "crates/quanta-index-search-plane/src/readiness/activation_catalog/repository_envelope.rs",
+      "crates/quanta-index-search-plane/src/readiness/activation_catalog/source_events.rs",
+      "crates/quanta-index-core/src/domains/lexical/collection_budget.rs",
+      "crates/quanta-index-core/src/domains/source_publication.rs",
+      "crates/quanta-index-semantic/src/build.rs"
+    ],
+    "isolated_worktree": "/Users/songmin/.codex/worktrees/l1-final-audit/quanta-index",
+    "lint_patch_sha256": "9236b2d443b95fc2cf95863c0048d00bf4264244fc6456ae50174d8006298b9a",
+    "owned_files_shared_isolated_equal_count": 8,
+    "process_patch_sha256": "6c8e839e868f50268bf02d40ec0f940f1738bba280dccc6c39fab280f1d9d78e",
+    "rustc": "rustc 1.92.0 (ded5c06cf 2025-12-08)",
+    "shared_checkout": "/Users/songmin/Documents/code-new/quanta-index"
+  }
+}

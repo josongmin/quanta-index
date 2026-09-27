@@ -17,6 +17,10 @@ name = "runtime_fast_suite"
 path = "tests/runtime_fast_suite.rs"
 
 [[test]]
+name = "l4_preview_sdk"
+path = "tests/l4_preview_sdk.rs"
+
+[[test]]
 name = "runtime_risk_suite"
 path = "tests/runtime_risk_suite.rs"
 

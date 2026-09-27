@@ -1,15 +1,16 @@
 {
   "classification": "VERIFIED",
-  "evidence_scope": "Individual owner-local passing regressions only. VERIFIED requirement rows are scoped to these listed cases, not exhaustive or installed product qualification.",
-  "head": "5571132655a83824731e7909b0e310951edad52b",
+  "evidence_scope": "Observed owner-local regressions plus the executed real-daemon SDK query contract. Each claim remains bounded to its receipt; no repository or clean-commit qualification.",
+  "head": "2102966246866398f01833bebf71396831377149",
   "historical_classification": "FAILED",
   "historical_head": "98601a66d8cab9c86232b3e62ce490c8b43b71b6",
   "historical_source_union_sha256": "f441ed82d5dfe9ee3f4034820603734e182c47a403224c03bf3fef15720ed593",
-  "latest_evidence": "L1_RCA.json",
+  "latest_evidence": "L1_ADVERSARIAL_AUDIT.json",
   "purpose": "Requirement-to-evidence map; test existence and this file do not establish completion.",
   "remaining": [
-    "Repository/daemon/SDK qualification NOT_RUN",
-    "Full repository lint NOT_RUN; scoped lint in L1_RCA.json"
+    "Repository-wide CI and clean-commit qualification NOT_RUN",
+    "Remaining preventive stored-row fault-injection/property matrix NOT_RUN",
+    "Full repository lint NOT_RUN; scoped isolated lint VERIFIED in L1_ADVERSARIAL_AUDIT.json"
   ],
   "requirements": [
     {

@@ -1,0 +1,1354 @@
+{
+  "acceptance": "User accepts observed successful executions. Concurrent changes are provenance, not a reason to rerun passed tests. Results do not claim clean-commit or repository qualification.",
+  "auxiliary": [
+    {
+      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-public-process-1.json",
+      "raw_sha256": "62053bc39fe452dd0a97137f83bda808c23534b2ded4cfc3b52a5badfa163c98",
+      "sha256": "62053bc39fe452dd0a97137f83bda808c23534b2ded4cfc3b52a5badfa163c98"
+    },
+    {
+      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-public-process-2.json",
+      "raw_sha256": "8fd60b6804cdba51bc8258ed86cd07504cb3d22a95f55d65cda373f72f845e07",
+      "sha256": "8fd60b6804cdba51bc8258ed86cd07504cb3d22a95f55d65cda373f72f845e07"
+    },
+    {
+      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-public-process-3.json",
+      "raw_sha256": "107fb088565f16029aaac9a34fe8e8b090eaef9e55058b96e27fd563de260f61",
+      "sha256": "107fb088565f16029aaac9a34fe8e8b090eaef9e55058b96e27fd563de260f61"
+    },
+    {
+      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-public-process-4.json",
+      "raw_sha256": "abbfce766b98e77cdebe50fc91155912ca82b9b3d4b54568b44a4096d1f714e4",
+      "sha256": "abbfce766b98e77cdebe50fc91155912ca82b9b3d4b54568b44a4096d1f714e4"
+    },
+    {
+      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-public-daemon-1.log.gz",
+      "raw_sha256": "8532af95e87cf0fa1ceed5ae7537e79aa1526cf3bec34b8bc9ca9858aa52c859",
+      "sha256": "5788301f493928e044bdb8182544b9f468c17737a517cb3b86af2274aee134f9"
+    },
+    {
+      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-public-daemon-2.log.gz",
+      "raw_sha256": "8532af95e87cf0fa1ceed5ae7537e79aa1526cf3bec34b8bc9ca9858aa52c859",
+      "sha256": "5788301f493928e044bdb8182544b9f468c17737a517cb3b86af2274aee134f9"
+    },
+    {
+      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-public-daemon-3.log.gz",
+      "raw_sha256": "8532af95e87cf0fa1ceed5ae7537e79aa1526cf3bec34b8bc9ca9858aa52c859",
+      "sha256": "5788301f493928e044bdb8182544b9f468c17737a517cb3b86af2274aee134f9"
+    },
+    {
+      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-public-daemon-4.log.gz",
+      "raw_sha256": "8532af95e87cf0fa1ceed5ae7537e79aa1526cf3bec34b8bc9ca9858aa52c859",
+      "sha256": "5788301f493928e044bdb8182544b9f468c17737a517cb3b86af2274aee134f9"
+    },
+    {
+      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/run-audit.py",
+      "raw_sha256": "e2955162353b7178b5850f37b9548bd62ce1624eaefebb153952d4623a5d844d",
+      "sha256": "e2955162353b7178b5850f37b9548bd62ce1624eaefebb153952d4623a5d844d"
+    },
+    {
+      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/snapshot-audit.py",
+      "raw_sha256": "4493872e1282c80fabadcc028d268f3fd642db505386d438b0e492506419df8f",
+      "sha256": "4493872e1282c80fabadcc028d268f3fd642db505386d438b0e492506419df8f"
+    },
+    {
+      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/public.py",
+      "raw_sha256": "ab8eb4058ffbe23b1e8902c56cef250ebad339797bc6feea44e82053d641e82a",
+      "sha256": "ab8eb4058ffbe23b1e8902c56cef250ebad339797bc6feea44e82053d641e82a"
+    },
+    {
+      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-static.json",
+      "raw_sha256": "9d8c76a74652075b4ae352a7cbc502642fb7bb0eb4284845187919c434db92ce",
+      "sha256": "9d8c76a74652075b4ae352a7cbc502642fb7bb0eb4284845187919c434db92ce"
+    },
+    {
+      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-owned.patch",
+      "raw_sha256": "14166c2c6e9827b188b965de02a3ced4cc8c40333a13db6f9d55d58f295c9f69",
+      "sha256": "14166c2c6e9827b188b965de02a3ced4cc8c40333a13db6f9d55d58f295c9f69"
+    },
+    {
+      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-clippy-sdk-inputs.json",
+      "raw_sha256": "9ef7a43e1c0023f622a04c597bbdcff8d5a6260d18fb2c51cee17fd1dd1e6910",
+      "sha256": "9ef7a43e1c0023f622a04c597bbdcff8d5a6260d18fb2c51cee17fd1dd1e6910"
+    },
+    {
+      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-owned-source-retention.json",
+      "raw_sha256": "3222eb66a9d7cb7e8064fcd51f1d891fda007d4dadbcaee69a4f1c92727f99a5",
+      "sha256": "3222eb66a9d7cb7e8064fcd51f1d891fda007d4dadbcaee69a4f1c92727f99a5"
+    },
+    {
+      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-isolated-inputs.json",
+      "raw_sha256": "abd426ae2439e49b5cf5733a45398998896f6429b7223945c03b283dfda98399",
+      "sha256": "abd426ae2439e49b5cf5733a45398998896f6429b7223945c03b283dfda98399"
+    },
+    {
+      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/run-isolated.py",
+      "raw_sha256": "7f50d11216661c2be2579b52a53bd8fd9a72a40fd2db9f99369b506c52d4cc66",
+      "sha256": "7f50d11216661c2be2579b52a53bd8fd9a72a40fd2db9f99369b506c52d4cc66"
+    },
+    {
+      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/snapshot-isolated.py",
+      "raw_sha256": "4cda16955be1df6cfe795b61db3863afab270ac20a9810576aa4e4c3b44e656f",
+      "sha256": "4cda16955be1df6cfe795b61db3863afab270ac20a9810576aa4e4c3b44e656f"
+    },
+    {
+      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-lint-hygiene.json",
+      "raw_sha256": "07e8d3932c7e3a4d69c802be0b9d544200c31cd2f21345bd036e835394671ce6",
+      "sha256": "07e8d3932c7e3a4d69c802be0b9d544200c31cd2f21345bd036e835394671ce6"
+    },
+    {
+      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-lint-hygiene.patch",
+      "raw_sha256": "4392fe50f53955df56d669dca62041f9e425ba40e81daa353a97f8f4d2d56d17",
+      "sha256": "4392fe50f53955df56d669dca62041f9e425ba40e81daa353a97f8f4d2d56d17"
+    },
+    {
+      "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-static-format-failed.json",
+      "raw_sha256": "1a61143258b859dcab6db50ed303e82ea63be5262ed3198297695b8a449e3489",
+      "sha256": "1a61143258b859dcab6db50ed303e82ea63be5262ed3198297695b8a449e3489"
+    }
+  ],
+  "dirty": " M crates/quanta-index-lexical/src/budgeted_search.rs\n M crates/quanta-index-lexical/src/text_docs.rs\n M crates/quanta-index-lexical/tests/l3_exact_source.rs\n M crates/quanta-index-sdk/tests/l1_daemon_query_contract.rs\n M crates/quanta-index-sdk/tests/l2_daemon_publication.rs\n M crates/quanta-index-search-plane/src/ingest_dispatcher/search_corpus.rs\n M crates/quanta-index-search-plane/src/readiness/activation_catalog.rs\n M crates/quanta-index-search-plane/src/readiness/activation_catalog/repository_envelope.rs\n M crates/quanta-index-search-plane/src/readiness/activation_catalog/source_events.rs\n M docs/plans/sep-27-code-search-remediation/handoffs/L5_HANDOFF.md\n M docs/plans/sep-27-code-search-remediation/handoffs/L5_HANDOFF.source.json\n M docs/plans/sep-27-code-search-remediation/handoffs/L5_TEST_MIGRATION.json\n M docs/plans/sep-27-code-search-remediation/rfcs/CS-PROD-01-parser-coverage-and-vite.md\n M docs/plans/sep-27-misc/tickets/INDEX.md\n?? docs/plans/sep-27-code-search-remediation/handoffs/L5_DEFINITION_AUDIT.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/L5_DEFINITION_AUDIT.md\n?? docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-owner-current-fixed.started.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-owner-current.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-owner-current.started.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/process-crash-matrix-final.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/process-crash-matrix-final.started.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/process-crash-matrix.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/process-crash-matrix.started.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/process-daemon-current-build.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/process-daemon-current-build.started.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/process-daemon-current-fixed.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/process-daemon-current-fixed.started.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/process-retention-crash.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/process-retention-crash.started.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/process-sdk-state-root.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/authority-id/\n?? docs/plans/sep-27-code-search-remediation/handoffs/l5-proof/definition-audit-20260927/\n",
+  "excluded": [
+    "Repository-wide CI and unrelated owner work",
+    "Clean-commit qualification",
+    "Learned semantic relevance or performance",
+    "Release/deployment",
+    "The RFC remaining preventive stored-row fault-injection/property matrix is not newly claimed by this query-admission repair"
+  ],
+  "findings": [
+    {
+      "fix": "One hybrid lexical planning owner used by search, seed and explain; semantic lexical scopes use the same original-query primitive-admission boundary.",
+      "id": "L1-AUDIT-01",
+      "priority": "P2",
+      "root_cause": "Composite lexical callers composed language contradictions before invoking mandatory primitive admission. Three hybrid entry points duplicated preparation.",
+      "status": "VERIFIED"
+    },
+    {
+      "fix": "Top-level scope validation selects the actual executor via uses_unindexed_scan and reuses manual_filter_regex; indexed predicate subplans keep indexed grammar.",
+      "id": "L1-AUDIT-02",
+      "priority": "P2",
+      "root_cause": "Primitive preflight unconditionally applied indexed Tantivy scope grammar to valid manual-scan filters.",
+      "status": "VERIFIED"
+    }
+  ],
+  "head": "2102966246866398f01833bebf71396831377149",
+  "rails": [
+    {
+      "after": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-clippy-1.after.json",
+        "raw_sha256": "5a4f634e3ffe872f852cff44a8071ededc228e621d008290892d863ef9ed7c2c",
+        "sha256": "5a4f634e3ffe872f852cff44a8071ededc228e621d008290892d863ef9ed7c2c"
+      },
+      "artifacts": [],
+      "before": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-clippy-1.before.json",
+        "raw_sha256": "0689a81e4caa3b0e9a94616b26bb6e114d86a0105c61d39cf536cf79576ddbf9",
+        "sha256": "0689a81e4caa3b0e9a94616b26bb6e114d86a0105c61d39cf536cf79576ddbf9"
+      },
+      "command": [
+        "./scripts/cargow",
+        "clippy",
+        "--locked",
+        "-j",
+        "2",
+        "-p",
+        "quanta-index-search-plane",
+        "-p",
+        "quanta-index-lexical",
+        "-p",
+        "quanta-index-sdk",
+        "--lib",
+        "--test",
+        "l1_query_domain_window",
+        "--test",
+        "l1_daemon_query_contract",
+        "--no-deps",
+        "--message-format=json",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "counts": null,
+      "exit_code": 101,
+      "label": "audit-clippy-1",
+      "log": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-clippy-1.log.gz",
+        "raw_sha256": "2515d2f229e0ff798c9b178819fbcd474c11d09522e4ff5c51898fa3321b71c8",
+        "sha256": "0a952af9e1f552d6485374a3de28d488c4ae38788df142babf47ab882bbac82c"
+      },
+      "receipt": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-clippy-1.receipt.json",
+        "raw_sha256": "b232b5f48e1422d827756c9700e72e048ad4af8f6a57a7dca2dc33109cf3f8fc",
+        "sha256": "b232b5f48e1422d827756c9700e72e048ad4af8f6a57a7dca2dc33109cf3f8fc"
+      },
+      "source_changed": [],
+      "status": "FAILED",
+      "terminals": []
+    },
+    {
+      "after": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-clippy-2.after.json",
+        "raw_sha256": "3a27c6ffb5fb0b6f8455f32df76fb21bbb9cc9119ae6d382ba69cfbb8ce9d461",
+        "sha256": "3a27c6ffb5fb0b6f8455f32df76fb21bbb9cc9119ae6d382ba69cfbb8ce9d461"
+      },
+      "artifacts": [],
+      "before": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-clippy-2.before.json",
+        "raw_sha256": "1c523620f9ee6999e2dd69ef9207da2fecd85379fbd0a291f6b050e5a101757c",
+        "sha256": "1c523620f9ee6999e2dd69ef9207da2fecd85379fbd0a291f6b050e5a101757c"
+      },
+      "command": [
+        "./scripts/cargow",
+        "clippy",
+        "--locked",
+        "-j",
+        "2",
+        "-p",
+        "quanta-index-search-plane",
+        "-p",
+        "quanta-index-lexical",
+        "-p",
+        "quanta-index-sdk",
+        "--lib",
+        "--test",
+        "l1_query_domain_window",
+        "--test",
+        "l1_daemon_query_contract",
+        "--no-deps",
+        "--message-format=json",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "counts": null,
+      "exit_code": 101,
+      "label": "audit-clippy-2",
+      "log": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-clippy-2.log.gz",
+        "raw_sha256": "11eb0f4f3e77e73415fd14beeea34c51fc6b66c87b334e06bf8af1797e5bebd2",
+        "sha256": "7de039a461e2606f068abddde8e1fdefdd6ff044e10782ed7281ebe886014b52"
+      },
+      "receipt": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-clippy-2.receipt.json",
+        "raw_sha256": "3ae452412839c68649f458d05d28c2de12feb1edf93dd7054a52ab012c934c0a",
+        "sha256": "3ae452412839c68649f458d05d28c2de12feb1edf93dd7054a52ab012c934c0a"
+      },
+      "source_changed": [
+        "crates/quanta-index-lexical/src/budgeted_search.rs",
+        "crates/quanta-index-lexical/src/ranked_page.rs",
+        "crates/quanta-index-lexical/src/ranked_page_tests.rs",
+        "crates/quanta-index-lexical/src/searcher/candidates.rs",
+        "crates/quanta-index-lexical/src/text_docs.rs",
+        "crates/quanta-index-sdk/Cargo.toml",
+        "crates/quanta-index-sdk/src/batch.rs",
+        "crates/quanta-index-sdk/src/binding.rs",
+        "crates/quanta-index-sdk/src/client.rs",
+        "crates/quanta-index-sdk/src/config.rs",
+        "crates/quanta-index-sdk/src/error.rs",
+        "crates/quanta-index-sdk/src/generations.rs",
+        "crates/quanta-index-sdk/src/history.rs",
+        "crates/quanta-index-sdk/src/lexical.rs",
+        "crates/quanta-index-sdk/src/lib.rs",
+        "crates/quanta-index-sdk/src/namespace.rs",
+        "crates/quanta-index-sdk/src/observability.rs",
+        "crates/quanta-index-sdk/src/quarantine.rs",
+        "crates/quanta-index-sdk/src/repomap.rs",
+        "crates/quanta-index-sdk/src/runtime.rs",
+        "crates/quanta-index-sdk/src/search.rs",
+        "crates/quanta-index-sdk/src/semantic.rs",
+        "crates/quanta-index-sdk/src/structural.rs",
+        "crates/quanta-index-sdk/src/symbol.rs",
+        "crates/quanta-index-sdk/src/tests.rs",
+        "crates/quanta-index-sdk/src/text_query_builder.rs",
+        "crates/quanta-index-sdk/src/transport.rs"
+      ],
+      "status": "FAILED",
+      "terminals": []
+    },
+    {
+      "after": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-clippy-3.after.json",
+        "raw_sha256": "5c6f504e735f8bc869d7ca7bd991b36b08847a6350d38c93f29635b9b106af60",
+        "sha256": "5c6f504e735f8bc869d7ca7bd991b36b08847a6350d38c93f29635b9b106af60"
+      },
+      "artifacts": [],
+      "before": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-clippy-3.before.json",
+        "raw_sha256": "6d735cd29f696d7d1e8986dc827dedef72524f2a480b85344fd15cc5c2f74f32",
+        "sha256": "6d735cd29f696d7d1e8986dc827dedef72524f2a480b85344fd15cc5c2f74f32"
+      },
+      "command": [
+        "./scripts/cargow",
+        "clippy",
+        "--locked",
+        "-j",
+        "2",
+        "-p",
+        "quanta-index-search-plane",
+        "-p",
+        "quanta-index-lexical",
+        "-p",
+        "quanta-index-sdk",
+        "--lib",
+        "--test",
+        "l1_query_domain_window",
+        "--test",
+        "l1_daemon_query_contract",
+        "--no-deps",
+        "--message-format=json",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "counts": null,
+      "exit_code": 101,
+      "label": "audit-clippy-3",
+      "log": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-clippy-3.log.gz",
+        "raw_sha256": "ecc66f8d452e247dedc14327e3a3ecf20d76e320147f9d63999c1523cc77b790",
+        "sha256": "b13677b05bb177e430f3151faceab2f57f132e3d0eaeb81d9a8a2f6990c59a56"
+      },
+      "receipt": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-clippy-3.receipt.json",
+        "raw_sha256": "a19fb6c310f751f42bc35eb9e64c85b4377f1213a0da5318e0e361fa5cd17a57",
+        "sha256": "a19fb6c310f751f42bc35eb9e64c85b4377f1213a0da5318e0e361fa5cd17a57"
+      },
+      "source_changed": [
+        "crates/quanta-index-lexical/src/budgeted_search.rs"
+      ],
+      "status": "FAILED",
+      "terminals": []
+    },
+    {
+      "after": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-clippy-isolated-1.after.json",
+        "raw_sha256": "45076fc8526613c0cd8082dec7887ea46a0dfb868c84e4e1be0f73b6550d2c69",
+        "sha256": "45076fc8526613c0cd8082dec7887ea46a0dfb868c84e4e1be0f73b6550d2c69"
+      },
+      "artifacts": [],
+      "before": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-clippy-isolated-1.before.json",
+        "raw_sha256": "45076fc8526613c0cd8082dec7887ea46a0dfb868c84e4e1be0f73b6550d2c69",
+        "sha256": "45076fc8526613c0cd8082dec7887ea46a0dfb868c84e4e1be0f73b6550d2c69"
+      },
+      "command": [
+        "./scripts/cargow",
+        "clippy",
+        "--locked",
+        "-j",
+        "2",
+        "-p",
+        "quanta-index-search-plane",
+        "-p",
+        "quanta-index-lexical",
+        "-p",
+        "quanta-index-sdk",
+        "--lib",
+        "--test",
+        "l1_query_domain_window",
+        "--test",
+        "l1_daemon_query_contract",
+        "--no-deps",
+        "--message-format=json",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "counts": null,
+      "exit_code": 101,
+      "label": "audit-clippy-isolated-1",
+      "log": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-clippy-isolated-1.log.gz",
+        "raw_sha256": "2dbb434910698f21c21222a78a89b77b4309ca851f940a3cfd7ac5d3a594f57a",
+        "sha256": "4964babf2e8062c18cf648671ef2e0e7349baad6f5874fdb7cf7260c2719a119"
+      },
+      "receipt": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-clippy-isolated-1.receipt.json",
+        "raw_sha256": "636605321801f6de76ddda2c50af762af4053f8ff1a6d773d88061304948eec2",
+        "sha256": "636605321801f6de76ddda2c50af762af4053f8ff1a6d773d88061304948eec2"
+      },
+      "source_changed": [],
+      "status": "FAILED",
+      "terminals": []
+    },
+    {
+      "after": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-clippy-isolated-2.after.json",
+        "raw_sha256": "f74635fbd6cf0056cbcb44c2e99ddaa9df7599c25f19c4930954db619253a0a6",
+        "sha256": "f74635fbd6cf0056cbcb44c2e99ddaa9df7599c25f19c4930954db619253a0a6"
+      },
+      "artifacts": [],
+      "before": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-clippy-isolated-2.before.json",
+        "raw_sha256": "f74635fbd6cf0056cbcb44c2e99ddaa9df7599c25f19c4930954db619253a0a6",
+        "sha256": "f74635fbd6cf0056cbcb44c2e99ddaa9df7599c25f19c4930954db619253a0a6"
+      },
+      "command": [
+        "./scripts/cargow",
+        "clippy",
+        "--locked",
+        "-j",
+        "2",
+        "-p",
+        "quanta-index-search-plane",
+        "-p",
+        "quanta-index-lexical",
+        "-p",
+        "quanta-index-sdk",
+        "--lib",
+        "--test",
+        "l1_query_domain_window",
+        "--test",
+        "l1_daemon_query_contract",
+        "--no-deps",
+        "--message-format=json",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "counts": null,
+      "exit_code": 101,
+      "label": "audit-clippy-isolated-2",
+      "log": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-clippy-isolated-2.log.gz",
+        "raw_sha256": "f5ce06f483d539490525b275fbff4ee773f48480baf2827716f0040cb0ea1ac1",
+        "sha256": "814ff0fa93f4231d806456a7bc7b10994e717b8ced784c24b71116a7eeed2aad"
+      },
+      "receipt": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-clippy-isolated-2.receipt.json",
+        "raw_sha256": "eef7b01124e88eafa4ebc695837771f3b403ccf95d254e7b410a3746840becc8",
+        "sha256": "eef7b01124e88eafa4ebc695837771f3b403ccf95d254e7b410a3746840becc8"
+      },
+      "source_changed": [],
+      "status": "FAILED",
+      "terminals": []
+    },
+    {
+      "after": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-clippy-isolated-3.after.json",
+        "raw_sha256": "49484fc307f199750d103fbe20fc45d9e8b9816b03e7e2b95c009fd0f15c88d1",
+        "sha256": "49484fc307f199750d103fbe20fc45d9e8b9816b03e7e2b95c009fd0f15c88d1"
+      },
+      "artifacts": [],
+      "before": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-clippy-isolated-3.before.json",
+        "raw_sha256": "49484fc307f199750d103fbe20fc45d9e8b9816b03e7e2b95c009fd0f15c88d1",
+        "sha256": "49484fc307f199750d103fbe20fc45d9e8b9816b03e7e2b95c009fd0f15c88d1"
+      },
+      "command": [
+        "./scripts/cargow",
+        "clippy",
+        "--locked",
+        "-j",
+        "2",
+        "-p",
+        "quanta-index-search-plane",
+        "-p",
+        "quanta-index-lexical",
+        "-p",
+        "quanta-index-sdk",
+        "--lib",
+        "--test",
+        "l1_query_domain_window",
+        "--test",
+        "l1_daemon_query_contract",
+        "--no-deps",
+        "--message-format=json",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "counts": null,
+      "exit_code": 0,
+      "label": "audit-clippy-isolated-3",
+      "log": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-clippy-isolated-3.log.gz",
+        "raw_sha256": "d2e3f4ccf89a1d72d50386e74a3d77ce99988d3ba29030c796856fdd96efc820",
+        "sha256": "1563487a4f4ae6ee8135f87e8f262c8d7dc83b4d8aba1b568d015fe7464d5485"
+      },
+      "receipt": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-clippy-isolated-3.receipt.json",
+        "raw_sha256": "54924ad1c4c0a26d805fb92791f407de2683ed30291577d4b1f70cddf765bf40",
+        "sha256": "54924ad1c4c0a26d805fb92791f407de2683ed30291577d4b1f70cddf765bf40"
+      },
+      "source_changed": [],
+      "status": "VERIFIED",
+      "terminals": []
+    },
+    {
+      "after": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-composite-red-1.after.json",
+        "raw_sha256": "d69689b4726a15eb50de496e32456738e46384150226eb0f18fcfbf207f0380c",
+        "sha256": "d69689b4726a15eb50de496e32456738e46384150226eb0f18fcfbf207f0380c"
+      },
+      "artifacts": [
+        {
+          "features": [],
+          "fresh": false,
+          "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-search-plane#0.1.0",
+          "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-workspace-lane/debug/deps/quanta_index_search_plane-e705f3e83e1e2656",
+          "profile": {
+            "debug_assertions": true,
+            "debuginfo": 1,
+            "opt_level": "0",
+            "overflow_checks": true,
+            "test": true
+          },
+          "sha256": "37ff42213167899b40c37c1f554eb3a18424f692d2d663889d9541ed7d2951e9",
+          "target": {
+            "crate_types": [
+              "lib"
+            ],
+            "doc": true,
+            "doctest": true,
+            "edition": "2024",
+            "kind": [
+              "lib"
+            ],
+            "name": "quanta_index_search_plane",
+            "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-search-plane/src/lib.rs",
+            "test": true
+          }
+        }
+      ],
+      "before": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-composite-red-1.before.json",
+        "raw_sha256": "f6c7d50555e4b0f8b7e6321e35589e595d705e9f1653457c4c9933811df4d794",
+        "sha256": "f6c7d50555e4b0f8b7e6321e35589e595d705e9f1653457c4c9933811df4d794"
+      },
+      "command": [
+        "./scripts/cargow",
+        "test",
+        "--locked",
+        "-j",
+        "2",
+        "-p",
+        "quanta-index-search-plane",
+        "--lib",
+        "--message-format=json",
+        "l1_composite_routes_admit_primitives_before_language_shortcut"
+      ],
+      "counts": {
+        "failed": 1,
+        "ignored": 0,
+        "passed": 0
+      },
+      "exit_code": 101,
+      "label": "audit-composite-red-1",
+      "log": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-composite-red-1.log.gz",
+        "raw_sha256": "1377fdcb4de0d27eb3b06f088a421757c23502936c8c84303817aa2a95f15490",
+        "sha256": "31b2957348e62cfe5de4034eac5f6e7327780e50189efe486ec7b3d3531b1ac3"
+      },
+      "receipt": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-composite-red-1.receipt.json",
+        "raw_sha256": "12a313f50edc190a8b1e8a94db480760e62789355e290116e23dc5d564a20585",
+        "sha256": "12a313f50edc190a8b1e8a94db480760e62789355e290116e23dc5d564a20585"
+      },
+      "source_changed": [
+        "crates/quanta-index-core/src/request_budget.rs",
+        "crates/quanta-index-lexical/src/budgeted_search.rs",
+        "crates/quanta-index-lexical/src/ranked_page.rs",
+        "crates/quanta-index-lexical/src/ranked_page_tests.rs",
+        "crates/quanta-index-search-plane/src/ingest_dispatcher/search_corpus.rs",
+        "crates/quanta-index-search-plane/src/ingest_dispatcher/tests/search_corpus.rs",
+        "crates/quanta-index-search-plane/src/query_dispatcher/tests/execution_truth.rs",
+        "tools/ci/resource_admission.py"
+      ],
+      "status": "FAILED",
+      "terminals": [
+        "running 1 test",
+        "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 465 filtered out; finished in 0.54s"
+      ]
+    },
+    {
+      "after": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-dispatcher-green-1.after.json",
+        "raw_sha256": "e6cd3c579d9be4d66cae90a0ffdb87a3ab23ac096ebde9ed682781d516b02543",
+        "sha256": "e6cd3c579d9be4d66cae90a0ffdb87a3ab23ac096ebde9ed682781d516b02543"
+      },
+      "artifacts": [
+        {
+          "features": [],
+          "fresh": false,
+          "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-search-plane#0.1.0",
+          "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-workspace-lane/debug/deps/quanta_index_search_plane-e705f3e83e1e2656",
+          "profile": {
+            "debug_assertions": true,
+            "debuginfo": 1,
+            "opt_level": "0",
+            "overflow_checks": true,
+            "test": true
+          },
+          "sha256": "d579697dbfe09fc75e94d4452314fc2b0cf482f161472d978fec67294b6803f0",
+          "target": {
+            "crate_types": [
+              "lib"
+            ],
+            "doc": true,
+            "doctest": true,
+            "edition": "2024",
+            "kind": [
+              "lib"
+            ],
+            "name": "quanta_index_search_plane",
+            "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-search-plane/src/lib.rs",
+            "test": true
+          }
+        }
+      ],
+      "before": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-dispatcher-green-1.before.json",
+        "raw_sha256": "f1aab5d84492d96f136af4b296a71ac6b2b30a64000c5bbdbde2fbd4253071a7",
+        "sha256": "f1aab5d84492d96f136af4b296a71ac6b2b30a64000c5bbdbde2fbd4253071a7"
+      },
+      "command": [
+        "./scripts/cargow",
+        "test",
+        "--locked",
+        "-j",
+        "2",
+        "-p",
+        "quanta-index-search-plane",
+        "--lib",
+        "--message-format=json"
+      ],
+      "counts": {
+        "failed": 1,
+        "ignored": 0,
+        "passed": 465
+      },
+      "exit_code": 101,
+      "label": "audit-dispatcher-green-1",
+      "log": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-dispatcher-green-1.log.gz",
+        "raw_sha256": "5490469f41b2aedceb932210a4df9e707f9a128da55a5b6ab8c4460c01d83b5f",
+        "sha256": "0575346bf07a2a3b05a5f584e8f2c5d7370d19c52c3f1d5f7649172bc304aca4"
+      },
+      "receipt": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-dispatcher-green-1.receipt.json",
+        "raw_sha256": "a14eb1e8d4a887b13d36ab44065b13dcedf4b54adcff89442dabb5b7efa2dab0",
+        "sha256": "a14eb1e8d4a887b13d36ab44065b13dcedf4b54adcff89442dabb5b7efa2dab0"
+      },
+      "source_changed": [
+        "crates/quanta-index-core/src/domains/lexical/collection_budget.rs",
+        "crates/quanta-index-core/src/domains/lexical/coverage.rs",
+        "crates/quanta-index-core/src/domains/lexical/outbound.rs",
+        "crates/quanta-index-core/src/domains/lexical/service.rs",
+        "crates/quanta-index-core/src/request_budget.rs"
+      ],
+      "status": "FAILED",
+      "terminals": [
+        "running 466 tests",
+        "test result: FAILED. 465 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.96s"
+      ]
+    },
+    {
+      "after": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-hybrid-control-green-1.after.json",
+        "raw_sha256": "763e5b2ac82312eb2d12dd2508bfc3023db5ab849ce1e4cb1f7840d0bf43977d",
+        "sha256": "763e5b2ac82312eb2d12dd2508bfc3023db5ab849ce1e4cb1f7840d0bf43977d"
+      },
+      "artifacts": [
+        {
+          "features": [],
+          "fresh": false,
+          "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-search-plane#0.1.0",
+          "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-workspace-lane/debug/deps/quanta_index_search_plane-e705f3e83e1e2656",
+          "profile": {
+            "debug_assertions": true,
+            "debuginfo": 1,
+            "opt_level": "0",
+            "overflow_checks": true,
+            "test": true
+          },
+          "sha256": "569090181b58f5670b581e8ace773d09d95c523ed8a1395a0b03d23ae1e9122e",
+          "target": {
+            "crate_types": [
+              "lib"
+            ],
+            "doc": true,
+            "doctest": true,
+            "edition": "2024",
+            "kind": [
+              "lib"
+            ],
+            "name": "quanta_index_search_plane",
+            "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-search-plane/src/lib.rs",
+            "test": true
+          }
+        }
+      ],
+      "before": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-hybrid-control-green-1.before.json",
+        "raw_sha256": "6268c24d153b44074f999e03e0a45f0e8d023ba020dfe02f97df7af7191a1190",
+        "sha256": "6268c24d153b44074f999e03e0a45f0e8d023ba020dfe02f97df7af7191a1190"
+      },
+      "command": [
+        "./scripts/cargow",
+        "test",
+        "--locked",
+        "-j",
+        "2",
+        "-p",
+        "quanta-index-search-plane",
+        "--lib",
+        "--message-format=json",
+        "hybrid_repo_filter_excluding_the_generation_empties_both_lanes"
+      ],
+      "counts": {
+        "failed": 0,
+        "ignored": 0,
+        "passed": 1
+      },
+      "exit_code": 0,
+      "label": "audit-hybrid-control-green-1",
+      "log": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-hybrid-control-green-1.log.gz",
+        "raw_sha256": "b0e305adf32a9607fdae5cd3d8a4c104bf78baddbfd27b6b2375cfce8c272572",
+        "sha256": "b9aaba01cb21e8409780742f86bb3bd522681f8e1f761d8496d8d572b8b684ba"
+      },
+      "receipt": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-hybrid-control-green-1.receipt.json",
+        "raw_sha256": "4c2dd134be3392bb4043544e1e78afec6d04894b74e322495392c0af99d23aa7",
+        "sha256": "4c2dd134be3392bb4043544e1e78afec6d04894b74e322495392c0af99d23aa7"
+      },
+      "source_changed": [
+        "crates/quanta-index-sdk/tests/l1_daemon_query_contract.rs"
+      ],
+      "status": "VERIFIED",
+      "terminals": [
+        "running 1 test",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 465 filtered out; finished in 0.12s"
+      ]
+    },
+    {
+      "after": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-manual-scope-red-1.after.json",
+        "raw_sha256": "93253c3e4039236155be8b653debe48a706de5a97a9e151f830d2b5c911a599e",
+        "sha256": "93253c3e4039236155be8b653debe48a706de5a97a9e151f830d2b5c911a599e"
+      },
+      "artifacts": [
+        {
+          "features": [],
+          "fresh": false,
+          "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical#0.1.0",
+          "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-integration-lane/debug/dump_predicate_capabilities",
+          "profile": {
+            "debug_assertions": true,
+            "debuginfo": 1,
+            "opt_level": "0",
+            "overflow_checks": true,
+            "test": false
+          },
+          "sha256": "e3dbf2088084081950f76ad77d27f3c4d88e4c30a0797e3a305ca3faa0996d8c",
+          "target": {
+            "crate_types": [
+              "bin"
+            ],
+            "doc": true,
+            "doctest": false,
+            "edition": "2024",
+            "kind": [
+              "bin"
+            ],
+            "name": "dump_predicate_capabilities",
+            "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical/src/bin/dump_predicate_capabilities.rs",
+            "test": true
+          }
+        },
+        {
+          "features": [],
+          "fresh": false,
+          "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical#0.1.0",
+          "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-integration-lane/debug/deps/l1_query_domain_window-dbd650b8da1d3110",
+          "profile": {
+            "debug_assertions": true,
+            "debuginfo": 1,
+            "opt_level": "0",
+            "overflow_checks": true,
+            "test": true
+          },
+          "sha256": "32757bf1851bc7ef5c87e5ab688f85d3edf0c520c1c437d9821d8596be0a57a4",
+          "target": {
+            "crate_types": [
+              "bin"
+            ],
+            "doc": false,
+            "doctest": false,
+            "edition": "2024",
+            "kind": [
+              "test"
+            ],
+            "name": "l1_query_domain_window",
+            "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical/tests/l1_query_domain_window.rs",
+            "test": true
+          }
+        }
+      ],
+      "before": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-manual-scope-red-1.before.json",
+        "raw_sha256": "49e3ad5c704573ff2bc8eb8e2c659282ecfc4d2716d00a682ae191eb2e117960",
+        "sha256": "49e3ad5c704573ff2bc8eb8e2c659282ecfc4d2716d00a682ae191eb2e117960"
+      },
+      "command": [
+        "./scripts/cargow",
+        "test",
+        "--locked",
+        "-j",
+        "2",
+        "-p",
+        "quanta-index-lexical",
+        "--test",
+        "l1_query_domain_window",
+        "--message-format=json",
+        "l1_manual_scope_admission_preserves_supported_regex_grammar"
+      ],
+      "counts": {
+        "failed": 1,
+        "ignored": 0,
+        "passed": 0
+      },
+      "exit_code": 101,
+      "label": "audit-manual-scope-red-1",
+      "log": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-manual-scope-red-1.log.gz",
+        "raw_sha256": "a3caf023be03cda8f553fcb547acae57fd5660c53f2eab59c941c90f1e84c9e8",
+        "sha256": "691383dfb5f44e7ea365a3200d951b23361a6c39d33a36409c01e4a628e2ec4c"
+      },
+      "receipt": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-manual-scope-red-1.receipt.json",
+        "raw_sha256": "972611d511ced7ba81fa76d07a0ab05e59b902e32204fde3481552b3b456ad0a",
+        "sha256": "972611d511ced7ba81fa76d07a0ab05e59b902e32204fde3481552b3b456ad0a"
+      },
+      "source_changed": [],
+      "status": "FAILED",
+      "terminals": [
+        "running 1 test",
+        "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 17 filtered out; finished in 0.26s"
+      ]
+    },
+    {
+      "after": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-native-green-1.after.json",
+        "raw_sha256": "13f1057a604b4a286d498066c65760fd7cfe278a68cb73a53d745c469bfbdf35",
+        "sha256": "13f1057a604b4a286d498066c65760fd7cfe278a68cb73a53d745c469bfbdf35"
+      },
+      "artifacts": [
+        {
+          "features": [],
+          "fresh": false,
+          "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical#0.1.0",
+          "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-integration-lane/debug/dump_predicate_capabilities",
+          "profile": {
+            "debug_assertions": true,
+            "debuginfo": 1,
+            "opt_level": "0",
+            "overflow_checks": true,
+            "test": false
+          },
+          "sha256": "b973888b42d2396bb63dec6572f39b037fd1c91c2c64ed6c897d52ae7dbdcfc3",
+          "target": {
+            "crate_types": [
+              "bin"
+            ],
+            "doc": true,
+            "doctest": false,
+            "edition": "2024",
+            "kind": [
+              "bin"
+            ],
+            "name": "dump_predicate_capabilities",
+            "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical/src/bin/dump_predicate_capabilities.rs",
+            "test": true
+          }
+        },
+        {
+          "features": [],
+          "fresh": false,
+          "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical#0.1.0",
+          "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-integration-lane/debug/deps/l1_query_domain_window-dbd650b8da1d3110",
+          "profile": {
+            "debug_assertions": true,
+            "debuginfo": 1,
+            "opt_level": "0",
+            "overflow_checks": true,
+            "test": true
+          },
+          "sha256": "125cf30dea07989b6bdd0b8752bf2306f817d17843895eb60e61eb18e871e12a",
+          "target": {
+            "crate_types": [
+              "bin"
+            ],
+            "doc": false,
+            "doctest": false,
+            "edition": "2024",
+            "kind": [
+              "test"
+            ],
+            "name": "l1_query_domain_window",
+            "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-lexical/tests/l1_query_domain_window.rs",
+            "test": true
+          }
+        }
+      ],
+      "before": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-native-green-1.before.json",
+        "raw_sha256": "13f1057a604b4a286d498066c65760fd7cfe278a68cb73a53d745c469bfbdf35",
+        "sha256": "13f1057a604b4a286d498066c65760fd7cfe278a68cb73a53d745c469bfbdf35"
+      },
+      "command": [
+        "./scripts/cargow",
+        "test",
+        "--locked",
+        "-j",
+        "2",
+        "-p",
+        "quanta-index-lexical",
+        "--test",
+        "l1_query_domain_window",
+        "--message-format=json"
+      ],
+      "counts": {
+        "failed": 0,
+        "ignored": 0,
+        "passed": 18
+      },
+      "exit_code": 0,
+      "label": "audit-native-green-1",
+      "log": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-native-green-1.log.gz",
+        "raw_sha256": "97d5c9dad0d629ae79ea8bb1db9ba478b5d211b1933016c2cc8bb6333aae7933",
+        "sha256": "8b34e14be7dfcc7410603f9cb09a52301b4ac2738d7f2978284ed2738f4b9b8b"
+      },
+      "receipt": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-native-green-1.receipt.json",
+        "raw_sha256": "be88e5ca82d50dcc97c00e6a9b217f8caaa486327fe7cf8711808ba2c1158360",
+        "sha256": "be88e5ca82d50dcc97c00e6a9b217f8caaa486327fe7cf8711808ba2c1158360"
+      },
+      "source_changed": [],
+      "status": "VERIFIED",
+      "terminals": [
+        "running 18 tests",
+        "test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.53s"
+      ]
+    },
+    {
+      "after": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-public-build-1.after.json",
+        "raw_sha256": "80fa61ad5a9c6d4e809973a9b78a8a9eeedb38b28e060b4eb2b9a22201a3626c",
+        "sha256": "80fa61ad5a9c6d4e809973a9b78a8a9eeedb38b28e060b4eb2b9a22201a3626c"
+      },
+      "artifacts": [
+        {
+          "features": [],
+          "fresh": false,
+          "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-searchd-runtime#0.1.0",
+          "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/daemon-lane/debug/quanta-index-searchd",
+          "profile": {
+            "debug_assertions": true,
+            "debuginfo": 1,
+            "opt_level": "0",
+            "overflow_checks": true,
+            "test": false
+          },
+          "sha256": "6392fef5eac7a1f8bc8d8b404ce51f0065b03d0e0228f1acf028270d1ec9bf2c",
+          "target": {
+            "crate_types": [
+              "bin"
+            ],
+            "doc": false,
+            "doctest": false,
+            "edition": "2024",
+            "kind": [
+              "bin"
+            ],
+            "name": "quanta-index-searchd",
+            "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-searchd-runtime/src/bin/quanta-index-searchd.rs",
+            "test": true
+          }
+        }
+      ],
+      "before": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-public-build-1.before.json",
+        "raw_sha256": "9b22fb15c98f415a555f0be563a2b4366a95efddb9bbd28ba714d9ca141275ee",
+        "sha256": "9b22fb15c98f415a555f0be563a2b4366a95efddb9bbd28ba714d9ca141275ee"
+      },
+      "command": [
+        "./scripts/cargow",
+        "build",
+        "--locked",
+        "-j",
+        "2",
+        "-p",
+        "quanta-index-searchd-runtime",
+        "--bin",
+        "quanta-index-searchd",
+        "--message-format=json"
+      ],
+      "counts": null,
+      "exit_code": 0,
+      "label": "audit-public-build-1",
+      "log": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-public-build-1.log.gz",
+        "raw_sha256": "f3be5b8a83b1e56ce62ed831e2805f3fa0ce3cb513e3e48129946d71cd8f4020",
+        "sha256": "f93c29cf93859aabcb6de7a6083c38a075c70a7384c1bf6fa9bb47a1b71461e3"
+      },
+      "receipt": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-public-build-1.receipt.json",
+        "raw_sha256": "288724dc9e4b496410366f21120edb6c2e36125a7a27f9ff53bf655c3c1cfce2",
+        "sha256": "288724dc9e4b496410366f21120edb6c2e36125a7a27f9ff53bf655c3c1cfce2"
+      },
+      "source_changed": [],
+      "status": "VERIFIED",
+      "terminals": []
+    },
+    {
+      "after": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-public-sdk-1.after.json",
+        "raw_sha256": "f867306282da7139797504078d2e105019344b7ab20ce9bd0de2930809c903e0",
+        "sha256": "f867306282da7139797504078d2e105019344b7ab20ce9bd0de2930809c903e0"
+      },
+      "artifacts": [
+        {
+          "features": [],
+          "fresh": false,
+          "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-sdk#0.1.0",
+          "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-integration-lane/debug/deps/l1_daemon_query_contract-07fb004ef35c4dcd",
+          "profile": {
+            "debug_assertions": true,
+            "debuginfo": 1,
+            "opt_level": "0",
+            "overflow_checks": true,
+            "test": true
+          },
+          "sha256": "ea9e99103c3cef6dc1b43c6471c8e706e72cc3ea1125701301e6d0f30e562949",
+          "target": {
+            "crate_types": [
+              "bin"
+            ],
+            "doc": false,
+            "doctest": false,
+            "edition": "2024",
+            "kind": [
+              "test"
+            ],
+            "name": "l1_daemon_query_contract",
+            "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-sdk/tests/l1_daemon_query_contract.rs",
+            "test": true
+          }
+        }
+      ],
+      "before": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-public-sdk-1.before.json",
+        "raw_sha256": "80fa61ad5a9c6d4e809973a9b78a8a9eeedb38b28e060b4eb2b9a22201a3626c",
+        "sha256": "80fa61ad5a9c6d4e809973a9b78a8a9eeedb38b28e060b4eb2b9a22201a3626c"
+      },
+      "command": [
+        "./scripts/cargow",
+        "test",
+        "--locked",
+        "-j",
+        "2",
+        "-p",
+        "quanta-index-sdk",
+        "--test",
+        "l1_daemon_query_contract",
+        "--message-format=json",
+        "--",
+        "--ignored"
+      ],
+      "counts": {
+        "failed": 1,
+        "ignored": 0,
+        "passed": 0
+      },
+      "exit_code": 101,
+      "label": "audit-public-sdk-1",
+      "log": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-public-sdk-1.log.gz",
+        "raw_sha256": "7bab04045a12dfc0108ee306e5ac385ba688c9cc0f4ed76fe73a159d57782ba5",
+        "sha256": "3622c53767f837d1b376c4846d2346446f04df30c9a4e79b61597f6e4bb225fb"
+      },
+      "receipt": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-public-sdk-1.receipt.json",
+        "raw_sha256": "89a505a7efc026021f78abc25c78053bf2e073283039ead94f4a9f4af8880d8a",
+        "sha256": "89a505a7efc026021f78abc25c78053bf2e073283039ead94f4a9f4af8880d8a"
+      },
+      "source_changed": [
+        "crates/quanta-index-sdk/tests/l1_daemon_query_contract.rs"
+      ],
+      "status": "FAILED",
+      "terminals": [
+        "running 1 test",
+        "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.88s"
+      ]
+    },
+    {
+      "after": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-public-sdk-2.after.json",
+        "raw_sha256": "7ab7f4fb210a842d68ffc059a7f66b30f05911bb1ccf0d6019c9235db123a227",
+        "sha256": "7ab7f4fb210a842d68ffc059a7f66b30f05911bb1ccf0d6019c9235db123a227"
+      },
+      "artifacts": [
+        {
+          "features": [],
+          "fresh": false,
+          "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-sdk#0.1.0",
+          "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-integration-lane/debug/deps/l1_daemon_query_contract-07fb004ef35c4dcd",
+          "profile": {
+            "debug_assertions": true,
+            "debuginfo": 1,
+            "opt_level": "0",
+            "overflow_checks": true,
+            "test": true
+          },
+          "sha256": "b0613383270f62efe40a42cee667c25496e41edbcbdda0855debdce735c5763c",
+          "target": {
+            "crate_types": [
+              "bin"
+            ],
+            "doc": false,
+            "doctest": false,
+            "edition": "2024",
+            "kind": [
+              "test"
+            ],
+            "name": "l1_daemon_query_contract",
+            "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-sdk/tests/l1_daemon_query_contract.rs",
+            "test": true
+          }
+        }
+      ],
+      "before": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-public-sdk-2.before.json",
+        "raw_sha256": "cf342cb8a2863b25a0f89e8babb67040a1c445f9639f3bb40cbb90de367ab36e",
+        "sha256": "cf342cb8a2863b25a0f89e8babb67040a1c445f9639f3bb40cbb90de367ab36e"
+      },
+      "command": [
+        "./scripts/cargow",
+        "test",
+        "--locked",
+        "-j",
+        "2",
+        "-p",
+        "quanta-index-sdk",
+        "--test",
+        "l1_daemon_query_contract",
+        "--message-format=json",
+        "--",
+        "--ignored"
+      ],
+      "counts": {
+        "failed": 1,
+        "ignored": 0,
+        "passed": 0
+      },
+      "exit_code": 101,
+      "label": "audit-public-sdk-2",
+      "log": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-public-sdk-2.log.gz",
+        "raw_sha256": "f46caf56a60c0716eae1c74f2d18668d76f94f1614247830a068be797a7e09b0",
+        "sha256": "56d285293818ca5ddcc11d2d2d9029d90230770a8926162cde4cd4e25f6c0e2c"
+      },
+      "receipt": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-public-sdk-2.receipt.json",
+        "raw_sha256": "5bf6f2c66d9179f6987d311d3125f86f8d5f445cd929902b0df186c6e014c6e4",
+        "sha256": "5bf6f2c66d9179f6987d311d3125f86f8d5f445cd929902b0df186c6e014c6e4"
+      },
+      "source_changed": [],
+      "status": "FAILED",
+      "terminals": [
+        "running 1 test",
+        "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.67s"
+      ]
+    },
+    {
+      "after": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-public-sdk-3.after.json",
+        "raw_sha256": "fefdf81fcf125ac31c125d3c9d1b41bae63d3236664803e4b94b10cd76d993ca",
+        "sha256": "fefdf81fcf125ac31c125d3c9d1b41bae63d3236664803e4b94b10cd76d993ca"
+      },
+      "artifacts": [
+        {
+          "features": [],
+          "fresh": false,
+          "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-sdk#0.1.0",
+          "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-integration-lane/debug/deps/l1_daemon_query_contract-07fb004ef35c4dcd",
+          "profile": {
+            "debug_assertions": true,
+            "debuginfo": 1,
+            "opt_level": "0",
+            "overflow_checks": true,
+            "test": true
+          },
+          "sha256": "53176f87926223349deee2dbadb4046a9d092bc3b90b2537643117ff8e8c2b99",
+          "target": {
+            "crate_types": [
+              "bin"
+            ],
+            "doc": false,
+            "doctest": false,
+            "edition": "2024",
+            "kind": [
+              "test"
+            ],
+            "name": "l1_daemon_query_contract",
+            "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-sdk/tests/l1_daemon_query_contract.rs",
+            "test": true
+          }
+        }
+      ],
+      "before": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-public-sdk-3.before.json",
+        "raw_sha256": "9c6dd14016c4180eeb79f0844268ff69230c36c472b99918ef7bdd80077bbbdc",
+        "sha256": "9c6dd14016c4180eeb79f0844268ff69230c36c472b99918ef7bdd80077bbbdc"
+      },
+      "command": [
+        "./scripts/cargow",
+        "test",
+        "--locked",
+        "-j",
+        "2",
+        "-p",
+        "quanta-index-sdk",
+        "--test",
+        "l1_daemon_query_contract",
+        "--message-format=json",
+        "--",
+        "--ignored"
+      ],
+      "counts": {
+        "failed": 1,
+        "ignored": 0,
+        "passed": 0
+      },
+      "exit_code": 101,
+      "label": "audit-public-sdk-3",
+      "log": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-public-sdk-3.log.gz",
+        "raw_sha256": "c89627f9f91c91f8631c51725ccdbf122aba13987144524b5d94ffa63c5a1613",
+        "sha256": "8a2bf70cc505be38456d08f31c6397219ada88eb93e261a2ffbbe6e49b3f29be"
+      },
+      "receipt": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-public-sdk-3.receipt.json",
+        "raw_sha256": "f8bc9aafc8ea4cfb59816a9d5b80b231db9c5e6e4393905060bd1ed2d9cf11d8",
+        "sha256": "f8bc9aafc8ea4cfb59816a9d5b80b231db9c5e6e4393905060bd1ed2d9cf11d8"
+      },
+      "source_changed": [
+        "crates/quanta-index-lexical/src/ranked_page_tests.rs"
+      ],
+      "status": "FAILED",
+      "terminals": [
+        "running 1 test",
+        "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.71s"
+      ]
+    },
+    {
+      "after": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-public-sdk-4.after.json",
+        "raw_sha256": "accdabe51a361b74e7370281a2c2c93d145328b5987b0a3386196e3993c79aba",
+        "sha256": "accdabe51a361b74e7370281a2c2c93d145328b5987b0a3386196e3993c79aba"
+      },
+      "artifacts": [
+        {
+          "features": [],
+          "fresh": false,
+          "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-sdk#0.1.0",
+          "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-integration-lane/debug/deps/l1_daemon_query_contract-07fb004ef35c4dcd",
+          "profile": {
+            "debug_assertions": true,
+            "debuginfo": 1,
+            "opt_level": "0",
+            "overflow_checks": true,
+            "test": true
+          },
+          "sha256": "28ea0a13735f6bdb049fda11335b69b3b6bd9818d4de3af70df6e49d09460549",
+          "target": {
+            "crate_types": [
+              "bin"
+            ],
+            "doc": false,
+            "doctest": false,
+            "edition": "2024",
+            "kind": [
+              "test"
+            ],
+            "name": "l1_daemon_query_contract",
+            "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-sdk/tests/l1_daemon_query_contract.rs",
+            "test": true
+          }
+        }
+      ],
+      "before": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-public-sdk-4.before.json",
+        "raw_sha256": "accdabe51a361b74e7370281a2c2c93d145328b5987b0a3386196e3993c79aba",
+        "sha256": "accdabe51a361b74e7370281a2c2c93d145328b5987b0a3386196e3993c79aba"
+      },
+      "command": [
+        "./scripts/cargow",
+        "test",
+        "--locked",
+        "-j",
+        "2",
+        "-p",
+        "quanta-index-sdk",
+        "--test",
+        "l1_daemon_query_contract",
+        "--message-format=json",
+        "--",
+        "--ignored"
+      ],
+      "counts": {
+        "failed": 0,
+        "ignored": 0,
+        "passed": 1
+      },
+      "exit_code": 0,
+      "label": "audit-public-sdk-4",
+      "log": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-public-sdk-4.log.gz",
+        "raw_sha256": "928956f8e4f0dd89598f7507e7470be95f4e28c078619607b239b58cca095221",
+        "sha256": "a9380d037c78c9b18eb90a81c0d8907df728c460614c12fd0f4f871969b10e88"
+      },
+      "receipt": {
+        "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/audit-public-sdk-4.receipt.json",
+        "raw_sha256": "c938d104cd9c7341e3b74b7fe78c3bef0aa6bf23145433c17e9d40afb54fbf8b",
+        "sha256": "c938d104cd9c7341e3b74b7fe78c3bef0aa6bf23145433c17e9d40afb54fbf8b"
+      },
+      "source_changed": [],
+      "status": "VERIFIED",
+      "terminals": [
+        "running 1 test",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.07s"
+      ]
+    }
+  ],
+  "remaining_reproduced_p0_p2": [],
+  "scope": "L1 query/domain/window primitive admission: lexical, Symbol, hybrid, seed, scoped semantic and query explain; native indexed/manual execution; actual daemon SDK changed public paths",
+  "source": {
+    "crates/quanta-index-lexical/src/budgeted_search.rs": "d19b0b68e9b884db5332147cf0b549347590e21629706a8aaa9d64f661bd3d41",
+    "crates/quanta-index-lexical/src/query_admission.rs": "7a4571d35ae465fdb3f992c31da2e2df6c6cf1740bfa7924f37f89a8b04b9be9",
+    "crates/quanta-index-lexical/src/searcher/manual_scan.rs": "05bc11af63a4df4153996229fbb5d69cbaf90cfaa4cbdb9e297b4b84dd6dfa8e",
+    "crates/quanta-index-lexical/src/searcher/prepare.rs": "f9021014a191d3955c571af9a141369fbba7bef22bdbba167ab49adbbc484239",
+    "crates/quanta-index-lexical/src/text_docs.rs": "19329340676cad99ccf8a99c138b38eb42267fe43162d3a75b1d040d9a8d8f93",
+    "crates/quanta-index-lexical/tests/l1_query_domain_window.rs": "e3343d98262d14f6332886966420434a062d4822f6036c803706924568178d42",
+    "crates/quanta-index-sdk/src/binding.rs": "c939c3d1dbde330707fcede9aba81b02f8c0f5d41f977dc918c4ffeab64540f9",
+    "crates/quanta-index-sdk/tests/l1_daemon_query_contract.rs": "19e318fb306cf6e2706821feb97bcdc6b96cf40ccea15194868c801818fc038a",
+    "crates/quanta-index-search-plane/src/ingest_dispatcher/search_corpus.rs": "505d6bcac1a76dd4d1385a1ca37805f8949c06d027c41377867eeac27c7cbdc2",
+    "crates/quanta-index-search-plane/src/query_dispatcher/planning.rs": "7b3d832b4094de1e718926b450041ea83f36df078268220cb56672e6952e7234",
+    "crates/quanta-index-search-plane/src/query_dispatcher/routes/explain.rs": "598592547cecb9f737c7be27c540c7a0182ef26950a47d48de14f52c0e697b0f",
+    "crates/quanta-index-search-plane/src/query_dispatcher/routes/hybrid.rs": "59064fe020fbc98ce66291706a51c0d334db34c128b7d45316b216a808378522",
+    "crates/quanta-index-search-plane/src/query_dispatcher/routes/hybrid_seed.rs": "20e5a79fc083643a8290d30c1033cbb92d6f96bb1960f340cc8f338f7158a19b",
+    "crates/quanta-index-search-plane/src/query_dispatcher/routes/semantic.rs": "b53c85ac7215bd68b02ead5b27015a92dbb69f33330ebd6ec1e1ddf741a54ebf",
+    "crates/quanta-index-search-plane/src/query_dispatcher/tests/execution_truth.rs": "04ea799a02b5edaf5558749cd3cd58f3f86c77a4d08ed690f6eff2cf04d1e23e",
+    "crates/quanta-index-search-plane/src/query_dispatcher/tests/hybrid_filters.rs": "a43c2014b3c7178cd6651de12b0e439de2331f4163372c58cc20961fe995f3fc",
+    "crates/quanta-index-search-plane/src/readiness/activation_catalog.rs": "6e21235c260998b0724d46ace6a38b60f15dc1c7c178c574ab7fd14e2d48b39d",
+    "crates/quanta-index-search-plane/src/readiness/activation_catalog/repository_envelope.rs": "a8f40b51b52a9cbdd75cfb81dfb39f92bd017fe4e109aa333d854607e0811b23",
+    "crates/quanta-index-search-plane/src/readiness/activation_catalog/source_events.rs": "2554d7e770940e02dff316903eee0ca709bc4377b8c4f66cfda97a8d455f52dc",
+    "docs/adr/SEP-26-001-retrieval-query-publication-and-result-proof.md": "5735adaf89405dac8ba9a374b400e53bfb7053ef6cdc92e652d24515a6faa8b3",
+    "docs/plans/sep-27-code-search-remediation/rfcs/CS-ENG-01-query-domain-and-result-contract.md": "53b79dfc7e058ed050e2adf545d982b424b94d3b08b08e8cc4c53a833874c2c1"
+  },
+  "status": "VERIFIED",
+  "time_unix": 1790464993.113081
+}

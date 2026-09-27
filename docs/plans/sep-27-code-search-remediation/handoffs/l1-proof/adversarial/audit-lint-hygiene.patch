@@ -1,0 +1,100 @@
+--- a/crates/quanta-index-lexical/src/budgeted_search.rs
++++ b/crates/quanta-index-lexical/src/budgeted_search.rs
+@@ -267,8 +267,9 @@
+     )
+ }
+ 
+-/// Exact-set variant: a collector's resource refusal terminates the scorer and
+-/// discards every segment fruit before merge; it is never successful exhaustion.
++/// Exact-set collection refuses partial success on resource exhaustion.
++///
++/// A collector's refusal stops scoring and discards every fruit before merge.
+ /// Fallible child fruits are checked at the segment boundary, so an integrity
+ /// error cannot reach later collection or merge work that might mask its cause.
+ pub(crate) fn budgeted_collection<C: Collector>(
+--- a/crates/quanta-index-search-plane/src/ingest_dispatcher/search_corpus.rs
++++ b/crates/quanta-index-search-plane/src/ingest_dispatcher/search_corpus.rs
+@@ -801,10 +801,10 @@
+             };
+             validate_delta_base_v1(validator.as_ref(), &base, &format!("{label} delta base"))?;
+         }
+-        if !self.ledger.read().map_err(|error| CoreError::Storage(format!(
++        if self.ledger.read().map_err(|error| CoreError::Storage(format!(
+             "direct search-corpus materialize: ledger poisoned while inspecting base chunk authority: {error}"
+         )))?.structural_state(&batch.repo_id, &batch.revision_id, base_generation)
+-            .is_some_and(|state| state.source_batch_digest().is_some()) {
++            .is_none_or(|state| state.source_batch_digest().is_none()) {
+             return Err(CoreError::Typed {
+                 code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusDeltaBaseNotSealed,
+                 message: "source delta base has no complete chunk authority; rebuild the source generation before publication".into(),
+@@ -989,7 +989,8 @@
+                 delta.removed.clear();
+                 delta
+             };
+-            chunks.meta.seal_requested = current.is_some_and(|state| state.seal_requested());
++            chunks.meta.seal_requested =
++                current.is_some_and(crate::readiness::StructuralAuthorityState::seal_requested);
+             chunks.meta.source_batch_digest = Some(batch.batch_digest.clone());
+             // Auxiliary generations older than the one being sealed that the
+             // retention receipt does not retain go with it; a newer
+--- a/crates/quanta-index-search-plane/src/readiness/activation_catalog.rs
++++ b/crates/quanta-index-search-plane/src/readiness/activation_catalog.rs
+@@ -739,6 +739,7 @@
+         current.roots.extend(next.roots);
+         let _prior = current.histories.remove(repo);
+         current.histories.extend(next.histories);
++        drop(current);
+         Ok(())
+     }
+ 
+--- a/crates/quanta-index-search-plane/src/readiness/activation_catalog/repository_envelope.rs
++++ b/crates/quanta-index-search-plane/src/readiness/activation_catalog/repository_envelope.rs
+@@ -1,6 +1,7 @@
+-//! One durable replacement contains all roots and source-event lineage for a
+-//! repository. Counts and bytes are bounded; retained event identities never
+-//! expire or get evicted to make room for a new publication.
++//! One durable replacement binds repository roots and source-event lineage.
++//!
++//! Counts and bytes are bounded; retained event identities never expire or get
++//! evicted to make room for a new publication.
+ 
+ use std::collections::BTreeMap;
+ use std::fmt;
+@@ -416,12 +417,14 @@
+     if !metadata.is_file() {
+         return Err(corrupt("nonregular envelope"));
+     }
+-    if metadata.len() > MAX_ENVELOPE_BYTES as u64 {
++    if metadata.len()
++        > u64::try_from(MAX_ENVELOPE_BYTES).map_err(|error| corrupt(error.to_string()))?
++    {
+         return Err(capacity("persisted byte limit"));
+     }
+     let mut bytes = Vec::new();
+     let _read = file
+-        .take((MAX_ENVELOPE_BYTES + 1) as u64)
++        .take(u64::try_from(MAX_ENVELOPE_BYTES + 1).map_err(|error| corrupt(error.to_string()))?)
+         .read_to_end(&mut bytes)
+         .map_err(|error| corrupt(error.to_string()))?;
+     if bytes.len() > MAX_ENVELOPE_BYTES {
+--- a/crates/quanta-index-search-plane/src/readiness/activation_catalog/source_events.rs
++++ b/crates/quanta-index-search-plane/src/readiness/activation_catalog/source_events.rs
+@@ -32,12 +32,12 @@
+             .records
+             .get(&(event.stream_id.clone(), event.event_id.clone()))
+     });
+-    if let Some(record) = record {
+-        if record.binding.event != *event {
+-            return Err(conflict(
+-                "event identity reused with different payload or expected base",
+-            ));
+-        }
++    if let Some(record) = record
++        && record.binding.event != *event
++    {
++        return Err(conflict(
++            "event identity reused with different payload or expected base",
++        ));
+     }
+     Ok(record.cloned())
+ }

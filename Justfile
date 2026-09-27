@@ -412,16 +412,6 @@ retrieval-contract-local:
 retrieval-sdk-proof $out:
     uv run --frozen --extra dev python tools/benchmark/retrieval/portable_proof.py run --rail sdk --out "$out"
 
-# Internal machine-evidence recipe; invoked only by portable_proof.py.
-_retrieval-sdk-proof-raw $out:
-    test ! -e "$out" || { echo "refusing non-fresh proof root: $out" >&2; exit 2; }
-    python3 tools/ci/source_closure.py capture --profile retrieval --out "$out/source-closure.json"
-    env CARGO_NET_OFFLINE=true {{cargo}} --lane test-daemon-lane build -p quanta-index-searchd-runtime --bin quanta-index-searchd --locked
-    env CARGO_NET_OFFLINE=true {{cargo}} --lane test-daemon-lane build -p quanta-index-retrieval-bench --bin quanta-index-retrieval-bench --locked
-    {{cargo}} --lane test-daemon-lane nextest list -p quanta-index-retrieval-bench --test sdk_roundtrip --all-features --locked --message-format json > "$out/nextest-inventory.json"
-    python3 tools/benchmark/retrieval/proof_inventory.py --verify "$out/nextest-inventory.json" --role sdk
-    set -e -o pipefail; target_dir="$({{cargo}} --lane test-daemon-lane metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"; NEXTEST_EXPERIMENTAL_LIBTEST_JSON=1 QUANTA_BENCH_SDK_EVIDENCE_DIR="$out" QUANTA_INDEX_SEARCHD_BIN="$target_dir/debug/quanta-index-searchd" {{cargo}} --lane test-daemon-lane nextest run -p quanta-index-retrieval-bench --test sdk_roundtrip --all-features --locked --message-format libtest-json-plus --message-format-version 0.1 | tee "$out/nextest.jsonl"; python3 tools/benchmark/retrieval/sdk_proof.py --record "$out/actual-runner-record.json" --nextest "$out/nextest.jsonl" --nextest-inventory "$out/nextest-inventory.json" --runner-bin "$target_dir/debug/quanta-index-retrieval-bench" --out "$out/sdk_results.json"
-
 # Public canonical route: context-bound Python and Rust schema-v2 receipts.
 # Pass a fresh artifact root outside the checkout.
 # pair-spec.receipts maps contract_execution_context/source_closure to this root;

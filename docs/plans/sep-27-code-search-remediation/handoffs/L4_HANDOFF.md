@@ -1,12 +1,16 @@
 # L4_HANDOFF — matcher-aligned source previews
 
-Latest audit: [L4_ADDITIONAL_AUDIT.md](L4_ADDITIONAL_AUDIT.md) records two further
-P2 fixes: lazy preview admission/output retention and wire-local emitted-byte
-validation. Its receipts supersede the historical closeout below for those
-changes. Current shared-tree qualification is **BLOCKED** by concurrent source
-and dependency changes; frozen owner/contract proof is not whole-tree proof.
-Aggregate regex heap proof remains BLOCKED; SDK/daemon/workspace qualification
-is NOT_RUN. The user authorized shared-file edits; no coordination is required.
+Latest audit: [L4_REAUDIT_20260927.md](L4_REAUDIT_20260927.md) records the
+observed regex preview admission undercount, its policy-charge mitigation,
+and a real daemon-process restart SDK regression. Read its exact receipts and
+remaining claims before treating a selected test as closure.
+The earlier [L4_FURTHER_AUDIT.md](L4_FURTHER_AUDIT.md) records cancellation,
+multi-hit preview, verify-only regex candidate and cache-admission repairs.
+The earlier [L4_AUTHORITY_ID_AUDIT.md](L4_AUTHORITY_ID_AUDIT.md) and
+[L4_ADDITIONAL_AUDIT.md](L4_ADDITIONAL_AUDIT.md) remain historical receipts.
+Aggregate regex heap proof remains BLOCKED; whole-workspace and installed
+deployment qualification are NOT_RUN. A locally built real daemon binary
+was exercised twice in the latest audit, below installed/release proof.
 
 ## Historical p02 source and scope
 
@@ -80,8 +84,9 @@ is NOT_RUN. The user authorized shared-file edits; no coordination is required.
 - One request preview ledger, separate from mandatory collection: 10,000,000
   logical work units and 64 MiB reservations; 64 KiB source, 128 KiB transformed,
   262,144 map entries, 32 positive witnesses. Cancellation/deadline are mandatory.
-- Request-local compiled regex reuse charges 16 MiB per distinct executor,
-  limiting executor count. This is a logical admission charge, not an established
+- Historical p02 request-local compiled regex reuse charged 16 MiB per distinct
+  executor; the latest audit adds a state-proportional charge before engine
+  compilation. Both are logical admission charges, not an established
   aggregate compiler/HIR heap ceiling: regex 1.12.4 limits each NFA independently
   and regex-automata 0.4.14 may retain multiple NFAs. Aggregate compiler/retained
   heap-bound qualification is NOT_RUN. Existing leaf document-bitmap cache is
@@ -141,8 +146,9 @@ and the new long-sequence regression. No historical result is promoted as final.
 - Full-file SHA is producer attestation, not independent whole-file byte proof.
 - One regex engine search / normalization segment sort is not internally
   preemptible; input bounds and surrounding interruption checks are explicit.
-- Regex compilation/retained heap has component limits, but the fixed 16 MiB
-  charge has no demonstrated aggregate upper-bound proof. Source-pattern bytes
+- Regex compilation/retained heap has component limits, but neither the
+  historical fixed 16 MiB charge nor the current state-proportional charge
+  has a demonstrated aggregate upper-bound proof. Source-pattern bytes
   and retained executor count are bounded; this does not qualify a 64 MiB total
   preview heap ceiling. The source inspection and exact dependency-file digests are in
   [dependency-audit.json](l4-proof/p02/dependency-audit.json); no

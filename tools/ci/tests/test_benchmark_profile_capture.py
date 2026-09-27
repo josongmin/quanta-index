@@ -87,6 +87,143 @@ def test_capture_cli_return_keeps_the_primary_failure(tmp_path):
     assert failure["error"]["message"] == "real preflight refusal"
 
 
+@pytest.mark.parametrize("outcome", ["nonzero", "recorded", "exception"])
+def test_nested_failure_cannot_be_ignored_to_publish_a_capture(tmp_path, outcome):
+    root, repo = tmp_path / "evidence", tmp_path / "repo"
+
+    @capture.capture_entrypoint("profile")
+    def child(repo, root):
+        capture.capture_phase("preflight")
+        if outcome == "exception":
+            raise ValueError("nested refusal oracle")
+        if outcome == "recorded":
+            capture.capture_error(ValueError("nested refusal oracle"))
+        return 7
+
+    @capture.capture_entrypoint("profile")
+    def parent(repo, root):
+        if outcome == "exception":
+            with pytest.raises(ValueError, match="nested refusal oracle"):
+                child(repo, root)
+        else:
+            assert child(repo, root) == 7
+        epoch = capture.current_capture()
+        return capture.publish_capture(
+            root, capture_id=epoch.capture_id, profile="profile",
+            registry_digest=evidence.digest_bytes(b"registry"),
+            expected_cases={"family": ["case"]},
+            runs=[prepared_run(root, "nested-run", "case")],
+            replay=lambda *_: None, verify_source=lambda: None,
+        )
+
+    with pytest.raises(ValueError, match="nested refusal oracle|child returned exit 7"):
+        parent(repo, root)
+    assert not (root / "profiles/profile.json").exists()
+    assert not (root / "runs/nested-run").exists()
+    failure = json.loads(next((root / "failures").glob("*.json")).read_text())
+    assert failure["phase"] == "preflight"
+    assert failure["commit_state"] == "not_started"
+
+
+def test_initial_journal_write_failure_retains_reason_and_resets_context(tmp_path, monkeypatch):
+    def full_disk(*_):
+        raise OSError("journal disk-full oracle")
+
+    monkeypatch.setattr(capture, "_write_atomic", full_disk)
+    root = tmp_path / "evidence"
+    with pytest.raises(OSError, match="journal disk-full oracle"):
+        with capture.CaptureEpoch(tmp_path / "repo", root, "profile", capture_id="failed"):
+            pytest.fail("journal failure admitted body")
+    failure = json.loads((root / "failures/failed.json").read_text())
+    assert failure["phase"] == "admission"
+    assert failure["error"]["message"] == "journal disk-full oracle"
+    assert failure["observations"] == {}
+    with pytest.raises(evidence.EvidenceError, match="no owning epoch"):
+        capture.current_capture()
+
+
+@pytest.mark.parametrize("mismatch", ["repo", "root", "profile"])
+def test_nested_capture_requires_the_same_authority(tmp_path, mismatch):
+    @capture.capture_entrypoint()
+    def child(repo, root, profile):
+        pytest.fail("foreign nested capture entered")
+
+    repo, root = tmp_path / "repo", tmp_path / "evidence"
+    options = dict(repo=repo, root=root, profile="profile")
+    options[mismatch] = "other" if mismatch == "profile" else tmp_path / "other"
+    with pytest.raises(evidence.EvidenceError, match="differs from its capture epoch"):
+        with capture.CaptureEpoch(repo, root, "profile", capture_id="failed"):
+            child(**options)
+    failure = json.loads((root / "failures/failed.json").read_text())
+    assert failure["error"]["message"] == "nested publication differs from its capture epoch"
+    assert not (tmp_path / "other").exists()
+
+
+@pytest.mark.parametrize("mode", ["spawn", "timeout", "nonzero", "interrupt"])
+def test_capture_retains_real_execution_failure_and_does_not_invent_terminal(tmp_path, mode):
+    import os
+    import subprocess
+
+    from producer_execution import ProducerExecutionError, execute
+
+    root = tmp_path / "evidence"
+    scripts = {
+        "timeout": "import time; print('started', flush=True); time.sleep(30)",
+        "nonzero": "print('failed-output'); raise SystemExit(7)",
+        "interrupt": f"import os, signal, time; os.kill({os.getpid()}, signal.SIGTERM); time.sleep(30)",
+    }
+    argv = ([str(tmp_path / "missing-producer")] if mode == "spawn" else
+            [sys.executable, "-c", scripts[mode]])
+    with pytest.raises((ProducerExecutionError, subprocess.TimeoutExpired, OSError)):
+        with capture.CaptureEpoch(tmp_path / "repo", root, "profile", capture_id="failed") as epoch:
+            epoch.execute(execute, argv, cwd=tmp_path, env=dict(os.environ), timeout=1,
+                          log_dir=epoch.work / "execution")
+    failure = json.loads((root / "failures/failed.json").read_text())
+    assert failure["phase"] == "execution"
+    observed = failure["observations"]["execution"]
+    raw = evidence.RawFile.capture(Path(observed["record"]["path"]))
+    assert raw.sha256 == observed["record"]["sha256"]
+    assert raw.size == observed["record"]["bytes"]
+    terminal = json.loads(raw.read_control())
+    assert terminal["status"] == "failed"
+    if mode in {"spawn", "timeout", "interrupt"}:
+        assert terminal["command"] is None
+        assert terminal["error_type"] == "ProducerExecutionError"
+        if mode == "timeout":
+            assert "timed out" in failure["error"]["message"]
+        elif mode == "interrupt":
+            assert "interrupted by SIGTERM" in failure["error"]["message"]
+        else:
+            assert "FileNotFoundError" in (Path(observed["log_dir"]) / "stderr").read_text()
+    else:
+        assert terminal["command"]["exit_code"] != 0
+    assert not (root / "profiles").exists()
+
+
+def test_failure_record_keeps_primary_and_later_cleanup_error(tmp_path):
+    root = tmp_path / "evidence"
+    with pytest.raises(OSError, match="cleanup oracle"):
+        with capture.CaptureEpoch(tmp_path / "repo", root, "profile", capture_id="failed") as epoch:
+            epoch.reject(ValueError("primary oracle"))
+            raise OSError("cleanup oracle")
+    error = json.loads((root / "failures/failed.json").read_text())["error"]
+    assert error["message"] == "primary oracle"
+    assert error["secondary"] == {"type": "OSError", "message": "cleanup oracle"}
+
+
+def test_failure_cannot_overwrite_an_existing_diagnostic(tmp_path):
+    root = tmp_path / "evidence"
+    prior = evidence.write_raw_file(root / "failures/failed.json", [b"prior diagnostic oracle"])
+    primary = ValueError("new failure oracle")
+    with pytest.raises(evidence.EvidenceError, match="NOT_PERSISTED") as caught:
+        with capture.CaptureEpoch(tmp_path / "repo", root, "profile", capture_id="failed"):
+            raise primary
+    assert caught.value.__cause__ is primary
+    assert prior.path.read_bytes() == b"prior diagnostic oracle"
+    with pytest.raises(evidence.EvidenceError, match="no owning epoch"):
+        capture.current_capture()
+
+
 def add_run(root, name="r1", family="family", case="case"):
     store = evidence.RunStore(root)
     staged = store.stage(name)
@@ -361,8 +498,31 @@ def test_domain_replay_failure_cannot_replace_profile(tmp_path):
     assert failure["error"]["message"] == "independent domain replay failed"
 
 
+@pytest.mark.parametrize("boundary", ["source", "replay", "final-source"])
+def test_publication_cannot_ignore_callback_recorded_refusal(tmp_path, boundary):
+    add_run(tmp_path)
+    prior = publish(tmp_path)
+    calls = 0
+
+    def check_source():
+        nonlocal calls
+        calls += 1
+        if (boundary == "source" and calls == 1) or (boundary == "final-source" and calls == 3):
+            capture.capture_error(ValueError("source callback refusal"))
+
+    def replay(*_):
+        if boundary == "replay":
+            capture.capture_error(ValueError("replay callback refusal"))
+
+    with pytest.raises(ValueError, match="callback refusal"):
+        publish_prepared(tmp_path, verify_source=check_source, replay=replay)
+    assert capture.load_capture(tmp_path, profile="profile", registry_digest=prior["registry_digest"]) == prior
+    failure = json.loads((tmp_path / "failures/capture2.json").read_text())
+    assert failure["commit_state"] == "not_started"
+
+
 @pytest.mark.parametrize(
-    "boundary", ["before-capture", "before-pointer", "after-pointer", "final-source"]
+    "boundary", ["before-capture", "before-pointer", "after-pointer", "final-source", "after-returned-commit"]
 )
 def test_publication_failures_preserve_or_recover_a_complete_pointer(
     tmp_path, monkeypatch, boundary
@@ -389,6 +549,14 @@ def test_publication_failures_preserve_or_recover_a_complete_pointer(
             raise OSError(f"injected {boundary}")
 
         monkeypatch.setattr(capture, "_write_atomic", fail_pointer)
+    elif boundary == "after-returned-commit":
+        real = capture.CaptureEpoch.committed
+
+        def failed_response(epoch, document):
+            real(epoch, document)
+            raise OSError("injected after-returned-commit")
+
+        monkeypatch.setattr(capture.CaptureEpoch, "committed", failed_response)
     else:
 
         def source_changed():
@@ -401,12 +569,20 @@ def test_publication_failures_preserve_or_recover_a_complete_pointer(
     current = capture.load_capture(
         tmp_path, profile="profile", registry_digest=prior["registry_digest"]
     )
-    if boundary == "after-pointer":
+    if boundary in {"after-pointer", "after-returned-commit"}:
         assert current["capture_id"] == "capture2"
         assert {row["run_id"] for row in current["runs"]} == {"r2", "r3"}
     else:
         assert current == prior
         assert pointer.read_bytes() == previous
+    failure = json.loads((tmp_path / "failures/capture2.json").read_text())
+    expected_state = ("returned" if boundary == "after-returned-commit" else
+                      "not_started" if boundary == "final-source" else "attempted")
+    assert failure["commit_state"] == expected_state
+    assert failure["status"] == "failed"
+    assert failure["error"]["message"] == f"injected {boundary}"
+    if boundary == "after-returned-commit":
+        assert failure["observations"]["capture_digest"] == current["digest"]
 
 
 @pytest.mark.parametrize("boundary", ["before-capture", "before-pointer", "after-pointer"])
@@ -442,6 +618,11 @@ publish_prepared(Path(sys.argv[1]))
         timeout=20,
     )
     assert result.returncode == 91, result.stderr.decode()
+    journal = json.loads((tmp_path / "work/capture2/capture.json").read_text())
+    assert journal["status"] == "active"
+    assert journal["phase"] == "commit"
+    assert journal["commit_state"] == "attempted"
+    assert not (tmp_path / "failures/capture2.json").exists()
     current = capture.load_capture(
         tmp_path, profile="profile", registry_digest=prior["registry_digest"]
     )

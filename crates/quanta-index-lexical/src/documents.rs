@@ -8,14 +8,14 @@
 use crate::analyzer::tokenizer_name;
 use crate::metadata_normalize::normalize_language;
 use crate::normalize::CaseMode;
-use crate::{SchemaFields, normalize};
+use crate::{SYMBOL_DOC_KIND, SchemaFields, TEXT_DOC_KIND, normalize};
 use quanta_index_contract::lex::SymbolRecord;
 use quanta_index_contract::{ChunkRecord, LqExpr, SourceFileRevision};
 use quanta_index_core::CoreError;
 use sha2::{Digest as _, Sha256};
 use std::path::Path;
 use tantivy::schema::{
-    Field, IndexRecordOption, OwnedValue, TantivyDocument, TextFieldIndexing, TextOptions, Value,
+    Field, IndexRecordOption, TantivyDocument, TextFieldIndexing, TextOptions, Value,
 };
 
 pub(crate) fn file_name_for_path(path: &str) -> Option<&str> {
@@ -23,40 +23,6 @@ pub(crate) fn file_name_for_path(path: &str) -> Option<&str> {
         .file_name()
         .and_then(|name| name.to_str())
         .filter(|name| !name.is_empty())
-}
-
-pub(crate) fn language_from_path_hint(path: &str) -> Option<&'static str> {
-    let ext = Path::new(path)
-        .extension()
-        .and_then(|extension| extension.to_str())?
-        .to_ascii_lowercase();
-    match ext.as_str() {
-        "rs" => Some("rust"),
-        "py" => Some("python"),
-        "md" => Some("markdown"),
-        "java" => Some("java"),
-        "js" => Some("javascript"),
-        "ts" => Some("typescript"),
-        "jsx" => Some("javascriptreact"),
-        "tsx" => Some("typescriptreact"),
-        "rb" => Some("ruby"),
-        "go" => Some("go"),
-        "c" => Some("c"),
-        "cc" | "cpp" | "cxx" | "hpp" | "hh" | "hxx" => Some("cpp"),
-        "cs" => Some("csharp"),
-        "kt" | "kts" => Some("kotlin"),
-        "swift" => Some("swift"),
-        "scala" => Some("scala"),
-        "php" => Some("php"),
-        "html" | "htm" => Some("html"),
-        "css" => Some("css"),
-        "json" => Some("json"),
-        "yaml" | "yml" => Some("yaml"),
-        "toml" => Some("toml"),
-        "sh" | "bash" => Some("shell"),
-        "txt" => Some("text"),
-        _ => None,
-    }
 }
 
 /// Indexing options for a text field analyzed by the shared normalizer
@@ -184,18 +150,48 @@ pub(crate) fn add_chunk_provenance_fields(
     doc.add_bytes(fields.chunk_raw_sha256, digest);
 }
 
-pub(crate) fn stored_text(doc: &TantivyDocument, field: Field) -> Option<String> {
-    let value: &OwnedValue = doc.get_first(field)?;
-    Value::as_str(&value).map(str::to_owned)
+/// Required stored authority must not disappear or select a first duplicate.
+pub(crate) fn required_stored_text<'a>(
+    doc: &'a TantivyDocument,
+    field: Field,
+    name: &str,
+) -> Result<&'a str, CoreError> {
+    let mut values = doc.get_all(field);
+    let value = values
+        .next()
+        .ok_or_else(|| CoreError::Storage(format!("lexical: stored document missing `{name}`")))?;
+    if values.next().is_some() {
+        return Err(CoreError::Storage(format!(
+            "lexical: stored document has duplicate `{name}`"
+        )));
+    }
+    value.as_str().ok_or_else(|| {
+        CoreError::Storage(format!("lexical: stored document has malformed `{name}`"))
+    })
+}
+
+pub(crate) fn stored_doc_kind(doc: &TantivyDocument, field: Field) -> Result<&str, CoreError> {
+    let kind = required_stored_text(doc, field, "doc_kind")?;
+    if kind != TEXT_DOC_KIND && kind != SYMBOL_DOC_KIND {
+        return Err(CoreError::Storage(format!(
+            "lexical: stored document has invalid doc_kind `{kind}`"
+        )));
+    }
+    Ok(kind)
 }
 
 pub(crate) fn stored_u32(doc: &TantivyDocument, field: Field) -> Result<Option<u32>, CoreError> {
-    let Some(value) = doc.get_first(field) else {
+    let mut values = doc.get_all(field);
+    let Some(value) = values.next() else {
         return Ok(None);
     };
-    let Some(raw) = Value::as_u64(&value) else {
-        return Ok(None);
-    };
+    if values.next().is_some() {
+        return Err(CoreError::Storage(
+            "lexical: duplicate stored u32 field".to_string(),
+        ));
+    }
+    let raw = Value::as_u64(&value)
+        .ok_or_else(|| CoreError::Storage("lexical: malformed stored u32 field".to_string()))?;
     u32::try_from(raw)
         .map(Some)
         .map_err(|err| CoreError::Storage(format!("lexical: stored u32 exceeds range: {err}")))

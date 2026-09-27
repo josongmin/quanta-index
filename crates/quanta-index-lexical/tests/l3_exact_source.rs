@@ -30,7 +30,7 @@ fn scope(
     definitions: &[(&str, &str, &str, Option<&str>)],
 ) -> Result<SearchCorpusReplaceScope, Box<dyn Error>> {
     let language = LanguageCode::new("rust").map_err(str::to_string)?;
-    let text = "content_only Café One::Café Café::Inner";
+    let text = format!("content_only Café One::Café Café::Inner {owner} {file}");
     let path = RepoRelativePath::new(file);
     let chunks = vec![ChunkRecord {
         chunk_id: ChunkId::new(format!("chunk-{owner}-{file}")),
@@ -40,7 +40,7 @@ fn scope(
         end_byte: u32::try_from(text.len())?,
         start_line: 1,
         end_line: 1,
-        text: text.into(),
+        text: text.clone().into_boxed_str(),
         structural: None,
         parent_chunk_id: None,
         source_repo_id: Some(RepoId::new(owner)?),
@@ -90,6 +90,34 @@ fn scope(
         },
         chunks,
         symbols,
+    })
+}
+
+// Fixed SHA-256 goldens for the independent source byte fixtures above.
+// Distinct source/path pairs deliberately have different content identities.
+fn expected_source_hash(owner: &str, path: &str) -> Result<[u8; 32], Box<dyn Error>> {
+    Ok(match (owner, path) {
+        ("source-a", "same.rs") => [
+            0xe9, 0xb5, 0x26, 0x51, 0x5c, 0x80, 0x9d, 0x93, 0x78, 0xb0, 0x7d, 0xeb, 0x8e, 0xea,
+            0xbf, 0x8c, 0x74, 0xad, 0xaa, 0x36, 0x12, 0x07, 0x50, 0xb7, 0xa7, 0x81, 0x14, 0x2c,
+            0x90, 0x97, 0xec, 0x87,
+        ],
+        ("source-a", "other.rs") => [
+            0x05, 0xaf, 0x1a, 0x12, 0xfa, 0x02, 0x9b, 0x63, 0xf5, 0x70, 0x2a, 0x51, 0x52, 0x2f,
+            0xc0, 0x00, 0x07, 0x61, 0x4f, 0x6b, 0x72, 0x0f, 0xd6, 0xfc, 0xf2, 0xce, 0x20, 0x88,
+            0x2e, 0xec, 0x4f, 0xe7,
+        ],
+        ("source-b", "same.rs") => [
+            0x9a, 0x1b, 0xa4, 0xf9, 0x59, 0xd1, 0x66, 0xe7, 0x61, 0xb9, 0xb1, 0xd5, 0xbf, 0x8b,
+            0xec, 0x83, 0x7e, 0xc0, 0x2c, 0x7a, 0x81, 0x0b, 0xf1, 0x82, 0x14, 0x3f, 0xc4, 0x66,
+            0x4b, 0xaf, 0xf8, 0x44,
+        ],
+        ("zero-symbols", "same.rs") => [
+            0xb6, 0xa9, 0xae, 0xec, 0xdf, 0xe8, 0x2d, 0x46, 0x35, 0x52, 0xf6, 0xdd, 0x19, 0xb2,
+            0xe4, 0x87, 0x1c, 0x25, 0xd1, 0xa2, 0xe9, 0xe4, 0x20, 0xb6, 0x80, 0x7f, 0xe3, 0xbc,
+            0x9a, 0xb7, 0x07, 0x7a,
+        ],
+        _ => return Err("unknown source hash fixture".into()),
     })
 }
 
@@ -220,6 +248,13 @@ fn check_exact_symbol_policy(manual: bool) -> TestResult {
                     format!("rev-{}", row.source_repo_id.as_str())
                 );
                 assert_eq!(row.repo_relative_path, source.file.repo_relative_path);
+                assert_eq!(
+                    source.source_sha256,
+                    expected_source_hash(
+                        row.source_repo_id.as_str(),
+                        row.repo_relative_path.as_str()
+                    )?
+                );
             }
         }
     }
@@ -368,6 +403,13 @@ fn l3_source_file_and_repo_projections_page_in_fixed_source_order() -> TestResul
                             let source = row.source.as_ref().ok_or("missing source revision")?;
                             assert_eq!(source.file.source_repo_id, row.source_repo_id);
                             assert_eq!(source.file.repo_relative_path, row.repo_relative_path);
+                            assert_eq!(
+                                source.source_sha256,
+                                expected_source_hash(
+                                    row.source_repo_id.as_str(),
+                                    row.repo_relative_path.as_str()
+                                )?
+                            );
                             actual.push((
                                 row.source_repo_id.as_str().to_owned(),
                                 row.repo_relative_path.as_str().to_owned(),

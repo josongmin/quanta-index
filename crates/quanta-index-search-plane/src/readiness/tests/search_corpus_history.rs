@@ -9,10 +9,13 @@ use std::sync::{Arc, Barrier};
 use std::thread;
 
 use quanta_index_contract::{
-    GenerationSnapshot, ManifestGeneration, RepoId, RevisionId,
+    GenerationSnapshot, IngestOperationKindV1, ManifestGeneration, RepoId, RevisionId,
     SearchPlaneRollbackSearchCorpusGenerationCasRequest, SearchPlaneTrackKind,
+    SourcePublicationEvent,
 };
-use quanta_index_core::CoreError;
+use quanta_index_core::{
+    CoreError, IdempotencyKeyV1, SourceEventBindingV1, SourcePublicationCatalogPort as _,
+};
 use tempfile::tempdir;
 
 use crate::SearchCorpusLifecycleOwner;
@@ -29,6 +32,127 @@ use crate::readiness::tests::support::{
 };
 use crate::search_corpus_lifecycle::SearchCorpusPairMutationCoordinator;
 use crate::search_corpus_retention::SearchCorpusHistoryRetentionPolicyV1;
+
+fn pending_source_binding(
+    repo: &RepoId,
+    revision: &RevisionId,
+    generation: u64,
+) -> SourceEventBindingV1 {
+    SourceEventBindingV1 {
+        event: SourcePublicationEvent {
+            stream_id: "pending-stream".into(),
+            event_id: format!("event-{generation}"),
+            expected_base_event_id: None,
+            payload_sha256: [1; 32],
+        },
+        target: GenerationSnapshot {
+            repo_id: repo.clone(),
+            revision_id: revision.clone(),
+            track: SearchPlaneTrackKind::Lexical,
+            manifest_generation: ManifestGeneration::new(generation),
+            manifest_digest: format!("digest-{generation}"),
+        },
+        journal_key: IdempotencyKeyV1 {
+            kind: IngestOperationKindV1::SearchCorpus,
+            repo_id: repo.clone(),
+            revision_id: revision.clone(),
+            generation: ManifestGeneration::new(generation),
+            batch_digest: "a".repeat(64),
+        },
+    }
+}
+
+#[test]
+fn unresolved_source_target_blocks_later_seal_even_if_retained() -> TestResult {
+    let dir = tempdir()?;
+    let owner = SearchCorpusLifecycleOwner::open(
+        dir.path(),
+        search_corpus_retention(2)?,
+        Arc::new(crate::readiness::ScriptedIndexBytesV1),
+    )?;
+    let store = owner.authority_store();
+    let catalog = owner.activation_catalog();
+    let repo = RepoId::new("source-pending")?;
+    let revision = RevisionId::new("revision")?;
+    let pending = pending_source_binding(&repo, &revision, 1);
+    let _reserved = catalog.reserve_source_event(&pending)?;
+    let _receipt = store.record_sealed_search_corpus(
+        &repo,
+        &revision,
+        ManifestGeneration::new(1),
+        "digest-1",
+    )?;
+    let rejected =
+        store.record_sealed_search_corpus(&repo, &revision, ManifestGeneration::new(2), "digest-2");
+    assert!(matches!(rejected, Err(CoreError::NotReady(_))));
+    assert!(
+        store
+            .search_corpus_authority_path(&repo, &revision, ManifestGeneration::new(1))
+            .is_file()
+    );
+    assert!(
+        !store
+            .search_corpus_authority_path(&repo, &revision, ManifestGeneration::new(2))
+            .exists()
+    );
+    Ok(())
+}
+
+#[test]
+fn unresolved_source_without_authority_blocks_other_stream_retention() -> TestResult {
+    let dir = tempdir()?;
+    let owner = SearchCorpusLifecycleOwner::open(
+        dir.path(),
+        search_corpus_retention(2)?,
+        Arc::new(crate::readiness::ScriptedIndexBytesV1),
+    )?;
+    let store = owner.authority_store();
+    let catalog = owner.activation_catalog();
+    let repo = RepoId::new("source-unrecorded")?;
+    let revision = RevisionId::new("revision")?;
+    let pending = pending_source_binding(&repo, &revision, 1);
+    let _reserved = catalog.reserve_source_event(&pending)?;
+    let result =
+        store.record_sealed_search_corpus(&repo, &revision, ManifestGeneration::new(2), "digest-2");
+    assert!(matches!(result, Err(CoreError::NotReady(_))));
+    assert!(
+        !store
+            .search_corpus_authority_path(&repo, &revision, ManifestGeneration::new(2))
+            .exists()
+    );
+    Ok(())
+}
+
+#[test]
+fn newer_unrecorded_source_does_not_block_older_original_recovery() -> TestResult {
+    let dir = tempdir()?;
+    let owner = SearchCorpusLifecycleOwner::open(
+        dir.path(),
+        search_corpus_retention(2)?,
+        Arc::new(crate::readiness::ScriptedIndexBytesV1),
+    )?;
+    let store = owner.authority_store();
+    let catalog = owner.activation_catalog();
+    let repo = RepoId::new("source-older-recovery")?;
+    let revision = RevisionId::new("revision")?;
+    let newer = pending_source_binding(&repo, &revision, 2);
+    let _newer = catalog.reserve_source_event(&newer)?;
+    let mut older = pending_source_binding(&repo, &revision, 1);
+    older.event.stream_id = "earlier-stream".into();
+    let _older = catalog.reserve_source_event(&older)?;
+    let _receipt = store.record_sealed_search_corpus(
+        &repo,
+        &revision,
+        ManifestGeneration::new(1),
+        "digest-1",
+    )?;
+    assert!(
+        store
+            .search_corpus_authority_path(&repo, &revision, ManifestGeneration::new(1))
+            .is_file()
+    );
+    Ok(())
+}
 
 #[test]
 fn sealed_search_corpus_history_reaps_max_plus_one_and_preserves_predecessor() -> TestResult {

@@ -1,0 +1,56 @@
+{
+  "utc": "2026-09-26T23:25:24.204427+00:00",
+  "head": "2102966246866398f01833bebf71396831377149",
+  "dirty": " M crates/quanta-index-lexical/src/budgeted_search.rs\n M crates/quanta-index-lexical/src/text_docs.rs\n M crates/quanta-index-lexical/tests/l2_file_mutation.rs\n M crates/quanta-index-lexical/tests/l3_exact_source.rs\n M crates/quanta-index-sdk/tests/l1_daemon_query_contract.rs\n M crates/quanta-index-sdk/tests/l2_daemon_publication.rs\n M crates/quanta-index-search-plane/src/ingest_dispatcher/search_corpus.rs\n M crates/quanta-index-search-plane/src/readiness/activation_catalog.rs\n M crates/quanta-index-search-plane/src/readiness/activation_catalog/repository_envelope.rs\n M crates/quanta-index-search-plane/src/readiness/activation_catalog/source_events.rs\n M docs/plans/sep-27-code-search-remediation/handoffs/L1_CLOSEOUT.json\n M docs/plans/sep-27-code-search-remediation/handoffs/L1_HANDOFF.md\n M docs/plans/sep-27-code-search-remediation/handoffs/L1_REQUIREMENT_AUDIT.json\n M docs/plans/sep-27-code-search-remediation/handoffs/L5_HANDOFF.md\n M docs/plans/sep-27-code-search-remediation/handoffs/L5_HANDOFF.source.json\n M docs/plans/sep-27-code-search-remediation/handoffs/L5_TEST_MIGRATION.json\n M docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/capture.py\n M docs/plans/sep-27-code-search-remediation/rfcs/CS-PROD-01-parser-coverage-and-vite.md\n M docs/plans/sep-27-misc/tickets/INDEX.md\n M tools/ci/tests/test_benchctl.py\n M tools/ci/tests/test_benchmark_profile_capture.py\n?? docs/plans/sep-27-code-search-remediation/handoffs/L1_ADVERSARIAL_AUDIT.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/L1_ADVERSARIAL_AUDIT.md\n?? docs/plans/sep-27-code-search-remediation/handoffs/L5_DEFINITION_AUDIT.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/L5_DEFINITION_AUDIT.md\n?? docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/adversarial/\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-lexical-current.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-lexical-current.started.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-owner-current-fixed.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-owner-current-fixed.started.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-owner-current.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-owner-current.started.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/process-crash-matrix-final.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/process-crash-matrix-final.started.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/process-crash-matrix.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/process-crash-matrix.started.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/process-current-native.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/process-current-native.started.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/process-daemon-current-build.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/process-daemon-current-build.started.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/process-daemon-current-fixed.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/process-daemon-current-fixed.started.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/process-daemon-custody.started.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/process-retention-crash.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/process-retention-crash.started.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/process-sdk-state-root.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l3-proof/ss/\n?? docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/authority-id/\n?? docs/plans/sep-27-code-search-remediation/handoffs/l5-proof/definition-audit-20260927/\n",
+  "all_bound_live_differences": {
+    "crates/quanta-index-sdk/tests/l1_daemon_query_contract.rs": {
+      "frozen": "26bb0582d08ff6f77b1031fc90e6b409b4f1a2731a2f67b8380ba8824648653a",
+      "live": "19e318fb306cf6e2706821feb97bcdc6b96cf40ccea15194868c801818fc038a"
+    },
+    "crates/quanta-index-sdk/tests/l2_daemon_publication.rs": {
+      "frozen": "58f3eb9ac61dd8062d102e08bb58dbbc0aa50de2b571cedf52265e4510538b0e",
+      "live": "a9cfc1fbeb0254975426aba1453c833201aa2266e976164b029d78c881a6259c"
+    },
+    "crates/quanta-index-search-plane/src/ingest_dispatcher/search_corpus.rs": {
+      "frozen": "fe31a35a0b8858bc19fe311c07c89bb0b657f841c3c2ae8094826c03f5b2c83c",
+      "live": "505d6bcac1a76dd4d1385a1ca37805f8949c06d027c41377867eeac27c7cbdc2"
+    },
+    "crates/quanta-index-search-plane/src/readiness/activation_catalog.rs": {
+      "frozen": "6b02406c512e2b9e9ad607c5d131712ec44aadc56e705bf088a7ea9ca8ae923f",
+      "live": "6e21235c260998b0724d46ace6a38b60f15dc1c7c178c574ab7fd14e2d48b39d"
+    },
+    "crates/quanta-index-search-plane/src/readiness/activation_catalog/repository_envelope.rs": {
+      "frozen": "3a3d7615fdf12386693e91872fea228339726992989144f8d9216eb1134f9367",
+      "live": "a8f40b51b52a9cbdd75cfb81dfb39f92bd017fe4e109aa333d854607e0811b23"
+    },
+    "crates/quanta-index-search-plane/src/readiness/activation_catalog/source_events.rs": {
+      "frozen": "66135ffc05cc72bebee28c1d4a41a9f4d195650e643c7fd54936a2404d24b987",
+      "live": "2554d7e770940e02dff316903eee0ca709bc4377b8c4f66cfda97a8d455f52dc"
+    },
+    "tools/benchmark/benchctl.py": {
+      "frozen": "bb2c33a7a458189da336d18b33005701fec1132834001c1261c7a929e8aa9331",
+      "live": "2dd3713b2caa3161040cfba3dc09040c40a18b99756c7f8eeb7080cd396f1ce0"
+    },
+    "tools/benchmark/profile_capture.py": {
+      "frozen": "8e7de5c9036df415731907dce0facde5085704b639de5f7c74ce7289fa0c4bc8",
+      "live": "0731c05b292018905d9749dda54fe8f6c7b0839fca6cc9d682db894eb8130ab6"
+    },
+    "tools/ci/tests/test_benchctl.py": {
+      "frozen": "8a6975497e0467d6ed0abdd8bbff0fd92e63aa9d9d29f120f0a89b788ee0beaf",
+      "live": "e5404f3b5c47af1e1d977afdfa11890236e4a0495fe1a0ebc1cd1e840f4fb5c3"
+    },
+    "tools/ci/tests/test_benchmark_profile_capture.py": {
+      "frozen": "7f19f2ecd37da184096b598582b20533dc1bba20e054cc8cd32340478a790e8d",
+      "live": "2e54ee2cf03cb276809e57ef2e0fae54488ff0688a86548bdfe3c006f982c95b"
+    }
+  },
+  "selected_live_differences": {},
+  "selected_added_paths": [],
+  "selected_inputs_match": true,
+  "touched_files": {
+    "crates/quanta-index-lexical/src/text_docs.rs": "19329340676cad99ccf8a99c138b38eb42267fe43162d3a75b1d040d9a8d8f93",
+    "crates/quanta-index-lexical/src/searcher/candidates.rs": "306018438bcfb47242c9c2f466a0c4450a711e160f4908c3ce0bb3d4a24b291a",
+    "crates/quanta-index-lexical/src/budgeted_search.rs": "346f0e73d4cc7ef1764450d6214adcbf24972bc27ea6d4456d3831505fe9ab90",
+    "crates/quanta-index-lexical/tests/l2_file_mutation.rs": "117009407b055d7b922f27ff85a308ec8604de7847cba2cd460e31b3e8806142"
+  }
+}

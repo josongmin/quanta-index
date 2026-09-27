@@ -2390,7 +2390,7 @@ CONTEXT_COMMAND_NAMES = {
         "rust-test",
     ),
     "sdk": (
-        "source-closure", "build-searchd", "build-runner", "rust-collection",
+        "source-closure", "build-searchd", "rust-collection",
         "rust-build", "metadata", "rust-test",
     ),
 }

@@ -1,0 +1,32 @@
+{
+  "captured_unix": 1790471942.813916,
+  "files": {
+    "Cargo.lock": "58dda6f980fd3d2ad4975b3be18c74e60351be045d78206728f88475a6ba6bbc",
+    "crates/quanta-index-core/src/domains/semantic/outbound.rs": "122ecd5fab5ceef4c20a555928179289d8d4f59870ac8e7140ddda710b4f3d8d",
+    "crates/quanta-index-lexical/src/budgeted_search.rs": "44ae60134ad63a6898c7a2223fd3d907acbcf45d4e90a647e800d2818b712ad9",
+    "crates/quanta-index-lexical/src/text_docs.rs": "19329340676cad99ccf8a99c138b38eb42267fe43162d3a75b1d040d9a8d8f93",
+    "crates/quanta-index-sdk/tests/l1_daemon_query_contract.rs": "a70828173a9fb564ca03cb4d41313569fb868aa94bc2f80c7e5c733f3b081e5a",
+    "crates/quanta-index-search-plane/src/ingest_dispatcher/search_corpus.rs": "505d6bcac1a76dd4d1385a1ca37805f8949c06d027c41377867eeac27c7cbdc2",
+    "crates/quanta-index-search-plane/src/query_dispatcher/routes/semantic.rs": "a3ff3ba84bdc12c3f48f9cea02758dc99af8de8130b4ef3567f7df5130191593",
+    "crates/quanta-index-search-plane/src/query_dispatcher/tests/execution_truth.rs": "ba8799772a801330bc13cee807afb2c10646d112b104d2c2656730d807fdaf9f",
+    "crates/quanta-index-search-plane/src/query_dispatcher/tests/support/semantic.rs": "79fc7e16ca7c59596bef0209147714aab977fff5ec978a7d71bb02060c56441f",
+    "crates/quanta-index-search-plane/src/query_dispatcher/window.rs": "1aca95f3ef1bd40ea98a24c73506a9e81e74acceb72e977cc79b969c6c91c31c",
+    "crates/quanta-index-search-plane/src/readiness/activation_catalog.rs": "6e21235c260998b0724d46ace6a38b60f15dc1c7c178c574ab7fd14e2d48b39d",
+    "crates/quanta-index-search-plane/src/readiness/activation_catalog/repository_envelope.rs": "a8f40b51b52a9cbdd75cfb81dfb39f92bd017fe4e109aa333d854607e0811b23",
+    "crates/quanta-index-search-plane/src/readiness/activation_catalog/source_events.rs": "2554d7e770940e02dff316903eee0ca709bc4377b8c4f66cfda97a8d455f52dc",
+    "crates/quanta-index-searchd/src/app/integrity_scrub.rs": "f34be112b007941d83634c315101ce12c0be9a88add86bb263fe93debb07a01d",
+    "crates/quanta-index-semantic/src/search.rs": "0f653acc5e881a2e58299b1d5cf99b1f7cda7b74779a0dd1af874811324cb4aa"
+  },
+  "head": "2102966246866398f01833bebf71396831377149",
+  "isolated_baseline_fixes": [
+    "crates/quanta-index-lexical/src/text_docs.rs",
+    "crates/quanta-index-lexical/src/budgeted_search.rs",
+    "crates/quanta-index-search-plane/src/ingest_dispatcher/search_corpus.rs",
+    "crates/quanta-index-search-plane/src/readiness/activation_catalog.rs",
+    "crates/quanta-index-search-plane/src/readiness/activation_catalog/repository_envelope.rs",
+    "crates/quanta-index-search-plane/src/readiness/activation_catalog/source_events.rs"
+  ],
+  "patch_sha256": "6c8e839e868f50268bf02d40ec0f940f1738bba280dccc6c39fab280f1d9d78e",
+  "rustc": "rustc 1.92.0 (ded5c06cf 2025-12-08)",
+  "status": " M crates/quanta-index-core/src/domains/semantic/outbound.rs\n M crates/quanta-index-lexical/src/budgeted_search.rs\n M crates/quanta-index-lexical/src/text_docs.rs\n M crates/quanta-index-sdk/tests/l1_daemon_query_contract.rs\n M crates/quanta-index-search-plane/src/ingest_dispatcher/search_corpus.rs\n M crates/quanta-index-search-plane/src/query_dispatcher/routes/semantic.rs\n M crates/quanta-index-search-plane/src/query_dispatcher/tests/execution_truth.rs\n M crates/quanta-index-search-plane/src/query_dispatcher/tests/support/semantic.rs\n M crates/quanta-index-search-plane/src/query_dispatcher/window.rs\n M crates/quanta-index-search-plane/src/readiness/activation_catalog.rs\n M crates/quanta-index-search-plane/src/readiness/activation_catalog/repository_envelope.rs\n M crates/quanta-index-search-plane/src/readiness/activation_catalog/source_events.rs\n M crates/quanta-index-searchd/src/app/integrity_scrub.rs\n M crates/quanta-index-semantic/src/search.rs"
+}

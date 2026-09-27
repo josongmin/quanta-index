@@ -11,7 +11,7 @@
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use quanta_index_contract::{RepoId, RevisionId};
+use quanta_index_contract::{GenerationSnapshot, RepoId, RevisionId};
 use quanta_index_core::CoreError;
 
 use crate::readiness::{
@@ -105,6 +105,14 @@ pub(crate) trait ActiveSearchCorpusPinReadPort: std::fmt::Debug + Send + Sync {
         repo_id: &RepoId,
         revision_id: &RevisionId,
     ) -> Result<Option<SearchCorpusGenerationV1>, CoreError>;
+
+    /// Original source publications that still own a Pending/Staged stream
+    /// slot. Retention must not reclaim their target before journal recovery.
+    fn unresolved_source_targets_for_pair_v1(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+    ) -> Result<Vec<GenerationSnapshot>, CoreError>;
 
     fn all_active_search_corpora_for_bootstrap_v1(
         &self,

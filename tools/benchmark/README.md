@@ -1,5 +1,9 @@
 # Benchmark tooling
 
+For code-search execution, start with the
+[operator runbook](CODE_SEARCH_RUNBOOK.md). It separates live Quanta--Semble
+capture, recorded five-product lexical scoring, and correctness-only proof.
+
 The registered evidence CLI is `python3 tools/benchmark/benchctl.py`. Its sole
 registration/producer/validator/scorer/baseline control plane is
 `tools/benchmark/registry.toml` (validated by `tools/benchmark/registry.py`);

@@ -20,11 +20,11 @@ use std::time::{Duration, Instant};
 
 use quanta_index_contract::{
     ChunkId, ChunkRecord, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
-    SearchCorpusActiveHeadV1, SearchPlaneErrorCodeV2, SearchScopeKey, SearchScopeSurface,
+    SearchCorpusActiveHeadV1, SearchPlaneErrorCodeV2, SourceFileKey, SourcePublicationEvent,
     lex::LanguageCode,
 };
 use quanta_index_sdk::{ConnectOptions, QuantaIndex, RepoMetaBatch, SdkError, SearchCorpusBatch};
-use quanta_index_searchd_harness::E2eRuntime;
+use quanta_index_searchd_harness::{E2eRuntime, fixture_source_scope_v1};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -157,18 +157,26 @@ fn corpus_batch(raw_generation: u64) -> Result<SearchCorpusBatch, Box<dyn Error>
         revision(),
         generation(raw_generation),
         format!("manifest:generation-activation-concurrency:{label}"),
-    );
+    )
+    .source_event(SourcePublicationEvent {
+        stream_id: "fixture:generation-activation-concurrency".to_string(),
+        event_id: format!("fixture:generation-activation-concurrency:{raw_generation}"),
+        expected_base_event_id: (raw_generation == G2)
+            .then(|| format!("fixture:generation-activation-concurrency:{G1}")),
+        payload_sha256: [0; 32],
+    });
 
     for index in 0..RESULT_COUNT {
         let path = format!("src/{label}/file_{index:02}.rs");
         let text = format!("{NEEDLE} {label} source {index}");
         let end_byte = u32::try_from(text.len())?;
-        batch = batch.replace_scope(
-            SearchScopeKey {
-                doc_surface: SearchScopeSurface::File,
-                repo_relative_path: RepoRelativePath::new(path.clone()),
-            },
-            format!("scope:generation-activation-concurrency:{label}:{index}"),
+        let file_v1 = SourceFileKey {
+            source_repo_id: source_repo(raw_generation, index),
+            repo_relative_path: RepoRelativePath::new(path.clone()),
+        };
+        let scope_v1 = fixture_source_scope_v1(
+            file_v1,
+            revision(),
             vec![ChunkRecord {
                 chunk_id: ChunkId::new(format!("generation-{raw_generation}-chunk-{index:02}")),
                 repo_relative_path: RepoRelativePath::new(path),
@@ -183,7 +191,8 @@ fn corpus_batch(raw_generation: u64) -> Result<SearchCorpusBatch, Box<dyn Error>
                 source_repo_id: Some(source_repo(raw_generation, index)),
             }],
             Vec::new(),
-        );
+        )?;
+        batch = batch.replace_scope(scope_v1.coverage, scope_v1.chunks, scope_v1.symbols);
     }
     Ok(batch)
 }

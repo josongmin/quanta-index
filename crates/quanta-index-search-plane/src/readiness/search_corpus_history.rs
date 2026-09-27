@@ -438,6 +438,42 @@ impl AuxiliaryAuthorityStore {
                 )));
             }
         }
+        let unresolved = self
+            .active_pins
+            .unresolved_source_targets_for_pair_v1(repo_id, revision_id)?;
+        if let Some(candidate) = required_generation
+            && let Some(older) = unresolved
+                .iter()
+                .find(|target| target.manifest_generation < candidate)
+        {
+            // A later physical seal becomes the current track identity even
+            // if retention preserves the older authority. The older event
+            // could then never activate, so admit no later seal until it does.
+            return Err(CoreError::NotReady(format!(
+                "search-corpus history retention: unresolved source generation {} must activate before generation {} can seal",
+                older.manifest_generation.get(),
+                candidate.get(),
+            )));
+        }
+        for target in &unresolved {
+            let recorded = records
+                .iter()
+                .find(|record| record.record.generation == target.manifest_generation);
+            match recorded {
+                Some(record) if record.record.manifest_digest == target.manifest_digest => {}
+                Some(_) => {
+                    return Err(CoreError::Storage(format!(
+                        "search-corpus history retention: unresolved source target identity differs from durable history for repo={} revision={} generation={}",
+                        repo_id.as_str(),
+                        revision_id.as_str(),
+                        target.manifest_generation.get(),
+                    )));
+                }
+                // A newer unrecorded target is not swept by an older
+                // candidate's physical GC. Boot also performs no mutation.
+                None => {}
+            }
+        }
         let mut measure = |generations: &BTreeSet<ManifestGeneration>| {
             self.index_bytes
                 .measure_index_bytes(repo_id, revision_id, generations)
@@ -452,6 +488,9 @@ impl AuxiliaryAuthorityStore {
                         active.manifest_generation() == record.record.generation
                             && active.manifest_digest() == record.record.manifest_digest.as_str()
                     }),
+                    unresolved_source: unresolved
+                        .iter()
+                        .any(|target| target.manifest_generation == record.record.generation),
                 })
                 .collect(),
             &mut measure,

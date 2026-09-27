@@ -1,0 +1,172 @@
+{
+  "checked_at_utc": "2026-09-27T01:52:57.835972+00:00",
+  "source_sha256": "cfce3977b3b3545a950438a0cf1009d6fe9073c84f00f8dae08f0586f19c8f7b",
+  "snapshot_head": "2102966246866398f01833bebf71396831377149",
+  "live_head": "2102966246866398f01833bebf71396831377149",
+  "snapshot_input_count": 1172,
+  "external_input_count": 25,
+  "selected_file_hashes": {
+    "crates/quanta-index-lexical/src/regex_match_cache.rs": {
+      "snapshot_sha256": "df892388ef6cf5256ab98da119b1738735e58a3cfbf976d51af6eb69fd75ae47",
+      "live_sha256": "df892388ef6cf5256ab98da119b1738735e58a3cfbf976d51af6eb69fd75ae47"
+    },
+    "crates/quanta-index-lexical/src/searcher/candidates.rs": {
+      "snapshot_sha256": "8a4b6ac1f73fa26cce7702fce483df273b1d54737fb1d9130686584b761b7e28",
+      "live_sha256": "8a4b6ac1f73fa26cce7702fce483df273b1d54737fb1d9130686584b761b7e28"
+    },
+    "crates/quanta-index-lexical/src/searcher/manual_scan.rs": {
+      "snapshot_sha256": "f057edd88636299240011129a63385bc592182a6fac7a93e9ded1115dce2ad7f",
+      "live_sha256": "f057edd88636299240011129a63385bc592182a6fac7a93e9ded1115dce2ad7f"
+    },
+    "crates/quanta-index-lexical/src/searcher/match_sets.rs": {
+      "snapshot_sha256": "3b66d79f585595d3566675be6d02b7a13a87bdced678f50792b3cbe15f57713d",
+      "live_sha256": "3b66d79f585595d3566675be6d02b7a13a87bdced678f50792b3cbe15f57713d"
+    },
+    "crates/quanta-index-lexical/src/searcher/snippets.rs": {
+      "snapshot_sha256": "431daf84bc2d37745ea926994954fd4ff5d971bb7f652c3464e845c3218a5fe2",
+      "live_sha256": "431daf84bc2d37745ea926994954fd4ff5d971bb7f652c3464e845c3218a5fe2"
+    },
+    "crates/quanta-index-lexical/tests/l4_match_anchored_preview.rs": {
+      "snapshot_sha256": "dd56772836d75a38f94dbe647ea2ac441426198b5aa427e12d28ee2de3696ed0",
+      "live_sha256": "dd56772836d75a38f94dbe647ea2ac441426198b5aa427e12d28ee2de3696ed0"
+    },
+    "crates/quanta-index-lq-regex/src/executor.rs": {
+      "snapshot_sha256": "56fc6e9d5d4f7beaaf2411ba4316e4f60c6a3b53d0b0a7a14417aa3749715541",
+      "live_sha256": "56fc6e9d5d4f7beaaf2411ba4316e4f60c6a3b53d0b0a7a14417aa3749715541"
+    },
+    "crates/quanta-index-lq-regex/src/lib.rs": {
+      "snapshot_sha256": "5b65092e5fd390dffed7c46c6da69f728788723364cd7dd6c0728f7b0cdc12b0",
+      "live_sha256": "5b65092e5fd390dffed7c46c6da69f728788723364cd7dd6c0728f7b0cdc12b0"
+    },
+    "crates/quanta-index-lq-text-normalizer/src/provenance.rs": {
+      "snapshot_sha256": "775e02216f7d868867de653912178b9ae16d5cc54dc3b7494585161044998405",
+      "live_sha256": "775e02216f7d868867de653912178b9ae16d5cc54dc3b7494585161044998405"
+    },
+    "crates/quanta-index-lq-text-normalizer/src/tokens.rs": {
+      "snapshot_sha256": "3d70a9c60a81588ec3e419bccb079ab10c2a4bded3a0e255de92f4dfa297fdb0",
+      "live_sha256": "3d70a9c60a81588ec3e419bccb079ab10c2a4bded3a0e255de92f4dfa297fdb0"
+    },
+    "crates/quanta-index-searchd-harness/src/harness.rs": {
+      "snapshot_sha256": "0826f552848424771be6f1dcb46dcf6b7b0ea1a6cdb77d02486f00582a56ee44",
+      "live_sha256": "0826f552848424771be6f1dcb46dcf6b7b0ea1a6cdb77d02486f00582a56ee44"
+    },
+    "crates/quanta-index-searchd-harness/src/harness/source_publication.rs": {
+      "snapshot_sha256": "37d0c735f8edb44d9bb3ff01707a44b1cef0a010080baa44909202a8cea15690",
+      "live_sha256": "37d0c735f8edb44d9bb3ff01707a44b1cef0a010080baa44909202a8cea15690"
+    },
+    "crates/quanta-index-searchd-runtime/Cargo.toml": {
+      "snapshot_sha256": "71185ce91cd667e0e444f403783ff273450a2e40b26d1438c47d6ef50b91af4b",
+      "live_sha256": "71185ce91cd667e0e444f403783ff273450a2e40b26d1438c47d6ef50b91af4b"
+    },
+    "crates/quanta-index-searchd-runtime/tests/l4_preview_sdk.rs": {
+      "snapshot_sha256": "554472e0633ada8fdc47ab75ac1c9c26b6a081d5bfd7a3d96832b275610d871b",
+      "live_sha256": "554472e0633ada8fdc47ab75ac1c9c26b6a081d5bfd7a3d96832b275610d871b"
+    }
+  },
+  "selected_files_match": true,
+  "full_live_manifest_drift": [
+    "docs/build-resource-budget.md",
+    "tools/ci/tests/test_rust_profile_history.py",
+    "tools/ci/timing/rust_profile_history.py"
+  ],
+  "external_dependency_drift": {},
+  "git_diff_check": {
+    "exit_code": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  "rustc_verbose": "rustc 1.92.0 (ded5c06cf 2025-12-08)\nbinary: rustc\ncommit-hash: ded5c06cf21d2b93bffd5d884aa6e96934ee4234\ncommit-date: 2025-12-08\nhost: aarch64-apple-darwin\nrelease: 1.92.0\nLLVM version: 21.1.3\n",
+  "host": "macOS-15.6-arm64-arm-64bit",
+  "ambient_quanta_index_env_names": [],
+  "daemon_binary": {
+    "path": "/Users/songmin/Library/Caches/quanta-index/target/5f6b3462cecbb396/test-daemon-lane/debug/quanta-index-searchd",
+    "sha256": "629e290be2483236061c097b7beebc6f1c7ad4ae5f47924209c0fd7043949050",
+    "bytes": 359077584
+  },
+  "runs": {
+    "owner-v6": {
+      "exit_code": 0,
+      "inputs_unchanged": true,
+      "test_summaries": [
+        "test result: ok. 193 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.97s",
+        "test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.18s",
+        "test result: ok. 82 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s",
+        "test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s"
+      ]
+    },
+    "process-sdk-v6": {
+      "exit_code": 0,
+      "inputs_unchanged": true,
+      "test_summaries": [
+        "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.69s"
+      ]
+    },
+    "owner-lint-v6": {
+      "exit_code": 0,
+      "inputs_unchanged": true,
+      "test_summaries": []
+    },
+    "process-lint-v6": {
+      "exit_code": 0,
+      "inputs_unchanged": true,
+      "test_summaries": []
+    },
+    "cache-cancel-v6": {
+      "exit_code": 0,
+      "inputs_unchanged": true,
+      "test_summaries": [
+        "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.44s",
+        "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.84s"
+      ]
+    },
+    "ui-v6": {
+      "exit_code": 0,
+      "inputs_unchanged": true,
+      "test_summaries": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 117 filtered out; finished in 0.77s"
+      ]
+    },
+    "format-v6": {
+      "exit_code": 0,
+      "inputs_unchanged": true,
+      "test_summaries": []
+    }
+  },
+  "artifact_sha256": {
+    "cache-cancel-v6.json": "6b43bd3233676364dfea333085d1e6815e6811e7d663ac32469578c80a80be3f",
+    "cache-cancel-v6.log": "ba4bae180fb154deddef1d8fc3f050fb2eb5f9113188639c7727eb705d8ca1b8",
+    "diagnostics/owner-lint-v5.json": "3e53be6e0b0b93c01adc37a3d981c57158ed990649fe94592b7b7bf491c3f55f",
+    "diagnostics/owner-lint-v5.log": "88ed5209b6108f9ade61565e75730827c15dd4fb04aaf4f943127470c62a83a1",
+    "diagnostics/process-sdk-v1.json": "f5359a0b2f69d6309978c5ab48bf3975280ea0091243afeee039960c566f35ab",
+    "diagnostics/process-sdk-v1.log": "e7820e410ef453afdc305b8e1be6da87f68a156ca750544c5d9295e14a663ef1",
+    "diagnostics/process-sdk-v2.json": "fd442b9f1085942c12560f2e2fa607079740db713086e09e383dcd59d9d94071",
+    "diagnostics/process-sdk-v2.log": "bd2b5b54564b55e9cd80b710599e5a4ba35d5486b0d014629b5dfdf6f11f0d2a",
+    "diagnostics/process-sdk-v3.json": "05bea846f718d2ee17406929f238066111a02436869bec408a81d1ab7c11b60f",
+    "diagnostics/process-sdk-v3.log": "d453c43a5b7cdc9a7bb01bed1b34f23d811e95f517abac020e0c53c031b2ecef",
+    "diagnostics/regex-preview-v3.json": "fa9fc4ba42bb9bb01e22f89f8ab8855acc9506d6322694129a65adbd79aa0c26",
+    "diagnostics/regex-preview-v3.log": "4374ac91b56e9edd7c8e4c245d1995677fbeffc818798738352b1760d826974f",
+    "diagnostics/snapshot-v1.json": "315f014fef34f80040931444bb2f56d93009cee66d46993a869877e01f255b38",
+    "diagnostics/snapshot-v2.json": "e6fc0d55bca63ea5397e3482d6b573e381a5e8769a69afa0daa3795453c130e1",
+    "diagnostics/snapshot-v3.json": "aaf0b0dc721bc85b771b8f747187845cfd6e3bf0743526fd40ee51cae0d6efd0",
+    "diagnostics/snapshot-v5.json": "ff2663af9128a095258eca3aa71e6bf260b4412bfc201ff377d1bf8a8d904fef",
+    "format-v6.json": "531a69e76897f7b6386253311e43abacab3440f47c9e26608a6856466313830e",
+    "format-v6.log": "b9d0488fc990ab317c1e6075d4586454e7a341ea58b78598d7e71e0fb9fb3fd5",
+    "owner-lint-v6.json": "87fb9022550c196c4bf72fc2cabc3c536545b66130b7dba180a526621967b29e",
+    "owner-lint-v6.log": "e06e860236081edaab9206da7fa8acb1697442d7a1751787890e43591b20aee7",
+    "owner-v6.json": "119490da21c17b0853b2d0a39cbaf2377d780fbf89f4c89f6f7a8bbee32b342b",
+    "owner-v6.log": "1521b6f25aa7a770c915e6aa61b5bcabc8b445049b9109da999b0631641bbf2f",
+    "process-lint-v6.json": "64efbee3e850dec7cf1c89cb63dfceb7fa1944a5d2f49e6d2c498aaacdac17cd",
+    "process-lint-v6.log": "745a4cc7234feccd085fb4134eaeba3f83f1509beebfae1ca301818dc350f895",
+    "process-sdk-v6.json": "976b2cbc2b5bb6180dca15fc5d2212c7e42f4aca69a60aeb62dc3d77e18ef4f6",
+    "process-sdk-v6.log": "e8ac8a48ffc8079fef1a9d77f591922a565eda34dfeee9fa7bc3901fb50f7360",
+    "run.py": "8e672fc8dd7284fd0d4d7bace5a351c664de1fc3c44e8ee4fa67d837032491fe",
+    "snapshot.json": "532f08915a54b8b7ceccccf5c582900cd66ba72458c8bca51891c4a90ad5980f",
+    "ui-v6.json": "55c25dc4c87fb3f9add4a826e621253e0f317f929d3baa818a21dec1583a499b",
+    "ui-v6.log": "0b8a35019ddfaafde73082bb83ef7fadc2f7fb198e953dae7624cc6be42e5dcd"
+  },
+  "linked_report_sha256": {
+    "L4_REAUDIT_20260927.md": "a80341ea83bd7dd93f003019cb93f5ae292365aeb574c38a77603c67f8b4533f",
+    "L4_REGEX_BUDGET_RESIDUAL.md": "2a992b20bd4ddc57431a58219eff271b1bdb628097148c7384665c0258e62d82",
+    "L4_HANDOFF.md": "32c065021014afbf1ba0131162bd8d7c447e15301c3d832b2e5007f3a45522e9"
+  }
+}

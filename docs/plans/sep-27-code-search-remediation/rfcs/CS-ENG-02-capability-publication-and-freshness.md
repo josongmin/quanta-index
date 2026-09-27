@@ -1,6 +1,10 @@
 # CS-ENG-02 — Capability publication and freshness
 
-Status: **PROPOSED**. Implementation and incremental proof: **NOT_RUN**.
+Status: engine contract and L2 implementation present; whole-product qualification
+**BLOCKED**. Current implementation, owner proof and native daemon recovery
+evidence: [L2 handoff](../handoffs/L2_HANDOFF.md) and
+[L2 process audit](../handoffs/L2_PROCESS_AUDIT.md). The problem description below
+records the pre-cutover baseline; unchecked DoD items are not completion claims.
 Category: engine publication. Findings: F06; G01 remains a lifecycle proof gap.
 Final audit: E03/E04 in [engine-audit.md](../engine-audit.md). Depends on ENG-01
 and the PROD-01 producer payload agreement.

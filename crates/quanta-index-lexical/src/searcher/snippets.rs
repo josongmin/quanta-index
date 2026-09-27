@@ -875,6 +875,9 @@ mod l4_selected_preview_regressions {
 mod l4_witness_regressions {
     use super::RenderedPreview;
     use super::l4_selected_preview_regressions::render;
+    use quanta_index_contract::{LqExpr, LqLeaf, PreviewUnavailableReason};
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
 
     #[expect(
         clippy::expect_used,
@@ -883,7 +886,6 @@ mod l4_witness_regressions {
     fn emitted(expr: &LqExpr, source: &str) -> RenderedPreview {
         render(expr, source).expect("admitted fixed fixture must render")
     }
-    use quanta_index_contract::{LqExpr, LqLeaf};
 
     fn assert_focus(expr: LqExpr, source: &str, expected: &str) {
         let result = emitted(&expr, source);
@@ -1000,5 +1002,54 @@ mod l4_witness_regressions {
             &distant(&focus),
             &focus,
         );
+    }
+
+    #[test]
+    fn every_positive_match_in_the_emitted_window_has_a_typed_span() -> TestResult {
+        let cases = [
+            (
+                LqExpr::Leaf(LqLeaf::Keyword("needle".into())),
+                "needle needle needle",
+                vec![(0, 6), (7, 6), (14, 6)],
+            ),
+            (
+                LqExpr::Leaf(LqLeaf::RawString("ab".into())),
+                "ab ab ab",
+                vec![(0, 2), (3, 2), (6, 2)],
+            ),
+            (
+                LqExpr::Leaf(LqLeaf::Regex("needle[0-9]+".into())),
+                "needle1 needle22",
+                vec![(0, 7), (8, 8)],
+            ),
+            (
+                LqExpr::Leaf(LqLeaf::Phrase("blue whale".into())),
+                "blue whale blue whale",
+                vec![(0, 10), (11, 10)],
+            ),
+        ];
+        for (expr, raw, expected) in cases {
+            let rendered = render(&expr, raw)?;
+            assert_eq!(rendered.snippet, raw);
+            let actual = rendered
+                .highlights
+                .iter()
+                .map(|span| (span.start, span.len))
+                .collect::<Vec<_>>();
+            assert_eq!(actual, expected, "{expr:?}");
+            assert_eq!(
+                rendered.snippet_hit_offset,
+                expected.first().map(|span| span.0)
+            );
+        }
+
+        let saturated = render(&LqExpr::Leaf(LqLeaf::Keyword("x".into())), &"x ".repeat(33))?;
+        assert_eq!(
+            saturated.preview.unavailable_reason,
+            Some(PreviewUnavailableReason::WorkBudget)
+        );
+        assert!(saturated.snippet.is_empty());
+        assert!(saturated.highlights.is_empty());
+        Ok(())
     }
 }

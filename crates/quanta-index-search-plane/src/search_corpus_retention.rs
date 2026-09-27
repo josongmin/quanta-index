@@ -165,8 +165,8 @@ impl SearchCorpusHistoryRetentionPolicyV1 {
 
     /// Decide what one pair retains.
     ///
-    /// The required set — the candidate, the active generation and the
-    /// newest (or, with no active generation, the two newest) — must fit
+    /// The required set — the candidate, active generation, unresolved
+    /// source targets and the newest (or, with no active generation, the two newest) — must fit
     /// `max_generations` and `max_bytes` as measured together, else the
     /// admission is refused typed with nothing reaped. Older generations
     /// are then kept newest-first while the retained set, measured as one
@@ -191,7 +191,7 @@ impl SearchCorpusHistoryRetentionPolicyV1 {
 
         let mut required_generations: BTreeSet<ManifestGeneration> = items
             .iter()
-            .filter(|item| item.candidate || item.active)
+            .filter(|item| item.candidate || item.active || item.unresolved_source)
             .map(|item| item.generation)
             .collect();
         let has_active = items.iter().any(|item| item.active);
@@ -245,6 +245,7 @@ pub(crate) struct SearchCorpusHistoryRetentionItemV1 {
     pub(crate) generation: ManifestGeneration,
     pub(crate) candidate: bool,
     pub(crate) active: bool,
+    pub(crate) unresolved_source: bool,
 }
 
 /// What one pair retains and the index bytes that set was measured at.
@@ -390,6 +391,7 @@ mod tests {
             generation: ManifestGeneration::new(generation),
             candidate,
             active: false,
+            unresolved_source: false,
         }
     }
 
@@ -402,16 +404,19 @@ mod tests {
                     generation: g(3),
                     candidate: true,
                     active: false,
+                    unresolved_source: false,
                 },
                 SearchCorpusHistoryRetentionItemV1 {
                     generation: g(2),
                     candidate: false,
                     active: false,
+                    unresolved_source: false,
                 },
                 SearchCorpusHistoryRetentionItemV1 {
                     generation: g(1),
                     candidate: false,
                     active: true,
+                    unresolved_source: false,
                 },
             ],
             &mut ten_each,

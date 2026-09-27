@@ -38,6 +38,8 @@ pub(crate) const TICK_INTERVAL: u32 = 1_024;
 /// Charge before reading keys or growing a group map. The first excess match
 /// is only a refusal probe: it is never materialized. The sticky stop is also
 /// observed by the native scorer, independently of the cancellation interval.
+/// `budgeted_collection` binds one request to all existing collector clones;
+/// direct Tantivy callers without a request enforce resource limits only.
 #[derive(Clone, Debug)]
 pub(crate) struct CollectionBudget {
     policy: LexicalExecutionBudgetV1,
@@ -45,9 +47,9 @@ pub(crate) struct CollectionBudget {
     admitted: Arc<AtomicUsize>,
     exceeded: Arc<AtomicBool>,
     aborted: Arc<AtomicBool>,
-    // The stored probe never owns a collection, avoiding a reference cycle.
-    // Its interruption state is shared with the native walk's outer probe.
-    request_probe: Arc<OnceLock<BudgetProbe>>,
+    // Share request interruption with the native walk without owning its probe
+    // or a collection handle. This state cannot form a reference cycle.
+    request_probe: Arc<OnceLock<RequestProbe>>,
 }
 
 impl CollectionBudget {
@@ -67,11 +69,13 @@ impl CollectionBudget {
 
     fn bind_request(&self, budget: &RequestBudgetV1) -> Result<BudgetProbe, CoreError> {
         let probe = BudgetProbe::new(budget);
-        self.request_probe.set(probe.clone()).map_err(|_| {
-            CoreError::InvalidContract(
-                "lexical: a collection budget belongs to exactly one search".into(),
-            )
-        })?;
+        self.request_probe
+            .set(probe.request.clone())
+            .map_err(|_rejected_probe| {
+                CoreError::InvalidContract(
+                    "lexical: a collection budget belongs to exactly one search".into(),
+                )
+            })?;
         Ok(probe)
     }
 
@@ -97,7 +101,7 @@ impl CollectionBudget {
         self.exceeded.load(Ordering::Acquire)
             || self.aborted.load(Ordering::Acquire)
             || self.resources.failure().is_some()
-            || self.request_probe.get().is_some_and(BudgetProbe::observe)
+            || self.request_probe.get().is_some_and(RequestProbe::observe)
     }
 
     /// Stop walking after a collector integrity error; preserve that error in
@@ -106,7 +110,7 @@ impl CollectionBudget {
         self.aborted.store(true, Ordering::Release);
     }
 
-    pub(crate) fn error(&self, surface: &str) -> Option<CoreError> {
+    pub(crate) fn error(&self, surface: &'static str) -> Option<CoreError> {
         self.exceeded
             .load(Ordering::Acquire)
             .then(|| self.policy.exceeded(surface))
@@ -114,7 +118,7 @@ impl CollectionBudget {
             .or_else(|| {
                 self.request_probe
                     .get()
-                    .and_then(|probe| probe.interruption_error(surface))
+                    .and_then(|probe| probe.error(surface))
             })
     }
 
@@ -151,6 +155,21 @@ impl CollectionBudget {
             .map_err(|error| tantivy::TantivyError::InvalidArgument(error.to_string()))
     }
 
+    /// Reserve the search wrapper's fruit carrier before it enters a Tantivy
+    /// collector. Preserve the typed request/resource error at this boundary.
+    fn reserve_search_bytes(
+        &self,
+        bytes: u64,
+        stage: &'static str,
+    ) -> Result<LexicalMemoryReservation, CoreError> {
+        if self.stopped() {
+            return Err(self.error(stage).unwrap_or_else(|| {
+                CoreError::Storage("lexical collection was aborted".to_string())
+            }));
+        }
+        self.resources.reserve_bytes(bytes)
+    }
+
     /// Conservative node-layout admission for the pinned Rust 1.92 `BTreeMap`:
     /// at most 11 key/value slots, 12 edges, parent/index/length and padding.
     /// Insert-only maps allocate no more nodes than admitted entries. Keep
@@ -180,22 +199,59 @@ impl CollectionBudget {
     }
 }
 
+/// Shared interruption authority for native traversal and collection phases.
+/// It owns no collection or traversal handle.
+#[derive(Clone, Debug)]
+struct RequestProbe {
+    budget: RequestBudgetV1,
+    interrupted: Arc<AtomicBool>,
+}
+
+impl RequestProbe {
+    fn observe(&self) -> bool {
+        if self.interrupted.load(Ordering::Relaxed) {
+            return true;
+        }
+        if self.budget.interruption().is_some() {
+            self.interrupted.store(true, Ordering::Release);
+            return true;
+        }
+        false
+    }
+
+    fn interrupted(&self) -> bool {
+        self.interrupted.load(Ordering::Acquire)
+    }
+
+    fn error(&self, stage: &'static str) -> Option<CoreError> {
+        if !self.interrupted() {
+            return None;
+        }
+        Some(self.budget.interrupted_at(stage).unwrap_or_else(|| {
+            CoreError::Storage(format!(
+                "lexical: `{stage}` observed an interruption the request budget no longer reports"
+            ))
+        }))
+    }
+}
+
 /// One search's view of the request budget, shared by every scorer and
 /// callback the search creates.
 #[derive(Clone, Debug)]
 pub(crate) struct BudgetProbe {
-    budget: RequestBudgetV1,
+    request: RequestProbe,
     ticks: Arc<AtomicU32>,
-    interrupted: Arc<AtomicBool>,
     collection: Option<CollectionBudget>,
 }
 
 impl BudgetProbe {
     pub(crate) fn new(budget: &RequestBudgetV1) -> Self {
         Self {
-            budget: budget.clone(),
+            request: RequestProbe {
+                budget: budget.clone(),
+                interrupted: Arc::new(AtomicBool::new(false)),
+            },
             ticks: Arc::new(AtomicU32::new(0)),
-            interrupted: Arc::new(AtomicBool::new(false)),
             collection: None,
         }
     }
@@ -211,7 +267,7 @@ impl BudgetProbe {
         {
             return true;
         }
-        if self.interrupted.load(Ordering::Relaxed) {
+        if self.interrupted() {
             return true;
         }
         let prior = self.ticks.fetch_add(1, Ordering::Relaxed);
@@ -230,27 +286,20 @@ impl BudgetProbe {
         {
             return true;
         }
-        if self.interrupted.load(Ordering::Relaxed) {
-            return true;
-        }
-        if self.budget.interruption().is_some() {
-            self.interrupted.store(true, Ordering::Release);
-            return true;
-        }
-        false
+        self.request.observe()
     }
 
     /// Whether any tick or look observed an interruption.
     pub(crate) fn interrupted(&self) -> bool {
-        self.interrupted.load(Ordering::Acquire)
+        self.request.interrupted()
     }
 
     /// Charge an attempted native visit before asking the inner scorer to
     /// initialize or advance. Terminal probes are conservatively charged too.
     fn admit_visit(&self) -> bool {
-        self.collection.as_ref().is_none_or(|collection| {
-            !collection.stopped() && collection.resources.charge_work(1).is_ok()
-        })
+        self.collection
+            .as_ref()
+            .is_none_or(|collection| collection.charge_work(1).is_ok())
     }
 
     fn error(&self, stage: &'static str) -> Option<CoreError> {
@@ -268,14 +317,7 @@ impl BudgetProbe {
     /// one and a budget that reports none is a defect this names rather
     /// than hides.
     pub(crate) fn interruption_error(&self, stage: &'static str) -> Option<CoreError> {
-        if !self.interrupted() {
-            return None;
-        }
-        Some(self.budget.interrupted_at(stage).unwrap_or_else(|| {
-            CoreError::Storage(format!(
-                "lexical: `{stage}` observed an interruption the request budget no longer reports"
-            ))
-        }))
+        self.request.error(stage)
     }
 }
 
@@ -303,8 +345,9 @@ pub(crate) fn budgeted_search<C: Collector>(
     )
 }
 
-/// Exact-set variant: a collector's resource refusal terminates the scorer and
-/// discards every segment fruit before merge; it is never successful exhaustion.
+/// Exact-set collection refuses partial success on resource exhaustion.
+///
+/// A collector's refusal stops scoring and discards every fruit before merge.
 /// Fallible child fruits are checked at the segment boundary, so an integrity
 /// error cannot reach later collection or merge work that might mask its cause.
 pub(crate) fn budgeted_collection<C: Collector>(
@@ -366,7 +409,7 @@ fn search_with_probe<C: Collector>(
                     "lexical: segment-fruit byte size overflow: {error}"
                 ))
             })?;
-            Some(collection.resources.reserve_bytes(bytes)?)
+            Some(collection.reserve_search_bytes(bytes, stage)?)
         }
         None => None,
     };
@@ -617,6 +660,26 @@ mod tests {
                 "request binding must not form a cycle"
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn fruit_carrier_reservation_observes_bound_cancellation() -> TestResult {
+        use quanta_index_core::{LexicalCollectionBudget, LexicalExecutionBudgetV1};
+
+        let request = RequestBudgetV1::unbounded();
+        let resources = LexicalCollectionBudget::new(1, 1)?;
+        let collection =
+            super::CollectionBudget::new(LexicalExecutionBudgetV1::new(1)?, resources.clone());
+        let _probe = collection.bind_request(&request)?;
+        request.cancel_handle().cancel();
+        let result = collection.reserve_search_bytes(2, "test:fruit-carrier");
+        assert!(
+            matches!(&result, Err(CoreError::Typed { code, .. }) if *code == REQUEST_CANCELLED_CODE),
+            "cancelled carrier must keep its typed reason: {result:?}"
+        );
+        assert_eq!(resources.peak_bytes(), 0);
+        assert!(resources.failure().is_none());
         Ok(())
     }
 

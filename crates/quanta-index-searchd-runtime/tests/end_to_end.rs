@@ -19,7 +19,6 @@
     reason = "mixed migration: typed ingest helpers land before all channel setup blocks are cut over"
 )]
 
-use std::collections::BTreeMap;
 use std::error::Error;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -35,8 +34,7 @@ use quanta_index_contract::{
     HistoryQueryRequest, HybridCandidateV1, HybridLaneV1, HybridQueryRequest, LqVisibility,
     ManifestGeneration, RepoId, RepoRelativePath, RevisionId, RuntimeCatalogIngestBatch,
     RuntimeChangedRecord, RuntimeDocFacetRecord, RuntimeEdgeAuthorityRecord,
-    RuntimeMetadataQueryRequest, RuntimeSnapshotRecord, SearchCorpusIngestBatch,
-    SearchCorpusReplaceScope, SearchCorpusTombstoneScope, SearchPlaneIngestIpcRequest,
+    RuntimeMetadataQueryRequest, RuntimeSnapshotRecord, SearchPlaneIngestIpcRequest,
     SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
     SearchPlaneIngestIpcResponseEnvelope, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
@@ -47,7 +45,7 @@ use quanta_index_contract::{
 use quanta_index_ipc::send_request;
 use quanta_index_searchd::app::SemanticEmbedderProfile;
 use quanta_index_searchd::app::config::OpenAiEmbedderTuning;
-use quanta_index_searchd_harness::{E2eRuntime, semantic_source_scopes_for_chunk_records};
+use quanta_index_searchd_harness::{E2eRuntime, SourceCorpusFixture};
 use serde::ser::{Serialize, SerializeStruct, Serializer};
 
 use crate::frontdoor_scenarios::{
@@ -312,9 +310,9 @@ fn structural_tree_record() -> Result<ParseTreeRecord, Box<dyn Error>> {
     })
 }
 
-fn publish_structural_ready_fixture(socket: &Path) -> TestResult {
+fn publish_structural_ready_fixture(socket: &Path, corpus: &mut SourceCorpusFixture) -> TestResult {
     publish_search_corpus_chunks(
-        socket,
+        corpus,
         vec![chunk_record_with_metadata(
             "chunk-tree",
             "src/lib.rs",
@@ -408,95 +406,27 @@ fn dispatch_ingest(socket: &Path, payload: SearchPlaneIngestIpcRequest) -> TestR
 }
 
 fn publish_search_corpus_chunks(
-    socket: &Path,
+    corpus: &mut SourceCorpusFixture,
     chunks: Vec<ChunkRecord>,
     bundle_payload: Option<Vec<u8>>,
 ) -> TestResult {
-    let semantic_replace_scopes = semantic_source_scopes_for_chunk_records(&chunks);
-    let mut chunks_by_path: BTreeMap<String, Vec<ChunkRecord>> = BTreeMap::new();
-    for chunk in chunks {
-        chunks_by_path
-            .entry(chunk.repo_relative_path.as_str().to_string())
-            .or_default()
-            .push(chunk);
+    corpus.replace_chunks(chunks)?;
+    if let Some(bytes) = bundle_payload {
+        corpus.set_metadata(bytes)?;
     }
-    let replace_scopes = chunks_by_path
-        .into_iter()
-        .map(|(path, chunks)| SearchCorpusReplaceScope {
-            scope: scope_key(&path),
-            scope_digest: format!("e2e-lex-scope:{path}"),
-            chunks,
-            symbols: Vec::new(),
-        })
-        .collect();
-    dispatch_ingest(
-        socket,
-        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(SearchCorpusIngestBatch {
-            repo_id: repo(),
-            revision_id: revision(),
-            generation: generation(),
-            base_generation: None,
-            manifest_digest: format!("e2e-lex-manifest-{}", generation().get()),
-            batch_digest: String::new(),
-            mode: BatchIngestMode::ReplaceGeneration,
-            bundle_payload,
-            clear_surfaces: Vec::new(),
-            replace_scopes,
-            tombstone_scopes: Vec::new(),
-            semantic_replace_scopes,
-            semantic_tombstone_scopes: Vec::new(),
-            seal: false,
-        }),
-    )
+    Ok(())
 }
 
-fn tombstone_lexical_scopes(socket: &Path, paths: &[&str]) -> TestResult {
-    dispatch_ingest(
-        socket,
-        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(SearchCorpusIngestBatch {
-            repo_id: repo(),
-            revision_id: revision(),
-            generation: generation(),
-            base_generation: None,
-            manifest_digest: format!("e2e-lex-del-{}", generation().get()),
-            batch_digest: String::new(),
-            mode: BatchIngestMode::ReplaceGeneration,
-            bundle_payload: None,
-            clear_surfaces: Vec::new(),
-            replace_scopes: Vec::new(),
-            tombstone_scopes: paths
-                .iter()
-                .map(|path| SearchCorpusTombstoneScope {
-                    scope: scope_key(path),
-                })
-                .collect(),
-            semantic_replace_scopes: Vec::new(),
-            semantic_tombstone_scopes: Vec::new(),
-            seal: false,
-        }),
-    )
+fn tombstone_lexical_scopes(corpus: &mut SourceCorpusFixture, paths: &[&str]) -> TestResult {
+    for path in paths {
+        corpus.delete_path(path)?;
+    }
+    Ok(())
 }
 
-fn seal_lexical(socket: &Path) -> TestResult {
-    dispatch_ingest(
-        socket,
-        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(SearchCorpusIngestBatch {
-            repo_id: repo(),
-            revision_id: revision(),
-            generation: generation(),
-            base_generation: None,
-            manifest_digest: format!("e2e-lex-seal-{}", generation().get()),
-            batch_digest: String::new(),
-            mode: BatchIngestMode::ReplaceGeneration,
-            bundle_payload: None,
-            clear_surfaces: Vec::new(),
-            replace_scopes: Vec::new(),
-            tombstone_scopes: Vec::new(),
-            semantic_replace_scopes: Vec::new(),
-            semantic_tombstone_scopes: Vec::new(),
-            seal: true,
-        }),
-    )
+fn seal_lexical(socket: &Path, corpus: &mut SourceCorpusFixture) -> TestResult {
+    corpus.publish(socket, next_request_id())?;
+    Ok(())
 }
 
 fn publish_history_commits(socket: &Path, commits: Vec<CommitRecord>) -> TestResult {
@@ -819,8 +749,14 @@ fn publish_dispatch_queries_share_one_indexed_fixture() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
     let ingest_socket = fixture.ingest_socket;
+    let mut corpus = SourceCorpusFixture::new(
+        repo(),
+        revision(),
+        generation(),
+        format!("fixture-event-{}", next_request_id()),
+    );
     publish_search_corpus_chunks(
-        &ingest_socket,
+        &mut corpus,
         vec![
             chunk_record("c1", "hello world")?,
             chunk_record("c2", "hello rust")?,
@@ -828,7 +764,7 @@ fn publish_dispatch_queries_share_one_indexed_fixture() -> TestResult {
         ],
         Some(b"manifest".to_vec()),
     )?;
-    seal_lexical(&ingest_socket)?;
+    seal_lexical(&ingest_socket, &mut corpus)?;
 
     let verification: TestResult = (|| {
         verify_publish_dispatch_lexical_roundtrip(&socket)
@@ -845,8 +781,14 @@ fn sourcegraph_path_and_lang_filters_execute_against_indexed_metadata() -> TestR
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
     let ingest_socket = fixture.ingest_socket;
+    let mut corpus = SourceCorpusFixture::new(
+        repo(),
+        revision(),
+        generation(),
+        format!("fixture-event-{}", next_request_id()),
+    );
     publish_search_corpus_chunks(
-        &ingest_socket,
+        &mut corpus,
         vec![
             chunk_record_with_metadata("alpha", "src/lib.rs", "rust", 3, 8, "needle alpha")?,
             chunk_record_with_metadata("beta", "src/main.rs", "rust", 10, 18, "needle beta")?,
@@ -854,7 +796,7 @@ fn sourcegraph_path_and_lang_filters_execute_against_indexed_metadata() -> TestR
         ],
         Some(b"manifest".to_vec()),
     )?;
-    seal_lexical(&ingest_socket)?;
+    seal_lexical(&ingest_socket, &mut corpus)?;
 
     let req = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 7,
@@ -946,13 +888,19 @@ fn history_query_returns_typed_shard_unavailable_when_diff_shard_missing() -> Te
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
     let ingest_socket = fixture.ingest_socket;
+    let mut corpus = SourceCorpusFixture::new(
+        repo(),
+        revision(),
+        generation(),
+        format!("fixture-event-{}", next_request_id()),
+    );
     publish_search_corpus_chunks(
-        &ingest_socket,
+        &mut corpus,
         vec![chunk_record("history-lex", "history shard lexical proof")?],
         Some(b"manifest".to_vec()),
     )?;
     publish_history_commits(&ingest_socket, vec![history_commit_record()])?;
-    seal_lexical(&ingest_socket)?;
+    seal_lexical(&ingest_socket, &mut corpus)?;
     if !wait_until(READINESS_TIMEOUT, || {
         send_query_request(&socket, &lex_query("history"))
             .map(|resp| matches!(resp.payload, SearchPlaneQueryIpcResponse::Text(_)))
@@ -981,8 +929,14 @@ fn end_to_end_widened_history_and_runtime_queries_roundtrip_exact_truth() -> Tes
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
     let ingest_socket = fixture.ingest_socket;
+    let mut corpus = SourceCorpusFixture::new(
+        repo(),
+        revision(),
+        generation(),
+        format!("fixture-event-{}", next_request_id()),
+    );
     publish_search_corpus_chunks(
-        &ingest_socket,
+        &mut corpus,
         vec![
             chunk_record("history-lex", "history lexical proof")?,
             chunk_record_with_metadata(
@@ -1078,7 +1032,7 @@ fn end_to_end_widened_history_and_runtime_queries_roundtrip_exact_truth() -> Tes
     )?;
     publish_history_authority_fixture(&ingest_socket)?;
     publish_runtime_catalog_fixture(&ingest_socket)?;
-    seal_lexical(&ingest_socket)?;
+    seal_lexical(&ingest_socket, &mut corpus)?;
 
     for &scenario in IPC_FRONTDOOR_SCENARIOS {
         match scenario.expected {
@@ -1279,10 +1233,16 @@ fn hybrid_query_succeeds_when_both_tracks_sealed() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
     let ingest_socket = fixture.ingest_socket;
+    let mut corpus = SourceCorpusFixture::new(
+        repo(),
+        revision(),
+        generation(),
+        format!("fixture-event-{}", next_request_id()),
+    );
     let alpha = chunk_record("alpha", "sphinx quartz")?;
     let beta = chunk_record("beta", "sphinx riddles")?;
-    publish_search_corpus_chunks(&ingest_socket, vec![alpha, beta], None)?;
-    seal_lexical(&ingest_socket)?;
+    publish_search_corpus_chunks(&mut corpus, vec![alpha, beta], None)?;
+    seal_lexical(&ingest_socket, &mut corpus)?;
     let pin = GenerationPin::new(repo(), revision(), generation());
     // Wait for joint lexical/semantic materialization from search-corpus ingest.
     if !wait_until(READINESS_TIMEOUT, || {
@@ -1492,8 +1452,14 @@ fn repo_metadata_filters_share_one_indexed_fixture() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
     let ingest_socket = fixture.ingest_socket;
+    let mut corpus = SourceCorpusFixture::new(
+        repo(),
+        revision(),
+        generation(),
+        format!("fixture-event-{}", next_request_id()),
+    );
     publish_search_corpus_chunks(
-        &ingest_socket,
+        &mut corpus,
         vec![chunk_record("alpha", "needle")?],
         Some(repo_metadata_payload(
             false,
@@ -1502,7 +1468,7 @@ fn repo_metadata_filters_share_one_indexed_fixture() -> TestResult {
             &["global", "team-search"],
         )?),
     )?;
-    seal_lexical(&ingest_socket)?;
+    seal_lexical(&ingest_socket, &mut corpus)?;
 
     let verification: TestResult = (|| {
         let verify_sourcegraph_context_filter_fn: fn(&Path) -> TestResult =
@@ -1628,6 +1594,12 @@ fn openai_semantic_paraphrase_outranks_unrelated_v1() -> TestResult {
     )?;
     let socket = fixture.query_socket.clone();
     let ingest_socket = fixture.ingest_socket;
+    let mut corpus = SourceCorpusFixture::new(
+        repo(),
+        revision(),
+        generation(),
+        format!("fixture-event-{}", next_request_id()),
+    );
 
     // Zero meaningful lexical overlap with the query "the cat is sleeping":
     // cat-doc uses kitten/dozed/windowsill; finance-doc uses revenue/dividends.
@@ -1641,8 +1613,8 @@ fn openai_semantic_paraphrase_outranks_unrelated_v1() -> TestResult {
         "finance-doc",
         "Quarterly revenue and shareholder dividends climbed after the earnings report.",
     )?;
-    publish_search_corpus_chunks(&ingest_socket, vec![cat_doc, finance_doc], None)?;
-    seal_lexical(&ingest_socket)?;
+    publish_search_corpus_chunks(&mut corpus, vec![cat_doc, finance_doc], None)?;
+    seal_lexical(&ingest_socket, &mut corpus)?;
 
     let pin = GenerationPin::new(repo(), revision(), generation());
     let req = SearchPlaneQueryIpcRequestEnvelope {
@@ -1751,16 +1723,22 @@ fn semantic_query_uses_search_owned_text_derivation_with_explicit_hash_profile()
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
     let ingest_socket = fixture.ingest_socket;
+    let mut corpus = SourceCorpusFixture::new(
+        repo(),
+        revision(),
+        generation(),
+        format!("fixture-event-{}", next_request_id()),
+    );
 
     publish_search_corpus_chunks(
-        &ingest_socket,
+        &mut corpus,
         vec![
             chunk_record("alpha", "parser pipeline typed semantic search")?,
             chunk_record("beta", "archive storage compaction")?,
         ],
         None,
     )?;
-    seal_lexical(&ingest_socket)?;
+    seal_lexical(&ingest_socket, &mut corpus)?;
 
     let req = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 44,
@@ -1900,12 +1878,18 @@ fn semantic_query_with_lexical_scope_returns_intersection_only() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
     let ingest_socket = fixture.ingest_socket;
+    let mut corpus = SourceCorpusFixture::new(
+        repo(),
+        revision(),
+        generation(),
+        format!("fixture-event-{}", next_request_id()),
+    );
     let pin = GenerationPin::new(repo(), revision(), generation());
     let alpha = chunk_record("alpha", "scope needle")?;
     let beta = chunk_record("beta", "scope miss")?;
     let gamma = chunk_record("gamma", "outside needle")?;
-    publish_search_corpus_chunks(&ingest_socket, vec![alpha, beta, gamma], None)?;
-    seal_lexical(&ingest_socket)?;
+    publish_search_corpus_chunks(&mut corpus, vec![alpha, beta, gamma], None)?;
+    seal_lexical(&ingest_socket, &mut corpus)?;
 
     let req = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 41,
@@ -1958,12 +1942,18 @@ fn semantic_scoped_query_ignores_out_of_scope_global_nearest_hit() -> TestResult
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
     let ingest_socket = fixture.ingest_socket;
+    let mut corpus = SourceCorpusFixture::new(
+        repo(),
+        revision(),
+        generation(),
+        format!("fixture-event-{}", next_request_id()),
+    );
     let pin = GenerationPin::new(repo(), revision(), generation());
     let alpha = chunk_record("alpha", "focus alpha")?;
     let beta = chunk_record("beta", "scope focus")?;
     let gamma = chunk_record("gamma", "scope gamma")?;
-    publish_search_corpus_chunks(&ingest_socket, vec![alpha, beta, gamma], None)?;
-    seal_lexical(&ingest_socket)?;
+    publish_search_corpus_chunks(&mut corpus, vec![alpha, beta, gamma], None)?;
+    seal_lexical(&ingest_socket, &mut corpus)?;
 
     let req = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 42,
@@ -2052,8 +2042,14 @@ fn default_indexed_queries_share_one_fixture() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
     let ingest_socket = fixture.ingest_socket;
+    let mut corpus = SourceCorpusFixture::new(
+        repo(),
+        revision(),
+        generation(),
+        format!("fixture-event-{}", next_request_id()),
+    );
     publish_search_corpus_chunks(
-        &ingest_socket,
+        &mut corpus,
         vec![
             chunk_record("alpha", "semantic alpha")?,
             chunk_record("beta", "semantic beta")?,
@@ -2063,7 +2059,7 @@ fn default_indexed_queries_share_one_fixture() -> TestResult {
         ],
         Some(b"manifest".to_vec()),
     )?;
-    seal_lexical(&ingest_socket)?;
+    seal_lexical(&ingest_socket, &mut corpus)?;
 
     let verification: TestResult = (|| {
         let verify_semantic_without_lexical_scope_fn: fn(&Path) -> TestResult =
@@ -2103,10 +2099,16 @@ fn semantic_query_fails_closed_when_runtime_has_no_query_embedder() -> TestResul
     let fixture = ScenarioFixture::boot_with_profile(SemanticEmbedderProfile::Unavailable)?;
     let socket = fixture.query_socket.clone();
     let ingest_socket = fixture.ingest_socket;
+    let mut corpus = SourceCorpusFixture::new(
+        repo(),
+        revision(),
+        generation(),
+        format!("fixture-event-{}", next_request_id()),
+    );
 
     let alpha = chunk_record("alpha", "semantic alpha")?;
-    publish_search_corpus_chunks(&ingest_socket, vec![alpha], None)?;
-    seal_lexical(&ingest_socket)?;
+    publish_search_corpus_chunks(&mut corpus, vec![alpha], None)?;
+    seal_lexical(&ingest_socket, &mut corpus)?;
 
     let req = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 44,
@@ -2262,6 +2264,12 @@ fn hybrid_query_admits_a_semantic_only_relevant_hit_beside_the_lexical_hits() ->
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
     let ingest_socket = fixture.ingest_socket;
+    let mut corpus = SourceCorpusFixture::new(
+        repo(),
+        revision(),
+        generation(),
+        format!("fixture-event-{}", next_request_id()),
+    );
     // Lexical lane (`riddle`): beta only. Dense lane (`focus alpha`): alpha
     // first, beta second, gamma last. Fused at top_k=2: beta (both lanes),
     // then alpha on dense relevance alone; gamma, ranked last by the one
@@ -2269,8 +2277,8 @@ fn hybrid_query_admits_a_semantic_only_relevant_hit_beside_the_lexical_hits() ->
     let alpha = chunk_record("alpha", "focus alpha")?;
     let beta = chunk_record("beta", "riddle focus")?;
     let gamma = chunk_record("gamma", "scope gamma")?;
-    publish_search_corpus_chunks(&ingest_socket, vec![alpha, beta, gamma], None)?;
-    seal_lexical(&ingest_socket)?;
+    publish_search_corpus_chunks(&mut corpus, vec![alpha, beta, gamma], None)?;
+    seal_lexical(&ingest_socket, &mut corpus)?;
 
     let pin = GenerationPin::new(repo(), revision(), generation());
     let req = SearchPlaneQueryIpcRequestEnvelope {
@@ -2396,10 +2404,16 @@ fn hybrid_query_repeated_tied_scope_query_keeps_stable_order() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
     let ingest_socket = fixture.ingest_socket;
+    let mut corpus = SourceCorpusFixture::new(
+        repo(),
+        revision(),
+        generation(),
+        format!("fixture-event-{}", next_request_id()),
+    );
     let alpha = chunk_record("alpha", "scope tie")?;
     let beta = chunk_record("beta", "scope tie")?;
-    publish_search_corpus_chunks(&ingest_socket, vec![alpha, beta], None)?;
-    seal_lexical(&ingest_socket)?;
+    publish_search_corpus_chunks(&mut corpus, vec![alpha, beta], None)?;
+    seal_lexical(&ingest_socket, &mut corpus)?;
 
     let pin = GenerationPin::new(repo(), revision(), generation());
     let request = SearchPlaneQueryIpcRequestEnvelope {
@@ -2497,8 +2511,14 @@ fn structural_query_returns_typed_shard_unavailable_error() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
     let ingest_socket = fixture.ingest_socket;
+    let mut corpus = SourceCorpusFixture::new(
+        repo(),
+        revision(),
+        generation(),
+        format!("fixture-event-{}", next_request_id()),
+    );
     publish_search_corpus_chunks(
-        &ingest_socket,
+        &mut corpus,
         vec![
             chunk_record_with_metadata("chunk-tree", "src/lib.rs", "rust", 1, 1, "fn main() {}")?,
             // Keep one search-owned semantic source alive after orphaning the
@@ -2542,8 +2562,8 @@ fn structural_query_returns_typed_shard_unavailable_error() -> TestResult {
             },
         }],
     )?;
-    tombstone_lexical_scopes(&ingest_socket, &["src/lib.rs"])?;
-    seal_lexical(&ingest_socket)?;
+    tombstone_lexical_scopes(&mut corpus, &["src/lib.rs"])?;
+    seal_lexical(&ingest_socket, &mut corpus)?;
     seal_structural(&ingest_socket)?;
 
     let request = SearchPlaneQueryIpcRequestEnvelope {
@@ -3043,8 +3063,14 @@ fn structural_ready_queries_share_one_indexed_fixture() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
     let ingest_socket = fixture.ingest_socket;
-    publish_structural_ready_fixture(&ingest_socket)?;
-    seal_lexical(&ingest_socket)?;
+    let mut corpus = SourceCorpusFixture::new(
+        repo(),
+        revision(),
+        generation(),
+        format!("fixture-event-{}", next_request_id()),
+    );
+    publish_structural_ready_fixture(&ingest_socket, &mut corpus)?;
+    seal_lexical(&ingest_socket, &mut corpus)?;
     seal_structural(&ingest_socket)?;
 
     let verification: TestResult = (|| {

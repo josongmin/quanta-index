@@ -153,7 +153,12 @@ def _bind_test_binaries(raw: RawFile | bytes) -> dict[str, dict[str, str]]:
 
 
 def verify_reused_build(
-    binary_raw: RawFile | bytes, metadata_raw: RawFile | bytes, collection_raw: RawFile | bytes, *, workspace_root: Path
+    binary_raw: RawFile | bytes,
+    metadata_raw: RawFile | bytes,
+    collection_raw: RawFile | bytes,
+    *,
+    workspace_root: Path,
+    required_non_test_binary: Path | None = None,
 ) -> dict[str, Path]:
     """Cross-check actual native build metadata against the selected collection."""
     selected = selected_test_binaries(collection_raw)
@@ -209,6 +214,24 @@ def verify_reused_build(
             raise ValueError(
                 "native compiled binary differs from collection/Cargo package identity"
             )
+    if required_non_test_binary is not None:
+        package_ids = [
+            package_id
+            for package_id, package in packages.items()
+            if package.get("name") == PACKAGE
+            and package.get("manifest_path")
+            == str(workspace_root / "benchmarks/retrieval/Cargo.toml")
+        ]
+        non_test = binary_list["rust-build-meta"].get("non-test-binaries")
+        expected_path = Path(target) / "debug" / PACKAGE
+        if (
+            len(package_ids) != 1
+            or not isinstance(non_test, dict)
+            or non_test.get(package_ids[0])
+            != [{"name": PACKAGE, "kind": "bin-exe", "path": f"debug/{PACKAGE}"}]
+            or required_non_test_binary != expected_path
+        ):
+            raise ValueError("SDK runner is absent from the selected native build")
     return selected
 
 
@@ -760,11 +783,6 @@ def _expected_commands(
             base,
         ),
         (
-            "build-runner",
-            _cargo(wrapper, "build", "-p", PACKAGE, "--bin", PACKAGE, "--locked"),
-            base,
-        ),
-        (
             "rust-build",
             _cargo(
                 wrapper,
@@ -945,12 +963,8 @@ def _produce(rail: str, out: Path, revision: str, tools: dict[str, dict[str, str
             out,
             commands,
         )
-        _run(
-            "build-runner",
-            _cargo(wrapper, "build", "-p", PACKAGE, "--bin", PACKAGE, "--locked"),
-            out,
-            commands,
-        )
+        # The integration test's CARGO_BIN_EXE reference makes this preparation
+        # compile the runner; bind the resulting binary after collection.
         selector = ["-p", PACKAGE, "--test", "sdk_roundtrip", *FLAGS]
         build_raw = _run(
             "rust-build",
@@ -974,10 +988,16 @@ def _produce(rail: str, out: Path, revision: str, tools: dict[str, dict[str, str
         )
         collected.copy_to(out / "nextest-inventory.json")
 
-        verify_reused_build(build_raw, metadata_raw, collected, workspace_root=ROOT)
         suffix = ".exe" if os.name == "nt" else ""
         searchd = target / "debug" / f"quanta-index-searchd{suffix}"
         runner = target / "debug" / f"{PACKAGE}{suffix}"
+        verify_reused_build(
+            build_raw,
+            metadata_raw,
+            collected,
+            workspace_root=ROOT,
+            required_non_test_binary=runner,
+        )
         binaries = {}
         for name, path in (("searchd", searchd), ("runner", runner)):
             if not path.is_file():
@@ -1198,17 +1218,23 @@ def validate(
             raise ValueError("invalid proof tool identity")
     binaries = context["binaries"]
     selected_binaries = selected_test_binaries(capture("rust-collection.stdout"))
-    verify_reused_build(
-        capture("rust-build.stdout"),
-        capture("metadata.stdout"),
-        capture("rust-collection.stdout"),
-        workspace_root=ROOT,
-    )
     expected_binary_roles = set(selected_binaries) | (
         {"runner", "searchd"} if context["rail"] == "sdk" else set()
     )
     if not isinstance(binaries, dict) or set(binaries) != expected_binary_roles:
         raise ValueError("invalid proof binary identities")
+    verify_reused_build(
+        capture("rust-build.stdout"),
+        capture("metadata.stdout"),
+        capture("rust-collection.stdout"),
+        workspace_root=ROOT,
+        required_non_test_binary=(
+            Path(binaries["runner"]["path"])
+            if context["rail"] == "sdk" and isinstance(binaries["runner"], dict)
+            and isinstance(binaries["runner"].get("path"), str)
+            else None
+        ),
+    )
     if any(
         not isinstance(binaries[name], dict) or binaries[name].get("path") != str(path)
         for name, path in selected_binaries.items()

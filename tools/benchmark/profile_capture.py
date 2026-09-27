@@ -62,8 +62,9 @@ class CaptureEpoch:
     """
 
     def __init__(self, repo: Path, root: Path, profile: str, *, capture_id=None):
+        self.repo = repo.resolve()
         self.root = root.absolute()
-        if self.root.resolve().is_relative_to(repo.resolve()):
+        if self.root.resolve().is_relative_to(self.repo):
             raise EvidenceError("capture evidence root must stay outside the checkout")
         _directories(self.root)
         self.profile = _run_id(profile)
@@ -92,6 +93,7 @@ class CaptureEpoch:
         return self
 
     def step(self, phase, **observations):
+        self.require_healthy()
         _run_id(phase)
         self.state.update(phase=phase, sequence=self.state["sequence"] + 1, updated_ns=time.time_ns())
         self.state["history"].append({
@@ -104,6 +106,10 @@ class CaptureEpoch:
         if self.primary is None:
             self.primary = error
 
+    def require_healthy(self):
+        if self.primary is not None:
+            raise self.primary
+
     def inputs(self, files):
         self.step("preparation", inputs={
             name: {"path": str(raw.path), "sha256": raw.sha256, "bytes": raw.size}
@@ -111,6 +117,7 @@ class CaptureEpoch:
         })
 
     def execute(self, owner, *args, **kwargs):
+        self.require_healthy()
         log_dir = kwargs["log_dir"].absolute()
         if not log_dir.is_relative_to(self.work):
             raise EvidenceError("producer logs escape their capture epoch")
@@ -188,16 +195,32 @@ def capture_entrypoint(profile=None, *, profile_argument="profile", repo_argumen
             arguments = signature.bind(*args, **kwargs).arguments
             repo, root = arguments[repo_argument], arguments[root_argument]
             selected = profile if profile is not None else arguments[profile_argument]
+
+            def invoke(epoch):
+                try:
+                    result = function(*args, **kwargs)
+                except BaseException as error:
+                    epoch.reject(error)
+                    raise
+                if type(result) is int and result != 0:
+                    epoch.reject(EvidenceError(
+                        f"{function.__name__} returned exit {result} during {epoch.state['phase']}"
+                    ))
+                else:
+                    epoch.require_healthy()
+                return result
+
             existing = _active_capture.get()
             if existing is not None:
-                if existing.root != root.absolute() or existing.profile != selected:
-                    raise EvidenceError("nested publication differs from its capture epoch")
-                return function(*args, **kwargs)
+                if (existing.root != root.absolute() or existing.profile != selected
+                        or existing.repo != repo.resolve()):
+                    error = EvidenceError("nested publication differs from its capture epoch")
+                    existing.reject(error)
+                    raise error
+                existing.require_healthy()
+                return invoke(existing)
             with CaptureEpoch(repo, root, selected) as epoch:
-                result = function(*args, **kwargs)
-                if type(result) is int and result != 0:
-                    epoch.reject(EvidenceError(f"{function.__name__} returned exit {result} during {epoch.state['phase']}"))
-                return result
+                return invoke(epoch)
 
         return wrapped
     return decorate
@@ -236,6 +259,7 @@ def publish_capture(
     from evidence_bridge import promote_native_run
 
     epoch = current_capture()
+    epoch.require_healthy()
     if (epoch.root, epoch.profile, epoch.capture_id) != (root.absolute(), profile, capture_id):
         raise EvidenceError("publication differs from its capture epoch")
     epoch.step("publication_inventory")
@@ -270,15 +294,18 @@ def publish_capture(
     for run in prepared:
         epoch.step("publication_source", run_id=run["run_id"])
         verify_source()
+        epoch.require_healthy()
         epoch.step("promotion", source=run["source"], inputs=run.get("inputs"), prepared_command=run.get("command"))
         result = promote_native_run(evidence_root=root, **run)
         epoch.step("promoted_load", run_id=result["run_id"])
         record = store.load(result["run_id"])
         epoch.step("domain_replay")
         replay(store, record)
+        epoch.require_healthy()
         promoted.append(record["run_id"])
     epoch.step("final_source", promoted_run_ids=promoted)
     verify_source()
+    epoch.require_healthy()
     epoch.state["commit_state"] = "attempted"
     epoch.step("commit")
     document = commit_capture(

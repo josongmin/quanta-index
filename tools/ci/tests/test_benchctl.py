@@ -1364,6 +1364,18 @@ def test_promotion_is_scoped_to_the_profile_families(monkeypatch, tmp_path, prof
     assert {run["family"] for run in runs} == set(selected)
     assert len(runs) == 2
     assert (root / "profiles" / f"{profile_name}.json").is_file()
+    assert MODULE.RunStore(root).collect([]) == []
+    for run in runs:
+        replay = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH), "replay", run["run_id"],
+             "--evidence-root", str(root)],
+            cwd=REPO_ROOT, capture_output=True, text=True, timeout=30,
+        )
+        assert replay.returncode == 0, replay.stdout + replay.stderr
+    assert MODULE.validate_promoted_runs(
+        root, profile_name, manifest, source,
+        "sha256:" + hashlib.sha256((repo / "Cargo.lock").read_bytes()).hexdigest(),
+    ) == 0
 
 
 def test_native_capture_keeps_real_failed_producer_logs_and_prior_pointer(monkeypatch, tmp_path):
@@ -1413,32 +1425,30 @@ def test_native_capture_keeps_real_failed_producer_logs_and_prior_pointer(monkey
     assert terminal["command"]["exit_code"] == 7
     assert observed["record"]["sha256"] == "sha256:" + hashlib.sha256((log_dir / "execution.json").read_bytes()).hexdigest()
     assert MODULE.RunStore(root).collect([]) == []
-    for run in runs:
-        replay = subprocess.run(
-            [
-                sys.executable,
-                str(SCRIPT_PATH),
-                "replay",
-                run["run_id"],
-                "--evidence-root",
-                str(root),
-            ],
-            cwd=REPO_ROOT,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        assert replay.returncode == 0, replay.stdout + replay.stderr
-    assert (
-        MODULE.validate_promoted_runs(
-            root,
-            profile_name,
-            manifest,
-            source,
-            "sha256:" + hashlib.sha256((repo / "Cargo.lock").read_bytes()).hexdigest(),
-        )
-        == 0
-    )
+    assert failures[0].is_file()
+    assert (log_dir / "execution.json").is_file()
+
+
+def test_native_preflight_nonzero_retains_actual_reason(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    args = _native_profile_fixture(monkeypatch, tmp_path, "systems")
+    monkeypatch.setattr(MODULE, "require_declared_baselines", lambda *_: None)
+    monkeypatch.setattr(MODULE, "require_clean_worktree", lambda *_: None)
+    monkeypatch.setattr(MODULE, "resolve_checkout_head", lambda *_: args["initial_head"])
+    monkeypatch.setattr(MODULE, "preflight", lambda *_: 7)
+    root = args["evidence_root"]
+    cli = SimpleNamespace(command="run", profile="systems", evidence_root=root,
+                          admit_baseline=False, cold_samples=None)
+    assert MODULE._capture_native_run(
+        args["repo_root"], root, "systems", args=cli, argv=["run", "systems"],
+        profile={"recipes": ["must-not-run"]}, manifest=args["manifest"], artifact_profile="systems",
+    ) == 7
+    failure = json.loads(next((root / "failures").glob("*.json")).read_text())
+    assert failure["phase"] == "preflight"
+    assert "local timing preflight returned exit 7; receipt path:" in failure["error"]["message"]
+    assert "execution" not in failure["observations"]
+    assert not (root / "profiles").exists()
 
 
 def test_native_raw_filename_collision_refuses_before_promotion(monkeypatch, tmp_path, capsys):
@@ -1534,6 +1544,10 @@ def test_native_partial_publication_preserves_prior_complete_capture(monkeypatch
     )
     assert len(document["runs"]) == 2
     assert len(MODULE.RunStore(root).collect([])) == 1
+    failure = json.loads(next((root / "failures").glob("*.json")).read_text())
+    assert failure["phase"] == "promotion"
+    assert failure["commit_state"] == "not_started"
+    assert failure["error"]["message"] == "injected second-family failure"
     source = evidence_bridge.source_identity(args["repo_root"], "benchmark-control-plane")
     lock = "sha256:" + hashlib.sha256((args["repo_root"] / "Cargo.lock").read_bytes()).hexdigest()
     assert MODULE.validate_promoted_runs(root, "systems", args["manifest"], source, lock) == 0

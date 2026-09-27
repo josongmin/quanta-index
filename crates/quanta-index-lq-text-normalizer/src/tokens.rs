@@ -225,14 +225,29 @@ pub(crate) fn substring_range_in_case_text(
     needle: &str,
     case: CaseMode,
 ) -> Option<core::ops::Range<usize>> {
+    substring_ranges_in_case_text(haystack, needle, case).next()
+}
+
+/// Reuse the raw-substring truth transformation for each non-overlapping hit.
+pub(crate) fn substring_ranges_in_case_text<'a>(
+    haystack: &'a str,
+    needle: &str,
+    case: CaseMode,
+) -> impl Iterator<Item = core::ops::Range<usize>> + 'a {
     let needle = nfc(needle);
-    if needle.is_empty() {
-        return None;
-    }
-    let needle = apply_case(needle.as_ref(), case);
-    haystack
-        .find(needle.as_ref())
-        .map(|start| start..start.saturating_add(needle.len()))
+    let needle = apply_case(needle.as_ref(), case).into_owned();
+    let mut cursor = 0;
+    std::iter::from_fn(move || {
+        if needle.is_empty() {
+            return None;
+        }
+        let remaining = haystack.get(cursor..)?;
+        let relative = remaining.find(needle.as_str())?;
+        let start = cursor.saturating_add(relative);
+        let end = start.saturating_add(needle.len());
+        cursor = end;
+        Some(start..end)
+    })
 }
 
 #[cfg(test)]

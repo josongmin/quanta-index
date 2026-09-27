@@ -31,9 +31,9 @@ use std::time::Duration;
 
 use quanta_index_catalog::SqliteCatalog;
 use quanta_index_contract::{
-    BatchIngestMode, FileId, GenerationPin, ManifestGeneration, QuarantineDiscardOutcomeDtoV1,
-    QuarantineTargetV1, QuarantinedGenerationEntryV1, RepoMapExactnessSummary, RepoMapFileNode,
-    RepoMapGraphCoverage, RepoMapGraphCoverageClass, RepoMapItemIndexAvailability, RepoMapNode,
+    FileId, GenerationPin, ManifestGeneration, QuarantineDiscardOutcomeDtoV1, QuarantineTargetV1,
+    QuarantinedGenerationEntryV1, RepoMapExactnessSummary, RepoMapFileNode, RepoMapGraphCoverage,
+    RepoMapGraphCoverageClass, RepoMapItemIndexAvailability, RepoMapNode,
     RepoMapPublishBundleRequestV2, RepoMapRedactionState, RepoMapSourceBundle, RepoRelativePath,
     SearchCorpusGenerationIdentityV1, SearchCorpusIngestBatch, SearchPlaneControlIpcResponse,
     SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse,
@@ -894,23 +894,18 @@ fn damage_to_the_active_semantic_generation_refuses_to_boot_and_records_nothing(
 
 /// A lexical-only seal of `generation` for the harness's pair: what a crash
 /// between the two tracks' seals leaves behind.
-fn lexical_half(rt: &E2eRuntime, generation: ManifestGeneration) -> SearchCorpusIngestBatch {
-    SearchCorpusIngestBatch {
-        repo_id: rt.repo(),
-        revision_id: rt.revision(),
+fn lexical_half(
+    rt: &E2eRuntime,
+    generation: ManifestGeneration,
+) -> Result<SearchCorpusIngestBatch, Box<dyn Error>> {
+    quanta_index_searchd_harness::SourceCorpusFixture::new(
+        rt.repo(),
+        rt.revision(),
         generation,
-        base_generation: None,
-        manifest_digest: format!("lex-seal:{}", generation.get()),
-        batch_digest: String::new(),
-        mode: BatchIngestMode::ReplaceGeneration,
-        bundle_payload: None,
-        clear_surfaces: Vec::new(),
-        replace_scopes: Vec::new(),
-        tombstone_scopes: Vec::new(),
-        semantic_replace_scopes: Vec::new(),
-        semantic_tombstone_scopes: Vec::new(),
-        seal: true,
-    }
+        "boot-lexical-half-event".into(),
+    )
+    .frozen_batch()
+    .map_err(Into::into)
 }
 
 /// A generation sealed on one track only is named at boot (QI-BB-029
@@ -932,7 +927,7 @@ fn a_generation_sealed_on_one_track_only_is_named_at_boot() -> TestResult {
     let mut rt = rt.reopen();
     let half = ManifestGeneration::new(7);
     let lexical_root = std::fs::canonicalize(rt.state_root())?.join("indexes/lexical");
-    LexicalAdapter::with_state_root(lexical_root).build_batch(&lexical_half(&rt, half))?;
+    LexicalAdapter::with_state_root(lexical_root).build_batch(&lexical_half(&rt, half)?)?;
     let half_dir = generation_dir(&rt, "indexes/lexical", half)?;
     if !half_dir.is_dir() || generation_dir(&rt, "indexes/semantic", half)?.exists() {
         return Err("the fixture seals the lexical half only".into());

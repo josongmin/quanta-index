@@ -1,0 +1,400 @@
+--- before/benchmarks/retrieval/src/symbols.rs
++++ after/benchmarks/retrieval/src/symbols.rs
+@@ -195,6 +195,9 @@
+                 _,
+                 "function_declaration"
+                 | "generator_function_declaration"
++                | "function_expression"
++                | "generator_function"
++                | "function_signature"
+                 | "function_item"
+                 | "function_signature_item"
+                 | "function_definition",
+@@ -203,16 +206,24 @@
+             } else {
+                 "function"
+             }),
+-            (_, "method_declaration" | "method_definition") => Some("method"),
+-            (_, "class_declaration" | "abstract_class_declaration" | "class_definition") => {
+-                Some("class")
+-            }
++            (
++                _,
++                "method_declaration"
++                | "method_definition"
++                | "method_elem"
++                | "method_signature"
++                | "abstract_method_signature",
++            ) => Some("method"),
++            (
++                _,
++                "class" | "class_declaration" | "abstract_class_declaration" | "class_definition",
++            ) => Some("class"),
+             (_, "struct_item") => Some("struct"),
+-            (_, "enum_item") => Some("enum"),
++            (_, "enum_item" | "enum_declaration") => Some("enum"),
+             (_, "trait_item") => Some("trait"),
+             (_, "interface_declaration") => Some("interface"),
+-            (_, "type_item" | "type_alias_declaration") => Some("type_alias"),
+-            (_, "mod_item") => Some("module"),
++            (_, "type_item" | "type_alias" | "type_alias_declaration") => Some("type_alias"),
++            (_, "mod_item" | "module" | "internal_module") => Some("module"),
+             _ => None,
+         }
+     }
+@@ -243,14 +254,22 @@
+                     | "mod_item"
+                     | "function_item"
+             ),
+-            Self::Go => matches!(node_kind, "method_declaration"),
++            Self::Go => matches!(
++                node_kind,
++                "function_declaration" | "method_declaration" | "type_spec" | "type_alias"
++            ),
+             Self::Python => matches!(node_kind, "class_definition" | "function_definition"),
+             Self::JavaScript | Self::TypeScript { .. } => matches!(
+                 node_kind,
+                 "class_declaration"
++                    | "class"
+                     | "abstract_class_declaration"
++                    | "interface_declaration"
++                    | "type_alias_declaration"
+                     | "function_declaration"
+                     | "generator_function_declaration"
++                    | "function_expression"
++                    | "generator_function"
+                     | "method_definition"
+                     | "module"
+                     | "internal_module"
+@@ -369,6 +388,9 @@
+ (function_declaration name: (identifier) @name) @def
+ (method_declaration name: (field_identifier) @name) @def
+ (type_spec name: (type_identifier) @name) @def
++(type_alias name: (type_identifier) @name) @def
++(type_spec type: (interface_type (method_elem name: (field_identifier) @name) @def))
++(type_alias type: (interface_type (method_elem name: (field_identifier) @name) @def))
+ ";
+ 
+ const PYTHON_QUERY: &str = r"
+@@ -379,6 +401,9 @@
+ const JAVASCRIPT_QUERY: &str = r"
+ (function_declaration name: (identifier) @name) @def
+ (generator_function_declaration name: (identifier) @name) @def
++(function_expression name: (identifier) @name) @def
++(generator_function name: (identifier) @name) @def
++(class name: (identifier) @name) @def
+ (class_declaration name: (identifier) @name) @def
+ (method_definition name: [(property_identifier) (private_property_identifier)] @name) @def
+ ";
+@@ -386,11 +411,20 @@
+ const TYPESCRIPT_QUERY: &str = r"
+ (function_declaration name: (identifier) @name) @def
+ (generator_function_declaration name: (identifier) @name) @def
++(function_expression name: (identifier) @name) @def
++(generator_function name: (identifier) @name) @def
++(function_signature name: (identifier) @name) @def
++(class name: (type_identifier) @name) @def
+ (class_declaration name: (type_identifier) @name) @def
+ (abstract_class_declaration name: (type_identifier) @name) @def
+ (method_definition name: [(property_identifier) (private_property_identifier)] @name) @def
++(method_signature name: [(property_identifier) (private_property_identifier)] @name) @def
++(abstract_method_signature name: (property_identifier) @name) @def
+ (interface_declaration name: (type_identifier) @name) @def
+ (type_alias_declaration name: (type_identifier) @name) @def
++(enum_declaration name: (identifier) @name) @def
++(internal_module name: [(identifier) (nested_identifier) (string)] @name) @def
++(module name: [(identifier) (nested_identifier) (string)] @name) @def
+ ";
+ 
+ struct LineIndex {
+@@ -542,12 +576,30 @@
+                 control.check()?;
+             }
+             if language.is_container(node.kind()) {
++                // Expressions may have an explicit inner name. Anonymous
++                // expressions do not acquire the surrounding variable's name.
++                if matches!(
++                    language,
++                    SymbolLanguage::JavaScript | SymbolLanguage::TypeScript { .. }
++                ) && matches!(
++                    node.kind(),
++                    "class" | "function_expression" | "generator_function"
++                ) && node.child_by_field_name("name").is_none()
++                {
++                    parent = node.parent();
++                    continue;
++                }
+                 let name = language.container_name(node, source)?;
+                 if !seen_container {
+                     seen_container = true;
+                     nearest_type_container = language.is_type_container(node.kind());
+                 }
+                 containers.push(name);
++                if language == SymbolLanguage::Go && node.kind() == "method_declaration" {
++                    // Descendants need the same receiver owner as the method
++                    // itself. The list is reversed once after the walk.
++                    containers.push(go_receiver_type(node, source)?);
++                }
+             }
+             parent = node.parent();
+         }
+@@ -842,7 +894,15 @@
+                       func (r *Rect) Area() float64 { return r.W }\n\n\
+                       func NewRect(w float64) *Rect { return &Rect{W: w} }\n";
+         let records = extract_symbols("geom/rect.go", source).expect("go parses");
+-        let method = find(&records, "Area");
++        let method = records
++            .iter()
++            .find(|record| qualified(record) == "Rect.Area")
++            .expect("concrete receiver method");
++        assert!(
++            records
++                .iter()
++                .any(|record| qualified(record) == "Shape.Area")
++        );
+         assert_eq!(method.symbol_kind.as_str(), "method");
+         let free = find(&records, "NewRect");
+         assert_eq!(free.symbol_kind.as_str(), "function");
+@@ -1078,7 +1138,15 @@
+         assert_eq!(find(&records, "Rect").symbol_kind.as_str(), "struct");
+         assert_eq!(find(&records, "Shape").symbol_kind.as_str(), "interface");
+         assert_eq!(find(&records, "Config").symbol_kind.as_str(), "struct");
+-        let area = find(&records, "Area");
++        let area = records
++            .iter()
++            .find(|record| qualified(record) == "Rect.Area")
++            .expect("concrete receiver method");
++        assert!(
++            records
++                .iter()
++                .any(|record| qualified(record) == "Shape.Area")
++        );
+         assert_eq!(area.symbol_kind.as_str(), "method");
+         assert_eq!(qualified(area), "Rect.Area", "value receivers qualify too");
+     }
+--- before/benchmarks/retrieval/tests/l5_parser_regressions.rs
++++ after/benchmarks/retrieval/tests/l5_parser_regressions.rs
+@@ -1,7 +1,7 @@
+ //! Parser compatibility regressions for CS-PROD-01.
+ //!
+-//! The valid fixtures contain exactly one named definition: the handwritten
+-//! sentinel. Calls and namespace re-exports must not invent symbol definitions.
++//! Handwritten sentinels and inventories define the expected source facts.
++//! Calls and namespace re-exports must not invent symbol definitions.
+ //! These tests deliberately require a clean parse, never recovered-tree output.
+ 
+ #![expect(
+@@ -148,6 +148,192 @@
+         assert_eq!(
+             preflight.report().files.first().expect("one file").coverage,
+             SymbolCoverage::Complete { symbol_count: 4 }
++        );
++    }
++}
++
++// Handwritten inventories are independent of the producer query. Check exact
++// multiplicity, ownership, kinds, source spans, and the published coverage count.
++fn assert_definition_inventory(path: &str, source: &str, expected: &[(&str, &str, &str)]) {
++    let files = BTreeMap::from([(path.to_string(), source_file(path, source))]);
++    let preflight = preflight_corpus_symbols(&files, &SymbolPreflightOptions::default())
++        .expect("valid fixture preflight");
++    preflight
++        .admit(SymbolCoveragePolicy::RequireComplete)
++        .expect("complete inventory");
++    let records = preflight.symbols().get(path).expect("admitted file");
++    let actual = records
++        .iter()
++        .map(|record| {
++            let start = usize::try_from(record.definition_span.byte_start).expect("small offset");
++            let end = usize::try_from(record.definition_span.byte_end).expect("small offset");
++            (
++                record.qualified_name.as_ref(),
++                record.symbol_kind.as_str(),
++                source.get(start..end).expect("source-bound UTF-8 span"),
++            )
++        })
++        .collect::<std::collections::BTreeSet<_>>();
++    assert_eq!(
++        actual,
++        expected.iter().copied().collect(),
++        "inventory: {path}"
++    );
++    assert_eq!(records.len(), expected.len(), "no duplicate definitions");
++    for record in records {
++        let qualified = record.qualified_name.as_ref();
++        let owner = qualified.rsplit_once('.').map(|(owner, _)| owner);
++        assert_eq!(record.container_qualified_name.as_deref(), owner);
++        assert_eq!(
++            record.local_name.as_ref(),
++            qualified.rsplit('.').next().expect("name")
++        );
++    }
++    assert_eq!(
++        preflight.report().files[0].coverage,
++        SymbolCoverage::Complete {
++            symbol_count: u64::try_from(expected.len()).expect("count")
++        }
++    );
++}
++
++#[test]
++fn go_aliases_and_local_types_keep_function_and_receiver_ownership() {
++    let source = "package p\ntype Value struct{}\ntype Alias = Value\ntype Shape = struct{}\nfunc Outer() { type Local struct{}; type Copy = Local }\nfunc (v *Value) Read() { type Local struct{}; type Copy = Local }\n";
++    assert_definition_inventory(
++        "scope.go",
++        source,
++        &[
++            ("Value", "struct", "Value struct{}"),
++            ("Alias", "type_alias", "Alias = Value"),
++            ("Shape", "type_alias", "Shape = struct{}"),
++            (
++                "Outer",
++                "function",
++                "func Outer() { type Local struct{}; type Copy = Local }",
++            ),
++            ("Outer.Local", "struct", "Local struct{}"),
++            ("Outer.Copy", "type_alias", "Copy = Local"),
++            (
++                "Value.Read",
++                "method",
++                "func (v *Value) Read() { type Local struct{}; type Copy = Local }",
++            ),
++            ("Value.Read.Local", "struct", "Local struct{}"),
++            ("Value.Read.Copy", "type_alias", "Copy = Local"),
++        ],
++    );
++}
++
++#[test]
++fn go_named_interfaces_emit_owned_method_contracts() {
++    let source = "package p\ntype Reader interface { Read() int }\ntype Alias = interface { Read() int }\nfunc Outer() { type Local interface { Read() int } }\n";
++    assert_definition_inventory(
++        "contracts.go",
++        source,
++        &[
++            ("Reader", "interface", "Reader interface { Read() int }"),
++            ("Reader.Read", "method", "Read() int"),
++            ("Alias", "type_alias", "Alias = interface { Read() int }"),
++            ("Alias.Read", "method", "Read() int"),
++            (
++                "Outer",
++                "function",
++                "func Outer() { type Local interface { Read() int } }",
++            ),
++            ("Outer.Local", "interface", "Local interface { Read() int }"),
++            ("Outer.Local.Read", "method", "Read() int"),
++        ],
++    );
++}
++
++#[test]
++fn named_expressions_keep_their_names_without_naming_anonymous_bindings() {
++    let source = "const c = class Inner { run() {} };\nconst f = function Named() { function nested() {} };\nconst g = function* Generate() { function nested() {} };\nconst anonymousClass = class {};\nconst anonymousFunction = function() { function child() {} };\nconst anonymousGenerator = function*() {};\n";
++    for path in ["expr.js", "expr.jsx", "expr.ts", "expr.tsx"] {
++        assert_definition_inventory(
++            path,
++            source,
++            &[
++                ("Inner", "class", "class Inner { run() {} }"),
++                ("Inner.run", "method", "run() {}"),
++                (
++                    "Named",
++                    "function",
++                    "function Named() { function nested() {} }",
++                ),
++                ("Named.nested", "function", "function nested() {}"),
++                (
++                    "Generate",
++                    "function",
++                    "function* Generate() { function nested() {} }",
++                ),
++                ("Generate.nested", "function", "function nested() {}"),
++                ("child", "function", "function child() {}"),
++            ],
++        );
++    }
++}
++
++#[test]
++fn typescript_callable_declarations_keep_owners_and_overload_spans() {
++    let source = "type Alias = { read(): string };\ninterface Reader { read(): string; }\nabstract class Base { abstract read(): string; }\ndeclare function load(): string;\nfunction pick(x: string): string;\nfunction pick(x: number): number;\nfunction pick(x: any): any { return x; }\nclass Impl { read(x: string): string; read(x: any): any { return x; } }\n";
++    for path in ["decl.ts", "decl.tsx"] {
++        assert_definition_inventory(
++            path,
++            source,
++            &[
++                ("Alias", "type_alias", "type Alias = { read(): string };"),
++                ("Alias.read", "method", "read(): string"),
++                (
++                    "Reader",
++                    "interface",
++                    "interface Reader { read(): string; }",
++                ),
++                ("Reader.read", "method", "read(): string"),
++                (
++                    "Base",
++                    "class",
++                    "abstract class Base { abstract read(): string; }",
++                ),
++                ("Base.read", "method", "abstract read(): string"),
++                ("load", "function", "function load(): string;"),
++                ("pick", "function", "function pick(x: string): string;"),
++                ("pick", "function", "function pick(x: number): number;"),
++                (
++                    "pick",
++                    "function",
++                    "function pick(x: any): any { return x; }",
++                ),
++                (
++                    "Impl",
++                    "class",
++                    "class Impl { read(x: string): string; read(x: any): any { return x; } }",
++                ),
++                ("Impl.read", "method", "read(x: string): string"),
++                ("Impl.read", "method", "read(x: any): any { return x; }"),
++            ],
++        );
++    }
++}
++
++#[test]
++fn typescript_named_modules_and_enums_are_definitions_too() {
++    let source =
++        "namespace Outer { export enum Color { Red, Blue } export function inside() {} }\n";
++    for path in ["ns.ts", "ns.tsx"] {
++        assert_definition_inventory(
++            path,
++            source,
++            &[
++                (
++                    "Outer",
++                    "module",
++                    "namespace Outer { export enum Color { Red, Blue } export function inside() {} }",
++                ),
++                ("Outer.Color", "enum", "enum Color { Red, Blue }"),
++                ("Outer.inside", "function", "function inside() {}"),
++            ],
+         );
+     }
+ }
+--- before/benchmarks/retrieval/proof-required-tests.json
++++ after/benchmarks/retrieval/proof-required-tests.json
+@@ -375,6 +375,9 @@
+     "quanta-index-retrieval-bench::l5_parser_regressions$fatal_producer_failure_is_not_masked_by_an_earlier_recoverable_gap",
+     "quanta-index-retrieval-bench::l5_parser_regressions$file_and_total_symbol_budgets_refuse_publication_without_losing_the_census",
+     "quanta-index-retrieval-bench::l5_parser_regressions$generic_typeof_import_call_accepts_a_trailing_comma",
++    "quanta-index-retrieval-bench::l5_parser_regressions$go_aliases_and_local_types_keep_function_and_receiver_ownership",
++    "quanta-index-retrieval-bench::l5_parser_regressions$go_named_interfaces_emit_owned_method_contracts",
++    "quanta-index-retrieval-bench::l5_parser_regressions$named_expressions_keep_their_names_without_naming_anonymous_bindings",
+     "quanta-index-retrieval-bench::l5_parser_regressions$ordinary_typescript_and_tsx_definitions_remain_source_bound",
+     "quanta-index-retrieval-bench::l5_parser_regressions$preflight_diagnostic_ranges_are_sorted_and_bound_to_source_bytes",
+     "quanta-index-retrieval-bench::l5_parser_regressions$preflight_preserves_existing_supported_language_extraction",
+@@ -384,6 +387,8 @@
+     "quanta-index-retrieval-bench::l5_parser_regressions$producer_policy_records_and_commits_effective_extraction_limits",
+     "quanta-index-retrieval-bench::l5_parser_regressions$symbol_limit_refuses_partial_definition_output",
+     "quanta-index-retrieval-bench::l5_parser_regressions$type_namespace_reexport_accepts_valid_syntax_without_inventing_a_definition",
++    "quanta-index-retrieval-bench::l5_parser_regressions$typescript_callable_declarations_keep_owners_and_overload_spans",
++    "quanta-index-retrieval-bench::l5_parser_regressions$typescript_named_modules_and_enums_are_definitions_too",
+     "quanta-index-retrieval-bench::quanta_index_retrieval_bench$batch::tests::canonical_unit_commitment_is_independent_of_chunk_vector_order",
+     "quanta-index-retrieval-bench::quanta_index_retrieval_bench$batch::tests::chunk_id_colliding_with_an_actual_symbol_id_refuses",
+     "quanta-index-retrieval-bench::quanta_index_retrieval_bench$batch::tests::combined_replacement_carries_chunks_symbols_and_source_coverage",

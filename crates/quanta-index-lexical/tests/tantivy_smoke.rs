@@ -543,6 +543,7 @@ fn language_constraint_is_pushed_into_one_pre_limit_candidate_query_v1() -> Test
     ];
     adapter.build(&repo(), &revision(), generation(), &ops)?;
     let searcher = adapter.open(&repo(), &revision(), generation())?;
+
     let query = make_query(LqExpr::Leaf(LqLeaf::Keyword("needle".to_string())));
 
     let rust_only = QueryConstraintSetV1::from_languages([language_code("rust")?]);
@@ -3768,6 +3769,107 @@ fn tantivy_executes_index_no_full_scan_with_scoped_content_predicate() -> TestRe
         .into());
     }
 
+    Ok(())
+}
+
+#[test]
+fn tantivy_index_no_language_refuses_without_stored_authority() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+    let ops = vec![
+        upsert_with_metadata("python-source", "src/explicit.rs", "python", 1, 2, "needle")?,
+        upsert_with_metadata("rust-source", "src/explicit.py", "rust", 1, 2, "needle")?,
+    ];
+    adapter.build(&repo(), &revision(), generation(), &ops)?;
+    let searcher = adapter.open(&repo(), &revision(), generation())?;
+
+    let all_ids: Vec<String> = searcher
+        .search(
+            &make_query(LqExpr::Leaf(LqLeaf::Keyword("needle".to_string()))),
+            10,
+            &RequestBudgetV1::unbounded(),
+        )?
+        .into_iter()
+        .map(|candidate| candidate.candidate_id)
+        .collect();
+    assert_eq!(
+        all_ids.len(),
+        2,
+        "fixture did not publish both text documents: {all_ids:?}"
+    );
+    let mut unindexed = make_query(LqExpr::Leaf(LqLeaf::Keyword("needle".to_string())));
+    unindexed.options.index_mode = Some(LqYesNoOnly::No);
+    assert_eq!(
+        searcher
+            .search(&unindexed, 10, &RequestBudgetV1::unbounded())?
+            .len(),
+        2
+    );
+
+    for (language, expected) in [("python", "python-source"), ("rust", "rust-source")] {
+        let base = make_query_with_filters(
+            LqExpr::Leaf(LqLeaf::Keyword("needle".to_string())),
+            vec![LqFilter::Lang {
+                id: language.to_string(),
+            }],
+        );
+        let ids: Vec<String> = searcher
+            .search(&base, 10, &RequestBudgetV1::unbounded())?
+            .into_iter()
+            .map(|candidate| candidate.candidate_id)
+            .collect();
+        assert_eq!(ids, [expected.to_string()], "indexed language={language}");
+        let mut unindexed = base;
+        unindexed.options.index_mode = Some(LqYesNoOnly::No);
+        let refusal = searcher
+            .search(&unindexed, 10, &RequestBudgetV1::unbounded())
+            .expect_err("index:no must refuse language filtering without stored authority");
+        assert!(
+            matches!(&refusal, CoreError::NotImplemented(message) if message.contains("language filtering requires indexed execution")),
+            "{refusal:?}"
+        );
+    }
+
+    let mut scoped = make_query(LqExpr::Leaf(LqLeaf::Predicate {
+        name: "file.contains".to_string(),
+        args: vec![
+            LqPredicateArg::Filter {
+                name: "lang".to_string(),
+                value: "python".to_string(),
+            },
+            LqPredicateArg::Keyword("needle".to_string()),
+        ],
+    }));
+    scoped.options.index_mode = Some(LqYesNoOnly::No);
+    let refusal = searcher
+        .search(&scoped, 10, &RequestBudgetV1::unbounded())
+        .expect_err("index:no must refuse scoped content language without stored authority");
+    assert!(
+        matches!(&refusal, CoreError::NotImplemented(message) if message.contains("language filtering requires indexed execution")),
+        "{refusal:?}"
+    );
+    let mut absent_scoped = make_query(LqExpr::Leaf(LqLeaf::Predicate {
+        name: "file.contains".to_string(),
+        args: vec![
+            LqPredicateArg::Filter {
+                name: "name".to_string(),
+                value: "never-present".to_string(),
+            },
+            LqPredicateArg::Filter {
+                name: "lang".to_string(),
+                value: "python".to_string(),
+            },
+            LqPredicateArg::Keyword("needle".to_string()),
+        ],
+    }));
+    absent_scoped.options.index_mode = Some(LqYesNoOnly::No);
+    let refusal = searcher
+        .search(&absent_scoped, 10, &RequestBudgetV1::unbounded())
+        .expect_err("index:no must refuse unavailable language even for an empty path scope");
+    assert!(
+        matches!(&refusal, CoreError::NotImplemented(message) if message.contains("language filtering requires indexed execution")),
+        "{refusal:?}"
+    );
     Ok(())
 }
 

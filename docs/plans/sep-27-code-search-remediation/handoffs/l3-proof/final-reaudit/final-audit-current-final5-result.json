@@ -1,0 +1,39 @@
+{
+  "command": [
+    "./scripts/cargow",
+    "--lane",
+    "test-fast-lane",
+    "test",
+    "-p",
+    "quanta-index-lexical",
+    "--lib",
+    "--test",
+    "execution_budget",
+    "--test",
+    "ranked_pages",
+    "--test",
+    "l3_exact_source",
+    "--test",
+    "cancellation_inside_search",
+    "--test",
+    "unicode_normalization_goldens",
+    "--test",
+    "tantivy_smoke",
+    "--locked"
+  ],
+  "exit_code": 0,
+  "changed_inputs": [],
+  "head_before": "2102966246866398f01833bebf71396831377149",
+  "head_after": "2102966246866398f01833bebf71396831377149",
+  "log_path": "/private/tmp/qi-l3-native-evidence/final-audit-current-final5.log",
+  "log_sha256": "1725e41bc4e7ff29a70f3d1d91b6f97f48803fac2f32099e860ebfb7862fa5be",
+  "binary_sha256": {
+    "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-fast-lane/debug/deps/quanta_index_lexical-9b5383bc62ce9483": "b03cb4896d9d09d6e946e0efc52c13d6de090a0b59e25f63d7c777d64ea60783",
+    "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-fast-lane/debug/deps/cancellation_inside_search-ced663f13dd1c810": "ea98a83e4be803a9a2f2a7122cf6a3f80635f41bb154c580d478f08b63d706a6",
+    "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-fast-lane/debug/deps/execution_budget-56a3426f0649626b": "e886a09b45c7af22196b81b9acfde28a78876db2bb5db6bb610f56e87017432f",
+    "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-fast-lane/debug/deps/l3_exact_source-60aaaa993226033f": "8b4b7fe9edb32ca53fab0a6f5d9fc4358f92c628c6192169227f87802c961a19",
+    "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-fast-lane/debug/deps/ranked_pages-283ed70bf9633ac8": "db59576c5f2ced1c3d9407a5139b46d38dd17abc66f90768ad761ac1f7feecb2",
+    "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-fast-lane/debug/deps/tantivy_smoke-5afa6045be9a2529": "ed1f0796b12645771891e1d62f2b57d7f909f2ecd0f48d5cff9a4dd93b57c0a7",
+    "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-fast-lane/debug/deps/unicode_normalization_goldens-9bae77a082b46e65": "f6a1fc7ae7abe2771383ad479ec6eddcababa204ebdcd109106dbd28355f16b2"
+  }
+}

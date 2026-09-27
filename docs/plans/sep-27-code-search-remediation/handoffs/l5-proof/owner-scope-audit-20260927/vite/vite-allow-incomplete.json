@@ -1,0 +1,4126 @@
+{
+  "file_universe_sha256": "4211430d8b09ed08c39be4ba3b13e3e750027b9e3b1f45273bc5f775c26d8b8d",
+  "preflight": {
+    "admitted_files": 256,
+    "files": [
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 3
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/client/bundledDevClient.ts",
+        "source_sha256": "e37feb9427c38d07f90fe16d39235ebe2a351c2437caba3602194a6bca87920e"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 28
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/client/bundledDevHmrClient.ts",
+        "source_sha256": "746272de85ae0b05588cc5f5514de64292c20e07c63ed6778f5579cb2046437d"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 26
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/client/client.ts",
+        "source_sha256": "352d22e5fc80631d83aa96ee5a245c497a938785b78fb2f22f322239e33cf8ad"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/client/clientEntry.ts",
+        "source_sha256": "eae3d534b53116a2f672242cfee0cc34024d3a596059be46be06943b49e5dce5"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/client/env.ts",
+        "source_sha256": "5eb83c8492f0a8e68998a8eb778d58cee22246205319f8e48669185a47191c26"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 5
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/client/overlay.ts",
+        "source_sha256": "b1bb2b1d7ecca4ea0e8b4a25603d52b2eea554675bf58ff9d8ffe91a09fc9011"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 1
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/module-runner/__tests_dts__/importMeta.ts",
+        "source_sha256": "bc471a363b0832aa47f36be50a51f4967ae1a959ed55ca7a4aa9153b645c61dd"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/module-runner/constants.ts",
+        "source_sha256": "34be09845fbb29b7670917ba3226bcbc8ff4cf627a610a1cac4082a5e12993b1"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 6
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/module-runner/createImportMeta.ts",
+        "source_sha256": "7a09a97a56e6e4b671f50d60804c0e30a332d4b404ab80804ef0e88a0c5184bc"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 3
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/module-runner/esmEvaluator.ts",
+        "source_sha256": "1017125c90645e419392ac7cd0f382bb017f861b0c8eebff8c6484f624ce4e43"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 11
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/module-runner/evaluatedModules.ts",
+        "source_sha256": "5ba58952701c5af4b32830603d107d522901a831ffecd9efe6202d50d9e68294"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 4
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/module-runner/hmrHandler.ts",
+        "source_sha256": "2817ae9635dff166f1b6cae8b651d0aa1d8cf7aea99847abc251c965ca5c2ad2"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/module-runner/hmrLogger.ts",
+        "source_sha256": "f4467584563ecefec3d833b50596b12112e7fccb45e8420d217ae696a19d46ab"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 4
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/module-runner/importMetaResolver.ts",
+        "source_sha256": "1bcfebc69193e9b555dd7872b6f97c0b2f6562e8658b4c1e7f129f028798cca2"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/module-runner/index.ts",
+        "source_sha256": "607613e36d63cdf01950ec76497dee819426ae01b0f0d567b740b98d2e3306e0"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 15
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/module-runner/runner.ts",
+        "source_sha256": "1c95301a3bd57e64a5b4570ed588f00349f62318c21460d20fea295054ea86a9"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 7
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/module-runner/sourcemap/decoder.ts",
+        "source_sha256": "d064de5d0c504904253a2a213f96f046bcaa041fdd21987be731131795541d26"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 1
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/module-runner/sourcemap/index.ts",
+        "source_sha256": "1e671ea8348f3eae57729b7a05c841b0976f2d199b2d7643ef99411ac410fb52"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 20
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/module-runner/sourcemap/interceptor.ts",
+        "source_sha256": "5a54aca66dc4f4d3c547ef5c20edb8396f5628b999cd5b3fc1d080274f7b4769"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 11
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/module-runner/types.ts",
+        "source_sha256": "44917fc3db1e233824b51b8d39ca662fb7e7532fb70c625a6d73f7cc3d6a3abf"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 3
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/module-runner/utils.ts",
+        "source_sha256": "5f0f9e37048e96e65d4bb13efd9c116e41ba9c44f430ba74b8311796f59a2d93"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/assetSource.spec.ts",
+        "source_sha256": "13c28c48b58333658034a94c364ef50846a3b5f215df208709be7fda25f691f2"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 26
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/build.spec.ts",
+        "source_sha256": "508cfb9d003a211829510a318af74ff2c05c549c29ba1f9798a7b35241288cb0"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 17
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/config.spec.ts",
+        "source_sha256": "db1928e52c8b7b5afdfdb951176532d02457604183df586bd263ae7af6b13116"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/constants.spec.ts",
+        "source_sha256": "d634c8ecf0585ead3202fd4b370f2ac0a42ce170ad5304dbddfcc642b92f12a4"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 5
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/dev.spec.ts",
+        "source_sha256": "6a91c1e3d4f5fda40211fa617b5edc797f50bb937cb0bf858ed76dba4102b2b4"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/env.spec.ts",
+        "source_sha256": "423edc4eb6260d31625d4fe7195e2bfc4fd027f32dba09b3c02d6101cfff72f5"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 1
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/environment.spec.ts",
+        "source_sha256": "5c2ec117fa55b3b4d657a53a697c7ba2cbaadaa37b473493f6310eb12107cf0a"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 1
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/external.spec.ts",
+        "source_sha256": "f352ac6b8dd239d0b2a95cfdf4fd0c1e136e0a82dedf913e774b0a9e2b4c9785"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/filterRegex.spec.ts",
+        "source_sha256": "82c8bb8d3598066e0d5783134c1ffe1bd75df6c268952b605c9cd817d293d674"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/fixtures/config/cjs-module-vars-in-esm/vite.config.ts",
+        "source_sha256": "5f10aeb084263bb5eca3d1fbf98c16d24775eeb254194ad0bc030c41bfc0b07d"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/fixtures/config/entry/imports-field.ts",
+        "source_sha256": "c3fbf4de50ad53f10f323113d83ad86d9a3a4cb9b0f7873f037524a71238edf2"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/fixtures/config/entry/vite.config.import-attributes.ts",
+        "source_sha256": "077095ee983f81752e89730b610c8458d33c391299eda79bef064017a7b95f65"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/fixtures/config/entry/vite.config.ts",
+        "source_sha256": "6976062cf2db12e214a343b6080997018c63a229449971d2e47b45d1542a338f"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/fixtures/config/import-meta/vite.config.ts",
+        "source_sha256": "cf3f65fc1778f9035637138276c4be14fb5a4c695196a1d76aacb56df6945856"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 1
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/fixtures/config/native-compat/ts-syntax/vite.config.ts",
+        "source_sha256": "ca5295b866258bdd06367b0ab72dff0d63bc1aa6241d0329b711a5c0d2ed4d21"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/fixtures/config/plugin-module-condition/index.d.ts",
+        "source_sha256": "b774d11cb756e63364d4961eea6fb5dd8bba0ba93b80079d5b7140dd7b5fd309"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/fixtures/config/shebang-crlf/vite.config.ts",
+        "source_sha256": "4fc8e0aaca599309f3c338d4e991d32400bc2bc2d8c3cf28fb143a389e20a824"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/fixtures/config/shebang/vite.config.ts",
+        "source_sha256": "85c65611a6ab60622f10f0cf3b7b3d7e1ab27787264ffc59b47c89b035146bf1"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/fixtures/config/siblings/foo.ts",
+        "source_sha256": "3fde97440cb7f5f6149481c00bffd8dd1b5ee2b09074f9511b03f9962287fda3"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 1
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/fixtures/runner-import/basic.ts",
+        "source_sha256": "ed6210e71b5bbf2965e64ad94152a1cda10546afdad7b3fac1ea95e2722b170e"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/fixtures/runner-import/dynamic-import-dep.ts",
+        "source_sha256": "2e84a82383c923c4f6c2da08ade6ded77705775e43b185395538c7ce4d364b84"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/fixtures/runner-import/dynamic-import.ts",
+        "source_sha256": "c1a9eaa7fdd1f93d25cb512eda6d350c8c82acca84050b9974fcdc2810ee123c"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 1
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/fixtures/runner-import/plugin.ts",
+        "source_sha256": "3ebe8a5a328ef9b16b152c98637e26a2b6386a99c7da023b4b276f110b5870c5"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/fixtures/runner-import/vite.config.ts",
+        "source_sha256": "92448874e81262f2a95254f97a6ae412aae7a897e5a785d61b8114e93e688e6b"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript_tsx",
+        "path": "packages/vite/src/node/__tests__/fixtures/scan-build-input/src/entry-client.tsx",
+        "source_sha256": "4fc7efe88f4527261674488f9ef0263ea72141dfa75cff2671485b6b8a6fa281"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript_tsx",
+        "path": "packages/vite/src/node/__tests__/fixtures/scan-jsx-runtime/entry-glob-custom-oxc.tsx",
+        "source_sha256": "ba3d8d2751d87c0627564b1362a9cc1fd6e73dc0d1260e3760e06124728300b9"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript_tsx",
+        "path": "packages/vite/src/node/__tests__/fixtures/scan-jsx-runtime/entry-jsx.tsx",
+        "source_sha256": "e5362ff7f30245a4936344bb34b52f3b71bdb25460ed95f7cc500a644b942d8f"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript_tsx",
+        "path": "packages/vite/src/node/__tests__/fixtures/scan-jsx-runtime/pages/index.tsx",
+        "source_sha256": "90b8356dbf16c0929f4627372c002ceaf09bacb6795c1985be9cb201a3dc4766"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/fixtures/scan-subpath-import-glob/entry.ts",
+        "source_sha256": "431b65adbe28c7f00c94b1a0dbcdf70d875d73695e1e358ec3fb63f48249a8fb"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/fixtures/scan-subpath-import-glob/src/foo/a.ts",
+        "source_sha256": "baf11bfabb14302c55c476863fb2fd398ba2921e6a6fc30f8f07b776a753cb9b"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 2
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/html.spec.ts",
+        "source_sha256": "2f38f389822cffeb9ec57615dcfe32a7cb616bf658b2361f34efd56b3e388c49"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 1
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/http.spec.ts",
+        "source_sha256": "573cd64d521f1dca1426b1f5d362ecd2323361297adcaf86ba8097fb69fd3820"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 1
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/logger.spec.ts",
+        "source_sha256": "b0ab04d11fac57d047b240a6820f747624872a162374f86f7f3f14e4c458b517"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 3
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/optimizer/customExtensionBundleClose.spec.ts",
+        "source_sha256": "dbac2a37b4ae25a108fcdfe3ff746392427b31e1b09bcc8b013ee29006b58b5b"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 1
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/optimizer/discoverBeforeListen.spec.ts",
+        "source_sha256": "8a0fce73946dc95f0a0e10b973068d1ce4e928f92d6bceac90e9428e184695c9"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 2
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/optimizer/pluginConverter.spec.ts",
+        "source_sha256": "82568c3106a01985d070eac5d0a40ee81f2ad182ff84f911adc7b1126f0e54e6"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 1
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/optimizer/resolve.spec.ts",
+        "source_sha256": "1df351041d3a7ad0fff3b434a2f7f86de7e819731b343e09384769c5a399c72c"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 1
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/optimizer/rolldownDepPlugin.spec.ts",
+        "source_sha256": "4463e03bbaf4e5789171f43e743071061f45e79bd287c8ea4b7164299e3a879a"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/oxc.spec.ts",
+        "source_sha256": "0b6f00f771c55027b943f5c37e8f9336d78826e17662e082e881a0d35ba6e15a"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 1
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/packages.spec.ts",
+        "source_sha256": "3959e8df215a0259a5608fe650e287052645d601f2c7e26bd01b1ce07dcec3f2"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/packages/parent/index.ts",
+        "source_sha256": "55a2d804fae87bc95ab60a55a039ed54fe8b0cb42b928bbd44d26e0daadc2f70"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 1
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/plugins/assetImportMetaUrl.spec.ts",
+        "source_sha256": "aeb12cc559048cde6a3194b0809011476d370c235f438f214d8f5b7342bd7f75"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/plugins/clientInjections.spec.ts",
+        "source_sha256": "d2b40fff2b5f915fe1b5f27c4b4009a5a673f33dfbc3b727f5a77d5b628188b6"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 6
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/plugins/css.spec.ts",
+        "source_sha256": "63e474070b4c7e37525168c52ea2cd69a5b691e7cc9c8ef806d973b3b8de15a8"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/plugins/cssPreprocessorTeardown.spec.ts",
+        "source_sha256": "3b6082ca9b50b4fa108e9ab53c9ebcaea1913137e6babcbd5235054c946a3938"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 3
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/plugins/define.spec.ts",
+        "source_sha256": "eef47089ccfc218cf8e5dbf97bf028bcd694992c30b4479c68c40a4d79c1e62f"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 1
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/plugins/dynamicImportVar/parse.spec.ts",
+        "source_sha256": "7ab6308ce078bbfcdb2f37a3d4b4d6942c7c928ad6fe0498a01f450d34700792"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 1
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/plugins/esbuild.spec.ts",
+        "source_sha256": "1190c5ebfa477ce6b999ad22e2b9738aec77a4e45d5633f0c65b13ce11174846"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 25
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/plugins/hooks.spec.ts",
+        "source_sha256": "682359cd003307c4d5670ac831e4e51eed87f11e104e980822e320e4fec8a626"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 1
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/plugins/import.spec.ts",
+        "source_sha256": "2e459097a08bd909c9df045652d136e6bd5bceb757564810dd47516ad03a0fa9"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 2
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/plugins/importAnalysisBuild.spec.ts",
+        "source_sha256": "21ba7af36f47748ba75bbaedc37944d6aa2ca8baddea2bf6f29b1b5112952099"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/plugins/importGlob/fixture-a/.foo/test.ts",
+        "source_sha256": "d94f3c2ea9cfb78636d9b4e46806c8ea6310ea7ba6805553aff39489969a6ede"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 1
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/plugins/importGlob/fixture-a/index.ts",
+        "source_sha256": "97adf5c1aefd1125e572abe1f349e2c8f22383747b91e72db65015b073512a4a"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/plugins/importGlob/fixture-a/modules/a.ts",
+        "source_sha256": "2821f6cc031636a1cfbd2cf306e55b3c89f87a70295d83ff1b54a78c461ae040"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/plugins/importGlob/fixture-a/modules/b.ts",
+        "source_sha256": "952bf415f572ebea6094a1f7599d14272c03cd7313f13540a2776e8510365e2d"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/plugins/importGlob/fixture-a/modules/index.ts",
+        "source_sha256": "54388065df3754b2a11f3dd7d34bda4013343ad99514de53327b0f11ca740974"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/plugins/importGlob/fixture-a/sibling.ts",
+        "source_sha256": "e4390099307b124800b3b8fe30fbb07baf9c20cf8a130b43e50c0765fe12bd31"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/plugins/importGlob/fixture-b/a.ts",
+        "source_sha256": "2821f6cc031636a1cfbd2cf306e55b3c89f87a70295d83ff1b54a78c461ae040"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/plugins/importGlob/fixture-b/b.ts",
+        "source_sha256": "952bf415f572ebea6094a1f7599d14272c03cd7313f13540a2776e8510365e2d"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/plugins/importGlob/fixture-b/index.ts",
+        "source_sha256": "32560dc7fb00fb9a8a23997e041cc3783ad755f01c3df6262845231275374d7b"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/plugins/importGlob/fixture.spec.ts",
+        "source_sha256": "42ac12ebc7dfbf119edb2812172fd17962a1b3cb4efbc07e051acbe3fd67c13b"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 2
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/plugins/importGlob/parse.spec.ts",
+        "source_sha256": "5792b1a6374f20278c7889e1a6c8abfc439fbc0e0900e90dfcd090c7c6844b66"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/plugins/importGlob/utils.spec.ts",
+        "source_sha256": "bd41802af95fa9e3ab4c37be65c1752affc16e78d013f9f43787c0de78c1731f"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 2
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/plugins/index.spec.ts",
+        "source_sha256": "adfea10833cc399035c35e56ab3f87c3ed63bd6194337416fc0f224a7655e197"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/plugins/license.spec.ts",
+        "source_sha256": "1690e340265d17c4f4a8cf8b657ffdf01257c3c050a7bddf744efa943201ee13"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 2
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/plugins/modulePreloadPolyfill/modulePreloadPolyfill.spec.ts",
+        "source_sha256": "fb3537f9fc457af7a1797382e3b797e04794aa3e9433c38edaea7d82552413b6"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/plugins/oxc.spec.ts",
+        "source_sha256": "7fa181929508bca57b09a626211c17b26a021190bdabb48d03f08502f422c062"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 1
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/plugins/pluginFilter.spec.ts",
+        "source_sha256": "bd8de622d13455ebae78e7688e2351624f2f9aa6960df50b5985755ac4715118"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 2
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/plugins/terser.spec.ts",
+        "source_sha256": "f981a4b3282f3fedbaf494253a191fd36a78e4e5aaa67126bf3fe5de303dcf4e"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/plugins/worker.spec.ts",
+        "source_sha256": "ec7f58d6d2f3e77bfaae92f510fe69e6dd393a05602c270c32e7390153c9b3b6"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 1
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/plugins/workerImportMetaUrl.spec.ts",
+        "source_sha256": "329469d530a59c12068e2e3d63057d5759e5fbcefa350531d84b302e294f4045"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 6
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/resolve.spec.ts",
+        "source_sha256": "1cc11f7c45b049ad1cebda15ae304b56125ffe7180e85c59fc8d0fcb406e4945"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/runnerImport.spec.ts",
+        "source_sha256": "6f279ad6b83c96d149f408da76ee1f1236e3a96ccd4189a672128925b47a38f1"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 1
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/scan.spec.ts",
+        "source_sha256": "3363704f0fc05b7baf4d18590b6daa675d704fa1e37735e03809ac2a6a3c063b"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 1
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/shortcuts.spec.ts",
+        "source_sha256": "576d4ffe2989c8ec6d10cffaf69ffac797c338720b1c2df47371234ef752be13"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests__/utils.spec.ts",
+        "source_sha256": "808408826ba2491ef9f128492d34740d8f93eec5dcb827a4f90ca5c1a61a0ef1"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 1
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests_dts__/config.ts",
+        "source_sha256": "00056fec73a23358288c7be4f943ab4d384370c2a6e6ffaf323ffb5da976ac31"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 1
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests_dts__/importGlob.ts",
+        "source_sha256": "1e9414549773c887d660c773e2dd3d184df2097da884f137207597a9a06e1f6b"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 5
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests_dts__/plugin.ts",
+        "source_sha256": "48d82643c52255164a5d6fdb79934e7be0b8000092a685b444422c4ca5ed3173"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 1
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests_dts__/postcss.ts",
+        "source_sha256": "fb373a228fa5060ff1b18bfe99e7d763cee1e02dba38ed7574e7f084314d6e05"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 5
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests_dts__/typeOptions.ts",
+        "source_sha256": "ca159f0371381aea221f84faba43161d5e8ca67d73cd2d6e3859ee69ec6dfe26"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 1
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/__tests_dts__/utils.ts",
+        "source_sha256": "3d6b3a341c1f626dc95241c81c64f26fcc51def15679699790fb56e8643708c5"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 7
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/assetSource.ts",
+        "source_sha256": "e22488664e552d412f256e447c07cf5730cb167d2e199f0b7afb99bde1c64335"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 14
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/baseEnvironment.ts",
+        "source_sha256": "bc3d2d123be5615a7e6fc7014dce9b71a0b54f0dd17a986d3b458486d46f098c"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 72
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/build.ts",
+        "source_sha256": "9576b18bcbb4838bdd60be04829282d17a06b16d699dfaafe462241707e0f28b"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 7
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/cli.ts",
+        "source_sha256": "b6f0d4b8c5f529a2cac341b6940b4c74e3d1bfcf099d4c2fd3709aaf85ec3080"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 72
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/config.ts",
+        "source_sha256": "9ac58d93a88ec983e41366906e961a6a154cd1884cb3f89a4bc7251fe24d9e5f"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/constants.ts",
+        "source_sha256": "4c050a00ffd80d34767a250d02a991000950179b778ae75beedca8b76ef3d2d8"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 3
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/deprecations.ts",
+        "source_sha256": "f171ac001b4686e399a7de765f0abb5e6546c9e0191a3f183b944f1677081479"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 3
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/env.ts",
+        "source_sha256": "c34fe179f16534f2e50d0efa5466c44a6c910c51786af8708ad4e3302dab77fd"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 2
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/environment.ts",
+        "source_sha256": "775257ae84a9f4c613c6e8e94f9ba991548f6cdc756761bbcd123015a8bb29c5"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 4
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/external.ts",
+        "source_sha256": "7d0abd312c8a81c2dccf87f6326e3cf4795ed0c297c9b999239b2c4fcab18180"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 12
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/http.ts",
+        "source_sha256": "b016b063b01cc25a10e40b728be3960928ec3242d721b48cc9d84962b4d1e2c3"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 5
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/idResolver.ts",
+        "source_sha256": "2c7b1d3508610605303220e8be1f3250fe317ea720807619e04c20f3f6d5e5c5"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/index.ts",
+        "source_sha256": "59f3df62e9815efd7a7c67f606550b82131880d9c5279946caf088c2c16705b9"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/internalIndex.ts",
+        "source_sha256": "450de8dd659daa8c8193d428b4cfa213854a554435b2c489f1833bfebc6d4019"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 24
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/logger.ts",
+        "source_sha256": "63028a31360526ae0c559110e1b90b27044392e70fcb88975c2f2b53ede97d02"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 11
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/nativeConfigCompat.ts",
+        "source_sha256": "cd701bc168d85bd7ae65933bc4fbf78af785dbc2ba3441805a67baa3114de450"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 2
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/nodeResolve.ts",
+        "source_sha256": "8434ba58aa2a1b28097534c1033f272c9a3ca5da16301d02cc0f0a1406acc647"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 49
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/optimizer/index.ts",
+        "source_sha256": "7c28decefe726fe2b565afdb1eed4e2bf31e5b2d127f47e3653c27387404965f"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 16
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/optimizer/optimizer.ts",
+        "source_sha256": "3b9d8ebbc787075b5999776e52090dbbdcc202cd097b3c2e252983dc783bb761"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 29
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/optimizer/pluginConverter.ts",
+        "source_sha256": "b275f2f5565eeaa6047a1bc5626159f4a93cb4d47b483d092366321b1798293d"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 4
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/optimizer/resolve.ts",
+        "source_sha256": "2c9373956a4ef3248f8f636d0d324b1f832ed4f1077623928f3f6498d48ea9a8"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 11
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/optimizer/rolldownDepPlugin.ts",
+        "source_sha256": "5bb1dffa6403044cf3334db089230fad085d6e3f590aa353e2831f1064cfc153"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 29
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/optimizer/scan.ts",
+        "source_sha256": "5e7ebf2fbcef7cae492a43e2d27a4101189be4ce3690c4b41df18a86b84470a3"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 23
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/packages.ts",
+        "source_sha256": "6563cc7314120ea15c25a68731c4f1e6e3172325ec97255344d92fada81586f9"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 15
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/plugin.ts",
+        "source_sha256": "aaa596e6120c28d3929e6380a66990c342c638672c2560a1f5166617bbc0bb06"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 28
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/plugins/asset.ts",
+        "source_sha256": "842674740dc9361cac06f6a0513296f5747b90331d98b2c351c41aa6b0ee9d2b"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 5
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/plugins/assetImportMetaUrl.ts",
+        "source_sha256": "1a34019fcce6dd8e318da6dc354486e8be860591e2e4f277d8b004b06822a0d3"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 9
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/plugins/clientInjections.ts",
+        "source_sha256": "eaaa95a014786755bb6f67a3c6ff5045e18d8d81e79d42ca7caa0b3e5c191754"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 113
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/plugins/css.ts",
+        "source_sha256": "3935a3be98730228298140b531317e03f2a55ce628706cda01a180890607ad2e"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 9
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/plugins/define.ts",
+        "source_sha256": "832632cd9a1442891d6df8de3ad9d5537544a63e0f06b925b5eae5f6ab6dfd96"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 10
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/plugins/dynamicImportVars.ts",
+        "source_sha256": "6a1901ceee651ceb5052a4d89c07a42a51ff1518843d8a7afd69837527e7bb57"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 11
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/plugins/esbuild.ts",
+        "source_sha256": "911e953651b7aeeb848fb6059fc05b444f0d398da456af04d70dd2813b7f9b76"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 2
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/plugins/esbuildBannerFooterCompatPlugin.ts",
+        "source_sha256": "6d51aa0512ea2df6cc998502055f99c4ab38646de81ee03a8562146d21886107"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 5
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/plugins/forwardConsole.ts",
+        "source_sha256": "0d23f053b19aa19d4226b71e9e1c2bcbeab09cc123248440f4c86e1c42251029"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 49
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/plugins/html.ts",
+        "source_sha256": "764c140f4f55ccef9aab20707a61980582889dcefa5fd766cd07ea75f446f4fd"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 16
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/plugins/importAnalysis.ts",
+        "source_sha256": "0a478faa2184d2b27181e1c9d873428ba4097e37ff153f3282caf8adf052d851"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 14
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/plugins/importAnalysisBuild.ts",
+        "source_sha256": "093e758164e99d45f13e66cf703f77b1256635ebf3671176690f0e8b1f866669"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 20
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/plugins/importMetaGlob.ts",
+        "source_sha256": "f3e982b8d1500cbbe3840d4ff6e58fee1111ab62ca463d6c0c254aa639d441e3"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 11
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/plugins/index.ts",
+        "source_sha256": "894f5fdc6951953f78a50a81ce2cfb6e7a98592faf3a0a1a1c44608abbae7020"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 1
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/plugins/json.ts",
+        "source_sha256": "576263ee734a2ac7b00aebe99519e16bf0a3360aac013bf3eaf66b0d13575666"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 6
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/plugins/license.ts",
+        "source_sha256": "241afa814893d40766c2fcfe594c735bb469b1ab0b3e3155aa3cab98c356c0ef"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 9
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/plugins/manifest.ts",
+        "source_sha256": "69b8bb1487efe3d26dc7f75acee18afe832f9491e6ecfd1f88ecb0529a94052f"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 4
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/plugins/modulePreloadPolyfill.ts",
+        "source_sha256": "7c3ca92628814af5057cd530e8502613e5a47cafa6283281f36d9187db36fc2c"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 7
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/plugins/optimizedDeps.ts",
+        "source_sha256": "aa4046d5d75fd817bef3910c75ad6f124f07b24271311d432851bf97199d1b3d"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 13
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/plugins/oxc.ts",
+        "source_sha256": "0e35dc222a9cdd0f0c3a76a57c6d4d2ee5e6ffe184e1ca7907d40c98760517d5"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 13
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/plugins/pluginFilter.ts",
+        "source_sha256": "64c57efcc0b7518d0d10739f011ffc30dd6ccbd86eb4640eab8a3a5e82fcfd1c"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 7
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/plugins/preAlias.ts",
+        "source_sha256": "d4dc953b0599753d006bf2099e249225da82309a6bfeecb6734c3a2aa18edbd3"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 5
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/plugins/prepareOutDir.ts",
+        "source_sha256": "a41b3cb6adab626f4d1e2611fab75bf01a574913f798055e3e3f21ded8003710"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 1
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/plugins/reporter.ts",
+        "source_sha256": "5b34e3d9ee188fcc8e2802d0222177aea72ec25aad10bff4bd51f9124ca6f8bd"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 33
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/plugins/resolve.ts",
+        "source_sha256": "401f6fa84c7040d618c7e3dd91f66bc91221ed84fb33f6499593f6557f6351fb"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 7
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/plugins/terser.ts",
+        "source_sha256": "86c5ba1a8ddf9c577ddc4f1fe7fd7079f55e94d6c60f306e984677199cf7ebfc"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 12
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/plugins/wasm.ts",
+        "source_sha256": "d64d3cda7763599f3de854283b0a11be3a471e8a22edf49328f4d426c4140cf9"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 36
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/plugins/worker.ts",
+        "source_sha256": "a67ed97ce04bec464d88682f20a11a31c8a8f8b65a55f2f3d0039aada2a7a429"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 9
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/plugins/workerImportMetaUrl.ts",
+        "source_sha256": "e15b53e9ab304be5f7573c78c576011b13a13ccd06e09fbc19bcadcb2614cb83"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 15
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/preview.ts",
+        "source_sha256": "93fc78287057ceffd30f39ea3618665c54d73211487a2c4467bb3e44d23e9ee6"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 3
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/publicDir.ts",
+        "source_sha256": "7dbab4ea10633ac59784efde5d42aac88d78e1eb36c00c756275080295c25ea0"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 3
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/server/__tests__/hmr.spec.ts",
+        "source_sha256": "1db12585a249d825c54ee1bef614486f18bb974641f30a3961a1fc4f9814b6f1"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/server/__tests__/moduleGraph.spec.ts",
+        "source_sha256": "70b635ecd29076f7ef20c5c17a2618c5080f849003ecbe60b23ee8d72f638d17"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 35
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/server/__tests__/pluginContainer.spec.ts",
+        "source_sha256": "dff1d1dfba2a0125dae399cf896b7b9f1c6711758c1b5d4386c2c8afc2580f70"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/server/__tests__/search-root.spec.ts",
+        "source_sha256": "513fbc7dd6d76e91d2dde2903834ef9b8e3da5fab965254a0113f807823d3e9b"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 1
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/server/__tests__/sourcemap.spec.ts",
+        "source_sha256": "cc8d8d07c618d6a42e752bbf8749ffff324c792f3ccded8429a0d3a0c1a6449f"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/server/__tests__/transformRequest.spec.ts",
+        "source_sha256": "b41adbd84c84228ffef8b55c08ec640b34b9794e0f95c874e57cf61002749cf4"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 4
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/server/__tests__/watcher.spec.ts",
+        "source_sha256": "ed85125b1c47f05fd6f204110553197a2ea4e04098295bd6631419e355645b43"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 31
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/server/bundledDev.ts",
+        "source_sha256": "d4fa30eae04c40ef9424d59b371b2e398678835383e939119392ba484a6d7389"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 23
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/server/environment.ts",
+        "source_sha256": "7398b4686f5f6a62de47b6e64c317fbd794a49431eadeaffa6804a3c98801eaa"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 7
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/server/environments/fetchableEnvironments.ts",
+        "source_sha256": "4928930b84015fcc37a36595c8015dc49b0bfc3790cba7bb2f479183249eb8f2"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 7
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/server/environments/runnableEnvironment.ts",
+        "source_sha256": "ef531c353f3db4b29cbd306738299670b116b12555dfc1fe3c32184b846e6dff"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 56
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/server/hmr.ts",
+        "source_sha256": "70382e5c26bb2369d7385a7a7155b88081551061906d167af4e67a57e4b1c1a2"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 58
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/server/index.ts",
+        "source_sha256": "2a434d4e0cce2b359ff3d3e82d00ebd6332f994cdb79152b45541cd823ba8552"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/server/middlewares/__tests__/fixtures/base-root/src/main.ts",
+        "source_sha256": "5d2eb782fe3a645dbf5bdf2d765a254438962649c9c892811408cb50e04a5be4"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/server/middlewares/__tests__/hostCheck.spec.ts",
+        "source_sha256": "ad82076fffedb88e5dc5188132f4368d7fe0a0aa260af58e6658ba3924369bc1"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 1
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/server/middlewares/__tests__/indexHtml.spec.ts",
+        "source_sha256": "7a16666f950e242a9b7bd4dfa30f3dda0b86408e68a9fd058851ad256662a7a1"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/server/middlewares/__tests__/static.spec.ts",
+        "source_sha256": "d0fba98c7b06200ec1dca64a98fe09c0afcd2ae96eded6de56ea7db398bcedc4"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 2
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/server/middlewares/base.ts",
+        "source_sha256": "fc9544e0ecfa895f24cb68faa7682b5db1dac87dca1cb91e6bab60735f2ee981"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 6
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/server/middlewares/error.ts",
+        "source_sha256": "3e5b22194f19cfde3f6cf4cf56937830b02cb92412dcf79e0adc422f7957b8a7"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 3
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/server/middlewares/hostCheck.ts",
+        "source_sha256": "b74d7850d15bea831e899cbf26cbcd87303da1e8bf05bb3903f276b918355492"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 3
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/server/middlewares/htmlFallback.ts",
+        "source_sha256": "4d3b31feb8fb6d534f8b8b4c043696a51c08c33e196404daa7d9be0b499a3f0c"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 11
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/server/middlewares/indexHtml.ts",
+        "source_sha256": "7348279215b09e5317367130695f9be3a7d4f2936623a833a8f8830dd923bb79"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 2
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/server/middlewares/memoryFiles.ts",
+        "source_sha256": "bf92b026d82ebacee9f649ee5732d5627ce9e108c9fb5aa93514cb9a72e08b9f"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 2
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/server/middlewares/notFound.ts",
+        "source_sha256": "baa313aac9048bf2d0d9c7206d2d705387e3399910c91e6badce8becda2c6b2d"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 5
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/server/middlewares/proxy.ts",
+        "source_sha256": "8e24c22f2ce42912dbc4768138661430389ae0bf25976263a018b428a0e14aa6"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 2
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/server/middlewares/rejectInvalidRequest.ts",
+        "source_sha256": "22f84881d9d8a0926ea1dda5f53977f134d4c2ce3901284174c28ed313a9cf58"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 16
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/server/middlewares/static.ts",
+        "source_sha256": "fc51e47db6e427c7fc6a7f76ce5022ca306dd3882d3a0d9cc9d4d343f36a163e"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 2
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/server/middlewares/time.ts",
+        "source_sha256": "5f4aad0e41031ce653973c3dc6554fb78bb49086e4add8e9cc64fc740116997b"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 7
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/server/middlewares/transform.ts",
+        "source_sha256": "2be87d7841bd0456a59d7c80c7c6c0104b3d2d39f5deb4ade9926013234f5dac"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 2
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/server/middlewares/triggerLazyBundling.ts",
+        "source_sha256": "d06b4b0c4a4bde97ad517b22d355c12bcc1aefb892ec8c88c78c20f742bf9ba2"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 84
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/server/mixedModuleGraph.ts",
+        "source_sha256": "1a3979573c28ff0b39f122239670cafd4f99681433654ac1ec64e008d0239837"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 22
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/server/moduleGraph.ts",
+        "source_sha256": "459f3329e19e3cc3d2a47790327570b32484123ee2ca4c171f136c7ecd4ff4c0"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 4
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/server/openBrowser.ts",
+        "source_sha256": "759f8fe104d6b68bcb2e3769b95e0812cbf7d764db0008c04ba4554e1cd14b0e"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 79
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/server/pluginContainer.ts",
+        "source_sha256": "f446526b8964c8dbf7036387d608315b1f986b518fc66154749b0ccd3c7f1f92"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 6
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/server/searchRoot.ts",
+        "source_sha256": "268985d5ba5eb2cc8e3dc98bfaecfd554560766306824046008c88afc011b8a6"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 2
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/server/send.ts",
+        "source_sha256": "640925c7981adffb0840c4e6c2beb7c6acf6cf9b01e7538cf836f94d2a8bc51c"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 9
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/server/sourcemap.ts",
+        "source_sha256": "b6e2fd9bd16cfc10586c228ca0d82cd6117a1f7b480013709cdac076cba5c20e"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 9
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/server/transformRequest.ts",
+        "source_sha256": "c65e70c6cea58d48c4678940529e183db65fc30ffa6c2a85361c83166a1ee4ec"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 5
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/server/warmup.ts",
+        "source_sha256": "50c38d8518b9bc0ace5f9d5534783353a951edbe4722f2204da2d8bb8161aad5"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 18
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/server/ws.ts",
+        "source_sha256": "9ec260a1d607369e657b6e4a87121fe65f9a6cd5f15f3404f458109c7b0f25ab"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 12
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/shortcuts.ts",
+        "source_sha256": "3f3f10e0f619865e71edf644bc0171b391244f207678dedd373ab78763df62e2"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/ssr/__tests__/fixtures/errors/syntax-error-dep.ts",
+        "source_sha256": "9f484238bf5a690c9e44613edfffafd760c93e65fa66241fa7659096571bad8b"
+      },
+      {
+        "coverage": {
+          "state": "parse_failed"
+        },
+        "diagnostics": [
+          {
+            "byte_end": 7,
+            "byte_start": 0,
+            "kind": "syntax_error"
+          }
+        ],
+        "diagnostics_complete": true,
+        "diagnostics_total": 1,
+        "diagnostics_truncated": false,
+        "failure": "syntax_error",
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/ssr/__tests__/fixtures/errors/syntax-error.ts",
+        "source_sha256": "a773ffa899847fa969e63794cdd6155da5dbd5ef5cfb82f7fd8b7a6ae222cb7c"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 14
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/ssr/__tests__/ssrLoadModule.spec.ts",
+        "source_sha256": "ef9de744254ee9a3b6a0ce6afade9e307980916b975f25fba97950a9f1d57e6f"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 1
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/ssr/__tests__/ssrStacktrace.spec.ts",
+        "source_sha256": "565b93bb64b52faeea8b244efc33bad5c67013c477e4235a8c85bd5604c4eba5"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 4
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/ssr/__tests__/ssrTransform.spec.ts",
+        "source_sha256": "eb6d6bc3e95cc45fb66c8d15b86b696446eb837051693ce9041ab2ef1ac4ab28"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 3
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/ssr/fetchModule.ts",
+        "source_sha256": "c1930a4e97960f44bbc103626aac69178af3cf61ba50fe44a69bd8073d868ab9"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 5
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/ssr/index.ts",
+        "source_sha256": "96916bdcd1318f4d3729a982ea7cbd33b0baa7b658ba51deb905efd3f2855e24"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 2
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/ssr/runnerImport.ts",
+        "source_sha256": "d03788075232dc4abf81b4bb6f76836efc00b8d5107c8dee8e7eba5a804d0bca"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/ssr/runtime/__tests__/fixtures/a.ts",
+        "source_sha256": "82fda8e6435fc8956266c2d852a053b06e1127ea8b2fac0f74749df459ae0b7f"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/ssr/runtime/__tests__/fixtures/b.ts",
+        "source_sha256": "c3b3b32172d1dea5e09906103bad34e010747408aa00ab5f9592fed43ab282d1"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/ssr/runtime/__tests__/fixtures/builtin-import.ts",
+        "source_sha256": "30fe3d45c101d4ea26cc454029d0425713d05e3e86eb2c2e0fe3fd855ad0f55a"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/ssr/runtime/__tests__/fixtures/c.ts",
+        "source_sha256": "780c1b7c85c9b1451913b89b95de5257975dad2099cc952addf1e2bd3954d552"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/ssr/runtime/__tests__/fixtures/d.ts",
+        "source_sha256": "1c034be547a6163366145139b9f6c0ff1fc2ba10694c4fed9ebaf74f4f0dd947"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/ssr/runtime/__tests__/fixtures/default-string.ts",
+        "source_sha256": "e7fa7f4fa887144bef298c7a2cc5c507b34ed4aebf8cb3f7aa8aee6511d55dfd"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 2
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/ssr/runtime/__tests__/fixtures/has-error-deep.ts",
+        "source_sha256": "dfda690ba64598ea70aa19116b38654dc5bc5c3f1a04ec4579f1cd30be042b0a"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/ssr/runtime/__tests__/fixtures/has-error-first-comment.ts",
+        "source_sha256": "bca74f2290958020053ba18cad73afa07558e4c394cd676cdca1703380e48622"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/ssr/runtime/__tests__/fixtures/import-external.ts",
+        "source_sha256": "2b93c35d32bc38ac048b19382d987be97a84ba84573fd9b39a3a5ad3c51310db"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 1
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/ssr/runtime/__tests__/fixtures/oxc-runtime-helper.ts",
+        "source_sha256": "27568ae61926e25c3bd143c4fee283d3b0a9e35a37cb8f266f262a30f2288e9a"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 2
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/ssr/runtime/__tests__/fixtures/string-literal-sourcemap.ts",
+        "source_sha256": "15bfde5dce7e630c599542e78063287cd318b6865d512d8fafc4824ac6b0fd91"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 2
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/ssr/runtime/__tests__/fixtures/throws-error-method.ts",
+        "source_sha256": "1efb34a7c923b583cf2c41696028561f2f48868e18bfbbc8f1b0c26ddc7bf853"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 2
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/ssr/runtime/__tests__/fixtures/with space/has-error-deep.ts",
+        "source_sha256": "dfda690ba64598ea70aa19116b38654dc5bc5c3f1a04ec4579f1cd30be042b0a"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/ssr/runtime/__tests__/server-hmr.spec.ts",
+        "source_sha256": "191dec47603addcde40b2e0065a9968ae67641b119014e723d2a160227d51e04"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/ssr/runtime/__tests__/server-no-hmr.spec.ts",
+        "source_sha256": "71b689897a033d4f3e8c92213d303c455e4ead2aa0ca98b4293002df1b7bee23"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 7
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/ssr/runtime/__tests__/server-runtime.spec.ts",
+        "source_sha256": "d023fd84395c0598966ff44d275126f42033855a447f449516836856ae53b0ff"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 5
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/ssr/runtime/__tests__/server-source-maps.spec.ts",
+        "source_sha256": "8b6da019bba677808839bee684af7fa9981c7a70a7148940312e463624494a31"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 1
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/ssr/runtime/__tests__/server-worker-runner.invoke.spec.ts",
+        "source_sha256": "462c6eae207ac440cae6085be0bea09045f05cb6b8b9c8b343601eb7ded094f9"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 1
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/ssr/runtime/__tests__/server-worker-runner.spec.ts",
+        "source_sha256": "31c42582c77ddb4756952b41bfb9ab6ad3277bf1d5fe3504756abd27b3aa88e8"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 9
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/ssr/runtime/__tests__/utils.ts",
+        "source_sha256": "cd0261fa3300b21b805b38a9ba654cfcc857d1e739fa5214ea85520e06678cb6"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 8
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/ssr/runtime/serverModuleRunner.ts",
+        "source_sha256": "04f1bdcf4a60696f3291c416102da1534349be2455073f8a2328d53203f1315d"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 3
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/ssr/ssrManifestPlugin.ts",
+        "source_sha256": "5ec0505665584f0a1acf432bd09eade20645b65109209f3d42158556eec0e411"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 6
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/ssr/ssrModuleLoader.ts",
+        "source_sha256": "d44464a39206d284ebe4ee66ecbf411e44f464c213bd035bdd078c85c65c8433"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 4
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/ssr/ssrStacktrace.ts",
+        "source_sha256": "8a88c060aff685d9bfb7a222becb58bbe3afd27d6e89c71d4f54052bce3bc17c"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 25
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/ssr/ssrTransform.ts",
+        "source_sha256": "70e5541a06bf1fbe26446c7f44f3da8cf4f5f60dd3bf492e54caa85c748914b1"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 5
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/typeUtils.ts",
+        "source_sha256": "b43acc91e7f30334737d361f293c8b3771e631a8e5fac6bd336dbdcdb4653cfd"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 115
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/utils.ts",
+        "source_sha256": "79721828d793d607ef72b60756c41e2d635b11f7a2963a3aea5795c61284bd05"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 16
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/node/watch.ts",
+        "source_sha256": "f5f77bdf949647b72fbb45df850e3b45ddcb21ae1b30ad8862b4e2c06a163c20"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 3
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/shared/__tests__/forwardConsole.spec.ts",
+        "source_sha256": "c505446bd047eba0bd8b6f8f679b76eb66ae7472b69a4c7c115bad256f77c7fe"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/shared/__tests__/pretty-format.spec.ts",
+        "source_sha256": "6515bf92eac352fb134e806808e2ed00089ac1296845972976494fa8e6694bca"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 1
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/shared/builtin.ts",
+        "source_sha256": "0e6e87b08b915320e83b791756c57850f8269e5d373b37ded9fbb35ce94f110b"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 0
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/shared/constants.ts",
+        "source_sha256": "fb7862ff8c593c3a9ae090e6d0795ed37f1f899fd8be9adc970912c958ab3be2"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 10
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/shared/forwardConsole.ts",
+        "source_sha256": "434738afe09f69175a4f569856cd358e0c5d0e4c8a63ec132d5061bec05633dc"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 29
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/shared/hmr.ts",
+        "source_sha256": "cc6398dd70be749040fbc125c91680af68bb5539e462304235c7ae83e7e330ef"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 4
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/shared/hmrHandler.ts",
+        "source_sha256": "38b3eb488e2b63876a71a7e2838dcd0272cc06218bd43077ffbf5487e29fbf22"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 8
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/shared/invokeMethods.ts",
+        "source_sha256": "47cebfa2bc9718325327531186b7cae0278cd920e0ee2e2c3ef386217323e7b4"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 30
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/shared/moduleRunnerTransport.ts",
+        "source_sha256": "dca3361df511c60e1005252f563b4bfa241c822e53364766bff6f64f93ff3d91"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 10
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/shared/pretty-format.ts",
+        "source_sha256": "f679825c087bf0f7d3a10408e0c19b39fda81448b6c1b30f64fcaf8c3445052b"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 3
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/shared/ssrTransform.ts",
+        "source_sha256": "5e07234faa74433a4a64264e89cf7d561aa43cbbfaa13d6e493e5655b2a5383c"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 12
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/shared/utils.ts",
+        "source_sha256": "37ccaa0f5e09dceebd6ea32df579a3cc2b88a6fcee4ea99df460fda32586ff1f"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 5
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/types/alias.d.ts",
+        "source_sha256": "2c58198f87d011cd18fd414e5f2a1569f146497d5ff8283cb71b8b73d29ba53b"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 3
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/types/anymatch.d.ts",
+        "source_sha256": "6b758cee1ef6c32ec0f1d8dffd6f81e00cee7651763df749d80cc37f121778ff"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 18
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/types/chokidar.d.ts",
+        "source_sha256": "bec214de36ca6a5e7596c5e5dc9b8198abde892ed319e30f79cea60e8b882853"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 1
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/types/commonjs.d.ts",
+        "source_sha256": "4babce4892baa8594388ac1f14eb6f0b6b4ab4f75ba38b217efa825ecd0078f4"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 19
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/types/connect.d.ts",
+        "source_sha256": "d327b46f065c81a2e3be383572b1d2dd1a7f804f962ea1bdb1ec8d7749c0aa70"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 1
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/types/dynamicImportVars.d.ts",
+        "source_sha256": "4b05191f1ee3a6d7ae766734c8c99e2b1fca1eb251b4ba47465f275c4a033326"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 4
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/types/shims.d.ts",
+        "source_sha256": "7e82a2b79dbd51e8b8acce34b83b0362a231b9c744815fe78ee79c237f51066b"
+      },
+      {
+        "coverage": {
+          "state": "complete",
+          "symbol_count": 112
+        },
+        "diagnostics": [],
+        "diagnostics_complete": true,
+        "diagnostics_total": 0,
+        "diagnostics_truncated": false,
+        "failure": null,
+        "failure_detail": null,
+        "failure_detail_truncated": false,
+        "language": "typescript",
+        "path": "packages/vite/src/types/ws.d.ts",
+        "source_sha256": "9a0f8f3671ba2ba140becf263bf4e9cd78df6fde37adfd9e57e922c4c0ebb7fb"
+      }
+    ],
+    "grammar_identity": "tree-sitter@0.25.10;rust@0.24.2;go@0.25.0;javascript@0.25.0;python@0.25.0;typescript@0.23.2+quanta-typescript-compatibility-1;vendored-source-sha256=abc5ac3a85a4dbbcba16770a1dc38e2823f340d99e42f51a80103d3b124a01e3",
+    "incomplete_files": 1,
+    "lockfile_sha256": "58dda6f980fd3d2ad4975b3be18c74e60351be045d78206728f88475a6ba6bbc",
+    "policy": {
+      "max_diagnostics_per_file": 32,
+      "max_diagnostics_total": 1024,
+      "max_file_bytes": 1048576,
+      "max_symbols_per_file": 100000,
+      "max_symbols_total": 1000000,
+      "timeout_per_file_ns": "10000000000",
+      "timeout_total_ns": "120000000000"
+    },
+    "producer_identity": "source-bound-symbols-v2",
+    "producer_policy_sha256": "7f9424eb5b50b28797adad52c835631e8d8ccdffa5c4422c288dc0afea1b8f96",
+    "schema": "symbol-preflight-v1"
+  },
+  "repository_commit": "bc598a6a8a6b7d6e157e9f19c16911cff8d2360c",
+  "symbol_coverage_policy": "allow-incomplete"
+}

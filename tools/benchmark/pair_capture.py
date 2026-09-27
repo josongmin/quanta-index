@@ -9,6 +9,7 @@ from __future__ import annotations
 import math
 import os
 import platform
+import shutil
 import socket
 import stat
 import sys
@@ -403,12 +404,12 @@ def _replay_tree_identity(root: Path) -> dict[str, tuple[int, str | None]]:
 
 
 class _ReplayWorkspace:
-    """One invocation's restored inputs, with no cached verdict or payload."""
+    """Share only an identical corpus; restore native evidence for every run."""
 
     def __enter__(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="quanta-pair-corpus-")
         self.root = Path(self.temporary.name).resolve()
-        self.archives = None
+        self.corpus_archive = None
         self.identity = None
         return self
 
@@ -417,26 +418,26 @@ class _ReplayWorkspace:
 
     def restore(self, raw: Path) -> tuple[Path, Path]:
         # Rehash actual bytes on every run; mtime and cached metadata are not authority.
-        archives = (
-            RawFile.capture(raw / "corpus.bundle"),
-            RawFile.capture(raw / "native-tree.zip"),
-        )
-        commitments = tuple((ref.sha256, ref.size) for ref in archives)
+        corpus_archive = RawFile.capture(raw / "corpus.bundle")
+        native_archive = RawFile.capture(raw / "native-tree.zip")
+        commitment = (corpus_archive.sha256, corpus_archive.size)
         corpus, native = self.root / "corpus", self.root / "native"
-        if self.archives is None:
+        if self.corpus_archive is None:
             bundle = self.root / "corpus.bundle"
-            archives[0].copy_to(bundle)
+            corpus_archive.copy_to(bundle)
             restore_corpus(bundle, corpus)
             # Git now owns a complete object database. This staging copy is not
             # a replay input; discard it before repeated workspace byte checks.
             # The original raw bundle is still rehashed on every restore call.
             bundle.unlink()
-            unpack_native(archives[1], native)
-            self.archives = commitments
-            self.identity = _replay_tree_identity(self.root)
-        elif commitments != self.archives:
-            raise EvidenceError("pair profile raw corpus/native archives differ across cases")
-        self.verify_unchanged()
+            self.corpus_archive = commitment
+        else:
+            if commitment != self.corpus_archive:
+                raise EvidenceError("pair profile raw corpus archives differ across cases")
+            self.verify_unchanged()
+            shutil.rmtree(native)
+        unpack_native(native_archive, native)
+        self.identity = _replay_tree_identity(self.root)
         return corpus, native
 
     def verify_unchanged(self) -> None:

@@ -692,28 +692,6 @@ def fake_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, proof_actor_
             assert not Path(argv[argv.index("--out") + 1]).exists()
             write_receipt(argv)
             raw = b""
-        elif argv[1] == "_retrieval-sdk-proof-raw":
-            out.mkdir()
-            write_closure()
-            runner.parent.mkdir(parents=True, exist_ok=True)
-            runner.write_bytes(b"runner")
-            searchd.write_bytes(b"searchd")
-            (out / "nextest-inventory.json").write_bytes(
-                _rust_inventory("sdk_roundtrip", portable_proof.sdk_proof.PROOF_TEST, compiled_test)
-            )
-            (out / "nextest.jsonl").write_bytes(
-                _events("sdk_roundtrip", portable_proof.sdk_proof.PROOF_TEST)
-            )
-            write_sdk_record()
-            summary = portable_proof.sdk_proof.build_summary(
-                out / "actual-runner-record.json",
-                out / "nextest.jsonl",
-                runner,
-                out / "nextest-inventory.json",
-                searchd_path=searchd,
-            )
-            (out / "sdk_results.json").write_text(json.dumps(summary), encoding="utf-8")
-            raw = b""
         elif "proof_inventory.py" in argv[1]:
             (out / "python-inventory.json").write_text(
                 json.dumps(
@@ -738,6 +716,9 @@ def fake_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, proof_actor_
             test = portable_proof.sdk_proof.PROOF_TEST if binary == "sdk_roundtrip" else "one"
             raw = _rust_inventory(binary, test, compiled_test)
             if "--list-type" in argv:
+                if binary == "sdk_roundtrip":
+                    runner.parent.mkdir(parents=True, exist_ok=True)
+                    runner.write_bytes(b"runner")
                 full = json.loads(raw)
                 fields = {
                     "binary-id",
@@ -747,9 +728,20 @@ def fake_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, proof_actor_
                     "binary-path",
                     "build-platform",
                 }
+                build_meta = {"target-directory": str(target)}
+                if binary == "sdk_roundtrip":
+                    build_meta["non-test-binaries"] = {
+                        "fixture-retrieval-package": [
+                            {
+                                "name": portable_proof.PACKAGE,
+                                "kind": "bin-exe",
+                                "path": f"debug/{portable_proof.PACKAGE}",
+                            }
+                        ]
+                    }
                 raw = json.dumps(
                     {
-                        "rust-build-meta": {"target-directory": str(target)},
+                        "rust-build-meta": build_meta,
                         "rust-binaries": {
                             key: {field: value[field] for field in fields}
                             for key, value in full["rust-suites"].items()
@@ -777,8 +769,8 @@ def fake_execution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, proof_actor_
             )
             raw = b""
         elif argv[3] == "build":
-            runner.parent.mkdir(parents=True, exist_ok=True)
-            runner.write_bytes(b"runner")
+            assert "quanta-index-searchd-runtime" in argv
+            searchd.parent.mkdir(parents=True, exist_ok=True)
             searchd.write_bytes(b"searchd")
             raw = b""
         elif argv[3] == "metadata":
@@ -843,7 +835,7 @@ def test_producer_and_validator_bind_execution_and_inputs(fake_execution, rail: 
     out, runner, calls = fake_execution
     receipt = portable_proof.produce(rail, out)
     assert portable_proof.validate(receipt)["rail"] == rail
-    assert len(calls) == (10 if rail == "contract" else 9)
+    assert len(calls) == (10 if rail == "contract" else 8)
     assert all(isinstance(argv, list) for argv, _ in calls)
     context = json.loads(receipt.read_text(encoding="utf-8"))
     assert set(context) == {

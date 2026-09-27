@@ -1,0 +1,12 @@
+{
+  "binary": "/tmp/qi-l1-final-process3/searchd-proof-bin",
+  "binary_sha256": "d4005f208060189689d189858d3fbe3161c09cda7f6311893f5eebd40d4677df",
+  "build_log": "/tmp/quanta-l1-final-isolated-daemon-build3.jsonl",
+  "build_log_sha256": "679411832f6a43b9e929dab5d7702227eb5850675e5ac3b525362f7687631a93",
+  "build_stderr": "/tmp/quanta-l1-final-isolated-daemon-build3.stderr",
+  "build_stderr_sha256": "55b9b48c509c51ccd7b35d4bfe883068e76ed83765fa160d8bb5727d7e93fa90",
+  "captured_unix": 1790472124.464016,
+  "executable_from_compiler_artifact": "/Users/songmin/Library/Caches/quanta-index/target/49aca36e65dda5e4/daemon-lane/debug/quanta-index-searchd",
+  "source_manifest": "/tmp/qi-l1-final-isolated-inputs8.json",
+  "source_patch_sha256": "6c8e839e868f50268bf02d40ec0f940f1738bba280dccc6c39fab280f1d9d78e"
+}

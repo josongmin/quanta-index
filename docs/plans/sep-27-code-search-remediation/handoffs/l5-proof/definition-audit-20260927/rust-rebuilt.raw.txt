@@ -1,0 +1,5 @@
+resource admission: waiting lock=/Users/songmin/Library/Caches/quanta-index/resource-admission/build-test.lock
+resource admission: admitted lock=/Users/songmin/Library/Caches/quanta-index/resource-admission/build-test.lock wait_ns=40937081584
+    Blocking waiting for file lock on build directory
+resource admission: released lock=/Users/songmin/Library/Caches/quanta-index/resource-admission/build-test.lock held_ns=134879076958
+resource admission: interrupted

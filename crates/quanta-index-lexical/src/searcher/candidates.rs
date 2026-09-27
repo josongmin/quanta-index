@@ -7,7 +7,7 @@
 
 use crate::PreparedPredicatePlan;
 use crate::TantivySearcher;
-use crate::documents::{stored_text, stored_u32};
+use crate::documents::stored_u32;
 use crate::searcher::snippets::{
     SelectedSnippetSource, SnippetContext, SnippetLimits, integrity, render_selected,
 };
@@ -22,6 +22,11 @@ use quanta_index_core::{LexicalCollectionBudget, LexicalMemoryReservation, Reque
 use quanta_index_lq_regex::RegexExecutor;
 use std::collections::BTreeMap;
 use tantivy::schema::{Field, OwnedValue, TantivyDocument, Value};
+
+const PREVIEW_REGEX_BASE_BYTES: u64 = 16 * 1024 * 1024;
+// A conservative *policy charge* for complex plans, not an allocator-enforced
+// heap bound. The regex engine does not expose aggregate temporary allocation.
+const PREVIEW_REGEX_BYTES_PER_ESTIMATED_STATE: u64 = 256;
 
 /// One selected page's executor pool sharing the request's preview account.
 /// Retained output leases remain here until the caller transfers the response.
@@ -148,26 +153,41 @@ impl SelectedPreviewContext<'_> {
         if !self.admit(self.ledger.charge_work(work.saturating_add(100_000)))? {
             return Ok(());
         }
-        // This fixed logical charge bounds the number of retained executors.
-        // The engine's 10 MiB limit applies per NFA, not to total compiler/HIR
-        // allocations. Do not interpret this charge as a total heap ceiling.
-        let reservation = match self.ledger.reserve_bytes(16 * 1024 * 1024) {
+        // Reserve before AST/HIR planning. The additional state-proportional
+        // charge below precedes the engine's much larger automata allocation.
+        // Neither charge claims to be an allocator-enforced heap ceiling.
+        let reservation = match self.ledger.reserve_bytes(PREVIEW_REGEX_BASE_BYTES) {
             Ok(reservation) => reservation,
             Err(error) => {
                 let _admitted = self.admit(Err(error))?;
                 return Ok(());
             }
         };
-        if self.executor_reservations.try_reserve_exact(1).is_err() {
+        if self.executor_reservations.try_reserve_exact(2).is_err() {
             self.unavailable = Some(PreviewUnavailableReason::WorkBudget);
             return Ok(());
         }
         let pattern = TantivySearcher::regex_source_for_options(text, &self.query.options);
-        let executor = RegexExecutor::compile(&pattern)
+        let plan = RegexExecutor::prepare(&pattern)
+            .map_err(|error| integrity(&format!("prepared regex failed to plan: {error}")))?;
+        self.request.checkpoint("lexical:preview-regex-planned")?;
+        let extra_bytes = plan
+            .estimated_states()
+            .checked_mul(PREVIEW_REGEX_BYTES_PER_ESTIMATED_STATE)
+            .ok_or_else(|| integrity("preview regex state charge overflow"))?;
+        let extra_reservation = match self.ledger.reserve_bytes(extra_bytes) {
+            Ok(reservation) => reservation,
+            Err(error) => {
+                let _admitted = self.admit(Err(error))?;
+                return Ok(());
+            }
+        };
+        let executor = RegexExecutor::compile_prepared(plan)
             .map_err(|error| integrity(&format!("prepared regex failed to compile: {error}")))?;
         self.request.checkpoint("lexical:preview-regex-compiled")?;
         drop(self.executors.insert(text.clone(), executor));
         self.executor_reservations.push(reservation);
+        self.executor_reservations.push(extra_reservation);
         Ok(())
     }
 
@@ -423,6 +443,32 @@ mod l4_source_decode_regressions {
         assert!(source_offset(&doc, offset).is_err());
         Ok(())
     }
+
+    #[test]
+    fn ranked_line_fields_refuse_ambiguous_or_malformed_storage() -> Result<(), CoreError> {
+        let mut builder = Schema::builder();
+        let line = builder.add_u64_field("start_line", STORED);
+        let _schema = builder.build();
+        assert_eq!(stored_u32(&TantivyDocument::new(), line)?, None);
+
+        let mut malformed = TantivyDocument::new();
+        malformed.add_text(line, "7");
+        assert!(stored_u32(&malformed, line).is_err());
+
+        let mut duplicate = TantivyDocument::new();
+        duplicate.add_u64(line, 7);
+        duplicate.add_u64(line, 8);
+        assert!(stored_u32(&duplicate, line).is_err());
+
+        let mut overflow = TantivyDocument::new();
+        overflow.add_u64(line, u64::from(u32::MAX) + 1);
+        assert!(stored_u32(&overflow, line).is_err());
+
+        let mut valid = TantivyDocument::new();
+        valid.add_u64(line, 7);
+        assert_eq!(stored_u32(&valid, line)?, Some(7));
+        Ok(())
+    }
 }
 
 impl TantivySearcher {
@@ -487,7 +533,7 @@ impl TantivySearcher {
         doc: &TantivyDocument,
         candidate: LexicalCandidate,
     ) -> Result<SymbolCandidate, CoreError> {
-        let symbol_kind = stored_text(doc, self.fields.symbol_kind)
+        let symbol_kind = source_text(doc, self.fields.symbol_kind)?
             .ok_or_else(|| {
                 CoreError::Storage(
                     "lexical: stored symbol doc missing symbol_kind field".to_string(),
@@ -498,14 +544,12 @@ impl TantivySearcher {
                     CoreError::Storage(format!("lexical: invalid stored symbol_kind: {err}"))
                 })
             })?;
-        let symbol_kind_family = match stored_text(doc, self.fields.symbol_kind_family) {
-            Some(raw) => Some(
-                SymbolKindFamily::from_code_str(raw.as_str()).ok_or_else(|| {
-                    CoreError::Storage(format!(
-                        "lexical: invalid stored symbol_kind_family `{raw}`"
-                    ))
-                })?,
-            ),
+        let symbol_kind_family = match source_text(doc, self.fields.symbol_kind_family)? {
+            Some(raw) => Some(SymbolKindFamily::from_code_str(raw).ok_or_else(|| {
+                CoreError::Storage(format!(
+                    "lexical: invalid stored symbol_kind_family `{raw}`"
+                ))
+            })?),
             None => None,
         };
         Ok(SymbolCandidate {

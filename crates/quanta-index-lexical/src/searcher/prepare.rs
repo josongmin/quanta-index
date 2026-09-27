@@ -246,6 +246,9 @@ impl TantivySearcher {
         plan: &ValidatedLexicalPlan,
     ) -> Result<(LqQuery, QueryDocKind), CoreError> {
         let query = plan.query();
+        if Self::uses_unindexed_scan(&query.options) {
+            self.ensure_manual_language_query_supported(query)?;
+        }
         let doc_kind = if plan.executes_symbol_domain() {
             QueryDocKind::Symbol
         } else {

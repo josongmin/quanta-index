@@ -7,9 +7,8 @@ use quanta_index_contract::lex::{
     SymbolRecord, SymbolRelationship, SymbolSpan, compute_parse_tree_source_hash,
 };
 use quanta_index_contract::{
-    BatchIngestMode, CapabilityStatusV1, ChunkId, ChunkRecord, OwnerDocKind,
-    SearchCorpusIngestBatch, SearchCorpusReplaceScope, SearchScopeKey, SearchScopeSurface,
-    SemanticCorpusKindV1, SemanticSourceRecordV1, SemanticSourceReplaceScopeV1,
+    BatchIngestMode, CapabilityStatusV1, ChunkId, ChunkRecord, OwnerDocKind, SearchScopeKey,
+    SearchScopeSurface, SemanticCorpusKindV1, SemanticSourceRecordV1, SemanticSourceReplaceScopeV1,
     SemanticSourceScopeKeyV1, SourceRoleV1, StructuralIngestBatch, StructuralReplaceScope,
     StructuralTreeRecord, SymbolId, TextQuerySyntax,
 };
@@ -186,27 +185,11 @@ fn boot_symbol_projection_fixture() -> AnyResult<E2eRuntime> {
         container_qualified_name: Some("crate".to_string().into_boxed_str()),
         relationship: SymbolRelationship::Def,
     };
-    rt.publish_search_corpus_batch(SearchCorpusIngestBatch {
-        repo_id: rt.repo(),
-        revision_id: rt.revision(),
-        generation: rt.current_generation(),
-        base_generation: None,
-        manifest_digest: "structural-symbol-hellgate-lex".to_string(),
-        batch_digest: "structural-symbol-hellgate-lex-batch".to_string(),
-        mode: BatchIngestMode::ReplaceGeneration,
-        bundle_payload: None,
-        clear_surfaces: Vec::new(),
-        replace_scopes: vec![SearchCorpusReplaceScope {
-            scope: scope_key(path),
-            scope_digest: "structural-symbol-hellgate-scope".to_string(),
-            chunks: vec![chunk_a.clone(), chunk_b.clone()],
-            symbols: vec![symbol],
-        }],
-        tombstone_scopes: Vec::new(),
-        semantic_replace_scopes: semantic_source_scopes(&[chunk_a.clone(), chunk_b.clone()]),
-        semantic_tombstone_scopes: Vec::new(),
-        seal: false,
-    })?;
+    rt.stage_corpus_fixture(
+        vec![chunk_a.clone(), chunk_b.clone()],
+        vec![symbol],
+        semantic_source_scopes(&[chunk_a.clone(), chunk_b.clone()]),
+    )?;
     let tree = function_tree(content, "ParityTypeSymbol")?;
     rt.publish_structural_batch(StructuralIngestBatch {
         repo_id: rt.repo(),

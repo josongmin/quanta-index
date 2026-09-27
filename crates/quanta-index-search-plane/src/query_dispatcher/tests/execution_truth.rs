@@ -29,7 +29,7 @@ use crate::query_dispatcher::tests::support::lexical::{
     RecordingLexicalOpener, RecordingLexicalState,
 };
 use crate::query_dispatcher::tests::support::semantic::{
-    RecordingSemanticOpener, RecordingSemanticState,
+    FixedModelQueryEmbedder, RecordingSemanticOpener, RecordingSemanticState,
 };
 
 type BoxError = Box<dyn std::error::Error>;
@@ -596,11 +596,14 @@ fn semantic_unscoped_truth_chain() -> TestResult {
 }
 
 // CASE-COVERS: W10-R1 — scoped semantic truth, including a force_empty
-// scope that invokes no lexical backend.
+// scope that invokes neither backend.
 #[test]
 fn semantic_scoped_truth_chain() -> TestResult {
     // A live scope: both backends invoked, both contribute.
-    let lanes = truth_dispatcher(vec![candidate("lex-a", 1.0)], vec![candidate("sem-a", 1.0)])?;
+    let lanes = truth_dispatcher(
+        vec![candidate("semantic-scoped", 1.0)],
+        vec![candidate("sem-a", 1.0)],
+    )?;
     let scope = text_query("scope", QueryConstraintSetV1::unconstrained());
     let response = lanes.dispatcher.dispatch(
         semantic_request(Some(scope), QueryConstraintSetV1::unconstrained()),
@@ -611,6 +614,25 @@ fn semantic_scoped_truth_chain() -> TestResult {
     };
     let lexical = total_lexical(&lanes)?;
     let sem = total_semantic(&lanes)?;
+    let window_lanes = lane_flags(&response)?;
+    if window_lanes
+        != vec![
+            ("semantic.lexical".to_string(), true, true),
+            ("semantic.dense".to_string(), true, true),
+        ]
+    {
+        return Err(format!("live scoped semantic omitted a lane: {window_lanes:?}").into());
+    }
+    if semantic
+        .window
+        .coverage()
+        .lanes()
+        .first()
+        .map(quanta_index_contract::LaneTraceV1::candidates)
+        != Some(quanta_index_contract::CandidateCountV1::Exact(1))
+    {
+        return Err(format!("live lexical scope count is false: {:?}", semantic.window).into());
+    }
     if lexical != 1 || sem != 1 {
         return Err(format!(
             "scoped semantic must invoke both backends once, saw lexical={lexical} semantic={sem}"
@@ -628,8 +650,57 @@ fn semantic_scoped_truth_chain() -> TestResult {
         true,
     )?;
 
-    // A contradictory scope: the lexical backend is never invoked, so the
-    // response reports the semantic engine alone.
+    // A valid lexical scope with zero matches executes the lexical lane, but
+    // it never dispatches a dense query over an empty allowlist.
+    let lanes = truth_dispatcher(Vec::new(), vec![candidate("sem-a", 1.0)])?;
+    let scope = text_query("scope", QueryConstraintSetV1::unconstrained());
+    let response = lanes.dispatcher.dispatch(
+        semantic_request(Some(scope), QueryConstraintSetV1::unconstrained()),
+        &RequestBudgetV1::unbounded(),
+    );
+    let SearchPlaneQueryIpcResponse::Semantic(semantic) = &response else {
+        return Err(format!("expected Semantic response, got {response:?}").into());
+    };
+    let lexical = total_lexical(&lanes)?;
+    let sem = total_semantic(&lanes)?;
+    let window_lanes = lane_flags(&response)?;
+    if window_lanes
+        != vec![
+            ("semantic.lexical".to_string(), true, false),
+            ("semantic.dense".to_string(), false, false),
+        ]
+    {
+        return Err(format!("zero-hit scoped semantic omitted a lane: {window_lanes:?}").into());
+    }
+    if lexical != 1 || sem != 0 || !semantic.results.is_empty() {
+        return Err(format!(
+            "zero-hit scope must stop after lexical search, saw lexical={lexical} semantic={sem} response={semantic:?}"
+        )
+        .into());
+    }
+    if semantic.window.empty_provenance()
+        != Some(quanta_index_contract::EmptyProvenanceV2::ZeroHitExecuted)
+    {
+        return Err(format!(
+            "zero-hit scope lost its executed-empty proof: {:?}",
+            semantic.window
+        )
+        .into());
+    }
+    assert_truth_chain(
+        "zero-hit scope",
+        &semantic.explanation,
+        &lane_flags(&response)?,
+        emitted_fanout(&lanes),
+        lexical,
+        sem,
+        false,
+        false,
+    )?;
+
+    // A contradictory scope proves the whole result empty before either
+    // backend is invoked. The window must carry logical proof, not a
+    // zero-hit search claim.
     let lanes = truth_dispatcher(vec![candidate("lex-a", 1.0)], vec![candidate("sem-a", 1.0)])?;
     let scope = text_query("lang:python scope", rust_constraints());
     let response = lanes.dispatcher.dispatch(
@@ -641,11 +712,40 @@ fn semantic_scoped_truth_chain() -> TestResult {
     };
     let lexical = total_lexical(&lanes)?;
     let sem = total_semantic(&lanes)?;
-    if lexical != 0 || sem != 1 {
+    let window_lanes = lane_flags(&response)?;
+    if window_lanes
+        != vec![
+            ("semantic.lexical".to_string(), false, false),
+            ("semantic.dense".to_string(), false, false),
+        ]
+    {
+        return Err(format!("logical scoped semantic omitted a lane: {window_lanes:?}").into());
+    }
+    if lexical != 0 || sem != 0 {
         return Err(format!(
-            "force_empty scope must invoke semantic only, saw lexical={lexical} semantic={sem}"
+            "force_empty scope must invoke neither backend, saw lexical={lexical} semantic={sem}"
         )
         .into());
+    }
+    if semantic.window.empty_provenance()
+        != Some(quanta_index_contract::EmptyProvenanceV2::LogicalEmpty)
+    {
+        return Err(format!(
+            "force_empty scope has no logical empty proof: {:?}",
+            semantic.window
+        )
+        .into());
+    }
+    let stages = semantic
+        .explanation
+        .stage_timings
+        .as_deref()
+        .ok_or("force_empty scope lost stage observations")?;
+    if stages
+        .iter()
+        .any(|stage| stage.stage.as_str() == "semantic.dense_search")
+    {
+        return Err("force_empty scope claimed a dense search stage".into());
     }
     assert_truth_chain(
         "force_empty scope",
@@ -655,8 +755,162 @@ fn semantic_scoped_truth_chain() -> TestResult {
         lexical,
         sem,
         false,
-        true,
+        false,
     )?;
+    Ok(())
+}
+
+#[test]
+fn semantic_scoped_dense_zero_has_no_contributing_lane() -> TestResult {
+    let empty_dense = |_: &mut RecordingLexicalState, semantic: &mut RecordingSemanticState| {
+        semantic.scoped_search_results = Some(Vec::new());
+    };
+    let lanes = truth_dispatcher_full(
+        vec![candidate("semantic-scoped", 1.0)],
+        Vec::new(),
+        None,
+        Some(&empty_dense),
+    )?;
+    let scope = text_query("scope", QueryConstraintSetV1::unconstrained());
+    let response = lanes.dispatcher.dispatch(
+        semantic_request(Some(scope), QueryConstraintSetV1::unconstrained()),
+        &RequestBudgetV1::unbounded(),
+    );
+    let SearchPlaneQueryIpcResponse::Semantic(semantic) = &response else {
+        return Err(format!("expected Semantic response, got {response:?}").into());
+    };
+    let lexical = total_lexical(&lanes)?;
+    let sem = total_semantic(&lanes)?;
+    if lexical != 1 || sem != 1 || !semantic.results.is_empty() {
+        return Err(format!(
+            "dense zero-hit scope must invoke both lanes without rows: lexical={lexical} semantic={sem} response={semantic:?}"
+        )
+        .into());
+    }
+    let window_lanes = lane_flags(&response)?;
+    if window_lanes
+        != vec![
+            ("semantic.lexical".to_string(), true, false),
+            ("semantic.dense".to_string(), true, false),
+        ]
+    {
+        return Err(format!("dense zero-hit scope lost lane truth: {window_lanes:?}").into());
+    }
+    if semantic
+        .window
+        .coverage()
+        .lanes()
+        .first()
+        .map(quanta_index_contract::LaneTraceV1::candidates)
+        != Some(quanta_index_contract::CandidateCountV1::Exact(1))
+    {
+        return Err(format!(
+            "dense zero-hit lexical count is false: {:?}",
+            semantic.window
+        )
+        .into());
+    }
+    if semantic.window.empty_provenance()
+        != Some(quanta_index_contract::EmptyProvenanceV2::ZeroHitExecuted)
+    {
+        return Err(format!(
+            "dense zero-hit scope lost empty proof: {:?}",
+            semantic.window
+        )
+        .into());
+    }
+    assert_truth_chain(
+        "dense zero-hit scope",
+        &semantic.explanation,
+        &window_lanes,
+        emitted_fanout(&lanes),
+        lexical,
+        sem,
+        false,
+        false,
+    )
+}
+
+#[test]
+fn semantic_contradiction_preserves_embedding_admission() -> TestResult {
+    let lanes = truth_dispatcher(Vec::new(), Vec::new())?;
+    let scope = text_query("lang:python scope", rust_constraints());
+    let SearchPlaneQueryIpcRequest::Semantic(mut request) =
+        semantic_request(Some(scope), rust_constraints())
+    else {
+        return Err("semantic request helper returned another route".into());
+    };
+    request.query_text = "!!!".to_string();
+    let response = lanes.dispatcher.dispatch(
+        SearchPlaneQueryIpcRequest::Semantic(request),
+        &RequestBudgetV1::unbounded(),
+    );
+    let SearchPlaneQueryIpcResponse::Error(error) = response else {
+        return Err(format!("invalid semantic text escaped contradiction: {response:?}").into());
+    };
+    if error.code
+        != quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
+            quanta_index_contract::lex::LexicalErrorCode::EmptyQuery,
+        )
+    {
+        return Err(format!("invalid semantic text answered {:?}", error.code).into());
+    }
+    if total_lexical(&lanes)? != 0 || total_semantic(&lanes)? != 0 {
+        return Err("invalid semantic text invoked a search backend".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn semantic_contradiction_preserves_index_vector_validation() -> TestResult {
+    let mut lanes = truth_dispatcher(Vec::new(), Vec::new())?;
+    lanes.dispatcher.query_embedder = Arc::new(FixedModelQueryEmbedder {
+        model_id: crate::SEARCH_OWNED_SEMANTIC_MODEL_ID,
+        model_revision: crate::query_embedder::SEARCH_OWNED_SEMANTIC_MODEL_REVISION,
+        dimension: crate::SEARCH_OWNED_SEMANTIC_DIMENSION - 1,
+    });
+    let scope = text_query("lang:python scope", rust_constraints());
+    let response = lanes.dispatcher.dispatch(
+        semantic_request(Some(scope), rust_constraints()),
+        &RequestBudgetV1::unbounded(),
+    );
+    let SearchPlaneQueryIpcResponse::Error(error) = response else {
+        return Err(format!("wrong-dimension vector escaped empty scope: {response:?}").into());
+    };
+    if error.code
+        != quanta_index_contract::SearchPlaneErrorCodeV2::Lexical(
+            quanta_index_contract::lex::LexicalErrorCode::SemDimMismatch,
+        )
+    {
+        return Err(format!("wrong-dimension vector answered {:?}", error.code).into());
+    }
+    if total_lexical(&lanes)? != 0 || total_semantic(&lanes)? != 0 {
+        return Err("vector validation invoked a search backend".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn semantic_scope_refuses_adapter_rows_outside_lexical_allowlist() -> TestResult {
+    let lanes = truth_dispatcher(vec![candidate("lex-a", 1.0)], Vec::new())?;
+    let scope = text_query("scope", QueryConstraintSetV1::unconstrained());
+    let SearchPlaneQueryIpcRequest::Semantic(request) =
+        semantic_request(Some(scope), QueryConstraintSetV1::unconstrained())
+    else {
+        return Err("semantic request helper returned another route".into());
+    };
+    let result = lanes
+        .dispatcher
+        .semantic(&request, &RequestBudgetV1::unbounded());
+    if !matches!(
+        result,
+        Err(quanta_index_core::CoreError::InvalidContract(_))
+    ) {
+        return Err(format!("out-of-scope dense row escaped lexical allowlist: {result:?}").into());
+    }
+    if total_lexical(&lanes)? != 1 || total_semantic(&lanes)? != 1 {
+        return Err("out-of-scope test did not exercise both backend calls".into());
+    }
     Ok(())
 }
 

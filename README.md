@@ -101,6 +101,7 @@ Current verification posture (2026-09-16):
 
 Code-search benchmark and test-optimization work:
 
+- [Code-search benchmark runbook](tools/benchmark/CODE_SEARCH_RUNBOOK.md) gives the runnable commands, required external inputs, outputs, and claim boundaries for live pairs versus recorded five-product scoring.
 - [SEP-27 execution SSOT](docs/plans/sep-27-misc/tickets/INDEX.md) contains the current audit, structural implementation tickets, full retrieval acceptance contract, test-optimization invariants, measurement rules and external-input boundaries inline.
 - Frozen local contract/SDK proof and historical exploratory comparisons are not current-source, independent-gold quality or qualified speed evidence. The SSOT separates those scopes; retired packets are not live authorities.
 - Corpus checkouts, indexes, models, and raw results stay **outside** this repository. Do not infer current benchmark qualification from a package installation or a historical pair verdict.

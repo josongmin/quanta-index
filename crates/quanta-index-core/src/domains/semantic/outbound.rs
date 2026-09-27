@@ -463,6 +463,11 @@ pub trait SemanticSearcher: Send + Sync {
         }
     }
 
+    /// Validate the query vector against this opened generation without
+    /// issuing a search. Routes use this before an empty scope can return,
+    /// so a dimension or vector-contract error cannot become a false empty.
+    fn validate_query_vector(&self, query_vector: &[f32]) -> Result<(), CoreError>;
+
     /// The exact cosine similarity between `query_vector` and the vector
     /// this generation stores for `candidate_id`, or `None` when the
     /// generation holds no vector for it (QI-BB-022).

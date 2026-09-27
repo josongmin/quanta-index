@@ -1,0 +1,8 @@
+{
+  "base": "681dc3f0c5232b4c756c9fd296d305677560370a",
+  "worktree": "/Users/songmin/.codex/worktrees/l1-audit-lint/quanta-index",
+  "copied_owned_files": [
+    "crates/quanta-index-sdk/tests/l1_daemon_query_contract.rs"
+  ],
+  "scope": "Owned query code/tests from shared tree plus exact SDK diagnostic hunk; concurrent L2/L3 source changes excluded. The unrelated one-line text_docs borrow fix is not part of this scoped lint."
+}

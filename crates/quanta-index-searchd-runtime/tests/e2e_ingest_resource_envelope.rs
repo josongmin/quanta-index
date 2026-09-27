@@ -18,7 +18,6 @@ use quanta_index_contract::{
 use quanta_index_core::{
     GenerationStorageKeyV1, INGEST_RESOURCE_BUDGET_EXCEEDED_CODE, IngestResourcePolicy,
 };
-use quanta_index_ipc::stamp_batch_digest_v1;
 use quanta_index_searchd_harness as e2e_harness;
 
 use e2e_harness::E2eRuntime;
@@ -93,7 +92,7 @@ fn a_batch_past_the_vector_envelope_is_refused_before_any_track_writes() -> Test
         .append(&mut second.semantic_replace_scopes);
     // The body changed after the harness stamped it: re-stamp, as a
     // producer does last (QI-BB-032), so the envelope is what refuses it.
-    stamp_batch_digest_v1(&mut oversized)?;
+    rt.issue_fixture_source_event(&mut oversized)?;
 
     let refused = rt.ingest_once(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(
         oversized,
@@ -118,9 +117,11 @@ fn a_batch_past_the_vector_envelope_is_refused_before_any_track_writes() -> Test
     // One record fits: the same daemon applies it and serves it.
     let fits =
         rt.text_search_corpus_batch("src/envelope.rs", "fn envelope_body() { envelope_needle }")?;
-    let accepted = rt.ingest_once(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(fits))?;
+    let accepted = rt.ingest_once(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(
+        fits.clone(),
+    ))?;
     match &accepted {
-        SearchPlaneIngestIpcResponse::SearchCorpusReceipt(receipt) if receipt.applied => {}
+        SearchPlaneIngestIpcResponse::SearchCorpusReceipt(outcome) if outcome.receipt.applied => {}
         SearchPlaneIngestIpcResponse::SearchCorpusReceipt(_)
         | SearchPlaneIngestIpcResponse::Error(_)
         | SearchPlaneIngestIpcResponse::HistoryReceipt(_)
@@ -137,7 +138,8 @@ fn a_batch_past_the_vector_envelope_is_refused_before_any_track_writes() -> Test
             return Err(format!("a fitting batch must apply, got {accepted:?}").into());
         }
     }
-    let _sealed = rt.seal()?;
+    rt.publish_search_corpus_batch(fits)?;
+    rt.activate_last_sealed_generation()?;
     let served = rt.query_text(TextQuerySyntax::Native, "envelope_needle", 5);
     if let Some(error) = served.typed_error {
         return Err(format!("the fitting batch must serve: {error}").into());

@@ -1,38 +1,34 @@
 {
-  "state": "BLOCKED",
-  "scope": "Current shared-source selected lexical qualification; the RCA repair and 193 selected tests are VERIFIED on the referenced frozen snapshot",
-  "head": "5571132655a83824731e7909b0e310951edad52b",
+  "state": "VERIFIED",
+  "scope": "L3 explicit exact-name policy, source-aware grouping and native bounded collection; all identified L3 P0-P2 findings are closed",
+  "head": "2102966246866398f01833bebf71396831377149",
   "current_receipt": {
-    "path": "docs/plans/sep-27-code-search-remediation/handoffs/L3_RCA.source.json",
-    "sha256": "2b3f7806f19bfed5bfdd2b0a507b736dd1cfaa82180c7100f4af5d736c3c81d0"
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/L3_SS.source.json",
+    "sha256": "52ca29f67446f89f2e2ada2f947dfb31ece3ebbe647d6f861c95ccd2fc591db5"
+  },
+  "requirement_audit": {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/L3_REQUIREMENT_AUDIT.json",
+    "sha256": "29e6c30a0e0a5d57bc69afbe6d216273cb5b9880af5f5d20acf818321d2b97b7"
   },
   "claims": {
-    "reproduced_defect": "VERIFIED",
+    "current_selected_lexical_tests": "VERIFIED",
+    "new_regression_red_to_green": "VERIFIED",
+    "source_hash_oracles": "VERIFIED",
+    "known_L3_P0_P2_closed": "VERIFIED",
     "whole_repository_CI": "NOT_RUN",
     "installed_daemon_E2E": "NOT_RUN",
-    "performance_RSS_ranking_quality": "NOT_RUN",
-    "sealed_generation_bypass": "NOT_APPLICABLE",
-    "selected_lexical_tests_on_frozen_source": "VERIFIED",
-    "current_selected_lexical_tests": "BLOCKED",
-    "owned_files_match_verified_snapshot": "VERIFIED"
+    "performance_RSS_ranking_quality": "NOT_RUN"
   },
-  "last_verified_snapshot": {
-    "run": "rca-final-2",
-    "passed": 193,
+  "selected_verification": {
+    "run": "goal-final-3",
+    "passed": 200,
     "failed": 0,
     "ignored": 0,
-    "selected_input_sha256": "13437d4c36caeeb10f716d9f1e0610cd77ed32c37a1f4418a6ff75e7b874435b",
-    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l3-proof/rca/verified-snapshot-L3_RCA.source.json",
-    "sha256": "1866a1bd32858204d0d30f9997899ffbef2cd0f34aa7e02cb2758005cfc22eba"
+    "selected_input_sha256": "3494250c48902998da96c8b4fdb5576779786ab1e2e517c2acf61028cd7f6258"
   },
-  "current_changed_selected_inputs": [
-    "crates/quanta-index-core/src/domains/lexical/collection_budget.rs",
-    "crates/quanta-index-core/src/domains/lexical/coverage.rs",
-    "crates/quanta-index-core/src/domains/lexical/outbound.rs",
-    "crates/quanta-index-core/src/domains/lexical/service.rs",
-    "crates/quanta-index-core/src/request_budget.rs",
-    "crates/quanta-index-lexical/src/query_admission.rs",
-    "crates/quanta-index-lexical/src/searcher/manual_scan.rs",
-    "crates/quanta-index-lexical/src/searcher/prepare.rs"
-  ]
+  "known_unresolved_findings": {
+    "P0": 0,
+    "P1": 0,
+    "P2": 0
+  }
 }

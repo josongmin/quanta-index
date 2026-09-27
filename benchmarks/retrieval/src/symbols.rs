@@ -328,6 +328,44 @@ fn node_text<'source>(
         })
 }
 
+/// A dotted TypeScript namespace has one source name per AST identifier.
+/// Reading the full node text would leak whitespace/comments into symbol
+/// identity and would treat `A.B` as a single local name.
+fn namespace_segments(
+    name: Node<'_>,
+    source: &str,
+    control: Option<&ExtractionControl<'_>>,
+) -> Result<Vec<String>, SymbolExtractError> {
+    let mut pending = vec![name];
+    let mut segments = Vec::new();
+    while let Some(node) = pending.pop() {
+        if let Some(control) = control {
+            control.check()?;
+        }
+        match node.kind() {
+            "identifier" | "property_identifier" => {
+                segments.push(node_text(node, source, "namespace identifier")?.to_string());
+            }
+            "nested_identifier" | "member_expression" => {
+                // Stack order preserves left-to-right source order.
+                pending.push(required_child(node, "property", "dotted namespace")?);
+                pending.push(required_child(node, "object", "dotted namespace")?);
+            }
+            other => {
+                return Err(SymbolExtractError::ProducerDefect {
+                    detail: format!("unexpected dotted namespace component: {other}"),
+                });
+            }
+        }
+    }
+    if segments.len() < 2 {
+        return Err(SymbolExtractError::ProducerDefect {
+            detail: "dotted namespace has fewer than two identifiers".to_string(),
+        });
+    }
+    Ok(segments)
+}
+
 /// Depth-first search for the first descendant of `node` whose kind
 /// matches. Tree-sitter 0.25 exposes no descendants iterator, so this is
 /// an explicit cursor walk bounded by the subtree.
@@ -457,6 +495,48 @@ struct RawDefinition {
     byte_end: usize,
 }
 
+/// Method signatures in anonymous type positions are not methods of the
+/// nearest named function, class, or alias. Admit only direct interface/class
+/// members or members of an alias's own object/intersection type.
+fn typescript_signature_has_owner(
+    definition: Node<'_>,
+    control: Option<&ExtractionControl<'_>>,
+) -> Result<bool, SymbolExtractError> {
+    let Some(parent) = definition.parent() else {
+        return Ok(false);
+    };
+    match parent.kind() {
+        "interface_body" => Ok(parent
+            .parent()
+            .is_some_and(|owner| owner.kind() == "interface_declaration")),
+        "class_body" => Ok(parent.parent().is_some_and(|owner| {
+            matches!(
+                owner.kind(),
+                "class_declaration" | "abstract_class_declaration" | "class"
+            ) && owner.child_by_field_name("name").is_some()
+        })),
+        "object_type" if definition.kind() == "method_signature" => {
+            let mut value = parent;
+            while let Some(owner) = value.parent() {
+                if let Some(control) = control {
+                    control.check()?;
+                }
+                match owner.kind() {
+                    "parenthesized_type" | "intersection_type" => value = owner,
+                    "type_alias_declaration" => {
+                        return Ok(
+                            required_child(owner, "value", "TypeScript alias")?.id() == value.id()
+                        );
+                    }
+                    _ => return Ok(false),
+                }
+            }
+            Ok(false)
+        }
+        _ => Ok(false),
+    }
+}
+
 fn parse(
     language: SymbolLanguage,
     path: &str,
@@ -529,7 +609,7 @@ fn query_definitions(
     );
     while let Some(matched) = stream.next() {
         if let Some(control) = control {
-            control.check_symbols(definitions.len())?;
+            control.check()?;
         }
         let mut def_node: Option<Node<'_>> = None;
         let mut name_node: Option<Node<'_>> = None;
@@ -562,8 +642,32 @@ fn query_definitions(
         let name_node = name_node.ok_or_else(|| SymbolExtractError::ProducerDefect {
             detail: "definition query matched without its required @name capture".to_string(),
         })?;
-        let local_name = node_text(name_node, source, "definition name")?;
+        if matches!(language, SymbolLanguage::TypeScript { .. })
+            && matches!(
+                def_node.kind(),
+                "method_signature" | "abstract_method_signature"
+            )
+            && !typescript_signature_has_owner(def_node, control)?
+        {
+            continue;
+        }
+        if let Some(control) = control {
+            control.check_symbols(definitions.len())?;
+        }
+        let mut local_name = node_text(name_node, source, "definition name")?.to_string();
         let mut containers: Vec<String> = Vec::new();
+        if matches!(language, SymbolLanguage::TypeScript { .. })
+            && matches!(def_node.kind(), "module" | "internal_module")
+            && name_node.kind() == "nested_identifier"
+        {
+            let mut parts = namespace_segments(name_node, source, control)?;
+            local_name = parts
+                .pop()
+                .ok_or_else(|| SymbolExtractError::ProducerDefect {
+                    detail: "dotted namespace has no local identifier".to_string(),
+                })?;
+            containers.extend(parts.into_iter().rev());
+        }
         // Named ancestors qualify definitions without inventing names for
         // anonymous scopes. Python class bodies share their namespace through
         // control-flow blocks, so its method decision uses the nearest named
@@ -594,7 +698,20 @@ fn query_definitions(
                     seen_container = true;
                     nearest_type_container = language.is_type_container(node.kind());
                 }
-                containers.push(name);
+                if matches!(language, SymbolLanguage::TypeScript { .. })
+                    && matches!(node.kind(), "module" | "internal_module")
+                    && required_child(node, "name", "namespace container")?.kind()
+                        == "nested_identifier"
+                {
+                    let namespace_name = required_child(node, "name", "namespace container")?;
+                    containers.extend(
+                        namespace_segments(namespace_name, source, control)?
+                            .into_iter()
+                            .rev(),
+                    );
+                } else {
+                    containers.push(name);
+                }
                 if language == SymbolLanguage::Go && node.kind() == "method_declaration" {
                     // Descendants need the same receiver owner as the method
                     // itself. The list is reversed once after the walk.
@@ -644,7 +761,7 @@ fn query_definitions(
         })?;
         definitions.push(RawDefinition {
             kind,
-            local_name: local_name.to_string(),
+            local_name,
             containers,
             byte_start: def_node.start_byte(),
             byte_end: def_node.end_byte(),

@@ -20,6 +20,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[path = "harness/source_publication.rs"]
+mod source_publication;
+use source_publication::CorpusPublicationState;
+pub use source_publication::{SourceCorpusFixture, fixture_source_scope_v1};
+
 use anyhow::Result as AnyResult;
 use quanta_index_contract::lex::{
     LanguageCode, ParseNode, ParseRoleTag, ParseTreeRecord, SymbolKindCode, SymbolKindFamily,
@@ -36,8 +41,7 @@ use quanta_index_contract::{
     QuarantineDiscardRequest, QuarantineInventoryRequest, QuarantineInventoryV1,
     QuarantineTargetV1, QueryResultWindowV2, RawFallbackReasonV1, RepoId, RepoRelativePath,
     RevisionId, RuntimeMetadataQueryRequest, SearchCorpusActiveHeadV1,
-    SearchCorpusGenerationIdentityV1, SearchCorpusIngestBatch, SearchCorpusReplaceScope,
-    SearchCorpusTombstoneScope, SearchExplanation,
+    SearchCorpusGenerationIdentityV1, SearchCorpusIngestBatch, SearchExplanation,
     SearchPlaneActivateSearchCorpusGenerationCasRequest, SearchPlaneControlIpcRequest,
     SearchPlaneControlIpcRequestEnvelope, SearchPlaneControlIpcResponse,
     SearchPlaneControlIpcResponseEnvelope, SearchPlaneErrorCodeV2, SearchPlaneExplainQueryRequest,
@@ -263,7 +267,7 @@ pub struct E2eRuntime {
     driver: Option<DriverState>,
     query_obs_store: Option<Arc<BoundedQueryObsStore>>,
     chunk_ids_by_path: BTreeMap<String, ChunkId>,
-    chunk_records_by_path: BTreeMap<String, ChunkRecord>,
+    source_publication: CorpusPublicationState,
     request_id_counter: AtomicU64,
     /// Each harness-built mutation is a distinct producer declaration: the
     /// sequence is folded into producer-declared content digests so two
@@ -668,7 +672,7 @@ impl E2eRuntime {
             driver: None,
             query_obs_store: None,
             chunk_ids_by_path: BTreeMap::new(),
-            chunk_records_by_path: BTreeMap::new(),
+            source_publication: CorpusPublicationState::default(),
             request_id_counter: AtomicU64::new(1),
             batch_sequence: AtomicU64::new(1),
             generation_counter: 1,
@@ -1040,6 +1044,12 @@ impl E2eRuntime {
                 "e2e-harness: composite activation ack previous identity differs from the CAS expectation"
             ));
         }
+        self.source_publication.activate(
+            &candidate.lexical.repo_id,
+            &candidate.lexical.revision_id,
+            candidate.lexical.manifest_generation,
+            &candidate.lexical.manifest_digest,
+        )?;
         Ok(())
     }
 
@@ -1075,9 +1085,25 @@ impl E2eRuntime {
         &mut self,
         request: SearchPlaneActivateSearchCorpusGenerationCasRequest,
     ) -> AnyResult<SearchPlaneControlIpcResponse> {
-        self.dispatch_control_response_v1(
+        let candidate = request.candidate.clone();
+        let expected = request.expected_active.clone();
+        let response = self.dispatch_control_response_v1(
             SearchPlaneControlIpcRequest::ActivateSearchCorpusGenerationCas(request),
-        )
+        )?;
+        if let SearchPlaneControlIpcResponse::SearchCorpusActivationCasAck(ack) = &response
+            && ack.active.generation == candidate
+            && ack.previous_sealed_active == expected
+        {
+            // Observe only an event already bound to a validated producer
+            // receipt. Raw callers still receive the daemon response verbatim.
+            self.source_publication.observe_accepted_activation(
+                &candidate.lexical.repo_id,
+                &candidate.lexical.revision_id,
+                candidate.lexical.manifest_generation,
+                &candidate.lexical.manifest_digest,
+            );
+        }
+        Ok(response)
     }
 
     /// Send one rollback CAS as given and return the daemon's answer
@@ -1141,7 +1167,7 @@ impl E2eRuntime {
         self.current_search_corpus_head_from_control_v1(&repo_id, &revision_id)
     }
 
-    /// Ingest one chunk through the typed ingest front door.
+    /// Stage one chunk for the next complete source event sent by `seal`.
     ///
     /// `repo` is informational metadata only — the publish itself goes
     /// against the harness's owning `repo()` so the matching query can
@@ -1219,31 +1245,9 @@ impl E2eRuntime {
                 Ok::<ChunkRecord, anyhow::Error>(record)
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let (mode, base_generation) = self.lexical_batch_contract();
-        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(
-            SearchCorpusIngestBatch {
-                repo_id: self.repo(),
-                revision_id: self.revision(),
-                generation: self.current_generation(),
-                base_generation,
-                manifest_digest: format!("lex:{path}:{}", self.current_generation().get()),
-                batch_digest: String::new(),
-                mode,
-                bundle_payload: None,
-                clear_surfaces: Vec::new(),
-                replace_scopes: vec![SearchCorpusReplaceScope {
-                    scope: scope_key(path),
-                    scope_digest: format!("scope:{path}:{}-chunks", records.len()),
-                    chunks: records.clone(),
-                    symbols: Vec::new(),
-                }],
-                tombstone_scopes: Vec::new(),
-                semantic_replace_scopes: semantic_source_scopes_for_chunk_records(&records),
-                semantic_tombstone_scopes: Vec::new(),
-                seal: false,
-            },
-        ))?;
-        let Some(last_record) = records.last().cloned() else {
+        self.source_publication
+            .replace_chunks(&self.repo(), records.clone())?;
+        let Some(last_record) = records.last() else {
             return Err(anyhow::anyhow!(
                 "e2e-harness: ingest_text_chunks built no records for path `{path}`"
             ));
@@ -1251,22 +1255,19 @@ impl E2eRuntime {
         let _old = self
             .chunk_ids_by_path
             .insert(path.to_string(), last_record.chunk_id.clone());
-        let _old = self
-            .chunk_records_by_path
-            .insert(path.to_string(), last_record);
         Ok(records
             .iter()
             .map(|record| record.chunk_id.as_str().to_string())
             .collect())
     }
 
-    /// Ingest several files as ONE multi-scope corpus batch (one scope per file).
+    /// Stage several files for ONE sealed corpus event (one scope per source file).
     ///
     /// This is the realistic shape of a production ingest wave: many files in a
     /// single batch. The semantic derivation then embeds the whole wave in one
     /// batched provider call instead of one call per file — the batching that the
-    /// per-file `ingest_text*` helpers cannot exercise (each makes a single-scope
-    /// batch). Returns the chunk ids across all files in ingest order.
+    /// per-file calls also accumulate until `seal`; this helper declares the
+    /// complete multi-file wave at once. Returns chunk IDs in input order.
     pub fn ingest_text_files_one_batch(
         &mut self,
         files: &[(&str, &[E2eTextChunkSpec<'_>])],
@@ -1276,7 +1277,6 @@ impl E2eRuntime {
                 "e2e-harness: ingest_text_files_one_batch requires at least one file"
             ));
         }
-        let mut scopes = Vec::with_capacity(files.len());
         let mut all_ids = Vec::new();
         let mut all_records = Vec::new();
         for (path, chunks) in files {
@@ -1323,117 +1323,101 @@ impl E2eRuntime {
                 all_ids.push(record.chunk_id.as_str().to_string());
             }
             all_records.extend(records.iter().cloned());
-            if let Some(last_record) = records.last().cloned() {
-                let _old = self
-                    .chunk_ids_by_path
-                    .insert((*path).to_string(), last_record.chunk_id.clone());
-                let _old = self
-                    .chunk_records_by_path
-                    .insert((*path).to_string(), last_record);
-            }
-            scopes.push(SearchCorpusReplaceScope {
-                scope: scope_key(path),
-                scope_digest: format!("scope:{path}:{}-chunks", records.len()),
-                chunks: records,
-                symbols: Vec::new(),
-            });
         }
-        let (mode, base_generation) = self.lexical_batch_contract();
-        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(
-            SearchCorpusIngestBatch {
-                repo_id: self.repo(),
-                revision_id: self.revision(),
-                generation: self.current_generation(),
-                base_generation,
-                manifest_digest: format!(
-                    "lex-multi:{}:{}",
-                    files.len(),
-                    self.current_generation().get()
-                ),
-                batch_digest: String::new(),
-                mode,
-                bundle_payload: None,
-                clear_surfaces: Vec::new(),
-                replace_scopes: scopes,
-                tombstone_scopes: Vec::new(),
-                semantic_replace_scopes: semantic_source_scopes_for_chunk_records(&all_records),
-                semantic_tombstone_scopes: Vec::new(),
-                seal: false,
-            },
-        ))?;
+        self.source_publication
+            .replace_chunks(&self.repo(), all_records.clone())?;
+        for record in &all_records {
+            let _previous = self.chunk_ids_by_path.insert(
+                record.repo_relative_path.as_str().to_string(),
+                record.chunk_id.clone(),
+            );
+        }
         Ok(all_ids)
     }
 
-    pub fn publish_repo_metadata_bundle(&mut self, payload: Vec<u8>) -> AnyResult<()> {
-        let (mode, base_generation) = self.lexical_batch_contract();
-        let semantic_records = self
-            .chunk_records_by_path
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
-        let semantic_replace_scopes = semantic_source_scopes_for_chunk_records(&semantic_records);
-        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(
-            SearchCorpusIngestBatch {
-                repo_id: self.repo(),
-                revision_id: self.revision(),
-                generation: self.current_generation(),
-                base_generation,
-                manifest_digest: format!("lex-meta:{}", self.current_generation().get()),
-                batch_digest: String::new(),
-                mode,
-                bundle_payload: Some(payload),
-                clear_surfaces: Vec::new(),
-                replace_scopes: Vec::new(),
-                tombstone_scopes: Vec::new(),
-                semantic_replace_scopes,
-                semantic_tombstone_scopes: Vec::new(),
-                seal: false,
+    /// Stage a complete explicit fixture, retaining its declared semantic owners.
+    /// The corpus event is issued only by the subsequent `seal`.
+    pub fn stage_corpus_fixture(
+        &mut self,
+        chunks: Vec<ChunkRecord>,
+        symbols: Vec<SymbolRecord>,
+        semantic_scopes: Vec<SemanticSourceReplaceScopeV1>,
+    ) -> AnyResult<()> {
+        self.source_publication
+            .stage_fixture(&self.repo(), chunks, symbols, semantic_scopes)
+    }
+
+    /// Build coverage from declared synthetic bytes using the same fixture issuer as staged ingest.
+    pub fn fixture_source_scope(
+        &self,
+        file: quanta_index_contract::SourceFileKey,
+        revision: RevisionId,
+        chunks: Vec<ChunkRecord>,
+        symbols: Vec<SymbolRecord>,
+    ) -> AnyResult<quanta_index_contract::SearchCorpusReplaceScope> {
+        let symbols_requested = !symbols.is_empty();
+        source_publication::source_scope(
+            file,
+            revision,
+            &source_publication::FixtureFile {
+                chunks,
+                symbols,
+                symbols_requested,
             },
-        ))?;
+        )
+    }
+
+    /// Explicitly issue a new source event after a fixture body is complete.
+    /// Transport stamping never calls this: malformed event tests keep their original authority.
+    pub fn issue_fixture_source_event(&self, batch: &mut SearchCorpusIngestBatch) -> AnyResult<()> {
+        batch.source_event = quanta_index_contract::SourcePublicationEvent {
+            stream_id: "e2e-harness-source-v1".into(),
+            event_id: format!("e2e-source-event-{}", self.next_batch_sequence()),
+            expected_base_event_id: self.source_publication.active_event(&batch.repo_id),
+            payload_sha256: [0; 32],
+        };
+        batch.source_event.payload_sha256 =
+            quanta_index_contract::source_event_payload_sha256(batch)?;
+        quanta_index_ipc::stamp_batch_digest_v1(batch)?;
         Ok(())
     }
 
+    pub fn publish_repo_metadata_bundle(&mut self, payload: Vec<u8>) -> AnyResult<()> {
+        self.source_publication.set_metadata(payload)
+    }
+
     pub fn publish_search_corpus_batch(&mut self, batch: SearchCorpusIngestBatch) -> AnyResult<()> {
-        let sealed_authority = batch.seal.then(|| {
-            (
-                batch.repo_id.clone(),
-                batch.revision_id.clone(),
-                batch.generation,
-                batch.manifest_digest.clone(),
-            )
-        });
+        self.source_publication.ensure_publishable(&batch)?;
+        let SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch) =
+            stamped_ingest_request(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch))?
+        else {
+            return Err(anyhow::anyhow!("unexpected stamped corpus request"));
+        };
         let response = self.dispatch_ingest_response(
-            SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch),
+            SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch.clone()),
         )?;
-        if let Some((repo_id, revision_id, generation, manifest_digest)) = sealed_authority {
-            let SearchPlaneIngestIpcResponse::SearchCorpusReceipt(receipt) = response else {
-                return Err(anyhow::anyhow!(
-                    "e2e-harness: sealed search-corpus publish returned an unexpected ingest response"
-                ));
-            };
-            if !receipt.sealed {
-                return Err(anyhow::anyhow!(
-                    "e2e-harness: sealed search-corpus publish receipt did not confirm a sealed generation"
-                ));
-            }
-            if receipt.generation != generation {
-                return Err(anyhow::anyhow!(
-                    "e2e-harness: sealed search-corpus publish receipt generation differs from the request"
-                ));
-            }
-            if receipt.manifest_digest.as_deref() != Some(manifest_digest.as_str()) {
-                return Err(anyhow::anyhow!(
-                    "e2e-harness: sealed search-corpus publish receipt manifest digest differs from the request"
-                ));
-            }
-            self.last_sealed_search_corpus_identity =
-                Some(self.search_corpus_identity_from_sealed_receipt(
-                    repo_id,
-                    revision_id,
-                    generation,
-                    &receipt,
-                )?);
+        let SearchPlaneIngestIpcResponse::SearchCorpusReceipt(outcome) = response else {
+            return Err(anyhow::anyhow!(
+                "sealed corpus publish returned an unexpected response"
+            ));
+        };
+        let identity = self.search_corpus_identity_from_sealed_receipt(
+            outcome.publication.target.repo_id.clone(),
+            outcome.publication.target.revision_id.clone(),
+            outcome.publication.target.manifest_generation,
+            &outcome.receipt,
+        )?;
+        self.source_publication.accept(&batch, &outcome)?;
+        if identity.lexical.repo_id == self.repo()
+            && identity.lexical.revision_id == self.revision()
+            && identity.lexical.manifest_generation == self.current_generation()
+        {
+            self.generation_counter = self
+                .generation_counter
+                .checked_add(1)
+                .ok_or_else(|| anyhow::anyhow!("harness generation exhausted"))?;
         }
+        self.last_sealed_search_corpus_identity = Some(identity);
         Ok(())
     }
 
@@ -1895,28 +1879,8 @@ impl E2eRuntime {
     }
 
     pub fn delete_chunk_for_path(&mut self, path: &str) -> AnyResult<()> {
-        let (mode, base_generation) = self.lexical_batch_contract();
-        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(
-            SearchCorpusIngestBatch {
-                repo_id: self.repo(),
-                revision_id: self.revision(),
-                generation: self.current_generation(),
-                base_generation,
-                manifest_digest: format!("lex-del:{path}:{}", self.current_generation().get()),
-                batch_digest: String::new(),
-                mode,
-                bundle_payload: None,
-                clear_surfaces: Vec::new(),
-                replace_scopes: Vec::new(),
-                tombstone_scopes: vec![SearchCorpusTombstoneScope {
-                    scope: scope_key(path),
-                }],
-                semantic_replace_scopes: Vec::new(),
-                semantic_tombstone_scopes: Vec::new(),
-                seal: false,
-            },
-        ))?;
-        drop(self.chunk_records_by_path.remove(path));
+        self.source_publication.delete_path(self.repo(), path)?;
+        let _removed = self.chunk_ids_by_path.remove(path);
         Ok(())
     }
 
@@ -1951,38 +1915,7 @@ impl E2eRuntime {
             container_qualified_name: Some("crate".to_string().into_boxed_str()),
             relationship: SymbolRelationship::Def,
         };
-        let chunks = self
-            .chunk_records_by_path
-            .get(path)
-            .cloned()
-            .into_iter()
-            .collect::<Vec<_>>();
-        let semantic_replace_scopes = semantic_source_scopes_for_chunk_records(&chunks);
-        let (mode, base_generation) = self.lexical_batch_contract();
-        self.dispatch_ingest(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(
-            SearchCorpusIngestBatch {
-                repo_id: self.repo(),
-                revision_id: self.revision(),
-                generation: self.current_generation(),
-                base_generation,
-                manifest_digest: format!("lex-symbol:{path}:{}", self.current_generation().get()),
-                batch_digest: String::new(),
-                mode,
-                bundle_payload: None,
-                clear_surfaces: Vec::new(),
-                replace_scopes: vec![SearchCorpusReplaceScope {
-                    scope: scope_key(path),
-                    scope_digest: format!("scope-symbol:{path}:{symbol_id}"),
-                    chunks,
-                    symbols: vec![record],
-                }],
-                tombstone_scopes: Vec::new(),
-                semantic_replace_scopes,
-                semantic_tombstone_scopes: Vec::new(),
-                seal: false,
-            },
-        ))?;
-        Ok(())
+        self.source_publication.add_symbol(self.repo(), record)
     }
 
     /// Seal the current generation. Returns the sealed `ManifestGeneration`
@@ -2012,64 +1945,30 @@ impl E2eRuntime {
                 "e2e-harness: structural/semantic readiness piggybacks on lexical seal; include SearchPlaneTrackKind::Lexical"
             ));
         }
-        if tracks.contains(&SearchPlaneTrackKind::Lexical) {
+        let next_generation = self
+            .generation_counter
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("harness generation exhausted"))?;
+        if self.source_publication.frozen().is_none() {
             let (mode, base_generation) = self.lexical_batch_contract();
-            let manifest_digest = format!("lex-seal:{}", sealed.get());
-            let response = self.dispatch_ingest_response(
-                SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(SearchCorpusIngestBatch {
-                    repo_id: self.repo(),
-                    revision_id: self.revision(),
-                    generation: sealed,
-                    base_generation,
-                    manifest_digest: manifest_digest.clone(),
-                    batch_digest: String::new(),
-                    mode,
-                    bundle_payload: None,
-                    clear_surfaces: Vec::new(),
-                    replace_scopes: Vec::new(),
-                    tombstone_scopes: Vec::new(),
-                    semantic_replace_scopes: Vec::new(),
-                    semantic_tombstone_scopes: Vec::new(),
-                    seal: true,
-                }),
-            )?;
-            let SearchPlaneIngestIpcResponse::SearchCorpusReceipt(receipt) = response else {
-                return Err(anyhow::anyhow!(
-                    "e2e-harness: seal returned an unexpected ingest response"
-                ));
-            };
-            if !receipt.sealed {
-                return Err(anyhow::anyhow!(
-                    "e2e-harness: seal receipt did not confirm a sealed generation"
-                ));
-            }
-            if receipt.generation != sealed {
-                return Err(anyhow::anyhow!(
-                    "e2e-harness: seal receipt generation differs from the request"
-                ));
-            }
-            if receipt.manifest_digest.as_deref() != Some(manifest_digest.as_str()) {
-                return Err(anyhow::anyhow!(
-                    "e2e-harness: seal receipt manifest digest differs from the request"
-                ));
-            }
-            if receipt.accepted_clear_surfaces != 0
-                || receipt.accepted_replace_scopes != 0
-                || receipt.accepted_tombstone_scopes != 0
-            {
-                return Err(anyhow::anyhow!(
-                    "e2e-harness: empty seal receipt reported accepted mutations"
-                ));
-            }
-            let identity = self.search_corpus_identity_from_sealed_receipt(
+            let batch = self.source_publication.build_batch(
                 self.repo(),
                 self.revision(),
                 sealed,
-                &receipt,
+                mode,
+                base_generation,
+                format!("e2e-source-event-{}", self.next_batch_sequence()),
             )?;
-            self.last_sealed_search_corpus_identity = Some(identity);
+            self.source_publication.freeze(batch);
         }
-        self.generation_counter = self.generation_counter.saturating_add(1);
+        let batch = self
+            .source_publication
+            .frozen()
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("harness source event was not frozen"))?;
+        self.publish_search_corpus_batch(batch)?;
+        self.source_publication.finish_frozen();
+        self.generation_counter = next_generation;
         Ok(sealed)
     }
 
@@ -3145,7 +3044,7 @@ impl E2eRuntime {
         Ok(response.payload)
     }
 
-    /// Build, without publishing, the unsealed single-chunk search-corpus
+    /// Build, without publishing, a sealed single-chunk source-event corpus
     /// batch `ingest_text` would publish for `path`, stamped with its
     /// canonical digest, so a test can publish the same body more than once
     /// through [`Self::ingest_once`] and observe the replay.
@@ -3171,31 +3070,17 @@ impl E2eRuntime {
             parent_chunk_id: None,
             source_repo_id: None,
         };
-        let records = vec![record];
+        let mut publication = self.source_publication.empty_successor();
+        publication.replace_chunks(&self.repo(), vec![record])?;
         let (mode, base_generation) = self.lexical_batch_contract();
-        let mut batch = SearchCorpusIngestBatch {
-            repo_id: self.repo(),
-            revision_id: self.revision(),
-            generation: self.current_generation(),
-            base_generation,
-            manifest_digest: format!("lex:{path}:{}", self.current_generation().get()),
-            batch_digest: String::new(),
+        publication.build_batch(
+            self.repo(),
+            self.revision(),
+            self.current_generation(),
             mode,
-            bundle_payload: None,
-            clear_surfaces: Vec::new(),
-            replace_scopes: vec![SearchCorpusReplaceScope {
-                scope: scope_key(path),
-                scope_digest: format!("scope:{path}:1-chunks"),
-                chunks: records.clone(),
-                symbols: Vec::new(),
-            }],
-            tombstone_scopes: Vec::new(),
-            semantic_replace_scopes: semantic_source_scopes_for_chunk_records(&records),
-            semantic_tombstone_scopes: Vec::new(),
-            seal: false,
-        };
-        stamp_batch_digest_v1(&mut batch)?;
-        Ok(batch)
+            base_generation,
+            format!("e2e-source-event-{}", self.next_batch_sequence()),
+        )
     }
 
     /// Publish `payload` as a producer would: like the SDK, the harness
@@ -3209,6 +3094,23 @@ impl E2eRuntime {
         payload: SearchPlaneIngestIpcRequest,
     ) -> AnyResult<SearchPlaneIngestIpcResponse> {
         let payload = stamped_ingest_request(payload)?;
+        let source_binding = match &payload {
+            SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch) => Some((
+                quanta_index_contract::SourcePublicationBinding::for_batch(batch),
+                batch.seal,
+            )),
+            SearchPlaneIngestIpcRequest::PublishHistoryBatch(_)
+            | SearchPlaneIngestIpcRequest::PublishRepoCommitRecencyBatch(_)
+            | SearchPlaneIngestIpcRequest::PublishRepoTopicBatch(_)
+            | SearchPlaneIngestIpcRequest::PublishFileOwnershipBatch(_)
+            | SearchPlaneIngestIpcRequest::PublishFileContributorBatch(_)
+            | SearchPlaneIngestIpcRequest::PublishDirtyBatch(_)
+            | SearchPlaneIngestIpcRequest::PublishRuntimeCatalogBatch(_)
+            | SearchPlaneIngestIpcRequest::PublishStructuralBatch(_)
+            | SearchPlaneIngestIpcRequest::PublishRepoMapBundleV2(_)
+            | SearchPlaneIngestIpcRequest::PublishRepoMetaBatch(_)
+            | SearchPlaneIngestIpcRequest::PublishRepoDescriptionBatch(_) => None,
+        };
         let socket = self.ensure_ingest_socket()?;
         let request_id = self.request_id_counter.fetch_add(1, Ordering::Relaxed);
         let envelope = SearchPlaneIngestIpcRequestEnvelope {
@@ -3229,6 +3131,26 @@ impl E2eRuntime {
                 err.code,
                 err.message
             ));
+        }
+        if let SearchPlaneIngestIpcResponse::SearchCorpusReceipt(outcome) = &response.payload {
+            let (requested, sealed) = source_binding
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("unexpected source publication response"))?;
+            outcome
+                .publication
+                .validate_receipt(requested, *sealed, &outcome.receipt)
+                .map_err(anyhow::Error::msg)?;
+            if let Some(observation) = &outcome.observation {
+                observation
+                    .validate_identity(
+                        request_id,
+                        requested,
+                        *sealed,
+                        &outcome.publication,
+                        &outcome.receipt,
+                    )
+                    .map_err(anyhow::Error::msg)?;
+            }
         }
         Ok(response.payload)
     }
@@ -3824,6 +3746,8 @@ pub fn stamped_ingest_request(
     }
     Ok(match payload {
         SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch) => {
+            // A producer event is immutable. Transport stamping must not repair
+            // a stale/tampered source commitment or create new source authority.
             SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(stamped(batch)?)
         }
         SearchPlaneIngestIpcRequest::PublishHistoryBatch(batch) => {

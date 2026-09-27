@@ -5601,7 +5601,7 @@ def test_verdict_refuses_bound_execution_context_tampering(tmp_path, rail, state
         kwargs = {"rail": rail, "raw": raw_paths}
         if rail == "sdk":
             assert [row["name"] for row in context["commands"]] == [
-                "source-closure", "build-searchd", "build-runner", "rust-build", "metadata", "rust-collection", "rust-test",
+                "source-closure", "build-searchd", "rust-build", "metadata", "rust-collection", "rust-test",
             ]
             kwargs.update(runner_sha=context["binaries"]["runner"]["sha256"],
                           searchd_sha=context["binaries"]["searchd"]["sha256"])
@@ -5748,6 +5748,7 @@ def test_verdict_refuses_bound_execution_context_tampering(tmp_path, rail, state
         refuse_context(forged)
         if rail == "sdk":
             forged = json.loads(json.dumps(context))
+            # A retired raw Just recipe cannot replace the bound SDK command list.
             legacy = dict(forged["commands"][0], name="sdk-recipe",
                           argv=[context["tools"]["just"]["path"], "_retrieval-sdk-proof-raw", "/proof"])
             forged["commands"] = [legacy, next(row for row in forged["commands"] if row["name"] == "metadata")]

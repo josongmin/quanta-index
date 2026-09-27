@@ -6,8 +6,7 @@
 )]
 
 use crate::authority_doc_set::AuthorityDocSetQuery;
-use crate::budgeted_search::budgeted_search;
-use crate::documents::stored_text;
+use crate::documents::required_stored_text;
 use crate::metadata_normalize::standard_pattern_options;
 use crate::normalize::TextQueryError;
 use crate::query_errors::{map_text_query_error, text_query_tokens};
@@ -20,7 +19,6 @@ use roaring::RoaringBitmap;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use tantivy::Term;
-use tantivy::collector::TopDocs;
 use tantivy::query::{AllQuery, BooleanQuery, Occur, PhraseQuery, Query, RegexQuery, TermQuery};
 use tantivy::schema::{Field, IndexRecordOption, TantivyDocument};
 
@@ -310,29 +308,17 @@ impl TantivySearcher {
             TEXT_DOC_KIND,
         );
         let searcher = self.reader.searcher();
-        let limit = usize::try_from(searcher.num_docs()).map_err(|err| {
-            CoreError::InvalidContract(format!(
-                "lexical: num_docs overflow while collecting predicate scope: {err}"
-            ))
-        })?;
-        if limit == 0 {
-            return Ok(BTreeSet::new());
-        }
-        let hits = budgeted_search(
-            &searcher,
-            &*compiled,
-            &TopDocs::with_limit(limit),
-            budget,
-            "lexical:predicate-scope",
-        )?;
+        let rows = self.collect_whole_set(&searcher, &*compiled, 1.0, "predicate scope", budget)?;
         let mut out: BTreeSet<String> = BTreeSet::new();
-        for (_, doc_address) in hits {
+        for row in rows {
+            budget.checkpoint("lexical:scope-decode")?;
+            let doc_address = row.address;
             let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
                 CoreError::Storage(format!("lexical: fetch doc {doc_address:?}: {err}"))
             })?;
-            if let Some(path) = stored_text(&doc, self.fields.repo_relative_path) {
-                let _inserted: bool = out.insert(path);
-            }
+            let path =
+                required_stored_text(&doc, self.fields.repo_relative_path, "repo_relative_path")?;
+            let _inserted: bool = out.insert(path.to_owned());
         }
         Ok(out)
     }

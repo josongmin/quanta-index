@@ -1,0 +1,51 @@
+{
+  "binary": {
+    "features": [],
+    "fresh": false,
+    "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-searchd-runtime#0.1.0",
+    "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/daemon-lane/debug/quanta-index-searchd",
+    "profile": {
+      "debug_assertions": true,
+      "debuginfo": 1,
+      "opt_level": "0",
+      "overflow_checks": true,
+      "test": false
+    },
+    "sha256": "6392fef5eac7a1f8bc8d8b404ce51f0065b03d0e0228f1acf028270d1ec9bf2c",
+    "target": {
+      "crate_types": [
+        "bin"
+      ],
+      "doc": false,
+      "doctest": false,
+      "edition": "2024",
+      "kind": [
+        "bin"
+      ],
+      "name": "quanta-index-searchd",
+      "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-searchd-runtime/src/bin/quanta-index-searchd.rs",
+      "test": true
+    }
+  },
+  "state_root": "/private/tmp/qi-l1-public-n1psozjw",
+  "argv": [
+    "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/daemon-lane/debug/quanta-index-searchd",
+    "serve",
+    "--state-root",
+    "/private/tmp/qi-l1-public-n1psozjw"
+  ],
+  "daemon_log": "/tmp/quanta-l1-rca.h1y4pja7/audit-public-daemon-1.log",
+  "daemon_log_sha256": "8532af95e87cf0fa1ceed5ae7537e79aa1526cf3bec34b8bc9ca9858aa52c859",
+  "daemon_env": {
+    "QUANTA_INDEX_RESOURCE_WAIT_SECONDS": "1200",
+    "QUANTA_INDEX_EMBEDDER": "hash-dev",
+    "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_GENERATIONS": "8",
+    "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_BYTES": "16777216",
+    "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_REVISION_PAIRS": "128",
+    "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_TOTAL_BYTES": "268435456",
+    "QUANTA_INDEX_L1_TEST_STATE_ROOT": "/private/tmp/qi-l1-public-n1psozjw"
+  },
+  "started_unix": 1790463849.360812,
+  "ended_unix": 1790463896.307561,
+  "test_exit": 101
+}

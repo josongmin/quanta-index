@@ -1,5 +1,29 @@
 # L1_HANDOFF — query/domain/window
 
+Latest code-first audit: semantic lexical-scope empty execution, out-of-scope
+adapter rows, vector-validation continuity, and window lane/count truth were
+repaired. Dispatcher full lib **470/470** and fresh real daemon/SDK **1/1**
+passed at the isolated process-source input. Scope-specific behavioral RED
+logs, exact source/binary identities, commands, and remaining qualification
+boundaries are in [L1_FINAL_AUDIT.md](L1_FINAL_AUDIT.md). The prior no-known-defect
+conclusion below is historical and superseded by this follow-up.
+
+Previous adversarial RCA: **VERIFIED** for its exercised L1 boundary. Two P2
+root causes are repaired: missing composite-route primitive admission and an
+indexed/manual scope-regex grammar mismatch. See [L1_ADVERSARIAL_AUDIT.md](L1_ADVERSARIAL_AUDIT.md)
+and its JSON receipt for exact commands, failed attempts, source identities and
+raw evidence.
+
+Native **18/18**; dispatcher aggregate **465 passed / 1 failed**, followed by the
+corrected existing control **1/1**; real daemon/SDK **1/1** with zero ignored;
+scoped Clippy **VERIFIED** in an isolated checkout, static checks **VERIFIED**.
+The shared checkout's concurrent owner changes are not repository-qualified by
+that isolated lint. No reproduced P0–P2 remains in the audited L1 scope.
+Repository-wide CI, remaining preventive RFC matrices and release qualification
+are **NOT_RUN**. A successful execution remains accepted per user instruction.
+
+## Previous primitive-admission RCA (historical)
+
 Latest RCA: **VERIFIED** for primitive admission before predicate/language
 emptiness. The native and dispatcher failures are repaired. A mandatory opener
 method delegates to one canonical lexical validator; all eight implementations

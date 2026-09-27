@@ -42,6 +42,10 @@ def default_log_path() -> Path:
 
 
 def build_common_event(exit_code: int, duration_ms: int) -> dict[str, Any]:
+    if type(exit_code) is not int or exit_code < 0:
+        raise ValueError("cargo/profile exit code must be a nonnegative integer")
+    if type(duration_ms) is not int or duration_ms < 0:
+        raise ValueError("cargo/profile duration must be a nonnegative integer")
     return {
         "v": LOG_SCHEMA_VERSION,
         "ts": utc_now_iso(),
@@ -63,16 +67,78 @@ def append_event(path: Path, payload: dict[str, Any]) -> None:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
+def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate history key: {key}")
+        result[key] = value
+    return result
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"invalid JSON constant: {value}")
+
+
+def _validate_event(event: Any) -> dict[str, Any]:
+    if not isinstance(event, dict):
+        raise ValueError("history event is not an object")
+    if (
+        type(event.get("v")) is int
+        and event["v"] == LOG_SCHEMA_VERSION
+        and "schema_version" not in event
+    ):
+        kind, timestamp, duration, exit_code = (
+            event.get("k"),
+            event.get("ts"),
+            event.get("ms"),
+            event.get("rc"),
+        )
+    elif (
+        type(event.get("schema_version")) is int
+        and event["schema_version"] == 1
+        and "v" not in event
+    ):
+        kind, timestamp, duration, exit_code = (
+            event.get("event_kind"),
+            event.get("recorded_at_utc"),
+            event.get("duration_ms"),
+            event.get("exit_code"),
+        )
+    else:
+        raise ValueError("unknown or conflicting history schema")
+    if kind not in {"cargo", "profile"}:
+        raise ValueError("history event kind is missing or invalid")
+    if not isinstance(timestamp, str) or not timestamp:
+        raise ValueError("history timestamp is missing or invalid")
+    if type(duration) is not int or duration < 0:
+        raise ValueError("history duration is missing or invalid")
+    if type(exit_code) is not int or exit_code < 0:
+        raise ValueError("history exit code is missing or invalid")
+    key = "lane" if kind == "cargo" else "profile"
+    if not isinstance(event.get(key), str) or not event[key]:
+        raise ValueError(f"history {key} is missing or invalid")
+    return event
+
+
 def load_events(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
 
     events: list[dict[str, Any]] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         stripped = line.strip()
         if not stripped:
-            continue
-        events.append(json.loads(stripped))
+            raise ValueError(f"history line {line_number} is empty")
+        try:
+            event = json.loads(
+                stripped,
+                object_pairs_hook=_unique_object,
+                parse_constant=_reject_json_constant,
+            )
+            events.append(_validate_event(event))
+        except (json.JSONDecodeError, ValueError) as error:
+            raise ValueError(f"invalid history line {line_number}: {error}") from error
     return events
 
 
@@ -85,19 +151,19 @@ def percentile(values: list[int], rank: float) -> int:
 
 
 def event_kind(event: dict[str, Any]) -> str:
-    return str(event.get("k") or event.get("event_kind") or "unknown")
+    return event["k"] if event.get("v") == LOG_SCHEMA_VERSION else event["event_kind"]
 
 
 def event_timestamp(event: dict[str, Any]) -> str:
-    return str(event.get("ts") or event.get("recorded_at_utc") or "")
+    return event["ts"] if event.get("v") == LOG_SCHEMA_VERSION else event["recorded_at_utc"]
 
 
 def event_duration_ms(event: dict[str, Any]) -> int:
-    return int(event.get("ms", event.get("duration_ms", 0)))
+    return event["ms"] if event.get("v") == LOG_SCHEMA_VERSION else event["duration_ms"]
 
 
 def event_exit_code(event: dict[str, Any]) -> int:
-    return int(event.get("rc", event.get("exit_code", 0)))
+    return event["rc"] if event.get("v") == LOG_SCHEMA_VERSION else event["exit_code"]
 
 
 def event_lane_source(event: dict[str, Any]) -> str | None:
@@ -138,7 +204,7 @@ def aggregate_rows(
     for event in events:
         if event_kind(event) != kind_name:
             continue
-        key = str(event.get(key_field, "unknown"))
+        key = event[key_field]
         grouped[key].append(event)
 
     rows: list[AggregateRow] = []
@@ -322,12 +388,15 @@ def handle_summary(args: argparse.Namespace) -> int:
 
 def main() -> int:
     args = build_parser().parse_args()
-    if args.command == "append-cargo":
-        return handle_append_cargo(args)
-    if args.command == "append-profile":
-        return handle_append_profile(args)
-    if args.command == "summary":
-        return handle_summary(args)
+    try:
+        if args.command == "append-cargo":
+            return handle_append_cargo(args)
+        if args.command == "append-profile":
+            return handle_append_profile(args)
+        if args.command == "summary":
+            return handle_summary(args)
+    except (OSError, ValueError) as error:
+        raise SystemExit(f"rust profile history refused: {error}") from error
     raise RuntimeError(f"unknown command: {args.command}")
 
 

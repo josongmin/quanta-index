@@ -1,0 +1,10 @@
+{
+  "crates/quanta-index-lexical/src/text_docs.rs": {
+    "before": "3ce5c1f9b260123f450e1df504369d1bd22591e906d8f39cacffa96e4e9a94ca",
+    "after": "19329340676cad99ccf8a99c138b38eb42267fe43162d3a75b1d040d9a8d8f93"
+  },
+  "crates/quanta-index-lexical/src/searcher/candidates.rs": {
+    "before": "e2bb900fbfcb2e3457e227210abc17e8aa69f01dd1119864bc573f273dfb2070",
+    "after": "306018438bcfb47242c9c2f466a0c4450a711e160f4908c3ce0bb3d4a24b291a"
+  }
+}

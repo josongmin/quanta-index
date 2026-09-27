@@ -459,7 +459,10 @@ fn malformed_bundle_after_a_raw_replacement_refuses_before_any_write() -> TestRe
         &(
             request.mode,
             request.base_generation,
-            &request.replace_scopes[0],
+            request
+                .replace_scopes
+                .first()
+                .ok_or("replacement scope missing")?,
         ),
         &mut payload,
     )?;

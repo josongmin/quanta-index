@@ -355,6 +355,62 @@ fn concurrent_revision_activations_preserve_both_roots_and_stream_heads() -> Tes
     Ok(())
 }
 
+#[test]
+fn newer_stream_cannot_overtake_unresolved_source_for_same_pair() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let catalog = ActivationCatalog::open(dir.path())?;
+    let first = binding("r1", "stream-a", "event-a", None, 1);
+    let second = binding("r1", "stream-b", "event-b", None, 2);
+    let _first = catalog.reserve_source_event(&first)?;
+    let _second = catalog.reserve_source_event(&second)?;
+    let _second_stage =
+        catalog.reconcile_source_event(&second.target.repo_id, &second.event, &journal(&second))?;
+    assert!(matches!(
+        activate(&catalog, &second),
+        Err(CoreError::NotReady(_))
+    ));
+    assert!(
+        catalog
+            .active_search_corpus_v1(&first.target.repo_id, &first.target.revision_id)?
+            .is_none()
+    );
+
+    let _first_stage =
+        catalog.reconcile_source_event(&first.target.repo_id, &first.event, &journal(&first))?;
+    let coordinator = catalog.lifecycle_coordinator();
+    let first_head = {
+        let guard = coordinator.lock_pair(&first.target.repo_id, &first.target.revision_id)?;
+        catalog
+            .activate_prepared_under_guard_v1(
+                &guard,
+                &PreparedSearchCorpusGenerationV1::new(corpus(&first)?, None)?,
+                Some(&first.event),
+            )?
+            .active
+    };
+    {
+        let guard = coordinator.lock_pair(&second.target.repo_id, &second.target.revision_id)?;
+        let _activated = catalog.activate_prepared_under_guard_v1(
+            &guard,
+            &PreparedSearchCorpusGenerationV1::new(corpus(&second)?, Some(first_head))?,
+            Some(&second.event),
+        )?;
+    }
+    assert_eq!(
+        catalog.active_search_corpus_v1(&second.target.repo_id, &second.target.revision_id)?,
+        Some(corpus(&second)?)
+    );
+    let stale = binding("r1", "stream-c", "event-c", None, 1);
+    assert!(matches!(
+        catalog.reserve_source_event(&stale),
+        Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusGenerationConflict,
+            ..
+        })
+    ));
+    Ok(())
+}
+
 #[derive(Debug)]
 struct ToggleSync(AtomicBool);
 impl ParentDirectorySyncPort for ToggleSync {

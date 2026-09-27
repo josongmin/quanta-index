@@ -324,6 +324,7 @@ pub(super) fn fused_window_v2(
 pub(super) fn semantic_window_v2(
     top_k: u32,
     observed: usize,
+    scope_candidate_count: Option<usize>,
     dense_lane: &DenseLaneContractV1,
     execution: &LaneExecutionSummaryV1,
 ) -> Result<QueryResultWindowV2, CoreError> {
@@ -335,13 +336,32 @@ pub(super) fn semantic_window_v2(
         .map_err(|err| CoreError::InvalidContract(format!("page rows exceed u32: {err}")))?;
     let observed_u64 = u64::try_from(observed)
         .map_err(|err| CoreError::InvalidContract(format!("page rows exceed u64: {err}")))?;
-    let lane = LaneTraceV1::new(
+    let dense_lane_trace = LaneTraceV1::new(
         "semantic.dense",
         execution.semantic_executed(),
         execution.semantic_contributed,
     )
     .with_candidates(CandidateCountV1::AtLeast(observed_u64))
     .with_profile(dense_lane.trace_detail());
+    let mut lanes = Vec::with_capacity(2);
+    match (scope_candidate_count, execution.lexical_executed()) {
+        (Some(count), true) => {
+            let count = u64::try_from(count).map_err(|error| {
+                CoreError::InvalidContract(format!("semantic scope count exceeds u64: {error}"))
+            })?;
+            lanes.push(
+                LaneTraceV1::new("semantic.lexical", true, execution.lexical_contributed)
+                    .with_candidates(CandidateCountV1::Exact(count)),
+            );
+        }
+        (None, false) => {}
+        _ => {
+            return Err(CoreError::InvalidContract(
+                "semantic window scope count disagrees with lexical invocation".to_string(),
+            ));
+        }
+    }
+    lanes.push(dense_lane_trace);
     let (outcome, proof) = if continuation {
         (ExecutionOutcomeV2::LowerBound { continuation: true }, None)
     } else {
@@ -375,11 +395,53 @@ pub(super) fn semantic_window_v2(
                 ExaminedUniverseV1::Exact(u64::from(returned_u32))
             },
             proof,
-            vec![lane],
+            lanes,
         ),
         empty_provenance,
     )
     .map_err(|err| CoreError::InvalidContract(format!("semantic result window v2: {err}")))
+}
+
+/// An empty lexical allowlist makes the scoped dense universe empty. Preserve
+/// whether the lexical scope was proven empty by constraints or by a search;
+/// neither case invokes the dense backend.
+pub(super) fn semantic_empty_scope_window_v2(
+    execution: &LaneExecutionSummaryV1,
+) -> Result<QueryResultWindowV2, CoreError> {
+    if !execution.lexical_executed() {
+        return QueryResultWindowV2::new(
+            0,
+            CandidateCountV1::Exact(0),
+            ExecutionOutcomeV2::ExactExhausted,
+            CoverageV1::new(
+                ExaminedUniverseV1::Exact(0),
+                Some(ExhaustionProofV1::LogicalEmpty),
+                vec![
+                    LaneTraceV1::new("semantic.lexical", false, false),
+                    LaneTraceV1::new("semantic.dense", false, false),
+                ],
+            ),
+            Some(EmptyProvenanceV2::LogicalEmpty),
+        )
+        .map_err(|error| {
+            CoreError::InvalidContract(format!("logical semantic scope window: {error}"))
+        });
+    }
+    QueryResultWindowV2::new(
+        0,
+        CandidateCountV1::Exact(0),
+        ExecutionOutcomeV2::ExactExhausted,
+        CoverageV1::new(
+            ExaminedUniverseV1::Exact(0),
+            Some(ExhaustionProofV1::ProbeExhausted { fetched: 0 }),
+            vec![
+                LaneTraceV1::new("semantic.lexical", true, false),
+                LaneTraceV1::new("semantic.dense", false, false),
+            ],
+        ),
+        Some(EmptyProvenanceV2::ZeroHitExecuted),
+    )
+    .map_err(|error| CoreError::InvalidContract(format!("empty semantic scope window: {error}")))
 }
 
 #[cfg(test)]

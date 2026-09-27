@@ -1,7 +1,7 @@
 {
   "schema": "l5-required-test-migration-v1",
   "before_sha256": "de9c06b467ccdc8541ff89ec9c773d2b2c77a0433078fa5bc5f7b300932c1a50",
-  "after_sha256": "38dcf3e5466cdfec02bdc660d9786a250a1dfaf5babfd0f2986523e66ad226b3",
+  "after_sha256": "a09f5156036502c49d17a0e38f889c65d710faceeac229ddc2ff50b1497c300a",
   "mapping": [
     {
       "old": "quanta-index-retrieval-bench::quanta_index_retrieval_bench$batch::tests::combined_replacement_carries_chunks_and_symbols_together",
@@ -51,10 +51,10 @@
   ],
   "counts": {
     "python": 339,
-    "rust": 130,
+    "rust": 138,
     "sdk": 20
   },
-  "execution_status": "Final code audit: Rust 133 and current Python integration 16 passed at 55711326 plus overlay; full Python consumers 541 passed at the separate 98601a66 snapshot. Fresh Vite preflight 256 files passed both policy oracles. Fresh SDK/daemon tests NOT_RUN.",
+  "execution_status": "Owner-scope audit: Rust 141 and Python 16 passed on frozen 21029662 plus L5 overlay; fresh Vite census 256 files. Fresh daemon/SDK, full Python consumers and whole-repository CI NOT_RUN.",
   "followup_added_tests": [
     "batch::tests::duplicate_unit_ids_across_source_files_refuse",
     "batch::tests::incomplete_profile_preserves_plain_and_unclassified_text",
@@ -91,5 +91,19 @@
     "test_symbol_preflight_rejects_ancestor_symlink",
     "test_symbol_preflight_rejects_replaced_file_during_admission",
     "test_symbol_preflight_budget_cannot_be_bypassed_by_file_growth"
+  ],
+  "definition_audit": "L5_DEFINITION_AUDIT.json",
+  "definition_added_tests": [
+    "go_aliases_and_local_types_keep_function_and_receiver_ownership",
+    "go_named_interfaces_emit_owned_method_contracts",
+    "named_expressions_keep_their_names_without_naming_anonymous_bindings",
+    "typescript_callable_declarations_keep_owners_and_overload_spans",
+    "typescript_named_modules_and_enums_are_definitions_too"
+  ],
+  "owner_scope_audit": "L5_OWNER_SCOPE_AUDIT.json",
+  "owner_scope_added_tests": [
+    "typescript_anonymous_type_members_do_not_become_false_owner_methods",
+    "typescript_alias_composition_keeps_only_owned_method_signatures",
+    "dotted_namespaces_use_ast_segments_not_raw_spacing_or_comments"
   ]
 }

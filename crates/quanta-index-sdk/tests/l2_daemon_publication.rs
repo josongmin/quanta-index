@@ -1,6 +1,11 @@
 //! L2 process proof against a caller-selected freshly built daemon binary.
-//! Run with --ignored and QUANTA_INDEX_L2_TEST_BINARY. This test owns and stops
+//! Run with --ignored and `QUANTA_INDEX_L2_TEST_BINARY`. This test owns and stops
 //! only its own child processes; no scripted peer or harness adapter is used.
+
+#![expect(
+    clippy::panic_in_result_fn,
+    reason = "test assertions are the independent behavioral oracle; Result propagates fixture I/O errors"
+)]
 
 use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
@@ -24,6 +29,15 @@ struct Daemon {
 }
 impl Daemon {
     fn start(binary: &Path, root: &Path, phase: &str) -> TestResult<Self> {
+        Self::start_with_policy(binary, root, phase, 4, None)
+    }
+    fn start_with_policy(
+        binary: &Path,
+        root: &Path,
+        phase: &str,
+        retained_generations: usize,
+        crash_point: Option<&str>,
+    ) -> TestResult<Self> {
         let log = File::create(root.with_file_name(format!("daemon-{phase}.log")))?;
         let mut command = Command::new(binary);
         // Deterministic local embedding and daemon policy, independent of the
@@ -37,7 +51,10 @@ impl Daemon {
             .args(["serve", "--state-root"])
             .arg(root)
             .env("QUANTA_INDEX_EMBEDDER", "hash-dev")
-            .env("QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_GENERATIONS", "4")
+            .env(
+                "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_GENERATIONS",
+                retained_generations.to_string(),
+            )
             .env("QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_BYTES", "67108864")
             .env("QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_REVISION_PAIRS", "8")
             .env(
@@ -46,16 +63,21 @@ impl Daemon {
             )
             .stdout(Stdio::from(log.try_clone()?))
             .stderr(Stdio::from(log));
-        let child = command.spawn()?;
+        if let Some(point) = crash_point {
+            let _configured = command.env("QUANTA_INDEX_CRASH_POINT", point);
+        }
         let client = QuantaIndex::connect(
             ConnectOptions::from_state_root(root).with_request_io_timeout(Duration::from_secs(15)),
         )?;
+        let child = command.spawn()?;
         let mut daemon = Self { child, client };
         let probe = QuantaIndex::connect(
             ConnectOptions::from_state_root(root)
                 .with_request_io_timeout(Duration::from_millis(200)),
         )?;
-        let deadline = Instant::now() + Duration::from_secs(20);
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(20))
+            .ok_or("readiness deadline overflow")?;
         loop {
             if let Some(status) = daemon.child.try_wait()? {
                 return Err(format!(
@@ -69,11 +91,10 @@ impl Daemon {
                 Ok(report) if Instant::now() >= deadline => {
                     return Err(format!("daemon remains unready: {report:?}").into());
                 }
-                Ok(_) => std::thread::sleep(Duration::from_millis(20)),
                 Err(error) if Instant::now() >= deadline => {
                     return Err(format!("daemon readiness: {error}").into());
                 }
-                Err(_) => std::thread::sleep(Duration::from_millis(20)),
+                Ok(_) | Err(_) => std::thread::sleep(Duration::from_millis(20)),
             }
         }
     }
@@ -85,7 +106,9 @@ impl Daemon {
         if !status.success() {
             return Err("failed to signal owned daemon".into());
         }
-        let deadline = Instant::now() + Duration::from_secs(15);
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(15))
+            .ok_or("shutdown deadline overflow")?;
         loop {
             if let Some(status) = self.child.try_wait()? {
                 if !status.success() {
@@ -102,7 +125,9 @@ impl Daemon {
 }
 impl Drop for Daemon {
     fn drop(&mut self) {
-        if self.child.try_wait().ok().flatten().is_none() {
+        // A failed wait still requires best-effort cleanup. Normal completion
+        // goes through stop(), which reports every shutdown failure.
+        if !matches!(self.child.try_wait(), Ok(Some(_))) {
             let _killed = self.child.kill();
             let _waited = self.child.wait();
         }
@@ -218,6 +243,29 @@ fn query(client: &QuantaIndex, generation: u64, needle: &str) -> TestResult<Vec<
         .map(|row| row.candidate_id)
         .collect())
 }
+
+fn assert_incomplete_symbols(client: &QuantaIndex, generation: u64) -> TestResult {
+    // No symbol extractor ran for these files. Text remains searchable, but
+    // zero matching symbols must not become an exhaustive, successful answer.
+    assert!(matches!(
+        client
+            .symbol()
+            .query()
+            .native("absent_symbol")
+            .pinned(GenerationPin::new(
+                repo()?,
+                revision()?,
+                ManifestGeneration::new(generation),
+            ))
+            .top_k(10)
+            .execute(),
+        Err(SdkError::Remote {
+            code: SearchPlaneErrorCodeV2::SymbolCoverageIncomplete,
+            ..
+        })
+    ));
+    Ok(())
+}
 #[test]
 #[ignore = "requires freshly built daemon: set QUANTA_INDEX_L2_TEST_BINARY and run --ignored"]
 #[expect(
@@ -272,6 +320,25 @@ fn original_binding_delta_lineage_and_restart_through_real_daemon() -> TestResul
             .is_none()
     );
     assert_eq!(query(&daemon.client, 1, "oldneedle")?, ["a-old"]);
+    assert_incomplete_symbols(&daemon.client, 1)?;
+    let conflicting_replay = corpus(
+        100,
+        None,
+        other_revision.clone(),
+        "event-one",
+        None,
+        &[("a.rs", "a-new", "newneedle")],
+    )?;
+    assert!(matches!(
+        daemon
+            .client
+            .producer()
+            .publish_search_corpus_observed(&conflicting_replay),
+        Err(SdkError::Remote {
+            code: SearchPlaneErrorCodeV2::BatchDigestConflict,
+            ..
+        })
+    ));
     let second = corpus(
         2,
         Some(1),
@@ -287,6 +354,8 @@ fn original_binding_delta_lineage_and_restart_through_real_daemon() -> TestResul
     assert!(query(&daemon.client, 2, "oldneedle")?.is_empty());
     assert_eq!(query(&daemon.client, 2, "newneedle")?, ["a-new"]);
     assert_eq!(query(&daemon.client, 2, "untouchedneedle")?, ["b-stable"]);
+    assert_eq!(query(&daemon.client, 1, "oldneedle")?, ["a-old"]);
+    assert!(query(&daemon.client, 1, "newneedle")?.is_empty());
     let wrong_base = corpus(
         3,
         Some(1),
@@ -343,9 +412,298 @@ fn original_binding_delta_lineage_and_restart_through_real_daemon() -> TestResul
             .is_none()
     );
     assert_eq!(query(&restarted.client, 3, "newneedle")?, ["a-new"]);
+    assert_incomplete_symbols(&restarted.client, 3)?;
+    assert_eq!(query(&restarted.client, 1, "oldneedle")?, ["a-old"]);
     assert_eq!(
         query(&restarted.client, 3, "untouchedneedle")?,
         ["b-stable"]
     );
     restarted.stop()
+}
+
+#[test]
+#[ignore = "requires freshly built daemon: set QUANTA_INDEX_L2_TEST_BINARY and run --ignored"]
+#[expect(
+    clippy::print_stdout,
+    reason = "the process proof records its retained artifact root"
+)]
+fn unresolved_cross_stream_publication_orders_activation_after_restart() -> TestResult {
+    let requested_binary = std::env::var_os("QUANTA_INDEX_L2_TEST_BINARY")
+        .ok_or("QUANTA_INDEX_L2_TEST_BINARY is required")?;
+    let root = tempfile::Builder::new()
+        .prefix("qi-l2-cross-stream-")
+        .tempdir_in("/tmp")?
+        .keep();
+    println!("L2_PROCESS_ARTIFACT_ROOT={}", root.display());
+    let state_root = root.join("state");
+    let binary = root.join("daemon-under-test");
+    let _copied_bytes = std::fs::copy(requested_binary, &binary)?;
+    let first = corpus(
+        1,
+        None,
+        revision()?,
+        "cross-a",
+        None,
+        &[("a.rs", "a-one", "oldneedle")],
+    )?
+    .source_event(SourcePublicationEvent {
+        stream_id: "cross-stream-a".into(),
+        event_id: "cross-a".into(),
+        expected_base_event_id: None,
+        payload_sha256: [0; 32],
+    });
+    let second = corpus(
+        2,
+        None,
+        revision()?,
+        "cross-b",
+        None,
+        &[("a.rs", "a-two", "newneedle")],
+    )?
+    .source_event(SourcePublicationEvent {
+        stream_id: "cross-stream-b".into(),
+        event_id: "cross-b".into(),
+        expected_base_event_id: None,
+        payload_sha256: [0; 32],
+    });
+    let daemon = Daemon::start_with_policy(&binary, &state_root, "cross-first", 2, None)?;
+    let _first_stage = daemon
+        .client
+        .producer()
+        .publish_search_corpus_observed(&first)?;
+    assert!(matches!(
+        daemon
+            .client
+            .producer()
+            .publish_search_corpus_observed(&second),
+        Err(SdkError::Remote {
+            code: SearchPlaneErrorCodeV2::NotReady,
+            ..
+        })
+    ));
+    assert!(
+        daemon
+            .client
+            .generations()
+            .active_head(repo()?, revision()?)?
+            .is_none()
+    );
+    daemon.stop()?;
+
+    let restarted = Daemon::start_with_policy(&binary, &state_root, "cross-restart", 2, None)?;
+    assert!(matches!(
+        restarted
+            .client
+            .search_corpus()
+            .publish_and_activate(&second, None),
+        Err(SdkError::Remote {
+            code: SearchPlaneErrorCodeV2::NotReady,
+            ..
+        })
+    ));
+    let (_, first_activation) = restarted
+        .client
+        .search_corpus()
+        .publish_and_activate(&first, None)?;
+    let (_, second_activation) = restarted
+        .client
+        .search_corpus()
+        .publish_and_activate(&second, Some(first_activation.active))?;
+    assert_eq!(
+        restarted
+            .client
+            .generations()
+            .active_head(repo()?, revision()?)?,
+        Some(second_activation.active)
+    );
+    assert_eq!(query(&restarted.client, 2, "newneedle")?, ["a-two"]);
+    restarted.stop()
+}
+
+#[test]
+#[ignore = "requires debug daemon crash hooks: set QUANTA_INDEX_L2_TEST_BINARY and run --ignored"]
+#[expect(
+    clippy::print_stdout,
+    reason = "the process proof records its retained artifact root"
+)]
+fn delta_recovers_across_named_crash_cuts_with_rolled_back_active_head() -> TestResult {
+    let requested_binary = std::env::var_os("QUANTA_INDEX_L2_TEST_BINARY")
+        .ok_or("QUANTA_INDEX_L2_TEST_BINARY is required")?;
+    let root = tempfile::Builder::new()
+        .prefix("qi-l2-crash-")
+        .tempdir_in("/tmp")?
+        .keep();
+    println!("L2_PROCESS_ARTIFACT_ROOT={}", root.display());
+    let binary = root.join("daemon-under-test");
+    let _copied_bytes = std::fs::copy(requested_binary, &binary)?;
+    for point in [
+        "after_semantic_seal",
+        "before_authority_record",
+        "after_retention_receipt",
+        "after_catalog_transaction",
+        "after_ledger_reconcile",
+        "after_fence",
+        "between_track_reclaims",
+        "before_record_forget",
+    ] {
+        let case = root.join(point);
+        std::fs::create_dir(&case)?;
+        recover_delta_after_crash(&binary, &case.join("state"), point)?;
+        println!("L2_CRASH_CUT_VERIFIED={point} EXIT=86");
+    }
+    Ok(())
+}
+
+fn only_pair_directory(root: &Path) -> TestResult<std::path::PathBuf> {
+    let mut directories = Vec::new();
+    for entry in std::fs::read_dir(root)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir()
+            && !matches!(entry.file_name().to_str(), Some(".staging" | ".reclaim"))
+        {
+            directories.push(entry.path());
+        }
+    }
+    assert_eq!(directories.len(), 1, "fixture must have exactly one pair");
+    directories
+        .pop()
+        .ok_or_else(|| "missing fixture pair".into())
+}
+
+fn recover_delta_after_crash(binary: &Path, state: &Path, point: &str) -> TestResult {
+    use quanta_index_contract::SearchPlaneRollbackSearchCorpusGenerationCasRequest;
+    let initial = Daemon::start_with_policy(binary, state, "initial", 2, None)?;
+    let first = corpus(
+        1,
+        None,
+        revision()?,
+        "event-one",
+        None,
+        &[
+            ("a.rs", "a-old", "oldneedle"),
+            ("b.rs", "b-stable", "untouchedneedle"),
+        ],
+    )?;
+    let (_, first_active) = initial
+        .client
+        .search_corpus()
+        .publish_and_activate(&first, None)?;
+    let second = corpus(
+        2,
+        Some(1),
+        revision()?,
+        "event-two",
+        Some("event-one"),
+        &[("a.rs", "a-new", "newneedle")],
+    )?;
+    let (_, second_active) = initial
+        .client
+        .search_corpus()
+        .publish_and_activate(&second, Some(first_active.active.clone()))?;
+    // Source lineage remains event-two, while visible generation one is pinned.
+    // Retention of target three may now retire its inactive physical base two.
+    let rollback = initial.client.generations().rollback(
+        SearchPlaneRollbackSearchCorpusGenerationCasRequest {
+            expected_active: second_active.active,
+            target: first_active.active.generation,
+        },
+    )?;
+    assert_eq!(
+        rollback.active.generation.lexical.manifest_generation,
+        ManifestGeneration::new(1)
+    );
+    initial.stop()?;
+
+    let mut crashing = Daemon::start_with_policy(binary, state, "crash", 2, Some(point))?;
+    let third = corpus(
+        3,
+        Some(2),
+        revision()?,
+        "event-three",
+        Some("event-two"),
+        &[],
+    )?;
+    assert!(
+        crashing
+            .client
+            .producer()
+            .publish_search_corpus_observed(&third)
+            .is_err()
+    );
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(15))
+        .ok_or("crash deadline overflow")?;
+    loop {
+        if let Some(status) = crashing.child.try_wait()? {
+            assert_eq!(status.code(), Some(86));
+            break;
+        }
+        if Instant::now() >= deadline {
+            return Err("named crash point did not terminate the daemon".into());
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    drop(crashing);
+
+    // Inspect persisted state before starting recovery: the declared retention
+    // cap alone is not evidence that the base authority was actually retired.
+    if !matches!(point, "after_semantic_seal" | "before_authority_record") {
+        let pair = only_pair_directory(&state.join("authorities/search-corpus"))?;
+        assert!(pair.join("g1.cbor").try_exists()?);
+        assert!(pair.join("g3.cbor").try_exists()?);
+        assert!(
+            !pair.join("g2.cbor").try_exists()?,
+            "base authority survives {point}"
+        );
+    }
+    for track in ["lexical", "semantic"] {
+        if point == "before_record_forget"
+            || (point == "between_track_reclaims" && track == "lexical")
+        {
+            let pair = only_pair_directory(&state.join("indexes").join(track))?;
+            assert!(pair.join("g1").try_exists()?);
+            assert!(pair.join("g3").try_exists()?);
+            assert!(
+                !pair.join("g2").try_exists()?,
+                "physical {track} base survives {point}"
+            );
+        }
+    }
+
+    let recovered = Daemon::start_with_policy(binary, state, "recovered", 2, None)?;
+    let current = recovered
+        .client
+        .generations()
+        .active_head(repo()?, revision()?)?
+        .ok_or("rollback head disappeared after crash")?;
+    assert_eq!(current, rollback.active);
+    let (publication, active) = recovered
+        .client
+        .search_corpus()
+        .publish_and_activate_observed(&third, Some(current))?;
+    assert!(publication.receipt.applied);
+    assert_eq!(
+        publication.publication.target.manifest_generation,
+        ManifestGeneration::new(3)
+    );
+    assert_eq!(query(&recovered.client, 3, "newneedle")?, ["a-new"]);
+    assert_eq!(
+        query(&recovered.client, 3, "untouchedneedle")?,
+        ["b-stable"]
+    );
+    assert!(query(&recovered.client, 3, "oldneedle")?.is_empty());
+    let replay = recovered
+        .client
+        .producer()
+        .publish_search_corpus_observed(&third)?;
+    assert_eq!(replay.receipt, publication.receipt.replayed());
+    assert_eq!(replay.publication, publication.publication);
+    assert_eq!(
+        recovered
+            .client
+            .generations()
+            .active_head(repo()?, revision()?)?,
+        Some(active.active)
+    );
+    recovered.stop()
 }

@@ -1,0 +1,5 @@
+Traceback (most recent call last):
+  File "/private/tmp/quanta-index-l5-owner-scope-audit-20260927/vite.py", line 28, in <module>
+    assert result.returncode==expected,commands[-1]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: {'command': ['/private/tmp/quanta-index-l5-owner-scope-audit-20260927/vite/quanta-index-retrieval-bench', 'preflight', '--repo', '/private/tmp/qi-full-lexical-20260927/full-repos/vite', '--manifest', '/Users/songmin/Documents/code-new/qi-rb-coverage-set-2026-09-25/frozen-external-check/manifests/vite.json', '--symbol-coverage', 'allow-incomplete', '--out', '/private/tmp/quanta-index-l5-owner-scope-audit-20260927/vite/vite-allow-incomplete.json'], 'cwd': '/Users/songmin/.codex/worktrees/l5-owner-scope-audit/quanta-index', 'started_utc': '2026-09-27T00:31:04.052720+00:00', 'exit_code': 2, 'expected_exit': 0, 'output_sha256': 'a003ef3333bd1aee1e7b4bb43455b2dbaf40f23a177db9042ce5405eb4e31c98', 'log_sha256': 'f9fa15cc7bb202f2d476b7ae05b273697d403610d21e56421b36777d9452dea8'}

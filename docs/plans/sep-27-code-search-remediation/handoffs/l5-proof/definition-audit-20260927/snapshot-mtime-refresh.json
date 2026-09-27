@@ -1,0 +1,1217 @@
+[
+  {
+    "path": ".cargo/config.toml",
+    "mtime_before_ns": 1790462934771773343,
+    "mtime_after_ns": 1790464135543147000
+  },
+  {
+    "path": ".github/actions/private-cargo-dependencies/action.yml",
+    "mtime_before_ns": 1790463001715524696,
+    "mtime_after_ns": 1790464135543473000
+  },
+  {
+    "path": ".github/workflows/ci.yml",
+    "mtime_before_ns": 1790462945063691353,
+    "mtime_after_ns": 1790464135543535000
+  },
+  {
+    "path": ".github/workflows/correctness.yml",
+    "mtime_before_ns": 1790462945056745405,
+    "mtime_after_ns": 1790464135543578000
+  },
+  {
+    "path": ".github/workflows/potion-code-parity.yml",
+    "mtime_before_ns": 1790462945059963003,
+    "mtime_after_ns": 1790464135543625000
+  },
+  {
+    "path": ".gitignore",
+    "mtime_before_ns": 1790462934786614410,
+    "mtime_after_ns": 1790464135543959000
+  },
+  {
+    "path": "Cargo.lock",
+    "mtime_before_ns": 1790462947563508337,
+    "mtime_after_ns": 1790464135544011000
+  },
+  {
+    "path": "Cargo.toml",
+    "mtime_before_ns": 1790462934770970256,
+    "mtime_after_ns": 1790464135544050000
+  },
+  {
+    "path": "benchmarks/retrieval/proof-required-tests.json",
+    "mtime_before_ns": 1790463965010018486,
+    "mtime_after_ns": 1790464135544094000
+  },
+  {
+    "path": "benchmarks/retrieval/src/symbols.rs",
+    "mtime_before_ns": 1790463964951840689,
+    "mtime_after_ns": 1790464135544136000
+  },
+  {
+    "path": "benchmarks/retrieval/tests/l5_parser_regressions.rs",
+    "mtime_before_ns": 1790463919970545996,
+    "mtime_after_ns": 1790464135544215000
+  },
+  {
+    "path": "crates/quanta-index-core/src/domains/lexical/collection_budget.rs",
+    "mtime_before_ns": 1790463691640163057,
+    "mtime_after_ns": 1790464135544279000
+  },
+  {
+    "path": "crates/quanta-index-core/src/domains/lexical/coverage.rs",
+    "mtime_before_ns": 1790463691648161235,
+    "mtime_after_ns": 1790464135544321000
+  },
+  {
+    "path": "crates/quanta-index-core/src/domains/lexical/outbound.rs",
+    "mtime_before_ns": 1790463691652466533,
+    "mtime_after_ns": 1790464135544359000
+  },
+  {
+    "path": "crates/quanta-index-core/src/domains/lexical/service.rs",
+    "mtime_before_ns": 1790463679917507942,
+    "mtime_after_ns": 1790464135544397000
+  },
+  {
+    "path": "crates/quanta-index-core/src/request_budget.rs",
+    "mtime_before_ns": 1790463692108299682,
+    "mtime_after_ns": 1790464135544446000
+  },
+  {
+    "path": "crates/quanta-index-lexical/src/budgeted_search.rs",
+    "mtime_before_ns": 1790463448835637674,
+    "mtime_after_ns": 1790464135544520000
+  },
+  {
+    "path": "crates/quanta-index-lexical/src/query_admission.rs",
+    "mtime_before_ns": 1790463671874617229,
+    "mtime_after_ns": 1790464135544751000
+  },
+  {
+    "path": "crates/quanta-index-lexical/src/ranked_page.rs",
+    "mtime_before_ns": 1790463439771001957,
+    "mtime_after_ns": 1790464135545718000
+  },
+  {
+    "path": "crates/quanta-index-lexical/src/ranked_page_tests.rs",
+    "mtime_before_ns": 1790463465001432304,
+    "mtime_after_ns": 1790464135545764000
+  },
+  {
+    "path": "crates/quanta-index-lexical/src/searcher/manual_scan.rs",
+    "mtime_before_ns": 1790463671882414574,
+    "mtime_after_ns": 1790464135545803000
+  },
+  {
+    "path": "crates/quanta-index-lexical/src/searcher/prepare.rs",
+    "mtime_before_ns": 1790463672050267204,
+    "mtime_after_ns": 1790464135545841000
+  },
+  {
+    "path": "crates/quanta-index-lexical/tests/l1_query_domain_window.rs",
+    "mtime_before_ns": 1790463672057942882,
+    "mtime_after_ns": 1790464135545878000
+  },
+  {
+    "path": "crates/quanta-index-sdk/tests/l1_daemon_query_contract.rs",
+    "mtime_before_ns": 1790463908095722193,
+    "mtime_after_ns": 1790464135545932000
+  },
+  {
+    "path": "crates/quanta-index-search-plane/src/auxiliary_authority.rs",
+    "mtime_before_ns": 1790462795929633289,
+    "mtime_after_ns": 1790464135545980000
+  },
+  {
+    "path": "crates/quanta-index-search-plane/src/ingest_dispatcher/search_corpus.rs",
+    "mtime_before_ns": 1790463453108073056,
+    "mtime_after_ns": 1790464135546021000
+  },
+  {
+    "path": "crates/quanta-index-search-plane/src/ingest_dispatcher/tests/idempotency.rs",
+    "mtime_before_ns": 1790463239645092014,
+    "mtime_after_ns": 1790464135546075000
+  },
+  {
+    "path": "crates/quanta-index-search-plane/src/ingest_dispatcher/tests/search_corpus.rs",
+    "mtime_before_ns": 1790463509194496887,
+    "mtime_after_ns": 1790464135546756000
+  },
+  {
+    "path": "crates/quanta-index-search-plane/src/ingest_dispatcher/tests/support.rs",
+    "mtime_before_ns": 1790463119872604072,
+    "mtime_after_ns": 1790464135546815000
+  },
+  {
+    "path": "crates/quanta-index-search-plane/src/query_dispatcher/planning.rs",
+    "mtime_before_ns": 1790463615378422028,
+    "mtime_after_ns": 1790464135546859000
+  },
+  {
+    "path": "crates/quanta-index-search-plane/src/query_dispatcher/routes/explain.rs",
+    "mtime_before_ns": 1790463615397939224,
+    "mtime_after_ns": 1790464135547106000
+  },
+  {
+    "path": "crates/quanta-index-search-plane/src/query_dispatcher/routes/hybrid.rs",
+    "mtime_before_ns": 1790463615382843618,
+    "mtime_after_ns": 1790464135547168000
+  },
+  {
+    "path": "crates/quanta-index-search-plane/src/query_dispatcher/routes/hybrid_seed.rs",
+    "mtime_before_ns": 1790463615386234207,
+    "mtime_after_ns": 1790464135547220000
+  },
+  {
+    "path": "crates/quanta-index-search-plane/src/query_dispatcher/routes/semantic.rs",
+    "mtime_before_ns": 1790463615400901521,
+    "mtime_after_ns": 1790464135547268000
+  },
+  {
+    "path": "crates/quanta-index-search-plane/src/query_dispatcher/tests/execution_truth.rs",
+    "mtime_before_ns": 1790463461741371954,
+    "mtime_after_ns": 1790464135547305000
+  },
+  {
+    "path": "crates/quanta-index-search-plane/src/query_dispatcher/tests/hybrid_filters.rs",
+    "mtime_before_ns": 1790463736021078591,
+    "mtime_after_ns": 1790464135547366000
+  },
+  {
+    "path": "crates/quanta-index-search-plane/src/readiness/structural_state.rs",
+    "mtime_before_ns": 1790462796396109101,
+    "mtime_after_ns": 1790464135547414000
+  },
+  {
+    "path": "deny.toml",
+    "mtime_before_ns": 1790462934784562734,
+    "mtime_after_ns": 1790464135547453000
+  },
+  {
+    "path": "docs/adr/SEP-26-001-retrieval-query-publication-and-result-proof.md",
+    "mtime_before_ns": 1790463955966303258,
+    "mtime_after_ns": 1790464135547495000
+  },
+  {
+    "path": "docs/build-resource-budget.md",
+    "mtime_before_ns": 1790463637362319671,
+    "mtime_after_ns": 1790464135547547000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/L1_CLOSEOUT.json",
+    "mtime_before_ns": 1790462862942653453,
+    "mtime_after_ns": 1790464135547608000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/L1_HANDOFF.md",
+    "mtime_before_ns": 1790462862712356414,
+    "mtime_after_ns": 1790464135547658000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/L1_PRIMITIVE_ADMISSION_REQUEST.md",
+    "mtime_before_ns": 1790462835623590219,
+    "mtime_after_ns": 1790464135547896000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/L1_RCA.json",
+    "mtime_before_ns": 1790462862929461894,
+    "mtime_after_ns": 1790464135548070000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/L1_RCA.md",
+    "mtime_before_ns": 1790462862711690245,
+    "mtime_after_ns": 1790464135548195000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/L1_REQUIREMENT_AUDIT.json",
+    "mtime_before_ns": 1790462862932160156,
+    "mtime_after_ns": 1790464135548275000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/L2_FINAL.source.json",
+    "mtime_before_ns": 1790463711214667136,
+    "mtime_after_ns": 1790464135548355000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/L2_FINAL_AUDIT.json",
+    "mtime_before_ns": 1790463711199673822,
+    "mtime_after_ns": 1790464135548544000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/L2_FINAL_AUDIT.md",
+    "mtime_before_ns": 1790463711230162576,
+    "mtime_after_ns": 1790464135548607000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/L2_HANDOFF.md",
+    "mtime_before_ns": 1790463711256552908,
+    "mtime_after_ns": 1790464135548655000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/L3_HANDOFF.md",
+    "mtime_before_ns": 1790463714733592419,
+    "mtime_after_ns": 1790464135548718000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/L3_HANDOFF.source.json",
+    "mtime_before_ns": 1790463714733888795,
+    "mtime_after_ns": 1790464135548987000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/L3_RCA.source.json",
+    "mtime_before_ns": 1790463714732751251,
+    "mtime_after_ns": 1790464135549064000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/L3_RCA_AUDIT.md",
+    "mtime_before_ns": 1790463745552863932,
+    "mtime_after_ns": 1790464135549129000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/L4_ADDITIONAL_AUDIT.md",
+    "mtime_before_ns": 1790463902731760826,
+    "mtime_after_ns": 1790464135549185000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/L4_HANDOFF.md",
+    "mtime_before_ns": 1790463421629666297,
+    "mtime_after_ns": 1790464135549236000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/L5_FINAL_CODE_AUDIT.json",
+    "mtime_before_ns": 1790463541090444404,
+    "mtime_after_ns": 1790464135549281000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/L5_FINAL_CODE_AUDIT.md",
+    "mtime_before_ns": 1790463541091584989,
+    "mtime_after_ns": 1790464135549330000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/L5_HANDOFF.md",
+    "mtime_before_ns": 1790463541092228698,
+    "mtime_after_ns": 1790464135549493000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/L5_HANDOFF.source.json",
+    "mtime_before_ns": 1790463541092708157,
+    "mtime_after_ns": 1790464135549631000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/L5_TEST_MIGRATION.json",
+    "mtime_before_ns": 1790463541093244783,
+    "mtime_after_ns": 1790464135549748000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/rca/opener-census.log.gz",
+    "mtime_before_ns": 1790462835228263145,
+    "mtime_after_ns": 1790464135550063000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/rca/rca-cancellation-1.after.json",
+    "mtime_before_ns": 1790462834957331714,
+    "mtime_after_ns": 1790464135550160000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/rca/rca-cancellation-1.before.json",
+    "mtime_before_ns": 1790462834956364168,
+    "mtime_after_ns": 1790464135550268000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/rca/rca-cancellation-1.log.gz",
+    "mtime_before_ns": 1790462834959708308,
+    "mtime_after_ns": 1790464135550398000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/rca/rca-cancellation-1.receipt.json",
+    "mtime_before_ns": 1790462834955483789,
+    "mtime_after_ns": 1790464135550520000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/rca/rca-dispatcher-all-1.after.json",
+    "mtime_before_ns": 1790462834962331278,
+    "mtime_after_ns": 1790464135550601000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/rca/rca-dispatcher-all-1.before.json",
+    "mtime_before_ns": 1790462834961752192,
+    "mtime_after_ns": 1790464135550676000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/rca/rca-dispatcher-all-1.log.gz",
+    "mtime_before_ns": 1790462834966021670,
+    "mtime_after_ns": 1790464135550745000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/rca/rca-dispatcher-all-1.receipt.json",
+    "mtime_before_ns": 1790462834961292982,
+    "mtime_after_ns": 1790464135551043000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/rca/rca-dispatcher-regression-1.after.json",
+    "mtime_before_ns": 1790462834971388194,
+    "mtime_after_ns": 1790464135551100000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/rca/rca-dispatcher-regression-1.before.json",
+    "mtime_before_ns": 1790462834969782687,
+    "mtime_after_ns": 1790464135551142000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/rca/rca-dispatcher-regression-1.log.gz",
+    "mtime_before_ns": 1790462834974615042,
+    "mtime_after_ns": 1790464135551182000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/rca/rca-dispatcher-regression-1.receipt.json",
+    "mtime_before_ns": 1790462834967438551,
+    "mtime_after_ns": 1790464135551410000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/rca/rca-format.log.gz",
+    "mtime_before_ns": 1790462835226204802,
+    "mtime_after_ns": 1790464135551504000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/rca/rca-lexical-clippy-1.after.json",
+    "mtime_before_ns": 1790462834979148813,
+    "mtime_after_ns": 1790464135551580000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/rca/rca-lexical-clippy-1.before.json",
+    "mtime_before_ns": 1790462834977811223,
+    "mtime_after_ns": 1790464135551658000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/rca/rca-lexical-clippy-1.log.gz",
+    "mtime_before_ns": 1790462834982484619,
+    "mtime_after_ns": 1790464135551718000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/rca/rca-lexical-clippy-1.receipt.json",
+    "mtime_before_ns": 1790462834977288096,
+    "mtime_after_ns": 1790464135551803000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/rca/rca-lexical-clippy-2.after.json",
+    "mtime_before_ns": 1790462834985902968,
+    "mtime_after_ns": 1790464135551856000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/rca/rca-lexical-clippy-2.before.json",
+    "mtime_before_ns": 1790462834985323091,
+    "mtime_after_ns": 1790464135552121000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/rca/rca-lexical-clippy-2.log.gz",
+    "mtime_before_ns": 1790462834988523938,
+    "mtime_after_ns": 1790464135552186000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/rca/rca-lexical-clippy-2.receipt.json",
+    "mtime_before_ns": 1790462834984699588,
+    "mtime_after_ns": 1790464135552298000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/rca/rca-lexical-clippy-3.after.json",
+    "mtime_before_ns": 1790462834991200409,
+    "mtime_after_ns": 1790464135552433000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/rca/rca-lexical-clippy-3.before.json",
+    "mtime_before_ns": 1790462834990563281,
+    "mtime_after_ns": 1790464135552512000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/rca/rca-lexical-clippy-3.log.gz",
+    "mtime_before_ns": 1790462834994428757,
+    "mtime_after_ns": 1790464135552612000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/rca/rca-lexical-clippy-3.receipt.json",
+    "mtime_before_ns": 1790462834990023987,
+    "mtime_after_ns": 1790464135552835000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/rca/rca-native-1.after.json",
+    "mtime_before_ns": 1790462834999435529,
+    "mtime_after_ns": 1790464135552894000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/rca/rca-native-1.before.json",
+    "mtime_before_ns": 1790462834998415566,
+    "mtime_after_ns": 1790464135553074000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/rca/rca-native-1.log.gz",
+    "mtime_before_ns": 1790462835001250662,
+    "mtime_after_ns": 1790464135553304000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/rca/rca-native-1.receipt.json",
+    "mtime_before_ns": 1790462834997367853,
+    "mtime_after_ns": 1790464135553364000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/rca/rca-native-2.after.json",
+    "mtime_before_ns": 1790462835003776007,
+    "mtime_after_ns": 1790464135553847000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/rca/rca-native-2.before.json",
+    "mtime_before_ns": 1790462835003304588,
+    "mtime_after_ns": 1790464135553900000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/rca/rca-native-2.log.gz",
+    "mtime_before_ns": 1790462835005832350,
+    "mtime_after_ns": 1790464135553941000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/rca/rca-native-2.receipt.json",
+    "mtime_before_ns": 1790462835002752836,
+    "mtime_after_ns": 1790464135554196000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/rca/rca-native-controls-1.after.json",
+    "mtime_before_ns": 1790462835009445783,
+    "mtime_after_ns": 1790464135554253000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/rca/rca-native-controls-1.before.json",
+    "mtime_before_ns": 1790462835008837863,
+    "mtime_after_ns": 1790464135554380000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/rca/rca-native-controls-1.log.gz",
+    "mtime_before_ns": 1790462835011529709,
+    "mtime_after_ns": 1790464135554442000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/rca/rca-native-controls-1.receipt.json",
+    "mtime_before_ns": 1790462835008124902,
+    "mtime_after_ns": 1790464135554496000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/rca/rca-whitespace.log.gz",
+    "mtime_before_ns": 1790462835226541220,
+    "mtime_after_ns": 1790464135554554000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/rca/rca-working-interval.patch",
+    "mtime_before_ns": 1790462835228512896,
+    "mtime_after_ns": 1790464135554597000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/rca/run.py",
+    "mtime_before_ns": 1790462835227017848,
+    "mtime_after_ns": 1790464135554644000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/rca/snapshot.py",
+    "mtime_before_ns": 1790462835227510683,
+    "mtime_after_ns": 1790464135554693000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/rca/start.json",
+    "mtime_before_ns": 1790462835225514174,
+    "mtime_after_ns": 1790464135554940000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l1-proof/rca/static.json",
+    "mtime_before_ns": 1790462835225794592,
+    "mtime_after_ns": 1790464135555009000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-chunk-inheritance-green.json",
+    "mtime_before_ns": 1790462843618123532,
+    "mtime_after_ns": 1790464135555068000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-chunk-inheritance-green.started.json",
+    "mtime_before_ns": 1790462797617064275,
+    "mtime_after_ns": 1790464135555125000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-chunk-inheritance-red.json",
+    "mtime_before_ns": 1790462752732953557,
+    "mtime_after_ns": 1790464135555187000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-clippy-terminal.json",
+    "mtime_before_ns": 1790463281856813970,
+    "mtime_after_ns": 1790464135555245000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-clippy-terminal.started.json",
+    "mtime_before_ns": 1790463258864666054,
+    "mtime_after_ns": 1790464135555304000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-owner-closeout.json",
+    "mtime_before_ns": 1790463531294748706,
+    "mtime_after_ns": 1790464135555545000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-owner-closeout.started.json",
+    "mtime_before_ns": 1790463509942794520,
+    "mtime_after_ns": 1790464135555615000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-retention-order-green.json",
+    "mtime_before_ns": 1790463467509979516,
+    "mtime_after_ns": 1790464135555689000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-retention-order-green.started.json",
+    "mtime_before_ns": 1790463453670901575,
+    "mtime_after_ns": 1790464135555752000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-retention-order-red-executed.json",
+    "mtime_before_ns": 1790463417821168575,
+    "mtime_after_ns": 1790464135555825000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-retention-order-red-executed.started.json",
+    "mtime_before_ns": 1790463408822218416,
+    "mtime_after_ns": 1790464135555880000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-retention-order-red.json",
+    "mtime_before_ns": 1790463343007524492,
+    "mtime_after_ns": 1790464135555950000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-retention-order-red.started.json",
+    "mtime_before_ns": 1790463339723567481,
+    "mtime_after_ns": 1790464135556002000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-retired-base-green.json",
+    "mtime_before_ns": 1790463074072580050,
+    "mtime_after_ns": 1790464135556054000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-retired-base-green.started.json",
+    "mtime_before_ns": 1790463058630503767,
+    "mtime_after_ns": 1790464135556097000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-retired-base-red.json",
+    "mtime_before_ns": 1790463038680749526,
+    "mtime_after_ns": 1790464135556157000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-retired-base-red.started.json",
+    "mtime_before_ns": 1790462986982372486,
+    "mtime_after_ns": 1790464135556554000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-sdk-runtime-terminal.json",
+    "mtime_before_ns": 1790463442298845866,
+    "mtime_after_ns": 1790464135556717000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-sdk-runtime-terminal.started.json",
+    "mtime_before_ns": 1790463377408092295,
+    "mtime_after_ns": 1790464135556867000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-search-plane-owner-final.json",
+    "mtime_before_ns": 1790463223888756973,
+    "mtime_after_ns": 1790464135557369000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-search-plane-owner-final.started.json",
+    "mtime_before_ns": 1790463195511765687,
+    "mtime_after_ns": 1790464135557479000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-search-plane-owner-terminal.json",
+    "mtime_before_ns": 1790463258146372669,
+    "mtime_after_ns": 1790464135557616000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-search-plane-owner-terminal.started.json",
+    "mtime_before_ns": 1790463240011923508,
+    "mtime_after_ns": 1790464135557694000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-search-plane-owner.json",
+    "mtime_before_ns": 1790463166610444770,
+    "mtime_after_ns": 1790464135557910000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-search-plane-owner.started.json",
+    "mtime_before_ns": 1790463160034275406,
+    "mtime_after_ns": 1790464135557960000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l3-proof/rca/capture.py",
+    "mtime_before_ns": 1790463614683616227,
+    "mtime_after_ns": 1790464135557998000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l3-proof/rca/dependency-closure.json",
+    "mtime_before_ns": 1790463614708378556,
+    "mtime_after_ns": 1790464135558035000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l3-proof/rca/owned.patch",
+    "mtime_before_ns": 1790463614555983117,
+    "mtime_after_ns": 1790464135558216000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l3-proof/rca/rca-closeout.json.gz",
+    "mtime_before_ns": 1790463614644070875,
+    "mtime_after_ns": 1790464135558266000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l3-proof/rca/rca-final-2-after.json.gz",
+    "mtime_before_ns": 1790463614625902473,
+    "mtime_after_ns": 1790464135558315000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l3-proof/rca/rca-final-2-before.json.gz",
+    "mtime_before_ns": 1790463614629408312,
+    "mtime_after_ns": 1790464135558700000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l3-proof/rca/rca-final-2-result.json.gz",
+    "mtime_before_ns": 1790463614629633020,
+    "mtime_after_ns": 1790464135558748000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l3-proof/rca/rca-final-2-waiting-boundary.json.gz",
+    "mtime_before_ns": 1790463614629775229,
+    "mtime_after_ns": 1790464135558789000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l3-proof/rca/rca-final-2-waiting.json.gz",
+    "mtime_before_ns": 1790463614633180317,
+    "mtime_after_ns": 1790464135558827000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l3-proof/rca/rca-final-after.json.gz",
+    "mtime_before_ns": 1790463614612657745,
+    "mtime_after_ns": 1790464135558863000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l3-proof/rca/rca-final-before.json.gz",
+    "mtime_before_ns": 1790463614616546417,
+    "mtime_after_ns": 1790464135558901000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l3-proof/rca/rca-final-result.json.gz",
+    "mtime_before_ns": 1790463614617107543,
+    "mtime_after_ns": 1790464135558942000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l3-proof/rca/rca-final-waiting-boundary.json.gz",
+    "mtime_before_ns": 1790463614617422335,
+    "mtime_after_ns": 1790464135558980000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l3-proof/rca/rca-final-waiting.json.gz",
+    "mtime_before_ns": 1790463614621157841,
+    "mtime_after_ns": 1790464135559190000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l3-proof/rca/rca-metadata-updated.json.gz",
+    "mtime_before_ns": 1790463614682717392,
+    "mtime_after_ns": 1790464135559240000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l3-proof/rca/rca-prepatch.json.gz",
+    "mtime_before_ns": 1790463614640696245,
+    "mtime_after_ns": 1790464135559310000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l3-proof/rca/rca-publish.json.gz",
+    "mtime_before_ns": 1790463714730801624,
+    "mtime_after_ns": 1790464135559366000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l3-proof/rca/rca-red-2-after.json.gz",
+    "mtime_before_ns": 1790463614589565543,
+    "mtime_after_ns": 1790464135559417000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l3-proof/rca/rca-red-2-before.json.gz",
+    "mtime_before_ns": 1790463614592830715,
+    "mtime_after_ns": 1790464135559470000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l3-proof/rca/rca-red-2-result.json.gz",
+    "mtime_before_ns": 1790463614593005757,
+    "mtime_after_ns": 1790464135559510000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l3-proof/rca/rca-red-2-waiting-boundary.json.gz",
+    "mtime_before_ns": 1790463614593134298,
+    "mtime_after_ns": 1790464135559552000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l3-proof/rca/rca-red-2-waiting.json.gz",
+    "mtime_before_ns": 1790463614596278887,
+    "mtime_after_ns": 1790464135559594000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l3-proof/rca/rca-red-after.json.gz",
+    "mtime_before_ns": 1790463614572707017,
+    "mtime_after_ns": 1790464135559635000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l3-proof/rca/rca-red-before.json.gz",
+    "mtime_before_ns": 1790463614576432148,
+    "mtime_after_ns": 1790464135559671000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l3-proof/rca/rca-red-owned.patch",
+    "mtime_before_ns": 1790463614683352435,
+    "mtime_after_ns": 1790464135559706000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l3-proof/rca/rca-red-result.json.gz",
+    "mtime_before_ns": 1790463614579002902,
+    "mtime_after_ns": 1790464135559740000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l3-proof/rca/rca-red-waiting-boundary.json.gz",
+    "mtime_before_ns": 1790463614580634905,
+    "mtime_after_ns": 1790464135559788000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l3-proof/rca/rca-red-waiting.json.gz",
+    "mtime_before_ns": 1790463614584604911,
+    "mtime_after_ns": 1790464135559830000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l3-proof/rca/run.py",
+    "mtime_before_ns": 1790463614684016936,
+    "mtime_after_ns": 1790464135560081000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l3-proof/rca/selected-source.json",
+    "mtime_before_ns": 1790463614687227774,
+    "mtime_after_ns": 1790464135560155000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l3-proof/rca/verified-snapshot-L3_RCA.source.json",
+    "mtime_before_ns": 1790463714723588821,
+    "mtime_after_ns": 1790464135560206000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l3-proof/rca/verified-snapshot-L3_RCA_AUDIT.md",
+    "mtime_before_ns": 1790463714723976655,
+    "mtime_after_ns": 1790464135560250000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l3-proof/rca/watch_waiting.py",
+    "mtime_before_ns": 1790463614684554770,
+    "mtime_after_ns": 1790464135560294000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/deeper/README.md",
+    "mtime_before_ns": 1790463837399893379,
+    "mtime_after_ns": 1790464135560362000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/deeper/core-native-fc88f5f79f57/core-regression-execution.json",
+    "mtime_before_ns": 1790463783652210669,
+    "mtime_after_ns": 1790464135560475000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/deeper/core-native-fc88f5f79f57/final-clippy-receipt.json",
+    "mtime_before_ns": 1790463780838423453,
+    "mtime_after_ns": 1790464135560535000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/deeper/core-native-fc88f5f79f57/final-core-receipt.json",
+    "mtime_before_ns": 1790463780833895904,
+    "mtime_after_ns": 1790464135560596000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/deeper/core-native-fc88f5f79f57/final-native-receipt.json",
+    "mtime_before_ns": 1790463780835845699,
+    "mtime_after_ns": 1790464135560648000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/deeper/core-native-fc88f5f79f57/final-public-api-receipt.json",
+    "mtime_before_ns": 1790463780840300623,
+    "mtime_after_ns": 1790464135560699000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/deeper/core-native-fc88f5f79f57/frozen.json",
+    "mtime_before_ns": 1790463780831781526,
+    "mtime_after_ns": 1790464135560761000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/deeper/core-native-fc88f5f79f57/source.tar.gz",
+    "mtime_before_ns": 1790463783376322085,
+    "mtime_after_ns": 1790464135560873000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/deeper/dependency-tree.txt",
+    "mtime_before_ns": 1790463532059681863,
+    "mtime_after_ns": 1790464135561018000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/deeper/diagnostic/core-before-lint-fix/final-clippy-receipt.json",
+    "mtime_before_ns": 1790463780831234526,
+    "mtime_after_ns": 1790464135561324000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/deeper/diagnostic/core-before-lint-fix/final-core-receipt.json",
+    "mtime_before_ns": 1790463780829684732,
+    "mtime_after_ns": 1790464135561515000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/deeper/diagnostic/core-before-lint-fix/frozen.json",
+    "mtime_before_ns": 1790463577536747931,
+    "mtime_after_ns": 1790464135561561000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/deeper/diagnostic/red-after.json",
+    "mtime_before_ns": 1790463532073939260,
+    "mtime_after_ns": 1790464135561888000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/deeper/diagnostic/red-before.json",
+    "mtime_before_ns": 1790463532071710298,
+    "mtime_after_ns": 1790464135561933000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/deeper/diagnostic/red2-after.json",
+    "mtime_before_ns": 1790463532079263851,
+    "mtime_after_ns": 1790464135561973000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/deeper/diagnostic/red2-before.json",
+    "mtime_before_ns": 1790463532077511890,
+    "mtime_after_ns": 1790464135562013000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/deeper/environment.json",
+    "mtime_before_ns": 1790463532058036902,
+    "mtime_after_ns": 1790464135562075000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/deeper/format-final-receipt.json",
+    "mtime_before_ns": 1790463783648887123,
+    "mtime_after_ns": 1790464135562119000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/deeper/interrupted-core-wait.json",
+    "mtime_before_ns": 1790463532068456126,
+    "mtime_after_ns": 1790464135562157000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/deeper/invalidated-shared-target.json",
+    "mtime_before_ns": 1790463532062933076,
+    "mtime_after_ns": 1790464135562199000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/deeper/l4-additional.patch",
+    "mtime_before_ns": 1790463783649808957,
+    "mtime_after_ns": 1790464135562243000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/deeper/live-closeout.json",
+    "mtime_before_ns": 1790463902706174870,
+    "mtime_after_ns": 1790464135562406000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/deeper/metadata.json",
+    "mtime_before_ns": 1790463532067729667,
+    "mtime_after_ns": 1790464135562494000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/deeper/owned-paths.json",
+    "mtime_before_ns": 1790463783649352373,
+    "mtime_after_ns": 1790464135562550000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/deeper/phase-boundary.json",
+    "mtime_before_ns": 1790463783651225126,
+    "mtime_after_ns": 1790464135562600000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/deeper/receipt.json",
+    "mtime_before_ns": 1790463902731431409,
+    "mtime_after_ns": 1790464135562651000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/deeper/run_frozen.py",
+    "mtime_before_ns": 1790463532066890291,
+    "mtime_after_ns": 1790464135562699000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/deeper/toolchains.txt",
+    "mtime_before_ns": 1790463532056940942,
+    "mtime_after_ns": 1790464135562742000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/deeper/wire-native-fuzz-1f7467d3304e/final-clippy-receipt.json",
+    "mtime_before_ns": 1790463532032218738,
+    "mtime_after_ns": 1790464135562797000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/deeper/wire-native-fuzz-1f7467d3304e/final-fuzz-receipt.json",
+    "mtime_before_ns": 1790463532038775248,
+    "mtime_after_ns": 1790464135562843000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/deeper/wire-native-fuzz-1f7467d3304e/final-native-receipt.json",
+    "mtime_before_ns": 1790463532041377335,
+    "mtime_after_ns": 1790464135563058000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/deeper/wire-native-fuzz-1f7467d3304e/final-public-api-receipt.json",
+    "mtime_before_ns": 1790463532042915963,
+    "mtime_after_ns": 1790464135563132000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/deeper/wire-native-fuzz-1f7467d3304e/final-wire-receipt.json",
+    "mtime_before_ns": 1790463532040217500,
+    "mtime_after_ns": 1790464135563187000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/deeper/wire-native-fuzz-1f7467d3304e/frozen.json",
+    "mtime_before_ns": 1790463532037149621,
+    "mtime_after_ns": 1790464135563233000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/deeper/wire-native-fuzz-1f7467d3304e/source.tar.gz",
+    "mtime_before_ns": 1790463532050386224,
+    "mtime_after_ns": 1790464135563274000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l5-proof/final-code-audit-20260927/audit-changes-final.patch",
+    "mtime_before_ns": 1790463099534662782,
+    "mtime_after_ns": 1790464135563314000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l5-proof/final-code-audit-20260927/consumer-overlay.json",
+    "mtime_before_ns": 1790462478942402970,
+    "mtime_after_ns": 1790464135563502000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l5-proof/final-code-audit-20260927/current-head-overlay.json",
+    "mtime_before_ns": 1790463009791563917,
+    "mtime_after_ns": 1790464135563695000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l5-proof/final-code-audit-20260927/current-vite/vite-allow-incomplete.json",
+    "mtime_before_ns": 1790463509027201842,
+    "mtime_after_ns": 1790464135563893000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l5-proof/final-code-audit-20260927/current-vite/vite-receipt.json",
+    "mtime_before_ns": 1790463516619825665,
+    "mtime_after_ns": 1790464135564089000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l5-proof/final-code-audit-20260927/current-vite/vite-require-complete.json",
+    "mtime_before_ns": 1790463516498701774,
+    "mtime_after_ns": 1790464135564185000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l5-proof/final-code-audit-20260927/environment.json",
+    "mtime_before_ns": 1790462507620197458,
+    "mtime_after_ns": 1790464135564258000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l5-proof/final-code-audit-20260927/fixed-source-final.json",
+    "mtime_before_ns": 1790463099534809866,
+    "mtime_after_ns": 1790464135564537000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l5-proof/final-code-audit-20260927/format-update.json",
+    "mtime_before_ns": 1790462934363578001,
+    "mtime_after_ns": 1790464135564585000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l5-proof/final-code-audit-20260927/freeze.py",
+    "mtime_before_ns": 1790462477122938055,
+    "mtime_after_ns": 1790464135564626000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l5-proof/final-code-audit-20260927/frozen-overlay.json",
+    "mtime_before_ns": 1790462355069097856,
+    "mtime_after_ns": 1790464135564666000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l5-proof/final-code-audit-20260927/initial.json",
+    "mtime_before_ns": 1790462192499492560,
+    "mtime_after_ns": 1790464135564704000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l5-proof/final-code-audit-20260927/python-consumers-final.json",
+    "mtime_before_ns": 1790463051883872917,
+    "mtime_after_ns": 1790464135564941000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l5-proof/final-code-audit-20260927/python-consumers-final.junit.xml",
+    "mtime_before_ns": 1790463050922807749,
+    "mtime_after_ns": 1790464135565058000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l5-proof/final-code-audit-20260927/python-current-head.json",
+    "mtime_before_ns": 1790463038938895232,
+    "mtime_after_ns": 1790464135565134000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l5-proof/final-code-audit-20260927/python-current-head.junit.xml",
+    "mtime_before_ns": 1790463035980009093,
+    "mtime_after_ns": 1790464135565210000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l5-proof/final-code-audit-20260927/python-deep-json-red.json",
+    "mtime_before_ns": 1790462447168306015,
+    "mtime_after_ns": 1790464135565310000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l5-proof/final-code-audit-20260927/python-inventory.json",
+    "mtime_before_ns": 1790462563201595057,
+    "mtime_after_ns": 1790464135565795000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l5-proof/final-code-audit-20260927/python-red.json",
+    "mtime_before_ns": 1790462239847326267,
+    "mtime_after_ns": 1790464135566132000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l5-proof/final-code-audit-20260927/run_check.py",
+    "mtime_before_ns": 1790462200711410436,
+    "mtime_after_ns": 1790464135566185000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l5-proof/final-code-audit-20260927/rust-current-head.json",
+    "mtime_before_ns": 1790463485096929838,
+    "mtime_after_ns": 1790464135566228000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l5-proof/final-code-audit-20260927/rust-red.json",
+    "mtime_before_ns": 1790462320227743190,
+    "mtime_after_ns": 1790464135566283000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l5-proof/final-code-audit-20260927/summarize_tests.py",
+    "mtime_before_ns": 1790463247951354637,
+    "mtime_after_ns": 1790464135566362000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l5-proof/final-code-audit-20260927/symbols-before-format.rs",
+    "mtime_before_ns": 1790462934360859239,
+    "mtime_after_ns": 1790464135566416000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l5-proof/final-code-audit-20260927/test-summary.json",
+    "mtime_before_ns": 1790463501496509447,
+    "mtime_after_ns": 1790464135566470000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l5-proof/final-code-audit-20260927/vite-current-head.json",
+    "mtime_before_ns": 1790463516748223360,
+    "mtime_after_ns": 1790464135566705000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l5-proof/final-code-audit-20260927/vite_current.py",
+    "mtime_before_ns": 1790463037721350490,
+    "mtime_after_ns": 1790464135566773000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/handoffs/l5-proof/final-code-audit-20260927/vite_preflight.py",
+    "mtime_before_ns": 1790462616053378549,
+    "mtime_after_ns": 1790464135566832000
+  },
+  {
+    "path": "docs/plans/sep-27-code-search-remediation/rfcs/CS-PROD-01-parser-coverage-and-vite.md",
+    "mtime_before_ns": 1790463541094140034,
+    "mtime_after_ns": 1790464135566906000
+  },
+  {
+    "path": "docs/plans/sep-27-misc/tickets/INDEX.md",
+    "mtime_before_ns": 1790463160463752703,
+    "mtime_after_ns": 1790464135566971000
+  },
+  {
+    "path": "docs/private-cargo-dependencies.md",
+    "mtime_before_ns": 1790462934791016888,
+    "mtime_after_ns": 1790464135567024000
+  },
+  {
+    "path": "tools/benchmark/benchctl.py",
+    "mtime_before_ns": 1790463835863548845,
+    "mtime_after_ns": 1790464135567232000
+  },
+  {
+    "path": "tools/benchmark/criterion_capture.py",
+    "mtime_before_ns": 1790463835866573141,
+    "mtime_after_ns": 1790464135567385000
+  },
+  {
+    "path": "tools/benchmark/lexical_capture.py",
+    "mtime_before_ns": 1790463835858624671,
+    "mtime_after_ns": 1790464135567424000
+  },
+  {
+    "path": "tools/benchmark/pair_capture.py",
+    "mtime_before_ns": 1790463835268096194,
+    "mtime_after_ns": 1790464135567460000
+  },
+  {
+    "path": "tools/benchmark/profile_capture.py",
+    "mtime_before_ns": 1790463835861642301,
+    "mtime_after_ns": 1790464135567652000
+  },
+  {
+    "path": "tools/benchmark/recorded_capture.py",
+    "mtime_before_ns": 1790463835861631426,
+    "mtime_after_ns": 1790464135567762000
+  },
+  {
+    "path": "tools/benchmark/retrieval_capture.py",
+    "mtime_before_ns": 1790463835863680887,
+    "mtime_after_ns": 1790464135567887000
+  },
+  {
+    "path": "tools/ci/resource_admission.py",
+    "mtime_before_ns": 1790463472030895358,
+    "mtime_after_ns": 1790464135567953000
+  },
+  {
+    "path": "tools/ci/tests/test_benchmark_profile_capture.py",
+    "mtime_before_ns": 1790463874144479399,
+    "mtime_after_ns": 1790464135568281000
+  },
+  {
+    "path": "tools/ci/tests/test_pair_capture.py",
+    "mtime_before_ns": 1790463786709279462,
+    "mtime_after_ns": 1790464135568339000
+  },
+  {
+    "path": "tools/ci/tests/test_pair_replay_workspace.py",
+    "mtime_before_ns": 1790463461361857296,
+    "mtime_after_ns": 1790464135568401000
+  },
+  {
+    "path": "tools/ci/tests/test_recorded_capture.py",
+    "mtime_before_ns": 1790463491880993021,
+    "mtime_after_ns": 1790464135568881000
+  },
+  {
+    "path": "tools/ci/tests/test_resource_admission.py",
+    "mtime_before_ns": 1790463442071028771,
+    "mtime_after_ns": 1790464135568975000
+  },
+  {
+    "path": "tools/ci/tests/test_retrieval_capture.py",
+    "mtime_before_ns": 1790463900437412187,
+    "mtime_after_ns": 1790464135569032000
+  }
+]

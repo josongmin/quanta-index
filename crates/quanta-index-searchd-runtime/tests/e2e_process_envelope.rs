@@ -1,6 +1,6 @@
 //! QI-BB-016 through the real daemon: one process memory envelope, a
-//! resident-memory gate on the lexical writers, and an idle sweep that
-//! runs on the daemon's own timer.
+//! resident-memory gate on the lexical writers, and writer release at
+//! the complete source-event publication boundary.
 //!
 //! Oracles are external to the code under test: a scripted memory probe
 //! the test moves above and below the ceiling, the typed refusal code on
@@ -184,11 +184,11 @@ fn a_new_writer_is_refused_typed_above_the_rss_ceiling_and_admitted_below_it() -
     // frozen-policy refusal and an identical retry replays it by design
     // (S21-04), so a fresh body is what exercises the gate's new reading.
     probe.0.store(ceiling - 1, Ordering::Release);
-    let batch = rt.text_search_corpus_batch("src/gate.rs", "fn gate_body_v2() { gate_needle }")?;
-    let admitted = rt.ingest_once(SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch))?;
-    if typed_code(&admitted).is_some() {
-        return Err(format!("below the ceiling the batch is admitted, got {admitted:?}").into());
-    }
+    rt.ingest_text(
+        "repo-e2e",
+        "src/gate.rs",
+        "fn gate_body_v2() { gate_needle }",
+    )?;
     let _generation = rt.seal()?;
     rt.activate_last_sealed_generation()?;
     let served = rt.query_text(TextQuerySyntax::Native, "gate_needle", 10);
@@ -210,17 +210,10 @@ fn a_new_writer_is_refused_typed_above_the_rss_ceiling_and_admitted_below_it() -
     Ok(())
 }
 
-/// The maintenance timer sweeps an idle writer without any further
-/// ingest.
-///
-/// A producer that stops mid-generation gives its heap back within the
-/// idle interval plus one tick, which the writer tallies and the timer's
-/// own counters show.
+/// Producer staging is local. The public source-event door accepts only a
+/// complete sealed batch, so it cannot retain a daemon writer between files.
 #[test]
-fn an_idle_writer_is_released_by_the_daemons_timer_without_another_batch() -> TestResult {
-    // Longer than one batch's build (the idle clock starts when the writer
-    // is opened, before the build's derivation and commit), shorter than
-    // the test's patience.
+fn local_staging_has_no_daemon_writer_and_sealed_publication_releases_heap() -> TestResult {
     let idle = Duration::from_secs(2);
     let mut rt = E2eRuntime::boot_with_lexical_writer_policy(LexicalWriterPolicy::new(
         LexicalWriterPolicy::DEFAULT.envelope_bytes(),
@@ -228,71 +221,44 @@ fn an_idle_writer_is_released_by_the_daemons_timer_without_another_batch() -> Te
         idle,
     )?)?;
     rt.ingest_text("repo-idle", "src/idle.rs", "idle needle")?;
-    let after_ingest = Scrape::take(&mut rt)?;
-    match after_ingest.gauge("lexical_writers_open")? {
-        1.0 => {
-            if after_ingest.gauge("lexical_writers_allocated_heap_bytes")? < 1.0 {
-                return Err("an open writer holds its granted heap".into());
-            }
-        }
-        0.0 => {
-            // A slow ingest or scrape can cross the short idle deadline.
-            // Accept that ordering only when the timer proves it released
-            // the writer; an unexplained early close is still a failure.
-            if after_ingest.counter("lexical_writer_idle_releases_total")? != 1
-                || after_ingest.counter("maintenance_idle_writer_releases_total")? != 1
-                || after_ingest.counter("maintenance_ticks_total")? == 0
-            {
-                return Err("writer closed before scrape without a timer release".into());
-            }
-        }
-        observed => {
-            return Err(
-                format!("unsealed batch has unexpected open writer count {observed}").into(),
-            );
-        }
-    }
-    // No further ingest. The timer alone must release the writer.
-    let bound = idle
-        .saturating_mul(4)
-        .saturating_add(rt.maintenance_policy().tick().saturating_mul(4))
-        .saturating_add(Duration::from_secs(5));
-    let swept = wait_for_scrape(
-        &mut rt,
-        bound,
-        "the timer releasing the idle writer (lexical_writers_open < 1)",
-        |scrape| {
-            scrape
-                .gauge("lexical_writers_open")
-                .is_ok_and(|open| open < 1.0)
-        },
-    )?;
+    let staged = Scrape::take(&mut rt)?;
     expect_eq(
-        &format!("the timer released the idle writer within {bound:?}"),
-        &swept.gauge("lexical_writers_open")?,
+        "local staging opens no daemon writer",
+        &staged.gauge("lexical_writers_open")?,
         &0.0,
     )?;
-    if swept.counter("lexical_writer_idle_releases_total")? != 1 {
-        return Err("the writer cache counts the idle release".into());
-    }
-    if swept.counter("maintenance_idle_writer_releases_total")? != 1 {
-        return Err("the timer counts the release it made".into());
-    }
-    if swept.counter("maintenance_ticks_total")? == 0 {
-        return Err("the timer ticked".into());
-    }
     expect_eq(
-        "the released writer gave its heap back",
-        &swept.gauge("lexical_writers_allocated_heap_bytes")?,
+        "local staging allocates no daemon writer heap",
+        &staged.gauge("lexical_writers_allocated_heap_bytes")?,
         &0.0,
     )?;
-    // The generation is still usable: sealing reopens, commits, releases.
+    expect_eq(
+        "staging does not require the timer to close a writer",
+        &staged.counter("lexical_writer_idle_releases_total")?,
+        &0,
+    )?;
     let _generation = rt.seal()?;
+    let published = Scrape::take(&mut rt)?;
+    expect_eq(
+        "sealed publication releases its daemon writer",
+        &published.gauge("lexical_writers_open")?,
+        &0.0,
+    )?;
+    expect_eq(
+        "sealed publication returns its writer heap",
+        &published.gauge("lexical_writers_allocated_heap_bytes")?,
+        &0.0,
+    )?;
     rt.activate_last_sealed_generation()?;
     let served = rt.query_text(TextQuerySyntax::Native, "needle", 10);
     if let Some(error) = served.typed_error {
-        return Err(format!("the swept generation still seals and serves: {error:?}").into());
+        return Err(format!("the sealed event serves after activation: {error:?}").into());
     }
+    expect_eq(
+        "the sealed source has one match",
+        &served.candidate_ids.len(),
+        &1,
+    )?;
     Ok(())
 }
 

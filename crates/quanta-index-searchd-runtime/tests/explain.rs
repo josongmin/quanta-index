@@ -26,17 +26,13 @@ use std::time::{Duration, Instant};
 
 use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
-    BatchIngestMode, ChunkId, ChunkRecord, ExplainCandidateV1, GenerationPin, LexicalCandidate,
-    ManifestGeneration, RepoId, RepoRelativePath, RevisionId, SearchCorpusIngestBatch,
-    SearchCorpusReplaceScope, SearchPlaneExplainQueryRequest, SearchPlaneIngestIpcRequest,
-    SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
-    SearchPlaneIngestIpcResponseEnvelope, SearchPlaneQueryIpcRequest,
-    SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
-    SearchPlaneQueryIpcResponseEnvelope, SearchScopeKey, SearchScopeSurface, TextQueryRequest,
-    TextQuerySyntax,
+    ChunkId, ChunkRecord, ExplainCandidateV1, GenerationPin, LexicalCandidate, ManifestGeneration,
+    RepoId, RepoRelativePath, RevisionId, SearchPlaneExplainQueryRequest,
+    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
+    SearchPlaneQueryIpcResponseEnvelope, TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_ipc::send_request;
-use quanta_index_searchd_harness::E2eRuntime;
+use quanta_index_searchd_harness::{E2eRuntime, SourceCorpusFixture};
 
 type TestResult = Result<(), Box<dyn Error>>;
 static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
@@ -120,13 +116,6 @@ fn send_query_request(
     send_request(socket, request, quanta_index_ipc::ClientIoPolicy::default())
 }
 
-fn send_ingest_request(
-    socket: &Path,
-    request: &SearchPlaneIngestIpcRequestEnvelope,
-) -> Result<SearchPlaneIngestIpcResponseEnvelope, quanta_index_ipc::IpcError> {
-    send_request(socket, request, quanta_index_ipc::ClientIoPolicy::default())
-}
-
 fn wait_until<F>(timeout: Duration, mut cond: F) -> bool
 where
     F: FnMut() -> bool,
@@ -171,79 +160,14 @@ fn explain_request(
     }
 }
 
-fn scope_key(path: &str) -> SearchScopeKey {
-    SearchScopeKey {
-        doc_surface: SearchScopeSurface::Chunk,
-        repo_relative_path: RepoRelativePath::new(path),
-    }
+fn publish_chunk(corpus: &mut SourceCorpusFixture, chunk: ChunkRecord) -> TestResult {
+    corpus.stage_fixture(vec![chunk], Vec::new(), Vec::new())?;
+    Ok(())
 }
 
-fn dispatch_ingest(socket: &Path, payload: SearchPlaneIngestIpcRequest) -> TestResult {
-    // Like every producer, stamp the canonical batch digest before sending
-    // (QI-BB-032); the search plane refuses any other digest.
-    let payload = quanta_index_searchd_harness::stamped_ingest_request(payload)?;
-    let response = send_ingest_request(
-        socket,
-        &SearchPlaneIngestIpcRequestEnvelope {
-            request_id: NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed),
-            payload,
-        },
-    )?;
-    match response.payload {
-        SearchPlaneIngestIpcResponse::Error(err) => {
-            Err(format!("ingest failed code={} message={}", err.code, err.message).into())
-        }
-        _ => Ok(()),
-    }
-}
-
-fn publish_chunk(socket: &Path, chunk: ChunkRecord) -> TestResult {
-    dispatch_ingest(
-        socket,
-        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(SearchCorpusIngestBatch {
-            repo_id: repo(),
-            revision_id: revision(),
-            generation: generation(),
-            base_generation: None,
-            manifest_digest: format!("explain-lex-manifest-{}", generation().get()),
-            batch_digest: String::new(),
-            mode: BatchIngestMode::ReplaceGeneration,
-            bundle_payload: None,
-            clear_surfaces: Vec::new(),
-            replace_scopes: vec![SearchCorpusReplaceScope {
-                scope: scope_key(chunk.repo_relative_path.as_str()),
-                scope_digest: "explain-scope".to_string(),
-                chunks: vec![chunk],
-                symbols: Vec::new(),
-            }],
-            tombstone_scopes: Vec::new(),
-            semantic_replace_scopes: Vec::new(),
-            semantic_tombstone_scopes: Vec::new(),
-            seal: false,
-        }),
-    )
-}
-
-fn seal_lexical(socket: &Path) -> TestResult {
-    dispatch_ingest(
-        socket,
-        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(SearchCorpusIngestBatch {
-            repo_id: repo(),
-            revision_id: revision(),
-            generation: generation(),
-            base_generation: None,
-            manifest_digest: format!("explain-lex-seal-{}", generation().get()),
-            batch_digest: String::new(),
-            mode: BatchIngestMode::ReplaceGeneration,
-            bundle_payload: None,
-            clear_surfaces: Vec::new(),
-            replace_scopes: Vec::new(),
-            tombstone_scopes: Vec::new(),
-            semantic_replace_scopes: Vec::new(),
-            semantic_tombstone_scopes: Vec::new(),
-            seal: true,
-        }),
-    )
+fn seal_lexical(socket: &Path, corpus: &mut SourceCorpusFixture) -> TestResult {
+    corpus.publish(socket, NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed))?;
+    Ok(())
 }
 
 #[test]
@@ -251,11 +175,20 @@ fn explain_reports_present_candidate() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
     let ingest_socket = fixture.ingest_socket;
+    let mut corpus = SourceCorpusFixture::new(
+        repo(),
+        revision(),
+        generation(),
+        format!(
+            "fixture-event-{}",
+            NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
+        ),
+    );
     publish_chunk(
-        &ingest_socket,
+        &mut corpus,
         chunk_record("explain-c1", "quick brown fox jumps")?,
     )?;
-    seal_lexical(&ingest_socket)?;
+    seal_lexical(&ingest_socket, &mut corpus)?;
 
     let pin = GenerationPin::new(repo(), revision(), generation());
     if !wait_until(READINESS_TIMEOUT, || {
@@ -320,11 +253,20 @@ fn explain_rejects_generation_mismatch() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
     let ingest_socket = fixture.ingest_socket;
+    let mut corpus = SourceCorpusFixture::new(
+        repo(),
+        revision(),
+        generation(),
+        format!(
+            "fixture-event-{}",
+            NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
+        ),
+    );
     publish_chunk(
-        &ingest_socket,
+        &mut corpus,
         chunk_record("c-mismatch", "alpha bravo charlie")?,
     )?;
-    seal_lexical(&ingest_socket)?;
+    seal_lexical(&ingest_socket, &mut corpus)?;
 
     let pin = GenerationPin::new(repo(), revision(), generation());
     if !wait_until(READINESS_TIMEOUT, || {

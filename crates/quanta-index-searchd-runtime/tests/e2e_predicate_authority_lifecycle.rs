@@ -9,14 +9,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Result as AnyResult, ensure};
 use quanta_index_contract::{
-    BatchIngestMode, CapabilityStatusV1, ChunkId, ChunkRecord, FileContributorEntry,
-    FileContributorIdentityEntry, FileContributorIngestBatch, FileOwnershipEntry,
-    FileOwnershipIngestBatch, OwnerDocKind, RepoCommitRecencyEntry, RepoCommitRecencyIngestBatch,
-    RepoDescriptionEntry, RepoDescriptionIngestBatch, RepoId, RepoMetaEntry, RepoMetaIngestBatch,
-    RepoRelativePath, RepoTopicEntry, RepoTopicIngestBatch, SearchCorpusIngestBatch,
-    SearchCorpusReplaceScope, SearchScopeKey, SearchScopeSurface, SemanticCorpusKindV1,
-    SemanticSourceRecordV1, SemanticSourceReplaceScopeV1, SemanticSourceScopeKeyV1, SourceRoleV1,
-    TextQuerySyntax, lex::LanguageCode,
+    CapabilityStatusV1, ChunkId, ChunkRecord, FileContributorEntry, FileContributorIdentityEntry,
+    FileContributorIngestBatch, FileOwnershipEntry, FileOwnershipIngestBatch, OwnerDocKind,
+    RepoCommitRecencyEntry, RepoCommitRecencyIngestBatch, RepoDescriptionEntry,
+    RepoDescriptionIngestBatch, RepoId, RepoMetaEntry, RepoMetaIngestBatch, RepoRelativePath,
+    RepoTopicEntry, RepoTopicIngestBatch, SemanticCorpusKindV1, SemanticSourceRecordV1,
+    SemanticSourceReplaceScopeV1, SemanticSourceScopeKeyV1, SourceRoleV1, TextQuerySyntax,
+    lex::LanguageCode,
 };
 use quanta_index_searchd_harness::{E2eQueryResult, E2eRuntime};
 
@@ -72,13 +71,6 @@ fn query_paths(rt: &mut E2eRuntime, query: &str) -> AnyResult<Vec<String>> {
         );
     }
     Ok(sorted_paths(&result))
-}
-
-fn file_scope(path: &str) -> SearchScopeKey {
-    SearchScopeKey {
-        doc_surface: SearchScopeSurface::File,
-        repo_relative_path: RepoRelativePath::new(path),
-    }
 }
 
 fn replacement_chunk(id: &str, path: &str, source_repo_id: &str) -> AnyResult<ChunkRecord> {
@@ -139,46 +131,25 @@ fn semantic_source_scope(path: &str, generation: u64) -> SemanticSourceReplaceSc
 
 fn publish_initial_text_generation(rt: &mut E2eRuntime) -> AnyResult<()> {
     let generation = rt.current_generation();
-    rt.publish_search_corpus_batch(SearchCorpusIngestBatch {
-        repo_id: rt.repo(),
-        revision_id: rt.revision(),
-        generation,
-        base_generation: None,
-        manifest_digest: format!("predicate-lifecycle:corpus:g{}", generation.get()),
-        batch_digest: format!("predicate-lifecycle:corpus-batch:g{}", generation.get()),
-        mode: BatchIngestMode::ReplaceGeneration,
-        bundle_payload: None,
-        clear_surfaces: Vec::new(),
-        replace_scopes: vec![
-            SearchCorpusReplaceScope {
-                scope: file_scope(ALPHA_PATH),
-                scope_digest: format!("predicate-lifecycle:corpus:g{}:alpha", generation.get()),
-                chunks: vec![replacement_chunk(
-                    &format!("predicate-lifecycle-g{}-alpha", generation.get()),
-                    ALPHA_PATH,
-                    "authority-alpha",
-                )?],
-                symbols: Vec::new(),
-            },
-            SearchCorpusReplaceScope {
-                scope: file_scope(BETA_PATH),
-                scope_digest: format!("predicate-lifecycle:corpus:g{}:beta", generation.get()),
-                chunks: vec![replacement_chunk(
-                    &format!("predicate-lifecycle-g{}-beta", generation.get()),
-                    BETA_PATH,
-                    "authority-beta",
-                )?],
-                symbols: Vec::new(),
-            },
+    rt.stage_corpus_fixture(
+        vec![
+            replacement_chunk(
+                &format!("predicate-lifecycle-g{}-alpha", generation.get()),
+                ALPHA_PATH,
+                "authority-alpha",
+            )?,
+            replacement_chunk(
+                &format!("predicate-lifecycle-g{}-beta", generation.get()),
+                BETA_PATH,
+                "authority-beta",
+            )?,
         ],
-        tombstone_scopes: Vec::new(),
-        semantic_replace_scopes: vec![
+        Vec::new(),
+        vec![
             semantic_source_scope(ALPHA_PATH, generation.get()),
             semantic_source_scope(BETA_PATH, generation.get()),
         ],
-        semantic_tombstone_scopes: Vec::new(),
-        seal: false,
-    })
+    )
 }
 
 fn observe_generation(rt: &mut E2eRuntime, label: &str) -> AnyResult<AuthorityObservation> {

@@ -1,0 +1,21 @@
+{
+  "captured_utc": "2026-09-26T23:15:57.159670+00:00",
+  "shared_head": "2102966246866398f01833bebf71396831377149",
+  "owned_files": {
+    "benchmarks/retrieval/src/symbols.rs": "3ae81319e534ba64e7a9a34be266031a05ba6299ef6915649abeb821bf70be31",
+    "benchmarks/retrieval/tests/l5_parser_regressions.rs": "1daa87b05036675f3453fcddf44c18d12d57f4aa29741b55d43de3f4ac6ec4ab",
+    "benchmarks/retrieval/proof-required-tests.json": "696e885c3417f5df915b8e80ba24967a348725b642e7b8e92e69ac1f4cd196a1"
+  },
+  "changed_frozen_inputs_in_shared_checkout": [
+    "crates/quanta-index-lexical/src/budgeted_search.rs",
+    "crates/quanta-index-lexical/src/ranked_page.rs",
+    "crates/quanta-index-lexical/src/ranked_page_tests.rs",
+    "crates/quanta-index-lexical/src/searcher/candidates.rs",
+    "crates/quanta-index-lexical/src/text_docs.rs",
+    "crates/quanta-index-sdk/tests/l1_daemon_query_contract.rs",
+    "crates/quanta-index-sdk/tests/l2_daemon_publication.rs",
+    "tools/benchmark/benchctl.py",
+    "tools/benchmark/profile_capture.py",
+    "tools/ci/tests/test_benchmark_profile_capture.py"
+  ]
+}

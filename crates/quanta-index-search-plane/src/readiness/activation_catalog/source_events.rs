@@ -32,12 +32,12 @@ fn existing(
             .records
             .get(&(event.stream_id.clone(), event.event_id.clone()))
     });
-    if let Some(record) = record {
-        if record.binding.event != *event {
-            return Err(conflict(
-                "event identity reused with different payload or expected base",
-            ));
-        }
+    if let Some(record) = record
+        && record.binding.event != *event
+    {
+        return Err(conflict(
+            "event identity reused with different payload or expected base",
+        ));
     }
     Ok(record.cloned())
 }
@@ -71,6 +71,18 @@ impl SourcePublicationCatalogPort for ActivationCatalog {
         self.ensure_durability_certain_v1()?;
         if let Some(record) = existing(&entries, repo, &binding.event)? {
             return Ok(SourceEventReservationV1::Existing(record));
+        }
+        if super::active_search_corpus_generation_v1(
+            &entries.roots,
+            repo,
+            &binding.target.revision_id,
+        )
+        .is_some_and(|active| active.manifest_generation() >= binding.target.manifest_generation)
+        {
+            return Err(CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::SearchCorpusGenerationConflict,
+                message: "source publication target must advance the active generation".into(),
+            });
         }
         let history = entries.histories.get(repo);
         let stream = history.and_then(|history| history.streams.get(&binding.event.stream_id));
@@ -205,6 +217,18 @@ pub(super) fn activate_event(
     target: &GenerationSnapshot,
     event: Option<&SourcePublicationEvent>,
 ) -> Result<(), CoreError> {
+    if state.histories.get(&target.repo_id).is_some_and(|history| {
+        history.records.values().any(|record| {
+            record.phase != SourceEventPhaseV1::Active
+                && record.binding.target.revision_id == target.revision_id
+                && record.binding.target.manifest_generation < target.manifest_generation
+        })
+    }) {
+        return Err(CoreError::NotReady(
+            "source activation would overtake an unresolved older publication for the same pair"
+                .into(),
+        ));
+    }
     let Some(event) = event else {
         if state.histories.get(&target.repo_id).is_some_and(|history| {
             history.records.values().any(|record| {

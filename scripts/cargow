@@ -283,7 +283,7 @@ if requires_searchd_pin "$@"; then
   prepare_searchd_pin
 fi
 
-start_ms="$(python3 -c 'import time; print(int(time.time() * 1000))')"
+start_ms="$(python3 -c 'import time; print(time.clock_gettime_ns(time.CLOCK_MONOTONIC) // 1000000)')"
 
 if run_cargo "$@"; then
   status=0
@@ -291,7 +291,7 @@ else
   status="$?"
 fi
 
-end_ms="$(python3 -c 'import time; print(int(time.time() * 1000))')"
+end_ms="$(python3 -c 'import time; print(time.clock_gettime_ns(time.CLOCK_MONOTONIC) // 1000000)')"
 duration_ms="$((end_ms - start_ms))"
 
 log_cargo_event "$lane" "$lane_source" "$status" "$duration_ms" "${1:-}"

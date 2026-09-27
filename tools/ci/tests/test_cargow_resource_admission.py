@@ -126,6 +126,35 @@ def test_leaf_failure_exit_code_survives_admission(cargo_env):
     assert records(cargo_env)[0]["held"] is True
 
 
+def test_cargo_history_duration_uses_monotonic_clock(cargo_env, tmp_path):
+    clock_calls = tmp_path / "clock-calls"
+    fake_python = tmp_path / "bin" / "python3"
+    fake_python.write_text(
+        f"#!{sys.executable}\n"
+        "import os, sys\n"
+        "from pathlib import Path\n"
+        f"calls = Path({str(clock_calls)!r})\n"
+        "if sys.argv[1:2] == ['-c'] and 'import time; print(' in sys.argv[2]:\n"
+        "    index = int(calls.read_text()) if calls.exists() else 0\n"
+        "    calls.write_text(str(index + 1))\n"
+        "    monotonic = 'clock_gettime_ns(time.CLOCK_MONOTONIC)' in sys.argv[2]\n"
+        "    print(([1000, 1500] if monotonic else [5000, 3000])[index])\n"
+        "else:\n"
+        "    os.execv(sys.executable, [sys.executable, *sys.argv[1:]])\n"
+    )
+    fake_python.chmod(0o755)
+    cargo_env["QUANTA_INDEX_BUILD_LOGGING"] = "1"
+
+    result = run(cargo_env, "metadata", "--no-deps")
+    assert result.returncode == 0, result.stderr
+    assert clock_calls.read_text() == "2"
+    history = tmp_path / "cache" / "state" / "build-profile" / "history.jsonl"
+    event = json.loads(history.read_text().splitlines()[0])
+    assert event["k"] == "cargo"
+    assert event["cmd"] == "metadata"
+    assert event["ms"] == 500
+
+
 @pytest.mark.parametrize("arguments,admitted", [
     ([], True),
     (["--binaries-metadata", "bins.json"], True),

@@ -49,8 +49,8 @@ use crate::searchd_binary_process::{
 };
 use quanta_index_contract::{
     ChunkId, ChunkRecord, GenerationPin, ManifestGeneration, RepoId, RepoRelativePath, RevisionId,
-    SearchCorpusActiveHeadV1, SearchPlaneRollbackSearchCorpusGenerationCasRequest, SearchScopeKey,
-    SearchScopeSurface,
+    SearchCorpusActiveHeadV1, SearchPlaneRollbackSearchCorpusGenerationCasRequest, SourceFileKey,
+    SourcePublicationEvent,
 };
 use quanta_index_core::{GenerationStorageKeyV1, RECLAIM_AREA_DIR_NAME};
 use quanta_index_sdk::{ConnectOptions, LanguageCode, QuantaIndex, SdkError, SearchCorpusBatch};
@@ -59,7 +59,9 @@ use quanta_index_search_plane::crash_point::{
     AFTER_SEMANTIC_SEAL, BEFORE_AUTHORITY_RECORD, BEFORE_RECORD_FORGET, BETWEEN_TRACK_RECLAIMS,
     CRASH_EXIT_CODE, CRASH_POINT_ENV,
 };
-use quanta_index_searchd_harness::semantic_source_scopes_for_chunk_records;
+use quanta_index_searchd_harness::{
+    fixture_source_scope_v1, semantic_source_scopes_for_chunk_records,
+};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -105,21 +107,31 @@ fn batch(generation: u64) -> Result<SearchCorpusBatch, Box<dyn Error>> {
         source_repo_id: None,
     };
     let semantic_scopes = semantic_source_scopes_for_chunk_records(std::slice::from_ref(&chunk));
+    let scope_v1 = fixture_source_scope_v1(
+        SourceFileKey {
+            source_repo_id: RepoId::new(REPO)?,
+            repo_relative_path: RepoRelativePath::new(path),
+        },
+        RevisionId::new(REVISION)?,
+        vec![chunk],
+        Vec::new(),
+    )?;
     let mut batch = SearchCorpusBatch::replace_generation(
         RepoId::new(REPO)?,
         RevisionId::new(REVISION)?,
         ManifestGeneration::new(generation),
         digest(generation),
     )
-    .replace_scope(
-        SearchScopeKey {
-            doc_surface: SearchScopeSurface::File,
-            repo_relative_path: RepoRelativePath::new(path),
-        },
-        format!("scope:crash-matrix:{generation}"),
-        vec![chunk],
-        Vec::new(),
-    );
+    .source_event(SourcePublicationEvent {
+        stream_id: "fixture:crash-matrix".to_string(),
+        event_id: format!("fixture:crash-matrix:{generation}"),
+        expected_base_event_id: generation
+            .checked_sub(1)
+            .filter(|prior_v1| *prior_v1 > 0)
+            .map(|prior_v1| format!("fixture:crash-matrix:{prior_v1}")),
+        payload_sha256: [0; 32],
+    })
+    .replace_scope(scope_v1.coverage, scope_v1.chunks, scope_v1.symbols);
     for scope in semantic_scopes {
         batch = batch.replace_semantic_scope(
             scope.scope,

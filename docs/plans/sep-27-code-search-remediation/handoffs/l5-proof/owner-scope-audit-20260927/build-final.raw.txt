@@ -1,0 +1,4 @@
+resource admission: waiting lock=/Users/songmin/Library/Caches/quanta-index/resource-admission/build-test.lock
+resource admission: admitted lock=/Users/songmin/Library/Caches/quanta-index/resource-admission/build-test.lock wait_ns=234699746584
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.05s
+resource admission: released lock=/Users/songmin/Library/Caches/quanta-index/resource-admission/build-test.lock held_ns=1351599125

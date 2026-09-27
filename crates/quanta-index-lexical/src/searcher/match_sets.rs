@@ -21,7 +21,8 @@ use quanta_index_core::{CoreError, RequestBudgetV1};
 use quanta_index_lq_positions::query_phrase;
 use quanta_index_lq_regex::RegexExecutor;
 use quanta_index_lq_trigram::{
-    DocId as TrigramDocId, TrigramErrorCode, query_raw_substring, regex_prefilter_any_of,
+    DocId as TrigramDocId, LimitDimension, MAX_CANDIDATE_PRE_VERIFY, TrigramError,
+    TrigramErrorCode, query_raw_substring, regex_prefilter_any_of,
 };
 use roaring::RoaringBitmap;
 use std::sync::Arc;
@@ -35,6 +36,37 @@ use quanta_index_contract::{LqExpr, LqLeaf, LqPatternType, PreviewUnavailableRea
 use quanta_index_lq_regex::executor::RegexRangeError;
 use quanta_index_lq_text_normalizer::MappedText;
 use std::cell::Cell;
+
+/// Verify-only regexes have the same pre-verify candidate cap as a usable
+/// trigram prefilter.
+///
+/// Observe cancellation before advancing the authority
+/// iterator and refuse an oversized set before allocating its next slot.
+fn bounded_verify_only_candidates(
+    mut doc_ids: impl Iterator<Item = u64>,
+    budget: &RequestBudgetV1,
+) -> Result<Vec<TrigramDocId>, CoreError> {
+    let mut out = Vec::new();
+    loop {
+        budget.checkpoint("lexical:regex-verify-only-candidates")?;
+        let Some(doc_id) = doc_ids.next() else {
+            return Ok(out);
+        };
+        if out.len() >= MAX_CANDIDATE_PRE_VERIFY {
+            let error = TrigramError::plan_limit(
+                LimitDimension::CandidateSet,
+                format!("verify-only regex candidate set exceeds cap {MAX_CANDIDATE_PRE_VERIFY}"),
+            );
+            return Err(map_trigram_error("regex verify-only prefilter", &error));
+        }
+        out.try_reserve(1).map_err(|error| {
+            CoreError::Storage(format!(
+                "lexical: regex candidate allocation refused: {error}"
+            ))
+        })?;
+        out.push(TrigramDocId(doc_id));
+    }
+}
 
 impl TantivySearcher {
     /// The text documents containing `needle` as bytes, as authority doc
@@ -125,6 +157,7 @@ impl TantivySearcher {
             })?;
             // A hit shares the set; nothing is cloned per candidate.
             if let Some(cached) = cache.get(cache_key) {
+                budget.checkpoint("lexical:regex-cache-hit")?;
                 return Ok(cached);
             }
         }
@@ -158,7 +191,7 @@ impl TantivySearcher {
         {
             Ok(doc_ids) => doc_ids,
             Err(err) if err.code == TrigramErrorCode::RegexPrefilterUnusable => {
-                authority.doc_ids().map(TrigramDocId).collect()
+                bounded_verify_only_candidates(authority.doc_ids(), budget)?
             }
             Err(err) => return Err(map_trigram_error("regex prefilter", &err)),
         };
@@ -201,6 +234,10 @@ impl TantivySearcher {
                     message: format!("lexical: regex verify failed: {err}"),
                 },
             })?;
+        // The interval probe can miss cancellation during its final few
+        // candidates. Observe the request before materializing or publishing
+        // the complete match set.
+        budget.checkpoint("lexical:regex-verify-complete")?;
         let out = Arc::new(authority_member_set(
             verified_doc_ids.iter().map(|doc_id| doc_id.0),
             "regex",
@@ -416,6 +453,31 @@ impl WitnessMatcher<'_, '_, '_> {
         Ok(())
     }
 
+    fn gather(
+        &self,
+        map: &MappedText<'_>,
+        ranges: impl Iterator<Item = Range<usize>>,
+        out: &mut Vec<PositiveWitness>,
+    ) -> PreviewResult<bool> {
+        // One extra range proves an incomplete witness set and declines the
+        // optional preview. Never emit a partial highlight list as complete.
+        let cap = self
+            .context
+            .limits
+            .witnesses
+            .saturating_sub(out.len())
+            .saturating_add(1);
+        let mut matched = false;
+        for range in ranges.take(cap) {
+            matched = true;
+            self.push(map, range, out)?;
+            if self.overflow.get() || self.unsupported.get() {
+                break;
+            }
+        }
+        Ok(matched)
+    }
+
     fn leaf(
         &self,
         leaf: &LqLeaf,
@@ -452,11 +514,17 @@ impl WitnessMatcher<'_, '_, '_> {
                     "regex executor has wrong pattern/case binding",
                 )));
             }
+            let cap = self
+                .context
+                .limits
+                .witnesses
+                .saturating_sub(out.len())
+                .saturating_add(1);
             let found = executor
                 .find_ranges_bounded(
                     self.nfc.text().as_bytes(),
                     self.context.limits.transformed_bytes,
-                    1,
+                    cap,
                     &|| self.context.request.interruption().is_some(),
                 )
                 .map_err(|error| match error {
@@ -470,18 +538,14 @@ impl WitnessMatcher<'_, '_, '_> {
                             .unwrap_or_else(|| integrity("unobserved regex interruption")),
                     ),
                 })?;
-            if let Some(range) = found.ranges.into_iter().next() {
-                self.push(self.nfc, range, out)?;
-                return Ok((true, false));
-            }
-            return Ok((false, false));
+            return self
+                .gather(self.nfc, found.ranges.into_iter(), out)
+                .map(|matched| (matched, false));
         }
         if matches!(leaf, LqLeaf::RawString(_)) {
-            if let Some(range) = self.folded.find_substring(text) {
-                self.push(self.folded, range, out)?;
-                return Ok((true, false));
-            }
-            return Ok((false, false));
+            return self
+                .gather(self.folded, self.folded.find_substrings(text), out)
+                .map(|matched| (matched, false));
         }
         let wanted =
             normalize::query_tokens(text, self.context.options.case_mode()).map_err(|error| {
@@ -489,8 +553,11 @@ impl WitnessMatcher<'_, '_, '_> {
             })?;
         self.context
             .charge(self.document.len().saturating_mul(wanted.len()))?;
-        if let Some(range) = normalize::phrase_ranges(self.document, &wanted).next() {
-            self.push(self.nfc, range, out)?;
+        if self.gather(
+            self.nfc,
+            normalize::phrase_ranges(self.document, &wanted),
+            out,
+        )? {
             return Ok((true, false));
         }
         if include_path && matches!(leaf, LqLeaf::Keyword(_)) {
@@ -510,5 +577,45 @@ impl WitnessMatcher<'_, '_, '_> {
             return Ok((normalize::contains_phrase(&present, &wanted), true));
         }
         Ok((false, false))
+    }
+}
+
+#[cfg(test)]
+mod l4_verify_only_candidate_bounds {
+    use super::{MAX_CANDIDATE_PRE_VERIFY, bounded_verify_only_candidates};
+    use quanta_index_contract::SearchPlaneErrorCodeV2;
+    use quanta_index_core::{CoreError, RequestBudgetV1};
+    use std::cell::Cell;
+
+    #[test]
+    fn fallback_preserves_the_candidate_cap_and_checks_cancellation_before_enumeration()
+    -> Result<(), CoreError> {
+        let max = u64::try_from(MAX_CANDIDATE_PRE_VERIFY)
+            .map_err(|error| CoreError::Storage(error.to_string()))?;
+        let budget = RequestBudgetV1::unbounded();
+        let admitted = bounded_verify_only_candidates(1..=max, &budget)?;
+        assert_eq!(admitted.len(), MAX_CANDIDATE_PRE_VERIFY);
+        let oversized = bounded_verify_only_candidates(1..=max.saturating_add(1), &budget);
+        assert!(matches!(
+            oversized,
+            Err(CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::LexTrigramPlanLimitExceeded,
+                ..
+            })
+        ));
+
+        let cancelled = RequestBudgetV1::unbounded();
+        cancelled.cancel_handle().cancel();
+        let advanced = Cell::new(false);
+        let interrupted = bounded_verify_only_candidates(
+            std::iter::from_fn(|| {
+                advanced.set(true);
+                Some(1)
+            }),
+            &cancelled,
+        );
+        assert!(interrupted.is_err());
+        assert!(!advanced.get());
+        Ok(())
     }
 }

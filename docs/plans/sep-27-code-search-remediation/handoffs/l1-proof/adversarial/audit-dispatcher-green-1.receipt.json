@@ -1,0 +1,63 @@
+{
+  "after": "/tmp/quanta-l1-rca.h1y4pja7/audit-dispatcher-green-1.after.json",
+  "artifacts": [
+    {
+      "features": [],
+      "fresh": false,
+      "package_id": "path+file:///Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-search-plane#0.1.0",
+      "path": "/Users/songmin/Library/Caches/quanta-index/target/e385f4e6b4fe8e9b/test-workspace-lane/debug/deps/quanta_index_search_plane-e705f3e83e1e2656",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 1,
+        "opt_level": "0",
+        "overflow_checks": true,
+        "test": true
+      },
+      "sha256": "d579697dbfe09fc75e94d4452314fc2b0cf482f161472d978fec67294b6803f0",
+      "target": {
+        "crate_types": [
+          "lib"
+        ],
+        "doc": true,
+        "doctest": true,
+        "edition": "2024",
+        "kind": [
+          "lib"
+        ],
+        "name": "quanta_index_search_plane",
+        "src_path": "/Users/songmin/Documents/code-new/quanta-index/crates/quanta-index-search-plane/src/lib.rs",
+        "test": true
+      }
+    }
+  ],
+  "before": "/tmp/quanta-l1-rca.h1y4pja7/audit-dispatcher-green-1.before.json",
+  "classification": "UNCLASSIFIED: inspect execution count, outcome, inputs and source drift before promoting evidence",
+  "command": [
+    "./scripts/cargow",
+    "test",
+    "--locked",
+    "-j",
+    "2",
+    "-p",
+    "quanta-index-search-plane",
+    "--lib",
+    "--message-format=json"
+  ],
+  "ended_unix": 1790463693.54107,
+  "executed_result_lines": [
+    "running 466 tests",
+    "test result: FAILED. 465 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.96s"
+  ],
+  "exit_code": 101,
+  "head_changed": false,
+  "log": "/tmp/quanta-l1-rca.h1y4pja7/audit-dispatcher-green-1.log",
+  "log_sha256": "5490469f41b2aedceb932210a4df9e707f9a128da55a5b6ab8c4460c01d83b5f",
+  "source_changed": [
+    "crates/quanta-index-core/src/domains/lexical/collection_budget.rs",
+    "crates/quanta-index-core/src/domains/lexical/coverage.rs",
+    "crates/quanta-index-core/src/domains/lexical/outbound.rs",
+    "crates/quanta-index-core/src/domains/lexical/service.rs",
+    "crates/quanta-index-core/src/request_budget.rs"
+  ],
+  "started_unix": 1790463672.774357
+}

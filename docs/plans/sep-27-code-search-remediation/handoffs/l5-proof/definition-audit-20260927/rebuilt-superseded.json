@@ -1,0 +1,5 @@
+{
+  "reason": "superseded queued run; final source moves to checkout-specific target",
+  "signalled_admission_pid": 83716,
+  "verified_command": "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/Resources/Python.app/Contents/MacOS/Python /Users/songmin/.codex/worktrees/l5-definition-audit/quanta-index/scripts/../tools/ci/resource_admission.py --lock /Users/songmin/Library/Caches/quanta-index/resource-admission/build-test.lock --wait-seconds 900 --timeout-seconds 7200 -- cargo test -p quanta-index-retrieval-bench --lib --bins --test chunking_contract --test l5_parser_regressions --all-features --locked"
+}

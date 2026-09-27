@@ -1,14 +1,15 @@
 # Current L3 handoff
 
-The current RCA, repair and source binding are in
-[L3_RCA_AUDIT.md](L3_RCA_AUDIT.md) and [L3_RCA.source.json](L3_RCA.source.json).
+Current completion audit: [L3_SS_AUDIT.md](L3_SS_AUDIT.md).
+Requirement evidence: [L3_REQUIREMENT_AUDIT.json](L3_REQUIREMENT_AUDIT.json).
+Source and raw proof binding: [L3_SS.source.json](L3_SS.source.json).
 
-One additional error-masking defect was reproduced and repaired. The selected
-lexical scope is VERIFIED on its frozen snapshot: 193 passed, 0 failed, 0 ignored.
-Latest shared-source qualification is BLOCKED: other source changed after the run.
-The three owned repair/test files still match the verified snapshot.
-Whole-repository CI and installed E2E are NOT_RUN.
+Original L3 A/B/C scope: VERIFIED. Known unresolved P0/P1/P2 findings: 0/0/0.
+Final selected lexical run: 200 passed, 0 failed, 0 ignored, with stable inputs.
+One additional cancellation-boundary defect was repaired, and source hash fixtures
+were strengthened. No public contract migration or cross-lane connection request
+is required by these changes.
 
-Earlier scope and repairs remain in [L3_ADVERSARIAL_AUDIT.md](L3_ADVERSARIAL_AUDIT.md),
-[L3_FOLLOWUP_AUDIT.md](L3_FOLLOWUP_AUDIT.md) and their receipts. Their test counts
-must not be combined with the current run or promoted to current SDK/CLI proof.
+Whole-repository CI, installed E2E, performance/RSS and ranking-quality promotion
+remain NOT_RUN. Earlier RCA/adversarial/followup reports and their receipts are
+historical and must not be combined with this run's counts or source identity.

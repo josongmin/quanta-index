@@ -1,0 +1,23 @@
+{
+  "utc": "2026-09-26T23:22:00.543135+00:00",
+  "live_head": "2102966246866398f01833bebf71396831377149",
+  "live_dirty": " M crates/quanta-index-lexical/src/budgeted_search.rs\n M crates/quanta-index-lexical/src/text_docs.rs\n M crates/quanta-index-lexical/tests/l3_exact_source.rs\n M crates/quanta-index-sdk/tests/l1_daemon_query_contract.rs\n M crates/quanta-index-sdk/tests/l2_daemon_publication.rs\n M crates/quanta-index-search-plane/src/ingest_dispatcher/search_corpus.rs\n M crates/quanta-index-search-plane/src/readiness/activation_catalog.rs\n M crates/quanta-index-search-plane/src/readiness/activation_catalog/repository_envelope.rs\n M crates/quanta-index-search-plane/src/readiness/activation_catalog/source_events.rs\n M docs/plans/sep-27-code-search-remediation/handoffs/L5_HANDOFF.md\n M docs/plans/sep-27-code-search-remediation/handoffs/L5_HANDOFF.source.json\n M docs/plans/sep-27-code-search-remediation/handoffs/L5_TEST_MIGRATION.json\n M docs/plans/sep-27-code-search-remediation/rfcs/CS-PROD-01-parser-coverage-and-vite.md\n M docs/plans/sep-27-misc/tickets/INDEX.md\n?? docs/plans/sep-27-code-search-remediation/handoffs/L5_DEFINITION_AUDIT.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/L5_DEFINITION_AUDIT.md\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/audit-owner-current.started.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/process-crash-matrix-final.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/process-crash-matrix-final.started.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/process-crash-matrix.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/process-crash-matrix.started.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/process-daemon-current-build.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/process-daemon-current-build.started.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/process-retention-crash.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/process-retention-crash.started.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l2-proof/process-sdk-state-root.json\n?? docs/plans/sep-27-code-search-remediation/handoffs/l4-proof/authority-id/\n?? docs/plans/sep-27-code-search-remediation/handoffs/l5-proof/definition-audit-20260927/\n",
+  "changed_inputs": {
+    "crates/quanta-index-lexical/src/budgeted_search.rs": {
+      "before": "543c658b892977eefab13069d9ed9ea7d58c35b0654bba1a5ac1155dc19262a8",
+      "after": "d19b0b68e9b884db5332147cf0b549347590e21629706a8aaa9d64f661bd3d41"
+    },
+    "crates/quanta-index-lexical/src/ranked_page.rs": {
+      "before": "37d2afb499dc204474d25d7b88441982d42f530682d4f4701ea03af297a32fd8",
+      "after": "4c602e8c3983df45016a60484f3c4ff4f589baf3baad8cdbc4e7bab333b53b48"
+    },
+    "crates/quanta-index-lexical/src/ranked_page_tests.rs": {
+      "before": "ff0780642a633e332270fe38f22db469253808326f75459e34e24aa1482173d8",
+      "after": "fcd5759393a734f8af28ce3dce10fc9dbffd615872f64d6c0d7ddd40da38c748"
+    },
+    "crates/quanta-index-lexical/tests/l3_exact_source.rs": {
+      "before": "f1479bd10bd2af128ea0d9b25deaf5b96e41feb33af2dcb0a288b70c99a23055",
+      "after": "95cc4f344d039b841ca44a429dd95cb712f306a8ae4d17cc04501ac58a31cc5c"
+    }
+  }
+}

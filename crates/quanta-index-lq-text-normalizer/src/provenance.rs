@@ -210,7 +210,13 @@ impl<'a> MappedText<'a> {
     /// Uses the same needle transformation and comparison as `contains_substring`.
     #[must_use]
     pub fn find_substring(&self, needle: &str) -> Option<Range<usize>> {
-        crate::tokens::substring_range_in_case_text(&self.transformed, needle, self.case)
+        self.find_substrings(needle).next()
+    }
+
+    /// Non-overlapping raw-substring witnesses with the same transformation
+    /// and match semantics as [`Self::find_substring`].
+    pub fn find_substrings(&self, needle: &str) -> impl Iterator<Item = Range<usize>> + '_ {
+        crate::tokens::substring_ranges_in_case_text(&self.transformed, needle, self.case)
     }
 
     /// Map a nonempty, UTF-8-aligned transformed span to its covering raw span.
@@ -368,7 +374,7 @@ fn decompose(
 )]
 mod tests {
     use super::{MappedText, MappingError};
-    use crate::CaseMode;
+    use crate::{CaseMode, apply_case, nfc};
 
     fn mapped<'a>(
         raw: &'a str,
@@ -376,6 +382,37 @@ mod tests {
         case: CaseMode,
     ) -> Result<MappedText<'a>, MappingError> {
         MappedText::new(raw, indexed, case, 4096, 16384, &|| false)
+    }
+
+    #[test]
+    fn l4_canonical_order_and_fold_matrix_preserves_source_ranges() -> Result<(), MappingError> {
+        // A fixed small alphabet exercises leading/reordered marks, Hangul
+        // composition, singleton decomposition, and an expanding lowercase.
+        // Compare the mapped output to the public normalization/case contract,
+        // then require every emitted scalar to carry valid source/NFC bytes.
+        let alphabet = [
+            "a", "\u{301}", "\u{323}", "\u{1100}", "\u{1161}", "\u{212a}", "\u{130}",
+        ];
+        for first in alphabet {
+            for second in alphabet {
+                for third in alphabet {
+                    let raw = format!("{first}{second}{third}");
+                    let indexed = nfc(&raw);
+                    for case in [CaseMode::Sensitive, CaseMode::Folded] {
+                        let map = mapped(&raw, indexed.as_ref(), case)?;
+                        assert_eq!(map.text(), apply_case(indexed.as_ref(), case));
+                        for (start, scalar) in map.text().char_indices() {
+                            let end = start + scalar.len_utf8();
+                            let source = map.source_range(start..end)?;
+                            let normalized = map.normalized_range(start..end)?;
+                            assert!(raw.get(source).is_some(), "{raw:?} {case:?}");
+                            assert!(indexed.get(normalized).is_some(), "{raw:?} {case:?}");
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     #[test]
@@ -392,6 +429,22 @@ mod tests {
         assert_eq!(
             mapped("İ", "İ", CaseMode::Sensitive)?.find_substring("i\u{307}"),
             None
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn l4_substring_ranges_keep_folded_coordinates_and_nonoverlap() -> Result<(), MappingError> {
+        let folded = mapped("İ İ", "İ İ", CaseMode::Folded)?;
+        assert_eq!(
+            folded.find_substrings("i\u{307}").collect::<Vec<_>>(),
+            vec![0..3, 4..7]
+        );
+        assert_eq!(folded.find_substrings("").count(), 0);
+        let sensitive = mapped("aaa", "aaa", CaseMode::Sensitive)?;
+        assert_eq!(
+            sensitive.find_substrings("aa").collect::<Vec<_>>(),
+            vec![0..2]
         );
         Ok(())
     }

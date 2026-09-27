@@ -801,10 +801,10 @@ impl DirectSearchCorpusMaterializer {
             };
             validate_delta_base_v1(validator.as_ref(), &base, &format!("{label} delta base"))?;
         }
-        if !self.ledger.read().map_err(|error| CoreError::Storage(format!(
+        if self.ledger.read().map_err(|error| CoreError::Storage(format!(
             "direct search-corpus materialize: ledger poisoned while inspecting base chunk authority: {error}"
         )))?.structural_state(&batch.repo_id, &batch.revision_id, base_generation)
-            .is_some_and(|state| state.source_batch_digest().is_some()) {
+            .is_none_or(|state| state.source_batch_digest().is_none()) {
             return Err(CoreError::Typed {
                 code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusDeltaBaseNotSealed,
                 message: "source delta base has no complete chunk authority; rebuild the source generation before publication".into(),
@@ -989,7 +989,8 @@ impl DirectSearchCorpusMaterializer {
                 delta.removed.clear();
                 delta
             };
-            chunks.meta.seal_requested = current.is_some_and(|state| state.seal_requested());
+            chunks.meta.seal_requested =
+                current.is_some_and(crate::readiness::StructuralAuthorityState::seal_requested);
             chunks.meta.source_batch_digest = Some(batch.batch_digest.clone());
             // Auxiliary generations older than the one being sealed that the
             // retention receipt does not retain go with it; a newer

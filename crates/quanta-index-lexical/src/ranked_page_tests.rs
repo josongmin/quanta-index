@@ -748,6 +748,53 @@ fn l3_collection_cannot_rebind_to_a_different_search_request() -> TestResult {
 }
 
 #[test]
+fn l3_retained_buffers_and_guard_carriers_observe_bound_cancellation() -> TestResult {
+    let index = index_with(&[&["a.rs"]])?;
+    let searcher = index.reader()?.searcher();
+    let request = RequestBudgetV1::unbounded();
+    let resources = LexicalCollectionBudget::new(100, 1_000_000)?;
+    let ledger = CollectionBudget::new(LexicalExecutionBudgetV1::new(10)?, resources.clone());
+    let fruit = budgeted_collection(
+        &searcher,
+        &MeasuredQuery::default(),
+        &GroupedPageCollector::new(ProjectionGroup::Path, 1.0, ledger.clone()),
+        &request,
+        ledger.clone(),
+        "test:buffer-cancel",
+    )?;
+    drop(fruit);
+    assert_eq!(resources.resident_bytes(), 0);
+    let work = resources.used_work();
+    let peak = resources.peak_bytes();
+
+    request.cancel_handle().cancel();
+    let rows = super::RankedRows::with_capacity(1, Some(ledger.clone()));
+    let row_error = rows.err().ok_or("cancelled row buffer was allocated")?;
+    assert!(
+        row_error.to_string().contains("REQUEST_CANCELLED"),
+        "{row_error}"
+    );
+    let guard = resources.reserve_bytes(1)?;
+    let mut carrier = super::rows::CollectionMemory::new(ledger.clone());
+    let carrier_error = carrier
+        .hold(guard)
+        .err()
+        .ok_or("cancelled guard carrier was allocated")?;
+    assert!(
+        carrier_error.to_string().contains("REQUEST_CANCELLED"),
+        "{carrier_error}"
+    );
+    assert!(
+        matches!(ledger.error("test:buffer-cancel"), Some(CoreError::Typed { code, .. }) if code == REQUEST_CANCELLED_CODE)
+    );
+    assert_eq!(resources.used_work(), work);
+    assert_eq!(resources.peak_bytes(), peak);
+    assert_eq!(resources.resident_bytes(), 0);
+    assert!(resources.failure().is_none());
+    Ok(())
+}
+
+#[test]
 fn l3_failed_admission_never_builds_group_output() -> TestResult {
     let index = index_with(&[&["a", "b"]])?;
     let searcher = index.reader()?.searcher();

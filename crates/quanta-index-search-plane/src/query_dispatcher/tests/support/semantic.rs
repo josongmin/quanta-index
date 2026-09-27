@@ -3,13 +3,14 @@
 use std::sync::{Arc, Mutex};
 
 use quanta_index_contract::{
-    ClusterMembershipBatchReadRequestV1, ClusterMembershipBatchReadResponseV1, GenerationPin,
-    GenerationSnapshot, LexicalCandidate, ManifestGeneration, QueryConstraintSetV1, RepoId,
-    RevisionId, SemanticCorpusKindV1, SemanticQueryRequest,
+    ClusterMembershipBatchReadRequestV1, ClusterMembershipBatchReadResponseV1,
+    EmbeddingNormalization, GenerationPin, GenerationSnapshot, LexicalCandidate,
+    ManifestGeneration, QueryConstraintSetV1, RepoId, RevisionId, SemanticCorpusKindV1,
+    SemanticQueryRequest,
 };
 use quanta_index_core::{
     CoreError, DenseIndexV1, DenseLaneAttestationV1, DenseLaneContractV1, RequestBudgetV1,
-    SemanticIndexOpenPort, SemanticSearchHitV1, SemanticSearcher,
+    SemanticIndexOpenPort, SemanticPolicy, SemanticSearchHitV1, SemanticSearcher,
 };
 
 use crate::query_dispatcher::tests::support::common::{candidate, ready_pin};
@@ -97,6 +98,8 @@ pub(crate) struct RecordingSemanticState {
     /// What `search_constrained` answers, cut to the `top_k` asked for;
     /// `None` answers the one inline `semantic-inline` hit.
     pub(crate) constrained_search_results: Option<Vec<LexicalCandidate>>,
+    /// Override scoped search rows; `None` retains the default fixture row.
+    pub(crate) scoped_search_results: Option<Vec<LexicalCandidate>>,
     pub(crate) search_vectors: Vec<Vec<f32>>,
     /// The `top_k` of every `search_constrained` call, in call order: the
     /// dense lane's fetch sizes (QI-BB-018 보완 #3 refill).
@@ -154,6 +157,24 @@ impl RecordingSemanticSearcher {
 }
 
 impl SemanticSearcher for RecordingSemanticSearcher {
+    fn validate_query_vector(&self, query_vector: &[f32]) -> Result<(), CoreError> {
+        let dimension = crate::SEARCH_OWNED_SEMANTIC_DIMENSION;
+        if query_vector.len() != dimension {
+            return Err(CoreError::Typed {
+                code: quanta_index_contract::lex::LexicalErrorCode::SemDimMismatch.into(),
+                message: format!(
+                    "semantic: query vector dim {} does not match test index dim {dimension}",
+                    query_vector.len()
+                ),
+            });
+        }
+        SemanticPolicy::validate_embedding_vector_v1(
+            query_vector,
+            dimension,
+            EmbeddingNormalization::L2Unit,
+        )
+    }
+
     fn resident_bytes_estimate(&self) -> u64 {
         0
     }
@@ -349,13 +370,16 @@ impl SemanticSearcher for RecordingSemanticSearcher {
         _top_k: u32,
         budget: &RequestBudgetV1,
     ) -> Result<Vec<LexicalCandidate>, CoreError> {
-        self.state
-            .lock()
-            .map_err(|err| CoreError::Storage(format!("semantic state poisoned: {err}")))?
-            .scoped_vectors
-            .push(query_vector.to_vec());
+        let rows = {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|err| CoreError::Storage(format!("semantic state poisoned: {err}")))?;
+            state.scoped_vectors.push(query_vector.to_vec());
+            state.scoped_search_results.clone()
+        };
         self.observe_budget(budget)?;
-        Ok(vec![candidate("semantic-scoped", 1.0)])
+        Ok(rows.unwrap_or_else(|| vec![candidate("semantic-scoped", 1.0)]))
     }
 
     fn search_scoped_constrained(
@@ -366,16 +390,17 @@ impl SemanticSearcher for RecordingSemanticSearcher {
         _top_k: u32,
         budget: &RequestBudgetV1,
     ) -> Result<Vec<LexicalCandidate>, CoreError> {
-        {
+        let rows = {
             let mut state = self
                 .state
                 .lock()
                 .map_err(|err| CoreError::Storage(format!("semantic state poisoned: {err}")))?;
             state.scoped_vectors.push(query_vector.to_vec());
             state.scoped_constraints.push(constraints.clone());
-        }
+            state.scoped_search_results.clone()
+        };
         self.observe_budget(budget)?;
-        Ok(vec![candidate("semantic-scoped", 1.0)])
+        Ok(rows.unwrap_or_else(|| vec![candidate("semantic-scoped", 1.0)]))
     }
 
     fn score_candidate(

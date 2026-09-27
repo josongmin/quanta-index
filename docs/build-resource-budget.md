@@ -38,6 +38,12 @@ preparation releases its slot before the main test command acquires it.
   acquired the slot reports only waiting time. These fields separate queue
   contention from time holding the slot; they are not success or performance
   qualification evidence, and absent diagnostics must not be treated as zero.
+- Cargo lane history uses the process-independent `CLOCK_MONOTONIC` elapsed
+  clock, including on macOS Python 3.9 where `time.monotonic_ns()` has a
+  per-process offset. Its summary rejects
+  missing or negative durations and missing exit codes, including historical
+  rows written before this clock change; those rows cannot be repaired from
+  their recorded values.
 
 This is cooperative admission, not a host resource quota. Direct Cargo calls,
 different cache roots, compiler services, unrelated processes, and descendants
@@ -75,3 +81,19 @@ The admitted optimization is to prepare nextest binaries once, then reuse the
 bound binaries metadata and Cargo metadata for collection and execution. Both
 reuse consumers revalidate input identity before and after execution; every
 selected test still runs and requires terminal evidence.
+
+The SDK rail builds searchd separately, then lets the `sdk_roundtrip` nextest
+preparation build its required retrieval runner. The integration test refers to
+that binary with `CARGO_BIN_EXE_quanta-index-retrieval-bench`; a second, earlier
+`cargo build` of the same runner is redundant. The Cargo unit graph for the
+selected test contains the runner binary and its 296 reachable units have the
+same features and effective profile options as the standalone runner graph.
+The profile names are `test` and `dev`, respectively, so this graph comparison
+does not establish identical executable bytes. The proof still requires the
+runner in nextest's selected `non-test-binaries` build metadata; an old file in
+the target directory is insufficient. It hashes and binds the runner before
+test execution, and checks the actual runner record and terminal nextest
+evidence. Cold-path timing remains unqualified
+until measured on a quiet, frozen host.
+`retrieval-sdk-proof` delegates to `portable_proof.py`; there is no second raw
+Just recipe with an independently maintained build sequence.

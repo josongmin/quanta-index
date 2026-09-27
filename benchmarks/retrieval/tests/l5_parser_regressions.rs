@@ -318,6 +318,79 @@ fn typescript_callable_declarations_keep_owners_and_overload_spans() {
 }
 
 #[test]
+fn typescript_anonymous_type_members_do_not_become_false_owner_methods() {
+    let source = "type Direct = { run(): void };\ntype Nested = { child: { run(): void } };\nfunction use(arg: { run(): void }) {}\nclass Outer { field: { run(): void }; run(): void; }\n";
+    for path in ["type-scope.ts", "type-scope.tsx"] {
+        assert_definition_inventory(
+            path,
+            source,
+            &[
+                ("Direct", "type_alias", "type Direct = { run(): void };"),
+                ("Direct.run", "method", "run(): void"),
+                (
+                    "Nested",
+                    "type_alias",
+                    "type Nested = { child: { run(): void } };",
+                ),
+                ("use", "function", "function use(arg: { run(): void }) {}"),
+                (
+                    "Outer",
+                    "class",
+                    "class Outer { field: { run(): void }; run(): void; }",
+                ),
+                ("Outer.run", "method", "run(): void"),
+            ],
+        );
+        let only_function = "function use(arg: { run(): void }) {}";
+        let files = BTreeMap::from([(path.to_string(), source_file(path, only_function))]);
+        let options = SymbolPreflightOptions {
+            max_symbols_per_file: 1,
+            max_symbols_total: 1,
+            ..SymbolPreflightOptions::default()
+        };
+        let preflight = preflight_corpus_symbols(&files, &options).expect("bounded preflight");
+        preflight
+            .admit(SymbolCoveragePolicy::RequireComplete)
+            .expect("skipped anonymous signatures must not exhaust symbol budget");
+        assert_eq!(
+            preflight.report().files[0].coverage,
+            SymbolCoverage::Complete { symbol_count: 1 }
+        );
+    }
+}
+
+#[test]
+fn typescript_alias_composition_keeps_only_owned_method_signatures() {
+    let source = "type Combined = { alpha(): void } & { beta(): void };\ntype Grouped = ({ gamma(): void });\ntype Generic<T> = Promise<{ delta(): void }>;\n";
+    for path in ["composed.ts", "composed.tsx"] {
+        assert_definition_inventory(
+            path,
+            source,
+            &[
+                (
+                    "Combined",
+                    "type_alias",
+                    "type Combined = { alpha(): void } & { beta(): void };",
+                ),
+                ("Combined.alpha", "method", "alpha(): void"),
+                ("Combined.beta", "method", "beta(): void"),
+                (
+                    "Grouped",
+                    "type_alias",
+                    "type Grouped = ({ gamma(): void });",
+                ),
+                ("Grouped.gamma", "method", "gamma(): void"),
+                (
+                    "Generic",
+                    "type_alias",
+                    "type Generic<T> = Promise<{ delta(): void }>;",
+                ),
+            ],
+        );
+    }
+}
+
+#[test]
 fn typescript_named_modules_and_enums_are_definitions_too() {
     let source =
         "namespace Outer { export enum Color { Red, Blue } export function inside() {} }\n";
@@ -333,6 +406,31 @@ fn typescript_named_modules_and_enums_are_definitions_too() {
                 ),
                 ("Outer.Color", "enum", "enum Color { Red, Blue }"),
                 ("Outer.inside", "function", "function inside() {}"),
+            ],
+        );
+    }
+}
+
+#[test]
+fn dotted_namespaces_use_ast_segments_not_raw_spacing_or_comments() {
+    let source = "namespace Outer . Inner { export function first() {} }\nnamespace A/* gap */. B . C { export class Item {} }\n";
+    for path in ["dotted.ts", "dotted.tsx"] {
+        assert_definition_inventory(
+            path,
+            source,
+            &[
+                (
+                    "Outer.Inner",
+                    "module",
+                    "namespace Outer . Inner { export function first() {} }",
+                ),
+                ("Outer.Inner.first", "function", "function first() {}"),
+                (
+                    "A.B.C",
+                    "module",
+                    "namespace A/* gap */. B . C { export class Item {} }",
+                ),
+                ("A.B.C.Item", "class", "class Item {}"),
             ],
         );
     }

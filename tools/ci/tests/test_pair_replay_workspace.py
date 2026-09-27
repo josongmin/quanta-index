@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import shutil
 
 import pytest
 
@@ -25,7 +26,7 @@ def raw_archives(tmp_path):
     return raw
 
 
-def test_repeated_restoration_is_local_and_rechecks_actual_archive_bytes(raw_archives, monkeypatch):
+def test_repeated_restoration_shares_only_corpus_and_rechecks_archives(raw_archives, monkeypatch, tmp_path):
     calls = []
     original = bridge.restore_corpus
 
@@ -34,17 +35,25 @@ def test_repeated_restoration_is_local_and_rechecks_actual_archive_bytes(raw_arc
         return original(*args, **kwargs)
 
     monkeypatch.setattr(bridge, "restore_corpus", counted)
+    second_raw = tmp_path / "second-raw"
+    shutil.copytree(raw_archives, second_raw)
+    changed_native = tmp_path / "changed-native"
+    bridge.unpack_native(bridge.RawFile.capture(second_raw / "native-tree.zip"), changed_native)
+    (changed_native / "case-specific.txt").write_text("second run", encoding="utf-8")
+    (second_raw / "native-tree.zip").unlink()
+    bridge.pack_native(changed_native, second_raw / "native-tree.zip")
     with bridge._ReplayWorkspace() as workspace:
         first = workspace.restore(raw_archives)
         assert workspace.restore(raw_archives) == first
         assert len(calls) == 1
-        archive = raw_archives / "native-tree.zip"
-        original_bytes = archive.read_bytes()
-        archive.write_bytes(original_bytes[:-1] + bytes([original_bytes[-1] ^ 1]))
-        with pytest.raises(bridge.EvidenceError, match="archives differ"):
-            workspace.restore(raw_archives)
-        archive.write_bytes(original_bytes)
+        assert workspace.restore(second_raw) == first
+        assert (first[1] / "case-specific.txt").read_text() == "second run"
+        assert len(calls) == 1
         assert workspace.restore(raw_archives) == first
+        assert not (first[1] / "case-specific.txt").exists()
+        (second_raw / "corpus.bundle").write_bytes(b"different corpus")
+        with pytest.raises(bridge.EvidenceError, match="corpus archives differ"):
+            workspace.restore(second_raw)
     assert not first[0].exists()
     with bridge._ReplayWorkspace() as second:
         second.restore(raw_archives)
@@ -79,7 +88,7 @@ def test_changed_corpus_bundle_is_not_hidden_by_identical_native_archive(raw_arc
     with bridge._ReplayWorkspace() as workspace:
         workspace.restore(raw_archives)
         (raw_archives / "corpus.bundle").write_bytes(b"different corpus")
-        with pytest.raises(bridge.EvidenceError, match="archives differ"):
+        with pytest.raises(bridge.EvidenceError, match="corpus archives differ"):
             workspace.restore(raw_archives)
 
 
@@ -121,6 +130,6 @@ def test_replay_discards_staging_bundle_but_rechecks_raw_archive(raw_archives, m
         assert captured.count(raw_bundle) == 2
         original_bytes = raw_bundle.read_bytes()
         raw_bundle.write_bytes(original_bytes[:-1] + bytes([original_bytes[-1] ^ 1]))
-        with pytest.raises(bridge.EvidenceError, match="archives differ"):
+        with pytest.raises(bridge.EvidenceError, match="corpus archives differ"):
             workspace.restore(raw_archives)
         assert captured.count(raw_bundle) == 3

@@ -126,7 +126,7 @@ fn a_replay_is_acked_from_the_record_and_a_forged_digest_never_lands() -> TestRe
     }
 
     // One byte of the body changes; the carried digest does not.
-    let mut forged = batch;
+    let mut forged = batch.clone();
     forged
         .replace_scopes
         .first_mut()
@@ -147,7 +147,8 @@ fn a_replay_is_acked_from_the_record_and_a_forged_digest_never_lands() -> TestRe
     }
 
     // What is served is the first body and only the first body.
-    let _sealed = rt.seal()?;
+    rt.publish_search_corpus_batch(batch)?;
+    rt.activate_last_sealed_generation()?;
     let served_first = rt.query_text(TextQuerySyntax::Native, "idem_first", 5);
     if let Some(error) = served_first.typed_error {
         return Err(format!("the applied body must serve: {error}").into());
@@ -247,7 +248,8 @@ fn duplicate_publishes_converge_on_one_apply(publishers: u64) -> TestResult {
     if idempotency_rows(&rt)? != 1 {
         return Err("duplicate publishes must leave exactly one record".into());
     }
-    let _sealed = rt.seal()?;
+    rt.publish_search_corpus_batch(batch)?;
+    rt.activate_last_sealed_generation()?;
     let served = rt.query_text(TextQuerySyntax::Native, "idem_race", 5);
     if let Some(error) = served.typed_error {
         return Err(format!("the applied body must serve: {error}").into());

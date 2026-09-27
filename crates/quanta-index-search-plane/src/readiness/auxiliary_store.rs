@@ -355,6 +355,14 @@ pub fn restore_auxiliary_rows_into(
 
 #[cfg(test)]
 impl ActiveSearchCorpusPinReadPort for NoActiveSearchCorpusPinsV1 {
+    fn unresolved_source_targets_for_pair_v1(
+        &self,
+        _repo_id: &RepoId,
+        _revision_id: &RevisionId,
+    ) -> Result<Vec<quanta_index_contract::GenerationSnapshot>, CoreError> {
+        Ok(Vec::new())
+    }
+
     fn active_search_corpus_under_guard_v1(
         &self,
         _guard: &SearchCorpusPairMutationGuard<'_>,

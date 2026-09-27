@@ -1,35 +1,37 @@
-# L2 handoff — final code audit repaired five additional defects
+# L2 handoff — code repairs and native daemon recovery audit
 
-Latest audit: [L2_FINAL_AUDIT.md](L2_FINAL_AUDIT.md) and
-[L2_FINAL_AUDIT.json](L2_FINAL_AUDIT.json). These supersede earlier verification
-statements below. Five additional defects (RR-10 through RR-14) were reproduced
-and repaired: physical Delta lineage, malformed bundle admission, inherited
-structural chunks, retry after base retirement, and checkpoint-before-retention
-ordering.
+Latest closeout: [L2_REAUDIT_20260927.md](L2_REAUDIT_20260927.md) and
+[machine-readable source/custody](L2_REAUDIT_20260927.json). A new P1,
+RR-15, was reproduced after the earlier process audit: a later producer stream
+could seal g2 while g1 was unresolved, leaving g1 impossible to activate. The
+retention/admission and activation repair is described in the new audit.
+RR-10 through RR-14 remain documented in [L2_FINAL_AUDIT.md](L2_FINAL_AUDIT.md).
 
-Latest owner result: **261 passed, 0 failed, 0 ignored, 205 filtered**, with no
-input changes during execution. **VERIFIED** is limited to the exact recorded
-owner-test snapshot in `l2-proof/audit-owner-closeout.json`.
-Overall integration qualification remains **BLOCKED**: the SDK scenario again
-failed harness compilation on 16 old DTO uses; scoped lint stopped on 11 core
-dependency errors. Behavior and target lint execution were **NOT_RUN**.
+- **VERIFIED:** retained native daemon + SDK process behavior, 3 tests including
+  all 8 named crash cuts and cross-stream refusal/restart/original retry.
+- **VERIFIED:** current search-plane non-query lib command, 265 passed, 0 failed,
+  208 query tests filtered; SDK process-test and search-plane lib strict lint
+  each exited 0. Source did not change during these commands.
+- **VERIFIED:** reachable harness symbol-before-text fixture repair, 10 focused
+  tests, full harness lib 118/118, and harness-only strict lint all passed in
+  source-stable commands. Earlier UI/shared-dependency failures are historical;
+  the exact current receipts are in the re-audit.
+- **BLOCKED:** combined shared dirty checkout/release qualification because
+  concurrent files changed during daemon build; runtime harness migration and
+  external producer cutover are separately owned. Installed release and
+  deployment are **NOT_RUN**.
 
-Source snapshot: shared dirty `main`, HEAD
-`5571132655a83824731e7909b0e310951edad52b`.
-Recorded owner source inventory: [L2_FINAL.source.json](L2_FINAL.source.json).
-Closeout revalidation observed later `core/domains/lexical/coverage.rs` drift.
-Shared source continues to change; do not promote snapshot receipts into current
-whole-repository qualification. Existing concurrent work was preserved. L2 did
-not commit, push, reset, create an agent or send a proactive L0 message.
+Recorded shared dirty main HEAD: `2102966246866398f01833bebf71396831377149`.
+The retained executable SHA-256 is
+`786ef955dbc84ca6fbcd1f675c36a4b1efb5d8811ee5e1b2312b15e40db88118`.
+Earlier process and owner receipts remain historical and are not promoted to
+the new source snapshot.
 
-The strict existing auxiliary state/meta rows now require nullable
-`source_batch_digest`; missing legacy fields reject and require an offline rebuild.
-A new target checkpoints complete chunks before retention, then records track
-and rollback authority after the reconciled receipt. No new generation/IR scheme
-or performance claim was introduced.
-
-Earlier `L2_HANDOFF.source.json`, `L2_RR_REOPEN.source.json`, the 98601a66 source
-snapshot, 556-test execution and fuzz receipts are historical baselines.
+The existing auxiliary state/meta rows require nullable `source_batch_digest`;
+legacy missing fields reject and need an offline rebuild. Complete target chunks
+are checkpointed before retention. Track/history publication still follows the
+reconciled receipt. No parallel generation/IR scheme or performance claim was
+introduced. Concurrent changes were preserved; L2 did not commit or push.
 
 ## Implementation and contract effects
 

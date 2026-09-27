@@ -337,6 +337,10 @@ mod tests {
     }
 
     impl SemanticSearcher for ResidentHandle {
+        fn validate_query_vector(&self, _query_vector: &[f32]) -> Result<(), CoreError> {
+            Err(never())
+        }
+
         fn resident_bytes_estimate(&self) -> u64 {
             1
         }

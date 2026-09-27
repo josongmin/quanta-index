@@ -19,11 +19,9 @@ use std::collections::BTreeSet;
 use quanta_index_contract::{LqQuery, QueryConstraintSetV1};
 use quanta_index_core::{CoreError, LexicalPolicy, RequestBudgetV1};
 use tantivy::TantivyDocument;
-use tantivy::collector::TopDocs;
 
 use crate::TantivySearcher;
-use crate::budgeted_search::budgeted_search;
-use crate::documents::stored_text;
+use crate::documents::required_stored_text;
 use crate::searcher::planner_errors::planner_preflight_expr;
 use crate::searcher::query_rewrite::rewrite_symbol_name_predicate_query;
 
@@ -44,6 +42,9 @@ impl TantivySearcher {
             return Ok(BTreeSet::new());
         }
         budget.checkpoint(ADMISSION_STAGE)?;
+        if candidate_ids.len() > self.execution_budget.max_examined_candidates() {
+            return Err(self.execution_budget.exceeded("dense candidate admission"));
+        }
         // The same preparation as `search_constrained`, step for step, so
         // the plan that admits a dense candidate is the plan that would
         // have ranked it on the lexical lane.
@@ -102,35 +103,33 @@ impl TantivySearcher {
         };
         let compiled =
             self.with_doc_kind_and_constraints(base, prepared.doc_kind.as_str(), constraints);
-        // One row past the candidate count: a live index holds one document
-        // per id, so an extra row means an id names two and the answer would
-        // not be the exact-lookup answer the port promises.
-        let collect_limit = candidate_ids.len().saturating_add(1);
-        let hits = budgeted_search(
+        // Whole-set collection charges native work and retained bytes before
+        // decoding; an extra row or duplicate id cannot become a partial
+        // admission result.
+        let hits = self.collect_whole_set(
             &searcher,
             &*compiled,
-            &TopDocs::with_limit(collect_limit),
+            1.0,
+            "dense candidate admission",
             budget,
-            ADMISSION_STAGE,
         )?;
         let mut admitted = BTreeSet::new();
-        for (_score, doc_address) in hits {
+        for row in hits {
+            budget.checkpoint(ADMISSION_STAGE)?;
+            let doc_address = row.address;
             let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
                 CoreError::Storage(format!(
                     "lexical: admission fetch doc {doc_address:?}: {err}"
                 ))
             })?;
-            let Some(candidate_id) = stored_text(&doc, self.fields.candidate_id) else {
-                return Err(CoreError::Storage(format!(
-                    "lexical: admission matched document {doc_address:?} without a candidate id"
-                )));
-            };
-            if !candidate_ids.contains(&candidate_id) {
+            let candidate_id =
+                required_stored_text(&doc, self.fields.candidate_id, "candidate_id")?;
+            if !candidate_ids.contains(candidate_id) {
                 return Err(CoreError::Storage(format!(
                     "lexical: admission matched `{candidate_id}`, which is not a dense candidate"
                 )));
             }
-            if !admitted.insert(candidate_id.clone()) {
+            if !admitted.insert(candidate_id.to_owned()) {
                 return Err(CoreError::Storage(format!(
                     "lexical: candidate id `{candidate_id}` names 2 live documents"
                 )));

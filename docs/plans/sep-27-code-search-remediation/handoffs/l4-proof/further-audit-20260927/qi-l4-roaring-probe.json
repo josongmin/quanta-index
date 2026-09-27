@@ -1,0 +1,12 @@
+{
+  "command": [
+    "/tmp/qi-roaring-heap-probe"
+  ],
+  "exit_code": 0,
+  "stdout": "warmup\ncount=3 live_heap=184 accounted=176 containers=3 array_bytes=48 run_bytes=0\ncount=513 live_heap=45064 accounted=24656 containers=513 array_bytes=8208 run_bytes=0\ncount=1025 live_heap=90120 accounted=49232 containers=1025 array_bytes=16400 run_bytes=0\n",
+  "stderr": "",
+  "source_sha256": "978720ccae52442e1af41cac151c32f76d4cf8bf00e491041eb2dc0899acc46c",
+  "binary_sha256": "ba7a3d3544e12c9f56bd0041eb8dc3b990018a4394768d2ec08b4e1662ab2ebb",
+  "roaring_rlib_sha256": "0fe334c1c2ddf5dbd7905cc5f1335022fc3da505656da0427e0ed672410632ca",
+  "lock_version": "roaring 0.11.4"
+}

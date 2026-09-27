@@ -18,19 +18,15 @@ use std::time::{Duration, Instant};
 
 use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
-    BatchIngestMode, ChunkId, ChunkRecord, EarlyStopReason, EngineTouched, GenerationPin,
-    HybridQueryRequest, LexicalCandidate, LqVisibility, ManifestGeneration, PlannerStage, RepoId,
-    RepoRelativePath, RevisionId, SearchCorpusIngestBatch, SearchCorpusReplaceScope,
-    SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneIngestIpcResponse,
-    SearchPlaneIngestIpcResponseEnvelope, SearchPlaneQueryIpcRequest,
-    SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
-    SearchPlaneQueryIpcResponseEnvelope, SearchScopeKey, SearchScopeSurface, SemanticQueryRequest,
+    ChunkId, ChunkRecord, EarlyStopReason, EngineTouched, GenerationPin, HybridQueryRequest,
+    LexicalCandidate, LqVisibility, ManifestGeneration, PlannerStage, RepoId, RepoRelativePath,
+    RevisionId, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope,
+    SearchPlaneQueryIpcResponse, SearchPlaneQueryIpcResponseEnvelope, SemanticQueryRequest,
     TextQueryRequest, TextQuerySyntax,
 };
 use quanta_index_ipc::send_request;
-use quanta_index_searchd_harness::{E2eRuntime, semantic_source_scopes_for_chunk_records};
+use quanta_index_searchd_harness::{E2eRuntime, SourceCorpusFixture};
 use serde::ser::{Serialize, SerializeStruct, Serializer};
-use std::collections::BTreeMap;
 
 use crate::frontdoor_scenarios::DSL_FRONTDOOR_SCENARIOS;
 
@@ -166,13 +162,6 @@ fn send_query_request(
     send_request(socket, request, quanta_index_ipc::ClientIoPolicy::default())
 }
 
-fn send_ingest_request(
-    socket: &Path,
-    request: &SearchPlaneIngestIpcRequestEnvelope,
-) -> Result<SearchPlaneIngestIpcResponseEnvelope, quanta_index_ipc::IpcError> {
-    send_request(socket, request, quanta_index_ipc::ClientIoPolicy::default())
-}
-
 fn wait_until<F>(timeout: Duration, mut cond: F) -> bool
 where
     F: FnMut() -> bool,
@@ -191,95 +180,21 @@ fn pin() -> GenerationPin {
     GenerationPin::new(repo(), revision(), generation())
 }
 
-fn scope_key(path: &str) -> SearchScopeKey {
-    SearchScopeKey {
-        doc_surface: SearchScopeSurface::Chunk,
-        repo_relative_path: RepoRelativePath::new(path),
-    }
-}
-
-fn dispatch_ingest(socket: &Path, payload: SearchPlaneIngestIpcRequest) -> TestResult {
-    // Like every producer, stamp the canonical batch digest before sending
-    // (QI-BB-032); the search plane refuses any other digest.
-    let payload = quanta_index_searchd_harness::stamped_ingest_request(payload)?;
-    let response = send_ingest_request(
-        socket,
-        &SearchPlaneIngestIpcRequestEnvelope {
-            request_id: NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed),
-            payload,
-        },
-    )?;
-    match response.payload {
-        SearchPlaneIngestIpcResponse::Error(err) => {
-            Err(format!("ingest failed code={} message={}", err.code, err.message).into())
-        }
-        _ => Ok(()),
-    }
-}
-
 fn publish_search_corpus_chunks(
-    socket: &Path,
+    corpus: &mut SourceCorpusFixture,
     chunks: Vec<ChunkRecord>,
     bundle_payload: Option<Vec<u8>>,
 ) -> TestResult {
-    let semantic_replace_scopes = semantic_source_scopes_for_chunk_records(&chunks);
-    let mut chunks_by_path: BTreeMap<String, Vec<ChunkRecord>> = BTreeMap::new();
-    for chunk in chunks {
-        chunks_by_path
-            .entry(chunk.repo_relative_path.as_str().to_string())
-            .or_default()
-            .push(chunk);
+    corpus.replace_chunks(chunks)?;
+    if let Some(bytes) = bundle_payload {
+        corpus.set_metadata(bytes)?;
     }
-    let replace_scopes = chunks_by_path
-        .into_iter()
-        .map(|(path, chunks)| SearchCorpusReplaceScope {
-            scope: scope_key(&path),
-            scope_digest: format!("dsl-lex-scope:{path}"),
-            chunks,
-            symbols: Vec::new(),
-        })
-        .collect();
-    dispatch_ingest(
-        socket,
-        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(SearchCorpusIngestBatch {
-            repo_id: repo(),
-            revision_id: revision(),
-            generation: generation(),
-            base_generation: None,
-            manifest_digest: format!("dsl-lex-manifest-{}", generation().get()),
-            batch_digest: String::new(),
-            mode: BatchIngestMode::ReplaceGeneration,
-            bundle_payload,
-            clear_surfaces: Vec::new(),
-            replace_scopes,
-            tombstone_scopes: Vec::new(),
-            semantic_replace_scopes,
-            semantic_tombstone_scopes: Vec::new(),
-            seal: false,
-        }),
-    )
+    Ok(())
 }
 
-fn seal_lexical(socket: &Path) -> TestResult {
-    dispatch_ingest(
-        socket,
-        SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(SearchCorpusIngestBatch {
-            repo_id: repo(),
-            revision_id: revision(),
-            generation: generation(),
-            base_generation: None,
-            manifest_digest: format!("dsl-lex-seal-{}", generation().get()),
-            batch_digest: String::new(),
-            mode: BatchIngestMode::ReplaceGeneration,
-            bundle_payload: None,
-            clear_surfaces: Vec::new(),
-            replace_scopes: Vec::new(),
-            tombstone_scopes: Vec::new(),
-            semantic_replace_scopes: Vec::new(),
-            semantic_tombstone_scopes: Vec::new(),
-            seal: true,
-        }),
-    )
+fn seal_lexical(socket: &Path, corpus: &mut SourceCorpusFixture) -> TestResult {
+    corpus.publish(socket, NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed))?;
+    Ok(())
 }
 
 fn lexical_request(
@@ -327,8 +242,17 @@ fn sourcegraph_repo_path_lang_filters_are_deterministic_across_repeated_runs() -
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
     let ingest_socket = fixture.ingest_socket;
+    let mut corpus = SourceCorpusFixture::new(
+        repo(),
+        revision(),
+        generation(),
+        format!(
+            "fixture-event-{}",
+            NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
+        ),
+    );
     publish_search_corpus_chunks(
-        &ingest_socket,
+        &mut corpus,
         vec![
             chunk_record_with_metadata("alpha", "src/lib.rs", "rust", 10, 14, "needle rust alpha")?,
             chunk_record_with_metadata("beta", "src/main.rs", "rust", 21, 26, "needle rust beta")?,
@@ -348,7 +272,7 @@ fn sourcegraph_repo_path_lang_filters_are_deterministic_across_repeated_runs() -
             &["global", "team-search"],
         )?),
     )?;
-    seal_lexical(&ingest_socket)?;
+    seal_lexical(&ingest_socket, &mut corpus)?;
 
     let query_text = "repo:repo-dsl path:src/lib.rs lang:rust fork:no archived:no visibility:public context:global needle";
     let request = lexical_request(2, TextQuerySyntax::Sourcegraph, query_text);
@@ -413,8 +337,17 @@ fn sourcegraph_boolean_text_query_is_deterministic_across_repeated_runs() -> Tes
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
     let ingest_socket = fixture.ingest_socket;
+    let mut corpus = SourceCorpusFixture::new(
+        repo(),
+        revision(),
+        generation(),
+        format!(
+            "fixture-event-{}",
+            NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
+        ),
+    );
     publish_search_corpus_chunks(
-        &ingest_socket,
+        &mut corpus,
         vec![
             chunk_record("alpha", "sphinx alpha needle")?,
             chunk_record("beta", "beta needle")?,
@@ -423,7 +356,7 @@ fn sourcegraph_boolean_text_query_is_deterministic_across_repeated_runs() -> Tes
         ],
         Some(b"manifest".to_vec()),
     )?;
-    seal_lexical(&ingest_socket)?;
+    seal_lexical(&ingest_socket, &mut corpus)?;
 
     let query_text = "(sphinx OR beta) needle NOT forbidden";
     let request = lexical_request(1, TextQuerySyntax::Sourcegraph, query_text);
@@ -465,8 +398,17 @@ fn sourcegraph_repo_has_file_predicate_executes_live() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
     let ingest_socket = fixture.ingest_socket;
+    let mut corpus = SourceCorpusFixture::new(
+        repo(),
+        revision(),
+        generation(),
+        format!(
+            "fixture-event-{}",
+            NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
+        ),
+    );
     publish_search_corpus_chunks(
-        &ingest_socket,
+        &mut corpus,
         vec![
             chunk_record_with_metadata("alpha", "src/lib.rs", "rust", 1, 2, "needle alpha")?,
             chunk_record_with_metadata("beta", "src/main.rs", "rust", 1, 2, "needle beta")?,
@@ -474,7 +416,7 @@ fn sourcegraph_repo_has_file_predicate_executes_live() -> TestResult {
         ],
         Some(b"manifest".to_vec()),
     )?;
-    seal_lexical(&ingest_socket)?;
+    seal_lexical(&ingest_socket, &mut corpus)?;
 
     for (idx, &scenario) in DSL_FRONTDOOR_SCENARIOS.iter().enumerate() {
         let request = lexical_request(
@@ -515,8 +457,17 @@ fn sourcegraph_phrase_and_regex_patterns_execute_live() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
     let ingest_socket = fixture.ingest_socket;
+    let mut corpus = SourceCorpusFixture::new(
+        repo(),
+        revision(),
+        generation(),
+        format!(
+            "fixture-event-{}",
+            NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
+        ),
+    );
     publish_search_corpus_chunks(
-        &ingest_socket,
+        &mut corpus,
         vec![
             chunk_record("alpha", "sphinx of quartz")?,
             chunk_record("beta", "riddle42")?,
@@ -524,7 +475,7 @@ fn sourcegraph_phrase_and_regex_patterns_execute_live() -> TestResult {
         ],
         None,
     )?;
-    seal_lexical(&ingest_socket)?;
+    seal_lexical(&ingest_socket, &mut corpus)?;
 
     let request = lexical_request(
         11,
@@ -583,8 +534,17 @@ fn lq_phrase_and_regex_patterns_execute_live() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
     let ingest_socket = fixture.ingest_socket;
+    let mut corpus = SourceCorpusFixture::new(
+        repo(),
+        revision(),
+        generation(),
+        format!(
+            "fixture-event-{}",
+            NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
+        ),
+    );
     publish_search_corpus_chunks(
-        &ingest_socket,
+        &mut corpus,
         vec![
             chunk_record("alpha", "sphinx of quartz")?,
             chunk_record("beta", "riddle42")?,
@@ -592,7 +552,7 @@ fn lq_phrase_and_regex_patterns_execute_live() -> TestResult {
         ],
         None,
     )?;
-    seal_lexical(&ingest_socket)?;
+    seal_lexical(&ingest_socket, &mut corpus)?;
 
     let phrase_request = lexical_request(
         2,
@@ -636,8 +596,17 @@ fn semantic_scoped_query_with_complex_scope_excludes_outsiders_and_explains_scop
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
     let ingest_socket = fixture.ingest_socket;
+    let mut corpus = SourceCorpusFixture::new(
+        repo(),
+        revision(),
+        generation(),
+        format!(
+            "fixture-event-{}",
+            NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
+        ),
+    );
     publish_search_corpus_chunks(
-        &ingest_socket,
+        &mut corpus,
         vec![
             chunk_record("alpha", "scope alpha keep")?,
             chunk_record("beta", "scope beta keep")?,
@@ -646,7 +615,7 @@ fn semantic_scoped_query_with_complex_scope_excludes_outsiders_and_explains_scop
         ],
         None,
     )?;
-    seal_lexical(&ingest_socket)?;
+    seal_lexical(&ingest_socket, &mut corpus)?;
 
     let request = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 3,
@@ -734,8 +703,17 @@ fn hybrid_query_reports_complex_scope_explanation_accounting() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
     let ingest_socket = fixture.ingest_socket;
+    let mut corpus = SourceCorpusFixture::new(
+        repo(),
+        revision(),
+        generation(),
+        format!(
+            "fixture-event-{}",
+            NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
+        ),
+    );
     publish_search_corpus_chunks(
-        &ingest_socket,
+        &mut corpus,
         vec![
             chunk_record("alpha", "scope alpha keep")?,
             chunk_record("beta", "scope beta keep")?,
@@ -744,7 +722,7 @@ fn hybrid_query_reports_complex_scope_explanation_accounting() -> TestResult {
         ],
         None,
     )?;
-    seal_lexical(&ingest_socket)?;
+    seal_lexical(&ingest_socket, &mut corpus)?;
 
     let request = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 4,
@@ -837,8 +815,17 @@ fn hybrid_query_surfaces_truthful_count_reached_early_stop() -> TestResult {
     let fixture = ScenarioFixture::boot()?;
     let socket = fixture.query_socket.clone();
     let ingest_socket = fixture.ingest_socket;
+    let mut corpus = SourceCorpusFixture::new(
+        repo(),
+        revision(),
+        generation(),
+        format!(
+            "fixture-event-{}",
+            NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
+        ),
+    );
     publish_search_corpus_chunks(
-        &ingest_socket,
+        &mut corpus,
         vec![
             chunk_record("alpha", "scope alpha keep")?,
             chunk_record("beta", "scope beta keep")?,
@@ -846,7 +833,7 @@ fn hybrid_query_surfaces_truthful_count_reached_early_stop() -> TestResult {
         ],
         None,
     )?;
-    seal_lexical(&ingest_socket)?;
+    seal_lexical(&ingest_socket, &mut corpus)?;
 
     let request = SearchPlaneQueryIpcRequestEnvelope {
         request_id: 5,

@@ -5,8 +5,7 @@
     reason = "the module is private to the crate; `pub(crate)` is the visibility its items need across the crate's modules, and the workspace's `unreachable_pub = deny` forbids the bare `pub`"
 )]
 
-use crate::budgeted_search::budgeted_search;
-use crate::documents::stored_text;
+use crate::documents::{required_stored_text, stored_doc_kind};
 use crate::metadata_normalize::{
     normalize_contributor_identity, normalize_language, normalize_owner_identity,
     normalize_repo_meta_pattern, normalize_repo_topic_value,
@@ -29,7 +28,6 @@ use quanta_index_core::{CoreError, RequestBudgetV1, timeref::parse_search_timere
 use quanta_index_lq_regex::RegexExecutor;
 use roaring::RoaringBitmap;
 use std::collections::BTreeSet;
-use tantivy::collector::TopDocs;
 use tantivy::query::{AllQuery, BooleanQuery, Occur, Query};
 use tantivy::schema::TantivyDocument;
 
@@ -88,29 +86,17 @@ impl TantivySearcher {
     ) -> Result<BTreeSet<String>, CoreError> {
         let compiled = self.repo_has_file_path_query(constraint, options, budget)?;
         let searcher = self.reader.searcher();
-        let limit = usize::try_from(searcher.num_docs()).map_err(|err| {
-            CoreError::InvalidContract(format!(
-                "lexical: num_docs overflow while collecting repo.has.file scope: {err}"
-            ))
-        })?;
-        if limit == 0 {
-            return Ok(BTreeSet::new());
-        }
-        let hits = budgeted_search(
-            &searcher,
-            &*compiled,
-            &TopDocs::with_limit(limit),
-            budget,
-            "lexical:repo-scope",
-        )?;
+        let rows =
+            self.collect_whole_set(&searcher, &*compiled, 1.0, "repo.has.file scope", budget)?;
         let mut out: BTreeSet<String> = BTreeSet::new();
-        for (_, doc_address) in hits {
+        for row in rows {
+            budget.checkpoint("lexical:scope-decode")?;
+            let doc_address = row.address;
             let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
                 CoreError::Storage(format!("lexical: fetch doc {doc_address:?}: {err}"))
             })?;
-            if let Some(repo_id) = stored_text(&doc, self.fields.repo_id) {
-                let _inserted: bool = out.insert(repo_id);
-            }
+            let repo_id = required_stored_text(&doc, self.fields.repo_id, "repo_id")?;
+            let _inserted: bool = out.insert(repo_id.to_owned());
         }
         Ok(out)
     }
@@ -215,29 +201,17 @@ impl TantivySearcher {
     ) -> Result<BTreeSet<String>, CoreError> {
         let compiled = self.repo_has_content_query(leaf, options, budget)?;
         let searcher = self.reader.searcher();
-        let limit = usize::try_from(searcher.num_docs()).map_err(|err| {
-            CoreError::InvalidContract(format!(
-                "lexical: num_docs overflow while collecting repo.has.content scope: {err}"
-            ))
-        })?;
-        if limit == 0 {
-            return Ok(BTreeSet::new());
-        }
-        let hits = budgeted_search(
-            &searcher,
-            &*compiled,
-            &TopDocs::with_limit(limit),
-            budget,
-            "lexical:repo-scope",
-        )?;
+        let rows =
+            self.collect_whole_set(&searcher, &*compiled, 1.0, "repo.has.content scope", budget)?;
         let mut out: BTreeSet<String> = BTreeSet::new();
-        for (_, doc_address) in hits {
+        for row in rows {
+            budget.checkpoint("lexical:scope-decode")?;
+            let doc_address = row.address;
             let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
                 CoreError::Storage(format!("lexical: fetch doc {doc_address:?}: {err}"))
             })?;
-            if let Some(repo_id) = stored_text(&doc, self.fields.repo_id) {
-                let _inserted: bool = out.insert(repo_id);
-            }
+            let repo_id = required_stored_text(&doc, self.fields.repo_id, "repo_id")?;
+            let _inserted: bool = out.insert(repo_id.to_owned());
         }
         Ok(out)
     }
@@ -473,42 +447,35 @@ impl TantivySearcher {
     ) -> Result<RoaringBitmap, CoreError> {
         let authority = self.file_ownership_authority()?;
         let searcher = self.reader.searcher();
-        let limit = usize::try_from(searcher.num_docs()).map_err(|err| {
-            CoreError::InvalidContract(format!(
-                "lexical: num_docs overflow while collecting file ownership candidates: {err}"
-            ))
-        })?;
+        let compiled = self.with_doc_kind(Box::new(AllQuery), TEXT_DOC_KIND);
         let mut out = RoaringBitmap::new();
-        if limit == 0 {
-            return Ok(out);
-        }
-        let hits = budgeted_search(
+        let rows = self.collect_whole_set(
             &searcher,
-            &AllQuery,
-            &TopDocs::with_limit(limit),
+            &*compiled,
+            1.0,
+            "file ownership candidates",
             budget,
-            "lexical:authority-scan",
         )?;
-        for (_score, doc_address) in hits {
+        for row in rows {
+            budget.checkpoint("lexical:scope-decode")?;
+            let doc_address = row.address;
             let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
                 CoreError::Storage(format!("lexical: fetch doc {doc_address:?}: {err}"))
             })?;
-            if stored_text(&doc, self.fields.doc_kind).as_deref() != Some(TEXT_DOC_KIND) {
-                continue;
+            if stored_doc_kind(&doc, self.fields.doc_kind)? != TEXT_DOC_KIND {
+                return Err(CoreError::Storage(
+                    "lexical: indexed text document has non-text stored doc_kind".to_string(),
+                ));
             }
-            let Some(source_repo_id) = stored_text(&doc, self.fields.repo_id) else {
-                continue;
-            };
-            let Some(repo_relative_path) = stored_text(&doc, self.fields.repo_relative_path) else {
-                continue;
-            };
-            let Some(candidate_id) = stored_text(&doc, self.fields.candidate_id) else {
-                continue;
-            };
+            let source_repo_id = required_stored_text(&doc, self.fields.repo_id, "repo_id")?;
+            let repo_relative_path =
+                required_stored_text(&doc, self.fields.repo_relative_path, "repo_relative_path")?;
+            let candidate_id =
+                required_stored_text(&doc, self.fields.candidate_id, "candidate_id")?;
             let Some(owners) = authority
                 .owners_by_repo_id
-                .get(&source_repo_id)
-                .and_then(|by_path| by_path.get(&repo_relative_path))
+                .get(source_repo_id)
+                .and_then(|by_path| by_path.get(repo_relative_path))
             else {
                 continue;
             };
@@ -518,7 +485,7 @@ impl TantivySearcher {
                 .map_or(!owners.is_empty(), |owner| owners.contains(owner));
             if matches {
                 let _inserted: bool =
-                    out.insert(self.stored_text_member(&doc, &candidate_id, "file.has.owner")?);
+                    out.insert(self.stored_text_member(&doc, candidate_id, "file.has.owner")?);
             }
         }
         Ok(out)
@@ -565,15 +532,8 @@ impl TantivySearcher {
     ) -> Result<RoaringBitmap, CoreError> {
         let authority = self.file_contributor_authority()?;
         let searcher = self.reader.searcher();
-        let limit = usize::try_from(searcher.num_docs()).map_err(|err| {
-            CoreError::InvalidContract(format!(
-                "lexical: num_docs overflow while collecting file contributor candidates: {err}"
-            ))
-        })?;
+        let compiled = self.with_doc_kind(Box::new(AllQuery), TEXT_DOC_KIND);
         let mut out = RoaringBitmap::new();
-        if limit == 0 {
-            return Ok(out);
-        }
         let contributor_regex = match &arg.contributor {
             ContributorPattern::Regex(source) => Some(RegexExecutor::compile(source).map_err(
                 |err| CoreError::Typed {
@@ -585,33 +545,33 @@ impl TantivySearcher {
             )?),
             ContributorPattern::Exact(_) => None,
         };
-        let hits = budgeted_search(
+        let rows = self.collect_whole_set(
             &searcher,
-            &AllQuery,
-            &TopDocs::with_limit(limit),
+            &*compiled,
+            1.0,
+            "file contributor candidates",
             budget,
-            "lexical:authority-scan",
         )?;
-        for (_score, doc_address) in hits {
+        for row in rows {
+            budget.checkpoint("lexical:scope-decode")?;
+            let doc_address = row.address;
             let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
                 CoreError::Storage(format!("lexical: fetch doc {doc_address:?}: {err}"))
             })?;
-            if stored_text(&doc, self.fields.doc_kind).as_deref() != Some(TEXT_DOC_KIND) {
-                continue;
+            if stored_doc_kind(&doc, self.fields.doc_kind)? != TEXT_DOC_KIND {
+                return Err(CoreError::Storage(
+                    "lexical: indexed text document has non-text stored doc_kind".to_string(),
+                ));
             }
-            let Some(source_repo_id) = stored_text(&doc, self.fields.repo_id) else {
-                continue;
-            };
-            let Some(repo_relative_path) = stored_text(&doc, self.fields.repo_relative_path) else {
-                continue;
-            };
-            let Some(candidate_id) = stored_text(&doc, self.fields.candidate_id) else {
-                continue;
-            };
+            let source_repo_id = required_stored_text(&doc, self.fields.repo_id, "repo_id")?;
+            let repo_relative_path =
+                required_stored_text(&doc, self.fields.repo_relative_path, "repo_relative_path")?;
+            let candidate_id =
+                required_stored_text(&doc, self.fields.candidate_id, "candidate_id")?;
             let Some(contributors) = authority
                 .contributors_by_repo_id
-                .get(&source_repo_id)
-                .and_then(|by_path| by_path.get(&repo_relative_path))
+                .get(source_repo_id)
+                .and_then(|by_path| by_path.get(repo_relative_path))
             else {
                 continue;
             };
@@ -641,7 +601,7 @@ impl TantivySearcher {
             if matches {
                 let _inserted: bool = out.insert(self.stored_text_member(
                     &doc,
-                    &candidate_id,
+                    candidate_id,
                     "file.has.contributor",
                 )?);
             }
@@ -682,29 +642,18 @@ impl TantivySearcher {
         }
         let compiled = self.with_doc_kind(Box::new(BooleanQuery::new(clauses)), TEXT_DOC_KIND);
         let searcher = self.reader.searcher();
-        let limit = usize::try_from(searcher.num_docs()).map_err(|err| {
-            CoreError::InvalidContract(format!(
-                "lexical: num_docs overflow while collecting scoped content paths: {err}"
-            ))
-        })?;
-        if limit == 0 {
-            return Ok(Some(BTreeSet::new()));
-        }
-        let hits = budgeted_search(
-            &searcher,
-            &*compiled,
-            &TopDocs::with_limit(limit),
-            budget,
-            "lexical:content-scope",
-        )?;
+        let rows =
+            self.collect_whole_set(&searcher, &*compiled, 1.0, "scoped content paths", budget)?;
         let mut out: BTreeSet<String> = BTreeSet::new();
-        for (_, doc_address) in hits {
+        for row in rows {
+            budget.checkpoint("lexical:scope-decode")?;
+            let doc_address = row.address;
             let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
                 CoreError::Storage(format!("lexical: fetch doc {doc_address:?}: {err}"))
             })?;
-            if let Some(path) = stored_text(&doc, self.fields.repo_relative_path) {
-                let _inserted: bool = out.insert(path);
-            }
+            let path =
+                required_stored_text(&doc, self.fields.repo_relative_path, "repo_relative_path")?;
+            let _inserted: bool = out.insert(path.to_owned());
         }
         Ok(Some(out))
     }
@@ -721,32 +670,23 @@ impl TantivySearcher {
         }
         let compiled = self.with_doc_kind(self.path_restriction_query(paths), TEXT_DOC_KIND);
         let searcher = self.reader.searcher();
-        let limit = usize::try_from(searcher.num_docs()).map_err(|err| {
-            CoreError::InvalidContract(format!(
-                "lexical: num_docs overflow while collecting scoped content candidate ids: {err}"
-            ))
-        })?;
-        if limit == 0 {
-            return Ok(out);
-        }
-        let hits = budgeted_search(
+        let rows = self.collect_whole_set(
             &searcher,
             &*compiled,
-            &TopDocs::with_limit(limit),
+            1.0,
+            "scoped content candidate ids",
             budget,
-            "lexical:content-scope",
         )?;
-        for (_, doc_address) in hits {
+        for row in rows {
+            budget.checkpoint("lexical:scope-decode")?;
+            let doc_address = row.address;
             let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
                 CoreError::Storage(format!("lexical: fetch doc {doc_address:?}: {err}"))
             })?;
-            let Some(candidate_id) = stored_text(&doc, self.fields.candidate_id) else {
-                return Err(CoreError::Storage(format!(
-                    "lexical: content scope matched text document {doc_address:?} without a candidate id"
-                )));
-            };
+            let candidate_id =
+                required_stored_text(&doc, self.fields.candidate_id, "candidate_id")?;
             let _inserted: bool =
-                out.insert(self.stored_text_member(&doc, &candidate_id, "content scope")?);
+                out.insert(self.stored_text_member(&doc, candidate_id, "content scope")?);
         }
         Ok(out)
     }

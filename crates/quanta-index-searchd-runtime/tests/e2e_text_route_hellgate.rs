@@ -8,8 +8,7 @@ use quanta_index_contract::{
     HistoryIngestBatch, HistoryRefMutation, HistoryRefUpsert, ManifestGeneration,
     RepoCommitRecencyEntry, RepoCommitRecencyIngestBatch, RepoDescriptionEntry,
     RepoDescriptionIngestBatch, RepoId, RepoMetaEntry, RepoMetaIngestBatch, RepoRelativePath,
-    RepoTopicEntry, RepoTopicIngestBatch, RevisionId, SearchCorpusIngestBatch,
-    SearchCorpusReplaceScope, SearchScopeKey, SearchScopeSurface, TextQuerySyntax,
+    RepoTopicEntry, RepoTopicIngestBatch, RevisionId, SearchCorpusIngestBatch, TextQuerySyntax,
     lex::{CommitSha, LanguageCode},
 };
 
@@ -322,13 +321,6 @@ fn rev_at_time_head_revision() -> RevisionId {
         .expect("static fixture ID satisfies canonical policy")
 }
 
-fn revision_scope_key(path: &str) -> SearchScopeKey {
-    SearchScopeKey {
-        doc_surface: SearchScopeSurface::File,
-        repo_relative_path: RepoRelativePath::new(path),
-    }
-}
-
 fn now_epoch_ms() -> AnyResult<u64> {
     let millis = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -346,7 +338,8 @@ fn publish_revision_text_generation(
     content: &str,
 ) -> AnyResult<GenerationPin> {
     let manifest_digest = format!("hellgate-lex:{path}:{}", generation.get());
-    rt.publish_search_corpus_batch(SearchCorpusIngestBatch {
+    let mut batch = SearchCorpusIngestBatch {
+        source_event: rt.text_search_corpus_batch(path, content)?.source_event,
         repo_id: rt.repo(),
         revision_id: revision_id.clone(),
         generation,
@@ -356,10 +349,13 @@ fn publish_revision_text_generation(
         mode: BatchIngestMode::ReplaceGeneration,
         bundle_payload: None,
         clear_surfaces: Vec::new(),
-        replace_scopes: vec![SearchCorpusReplaceScope {
-            scope: revision_scope_key(path),
-            scope_digest: format!("hellgate-scope:{path}:1-chunk"),
-            chunks: vec![ChunkRecord {
+        replace_scopes: vec![rt.fixture_source_scope(
+            quanta_index_contract::SourceFileKey {
+                source_repo_id: rt.repo(),
+                repo_relative_path: RepoRelativePath::new(path),
+            },
+            revision_id.clone(),
+            vec![ChunkRecord {
                 chunk_id: ChunkId::new(candidate_id),
                 repo_relative_path: RepoRelativePath::new(path),
                 language: LanguageCode::new("rust")
@@ -374,13 +370,15 @@ fn publish_revision_text_generation(
                 parent_chunk_id: None,
                 source_repo_id: None,
             }],
-            symbols: Vec::new(),
-        }],
+            Vec::new(),
+        )?],
         tombstone_scopes: Vec::new(),
         semantic_replace_scopes: Vec::new(),
         semantic_tombstone_scopes: Vec::new(),
         seal: true,
-    })?;
+    };
+    rt.issue_fixture_source_event(&mut batch)?;
+    rt.publish_search_corpus_batch(batch)?;
     let pin = GenerationPin::new(rt.repo(), revision_id, generation);
     rt.activate_last_sealed_generation()?;
     Ok(pin)

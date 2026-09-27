@@ -5,10 +5,8 @@
     reason = "the module is private to the crate; `pub(crate)` is the visibility its items need across the crate's modules, and the workspace's `unreachable_pub = deny` forbids the bare `pub`"
 )]
 
-use crate::budgeted_search::{BudgetProbe, budgeted_search};
 use crate::channel_payloads::count_from_len;
-use crate::documents::stored_text;
-use crate::documents::{file_name_for_path, language_from_path_hint};
+use crate::documents::{file_name_for_path, required_stored_text, stored_doc_kind};
 use crate::metadata_normalize::normalize_language;
 use crate::normalize::CaseMode;
 use crate::predicate_registry::{
@@ -57,7 +55,98 @@ struct ManualDocumentView<'a> {
     content: &'a str,
 }
 
+fn manual_language_unavailable() -> CoreError {
+    CoreError::NotImplemented(
+        "lexical: index:no language filtering requires indexed execution; language is not stored"
+            .to_string(),
+    )
+}
+
 impl TantivySearcher {
+    fn ensure_manual_language_leaf_supported(&self, leaf: &LqLeaf) -> Result<(), CoreError> {
+        let LqLeaf::Predicate { name, args } = leaf else {
+            return Ok(());
+        };
+        let Some((canonical_name, canonical_args)) =
+            self.canonicalize_predicate_call(name, args)?
+        else {
+            return Ok(());
+        };
+        if kind_of(&canonical_name) == Some(PredicateKind::ContentLeaf)
+            && self
+                .content_predicate_constraint(&canonical_name, &canonical_args)?
+                .language
+                .is_some()
+        {
+            return Err(manual_language_unavailable());
+        }
+        Ok(())
+    }
+
+    fn ensure_manual_language_expr_supported(&self, expr: &LqExpr) -> Result<(), CoreError> {
+        match expr {
+            LqExpr::Leaf(leaf) => self.ensure_manual_language_leaf_supported(leaf),
+            LqExpr::All(children) | LqExpr::Any(children) => {
+                for child in children {
+                    self.ensure_manual_language_expr_supported(child)?;
+                }
+                Ok(())
+            }
+            LqExpr::Not(inner) => self.ensure_manual_language_expr_supported(inner),
+            LqExpr::Empty => Ok(()),
+        }
+    }
+
+    pub(crate) fn ensure_manual_language_query_supported(
+        &self,
+        query: &LqQuery,
+    ) -> Result<(), CoreError> {
+        self.ensure_manual_language_expr_supported(&query.expr)?;
+        for filter in &query.filters {
+            match filter {
+                LqFilter::Lang { id } => {
+                    if normalize_language(id).is_none() {
+                        return Err(CoreError::InvalidContract(
+                            "lexical: lang filter value cannot be empty".to_string(),
+                        ));
+                    }
+                    return Err(manual_language_unavailable());
+                }
+                LqFilter::Content { leaf } => self.ensure_manual_language_leaf_supported(leaf)?,
+                LqFilter::Repo { .. }
+                | LqFilter::File { .. }
+                | LqFilter::Rev { .. }
+                | LqFilter::Author { .. }
+                | LqFilter::Committer { .. }
+                | LqFilter::Message { .. }
+                | LqFilter::Before { .. }
+                | LqFilter::After { .. }
+                | LqFilter::Since { .. }
+                | LqFilter::Until { .. }
+                | LqFilter::DiffAdded { .. }
+                | LqFilter::DiffRemoved { .. }
+                | LqFilter::DiffTouched { .. }
+                | LqFilter::Type { .. }
+                | LqFilter::Select { .. }
+                | LqFilter::Dirty { .. }
+                | LqFilter::Changed { .. }
+                | LqFilter::Stale { .. }
+                | LqFilter::Snapshot { .. }
+                | LqFilter::MetaOwner { .. }
+                | LqFilter::MetaService { .. }
+                | LqFilter::MetaLayer { .. }
+                | LqFilter::MetaSurface { .. }
+                | LqFilter::Affected { .. }
+                | LqFilter::InvalidatedBy { .. }
+                | LqFilter::Fork { .. }
+                | LqFilter::Archived { .. }
+                | LqFilter::Visibility { .. }
+                | LqFilter::Context { .. } => {}
+            }
+        }
+        Ok(())
+    }
+
     /// Whether `haystack` holds the token sequence of `text`, on the
     /// `index:no` route.
     ///
@@ -78,20 +167,11 @@ impl TantivySearcher {
         Ok(normalize::contains_phrase(&present, &wanted))
     }
 
-    pub(crate) fn doc_content_text(&self, doc: &TantivyDocument) -> String {
-        stored_text(doc, self.fields.chunk_text)
-            .or_else(|| stored_text(doc, self.fields.snippet))
-            .unwrap_or_default()
-    }
-
-    pub(crate) fn doc_language(
+    pub(crate) fn doc_content_text<'a>(
         &self,
-        doc: &TantivyDocument,
-        repo_relative_path: &str,
-    ) -> Option<String> {
-        stored_text(doc, self.fields.language).or_else(|| {
-            language_from_path_hint(repo_relative_path).map(std::string::ToString::to_string)
-        })
+        doc: &'a TantivyDocument,
+    ) -> Result<&'a str, CoreError> {
+        required_stored_text(doc, self.fields.chunk_text, "chunk_text")
     }
 
     pub(crate) fn manual_filter_regex(
@@ -255,6 +335,7 @@ impl TantivySearcher {
 
     pub(crate) fn manual_content_predicate_matches(
         &self,
+        doc: &TantivyDocument,
         constraint: &ContentPredicateConstraint,
         options: &LqOptions,
         source_repo_id: &str,
@@ -267,23 +348,12 @@ impl TantivySearcher {
         {
             return Ok(false);
         }
-        if let Some(language) = constraint.language.as_ref() {
-            let Some(normalized) = normalize_language(language) else {
-                return Err(CoreError::InvalidContract(
-                    "lexical: scoped content predicate escaped with an empty lang value"
-                        .to_string(),
-                ));
-            };
-            if self
-                .doc_language(&TantivyDocument::new(), repo_relative_path)
-                .as_deref()
-                != Some(normalized.as_str())
-            {
-                return Ok(false);
-            }
+        if constraint.language.is_some() {
+            return Err(manual_language_unavailable());
         }
         let lowered = self.predicate_content_leaf_from_constraint(constraint);
         self.manual_leaf_matches(
+            doc,
             &lowered,
             options,
             source_repo_id,
@@ -294,8 +364,13 @@ impl TantivySearcher {
         )
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the private manual predicate route needs the immutable document, source identity, query options and request budget together"
+    )]
     pub(crate) fn manual_predicate_matches(
         &self,
+        doc: &TantivyDocument,
         name: &str,
         args: &[LqPredicateArg],
         options: &LqOptions,
@@ -367,6 +442,7 @@ impl TantivySearcher {
                 let constraint =
                     self.content_predicate_constraint(&canonical_name, &canonical_args)?;
                 self.manual_content_predicate_matches(
+                    doc,
                     &constraint,
                     options,
                     source_repo_id,
@@ -381,8 +457,13 @@ impl TantivySearcher {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the private leaf evaluator shares the document, source identity, path policy and request budget with its predicate fallback"
+    )]
     pub(crate) fn manual_leaf_matches(
         &self,
+        doc: &TantivyDocument,
         leaf: &LqLeaf,
         options: &LqOptions,
         source_repo_id: &str,
@@ -417,6 +498,7 @@ impl TantivySearcher {
                     .to_string(),
             }),
             LqLeaf::Predicate { name, args } => self.manual_predicate_matches(
+                doc,
                 name,
                 args,
                 options,
@@ -460,6 +542,7 @@ impl TantivySearcher {
             }
             LqExpr::Empty => Ok(true),
             LqExpr::Leaf(leaf) => self.manual_leaf_matches(
+                view.doc,
                 leaf,
                 options,
                 view.source_repo_id,
@@ -492,6 +575,7 @@ impl TantivySearcher {
 
     pub(crate) fn manual_filter_matches(
         &self,
+        doc: &TantivyDocument,
         filter: &LqFilter,
         options: &LqOptions,
         source_repo_id: &str,
@@ -515,6 +599,7 @@ impl TantivySearcher {
                 self.manual_file_filter_matches(pattern, *scope, repo_relative_path)
             }
             LqFilter::Content { leaf } => self.manual_leaf_matches(
+                doc,
                 leaf,
                 options,
                 source_repo_id,
@@ -524,16 +609,12 @@ impl TantivySearcher {
                 budget,
             ),
             LqFilter::Lang { id } => {
-                let Some(language) = normalize_language(id.as_str()) else {
+                if normalize_language(id.as_str()).is_none() {
                     return Err(CoreError::InvalidContract(
                         "lexical: lang filter value cannot be empty".to_string(),
                     ));
-                };
-                let doc_language = self.doc_language(&TantivyDocument::new(), repo_relative_path);
-                Ok(
-                    language_from_path_hint(repo_relative_path).or(doc_language.as_deref())
-                        == Some(language.as_str()),
-                )
+                }
+                Err(manual_language_unavailable())
             }
             LqFilter::Fork { .. }
             | LqFilter::Archived { .. }
@@ -611,6 +692,7 @@ impl TantivySearcher {
         page: &ManualPage<'_>,
         budget: &RequestBudgetV1,
     ) -> Result<LexicalSearchPageV1, CoreError> {
+        self.ensure_manual_language_query_supported(query)?;
         let searcher = self.reader.searcher();
         let doc_limit = Self::corpus_docs(&searcher, "unindexed text scan")?;
         if doc_limit > self.execution_budget.max_examined_candidates() {
@@ -624,24 +706,20 @@ impl TantivySearcher {
                 exact_total: Some(0),
             });
         }
-        let hits = budgeted_search(
+        let hits = self.collect_whole_set(
             &searcher,
             &AllQuery,
-            &TopDocs::with_limit(doc_limit),
+            1.0,
+            "unindexed text scan (index:no)",
             budget,
-            "lexical:scan",
         )?;
         let boosted_score = Self::apply_query_boost_score(1.0, &query.options);
         let mut out: Vec<ManualRankedCandidate<LexicalCandidate>> = Vec::new();
         // The scan matches every document against the plan itself; the
         // budget is observed between documents (W5 phase 2).
-        let probe = BudgetProbe::new(budget);
-        for (_score, doc_address) in hits {
-            if probe.tick()
-                && let Some(interruption) = probe.interruption_error("lexical:scan")
-            {
-                return Err(interruption);
-            }
+        for row in hits {
+            budget.checkpoint("lexical:scan")?;
+            let doc_address = row.address;
             let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
                 CoreError::Storage(format!("lexical: fetch doc {doc_address:?}: {err}"))
             })?;
@@ -722,37 +800,32 @@ impl TantivySearcher {
         constraints: &QueryConstraintSetV1,
         budget: &RequestBudgetV1,
     ) -> Result<bool, CoreError> {
-        if stored_text(doc, self.fields.doc_kind).as_deref() != Some(prepared.doc_kind.as_str()) {
+        if stored_doc_kind(doc, self.fields.doc_kind)? != prepared.doc_kind.as_str() {
             return Ok(false);
         }
-        let Some(candidate_id) = stored_text(doc, self.fields.candidate_id) else {
-            return Ok(false);
-        };
-        let Some(source_repo_id) = stored_text(doc, self.fields.repo_id) else {
-            return Ok(false);
-        };
-        let Some(repo_relative_path) = stored_text(doc, self.fields.repo_relative_path) else {
-            return Ok(false);
-        };
-        if !Self::manual_exact_path_allows(&repo_relative_path, constraints) {
+        let candidate_id = required_stored_text(doc, self.fields.candidate_id, "candidate_id")?;
+        let source_repo_id = required_stored_text(doc, self.fields.repo_id, "repo_id")?;
+        let repo_relative_path =
+            required_stored_text(doc, self.fields.repo_relative_path, "repo_relative_path")?;
+        if !Self::manual_exact_path_allows(repo_relative_path, constraints) {
             return Ok(false);
         }
         if !self.manual_doc_restrictions_allow(
             &prepared.predicate_plan,
-            &candidate_id,
-            &source_repo_id,
-            &repo_relative_path,
+            candidate_id,
+            source_repo_id,
+            repo_relative_path,
         ) {
             return Ok(false);
         }
         let include_path_terms =
             Self::enables_path_term_surface(&prepared.predicate_plan.expr, &query.options);
-        let content = self.doc_content_text(doc);
+        let content = self.doc_content_text(doc)?;
         let view = ManualDocumentView {
             doc,
-            source_repo_id: &source_repo_id,
-            repo_relative_path: &repo_relative_path,
-            content: &content,
+            source_repo_id,
+            repo_relative_path,
+            content,
         };
         if !self.manual_expr_matches(
             &view,
@@ -765,11 +838,12 @@ impl TantivySearcher {
         }
         for filter in &prepared.query.filters {
             if !self.manual_filter_matches(
+                doc,
                 filter,
                 &query.options,
-                &source_repo_id,
-                &repo_relative_path,
-                &content,
+                source_repo_id,
+                repo_relative_path,
+                content,
                 budget,
             )? {
                 return Ok(false);
@@ -855,6 +929,7 @@ impl TantivySearcher {
         constraints: &QueryConstraintSetV1,
         budget: &RequestBudgetV1,
     ) -> Result<Vec<ManualRankedCandidate<SymbolCandidate>>, CoreError> {
+        self.ensure_manual_language_query_supported(query)?;
         let searcher = self.reader.searcher();
         let doc_limit = Self::corpus_docs(&searcher, "unindexed symbol scan")?;
         if doc_limit > self.execution_budget.max_examined_candidates() {
@@ -865,22 +940,18 @@ impl TantivySearcher {
         if doc_limit == 0 {
             return Ok(Vec::new());
         }
-        let hits = budgeted_search(
+        let hits = self.collect_whole_set(
             &searcher,
             &AllQuery,
-            &TopDocs::with_limit(doc_limit),
+            1.0,
+            "unindexed symbol scan (index:no)",
             budget,
-            "lexical:scan",
         )?;
         let boosted_score = Self::apply_query_boost_score(1.0, &query.options);
         let mut out: Vec<ManualRankedCandidate<SymbolCandidate>> = Vec::new();
-        let probe = BudgetProbe::new(budget);
-        for (_score, doc_address) in hits {
-            if probe.tick()
-                && let Some(interruption) = probe.interruption_error("lexical:scan")
-            {
-                return Err(interruption);
-            }
+        for row in hits {
+            budget.checkpoint("lexical:scan")?;
+            let doc_address = row.address;
             let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
                 CoreError::Storage(format!("lexical: fetch doc {doc_address:?}: {err}"))
             })?;
@@ -899,5 +970,54 @@ impl TantivySearcher {
         CoreError::NotReady(format!(
             "lexical: repo metadata snapshot missing for filter `{filter_name}` in LexicalFullBundle.payload"
         ))
+    }
+}
+
+#[cfg(test)]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "corrupt stored-field cases assert fail-closed scan behavior"
+)]
+mod stored_authority_tests {
+    use super::*;
+    use tantivy::schema::{STORED, Schema};
+
+    #[test]
+    fn required_manual_fields_reject_missing_malformed_and_duplicate_values()
+    -> Result<(), CoreError> {
+        let mut schema = Schema::builder();
+        let content = schema.add_text_field("chunk_text", STORED);
+        let _schema = schema.build();
+
+        let missing = TantivyDocument::new();
+        assert!(required_stored_text(&missing, content, "chunk_text").is_err());
+
+        let mut malformed = TantivyDocument::new();
+        malformed.add_u64(content, 7);
+        assert!(required_stored_text(&malformed, content, "chunk_text").is_err());
+
+        let mut duplicate = TantivyDocument::new();
+        duplicate.add_text(content, "first");
+        duplicate.add_text(content, "second");
+        assert!(required_stored_text(&duplicate, content, "chunk_text").is_err());
+
+        let mut valid = TantivyDocument::new();
+        valid.add_text(content, "needle");
+        assert_eq!(
+            required_stored_text(&valid, content, "chunk_text")?,
+            "needle"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn unknown_document_kind_is_not_silently_excluded() -> Result<(), CoreError> {
+        let mut schema = Schema::builder();
+        let kind = schema.add_text_field("doc_kind", STORED);
+        let _schema = schema.build();
+        let mut doc = TantivyDocument::new();
+        doc.add_text(kind, "unknown");
+        assert!(stored_doc_kind(&doc, kind).is_err());
+        Ok(())
     }
 }

@@ -5,7 +5,7 @@
     reason = "the module is private to the crate; `pub(crate)` is the visibility its items need across the crate's modules, and the workspace's `unreachable_pub = deny` forbids the bare `pub`"
 )]
 
-use crate::documents::stored_text;
+use crate::documents::{required_stored_text, stored_doc_kind};
 use crate::text_authority::AddedTextDoc;
 use crate::{IndexedTextDoc, SchemaFields, TEXT_DOC_KIND};
 use quanta_index_contract::SourceFileKey;
@@ -42,7 +42,7 @@ pub(crate) fn stored_text_authority_doc_id(
             "lexical: text document {candidate_id} stores multiple text-authority doc ids"
         )));
     }
-    let doc_id = Value::as_u64(value).ok_or_else(|| {
+    let doc_id = Value::as_u64(&value).ok_or_else(|| {
         CoreError::Storage(format!(
             "lexical: text document {candidate_id} stores a malformed text-authority doc id"
         ))
@@ -138,17 +138,13 @@ pub(crate) fn text_candidates_at_file(
                 "lexical: fetch scope candidate doc {doc_address:?}: {err}"
             ))
         })?;
-        if stored_text(&doc, fields.doc_kind).as_deref() != Some(TEXT_DOC_KIND) {
+        if stored_doc_kind(&doc, fields.doc_kind)? != TEXT_DOC_KIND {
             continue;
         }
-        let candidate_id = stored_text(&doc, fields.candidate_id).ok_or_else(|| {
-            CoreError::Storage(
-                "lexical: scope candidate doc missing candidate_id field".to_string(),
-            )
-        })?;
-        let doc_id = stored_text_authority_doc_id(&doc, fields, &candidate_id)?;
+        let candidate_id = required_stored_text(&doc, fields.candidate_id, "candidate_id")?;
+        let doc_id = stored_text_authority_doc_id(&doc, fields, candidate_id)?;
         candidates.push(IndexedTextDoc {
-            candidate_id,
+            candidate_id: candidate_id.to_owned(),
             doc_id,
         });
     }
@@ -188,20 +184,16 @@ pub(crate) fn collect_text_authority_docs(
                 "lexical: fetch text authority doc {doc_address:?}: {err}"
             ))
         })?;
-        if stored_text(&doc, fields.doc_kind).as_deref() != Some(TEXT_DOC_KIND) {
+        if stored_doc_kind(&doc, fields.doc_kind)? != TEXT_DOC_KIND {
             continue;
         }
-        let candidate_id = stored_text(&doc, fields.candidate_id).ok_or_else(|| {
-            CoreError::Storage("lexical: text authority doc missing candidate_id field".to_string())
-        })?;
-        let text = stored_text(&doc, fields.chunk_text).ok_or_else(|| {
-            CoreError::Storage("lexical: text authority doc missing chunk_text field".to_string())
-        })?;
-        let doc_id = stored_text_authority_doc_id(&doc, fields, &candidate_id)?;
+        let candidate_id = required_stored_text(&doc, fields.candidate_id, "candidate_id")?;
+        let text = required_stored_text(&doc, fields.chunk_text, "chunk_text")?;
+        let doc_id = stored_text_authority_doc_id(&doc, fields, candidate_id)?;
         docs.push(AddedTextDoc {
             doc_id,
-            candidate_id,
-            text,
+            candidate_id: candidate_id.to_owned(),
+            text: text.to_owned(),
         });
     }
     docs.sort_by_key(|doc| doc.doc_id);
@@ -274,6 +266,30 @@ mod l4_authority_id_regressions {
             collect_text_authority_docs(&index, &fields).is_err(),
             "stored decoding and authority rebuild silently chose the first ID"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn authority_rebuild_refuses_ambiguous_required_text_fields()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fields = SchemaFields::build();
+        for duplicate in [fields.candidate_id, fields.chunk_text] {
+            let index = Index::create_in_ram(fields.schema.clone());
+            crate::analyzer::register_analyzers(&index);
+            let mut writer = index.writer_with_num_threads(1, 15_000_000)?;
+            let mut doc = TantivyDocument::new();
+            doc.add_text(fields.doc_kind, crate::TEXT_DOC_KIND);
+            doc.add_text(fields.candidate_id, "candidate");
+            doc.add_text(fields.chunk_text, "needle");
+            doc.add_u64(fields.text_authority_doc_id, 1);
+            doc.add_text(duplicate, "conflicting");
+            let _operation = writer.add_document(doc)?;
+            let _commit = writer.commit()?;
+            assert!(
+                collect_text_authority_docs(&index, &fields).is_err(),
+                "authority rebuild accepted a duplicate required field"
+            );
+        }
         Ok(())
     }
 }

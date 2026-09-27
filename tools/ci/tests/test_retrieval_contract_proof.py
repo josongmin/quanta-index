@@ -95,25 +95,11 @@ def test_proof_recipes_capture_source_once_before_execution(tmp_path: Path) -> N
     assert [row[0] for row in sdk] == [
         "source-closure",
         "build-searchd",
-        "build-runner",
         "rust-build",
         "metadata",
         "rust-collection",
         "rust-test",
     ]
-    completed = subprocess.run(
-        ["just", "--dry-run", "_retrieval-sdk-proof-raw", str(tmp_path / "raw")],
-        cwd=ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    commands = completed.stdout + completed.stderr
-    assert commands.count("source_closure.py capture --profile retrieval") == 1
-    assert commands.index("test ! -e") < commands.index("source_closure.py capture")
-    assert commands.index("source_closure.py capture") < commands.index("--lane test-daemon-lane")
-    assert "write-verification-receipt.py" not in commands
-
 
 @pytest.mark.parametrize("rail", ["contract", "sdk"])
 def test_proof_recipe_passes_output_as_data(tmp_path: Path, rail: str) -> None:

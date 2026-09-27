@@ -1108,6 +1108,7 @@ fn reopen_preserves_structural_tombstone_not_ready_state() -> AnyResult<()> {
             SearchPlaneTrackKind::Structural,
         ])
         .map_err(|error| anyhow::anyhow!("structural tombstone generation 1 seal: {error}"))?;
+    rt.activate_last_sealed_generation()?;
 
     let before = query_structural_ids(
         &mut rt,

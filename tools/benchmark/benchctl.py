@@ -955,6 +955,13 @@ def _capture_native_family(
     return captures, artifacts, native_payload_from_artifacts(artifacts, entry["payload"])
 
 
+def refuse_capture(message: str, exit_code: int = 2) -> int:
+    """Keep a CLI refusal's actual reason in the owning diagnostic epoch."""
+    capture_error(EvidenceError(message))
+    print(f"ERROR: {message}", file=sys.stderr)
+    return exit_code
+
+
 @capture_entrypoint(profile_argument="profile_name", repo_argument="repo_root", root_argument="evidence_root")
 def promote_profile_runs(
     repo_root: Path,
@@ -993,8 +1000,7 @@ def promote_profile_runs(
         print(f"ERROR: cannot read clean benchmark preflight receipt: {exc}", file=sys.stderr)
         return 2
     if receipt_digest != preflight_digest:
-        print("ERROR: benchmark preflight receipt changed during capture", file=sys.stderr)
-        return 2
+        return refuse_capture("benchmark preflight receipt changed during capture")
     lease_mode = "shared"
     lease_samples = 1
     runs: list[dict] = []
@@ -1023,10 +1029,7 @@ def promote_profile_runs(
         captures, artifacts, payload = prepared[family]
         artifact = artifacts[0]
         if artifact.get("provenance", {}).get("git_head") != initial_head:
-            print(
-                f"ERROR: family {family!r} artifact is not from the frozen source", file=sys.stderr
-            )
-            return 2
+            return refuse_capture(f"family {family!r} artifact is not from the frozen source")
         try:
             source = source_identity(repo_root, "benchmark-control-plane")
         except EvidenceError as exc:
@@ -1034,8 +1037,7 @@ def promote_profile_runs(
             print(f"ERROR: cannot bind source closure: {exc}", file=sys.stderr)
             return 2
         if source.get("dirty") is not False or source.get("revision") != initial_head:
-            print("ERROR: benchmark source changed during promotion", file=sys.stderr)
-            return 2
+            return refuse_capture("benchmark source changed during promotion")
         # Promotion occurs only after the native validator and declared
         # comparator have both succeeded in this run.
         verdict_status = "pass"
@@ -1919,31 +1921,17 @@ def _native_tail(args, argv, repo_root, profile, manifest, artifact_profile):
         if requested_root is not None and (
             requested_root == repo_root or repo_root in requested_root.parents
         ):
-            print(
-                "ERROR: --evidence-root must stay outside the checkout; no producer was executed",
-                file=sys.stderr,
-            )
-            return 2
+            return refuse_capture("--evidence-root must stay outside the checkout; no producer was executed")
         if args.admit_baseline and requested_root is not None:
-            print(
-                "ERROR: baseline admission and immutable capture are separate actions; omit --evidence-root for admission",
-                file=sys.stderr,
-            )
-            return 2
+            return refuse_capture("baseline admission and immutable capture are separate actions; omit --evidence-root for admission")
         cold_samples = args.cold_samples
         if cold_samples is not None:
             if args.profile != "dsl-authority":
-                print("ERROR: --cold-samples is only valid for dsl-authority", file=sys.stderr)
-                return 2
+                return refuse_capture("--cold-samples is only valid for dsl-authority")
             if cold_samples < 20:
-                print(
-                    "ERROR: --cold-samples must be at least 20 for authority comparison",
-                    file=sys.stderr,
-                )
-                return 2
+                return refuse_capture("--cold-samples must be at least 20 for authority comparison")
         if args.admit_baseline and args.profile != "dsl-authority":
-            print("ERROR: --admit-baseline is only valid for dsl-authority", file=sys.stderr)
-            return 2
+            return refuse_capture("--admit-baseline is only valid for dsl-authority")
         capture_phase("source")
         try:
             if not args.admit_baseline:
@@ -1958,11 +1946,10 @@ def _native_tail(args, argv, repo_root, profile, manifest, artifact_profile):
         receipt = repo_root / "artifacts" / "benchmark-receipts" / args.profile / "preflight.json"
         preflight_result = preflight(repo_root, args.profile, receipt, manifest)
         if preflight_result:
-            print(
-                f"ERROR: local timing preflight blocked; receipt written to {receipt}",
-                file=sys.stderr,
+            return refuse_capture(
+                f"local timing preflight returned exit {preflight_result}; receipt path: {receipt}",
+                preflight_result,
             )
-            return preflight_result
         try:
             require_clean_preflight_receipt(receipt, args.profile)
             require_frozen_source(repo_root, initial_head)
@@ -1979,8 +1966,7 @@ def _native_tail(args, argv, repo_root, profile, manifest, artifact_profile):
         recipes = profile["recipes"]
         assert isinstance(recipes, list)
         if not recipes:
-            print(f"ERROR: profile {args.profile!r} has no registered producer", file=sys.stderr)
-            return 2
+            return refuse_capture(f"profile {args.profile!r} has no registered producer")
         capture_started_ns = time.time_ns()
         execution_started_ns = time.monotonic_ns()
         for recipe in recipes:
@@ -2003,8 +1989,7 @@ def _native_tail(args, argv, repo_root, profile, manifest, artifact_profile):
                 print(f"ERROR: producer recipe {recipe!r} refused: {exc}", file=sys.stderr)
                 return 2
             if returncode:
-                print(f"ERROR: producer recipe {recipe!r} failed", file=sys.stderr)
-                return returncode
+                return refuse_capture(f"producer recipe {recipe!r} returned exit {returncode}", returncode)
             try:
                 require_frozen_source(repo_root, initial_head)
             except RuntimeError as exc:
@@ -2042,25 +2027,19 @@ def _native_tail(args, argv, repo_root, profile, manifest, artifact_profile):
     if artifact_profile in manifest["profiles"]:
         validation = validate(repo_root, artifact_profile)
         if validation:
-            return validation
+            return refuse_capture(f"native validation returned exit {validation}", validation)
     else:
         # Crate-local Criterion, retrieval and recorded-only profiles have no
         # BenchArtifactV1 family; they are exercised through plan/replay or an
         # explicit --evidence-root, never through the artifact checker.
-        print(
-            f"ERROR: profile {args.profile!r} registers no BenchArtifactV1 family; "
-            "use `plan` or an explicit --evidence-root",
-            file=sys.stderr,
+        return refuse_capture(
+            f"profile {args.profile!r} registers no BenchArtifactV1 family; "
+            "use `plan` or an explicit --evidence-root"
         )
-        return 2
     validated_artifacts = None
     if args.command == "run" and evidence_root is not None:
         if evidence_root == repo_root or repo_root in evidence_root.parents:
-            print(
-                "ERROR: --evidence-root must stay outside the checkout; run artifacts are external",
-                file=sys.stderr,
-            )
-            return 2
+            return refuse_capture("--evidence-root must stay outside the checkout; run artifacts are external")
         try:
             validated_artifacts = snapshot_profile_artifacts(repo_root, args.profile, manifest)
         except RuntimeError as exc:
@@ -2090,7 +2069,7 @@ def _native_tail(args, argv, repo_root, profile, manifest, artifact_profile):
         try:
             result = compare(repo_root, profile, manifest)
             if result:
-                return result
+                return refuse_capture(f"native comparison returned exit {result}", result)
             if args.command == "run":
                 require_frozen_source(repo_root, initial_head)
                 if (

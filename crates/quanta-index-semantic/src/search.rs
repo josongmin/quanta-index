@@ -1207,6 +1207,10 @@ fn top_k_limit(top_k: u32) -> Result<usize, CoreError> {
 }
 
 impl SemanticSearcher for PersistedSemanticSearcher {
+    fn validate_query_vector(&self, query_vector: &[f32]) -> Result<(), CoreError> {
+        self.loaded.validate_query_vector(query_vector)
+    }
+
     fn resident_bytes_estimate(&self) -> u64 {
         self.loaded.resident_bytes_estimate
     }

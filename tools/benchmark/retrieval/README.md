@@ -1,5 +1,8 @@
 # Real-repository retrieval and context-yield benchmark
 
+For the operator sequence and supported claim boundaries, start with the
+[code-search runbook](../CODE_SEARCH_RUNBOOK.md).
+
 The Python evaluator scores recorded runner output; it does not query an
 index, generate candidates, or infer missing evidence. The benchmark-only
 Rust CLI in `benchmarks/retrieval` loads a pinned repository, chunks it,
