@@ -21,6 +21,7 @@ use std::sync::Arc;
 use tantivy::Term;
 use tantivy::query::{AllQuery, BooleanQuery, Occur, PhraseQuery, Query, RegexQuery, TermQuery};
 use tantivy::schema::{Field, IndexRecordOption, TantivyDocument};
+use tantivy_fst::Regex;
 
 impl TantivySearcher {
     pub(crate) fn exact_text_query(&self, field: Field, value: &str) -> Box<dyn Query> {
@@ -47,15 +48,28 @@ impl TantivySearcher {
         pattern: &str,
         scope: LqFileScope,
     ) -> Result<Box<dyn Query>, CoreError> {
-        let path_query = self.regex_text_query(self.fields.repo_relative_path, pattern)?;
-        let name_query = self.regex_text_query(self.fields.file_name, pattern)?;
         match scope {
-            LqFileScope::PathOnly => Ok(path_query),
-            LqFileScope::NameOnly => Ok(name_query),
-            LqFileScope::NameAndPath => Ok(Box::new(BooleanQuery::new(vec![
-                (Occur::Should, path_query),
-                (Occur::Should, name_query),
-            ]))),
+            LqFileScope::PathOnly => self.regex_text_query(self.fields.repo_relative_path, pattern),
+            LqFileScope::NameOnly => self.regex_text_query(self.fields.file_name, pattern),
+            LqFileScope::NameAndPath => {
+                crate::query_errors::admit_scope_regex_pattern_size(pattern)?;
+                let shared = Arc::new(Regex::new(pattern).map_err(|err| {
+                    CoreError::InvalidContract(format!("lexical: regex filter compile: {err}"))
+                })?);
+                Ok(Box::new(BooleanQuery::new(vec![
+                    (
+                        Occur::Should,
+                        Box::new(RegexQuery::from_regex(
+                            Arc::clone(&shared),
+                            self.fields.repo_relative_path,
+                        )),
+                    ),
+                    (
+                        Occur::Should,
+                        Box::new(RegexQuery::from_regex(shared, self.fields.file_name)),
+                    ),
+                ])))
+            }
         }
     }
 
