@@ -20,7 +20,7 @@ platform qualification. A historical local test total is not current-source proo
 
 ## Current-source audit and decision order
 
-Audit basis: `e56ce86d62bc71225d6994c79d1bd5fefe42bc1f`. Recheck these
+Audit basis: the Sep-28 integrated source through `fb7f98b6`. Recheck these
 call paths after source changes; concurrent documentation edits and historical
 receipts do not update the implementation state.
 
@@ -36,10 +36,12 @@ receipts do not update the implementation state.
   open verifies the generation. ENG-02 is a measured-cost and resource-boundary
   gap; do not infer a stale-result defect or promise sublinear total ingest.
 - [`code_search_workflow.py`](../../../../tools/benchmark/code_search_workflow.py) admits one exploratory lexical pair and external
-  five-product capture per spec. The runbook's three-mode matrix is an operator
-  procedure, not an enforced aggregate-completeness verdict. External capture
-  retains `diagnostic_unqualified` and whole-product indexed-universe attestation
-  is false. The qualified [`QUALITY_DELTA=pass`](../../../../tools/benchmark/retrieval/run.py) checks evidence/uncertainty, not
+  five-product capture per spec. [`code_search_matrix.py`](../../../../tools/benchmark/code_search_matrix.py)
+  now replays every cell in the declared repository × family × mode inventory,
+  but the family list is caller-declared and is not bound to an independently
+  adjudicated task population. Its verdict is `diagnostic_unqualified`; external
+  whole-product indexed-universe attestation remains false. The qualified
+  [`QUALITY_DELTA=pass`](../../../../tools/benchmark/retrieval/run.py) checks evidence/uncertainty, not
   the sign or a minimum useful effect. None of these signals alone admits a
   product win or default change.
 
