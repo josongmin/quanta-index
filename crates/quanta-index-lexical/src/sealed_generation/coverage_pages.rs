@@ -175,38 +175,44 @@ fn read_bounded(path: &Path, ceiling: usize) -> Result<Vec<u8>, CoreError> {
     if metadata.len() > ceiling_u64 {
         return Err(resource("encoded artifact exceeds its byte ceiling"));
     }
-    let file = File::open(path)
+    let mut file = File::open(path)
         .map_err(|error| CoreError::Storage(format!("open {}: {error}", path.display())))?;
-    if !file
+    let opened = file
         .metadata()
-        .map_err(|error| CoreError::Storage(error.to_string()))?
-        .is_file()
-    {
+        .map_err(|error| CoreError::Storage(error.to_string()))?;
+    if !opened.is_file() {
         return Err(corrupt(
             directory,
             "opened coverage artifact is not a regular file",
         ));
     }
-    let mut bytes = Vec::new();
-    // The extra byte detects growth without allowing read_to_end to grow an
-    // unadmitted buffer. This charge is a bounded read buffer, not process RSS.
-    let read_limit = ceiling
-        .checked_add(1)
-        .ok_or_else(|| resource("coverage read ceiling overflow"))?;
-    bytes
-        .try_reserve_exact(read_limit)
-        .map_err(|error| resource(&format!("coverage read allocation refused: {error}")))?;
-    let read_limit = u64::try_from(read_limit).map_err(|error| {
-        resource(&format!(
-            "coverage read ceiling is not representable: {error}"
-        ))
-    })?;
-    let _read = file
-        .take(read_limit)
-        .read_to_end(&mut bytes)
-        .map_err(|error| CoreError::Storage(format!("read {}: {error}", path.display())))?;
-    if bytes.len() > ceiling {
+    if opened.len() > ceiling_u64 {
         return Err(resource("encoded artifact exceeds its byte ceiling"));
+    }
+    let expected_len = usize::try_from(opened.len())
+        .map_err(|error| resource(&format!("coverage read length overflow: {error}")))?;
+    // Reserve the opened file's actual length instead of the page ceiling for
+    // every small page. read_exact plus one byte detects a concurrent change
+    // without allowing Vec's geometric growth to exceed the admitted length.
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(expected_len)
+        .map_err(|error| resource(&format!("coverage read allocation refused: {error}")))?;
+    bytes.resize(expected_len, 0);
+    file.read_exact(&mut bytes).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::UnexpectedEof {
+            corrupt(directory, "coverage artifact changed during read")
+        } else {
+            CoreError::Storage(format!("read {}: {error}", path.display()))
+        }
+    })?;
+    let mut extra = [0_u8; 1];
+    if file
+        .read(&mut extra)
+        .map_err(|error| CoreError::Storage(format!("read {}: {error}", path.display())))?
+        != 0
+    {
+        return Err(corrupt(directory, "coverage artifact changed during read"));
     }
     Ok(bytes)
 }
@@ -327,14 +333,26 @@ pub(crate) fn root_page_commitments(
             "coverage root belongs to another generation",
         ));
     }
-    Ok(pages
+    let commitments: Vec<_> = pages
         .into_iter()
         .map(|(slot, bytes, sha256, _)| SealedArtifactCommitmentV1 {
             name: page_name(slot, &sha256),
             bytes,
             sha256,
         })
-        .collect())
+        .collect();
+    let names: BTreeSet<_> = commitments.iter().map(|page| page.name.as_str()).collect();
+    for entry in
+        std::fs::read_dir(directory).map_err(|error| CoreError::Storage(error.to_string()))?
+    {
+        let entry = entry.map_err(|error| CoreError::Storage(error.to_string()))?;
+        let file_name = entry.file_name();
+        let name = file_name.to_string_lossy();
+        if is_coverage_page(&name) && !names.contains(name.as_ref()) {
+            return Err(corrupt(directory, "uncommitted coverage page"));
+        }
+    }
+    Ok(commitments)
 }
 
 pub(crate) fn decode_coverage_pages(
@@ -452,7 +470,7 @@ pub(crate) fn write_coverage_pages(
     snapshot: &CoverageSnapshot,
     base: Option<&CoverageWriteBase>,
     touched: &BTreeSet<u8>,
-) -> Result<(), CoreError> {
+) -> Result<SealedArtifactCommitmentV1, CoreError> {
     publication
         .validate()
         .map_err(|error| CoreError::InvalidContract(error.to_string()))?;
@@ -529,6 +547,12 @@ pub(crate) fn write_coverage_pages(
         &(COVERAGE_FORMAT, identity, publication, pages),
         MAX_COVERAGE_ROOT_BYTES,
     )?;
+    let root_commitment = SealedArtifactCommitmentV1 {
+        name: SOURCE_FILE_COVERAGE_FILE_NAME.into(),
+        bytes: u64::try_from(root.len())
+            .map_err(|error| resource(&format!("coverage root length overflow: {error}")))?,
+        sha256: Sha256::digest(&root).into(),
+    };
     let (_, _, _, pages) = decode_root(&root, directory)?;
     let planned_rows: u64 = pages.iter().map(|(_, _, _, rows)| u64::from(*rows)).sum();
     if u64::try_from(snapshot.len()) != Ok(planned_rows) {
@@ -591,12 +615,27 @@ pub(crate) fn write_coverage_pages(
                 ))
             })?;
     }
-    Ok(())
+    Ok(root_commitment)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::BoundedRows;
+    use super::{BoundedRows, MAX_COVERAGE_PAGE_BYTES, read_bounded};
+
+    #[test]
+    fn small_coverage_page_does_not_allocate_the_page_ceiling()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("page");
+        std::fs::write(&path, [7_u8; 64])?;
+        let bytes = read_bounded(&path, MAX_COVERAGE_PAGE_BYTES)?;
+        if bytes.as_slice() != [7_u8; 64]
+            || bytes.capacity().saturating_mul(2) >= MAX_COVERAGE_PAGE_BYTES
+        {
+            return Err("small coverage page used the maximum page reserve".into());
+        }
+        Ok(())
+    }
 
     #[test]
     fn serialized_cardinality_hints_cannot_allocate_unbounded_vectors() {

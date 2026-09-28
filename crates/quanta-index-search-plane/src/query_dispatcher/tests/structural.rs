@@ -1016,6 +1016,42 @@ fn structural_dispatch_executes_pure_negative_root_from_pinned_universe() -> Tes
     Ok(())
 }
 
+#[test]
+fn structural_negative_universe_applies_prepared_file_filter_to_all_chunks() -> TestResult {
+    let producer = Arc::new(PatternRoutingStructuralProducer::new());
+    let dispatcher = structural_dispatcher_with_producer_and_ledger(
+        Arc::clone(&producer),
+        ready_ledger_with_structural_boolean_chunks(),
+    )?;
+    let response = dispatcher.dispatch(
+        SearchPlaneQueryIpcRequest::Structural(quanta_index_contract::StructuralQueryRequest {
+            text_query: TextQueryRequest {
+                syntax: TextQuerySyntax::Native,
+                query_text: "file:src/b.rs NOT match { alpha }".to_string(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+                generation: Some(ready_pin()),
+                generation_selector: None,
+                top_k: 10,
+                cursor: None,
+            },
+            cursor: None,
+        }),
+        &RequestBudgetV1::unbounded(),
+    );
+    let SearchPlaneQueryIpcResponse::Structural(results) = response else {
+        return Err(format!("expected structural page, got {response:?}").into());
+    };
+    let ids = results
+        .results
+        .iter()
+        .map(|candidate| candidate.candidate_id.as_str())
+        .collect::<Vec<_>>();
+    if ids != ["chunk-beta"] {
+        return Err(format!("prepared file filter selected wrong chunks: {ids:?}").into());
+    }
+    Ok(())
+}
+
 // ------------------------------------------------------------------
 // QI-BB-025 W4 — keyset paging over the evaluated match set.
 // ------------------------------------------------------------------

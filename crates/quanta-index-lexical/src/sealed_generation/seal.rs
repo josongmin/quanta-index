@@ -13,8 +13,9 @@
 //! commitment without being read, because the base seal proved that very
 //! inode; everything else — a new segment, a rewritten shard, the
 //! rewritten `meta.json`, a rewritten overlay — is read once through a
-//! counting hasher. A fresh generation is therefore proved whole at its
-//! seal, and every later delta proves only what it wrote.
+//! counting hasher. Coverage pages are an exception: their inherited inodes
+//! are hashed at seal because in-place changes must not bypass the prepared
+//! coverage root. A fresh generation is therefore proved whole at its seal.
 //!
 //! The measurement is reported per seal so a test can hold the seal to
 //! that shape with an inode oracle instead of a clock.
@@ -42,7 +43,6 @@ use crate::sealed_generation::index_files::referenced_index_files;
 use crate::sealed_generation::manifest::{
     IndexSegmentVerificationV1, LexicalSealedManifest, manifest_path, read_manifest, write_manifest,
 };
-use crate::sealed_generation::verify::verify_source_coverage;
 use crate::text_authority::{
     TEXT_AUTHORITY_DIR_NAME, TEXT_AUTHORITY_MANIFEST_FILE_NAME, TextAuthorityManifest,
     finalize_for_seal,
@@ -243,6 +243,7 @@ pub(crate) fn seal_generation(
     fields: &SchemaFields,
     identity: &GenerationSnapshot,
     base_dir: Option<&Path>,
+    prepared_coverage_root: &SealedArtifactCommitmentV1,
 ) -> Result<LexicalSealCommitmentStats, CoreError> {
     remove_publish_leftovers(generation_dir)?;
     let mut measurer = Measurer {
@@ -296,21 +297,34 @@ pub(crate) fn seal_generation(
                 )));
             }
         };
-    let _coverage = verify_source_coverage(generation_dir, identity, source_coverage.as_ref())?;
-    if let Some(root) = &source_coverage {
-        for page in crate::sealed_generation::coverage::root_page_commitments(
+    let root = source_coverage.as_ref().ok_or_else(|| {
+        crate::index_store::sidecar_corrupt(
             generation_dir,
-            root,
-            identity,
-        )? {
-            let page_commitment = measurer.commit(&page.name)?;
-            if page_commitment != page {
-                return Err(crate::index_store::sidecar_corrupt(
-                    generation_dir,
-                    &page.name,
-                    "coverage page changed between verification and seal",
-                ));
-            }
+            SOURCE_FILE_COVERAGE_FILE_NAME,
+            "prepared coverage root is missing",
+        )
+    })?;
+    if root != prepared_coverage_root {
+        return Err(crate::index_store::sidecar_corrupt(
+            generation_dir,
+            SOURCE_FILE_COVERAGE_FILE_NAME,
+            "coverage root changed after preparation",
+        ));
+    }
+    // The writer encoded touched rows from a validated plan and linked only
+    // pages inherited from the verified base. Bind that plan to the persisted
+    // root, then hash every page against it: an in-place edit of a hard-linked
+    // base page must not inherit a stale manifest commitment.
+    for page in
+        crate::sealed_generation::coverage::root_page_commitments(generation_dir, root, identity)?
+    {
+        let page_commitment = measurer.hash(&page.name)?;
+        if page_commitment != page {
+            return Err(crate::index_store::sidecar_corrupt(
+                generation_dir,
+                &page.name,
+                "coverage page changed between preparation and seal",
+            ));
         }
     }
     let manifest = LexicalSealedManifest {

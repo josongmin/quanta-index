@@ -17,6 +17,13 @@ Pinned regex NFA size limits are per NFA. Forward/reverse retained engines,
 compiler temporaries and search caches are distinct allocations. The public
 bytes Regex wrapper does not expose one pre-allocation admission/cache owner.
 No current runtime aggregate overrun has been established by this ticket.
+The executor now pins the current 10 MiB NFA and 2 MiB lazy-DFA cache defaults
+explicitly, preventing a dependency-default change from silently moving those
+per-engine limits. This does not impose an aggregate request heap bound.
+The structural negative-universe file filter now compiles once per request
+instead of once per chunk. Its syntax error remains `StrInvalidRequest`, while
+an engine size refusal keeps `LexRegexPlanLimitExceeded`; neither change gives
+the structural route physical aggregate admission.
 
 The lockfile pins `regex 1.12.4`, `regex-automata 0.4.14` and
 `regex-syntax 0.8.11`. The pinned meta-engine exposes separate NFA/one-pass/DFA
@@ -124,6 +131,8 @@ mapping as a current defect.
   exhausts work and resident-memory accounts separately under the same policy.
   Indexed and manual selection retain the same two selected IDs, score bits,
   order and source identities while refusing every excerpt with `WorkBudget`.
+  Repeated and distinct regex leaves also retain hit identity, score and order
+  when optional preview refuses.
 - `l4_sdk_preview_survives_daemon_process_restart` checks original ingested bytes
   after checkout overwrite/deletion across two actual daemon starts. The same
   SDK route retains the pinned hit with typed `WorkBudget` refusal for 33
@@ -134,6 +143,11 @@ Run the owner libraries and `l4_match_anchored_preview` target, followed by the
 `l4_preview_sdk` runtime target through `./scripts/cargow test --locked`.
 Cache/cancellation/execution-budget and Unicode/regex integration targets are
 separate controls; passing them does not satisfy the physical admission items.
+
+Current owner-local focused checks on `3272662c` plus working-tree edits:
+regex library 92/92, lexical preview 17/17, and structural prepared-filter
+and typed-error tests 1/1 each. These are functional regressions, not an RSS
+or aggregate-allocation qualification.
 
 Context utility, payload cost and p95 overhead are separately owned by
 [CS-BENCH-03](CS-BENCH-03-tracks-metrics-and-statistics.md) and

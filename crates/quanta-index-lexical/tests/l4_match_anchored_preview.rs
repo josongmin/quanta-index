@@ -444,8 +444,24 @@ fn optional_preview_refusal_preserves_selected_identity_score_and_order() -> Tes
     )?;
     adapter.build_batch(&batch)?;
     let view = adapter.open(&batch.repo_id, &batch.revision_id, batch.generation)?;
-    for index_mode in [None, Some(LqYesNoOnly::No)] {
+    let multiple_regex_leaves = || {
+        LqExpr::All(vec![
+            LqExpr::Leaf(LqLeaf::Regex("needle".into())),
+            LqExpr::Leaf(LqLeaf::Regex("needle".into())),
+            LqExpr::Leaf(LqLeaf::Regex("n[ae]edle".into())),
+        ])
+    };
+    for (index_mode, expr) in [
+        (None, LqExpr::Leaf(LqLeaf::Keyword("needle".into()))),
+        (None, multiple_regex_leaves()),
+        (
+            Some(LqYesNoOnly::No),
+            LqExpr::Leaf(LqLeaf::Keyword("needle".into())),
+        ),
+        (Some(LqYesNoOnly::No), multiple_regex_leaves()),
+    ] {
         let mut present = query("needle");
+        present.expr = expr;
         present.options.index_mode = index_mode;
         let baseline = view.search(&present, 2, &RequestBudgetV1::unbounded())?;
         assert_eq!(baseline.len(), 2);

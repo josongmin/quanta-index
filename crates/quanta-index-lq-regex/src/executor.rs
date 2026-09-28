@@ -17,7 +17,7 @@
 //! 4. run [`crate::dialect::dialect_filter`] over the HIR;
 //! 5. compute the structural planning charge via [`crate::estimate_nfa_states`];
 //! 6. remove unobserved explicit captures, then compile with
-//!    `regex::bytes::Regex::new`, wrapping `regex::Error`
+//!    `regex::bytes::RegexBuilder`, wrapping `regex::Error`
 //!    size refusals into [`RegexErrorCode::PlanLimitExceeded`] and other
 //!    engine failures into [`RegexErrorCode::ExecutionInternal`].
 //!
@@ -43,6 +43,11 @@ use crate::dialect_ast_walk::ast_walk_filter;
 use crate::errors::{LimitDimension, RegexError, RegexErrorCode};
 use crate::estimator::estimate_nfa_states;
 use crate::literal_extract::extract_prefilter_literal_alternation;
+
+// Match the pinned regex 1.12.4 byte-engine defaults explicitly. These are
+// per-NFA and per-lazy-DFA-cache limits, not an aggregate allocation bound.
+const ENGINE_NFA_SIZE_LIMIT_BYTES: usize = 10 * (1 << 20);
+const ENGINE_DFA_CACHE_LIMIT_BYTES: usize = 2 * (1 << 20);
 
 /// Compiled regex paired with its HIR so callers can re-run
 /// literal extraction without re-parsing.
@@ -148,19 +153,23 @@ impl RegexExecutor {
 
     /// Compile an already validated plan without repeating dialect parsing.
     pub fn compile_prepared(plan: RegexCompilationPlan) -> Result<Self, RegexError> {
-        let compiled = regex::bytes::Regex::new(&plan.execution_pattern).map_err(|e| {
-            if let regex::Error::CompiledTooBig(limit) = e {
-                RegexError::plan_limit(
-                    LimitDimension::CompiledBytes,
-                    format!("compiled regex exceeds engine byte ceiling {limit}"),
-                )
-            } else {
-                RegexError::new(
-                    RegexErrorCode::ExecutionInternal,
-                    format!("validated regex failed engine construction: {e}"),
-                )
-            }
-        })?;
+        let compiled = regex::bytes::RegexBuilder::new(&plan.execution_pattern)
+            .size_limit(ENGINE_NFA_SIZE_LIMIT_BYTES)
+            .dfa_size_limit(ENGINE_DFA_CACHE_LIMIT_BYTES)
+            .build()
+            .map_err(|e| {
+                if let regex::Error::CompiledTooBig(limit) = e {
+                    RegexError::plan_limit(
+                        LimitDimension::CompiledBytes,
+                        format!("compiled regex exceeds engine byte ceiling {limit}"),
+                    )
+                } else {
+                    RegexError::new(
+                        RegexErrorCode::ExecutionInternal,
+                        format!("validated regex failed engine construction: {e}"),
+                    )
+                }
+            })?;
         Ok(Self {
             pattern: plan.pattern,
             hir: plan.hir,

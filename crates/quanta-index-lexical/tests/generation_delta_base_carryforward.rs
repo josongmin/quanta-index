@@ -25,6 +25,7 @@ use std::error::Error;
 use std::fmt::Write as _;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::Path;
+use std::time::Instant;
 
 use sha2::{Digest as _, Sha256};
 
@@ -505,6 +506,108 @@ fn delta_generation_does_not_rewrite_unchanged_index_bytes() -> TestResult {
         .into());
     }
     Ok(())
+}
+
+/// Measure the whole adapter path as a diagnostic owner fixture.
+///
+/// Run each size in a fresh process and measure peak process RSS externally.
+/// Durations are observations, not admission thresholds. Seal counters exclude
+/// base verification and decoder reads.
+fn measure_total_delta_pipeline(filler_scopes: usize) -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+    let g1 = ManifestGeneration::new(1);
+    let g2 = ManifestGeneration::new(2);
+
+    let start = Instant::now();
+    adapter.build_batch(&base_batch_with_filler(g1, filler_scopes)?)?;
+    let base_ms = start.elapsed().as_millis();
+    let base_dir = generation_dir(dir.path(), g1)?;
+    let (base_inodes, base_bytes) = inodes_and_bytes(&base_dir)?;
+
+    let mut delta = delta_batch(g2, g1)?;
+    delta.replace_scopes.push(scope(
+        "src/new.rs",
+        "chunk-new",
+        "new_marker in a newly admitted file",
+    )?);
+    delta.replace_scopes.sort_by(|left, right| {
+        left.coverage
+            .source
+            .file
+            .repo_relative_path
+            .as_str()
+            .cmp(right.coverage.source.file.repo_relative_path.as_str())
+    });
+    delta
+        .tombstone_scopes
+        .push(quanta_index_contract::SearchCorpusTombstoneScope {
+            file: quanta_index_contract::SourceFileKey {
+                source_repo_id: repo(),
+                repo_relative_path: RepoRelativePath::new("src/filler/mod_00007.rs"),
+            },
+        });
+    current_source_fixture::finish_batch(&mut delta)?;
+
+    let start = Instant::now();
+    adapter.preflight_batch(&delta)?;
+    let preflight_ms = start.elapsed().as_millis();
+    let start = Instant::now();
+    adapter.build_batch(&delta)?;
+    let build_ms = start.elapsed().as_millis();
+    let start = Instant::now();
+    let opened = adapter.open(&repo(), &revision(), g2)?;
+    let open_ms = start.elapsed().as_millis();
+    drop(opened);
+
+    assert_hits(&adapter, g2, "new_marker", &["chunk-new"], "mixed delta")?;
+    assert_hits(&adapter, g2, "quartz_00007", &[], "mixed tombstone")?;
+    let (fresh_bytes, fresh_entries) =
+        bytes_not_shared_with(&generation_dir(dir.path(), g2)?, &base_inodes)?;
+    let fresh_coverage_bytes: u64 = fresh_entries
+        .iter()
+        .filter(|(name, _)| name.starts_with("source-file-coverage"))
+        .map(|(_, bytes)| *bytes)
+        .sum();
+    emit_evidence(&[
+        ("kind", "diagnostic_total_pipeline".into()),
+        (
+            "files",
+            filler_scopes
+                .checked_add(2)
+                .ok_or("file count overflow")?
+                .to_string(),
+        ),
+        ("base_ms", base_ms.to_string()),
+        ("preflight_ms", preflight_ms.to_string()),
+        ("delta_build_ms", build_ms.to_string()),
+        ("delta_open_ms", open_ms.to_string()),
+        ("base_bytes", base_bytes.to_string()),
+        ("delta_fresh_bytes", fresh_bytes.to_string()),
+        (
+            "delta_fresh_coverage_bytes",
+            fresh_coverage_bytes.to_string(),
+        ),
+    ]);
+    Ok(())
+}
+
+#[test]
+#[ignore = "manual whole-adapter cost probe; run in a fresh process for RSS"]
+fn total_delta_pipeline_cost_128_files() -> TestResult {
+    measure_total_delta_pipeline(126)
+}
+
+#[test]
+#[ignore = "manual whole-adapter cost probe; run in a fresh process for RSS"]
+fn total_delta_pipeline_cost_512_files() -> TestResult {
+    measure_total_delta_pipeline(510)
+}
+
+#[test]
+#[ignore = "manual whole-adapter cost probe; run in a fresh process for RSS"]
+fn total_delta_pipeline_cost_2048_files() -> TestResult {
+    measure_total_delta_pipeline(2046)
 }
 
 /// Resolves the on-disk directory for one generation of the fixture corpus.

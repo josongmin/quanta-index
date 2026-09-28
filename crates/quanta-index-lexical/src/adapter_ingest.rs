@@ -241,7 +241,8 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
         let coverage = self.plan_batch_coverage(batch, &candidate, &generation_dir)?;
         // The prepared coverage marks this target as bound before any index
         // mutation. It is query-invisible until the index and artifact seal.
-        write_staged_coverage(&generation_dir, &candidate, &batch.source_event, &coverage)?;
+        let coverage_root =
+            write_staged_coverage(&generation_dir, &candidate, &batch.source_event, &coverage)?;
         let key = GenKey {
             repo_id: batch.repo_id.clone(),
             revision_id: batch.revision_id.clone(),
@@ -279,6 +280,7 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
                 &self.fields,
                 &candidate,
                 base_dir.as_deref(),
+                &coverage_root,
             )?;
             self.record_seal_measurement(measured)?;
             persist_lexical_sealed_identity(&generation_dir, &candidate)?;

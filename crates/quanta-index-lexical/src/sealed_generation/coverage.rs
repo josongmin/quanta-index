@@ -12,6 +12,7 @@ use quanta_index_contract::{
     SourceFileKey, SourcePublicationEvent,
 };
 use quanta_index_core::CoreError;
+use quanta_index_core::domains::generation::SealedArtifactCommitmentV1;
 
 pub(crate) const SOURCE_FILE_COVERAGE_FILE_NAME: &str = "source-file-coverage.cbor";
 #[path = "coverage_pages.rs"]
@@ -123,7 +124,7 @@ pub(crate) fn write_staged_coverage(
     identity: &GenerationSnapshot,
     publication: &SourcePublicationEvent,
     plan: &CoveragePlan,
-) -> Result<(), CoreError> {
+) -> Result<SealedArtifactCommitmentV1, CoreError> {
     pages::write_coverage_pages(
         generation_dir,
         identity,
@@ -372,7 +373,7 @@ mod tests {
         let identity = identity(1)?;
         assert!(read_staged_coverage(dir.path(), &identity)?.is_none());
         assert!(read_staged_coverage(&dir.path().join("uncreated"), &identity)?.is_none());
-        write_staged_coverage(
+        let _root = write_staged_coverage(
             dir.path(),
             &identity,
             &publication(),
@@ -453,7 +454,7 @@ mod tests {
                 )?);
             }
             let base = apply_file_coverage(&CoverageSnapshot::new(), &original, &[], &[])?;
-            write_staged_coverage(
+            let _root = write_staged_coverage(
                 &base_dir,
                 &identity(1)?,
                 &publication(),
@@ -491,7 +492,7 @@ mod tests {
                 expected_base_event_id: Some("event-1".into()),
                 ..publication()
             };
-            write_staged_coverage(
+            let _root = write_staged_coverage(
                 &candidate_dir,
                 &identity(2)?,
                 &event,
@@ -635,7 +636,7 @@ mod tests {
         let dir = tempfile::tempdir()?;
         let row = file("a.rs", SymbolCoverage::NotRequested)?;
         let snapshot = CoverageSnapshot::from([(row.source.file.clone(), row)]);
-        write_staged_coverage(
+        let _root = write_staged_coverage(
             dir.path(),
             &identity(1)?,
             &publication(),
@@ -697,7 +698,7 @@ mod tests {
         // retry. The sealed door above must still reject that same state.
         let row = file("a.rs", SymbolCoverage::NotRequested)?;
         let snapshot = CoverageSnapshot::from([(row.source.file.clone(), row)]);
-        write_staged_coverage(
+        let _root = write_staged_coverage(
             dir.path(),
             &identity(1)?,
             &publication(),
@@ -721,7 +722,7 @@ mod tests {
         let snapshot = CoverageSnapshot::from([(row.source.file.clone(), row)]);
         let generation = identity(1)?;
         let event = publication();
-        write_staged_coverage(
+        let root_commitment = write_staged_coverage(
             dir.path(),
             &generation,
             &event,
@@ -736,13 +737,17 @@ mod tests {
         std::fs::write(&orphan, b"interrupted page write")?;
 
         assert!(decode_coverage(&root, dir.path(), &generation).is_err());
+        assert!(
+            super::root_page_commitments(dir.path(), &root_commitment, &generation).is_err(),
+            "the seal path must reject an orphan even when the staged retry can remove it"
+        );
         assert_eq!(
             read_staged_coverage(dir.path(), &generation)?
                 .ok_or("missing staged root")?
                 .coverage,
             snapshot
         );
-        write_staged_coverage(
+        let _root = write_staged_coverage(
             dir.path(),
             &generation,
             &event,
@@ -766,7 +771,7 @@ mod tests {
         let base = CoverageSnapshot::from([(row.source.file.clone(), row.clone())]);
         let base_dir = dir.path().join("base");
         let target = dir.path().join("delta");
-        write_staged_coverage(
+        let _root = write_staged_coverage(
             &base_dir,
             &identity(1)?,
             &publication(),
@@ -794,7 +799,7 @@ mod tests {
             expected_base_event_id: Some("event-1".into()),
             ..publication()
         };
-        super::write_staged_coverage(&target, &identity(2)?, &event, &plan)?;
+        let _root = super::write_staged_coverage(&target, &identity(2)?, &event, &plan)?;
         crate::generation_dir::clone_generation_directory_preserving_existing(&base_dir, &target)?;
         let reopened = read_staged_coverage(&target, &identity(2)?)?.ok_or("missing empty root")?;
         assert!(reopened.coverage.is_empty());

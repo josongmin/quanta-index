@@ -294,11 +294,12 @@ fn emit_evidence(fields: &[(&str, String)]) {
     println!("QI-BB-006-SEAL-EVIDENCE {}", rendered.join(" "));
 }
 
-/// The bytes oracle: the base seal reads every committed byte once, and a
-/// one-scope delta's seal reads exactly the files that are not the base's
-/// inode and inherits exactly the ones that are.
+/// The bytes oracle: the base seal reads every committed byte once.
+///
+/// A delta rehashes even inherited coverage pages to reject in-place edits after base
+/// validation, while other unchanged inodes retain their base commitments.
 #[test]
-fn a_delta_seal_reads_only_what_the_delta_wrote() -> TestResult {
+fn a_delta_seal_rehashes_coverage_but_inherits_other_unmodified_files() -> TestResult {
     let temp = tempfile::tempdir()?;
     let root = temp.path().to_path_buf();
     let adapter = LexicalAdapter::with_state_root(root.clone());
@@ -344,6 +345,12 @@ fn a_delta_seal_reads_only_what_the_delta_wrote() -> TestResult {
         .partition(|file| base_inodes.contains(&file.inode));
     let linked_bytes = total_bytes(linked.iter().copied());
     let written_bytes = total_bytes(written.iter().copied());
+    let linked_coverage_pages: Vec<_> = linked
+        .iter()
+        .copied()
+        .filter(|file| file.name.starts_with("source-file-coverage-page-"))
+        .collect();
+    let linked_coverage_bytes = total_bytes(linked_coverage_pages.iter().copied());
     let written_names: Vec<&str> = written.iter().map(|file| file.name.as_str()).collect();
     emit_evidence(&[
         ("docs", DOCS.to_string()),
@@ -376,30 +383,32 @@ fn a_delta_seal_reads_only_what_the_delta_wrote() -> TestResult {
     if delta_seal.seals != 1 {
         return Err(format!("expected one delta seal, stats {delta_seal:?}").into());
     }
-    if delta_seal.files_hashed != u64::try_from(written.len())?
-        || delta_seal.bytes_hashed != written_bytes
+    if delta_seal.files_hashed != u64::try_from(written.len() + linked_coverage_pages.len())?
+        || delta_seal.bytes_hashed != written_bytes.saturating_add(linked_coverage_bytes)
     {
         return Err(format!(
-            "the delta seal hashed {} files / {} bytes; disk says {} files / {written_bytes} bytes are not the base's inode ({written_names:?})",
+            "the delta seal hashed {} files / {} bytes; disk says {} new files / {written_bytes} bytes plus {} linked coverage pages / {linked_coverage_bytes} bytes ({written_names:?})",
             delta_seal.files_hashed,
             delta_seal.bytes_hashed,
-            written.len()
+            written.len(),
+            linked_coverage_pages.len()
         )
         .into());
     }
-    if delta_seal.files_inherited != u64::try_from(linked.len())?
-        || delta_seal.bytes_inherited != linked_bytes
+    if delta_seal.files_inherited != u64::try_from(linked.len() - linked_coverage_pages.len())?
+        || delta_seal.bytes_inherited != linked_bytes.saturating_sub(linked_coverage_bytes)
     {
         return Err(format!(
-            "the delta seal inherited {} files / {} bytes; disk says {} files / {linked_bytes} bytes are the base's inode",
+            "the delta seal inherited {} files / {} bytes; disk says {} non-coverage files / {} bytes share the base inode",
             delta_seal.files_inherited,
             delta_seal.bytes_inherited,
-            linked.len()
+            linked.len() - linked_coverage_pages.len(),
+            linked_bytes.saturating_sub(linked_coverage_bytes)
         )
         .into());
     }
-    // Every inherited file is the base's file under the same name and
-    // length, so the base seal's proof is the proof carried.
+    // Every linked file is the base's file under the same name and length;
+    // only coverage pages are also rehashed against the prepared root.
     for file in &linked {
         match base_by_name.get(file.name.as_str()) {
             Some(base) if base.inode == file.inode && base.bytes == file.bytes => {}
