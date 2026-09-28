@@ -19,7 +19,8 @@
 //!   AST node inside the surrounding `Concat`. Walking the HIR cannot
 //!   recover the construct (flags have already been folded into class
 //!   `case_insensitive` bits). The AST walk inspects the top-level
-//!   `Concat` and rejects any `Ast::Flags` node after its first body node.
+//!   leading concatenation, including the first top-level alternative, and
+//!   rejects any `Ast::Flags` node after its first body node.
 //!   A contiguous leading flag prefix is **accepted** as a
 //!   canonicalization opportunity (PRE-NORM strips it before tokenizer
 //!   handoff).
@@ -154,7 +155,7 @@ fn is_named_capture_ref_open(bytes: &[u8], start: usize) -> bool {
 }
 
 /// Walk the AST and reject any `Ast::Flags(_)` set-flag node that is
-/// **not** at the leading position of the top-level concatenation.
+/// **not** in the leading prefix of the whole pattern.
 ///
 /// Decisions:
 ///
@@ -168,12 +169,36 @@ fn is_named_capture_ref_open(bytes: &[u8], start: usize) -> bool {
 ///   handoff.
 /// - Any `Ast::Flags(_)` after the first body node of the top-level concat is
 ///   rejected as [`ForbiddenKind::InlineFlagMidPattern`].
-/// - Any `Ast::Flags(_)` nested inside an `Ast::Alternation`,
-///   `Ast::Group`, `Ast::Repetition`, etc. is rejected as
+/// - A top-level alternation keeps its first branch's leading flag prefix:
+///   the AST places global flags there because alternation has lower precedence
+///   than concatenation. Flags in later branches are rejected.
+/// - Any `Ast::Flags(_)` nested inside an `Ast::Group`,
+///   `Ast::Repetition`, etc. is rejected as
 ///   `InlineFlagMidPattern`.
 ///   (Scoped flags `(?i:foo)` use `Ast::Group { kind: NonCapturing(Flags) }`,
 ///   a different AST shape entirely — those remain allowed.)
 fn walk_for_inline_flag(ast: &Ast) -> Result<(), RegexError> {
+    if let Ast::Alternation(a) = ast {
+        if let Some(first) = a.asts.first() {
+            // `(?i)foo|bar` applies `i` to the whole alternation, although the
+            // flag node lives in the first branch. Even a flag-only first
+            // branch is meaningful here: `(?i)|foo` has an empty alternative.
+            let _has_body = walk_leading_prefix(first)?;
+        }
+        for child in a.asts.iter().skip(1) {
+            walk_disallow_any_flags(child)?;
+        }
+        return Ok(());
+    }
+    if walk_leading_prefix(ast)? {
+        Ok(())
+    } else {
+        Err(inline_flag_error(ast.span().start.offset))
+    }
+}
+
+/// Validate a branch's leading prefix and return whether it has a body.
+fn walk_leading_prefix(ast: &Ast) -> Result<bool, RegexError> {
     match *ast {
         Ast::Concat(ref c) => {
             // Case policy prepends an engine flag to an already valid pattern.
@@ -203,16 +228,9 @@ fn walk_for_inline_flag(ast: &Ast) -> Result<(), RegexError> {
                     }
                 }
             }
-            if !has_body {
-                return Err(inline_flag_error(ast.span().start.offset));
-            }
-            Ok(())
+            Ok(has_body)
         }
-        // Top-level lone `Ast::Flags(_)` — degenerate `(?i)` pattern with
-        // nothing else. Treat as mid-pattern: there is no body to apply
-        // the flag to. (PRE-NORM would have stripped a leading `(?i)`
-        // before this, leaving `Ast::Empty`, not `Ast::Flags`.)
-        Ast::Flags(ref sf) => Err(inline_flag_error(sf.span.start.offset)),
+        Ast::Flags(_) => Ok(false),
         // Everything else: recurse normally; reject any flag node
         // encountered at any depth.
         Ast::Empty(_)
@@ -224,7 +242,10 @@ fn walk_for_inline_flag(ast: &Ast) -> Result<(), RegexError> {
         | Ast::ClassBracketed(_)
         | Ast::Repetition(_)
         | Ast::Group(_)
-        | Ast::Alternation(_) => walk_disallow_any_flags(ast),
+        | Ast::Alternation(_) => {
+            walk_disallow_any_flags(ast)?;
+            Ok(true)
+        }
     }
 }
 

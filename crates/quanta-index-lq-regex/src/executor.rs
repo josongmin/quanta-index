@@ -669,6 +669,41 @@ mod tests {
     }
 
     #[test]
+    fn leading_flags_apply_across_top_level_alternatives() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let source = "café needle CAFÉ NEEDLE";
+        for pattern in [
+            "(?i)CAFÉ|NEEDLE",
+            "(?i)(?m)CAFÉ|NEEDLE",
+            "(?i)(?-i)CAFÉ|NEEDLE",
+        ] {
+            let executor = RegexExecutor::compile(pattern)?;
+            let expected = if pattern.contains("(?-i)") {
+                vec![13..18, 19..25]
+            } else {
+                vec![0..5, 6..12, 13..18, 19..25]
+            };
+            let actual = executor.find_ranges_bounded(source.as_bytes(), 25, 5, &|| false)?;
+            assert_eq!(actual.ranges, expected, "{pattern}");
+            assert!(actual.exhausted);
+            assert!(!executor.verify(b"unrelated"));
+        }
+        for pattern in ["(?i)|NEEDLE", "(?i)(?m)|NEEDLE"] {
+            let executor = RegexExecutor::compile(pattern)?;
+            let actual = executor.find_ranges_bounded(b"x", 1, 3, &|| false)?;
+            assert_eq!(actual.ranges, vec![0..0, 1..1]);
+            assert!(actual.exhausted);
+        }
+        for pattern in ["a|(?i)b", "|(?i)b", "(?i)a|(?m)b", "((?i)a|b)"] {
+            let Some(error) = RegexExecutor::compile(pattern).err() else {
+                return Err(format!("non-leading flags were accepted: {pattern}").into());
+            };
+            assert_eq!(error.forbidden, Some(ForbiddenKind::InlineFlagMidPattern));
+        }
+        Ok(())
+    }
+
+    #[test]
     fn l4_range_cap_never_claims_exhaustion() -> Result<(), Box<dyn std::error::Error>> {
         let executor = RegexExecutor::compile("a")?;
         for source in [b"a".as_slice(), b"aaa".as_slice()] {

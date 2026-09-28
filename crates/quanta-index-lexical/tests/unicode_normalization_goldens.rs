@@ -696,6 +696,19 @@ const GOLDENS: &[Golden] = &[
     row(
         Leaf::Regex,
         Case::Insensitive,
+        "CAFÉ|検索",
+        &[
+            "latin_lower",
+            "latin_nfd",
+            "latin_upper",
+            "cjk_joined",
+            "cjk_spaced",
+        ],
+        "case:no applies to every branch of a top-level alternation",
+    ),
+    row(
+        Leaf::Regex,
+        Case::Insensitive,
         "検索",
         &["cjk_joined", "cjk_spaced"],
         "regex CJK",
