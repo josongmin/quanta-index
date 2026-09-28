@@ -26,11 +26,12 @@ def _write(path: Path, value: dict) -> None:
 
 def _read_spec(path: Path) -> dict:
     value = live._json(_read_control_file(path))
-    if (set(value) != {"schema_version", "pair_spec", "external_spec", "output_root", "timeout_secs"}
+    if (set(value) != {"schema_version", "pair_spec", "external_spec", "output_root",
+                       "native_output_root", "timeout_secs"}
             or type(value["schema_version"]) is not int or value["schema_version"] != 1
             or type(value["timeout_secs"]) is not int or not 60 <= value["timeout_secs"] <= 86400):
         raise ValueError("code-search workflow requires closed schema v1 and bounded timeout")
-    for key in ("pair_spec", "external_spec", "output_root"):
+    for key in ("pair_spec", "external_spec", "output_root", "native_output_root"):
         if not isinstance(value[key], str) or not Path(value[key]).is_absolute() or ".." in Path(value[key]).parts:
             raise ValueError(f"workflow {key} must be canonical absolute")
     return value
@@ -54,6 +55,19 @@ def _require_pure_lexical_pair(pair: dict) -> None:
         or len(pair["strategies"]) != 1
     ):
         raise ValueError("live workflow requires one exploratory pure-lexical pair")
+
+
+def _preflight_native_output(native_root: Path, pair: dict) -> None:
+    corpus_release.external(native_root)
+    stage = native_root.parent / f"{native_root.name}.staging"
+    if native_root.exists() or native_root.is_symlink() or stage.exists() or stage.is_symlink():
+        raise ValueError("native output root or staging path must be fresh")
+    run.preflight_daemon_socket_paths(
+        stage,
+        pair["strategies"],
+        repetitions=pair.get("repetitions", 1),
+        paired=True,
+    )
 
 
 def preflight(pair_path: Path, external_path: Path) -> tuple[dict, dict]:
@@ -93,14 +107,16 @@ def capture(repo: Path, spec_path: Path) -> dict:
     source = source_identity(repo, "retrieval")
     spec = _read_spec(spec_path)
     root = Path(spec["output_root"])
+    native_root = Path(spec["native_output_root"])
     corpus_release.external(root)
     if root.exists() or root.is_symlink():
         raise ValueError("workflow output must be fresh; never overwrite or resume partial runs")
     pair, external = preflight(Path(spec["pair_spec"]), Path(spec["external_spec"]))
+    _preflight_native_output(native_root, pair)
     root.mkdir(parents=True)
     timeout = spec["timeout_secs"]
     _write(root / "workflow-spec.json", spec)
-    pair["output_root"] = str(root / "native-pair")
+    pair["output_root"] = str(native_root)
     pair["run_id"] = root.name
     external["output_root"] = str(root / "native-external")
     pair_path, external_path = root / "pair-spec.json", root / "external-spec.json"
@@ -113,7 +129,7 @@ def capture(repo: Path, spec_path: Path) -> dict:
         _command(repo, root, "external-verify", ["code-search", "external-verify", "--capture", external["output_root"]], timeout)
         _command(repo, root, "pair-live", ["run", "retrieval-diagnostic", "--pair-spec", str(pair_path),
             "--evidence-root", str(pair_evidence), "--producer-timeout", str(timeout)], timeout)
-        pair_root = Path(pair["output_root"])
+        pair_root = native_root
         strategy = pair["strategies"][0]["name"]
         lexical_spec = {"schema_version": 2, "corpus": external["corpus"], "inputs": {
             "suite": pair["suite"], "query_pack": pair["query_pack"],

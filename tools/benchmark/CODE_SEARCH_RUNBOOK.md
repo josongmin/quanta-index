@@ -19,6 +19,9 @@ contracts. Neither an old report nor a successful `plan` is a new benchmark.
 The `code-search` workflow composes the existing registered pair and lexical
 profiles with live external collection over one frozen corpus view and query pack.
 `lexical-diagnostic` itself never starts or calls Sourcegraph, OpenGrok or cs.
+The workflow spec has separate `output_root` and `native_output_root` paths: keep
+the first durable and choose a fresh short path under `/tmp` for the pair runner's
+Unix socket budget. The workflow checks the socket path before querying externals.
 
 ## Product and mode coverage
 

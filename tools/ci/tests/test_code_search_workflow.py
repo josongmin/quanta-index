@@ -18,6 +18,7 @@ def test_workflow_spec_refuses_unbounded_timeout_and_unknown_key(tmp_path):
     path = tmp_path / "spec.json"
     value = {"schema_version": 1, "pair_spec": "/external/pair.json",
              "external_spec": "/external/external.json", "output_root": "/external/fresh",
+             "native_output_root": "/private/tmp/qd",
              "timeout_secs": 7200}
     path.write_text(json.dumps(value))
     assert workflow._read_spec(path) == value
@@ -25,6 +26,17 @@ def test_workflow_spec_refuses_unbounded_timeout_and_unknown_key(tmp_path):
         path.write_text(json.dumps({**value, **mutation}))
         with pytest.raises(ValueError, match="closed schema"):
             workflow._read_spec(path)
+
+
+def test_native_pair_root_checks_socket_budget_before_external_capture(tmp_path):
+    pair = {"strategies": [{"name": "fixed_window_strict"}], "repetitions": 1}
+    short_root = Path("/private/tmp/q")
+    workflow._preflight_native_output(short_root, pair)
+    assert not short_root.exists()
+
+    long_root = tmp_path / ("q" * 120)
+    with pytest.raises(workflow.run.RunError, match="Unix socket path.*limit 103"):
+        workflow._preflight_native_output(long_root, pair)
 
 
 def test_preflight_contract_requires_lexical_only_route_labels():
@@ -60,13 +72,18 @@ def test_external_failure_prevents_pair_execution_and_workflow_publication(tmp_p
     root = tmp_path / "fresh-workflow"
     spec = {"schema_version": 1, "pair_spec": str(tmp_path / "pair.json"),
             "external_spec": str(tmp_path / "external.json"), "output_root": str(root),
+                "native_output_root": "/private/tmp/qd",
             "timeout_secs": 60}
     path = tmp_path / "workflow.json"
     path.write_text(json.dumps(spec))
     monkeypatch.setattr(benchctl, "require_clean_worktree", lambda repo: None)
     monkeypatch.setattr(benchctl, "resolve_checkout_head", lambda repo: "a" * 40)
     monkeypatch.setattr(workflow, "source_identity", lambda repo, closure: {"revision": "a" * 40})
-    monkeypatch.setattr(workflow, "preflight", lambda pair, external: ({}, {}))
+    monkeypatch.setattr(
+        workflow,
+        "preflight",
+        lambda pair, external: ({"strategies": [{"name": "fixed_window_strict"}]}, {}),
+    )
     stages = []
 
     def failed_external(repo, root, name, args, timeout):

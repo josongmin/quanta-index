@@ -2,6 +2,7 @@
   "schema_version": 1,
   "pair_spec": "/external/pair-spec.json",
   "external_spec": "/external/live-external-spec.json",
+  "native_output_root": "/private/tmp/q",
   "output_root": "/external/fresh-five-product-run",
   "timeout_secs": 7200
 }
