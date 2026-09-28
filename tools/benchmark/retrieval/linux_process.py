@@ -150,10 +150,13 @@ def parse_proc_stat(raw: str, *, expected_pid: int | None = None) -> ProcessStat
         # Linux can report pgrp=-1 while an exited task is being torn down.
         # It is not a valid group for a live process.
         missing_dead_group = fields[0] in ("Z", "X", "x") and pgid == -1
+        # Kernel tasks such as kthreadd have no parent or process group. They
+        # appear in /proc snapshots but cannot belong to a user process tree.
+        kernel_task_group = ppid == 0 and pgid == 0
         if (
             pid <= 0
             or ppid < 0
-            or (pgid <= 0 and not missing_dead_group)
+            or (pgid <= 0 and not missing_dead_group and not kernel_task_group)
             or start <= 0
             or min(user, kernel, rss) < 0
         ):
