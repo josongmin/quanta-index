@@ -815,6 +815,91 @@ fn actual_generation_open_refuses_missing_or_tampered_coverage() -> TestResult {
     )
 }
 
+fn changed_base_page_between_phases_is_refused(after_second_preflight: bool) -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+    let base = batch(1, None, vec![file_scope("a.rs", "oldmarker")?])?;
+    adapter.build_batch(&base)?;
+    let delta = batch(2, Some(1), vec![file_scope("a.rs", "newmarker")?])?;
+    let base_dir =
+        quanta_index_core::domains::generation::GenerationStorageKeyV1::for_repo_revision(
+            &base.repo_id,
+            &base.revision_id,
+        )
+        .generation_dir(dir.path(), base.generation);
+    let target = quanta_index_core::domains::generation::GenerationStorageKeyV1::for_repo_revision(
+        &delta.repo_id,
+        &delta.revision_id,
+    )
+    .generation_dir(dir.path(), delta.generation);
+    let page = std::fs::read_dir(&base_dir)?
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .find(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("source-file-coverage-page-")
+        })
+        .ok_or("missing base coverage page")?
+        .path();
+    let original = std::fs::read(&page)?;
+    let pinned_old_reader = adapter.open(&base.repo_id, &base.revision_id, base.generation)?;
+
+    // The outer and lock-held calls currently have the same lexical port.
+    adapter.preflight_batch(&delta)?;
+    if after_second_preflight {
+        adapter.preflight_batch(&delta)?;
+    }
+    let mut changed = original.clone();
+    *changed.last_mut().ok_or("empty base coverage page")? ^= 1;
+    std::fs::write(&page, changed)?;
+    let refused = if after_second_preflight {
+        adapter.build_batch(&delta)
+    } else {
+        adapter.preflight_batch(&delta)
+    };
+    assert!(
+        matches!(
+            refused,
+            Err(quanta_index_core::CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
+                ..
+            })
+        ),
+        "phase recheck admitted a changed base coverage page: {refused:?}"
+    );
+    assert!(!target.exists(), "refusal created the delta target");
+    assert_eq!(
+        pinned_old_reader
+            .search_symbols(&query("oldmarker"), 20, &RequestBudgetV1::unbounded())?
+            .len(),
+        1,
+        "a pinned reader lost its previously authenticated generation"
+    );
+
+    std::fs::write(page, original)?;
+    adapter.preflight_batch(&delta)?;
+    adapter.build_batch(&delta)?;
+    assert_units(
+        &adapter,
+        &delta,
+        "newmarker",
+        &["chunk-newmarker"],
+        &["symbol-newmarker"],
+    )
+}
+
+#[test]
+fn lock_phase_rechecks_base_page_after_outer_preflight() -> TestResult {
+    changed_base_page_between_phases_is_refused(false)
+}
+
+#[test]
+fn build_rechecks_base_page_after_lock_phase_and_retry_succeeds() -> TestResult {
+    changed_base_page_between_phases_is_refused(true)
+}
+
 #[test]
 fn foreign_source_owner_refuses_before_target_creation() -> TestResult {
     let mut replacement = file_scope("a.rs", "marker")?;
