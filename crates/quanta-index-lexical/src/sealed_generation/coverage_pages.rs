@@ -363,7 +363,16 @@ pub(crate) fn decode_coverage_pages(
     directory: &Path,
     expected: &GenerationSnapshot,
 ) -> Result<CoverageArtifact, CoreError> {
-    decode_coverage_pages_impl(bytes, directory, expected, false)
+    decode_coverage_pages_impl(bytes, directory, expected, false, None)
+}
+
+pub(super) fn decode_coverage_pages_reusing(
+    bytes: &[u8],
+    directory: &Path,
+    expected: &GenerationSnapshot,
+    cached: Option<&CoverageArtifact>,
+) -> Result<CoverageArtifact, CoreError> {
+    decode_coverage_pages_impl(bytes, directory, expected, false, cached)
 }
 
 pub(crate) fn decode_staged_coverage_pages(
@@ -374,7 +383,7 @@ pub(crate) fn decode_staged_coverage_pages(
     // A crash on either side of the root rename can leave pages from the
     // other version. Only the unsealed retry path may ignore those pages;
     // the caller still compares the decoded event and complete snapshot.
-    decode_coverage_pages_impl(bytes, directory, expected, true)
+    decode_coverage_pages_impl(bytes, directory, expected, true, None)
 }
 
 fn decode_coverage_pages_impl(
@@ -382,6 +391,7 @@ fn decode_coverage_pages_impl(
     directory: &Path,
     expected: &GenerationSnapshot,
     allow_orphans: bool,
+    cached: Option<&CoverageArtifact>,
 ) -> Result<CoverageArtifact, CoreError> {
     let ((_, identity, publication, pages), heap_admission) = decode_root(bytes, directory)?;
     if identity != *expected {
@@ -393,7 +403,7 @@ fn decode_coverage_pages_impl(
     let mut coverage = CoverageSnapshot::new();
     let mut names = BTreeSet::new();
     let mut read_stats = LexicalCoverageReadStats {
-        decodes: 1,
+        decodes: u64::from(cached.is_none()),
         root_bytes: u64::try_from(bytes.len())
             .map_err(|error| resource(&format!("coverage root count overflow: {error}")))?,
         max_decode_heap_admission_bytes: heap_admission,
@@ -415,6 +425,12 @@ fn decode_coverage_pages_impl(
                 directory,
                 "coverage page differs from its commitment",
             ));
+        }
+        if cached.is_some() {
+            // Identical root bytes commit identical page bytes, slot/count and
+            // semantic rows already decoded once. Authenticate bytes again;
+            // skip only deserialization and rebuilding the immutable trees.
+            continue;
         }
         let mut reader = Cursor::new(&raw);
         let (format, found_slot, rows): DecodedPage = ciborium::from_reader(&mut reader)
@@ -461,7 +477,7 @@ fn decode_coverage_pages_impl(
         }
     }
     Ok(CoverageArtifact {
-        coverage,
+        coverage: cached.map_or(coverage, |artifact| artifact.coverage.clone()),
         publication,
         read_stats,
     })

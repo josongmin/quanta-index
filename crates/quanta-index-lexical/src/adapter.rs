@@ -80,6 +80,9 @@ impl LexicalAdapter {
             text_authority_updates: Arc::new(Mutex::new(TextAuthorityUpdateStats::default())),
             seal_commitments: Arc::new(Mutex::new(LexicalSealCommitmentStats::default())),
             coverage_reads: Arc::new(Mutex::new(crate::LexicalCoverageReadStats::default())),
+            coverage_decode_cache: Mutex::new(
+                crate::sealed_generation::coverage::CoverageDecodeCache::default(),
+            ),
             regex_policy,
             execution_budget,
             directory_lifecycle: Mutex::new(()),

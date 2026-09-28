@@ -483,8 +483,20 @@ impl LexicalAdapter {
                         "lexical: coverage base identity mismatch".into(),
                     ));
                 }
-                let verified =
-                    walk_sealed_generation(&base_dir, &identity, &mut DiscardingVisitor)?;
+                let mut cache = self.coverage_decode_cache.lock().map_err(|error| {
+                    CoreError::Storage(format!("lexical: coverage decode cache poisoned: {error}"))
+                })?;
+                let mut decoded = std::mem::take(&mut *cache);
+                drop(cache);
+                let verified = crate::sealed_generation::walk_sealed_generation_reusing_coverage(
+                    &base_dir,
+                    &identity,
+                    &mut DiscardingVisitor,
+                    Some(&mut decoded),
+                )?;
+                *self.coverage_decode_cache.lock().map_err(|error| {
+                    CoreError::Storage(format!("lexical: coverage decode cache poisoned: {error}"))
+                })? = decoded;
                 self.record_coverage_read(verified.coverage_read_stats)?;
                 // A current source high-water alone cannot authorize cloning an
                 // older physical snapshot: unchanged files would be resurrected

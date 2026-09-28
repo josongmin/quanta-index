@@ -450,6 +450,7 @@ pub struct LexicalAdapter {
     /// (QI-BB-006 보완 #4).
     seal_commitments: Arc<Mutex<LexicalSealCommitmentStats>>,
     coverage_reads: Arc<Mutex<LexicalCoverageReadStats>>,
+    coverage_decode_cache: Mutex<sealed_generation::coverage::CoverageDecodeCache>,
     /// Per-deployment regex policy injected at construction time.
     ///
     /// Owned by the adapter (not fabricated at the leaf call site) so all

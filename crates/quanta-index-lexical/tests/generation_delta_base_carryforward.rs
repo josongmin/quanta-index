@@ -627,20 +627,34 @@ fn measure_total_delta_pipeline(filler_scopes: usize, mixed: bool) -> TestResult
         assert_hits(&adapter, g2, "quartz_00007", &[], "mixed tombstone")?;
     }
     let file_count = u64::try_from(filler_scopes.checked_add(2).ok_or("file count overflow")?)?;
-    for (phase, read) in [
-        ("first_preflight", first_preflight_read),
-        ("second_preflight", second_preflight_read),
-        ("build", build_read),
-        ("open", open_read),
+    // Large roots intentionally stay outside the bounded decode cache.
+    let repeated_decodes =
+        u64::from(first_preflight_read.max_decode_heap_admission_bytes > 8 * 1024 * 1024);
+    let repeated_rows = repeated_decodes * file_count;
+    for (phase, read, decodes, rows) in [
+        ("first_preflight", first_preflight_read, 1, file_count),
+        (
+            "second_preflight",
+            second_preflight_read,
+            repeated_decodes,
+            repeated_rows,
+        ),
+        ("build", build_read, repeated_decodes, repeated_rows),
+        ("open", open_read, 1, file_count),
     ] {
-        if read.decodes != 1 || read.rows != file_count {
+        if read.decodes != decodes || read.rows != rows {
             return Err(format!(
-                "{phase}: expected one complete {file_count}-row coverage decode, got {read:?}"
+                "{phase}: expected {decodes} decodes and {rows} rows, got {read:?}"
             )
             .into());
         }
         emit_coverage_phase(phase, read);
     }
+    assert_eq!(
+        second_preflight_read.page_bytes,
+        first_preflight_read.page_bytes
+    );
+    assert_eq!(build_read.page_bytes, first_preflight_read.page_bytes);
     let (fresh_bytes, fresh_entries) =
         bytes_not_shared_with(&generation_dir(dir.path(), g2)?, &base_inodes)?;
     let fresh_coverage_bytes: u64 = fresh_entries

@@ -901,6 +901,43 @@ fn build_rechecks_base_page_after_lock_phase_and_retry_succeeds() -> TestResult 
 }
 
 #[test]
+fn repeated_delta_admission_reuses_decode_but_rehashes_all_coverage_pages() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+    adapter.build_batch(&batch(1, None, vec![file_scope("a.rs", "oldmarker")?])?)?;
+    let delta = batch(2, Some(1), vec![file_scope("a.rs", "newmarker")?])?;
+    let before = adapter.coverage_read_stats()?;
+    adapter.preflight_batch(&delta)?;
+    let first = adapter.coverage_read_stats()?;
+    assert_eq!(first.decodes, before.decodes + 1);
+    assert_eq!(first.rows, before.rows + 1);
+    adapter.preflight_batch(&delta)?;
+    let second = adapter.coverage_read_stats()?;
+    assert_eq!(second.decodes, first.decodes);
+    assert_eq!(second.rows, first.rows);
+    assert_eq!(
+        second.page_bytes - first.page_bytes,
+        first.page_bytes - before.page_bytes
+    );
+    assert_eq!(second.pages - first.pages, first.pages - before.pages);
+    adapter.build_batch(&delta)?;
+    let built = adapter.coverage_read_stats()?;
+    assert_eq!(built.decodes, first.decodes);
+    assert_eq!(built.rows, first.rows);
+    assert_eq!(
+        built.page_bytes - second.page_bytes,
+        first.page_bytes - before.page_bytes
+    );
+    assert_units(
+        &adapter,
+        &delta,
+        "newmarker",
+        &["chunk-newmarker"],
+        &["symbol-newmarker"],
+    )
+}
+
+#[test]
 fn foreign_source_owner_refuses_before_target_creation() -> TestResult {
     let mut replacement = file_scope("a.rs", "marker")?;
     replacement

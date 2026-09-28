@@ -33,8 +33,8 @@ use tantivy::{Index, IndexReader, ReloadPolicy};
 use crate::overlay_codec::OverlayFamily;
 use crate::ranked_keys::{self, MAX_RANKED_KEYS_BYTES, RankedKeyTables, SegmentKeys};
 use crate::sealed_generation::coverage::{
-    CoverageArtifact, CoverageSnapshot, LexicalCoverageReadStats, SOURCE_FILE_COVERAGE_FILE_NAME,
-    decode_coverage,
+    CoverageArtifact, CoverageDecodeCache, CoverageSnapshot, LexicalCoverageReadStats,
+    SOURCE_FILE_COVERAGE_FILE_NAME, decode_coverage,
 };
 use crate::sealed_generation::index_files::referenced_index_files;
 use crate::sealed_generation::manifest::{LexicalSealedManifest, read_bound_manifest};
@@ -86,6 +86,15 @@ pub(crate) fn walk_sealed_generation<V: SealedGenerationVisitor>(
     identity: &GenerationSnapshot,
     visitor: &mut V,
 ) -> Result<VerifiedGeneration, CoreError> {
+    walk_sealed_generation_reusing_coverage(generation_dir, identity, visitor, None)
+}
+
+pub(crate) fn walk_sealed_generation_reusing_coverage<V: SealedGenerationVisitor>(
+    generation_dir: &Path,
+    identity: &GenerationSnapshot,
+    visitor: &mut V,
+    cache: Option<&mut CoverageDecodeCache>,
+) -> Result<VerifiedGeneration, CoreError> {
     // A generation the scrub proved corrupt is refused at every door.
     crate::sealed_generation::refuse_if_quarantined(generation_dir)?;
     let manifest = read_bound_manifest(generation_dir, &identity.manifest_digest)?;
@@ -95,8 +104,15 @@ pub(crate) fn walk_sealed_generation<V: SealedGenerationVisitor>(
     let ranked_keys = verify_ranked_keys(generation_dir, &index, &manifest.ranked_keys)?;
     verify_overlays(generation_dir, &manifest, visitor)?;
     verify_text_authority(generation_dir, manifest.text_authority.as_deref(), visitor)?;
-    let coverage =
-        verify_source_coverage(generation_dir, identity, manifest.source_coverage.as_ref())?;
+    let coverage = match cache {
+        Some(cache) => verify_source_coverage_reusing(
+            generation_dir,
+            identity,
+            manifest.source_coverage.as_ref(),
+            Some(cache),
+        ),
+        None => verify_source_coverage(generation_dir, identity, manifest.source_coverage.as_ref()),
+    }?;
     let (coverage, source_publication, coverage_read_stats) = coverage.map_or(
         (None, None, LexicalCoverageReadStats::default()),
         |artifact| {
@@ -195,6 +211,15 @@ pub(crate) fn verify_source_coverage(
     identity: &GenerationSnapshot,
     committed: Option<&SealedArtifactCommitmentV1>,
 ) -> Result<Option<CoverageArtifact>, CoreError> {
+    verify_source_coverage_reusing(generation_dir, identity, committed, None)
+}
+
+fn verify_source_coverage_reusing(
+    generation_dir: &Path,
+    identity: &GenerationSnapshot,
+    committed: Option<&SealedArtifactCommitmentV1>,
+    cache: Option<&mut CoverageDecodeCache>,
+) -> Result<Option<CoverageArtifact>, CoreError> {
     if let Some(artifact) = committed {
         if artifact.bytes > super::coverage::MAX_COVERAGE_ROOT_BYTES_U64 {
             return Err(crate::index_store::sidecar_corrupt(
@@ -228,7 +253,12 @@ pub(crate) fn verify_source_coverage(
             }
         }
         let bytes = read_committed(generation_dir, artifact)?;
-        return decode_coverage(&bytes, generation_dir, identity).map(Some);
+        return cache
+            .map_or_else(
+                || decode_coverage(&bytes, generation_dir, identity),
+                |cache| cache.decode(&bytes, generation_dir, identity),
+            )
+            .map(Some);
     }
     match std::fs::symlink_metadata(generation_dir.join(SOURCE_FILE_COVERAGE_FILE_NAME)) {
         Ok(_) => Err(crate::index_store::sidecar_corrupt(

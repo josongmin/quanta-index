@@ -24,8 +24,11 @@ pub(crate) use pages::{
 
 pub(crate) type CoverageSnapshot = FileCoverageSnapshot;
 
-/// Successful coverage decodes only. These are logical bytes read and hashed
-/// by the coverage decoder, not filesystem block I/O or process RSS.
+/// Successful coverage authentication and decode work.
+///
+/// A decoded-root cache
+/// hit still adds every byte/page read and hashed, but no decoded rows. These
+/// are logical bytes, not filesystem block I/O or process RSS.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct LexicalCoverageReadStats {
     pub decodes: u64,
@@ -56,6 +59,37 @@ pub(crate) struct CoverageArtifact {
     pub(crate) coverage: CoverageSnapshot,
     pub(crate) publication: SourcePublicationEvent,
     pub(crate) read_stats: LexicalCoverageReadStats,
+}
+
+/// One decoded sealed root. Every reuse still reads and hashes every committed
+/// page and checks the current directory inventory before returning its rows.
+#[derive(Default)]
+pub(crate) struct CoverageDecodeCache {
+    entry: Option<([u8; 32], CoverageArtifact)>,
+}
+
+impl CoverageDecodeCache {
+    pub(crate) fn decode(
+        &mut self,
+        bytes: &[u8],
+        directory: &Path,
+        expected: &GenerationSnapshot,
+    ) -> Result<CoverageArtifact, CoreError> {
+        use sha2::{Digest as _, Sha256};
+        let digest = <[u8; 32]>::from(Sha256::digest(bytes));
+        let previous = self.entry.take();
+        let cached = previous
+            .as_ref()
+            .filter(|(key, _)| *key == digest)
+            .map(|(_, artifact)| artifact);
+        let artifact = pages::decode_coverage_pages_reusing(bytes, directory, expected, cached)?;
+        // Bound adapter-retained decoded state independently from the larger
+        // one-call decode admission. Large roots remain on the uncached rail.
+        if artifact.read_stats.max_decode_heap_admission_bytes <= 8 * 1024 * 1024 {
+            self.entry = Some((digest, artifact.clone()));
+        }
+        Ok(artifact)
+    }
 }
 
 fn corrupt(generation_dir: &Path, reason: &str) -> CoreError {
@@ -263,6 +297,78 @@ mod tests {
     use super::pages::write_coverage_pages as write_staged_coverage;
 
     type TestResult = Result<(), Box<dyn Error>>;
+
+    #[test]
+    fn decoded_root_reuse_reauthenticates_pages_and_invalidates_after_refusal() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let generation = identity(1)?;
+        let row = file("a.rs", SymbolCoverage::ParseFailed)?;
+        let snapshot = CoverageSnapshot::from([(row.source.file.clone(), row)]);
+        let root = write_staged_coverage(
+            dir.path(),
+            &generation,
+            &publication(),
+            &snapshot,
+            None,
+            &BTreeSet::new(),
+        )?;
+        let bytes = std::fs::read(dir.path().join(SOURCE_FILE_COVERAGE_FILE_NAME))?;
+        let mut cache = super::CoverageDecodeCache::default();
+        let first = cache.decode(&bytes, dir.path(), &generation)?;
+        assert_eq!(first.read_stats.decodes, 1);
+        let repeated = cache.decode(&bytes, dir.path(), &generation)?;
+        assert_eq!(repeated.coverage, snapshot);
+        assert_eq!(repeated.read_stats.decodes, 0);
+        assert_eq!(repeated.read_stats.rows, 0);
+        assert_eq!(repeated.read_stats.page_bytes, first.read_stats.page_bytes);
+        assert_eq!(repeated.read_stats.pages, first.read_stats.pages);
+
+        let pages = super::root_page_commitments(dir.path(), &root, &generation)?;
+        let path = dir
+            .path()
+            .join(&pages.first().ok_or("missing fixture page")?.name);
+        let original = std::fs::read(&path)?;
+        let mut corrupted = original.clone();
+        *corrupted.last_mut().ok_or("empty page")? ^= 1;
+        std::fs::write(&path, corrupted)?;
+        assert!(cache.decode(&bytes, dir.path(), &generation).is_err());
+        std::fs::write(&path, original)?;
+        let retry = cache.decode(&bytes, dir.path(), &generation)?;
+        assert_eq!(
+            retry.read_stats.decodes, 1,
+            "a refusal must discard cached rows"
+        );
+        assert_eq!(retry.coverage, snapshot);
+
+        let orphan = dir.path().join("source-file-coverage-page-orphan.cbor");
+        std::fs::write(&orphan, b"orphan")?;
+        assert!(cache.decode(&bytes, dir.path(), &generation).is_err());
+        std::fs::remove_file(orphan)?;
+        assert!(cache.decode(&bytes, dir.path(), &identity(2)?).is_err());
+        assert_eq!(
+            cache
+                .decode(&bytes, dir.path(), &generation)?
+                .read_stats
+                .decodes,
+            1
+        );
+
+        let other = file("b.rs", SymbolCoverage::NotRequested)?;
+        let next = CoverageSnapshot::from([(other.source.file.clone(), other)]);
+        let _root = write_staged_coverage(
+            dir.path(),
+            &generation,
+            &publication(),
+            &next,
+            None,
+            &BTreeSet::new(),
+        )?;
+        let changed = std::fs::read(dir.path().join(SOURCE_FILE_COVERAGE_FILE_NAME))?;
+        let refreshed = cache.decode(&changed, dir.path(), &generation)?;
+        assert_eq!(refreshed.read_stats.decodes, 1);
+        assert_eq!(refreshed.coverage, next);
+        Ok(())
+    }
 
     fn publication() -> SourcePublicationEvent {
         SourcePublicationEvent {

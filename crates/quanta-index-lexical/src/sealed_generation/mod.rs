@@ -22,4 +22,7 @@ pub(crate) use scrub::{
     quarantine_content_corrupt, quarantined_by_scrub, refuse_if_quarantined, scrub_step,
 };
 pub(crate) use seal::seal_generation;
-pub(crate) use verify::{DiscardingVisitor, SealedGenerationVisitor, walk_sealed_generation};
+pub(crate) use verify::{
+    DiscardingVisitor, SealedGenerationVisitor, walk_sealed_generation,
+    walk_sealed_generation_reusing_coverage,
+};
