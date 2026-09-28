@@ -528,7 +528,7 @@ impl WitnessMatcher<'_, '_, '_> {
                     &|| self.context.request.interruption().is_some(),
                 )
                 .map_err(|error| match error {
-                    RegexRangeError::SourceByteLimit => {
+                    RegexRangeError::SourceByteLimit | RegexRangeError::AllocationRefused => {
                         PreviewStop::Unavailable(PreviewUnavailableReason::WorkBudget)
                     }
                     RegexRangeError::Interrupted => PreviewStop::Mandatory(

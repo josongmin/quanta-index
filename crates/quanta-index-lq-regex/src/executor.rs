@@ -99,6 +99,7 @@ pub struct RegexRanges {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RegexRangeError {
     SourceByteLimit,
+    AllocationRefused,
     Interrupted,
 }
 
@@ -106,6 +107,7 @@ impl core::fmt::Display for RegexRangeError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str(match self {
             Self::SourceByteLimit => "regex preview source-byte limit exceeded",
+            Self::AllocationRefused => "regex preview range allocation refused",
             Self::Interrupted => "regex preview interrupted",
         })
     }
@@ -238,6 +240,27 @@ impl RegexExecutor {
         max_ranges: usize,
         interrupted: &dyn Fn() -> bool,
     ) -> Result<RegexRanges, RegexRangeError> {
+        self.find_ranges_with_reservation(
+            doc_text,
+            max_source_bytes,
+            max_ranges,
+            interrupted,
+            |ranges| {
+                ranges
+                    .try_reserve(1)
+                    .map_err(|_error| RegexRangeError::AllocationRefused)
+            },
+        )
+    }
+
+    fn find_ranges_with_reservation(
+        &self,
+        doc_text: &[u8],
+        max_source_bytes: usize,
+        max_ranges: usize,
+        interrupted: &dyn Fn() -> bool,
+        mut reserve: impl FnMut(&mut Vec<core::ops::Range<usize>>) -> Result<(), RegexRangeError>,
+    ) -> Result<RegexRanges, RegexRangeError> {
         if interrupted() {
             return Err(RegexRangeError::Interrupted);
         }
@@ -260,6 +283,7 @@ impl RegexExecutor {
                     exhausted: true,
                 });
             };
+            reserve(&mut ranges)?;
             ranges.push(found.range());
         }
         Ok(RegexRanges {
@@ -659,6 +683,24 @@ mod tests {
             executor.find_ranges_bounded(b"bbb", 3, 3, &expired),
             Err(super::RegexRangeError::Interrupted)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn l4_ranges_discard_partial_work_on_allocation_refusal()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let executor = RegexExecutor::compile("a")?;
+        let mut admitted = 0_usize;
+        let result = executor.find_ranges_with_reservation(b"aaa", 3, 3, &|| false, |_ranges| {
+            admitted = admitted.saturating_add(1);
+            if admitted == 2 {
+                Err(super::RegexRangeError::AllocationRefused)
+            } else {
+                Ok(())
+            }
+        });
+        assert_eq!(result, Err(super::RegexRangeError::AllocationRefused));
+        assert_eq!(admitted, 2);
         Ok(())
     }
 

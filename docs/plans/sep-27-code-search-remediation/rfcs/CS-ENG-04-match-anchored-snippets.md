@@ -34,6 +34,12 @@ The structural negative-universe file filter now compiles once per request
 instead of once per chunk. Its syntax error remains `StrInvalidRequest`, while
 an engine size refusal keeps `LexRegexPlanLimitExceeded`; neither change gives
 the structural route physical aggregate admission.
+Regex range output now uses fallible vector growth and maps allocation refusal
+to optional preview `WorkBudget`; this covers only the range carrier, not the
+engine or parser. Tantivy's indexed scope `RegexQuery::from_pattern` also wraps
+the `tantivy-fst` resource variants in a string-valued `InvalidArgument`, so a
+typed scope resource refusal requires a controlled dependency API change rather
+than matching error text.
 
 The lockfile pins `regex 1.12.4`, `regex-automata 0.4.14` and
 `regex-syntax 0.8.11`. The pinned meta-engine exposes separate NFA/one-pass/DFA
