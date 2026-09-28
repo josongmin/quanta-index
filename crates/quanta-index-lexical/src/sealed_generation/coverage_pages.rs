@@ -5,7 +5,7 @@ use serde::de::{SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, de};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
-use std::io::{Cursor, Read as _, Write};
+use std::io::{Cursor, Write};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 
@@ -194,6 +194,19 @@ fn read_bounded(path: &Path, ceiling: usize) -> Result<Vec<u8>, CoreError> {
     }
     let expected_len = usize::try_from(opened.len())
         .map_err(|error| resource(&format!("coverage read length overflow: {error}")))?;
+    read_admitted_bytes(&mut file, expected_len, path)
+}
+
+pub(crate) fn read_admitted_bytes(
+    file: &mut impl std::io::Read,
+    expected_len: usize,
+    path: &Path,
+) -> Result<Vec<u8>, CoreError> {
+    let directory = path.parent().unwrap_or(path);
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("artifact");
     // Reserve the opened file's actual length instead of the page ceiling for
     // every small page. read_exact plus one byte detects a concurrent change
     // without allowing Vec's geometric growth to exceed the admitted length.
@@ -204,7 +217,7 @@ fn read_bounded(path: &Path, ceiling: usize) -> Result<Vec<u8>, CoreError> {
     bytes.resize(expected_len, 0);
     file.read_exact(&mut bytes).map_err(|error| {
         if error.kind() == std::io::ErrorKind::UnexpectedEof {
-            corrupt(directory, "coverage artifact changed during read")
+            crate::index_store::sidecar_corrupt(directory, name, "artifact changed during read")
         } else {
             CoreError::Storage(format!("read {}: {error}", path.display()))
         }
@@ -215,7 +228,11 @@ fn read_bounded(path: &Path, ceiling: usize) -> Result<Vec<u8>, CoreError> {
         .map_err(|error| CoreError::Storage(format!("read {}: {error}", path.display())))?
         != 0
     {
-        return Err(corrupt(directory, "coverage artifact changed during read"));
+        return Err(crate::index_store::sidecar_corrupt(
+            directory,
+            name,
+            "artifact changed during read",
+        ));
     }
     Ok(bytes)
 }
@@ -319,16 +336,7 @@ pub(crate) fn root_page_commitments(
     root: &SealedArtifactCommitmentV1,
     expected: &GenerationSnapshot,
 ) -> Result<Vec<SealedArtifactCommitmentV1>, CoreError> {
-    if root.name != SOURCE_FILE_COVERAGE_FILE_NAME || root.bytes > MAX_COVERAGE_ROOT_BYTES_U64 {
-        return Err(corrupt(directory, "invalid coverage root commitment"));
-    }
-    let bytes = read_bounded(&directory.join(&root.name), MAX_COVERAGE_ROOT_BYTES)?;
-    if !has_length(&bytes, root.bytes) || <[u8; 32]>::from(Sha256::digest(&bytes)) != root.sha256 {
-        return Err(corrupt(
-            directory,
-            "coverage root differs from its commitment",
-        ));
-    }
+    let bytes = read_committed_coverage_root(directory, root)?;
     let ((_, identity, _, pages), _) = decode_root(&bytes, directory)?;
     if identity != *expected {
         return Err(corrupt(
@@ -356,6 +364,25 @@ pub(crate) fn root_page_commitments(
         }
     }
     Ok(commitments)
+}
+
+/// Read only the opened artifact's admitted length and one growth sentinel.
+/// Metadata inspected before open must never authorize an unbounded read.
+pub(crate) fn read_committed_coverage_root(
+    directory: &Path,
+    root: &SealedArtifactCommitmentV1,
+) -> Result<Vec<u8>, CoreError> {
+    if root.name != SOURCE_FILE_COVERAGE_FILE_NAME || root.bytes > MAX_COVERAGE_ROOT_BYTES_U64 {
+        return Err(corrupt(directory, "invalid coverage root commitment"));
+    }
+    let bytes = read_bounded(&directory.join(&root.name), MAX_COVERAGE_ROOT_BYTES)?;
+    if !has_length(&bytes, root.bytes) || <[u8; 32]>::from(Sha256::digest(&bytes)) != root.sha256 {
+        return Err(corrupt(
+            directory,
+            "coverage root differs from its commitment",
+        ));
+    }
+    Ok(bytes)
 }
 
 pub(crate) fn decode_coverage_pages(
@@ -656,6 +683,63 @@ pub(crate) fn write_coverage_pages(
 #[cfg(test)]
 mod tests {
     use super::{BoundedRows, MAX_COVERAGE_PAGE_BYTES, read_bounded};
+
+    #[test]
+    fn artifact_growth_after_length_admission_reads_only_one_sentinel()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::io::{Seek as _, Write as _};
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("committed-root");
+        std::fs::write(&path, [7_u8; 64])?;
+        let mut reader = std::fs::File::open(&path)?;
+        let admitted_len = usize::try_from(reader.metadata()?.len())?;
+        // Deterministically model growth after the opened-length check. The
+        // reader must not allocate/read the appended bytes before refusing.
+        let mut writer = std::fs::OpenOptions::new().append(true).open(&path)?;
+        writer.write_all(&vec![9_u8; MAX_COVERAGE_PAGE_BYTES])?;
+        let result = super::read_admitted_bytes(&mut reader, admitted_len, &path);
+        if !matches!(
+            &result,
+            Err(quanta_index_core::CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
+                ..
+            })
+        ) {
+            return Err(format!("growth must be refused as corruption: {result:?}").into());
+        }
+        let bytes_read = reader.stream_position()?;
+        if bytes_read != 65 || admitted_len != 64 {
+            return Err(
+                format!("growth read escaped admission: {admitted_len}/{bytes_read}").into(),
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn artifact_truncation_after_length_admission_is_corruption()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("committed-root");
+        std::fs::write(&path, [7_u8; 64])?;
+        let mut reader = std::fs::File::open(&path)?;
+        let admitted_len = usize::try_from(reader.metadata()?.len())?;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&path)?
+            .set_len(63)?;
+        let result = super::read_admitted_bytes(&mut reader, admitted_len, &path);
+        if !matches!(
+            &result,
+            Err(quanta_index_core::CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
+                ..
+            })
+        ) {
+            return Err(format!("truncation must be refused as corruption: {result:?}").into());
+        }
+        Ok(())
+    }
 
     #[test]
     fn small_coverage_page_does_not_allocate_the_page_ceiling()

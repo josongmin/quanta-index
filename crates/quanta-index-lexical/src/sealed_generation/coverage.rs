@@ -19,7 +19,7 @@ pub(crate) const SOURCE_FILE_COVERAGE_FILE_NAME: &str = "source-file-coverage.cb
 mod pages;
 pub(crate) use pages::{
     CoveragePlan, CoverageWriteBase, MAX_COVERAGE_ROOT_BYTES_U64, is_coverage_page,
-    root_page_commitments,
+    read_admitted_bytes, read_committed_coverage_root, root_page_commitments,
 };
 
 pub(crate) type CoverageSnapshot = FileCoverageSnapshot;

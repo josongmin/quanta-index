@@ -252,7 +252,7 @@ fn verify_source_coverage_reusing(
                 )));
             }
         }
-        let bytes = read_committed(generation_dir, artifact)?;
+        let bytes = super::coverage::read_committed_coverage_root(generation_dir, artifact)?;
         return cache
             .map_or_else(
                 || decode_coverage(&bytes, generation_dir, identity),
@@ -311,7 +311,7 @@ fn read_committed(
             "not a regular file at the committed length",
         ));
     }
-    let bytes = std::fs::read(&path).map_err(|error| {
+    let mut opened = std::fs::File::open(&path).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
             crate::index_store::sidecar_corrupt(generation_dir, &artifact.name, "missing")
         } else {
@@ -321,6 +321,23 @@ fn read_committed(
             ))
         }
     })?;
+    let opened_metadata = opened.metadata().map_err(|error| {
+        CoreError::Storage(format!(
+            "lexical: inspect opened committed file {}: {error}",
+            path.display()
+        ))
+    })?;
+    if !opened_metadata.is_file() || opened_metadata.len() != artifact.bytes {
+        return Err(crate::index_store::sidecar_corrupt(
+            generation_dir,
+            &artifact.name,
+            "opened file differs from the committed length",
+        ));
+    }
+    let admitted_len = usize::try_from(artifact.bytes).map_err(|error| {
+        CoreError::Storage(format!("lexical: committed read length overflow: {error}"))
+    })?;
+    let bytes = super::coverage::read_admitted_bytes(&mut opened, admitted_len, &path)?;
     let length = crate::channel_payloads::count_from_len(bytes.len())?;
     if length != artifact.bytes {
         return Err(crate::index_store::sidecar_corrupt(
