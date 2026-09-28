@@ -304,6 +304,25 @@ def test_archive_limit_boundaries_and_central_directory_preflight(tmp_path, monk
         )
 
 
+@pytest.mark.parametrize("names", [("A", "a"), ("é", "e\u0301"), ("A", "a/b")])
+def test_archive_refuses_portable_name_aliases_before_output(tmp_path, names):
+    import raw_archive
+
+    source = write_raw_file(tmp_path / "source", [b"raw"])
+    limits = raw_archive.ArchiveLimits(4096)
+    with pytest.raises(bridge.EvidenceError, match="portable path aliases|file/directory aliases"):
+        raw_archive.pack({name: source for name in names}, tmp_path / "packed.zip", limits=limits)
+    assert not (tmp_path / "packed.zip").exists()
+
+    archive_path = tmp_path / "external.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        for name in sorted(names):
+            archive.writestr(name, b"raw")
+    with pytest.raises(bridge.EvidenceError, match="portable path aliases|file/directory aliases"):
+        raw_archive.unpack(RawFile.capture(archive_path), tmp_path / "unpacked", limits=limits)
+    assert not (tmp_path / "unpacked").exists()
+
+
 @pytest.mark.parametrize(
     "mutation", ["ancestor", "existing", "hardlink", "changed", "forged", "prefix"]
 )
@@ -501,7 +520,9 @@ print(json.dumps({"peak": peak, "digest": digest, "size": ref.size}))
     assert peaks[1] - peaks[0] < 32 * 1024**2
 
 
-def test_archive_many_entry_inventory_and_limit(tmp_path):
+def test_archive_many_entry_inventory_and_limit(tmp_path, monkeypatch):
+    import struct
+
     import raw_archive
 
     source = write_raw_file(tmp_path / "source", [b"fixed"])
@@ -516,6 +537,20 @@ def test_archive_many_entry_inventory_and_limit(tmp_path):
             archive, tmp_path / "over", limits=raw_archive.ArchiveLimits(1024**2, max_entries=1999)
         )
     assert not (tmp_path / "over").exists()
+
+    forged = bytearray(archive.path.read_bytes())
+    end = forged.rfind(b"PK\x05\x06")
+    struct.pack_into("<HH", forged, end + 8, 1999, 1999)
+    bad = write_raw_file(tmp_path / "forged-many.zip", [forged])
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            raw_archive.zipfile,
+            "ZipFile",
+            lambda *_a, **_k: pytest.fail("forged cardinality reached ZipFile allocation"),
+        )
+        with pytest.raises(bridge.EvidenceError, match="count"):
+            raw_archive.unpack(bad, tmp_path / "forged-output", limits=limit)
+    assert not (tmp_path / "forged-output").exists()
 
 
 def test_both_archive_domains_bind_the_shared_io_owner():

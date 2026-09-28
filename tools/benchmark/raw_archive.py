@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import stat
 import struct
+import unicodedata
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -56,10 +57,17 @@ def _inventory(names: list[str], limits: ArchiveLimits) -> None:
         raise EvidenceError("archive entry count exceeds limit or is empty")
     if names != sorted(set(names)):
         raise EvidenceError("archive inventory is duplicate or reordered")
-    members = set(names)
+    portable = set()
     for name in names:
         canonical_name(name)
-        if any(str(parent) in members for parent in PurePosixPath(name).parents):
+        # APFS and other consumers may alias distinct ZIP names by Unicode
+        # normalization or case folding. Refuse before writing any entry.
+        alias = unicodedata.normalize("NFC", unicodedata.normalize("NFC", name).casefold())
+        if alias in portable:
+            raise EvidenceError("archive inventory has portable path aliases")
+        portable.add(alias)
+    for alias in portable:
+        if any(str(parent) in portable for parent in PurePosixPath(alias).parents):
             raise EvidenceError("archive file/directory aliases overlap")
 
 

@@ -333,6 +333,39 @@ print(json.dumps({{'rss':resource.getrusage(resource.RUSAGE_SELF).ru_maxrss*(1 i
     assert results[1] - results[0] < 32 * 1024 * 1024
 
 
+def test_failed_execution_retains_large_both_streams_with_bounded_rss(tmp_path, record_property):
+    peaks = []
+    for size in (8 * 1024 * 1024, 64 * 1024 * 1024):
+        script = f"""
+import hashlib,json,os,resource,sys
+from pathlib import Path
+sys.path.insert(0,{str(Path(execution.__file__).parent)!r})
+from producer_execution import ProducerExecutionError, execute
+command = "import os; out=b'x'*65536; err=b'y'*65536\\nfor _ in range({size // 65536}): os.write(1,out); os.write(2,err)\\nraise SystemExit(7)"
+root=Path({str(tmp_path / str(size))!r})
+try:
+    execute([sys.executable,'-c',command],cwd=Path({str(tmp_path)!r}),env=dict(os.environ),timeout=30,log_dir=root)
+except ProducerExecutionError as error:
+    assert 'exit 7' in str(error)
+else:
+    raise AssertionError('failed child was admitted')
+record=json.loads((root/'execution.json').read_text())
+assert record['status']=='failed' and record['command']['exit_code']==7
+for index, byte in enumerate((b'x', b'y')):
+    expected=hashlib.sha256()
+    for _ in range({size // 65536}): expected.update(byte*65536)
+    assert record['raw'][index]['bytes']=={size}
+    assert record['raw'][index]['sha256']=='sha256:'+expected.hexdigest()
+print(json.dumps({{'rss':resource.getrusage(resource.RUSAGE_SELF).ru_maxrss*(1 if sys.platform=='darwin' else 1024)}}))
+"""
+        result = subprocess.run([sys.executable, "-c", script], capture_output=True, timeout=40)
+        assert result.returncode == 0, result.stderr.decode()
+        peak = json.loads(result.stdout)["rss"]
+        record_property(f"failed_execution_{size}_peak_bytes", peak)
+        peaks.append(peak)
+    assert peaks[1] - peaks[0] < 32 * 1024 * 1024
+
+
 def test_execution_recording_failure_preserves_primary_and_logs(tmp_path, monkeypatch):
     import evidence
 
