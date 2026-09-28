@@ -306,6 +306,7 @@ mod tests {
 
     #[test]
     fn full_v2_admission_bounds_each_text_and_model_batch() {
+        const TEXTS_AT_BATCH_LIMIT: usize = 256;
         let window = "x".repeat(4096);
         let windows = vec![window.as_str(); BATCH_SIZE];
         assert!(validate_full_v2_batch(&windows).is_ok());
@@ -320,8 +321,11 @@ mod tests {
                 .contains("text exceeds")
         );
 
-        let at_batch_limit =
-            vec![at_text_limit.as_str(); FULL_V2_MAX_BATCH_TEXT_BYTES / FULL_V2_MAX_TEXT_BYTES];
+        assert_eq!(
+            TEXTS_AT_BATCH_LIMIT * FULL_V2_MAX_TEXT_BYTES,
+            FULL_V2_MAX_BATCH_TEXT_BYTES
+        );
+        let at_batch_limit = vec![at_text_limit.as_str(); TEXTS_AT_BATCH_LIMIT];
         assert!(validate_full_v2_batch(&at_batch_limit).is_ok());
         let over_batch_limit = vec![at_text_limit.as_str(); at_batch_limit.len() + 1];
         assert!(
