@@ -121,20 +121,30 @@ def _spec(value: dict, repositories: set[str]) -> dict:
 def _pair(repo: Path, root: Path, registry: dict) -> tuple[dict, dict, dict]:
     document = pair_capture.validate(repo, root, registry)
     expected_registry = registry_digest(registry)
-    # validate() replays every case. Read one raw input set from its verified
-    # immutable capture; the native owner checked the same set for every case.
+    # validate() replays every case, but the matrix must also prove that all
+    # cases belong to this one declared input and route. A first-run-only
+    # comparison could admit a mixed capture with different later cases.
     loaded = load_capture(root, profile=pair_capture.PROFILE, registry_digest=expected_registry)
     if loaded != document:
         raise ValueError("matrix pair capture changed during verification")
-    first = document["runs"][0]["run_id"]
-    RunStore(root).load(first)
-    raw = root / "runs" / first / "raw"
-    spec = pair_run.load_spec(raw / "original-spec.json")
-    inputs = {
-        role: _read_control_file(raw / f"input-{role}")
-        for role in ("manifest", "suite", "query_pack")
-    }
-    return document["source"], spec, inputs
+    store = RunStore(root)
+    first_spec = first_inputs = None
+    for row in document["runs"]:
+        run_id = row["run_id"]
+        store.load(run_id)
+        raw = root / "runs" / run_id / "raw"
+        spec = pair_run.load_spec(raw / "original-spec.json")
+        inputs = {
+            role: _read_control_file(raw / f"input-{role}")
+            for role in ("manifest", "suite", "query_pack")
+        }
+        if first_spec is None:
+            first_spec, first_inputs = spec, inputs
+        elif spec != first_spec or inputs != first_inputs:
+            raise ValueError("matrix pair runs differ in spec or native inputs")
+    if first_spec is None or first_inputs is None:
+        raise ValueError("matrix pair has no validated runs")
+    return document["source"], first_spec, first_inputs
 
 
 def _mode(spec: dict, mode: str) -> None:

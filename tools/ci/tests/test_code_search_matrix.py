@@ -159,3 +159,43 @@ def test_matrix_mode_requires_matching_single_route_and_exploratory_claims():
     ):
         with pytest.raises(ValueError, match="another route, mode or claim"):
             matrix._mode({**spec, **mutation}, "hybrid")
+
+
+@pytest.mark.parametrize("changed_role", [None, "manifest", "suite", "query_pack", "spec"])
+def test_matrix_pair_binds_every_validated_run(tmp_path, monkeypatch, changed_role):
+    root = tmp_path / "pair"
+    runs = ("case-a", "case-b")
+    for run_id in runs:
+        raw = root / "runs" / run_id / "raw"
+        raw.mkdir(parents=True)
+        (raw / "original-spec.json").write_text('{"candidate_route":"semantic"}')
+        for role in ("manifest", "suite", "query_pack"):
+            (raw / f"input-{role}").write_bytes(role.encode())
+    second = root / "runs" / runs[1] / "raw"
+    if changed_role == "spec":
+        (second / "original-spec.json").write_text('{"candidate_route":"lexical"}')
+    elif changed_role is not None:
+        (second / f"input-{changed_role}").write_bytes(b"different")
+
+    document = {"source": {"revision": "a" * 40}, "runs": [{"run_id": run} for run in runs]}
+    monkeypatch.setattr(matrix.pair_capture, "validate", lambda *_: document)
+    monkeypatch.setattr(matrix, "load_capture", lambda *_, **__: document)
+    monkeypatch.setattr(matrix, "registry_digest", lambda *_: "registry")
+    monkeypatch.setattr(matrix.pair_run, "load_spec", lambda path: json.loads(path.read_bytes()))
+
+    class Store:
+        def __init__(self, _root):
+            pass
+
+        def load(self, _run_id):
+            return {}
+
+    monkeypatch.setattr(matrix, "RunStore", Store)
+    if changed_role is None:
+        source, spec, inputs = matrix._pair(tmp_path, root, {})
+        assert source == document["source"]
+        assert spec == {"candidate_route": "semantic"}
+        assert inputs == {role: role.encode() for role in ("manifest", "suite", "query_pack")}
+    else:
+        with pytest.raises(ValueError, match="matrix pair runs differ"):
+            matrix._pair(tmp_path, root, {})
