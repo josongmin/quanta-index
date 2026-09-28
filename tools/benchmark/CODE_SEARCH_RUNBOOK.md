@@ -20,11 +20,28 @@ The `code-search` workflow composes the existing registered pair and lexical
 profiles with live external collection over one frozen corpus view and query pack.
 `lexical-diagnostic` itself never starts or calls Sourcegraph, OpenGrok or cs.
 
+## Product and mode coverage
+
+The five-product workflow is a lexical-only comparison. Its mode coverage is
+deliberately explicit:
+
+| Mode | Quanta | Semble | Sourcegraph | OpenGrok | cs |
+| --- | --- | --- | --- | --- | --- |
+| Lexical-only | Yes | Yes | Yes | Yes | Yes |
+| Semantic-only | Yes | Yes | Not applicable | Not applicable | Not applicable |
+| Hybrid | Yes | Yes | Not applicable | Not applicable | Not applicable |
+
+Run one paired `retrieval-diagnostic` capture for each Quanta/Semble mode and
+query suite. Run the five-product `code-search` workflow only for lexical-only.
+Do not treat lexical rescoring as a fresh search: it reads the recorded rows
+from all five lexical products. Conversely, external lexical tools do not have
+semantic-only or hybrid modes, so they cannot fill those matrix cells.
+
 ## One-command live workflow
 
 Use the [workflow spec example](retrieval/examples/code-search-workflow.json)
 after preparing the pair and external specs below. The workflow refuses unequal
-suite/pack bytes, a different release manifest, hybrid profiles, dirty source
+suite/pack bytes, a different release manifest, non-lexical profiles, dirty source
 and an existing output root. It captures external products first so authentication,
 revision and result-envelope failures are discovered before the SDK pair.
 

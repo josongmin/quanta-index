@@ -5,6 +5,7 @@
     "tools.ci.tests.test_retrieval_benchmark.TestSourcegraphComparator.test_chunk_match_refused",
     "tools.ci.tests.test_retrieval_benchmark.TestSourcegraphComparator.test_duplicate_json_key_refused",
     "tools.ci.tests.test_retrieval_benchmark.TestSourcegraphComparator.test_duplicate_native_hit_refused",
+    "tools.ci.tests.test_retrieval_benchmark.TestSourcegraphComparator.test_input_manifest_binding_does_not_claim_indexed_universe",
     "tools.ci.tests.test_retrieval_benchmark.TestSourcegraphComparator.test_malformed_event_refused",
     "tools.ci.tests.test_retrieval_benchmark.TestSourcegraphComparator.test_missing_or_mismatched_indexed_universe_refused",
     "tools.ci.tests.test_retrieval_benchmark.TestSourcegraphComparator.test_non_content_or_outside_universe_refused",

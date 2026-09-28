@@ -61,15 +61,15 @@
       "type": "array", "minItems": 2, "maxItems": 2, "uniqueItems": true,
       "items": {"enum": ["quanta", "semble"]}
     },
-    "semble_route": {"type": "string", "minLength": 1},
+    "semble_route": {"type": "string", "minLength": 1, "description": "Must match the Semble execution profile: lexical-only => semble-lexical-only, semantic-only => semble-semantic-only, and hybrid/default => semble-hybrid. The runtime enforces this cross-field contract."},
     "semble_python": {"type": "string", "minLength": 1},
     "semble_lockfile": {"type": "string", "minLength": 1},
     "semble_lockfile_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "semble_cache_root": {"type": "string", "minLength": 1},
     "semble_model_revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
     "quanta_model_dir": {"type": "string", "minLength": 1},
-    "baseline_route": {"type": "string", "minLength": 1},
-    "candidate_route": {"type": "string", "minLength": 1},
+    "baseline_route": {"type": "string", "minLength": 1, "description": "Must equal the Semble route selected by execution_profiles.semble.mode; the runtime enforces this cross-field contract."},
+    "candidate_route": {"type": "string", "minLength": 1, "description": "Must name one of the configured Quanta routes; the runtime enforces this cross-field contract."},
     "host_profile": {
       "type": "string", "minLength": 1,
       "description": "Path to a canonical host-profile JSON artifact. Optional in the schema; run_pair refuses a pair spec without it."

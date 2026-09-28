@@ -11,6 +11,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "benchmark"))
 import benchctl  # noqa: E402
 import code_search_workflow as workflow  # noqa: E402
 
+from tools.benchmark.retrieval import query_plan  # noqa: E402
+
 
 def test_workflow_spec_refuses_unbounded_timeout_and_unknown_key(tmp_path):
     path = tmp_path / "spec.json"
@@ -23,6 +25,35 @@ def test_workflow_spec_refuses_unbounded_timeout_and_unknown_key(tmp_path):
         path.write_text(json.dumps({**value, **mutation}))
         with pytest.raises(ValueError, match="closed schema"):
             workflow._read_spec(path)
+
+
+def test_preflight_contract_requires_lexical_only_route_labels():
+    pair = {
+        "execution_profiles": {
+            "quanta": query_plan.execution_profile("native"),
+            "semble": {
+                "profile_id": "semble-lexical-only-v1",
+                "mode": "lexical-only",
+                "alpha": None,
+                "rerank": "not_applicable",
+            },
+        },
+        "routes": ["lexical"],
+        "candidate_route": "lexical",
+        "baseline_route": "semble-lexical-only",
+        "semble_route": "semble-lexical-only",
+        "scope": "exploratory",
+        "claims": {"quality": False},
+        "repetitions": 1,
+        "strategies": [{"name": "fixed_window_strict"}],
+    }
+    workflow._require_pure_lexical_pair(pair)
+
+    for key in ("baseline_route", "semble_route"):
+        legacy = dict(pair)
+        legacy[key] = "semble-hybrid"
+        with pytest.raises(ValueError, match="pure-lexical pair"):
+            workflow._require_pure_lexical_pair(legacy)
 
 
 def test_external_failure_prevents_pair_execution_and_workflow_publication(tmp_path, monkeypatch):

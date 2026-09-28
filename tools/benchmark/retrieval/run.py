@@ -34,7 +34,12 @@ from contextlib import contextmanager
 from pathlib import Path
 
 try:
-    from tools.benchmark.retrieval import linux_isolation, linux_process, portable_proof, symbol_coverage
+    from tools.benchmark.retrieval import (
+        linux_isolation,
+        linux_process,
+        portable_proof,
+        symbol_coverage,
+    )
     from tools.benchmark.retrieval import query_plan as qp
     from tools.benchmark.retrieval import semble as semble_adapter
     from tools.benchmark.retrieval.contract_proof import nextest_summary, pytest_summary
@@ -62,9 +67,9 @@ except ImportError:  # direct script invocation: import the sibling module
     import linux_isolation  # noqa: E402
     import linux_process  # noqa: E402
     import portable_proof  # noqa: E402
-    import symbol_coverage  # noqa: E402
     import query_plan as qp  # noqa: E402
     import semble as semble_adapter  # noqa: E402
+    import symbol_coverage  # noqa: E402
     from contract_proof import nextest_summary, pytest_summary  # noqa: E402
     from evaluator import (  # noqa: E402
         CHUNK_STRATEGIES,
@@ -102,6 +107,12 @@ SEMBLE_PROFILES = (
     "lexical-only",
     "semantic-only",
 )
+SEMBLE_ROUTE_BY_MODE = {
+    "native-default": "semble-hybrid",
+    "hybrid-no-rerank": "semble-hybrid",
+    "lexical-only": "semble-lexical-only",
+    "semantic-only": "semble-semantic-only",
+}
 QUANTA_SYMBOL_PRODUCER_IDENTITY = "source-bound-symbols-v2"
 QUANTA_SYMBOL_GRAMMARS = symbol_coverage.grammar_identity()
 
@@ -128,6 +139,23 @@ def _validate_semble_profile(value: object, where: str) -> dict:
     else:
         raise RunError(f"{where}.mode is unknown")
     return value
+
+
+def _validate_semble_route_binding(spec: dict) -> None:
+    """Keep the public route labels aligned with the frozen execution mode."""
+    profiles = spec.get("execution_profiles", {})
+    semble = profiles.get("semble") if isinstance(profiles, dict) else None
+    if semble is None:
+        return
+    expected = SEMBLE_ROUTE_BY_MODE[semble["mode"]]
+    if spec.get("semble_route", expected) != expected:
+        raise RunError(f"spec.semble_route must be {expected} for {semble['mode']} execution")
+    if spec.get("baseline_route", expected) != expected:
+        raise RunError(f"spec.baseline_route must match Semble route {expected}")
+    routes = spec.get("routes", ["lexical", "semantic", "hybrid"])
+    candidate = spec.get("candidate_route")
+    if candidate is not None and candidate not in routes:
+        raise RunError("spec.candidate_route must name a configured Quanta route")
 
 
 def _validate_model_cache_manifest(value: object, where: str) -> dict:
@@ -2700,6 +2728,7 @@ def load_spec(path: Path) -> dict:
         for route in routes:
             if not isinstance(route, str) or not route:
                 raise RunError("spec.routes entries must be nonempty strings")
+    _validate_semble_route_binding(spec)
     if "blinding" in spec and spec["blinding"] not in ("isolated", "attested"):
         raise RunError("spec.blinding must be isolated or attested")
     if "scope" in spec and spec["scope"] not in ("exploratory", "qualified"):
@@ -7397,7 +7426,9 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
     (stage / "host-start.json").write_text(
         json.dumps(host_start, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-    semble_routes = [spec.get("semble_route", "semble-hybrid")]
+    semble_routes = [
+        spec.get("semble_route", SEMBLE_ROUTE_BY_MODE[spec["execution_profiles"]["semble"]["mode"]])
+    ]
     semble_pack = write_projected_pack(
         Path(spec["query_pack"]),
         Path(spec["suite"]),
@@ -7545,7 +7576,9 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
         "top_k": spec["top_k"],
         "strategies": [entry["name"] for entry in spec["strategies"]],
         "quanta_routes": list(spec.get("routes", ["lexical", "semantic", "hybrid"])),
-        "semble_route": spec.get("semble_route", "semble-hybrid"),
+        "semble_route": spec.get(
+            "semble_route", SEMBLE_ROUTE_BY_MODE[spec["execution_profiles"]["semble"]["mode"]]
+        ),
         "searchd_expected_sha256": spec["searchd_expected_sha256"],
         "semble_lockfile_sha256": spec["semble_lockfile_sha256"],
         "execution_profiles": spec["execution_profiles"],

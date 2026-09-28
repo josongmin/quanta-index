@@ -31,6 +31,79 @@ def fixture(tmp_path):
     return stage
 
 
+@pytest.mark.parametrize(
+    ("mode", "route"),
+    [
+        ("lexical-only", "semble-lexical-only"),
+        ("semantic-only", "semble-semantic-only"),
+        ("hybrid-no-rerank", "semble-hybrid"),
+        ("native-default", "semble-hybrid"),
+    ],
+)
+def test_semble_route_label_is_bound_to_execution_mode(mode, route):
+    spec = {
+        "execution_profiles": {"semble": {"mode": mode}},
+        "routes": ["lexical", "semantic", "hybrid"],
+        "candidate_route": "lexical",
+        "baseline_route": route,
+        "semble_route": route,
+    }
+    bridge.owner._validate_semble_route_binding(spec)
+
+    wrong = {**spec, "baseline_route": "semble-hybrid"}
+    if route != "semble-hybrid":
+        with pytest.raises(bridge.owner.RunError, match="baseline_route must match"):
+            bridge.owner._validate_semble_route_binding(wrong)
+
+
+def test_candidate_route_must_be_enabled_for_quanta():
+    spec = {
+        "execution_profiles": {"semble": {"mode": "lexical-only"}},
+        "routes": ["lexical"],
+        "candidate_route": "hybrid",
+    }
+    with pytest.raises(bridge.owner.RunError, match="configured Quanta route"):
+        bridge.owner._validate_semble_route_binding(spec)
+
+
+def test_pair_spec_loader_rejects_route_profile_mismatch(tmp_path):
+    spec = {
+        "spec_version": 2,
+        "repo": "/external/repo",
+        "manifest": "/external/manifest.json",
+        "suite": "/external/suite.json",
+        "query_pack": "/external/pack.json",
+        "execution_profiles": {
+            "quanta": bridge.owner.qp.execution_profile("native"),
+            "semble": {
+                "profile_id": "semble-lexical-only-v1",
+                "mode": "lexical-only",
+                "alpha": None,
+                "rerank": "not_applicable",
+            },
+        },
+        "top_k": 10,
+        "output_root": "/external/pair",
+        "runner_binary": "/external/runner",
+        "strategies": [{"name": "fixed_window_strict"}],
+        "searchd_binary": "/external/searchd",
+        "searchd_expected_sha256": "a" * 64,
+        "routes": ["lexical"],
+        "candidate_route": "lexical",
+        "baseline_route": "semble-lexical-only",
+        "semble_route": "semble-lexical-only",
+    }
+    path = tmp_path / "pair.json"
+    path.write_text(json.dumps(spec))
+    assert bridge.owner.load_spec(path)["baseline_route"] == "semble-lexical-only"
+
+    spec["baseline_route"] = "semble-hybrid"
+    spec["semble_route"] = "semble-hybrid"
+    path.write_text(json.dumps(spec))
+    with pytest.raises(bridge.owner.RunError, match="spec.semble_route must be"):
+        bridge.owner.load_spec(path)
+
+
 def test_native_owner_replay_and_separate_metric_spaces(tmp_path):
     stage = fixture(tmp_path)
     manifest, verdict = bridge.derive(stage["stage"], stage["repo"])
