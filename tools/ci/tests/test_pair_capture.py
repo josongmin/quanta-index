@@ -6,6 +6,7 @@ import io
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import zipfile
@@ -19,6 +20,28 @@ from evidence import RawFile, RunStore, sample_evidence, write_raw_file
 from registry import load_registry
 
 from tools.ci.tests.test_retrieval_benchmark import _pair_stage, _stage_verdict
+
+
+class _NonSeekableZipSink:
+    def __init__(self, handle):
+        self.handle = handle
+
+    def tell(self):
+        return self.handle.tell()
+
+    def write(self, data):
+        return self.handle.write(data)
+
+    def flush(self):
+        self.handle.flush()
+
+
+def _canonical_zip_info(name, size):
+    entry = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+    entry.create_system = 3
+    entry.external_attr = (stat.S_IFREG | 0o600) << 16
+    entry.file_size = size
+    return entry
 
 
 def registry_fixture():
@@ -315,9 +338,11 @@ def test_archive_refuses_portable_name_aliases_before_output(tmp_path, names):
     assert not (tmp_path / "packed.zip").exists()
 
     archive_path = tmp_path / "external.zip"
-    with zipfile.ZipFile(archive_path, "w") as archive:
-        for name in sorted(names):
-            archive.writestr(name, b"raw")
+    with archive_path.open("wb") as handle:
+        with zipfile.ZipFile(_NonSeekableZipSink(handle), "w") as archive:
+            for name in sorted(names):
+                with archive.open(_canonical_zip_info(name, 3), "w") as sink:
+                    sink.write(b"raw")
     with pytest.raises(bridge.EvidenceError, match="portable path aliases|file/directory aliases"):
         raw_archive.unpack(RawFile.capture(archive_path), tmp_path / "unpacked", limits=limits)
     assert not (tmp_path / "unpacked").exists()
@@ -401,6 +426,140 @@ def test_archive_zip64_roundtrip_with_small_forced_threshold(tmp_path, monkeypat
     assert (tmp_path / "output/record").read_bytes() == b"z" * 100
 
 
+def test_archive_zip64_offset_only_roundtrip(tmp_path, monkeypatch):
+    import raw_archive
+
+    monkeypatch.setattr(zipfile, "ZIP64_LIMIT", 32)
+    ref = write_raw_file(tmp_path / "source", [b""])
+    archive = raw_archive.pack(
+        {"a": ref, "b": ref}, tmp_path / "zip64-offset.zip", limits=raw_archive.ArchiveLimits(4096)
+    )
+    with zipfile.ZipFile(archive.path) as held:
+        assert held.getinfo("b").extra.startswith(b"\x01\x00")
+    raw_archive.unpack(archive, tmp_path / "output", limits=raw_archive.ArchiveLimits(4096))
+    assert (tmp_path / "output/a").read_bytes() == b""
+    assert (tmp_path / "output/b").read_bytes() == b""
+
+
+def test_archive_accepts_older_python_streaming_zip64_local_layout(tmp_path, monkeypatch):
+    import struct
+
+    import raw_archive
+
+    monkeypatch.setattr(zipfile, "ZIP64_LIMIT", 32)
+    ref = write_raw_file(tmp_path / "source", [b"z" * 100])
+    archive = raw_archive.pack(
+        {"record": ref}, tmp_path / "current.zip", limits=raw_archive.ArchiveLimits(4096)
+    )
+    data = bytearray(archive.path.read_bytes())
+    struct.pack_into("<B", data, 4, 20)
+    struct.pack_into("<II", data, 18, 0, 0)
+    older = write_raw_file(tmp_path / "older.zip", [data])
+    raw_archive.unpack(older, tmp_path / "output", limits=raw_archive.ArchiveLimits(4096))
+    assert (tmp_path / "output/record").read_bytes() == b"z" * 100
+
+
+@pytest.mark.parametrize("mutation", ["version", "classic_count"])
+def test_archive_rejects_inconsistent_zip64_end_metadata(tmp_path, monkeypatch, mutation):
+    import struct
+
+    import raw_archive
+
+    monkeypatch.setattr(zipfile, "ZIP64_LIMIT", 32)
+    source = write_raw_file(tmp_path / "source", [b"z" * 100])
+    archive = raw_archive.pack(
+        {"record": source}, tmp_path / "canonical.zip", limits=raw_archive.ArchiveLimits(4096)
+    )
+    data = bytearray(archive.path.read_bytes())
+    if mutation == "version":
+        zip64_end = data.index(b"PK\x06\x06")
+        struct.pack_into("<H", data, zip64_end + 12, 20)
+    else:
+        classic_end = data.index(b"PK\x05\x06")
+        struct.pack_into("<HH", data, classic_end + 8, 0, 0)
+    forged = write_raw_file(tmp_path / "forged.zip", [data])
+    with pytest.raises(bridge.EvidenceError, match="ZIP64 record"):
+        raw_archive.unpack(forged, tmp_path / "output", limits=raw_archive.ArchiveLimits(4096))
+    assert not (tmp_path / "output").exists()
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["date", "creator", "mode", "entry_comment", "extra", "archive_comment", "flags"],
+)
+def test_archive_rejects_noncanonical_external_zip_metadata(tmp_path, mutation):
+    import struct
+
+    import raw_archive
+
+    stream = _NonSeekableZipSink(io.BytesIO())
+    with zipfile.ZipFile(stream, "w", compression=zipfile.ZIP_STORED) as archive:
+        entry = _canonical_zip_info("record", 3)
+        if mutation == "date":
+            entry.date_time = (2026, 1, 1, 0, 0, 0)
+        elif mutation == "creator":
+            entry.create_system = 0
+        elif mutation == "mode":
+            entry.external_attr = (stat.S_IFREG | 0o644) << 16
+        elif mutation == "entry_comment":
+            entry.comment = b"comment"
+        elif mutation == "extra":
+            entry.extra = struct.pack("<HH", 0x9999, 0)
+        with archive.open(entry, "w") as sink:
+            sink.write(b"raw")
+        if mutation == "archive_comment":
+            archive.comment = b"comment"
+    data = bytearray(stream.handle.getvalue())
+    if mutation == "flags":
+        central = data.index(b"PK\x01\x02")
+        struct.pack_into("<H", data, central + 8, 0)
+    ref = write_raw_file(tmp_path / "external.zip", [data])
+    limits = raw_archive.ArchiveLimits(4096)
+    with pytest.raises(bridge.EvidenceError, match="noncanonical|end record"):
+        raw_archive.unpack(ref, tmp_path / "output", limits=limits)
+    assert not (tmp_path / "output").exists()
+
+
+def test_archive_rejects_unrequired_zip64_extra(tmp_path):
+    import struct
+
+    import raw_archive
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_STORED) as archive:
+        entry = _canonical_zip_info("record", 3)
+        entry.extra = struct.pack("<HHQQ", 1, 16, 3, 3)
+        archive.writestr(entry, b"raw")
+    ref = write_raw_file(tmp_path / "external.zip", [buffer.getvalue()])
+    with pytest.raises(bridge.EvidenceError, match="noncanonical extra metadata"):
+        raw_archive.unpack(ref, tmp_path / "output", limits=raw_archive.ArchiveLimits(4096))
+    assert not (tmp_path / "output").exists()
+
+
+@pytest.mark.parametrize("mutation", ["local_date", "local_flags", "descriptor"])
+def test_archive_rejects_noncanonical_local_zip_metadata(tmp_path, mutation):
+    import struct
+
+    import raw_archive
+
+    source = write_raw_file(tmp_path / "source", [b"raw"])
+    archive = raw_archive.pack(
+        {"record": source}, tmp_path / "canonical.zip", limits=raw_archive.ArchiveLimits(4096)
+    )
+    data = bytearray(archive.path.read_bytes())
+    if mutation == "local_date":
+        struct.pack_into("<H", data, 12, 0x5C21)
+    elif mutation == "local_flags":
+        struct.pack_into("<H", data, 6, 0)
+    else:
+        descriptor = data.index(b"PK\x07\x08")
+        struct.pack_into("<I", data, descriptor + 4, 0)
+    forged = write_raw_file(tmp_path / "forged.zip", [data])
+    with pytest.raises(bridge.EvidenceError, match="noncanonical local|noncanonical data"):
+        raw_archive.unpack(forged, tmp_path / "output", limits=raw_archive.ArchiveLimits(4096))
+    assert not (tmp_path / "output").exists()
+
+
 def test_forged_archive_count_refuses_before_zip_metadata_allocation(tmp_path, monkeypatch):
     import struct
 
@@ -466,8 +625,13 @@ def test_archive_payload_peak_rss_is_bounded(tmp_path, operation, record_propert
         archive = tmp_path / f"archive-{size}.zip"
         if operation == "unpack":
             # Independent stdlib fixture, not the streaming writer under test.
-            with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_STORED) as held:
-                held.write(path, arcname="record")
+            with archive.open("wb") as handle:
+                with zipfile.ZipFile(
+                    _NonSeekableZipSink(handle), "w", compression=zipfile.ZIP_STORED
+                ) as held:
+                    with held.open(_canonical_zip_info("record", size), "w") as sink:
+                        with path.open("rb") as source:
+                            shutil.copyfileobj(source, sink, length=65536)
         script = """
 import json, resource, sys
 from pathlib import Path

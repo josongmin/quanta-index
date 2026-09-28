@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 import shutil
+import stat
 import sys
 import zipfile
 from pathlib import Path
@@ -17,6 +18,36 @@ import pytest
 from tools.benchmark.evidence import write_raw_file
 from tools.benchmark.retrieval import portable_proof
 from tools.benchmark.retrieval import run as pairrun
+
+
+def _write_external_zip(path, members, *, compressed=False, symlink=False):
+    """Independent stdlib fixture with the streaming archive's fixed metadata."""
+
+    class NonSeekable:
+        def __init__(self, handle):
+            self.handle = handle
+
+        def tell(self):
+            return self.handle.tell()
+
+        def write(self, data):
+            return self.handle.write(data)
+
+        def flush(self):
+            self.handle.flush()
+
+    with path.open("wb") as handle:
+        with zipfile.ZipFile(NonSeekable(handle), "w") as archive:
+            for name, data in members:
+                entry = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+                entry.create_system = 3
+                entry.external_attr = (
+                    stat.S_IFLNK | 0o777 if symlink else stat.S_IFREG | 0o600
+                ) << 16
+                entry.compress_type = zipfile.ZIP_DEFLATED if compressed else zipfile.ZIP_STORED
+                entry.file_size = len(data)
+                with archive.open(entry, "w") as sink:
+                    sink.write(data)
 
 
 def _paired_context_fixture(fake_execution, rail, *, large_log=False):
@@ -108,15 +139,12 @@ def test_paired_context_archive_refuses_mutants(tmp_path, monkeypatch, rail, mut
     path = tmp_path / "logs.zip"
 
     def write():
-        with zipfile.ZipFile(path, "w") as archive:
-            for name in names:
-                entry = zipfile.ZipInfo(name)
-                entry.create_system = 3
-                entry.external_attr = (0o120777 if mutation == "symlink" else 0o100600) << 16
-                entry.compress_type = (
-                    zipfile.ZIP_DEFLATED if mutation == "compressed" else zipfile.ZIP_STORED
-                )
-                archive.writestr(entry, b"transcript")
+        _write_external_zip(
+            path,
+            [(name, b"transcript") for name in names],
+            compressed=mutation == "compressed",
+            symlink=mutation == "symlink",
+        )
 
     if mutation == "duplicate":
         with pytest.warns(UserWarning, match="Duplicate name"):
@@ -154,9 +182,7 @@ def test_paired_context_payload_ceiling_is_inclusive(tmp_path, monkeypatch, rail
         for stream in ("stdout", "stderr")
     )
     path = tmp_path / "logs.zip"
-    with zipfile.ZipFile(path, "w") as archive:
-        for name in names:
-            archive.writestr(name, b"ten bytes!")
+    _write_external_zip(path, [(name, b"ten bytes!") for name in names])
     monkeypatch.setattr(pairrun, "MAX_CONTEXT_LOG_BYTES", 10 * len(names))
     with pairrun._frozen_context_logs(path, rail) as logs:
         assert set(logs) == set(names)
@@ -294,13 +320,11 @@ def test_runner_bundle_rejects_rehashed_unadmitted_inputs(tmp_path, monkeypatch,
                 )
         members["bundle-manifest.json"] = pairrun.canonical_bytes(expected["manifest"]) + b"\n"
         expected["manifest_sha256"] = hashlib.sha256(members["bundle-manifest.json"]).hexdigest()
-    with zipfile.ZipFile(
+    _write_external_zip(
         path,
-        "w",
-        compression=zipfile.ZIP_DEFLATED if mutation == "compressed" else zipfile.ZIP_STORED,
-    ) as archive:
-        for name in sorted(members, reverse=mutation == "reordered"):
-            archive.writestr(name, members[name])
+        [(name, members[name]) for name in sorted(members, reverse=mutation == "reordered")],
+        compressed=mutation == "compressed",
+    )
     if mutation == "crc":
         path.write_bytes(
             path.read_bytes().replace(b"raise SystemExit(main())", b"raise SystemExit(Main())", 1)
