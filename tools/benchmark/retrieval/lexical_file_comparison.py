@@ -27,6 +27,8 @@ from tools.benchmark.retrieval.finite_json import is_finite_json_number
 from tools.benchmark.retrieval.query_plan import execution_profile
 
 PRODUCTS = ("sourcegraph", "opengrok", "cs")
+QUANTA_LEXICAL_ROUTE = "lexical"
+SEMBLE_LEXICAL_ROUTE = "semble-lexical-only"
 BARE_SYMBOL = re.compile(r"[A-Za-z_][A-Za-z_0-9]*\Z")
 INPUT_ROLES = (
     "suite",
@@ -314,6 +316,11 @@ def pair_result(
         }
     ):
         raise ValueError("pair execution profiles are not pure lexical")
+    if (
+        lock.get("quanta_routes") != [QUANTA_LEXICAL_ROUTE]
+        or lock.get("semble_route") != SEMBLE_LEXICAL_ROUTE
+    ):
+        raise ValueError("pair route labels do not match the pure-lexical execution profiles")
     counts = native.get("lane_call_counts", {})
     events = native.get("execution_events")
     if (
@@ -357,7 +364,10 @@ def pair_result(
     ):
         raise ValueError("pair report has incomplete per-query observations")
     result = {}
-    for route, label in (("lexical", "quanta_lexical"), ("semble-hybrid", "semble_lexical_only")):
+    for route, label in (
+        (QUANTA_LEXICAL_ROUTE, "quanta_lexical"),
+        (SEMBLE_LEXICAL_ROUTE, "semble_lexical_only"),
+    ):
         data = routes.get(route)
         if not isinstance(data, dict) or data.get("sample_count") != task_count:
             raise ValueError(f"pair report {route} is incomplete")

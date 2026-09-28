@@ -15,6 +15,10 @@ from pathlib import Path
 
 from tools.benchmark.retrieval import query_plan, run
 from tools.benchmark.retrieval.evaluator import canonical, digest
+from tools.benchmark.retrieval.lexical_file_comparison import (
+    QUANTA_LEXICAL_ROUTE,
+    SEMBLE_LEXICAL_ROUTE,
+)
 
 IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z_0-9]*\Z")
 
@@ -70,8 +74,8 @@ def build_spec(
     ):
         if original_suite.get(key) != suite.get(key) or suite.get(key) != pack.get(key):
             raise ValueError(f"{key} differs across frozen inputs")
-    if suite.get("routes") != ["lexical", "semble-hybrid"] or pack.get("routes") != suite["routes"]:
-        raise ValueError("lexical suite must declare lexical and semble-hybrid routes")
+    if suite.get("routes") != [QUANTA_LEXICAL_ROUTE, SEMBLE_LEXICAL_ROUTE] or pack.get("routes") != suite["routes"]:
+        raise ValueError("lexical suite must declare lexical and semble-lexical-only routes")
     if pack.get("suite_commitment_sha256") != digest(canonical(suite)):
         raise ValueError("query pack does not bind the lexical suite")
     for task_id, task in lexical.items():
@@ -102,9 +106,10 @@ def build_spec(
         output_root=str(output_root.resolve()),
         run_id=run_id,
         searchd_expected_sha256=_sha_file(Path(base["searchd_binary"])),
-        routes=["lexical"],
-        candidate_route="lexical",
-        baseline_route="semble-hybrid",
+        routes=[QUANTA_LEXICAL_ROUTE],
+        candidate_route=QUANTA_LEXICAL_ROUTE,
+        baseline_route=SEMBLE_LEXICAL_ROUTE,
+        semble_route=SEMBLE_LEXICAL_ROUTE,
         execution_profiles={
             "quanta": query_plan.execution_profile("native"),
             "semble": {

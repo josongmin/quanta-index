@@ -38,7 +38,9 @@ def source_seed(tmp_path_factory):
         "config.toml": b"enabled = true\n",
         "LICENSE": b"Fixture license source, not approval\n",
         "vendor/a.rs": b"excluded vendor code\n",
+        "build/generated.rs": b"excluded build output\n",
         "generated/b.rs": b"excluded generated code\n",
+        "syntax-error.rs": b"{}}\n",
         "empty.rs": b"",
         "binary.rs": b"hello\0world",
         "encoding.rs": b"\xff",
@@ -109,6 +111,15 @@ def test_complete_git_inventory_two_views_and_portable_replay(source, tmp_path):
     assert (
         inventory["vendor/a.rs"]["view_exclusions"]["code_only"] == "generated_or_vendor_component"
     )
+    assert (
+        inventory["build/generated.rs"]["view_exclusions"]["code_only"]
+        == "generated_or_vendor_component"
+    )
+    assert (
+        inventory["syntax-error.rs"]["view_exclusions"]["code_only"]
+        == "no_alphanumeric_token"
+    )
+    assert inventory["src/main.rs"]["view_exclusions"]["code_only"] is None
     assert inventory["encoding.rs"]["view_exclusions"]["developer_search"] == "non_utf8"
     assert inventory["README.md"]["view_exclusions"] == {
         "code_only": "non_code_extension",

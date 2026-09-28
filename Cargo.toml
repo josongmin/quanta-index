@@ -166,6 +166,9 @@ tempfile = "3.16.0"
 thiserror = "1.0.69"
 toml = "0.8"
 tokio = { version = "1.42", default-features = false, features = ["fs", "rt", "rt-multi-thread", "net", "io-util", "macros", "signal", "sync", "time"] }
+# Bounded compression for IPC request bodies that exceed the wire-frame cap;
+# zstd is already in the locked graph through Lance and Arrow.
+zstd = { version = "0.13.3", default-features = false }
 # Benchmark-only parsing for the retrieval brace-heuristic chunker (RB-03)
 # and the RBR-04 source-bound symbol producer: tree-sitter boundaries
 # replace the retired hand lexer. No product crate may depend on these.

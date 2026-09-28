@@ -85,7 +85,7 @@ def inputs(tmp_path, lexical_release_seed):
             "status": "success",
         }
         for task in pack["tasks"]
-        for route in ("lexical", "semble-hybrid")
+        for route in ("lexical", "semble-lexical-only")
     ]
     report = {
         "query_pack_sha256": digest(canonical(pack)),
@@ -99,7 +99,7 @@ def inputs(tmp_path, lexical_release_seed):
                     "chunk": {"file_recall_at_10": 1.0},
                     "mean_query_latency_ms": 1.0,
                 }
-                for route in ("lexical", "semble-hybrid")
+                for route in ("lexical", "semble-lexical-only")
             }
         },
         "per_query": rows,
@@ -117,7 +117,9 @@ def inputs(tmp_path, lexical_release_seed):
                     "alpha": None,
                     "rerank": "not_applicable",
                 },
-            }
+            },
+            "quanta_routes": ["lexical"],
+            "semble_route": "semble-lexical-only",
         },
         "semble_native": native,
         "pair_verdict": {"states": {"PAIR_VALID": "pass"}},

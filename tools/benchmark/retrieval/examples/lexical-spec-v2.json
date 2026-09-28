@@ -9,7 +9,7 @@
   "inputs": {
     "suite": "/external/lexical-suite.json",
     "query_pack": "/external/lexical-query-pack.json",
-    "pair_report": "/external/fresh-pair/report-semble-hybrid-vs-lexical-fixed_window_strict.json",
+    "pair_report": "/external/fresh-pair/report-semble-lexical-only-vs-lexical-fixed_window_strict.json",
     "pair_lock": "/external/fresh-pair/protocol-lock.json",
     "semble_native": "/external/fresh-pair/rep-00/semble/native.json",
     "pair_verdict": "/external/fresh-pair/verdict.json",

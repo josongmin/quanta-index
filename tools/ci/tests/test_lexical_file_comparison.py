@@ -48,7 +48,7 @@ def fixture_inputs(tmp_path):
         "file_universe_digest": "b" * 64,
         "file_universe": [],
         "comparison_contract": {"top_k": 10},
-        "routes": ["lexical", "semble-hybrid"],
+        "routes": ["lexical", "semble-lexical-only"],
     }
     suite = {**common_suite, "tasks": suite_tasks}
     original = {**common_suite, "tasks": original_tasks}
@@ -82,6 +82,9 @@ def test_prepare_binds_current_binary_and_pure_lexical_profiles(tmp_path):
     assert spec["execution_profiles"]["quanta"]["policy"] == "native"
     assert spec["execution_profiles"]["semble"]["mode"] == "lexical-only"
     assert spec["routes"] == ["lexical"]
+    assert spec["candidate_route"] == "lexical"
+    assert spec["baseline_route"] == "semble-lexical-only"
+    assert spec["semble_route"] == "semble-lexical-only"
 
 
 def test_prepare_rejects_changed_gold_and_missing_task(tmp_path):
@@ -201,7 +204,7 @@ def test_pair_result_rejects_semantic_lane_even_if_report_has_hits(tmp_path, rec
                     "chunk": {"file_recall_at_10": recall},
                     "mean_query_latency_ms": 1.0,
                 }
-                for route in ("lexical", "semble-hybrid")
+                for route in ("lexical", "semble-lexical-only")
             }
         },
         "per_query": [
@@ -212,7 +215,7 @@ def test_pair_result_rejects_semantic_lane_even_if_report_has_hits(tmp_path, rec
                 "file_recall_at_10": recall,
                 "file_hit_at_10": True,
             }
-            for route in ("lexical", "semble-hybrid")
+            for route in ("lexical", "semble-lexical-only")
             for task in pack["tasks"]
         ],
     }
@@ -230,7 +233,9 @@ def test_pair_result_rejects_semantic_lane_even_if_report_has_hits(tmp_path, rec
                 "alpha": None,
                 "rerank": "not_applicable",
             },
-        }
+        },
+        "quanta_routes": ["lexical"],
+        "semble_route": "semble-lexical-only",
     }
     native = {
         "semble_profile": "lexical-only",
@@ -242,8 +247,10 @@ def test_pair_result_rejects_semantic_lane_even_if_report_has_hits(tmp_path, rec
     paths = [tmp_path / f"{name}.json" for name in ("report", "lock", "native", "verdict")]
     for path, value in zip(paths, (report, lock, native, verdict), strict=True):
         path.write_text(json.dumps(value), encoding="utf-8")
-    assert pair_result(*paths, pack, suite, 20)["routes"]["quanta_lexical"]["hits"] == 20
-    route = pair_result(*paths, pack, suite, 20)["routes"]["quanta_lexical"]
+    scored = pair_result(*paths, pack, suite, 20)
+    assert scored["routes"]["quanta_lexical"]["hits"] == 20
+    assert scored["routes"]["semble_lexical_only"]["hits"] == 20
+    route = scored["routes"]["quanta_lexical"]
     assert route["file_recall_at_10"] == recall
     assert route["file_hit_rate_at_10"] == 1.0
     report["per_query"][0]["file_recall_at_10"] = 0.0
@@ -255,6 +262,48 @@ def test_pair_result_rejects_semantic_lane_even_if_report_has_hits(tmp_path, rec
     native["lane_call_counts"]["semantic"] = 1
     paths[2].write_text(json.dumps(native), encoding="utf-8")
     with pytest.raises(ValueError, match="did not execute lexical-only"):
+        pair_result(*paths, pack, suite, 20)
+
+
+def test_pair_result_rejects_hybrid_route_label_for_lexical_execution(tmp_path):
+    _, _, suite, pack = fixture_inputs(tmp_path)
+    report = {
+        "query_pack_sha256": digest(canonical(pack)),
+        "repository_commit": suite["repository_commit"],
+        "file_universe_digest": suite["file_universe_digest"],
+        "sample_count": 20,
+        "rank_metrics": {"routes": {}},
+        "per_query": [],
+    }
+    lock = {
+        "execution_profiles": {
+            "quanta": {
+                "profile_id": "quanta-native-v1",
+                "policy": "native",
+                "config": {},
+                "planning_cost_in_latency": False,
+            },
+            "semble": {
+                "profile_id": "semble-lexical-only-v1",
+                "mode": "lexical-only",
+                "alpha": None,
+                "rerank": "not_applicable",
+            },
+        },
+        "quanta_routes": ["lexical"],
+        "semble_route": "semble-hybrid",
+    }
+    native = {
+        "semble_profile": "lexical-only",
+        "rerank_applied": False,
+        "lane_call_counts": {"bm25": 1, "semantic": 0, "encode": 0},
+        "execution_events": [{"lane_entry_counts": {"bm25": 1, "semantic": 0}}],
+    }
+    verdict = {"states": {"PAIR_VALID": "pass"}}
+    paths = [tmp_path / f"legacy-{name}.json" for name in ("report", "lock", "native", "verdict")]
+    for path, value in zip(paths, (report, lock, native, verdict), strict=True):
+        path.write_text(json.dumps(value), encoding="utf-8")
+    with pytest.raises(ValueError, match="route labels do not match"):
         pair_result(*paths, pack, suite, 20)
 
 

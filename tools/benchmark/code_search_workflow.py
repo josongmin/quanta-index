@@ -20,6 +20,9 @@ from registry import load_registry, registry_digest
 from tools.benchmark.retrieval import evaluator, query_plan, run
 from tools.benchmark.retrieval import live_lexical_external as live
 
+QUANTA_LEXICAL_ROUTE = live.lexical.QUANTA_LEXICAL_ROUTE
+SEMBLE_LEXICAL_ROUTE = live.lexical.SEMBLE_LEXICAL_ROUTE
+
 
 def _write(path: Path, value: dict) -> None:
     live._write(path, json.dumps(value, sort_keys=True, indent=2).encode() + b"\n")
@@ -29,14 +32,19 @@ def _read_spec(path: Path) -> dict:
     value = live._json(_read_control_file(path))
     if (
         set(value)
-        != {"schema_version", "pair_spec", "external_spec", "output_root", "timeout_secs"}
+        not in (
+            {"schema_version", "pair_spec", "external_spec", "output_root", "timeout_secs"},
+            {"schema_version", "pair_spec", "external_spec", "output_root", "native_output_root", "timeout_secs"},
+        )
         or type(value["schema_version"]) is not int
         or value["schema_version"] != 1
         or type(value["timeout_secs"]) is not int
         or not 60 <= value["timeout_secs"] <= 86400
     ):
         raise ValueError("code-search workflow requires closed schema v1 and bounded timeout")
-    for key in ("pair_spec", "external_spec", "output_root"):
+    for key in ("pair_spec", "external_spec", "output_root", "native_output_root"):
+        if key not in value:
+            continue
         if (
             not isinstance(value[key], str)
             or not Path(value[key]).is_absolute()
@@ -44,6 +52,39 @@ def _read_spec(path: Path) -> dict:
         ):
             raise ValueError(f"workflow {key} must be canonical absolute")
     return value
+
+
+def _require_pure_lexical_pair(pair: dict) -> None:
+    expected_profiles = {
+        "quanta": query_plan.execution_profile("native"),
+        "semble": {"profile_id": "semble-lexical-only-v1", "mode": "lexical-only",
+                   "alpha": None, "rerank": "not_applicable"},
+    }
+    if (
+        pair["execution_profiles"] != expected_profiles
+        or pair["routes"] != [QUANTA_LEXICAL_ROUTE]
+        or pair["candidate_route"] != QUANTA_LEXICAL_ROUTE
+        or pair["baseline_route"] != SEMBLE_LEXICAL_ROUTE
+        or pair["semble_route"] != SEMBLE_LEXICAL_ROUTE
+        or pair["scope"] != "exploratory"
+        or any(pair["claims"].values())
+        or pair.get("repetitions", 1) != 1
+        or len(pair["strategies"]) != 1
+    ):
+        raise ValueError("live workflow requires one exploratory pure-lexical pair")
+
+
+def _preflight_native_output(native_root: Path, pair: dict) -> None:
+    corpus_release.external(native_root)
+    stage = native_root.parent / f"{native_root.name}.staging"
+    if native_root.exists() or native_root.is_symlink() or stage.exists() or stage.is_symlink():
+        raise ValueError("native output root or staging path must be fresh")
+    run.preflight_daemon_socket_paths(
+        stage,
+        pair["strategies"],
+        repetitions=pair.get("repetitions", 1),
+        paired=True,
+    )
 
 
 def preflight(pair_path: Path, external_path: Path) -> tuple[dict, dict]:
@@ -56,26 +97,7 @@ def preflight(pair_path: Path, external_path: Path) -> tuple[dict, dict]:
     suite, pack = live._json(suite_raw), live._json(pack_raw)
     live.lexical._file_universe(suite, pack)
     live.lexical._tasks(suite, pack)
-    expected_profiles = {
-        "quanta": query_plan.execution_profile("native"),
-        "semble": {
-            "profile_id": "semble-lexical-only-v1",
-            "mode": "lexical-only",
-            "alpha": None,
-            "rerank": "not_applicable",
-        },
-    }
-    if (
-        pair["execution_profiles"] != expected_profiles
-        or pair["routes"] != ["lexical"]
-        or pair["candidate_route"] != "lexical"
-        or pair["baseline_route"] != "semble-hybrid"
-        or pair["scope"] != "exploratory"
-        or any(pair["claims"].values())
-        or pair.get("repetitions", 1) != 1
-        or len(pair["strategies"]) != 1
-    ):
-        raise ValueError("live workflow requires one exploratory pure-lexical pair")
+    _require_pure_lexical_pair(pair)
     release = Path(external["corpus"]["release_path"])
     document = corpus_release.validate(release)
     repository = next(
@@ -188,7 +210,7 @@ def _components(root: Path, pair: dict, external: dict) -> dict:
     )
     strategy = pair["strategies"][0]["name"]
     entries = {
-        "pair_report": f"report-semble-hybrid-vs-lexical-{strategy}.json",
+        "pair_report": f"report-{pair['baseline_route']}-vs-{pair['candidate_route']}-{strategy}.json",
         "pair_lock": "protocol-lock.json",
         "semble_native": "rep-00/semble/native.json",
         "pair_verdict": "verdict.json",
@@ -220,10 +242,15 @@ def capture(repo: Path, spec_path: Path) -> dict:
     if root.exists() or root.is_symlink():
         raise ValueError("workflow output must be fresh; never overwrite or resume partial runs")
     pair, external = preflight(Path(spec["pair_spec"]), Path(spec["external_spec"]))
+    if "native_output_root" in spec:
+        _preflight_native_output(Path(spec["native_output_root"]), pair)
     root.mkdir(parents=True)
     timeout = spec["timeout_secs"]
     _write(root / "workflow-spec.json", spec)
-    native_pair, reservation = _native_pair_root(pair, root)
+    if "native_output_root" in spec:
+        native_pair, reservation = Path(spec["native_output_root"]), None
+    else:
+        native_pair, reservation = _native_pair_root(pair, root)
     pair["output_root"] = str(native_pair)
     pair["run_id"] = root.name
     external["output_root"] = str(root / "native-external")
@@ -271,7 +298,10 @@ def capture(repo: Path, spec_path: Path) -> dict:
             "inputs": {
                 "suite": pair["suite"],
                 "query_pack": pair["query_pack"],
-                "pair_report": str(pair_root / f"report-semble-hybrid-vs-lexical-{strategy}.json"),
+                "pair_report": str(
+                    pair_root
+                    / f"report-{pair['baseline_route']}-vs-{pair['candidate_route']}-{strategy}.json"
+                ),
                 "pair_lock": str(pair_root / "protocol-lock.json"),
                 "semble_native": str(pair_root / "rep-00/semble/native.json"),
                 "pair_verdict": str(pair_root / "verdict.json"),

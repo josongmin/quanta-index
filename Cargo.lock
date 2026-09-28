@@ -4452,6 +4452,7 @@ dependencies = [
  "serde",
  "sha2",
  "tempfile",
+ "zstd",
 ]
 
 [[package]]

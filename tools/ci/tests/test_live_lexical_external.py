@@ -240,6 +240,26 @@ def test_opengrok_full_view_probe_rejects_inventory_change_during_capture(tmp_pa
     ]
 
 
+def test_sourcegraph_request_target_preflight_is_independent_of_corpus_size():
+    manifest = {
+        "repository_commit": "a" * 40,
+        "files": [{"path": f"src/file-{index:05}.rs"} for index in range(10_000)],
+    }
+    config = {"repository": "benchmark/fixture"}
+    tasks = [{"query": "symbolName"}]
+
+    extensions, max_target_bytes = live._preflight_sourcegraph_request_targets(
+        config, tasks, manifest
+    )
+
+    assert extensions == [".rs"]
+    assert max_target_bytes < live.MAX_SOURCEGRAPH_REQUEST_TARGET_BYTES
+    with pytest.raises(ValueError, match="8 KiB preflight limit"):
+        live._preflight_sourcegraph_request_targets(
+            config, [{"query": "x" * live.MAX_SOURCEGRAPH_REQUEST_TARGET_BYTES}], manifest
+        )
+
+
 class SearchHandler(BaseHTTPRequestHandler):
     calls = []
     commit = ""

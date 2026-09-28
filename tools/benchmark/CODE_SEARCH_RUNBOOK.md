@@ -112,7 +112,7 @@ rankings unless a separate qualified speed protocol passes.
 
 Use the [workflow spec example](retrieval/examples/code-search-workflow.json)
 after preparing the pair and external specs below. The workflow refuses unequal
-suite/pack bytes, a different release manifest, hybrid profiles, dirty source
+suite/pack bytes, a different release manifest, non-lexical profiles, dirty source
 and an existing output root. It captures external products first so authentication,
 revision and result-envelope failures are discovered before the SDK pair.
 
@@ -257,11 +257,15 @@ operator-supplied image digests. Put required credentials in external
 `token_file` paths; the collector reads them without writing token bytes into
 the capture. Sourcegraph uses its `token` scheme; OpenGrok uses `Bearer`.
 Sourcegraph's Git origin must contain the selected original commit; a new
-synthetic snapshot commit is refused. Its request includes an exact selected-view
-file filter. cs must be an executable binary. The collector
-retains each raw HTTP response and cs stdout/stderr, checks terminal results,
-and emits exactly one `symbol_only` row per task and product. Failed or partial
-captures stay in `.staging` and do not publish the final output root:
+synthetic snapshot commit is refused. Its request uses a short file-extension
+filter to stay below the request-target limit, then validates and filters the
+full native stream against the selected-view manifest while preserving hit
+order. It records out-of-manifest matches separately. An 8 KiB request-target
+preflight runs before any live product request. cs must be an executable
+binary. The collector retains each raw HTTP response and cs stdout/stderr,
+checks terminal results, and emits exactly one `symbol_only` row per task and
+product. Failed or partial captures stay in `.staging` and do not publish the
+final output root:
 
 ```sh
 uv run --frozen --extra dev python tools/benchmark/benchctl.py code-search external \

@@ -31,16 +31,17 @@ from producer_execution import execute
 ROOT = Path(__file__).resolve().parents[2]
 VIEWS = ("code_only", "developer_search")
 POLICY = {
-    "id": "git-text-views-v1",
+    "id": "git-text-views-v2",
     "max_file_bytes": 1024 * 1024,
     "code_extensions": sorted({".rs", ".py", ".go", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"}),
     "excluded_components": sorted(
-        {"vendor", "third_party", "node_modules", "target", "dist", "generated"}
+        {"vendor", "third_party", "node_modules", "target", "dist", "generated", "build"}
     ),
     "symlinks": "exclude_without_following",
     "submodules": "exclude_without_recursing",
     "git_lfs": "exclude_pointer_without_fetching",
     "encoding": "nonempty_utf8_without_nul_or_exotic_line_breaks",
+    "searchability": "quanta_semantic_admission_at_least_one_unicode_alphanumeric_token",
     "case_collisions": "refuse_nfc_casefold_aliases_including_parent_components",
     "generated_vendor": "exclude_declared_components_no_content_heuristic",
     "path_scope": "complete_repository_not_candidate_benchmark_root",
@@ -305,6 +306,8 @@ def exclusion(row: dict, content: bytes | None) -> str | None:
         return "non_utf8"
     if "\0" in text or any(character in EXOTIC for character in text):
         return "binary_or_exotic_line_break"
+    if not any(character.isalnum() for character in text):
+        return "no_alphanumeric_token"
     return None
 
 

@@ -104,9 +104,21 @@ def _files(value: Any, where: str) -> list[dict[str, str]]:
     return result
 
 
-def query_expression(
-    query: str, repository: str, revision: str, file_paths: list[str] | None = None
-) -> str:
+def file_extensions(paths: list[str]) -> list[str]:
+    """Return a stable extension filter for a nonempty canonical path set."""
+    if not isinstance(paths, list) or not paths:
+        raise CaptureError("file extension filter requires a nonempty path list")
+    for path in paths:
+        _path(path)
+    extensions = sorted({PurePosixPath(path).suffix for path in paths})
+    if any(re.fullmatch(r"\.[A-Za-z0-9]+", extension) is None for extension in extensions):
+        raise CaptureError("manifest paths must have simple file extensions")
+    return extensions
+
+
+def query_expression(query: str, repository: str, revision: str,
+                     file_paths: list[str] | None = None,
+                     file_extensions_filter: list[str] | None = None) -> str:
     """Conservative keyword-term lane, with no caller-provided query syntax."""
     if (
         not isinstance(query, str)
@@ -121,12 +133,25 @@ def query_expression(
     ):
         raise CaptureError("repository must be a canonical slash-delimited name")
     _hex(revision, HEX40, "revision")
+    if file_paths is not None and file_extensions_filter is not None:
+        raise CaptureError("choose exact file paths or a file extension filter")
     repo_regex = "^" + re.escape(repository) + "$"
     file_filter = ""
     if file_paths is not None:
         if not file_paths or file_paths != sorted(set(file_paths)):
             raise CaptureError("search file universe must be sorted and unique")
         expression = "^(?:" + "|".join(re.escape(_path(path)) for path in file_paths) + ")$"
+        file_filter = " file:" + json.dumps(expression, ensure_ascii=False)
+    elif file_extensions_filter is not None:
+        if (
+            not file_extensions_filter
+            or file_extensions_filter != sorted(set(file_extensions_filter))
+            or any(re.fullmatch(r"\.[A-Za-z0-9]+", extension) is None
+                   for extension in file_extensions_filter)
+        ):
+            raise CaptureError("file extensions must be sorted, unique suffixes")
+        suffixes = "|".join(re.escape(extension[1:]) for extension in file_extensions_filter)
+        expression = "^(?:.*\\.(?:" + suffixes + "))$"
         file_filter = " file:" + json.dumps(expression, ensure_ascii=False)
     return f"{query} repo:{repo_regex} rev:{revision}{file_filter} type:file patternType:keyword count:all"
 
@@ -158,9 +183,7 @@ def validate_capture(
     request: dict[str, Any], raw: bytes, manifest: dict[str, Any], universe: dict[str, Any]
 ) -> dict[str, Any]:
     """Bind an offline stream to explicit inputs; emit diagnostic evidence only."""
-    request = _keys(
-        request,
-        {
+    request_keys = {
             "capture_version",
             "api_version",
             "endpoint",
@@ -173,14 +196,17 @@ def validate_capture(
             "http_status",
             "content_type",
             "server_image_digest",
-        },
-        "request",
-    )
-    if (
-        type(request["capture_version"]) is not int
-        or request["capture_version"] != 1
-        or request["api_version"] != "V3"
-    ):
+    }
+    if not isinstance(request, dict):
+        raise CaptureError("request must be an object")
+    capture_version = request.get("capture_version")
+    if capture_version == 1:
+        request = _keys(request, request_keys, "request")
+    elif capture_version == 2:
+        request = _keys(request, request_keys | {"file_filter_extensions"}, "request")
+    else:
+        raise CaptureError("only pinned V3 stream capture envelopes v1 and v2 are supported")
+    if type(capture_version) is not int or request["api_version"] != "V3":
         raise CaptureError("only the pinned V3 stream capture envelope is supported")
     if request["endpoint"] != "/.api/search/stream":
         raise CaptureError("unexpected Sourcegraph endpoint")
@@ -207,9 +233,15 @@ def validate_capture(
     if (
         type(universe["proof_version"]) is not int
         or universe["proof_version"] != 1
-        or universe["method"] not in ("operator_asserted_indexed_universe", "input_manifest_only")
+        or universe["method"] not in (
+            "operator_asserted_indexed_universe",
+            "input_manifest_only",
+            "input_manifest_postfiltered",
+        )
     ):
         raise CaptureError("universe binding has no supported method")
+    if capture_version == 1 and universe["method"] == "input_manifest_postfiltered":
+        raise CaptureError("v1 captures cannot use manifest postfilter scope")
     if (
         universe["repository"] != request["repository"]
         or universe["revision"] != request["revision"]
@@ -219,12 +251,22 @@ def validate_capture(
     if asserted != admitted:
         raise CaptureError("asserted indexed path/SHA universe differs from admitted manifest")
     admitted_by_path = {row["path"]: row["file_sha256"] for row in admitted}
-    expected_query = query_expression(
-        request["query"],
-        request["repository"],
-        request["revision"],
-        [row["path"] for row in admitted] if universe["method"] == "input_manifest_only" else None,
-    )
+    if capture_version == 1:
+        expected_query = query_expression(
+            request["query"], request["repository"], request["revision"],
+            [row["path"] for row in admitted]
+            if universe["method"] == "input_manifest_only" else None,
+        )
+    elif universe["method"] == "input_manifest_postfiltered":
+        expected_extensions = file_extensions([row["path"] for row in admitted])
+        if request["file_filter_extensions"] != expected_extensions:
+            raise CaptureError("file extension filter differs from the admitted manifest")
+        expected_query = query_expression(
+            request["query"], request["repository"], request["revision"],
+            file_extensions_filter=expected_extensions,
+        )
+    else:
+        raise CaptureError("v2 capture requires manifest postfilter scope")
     if request["request_query"] != expected_query:
         raise CaptureError(
             "sent query differs from the pinned keyword expression and file universe"
@@ -239,6 +281,8 @@ def validate_capture(
     reported_match_count = 0
     matches: list[dict[str, Any]] = []
     seen_matches: set[str] = set()
+    native_match_count = 0
+    out_of_manifest_match_count = 0
     for i, (kind, data) in enumerate(events[:-1]):
         if kind == "alert":
             raise CaptureError(f"stream alert at event {i}; results may be partial")
@@ -278,8 +322,12 @@ def validate_capture(
                     or hit.get("commit") != request["revision"]
                 ):
                     raise CaptureError("result repository/revision differs from request")
-                if path not in admitted_by_path:
+                in_manifest = path in admitted_by_path
+                if not in_manifest and capture_version == 1:
                     raise CaptureError(f"result outside admitted universe: {path}")
+                if (not in_manifest and PurePosixPath(path).suffix
+                        not in request["file_filter_extensions"]):
+                    raise CaptureError(f"result outside the declared extension filter: {path}")
                 line_matches = hit.get("lineMatches")
                 if (
                     not isinstance(line_matches, list)
@@ -318,9 +366,14 @@ def validate_capture(
                 if fingerprint in seen_matches:
                     raise CaptureError("duplicate native match row")
                 seen_matches.add(fingerprint)
+                native_match_count += 1
+                if not in_manifest:
+                    out_of_manifest_match_count += 1
+                    continue
                 matches.append(
                     {
                         "rank": len(matches) + 1,
+                        "native_rank": native_match_count,
                         "path": path,
                         "file_sha256": admitted_by_path[path],
                         "raw_match_sha256": fingerprint,
@@ -331,7 +384,7 @@ def validate_capture(
                 raise CaptureError("filters after final progress or malformed filters")
     if not final_progress:
         raise CaptureError("stream lacks final done=true progress")
-    if reported_match_count < len(matches):
+    if reported_match_count < native_match_count:
         raise CaptureError("final match count is smaller than returned content rows")
     files: list[dict[str, Any]] = []
     seen_paths: set[str] = set()
@@ -344,13 +397,14 @@ def validate_capture(
                     "path": hit["path"],
                     "file_sha256": hit["file_sha256"],
                     "first_match_rank": hit["rank"],
+                    "first_native_match_rank": hit["native_rank"],
                 }
             )
     binding_digest = sha256(
         json.dumps(universe, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
     )
     result = {
-        "adapter_version": 1,
+        "adapter_version": capture_version,
         "status": "diagnostic_unqualified",
         "reason": (
             "indexed_universe_is_operator_asserted_and_stream_request_authenticity_is_not_proven"
@@ -359,7 +413,10 @@ def validate_capture(
         ),
         "api_version": "V3",
         "request": request,
-        "rank_semantics": "observed_stream_order_only",
+        "rank_semantics": (
+            "observed_stream_order_postfiltered_to_input_manifest"
+            if capture_version == 2 else "observed_stream_order_only"
+        ),
         "query_sha256": request["query_sha256"],
         "repository": request["repository"],
         "revision": request["revision"],
@@ -372,6 +429,8 @@ def validate_capture(
         "raw_stream_base64": base64.b64encode(raw).decode("ascii"),
         "raw_match_order": matches,
         "file_order": files,
+        "native_match_count": native_match_count,
+        "out_of_manifest_match_count": out_of_manifest_match_count,
         "event_count": len(events),
     }
     if universe["method"] == "operator_asserted_indexed_universe":

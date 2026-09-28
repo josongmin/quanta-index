@@ -95,7 +95,7 @@ The JSON schema is the complete field authority; frequently used options:
 | `semble_python` | required for `pair` | pinned Semble venv interpreter |
 | `semble_lockfile` | required for `pair` | external exact-environment freeze path (frozen into the stage) |
 | `semble_lockfile_sha256` | required for `pair` | SHA-256 of the external freeze; installed distributions must match every pinned line with no extras, including `semble==0.6.0` |
-| `semble_route` | `semble-hybrid` | Semble record route name |
+| `semble_route` | derived from Semble profile | `lexical-only` -> `semble-lexical-only`, `semantic-only` -> `semble-semantic-only`, and `native-default`/`hybrid-no-rerank` -> `semble-hybrid`; explicit mismatches are refused |
 | `semble_cache_root` | `<out>/semble-cache` | Semble + HF caches (outside checkout) |
 | `query_repetitions_per_root`/`query_warmup_passes` | `1`/`1` | one driver-generated, digest-bound randomized schedule consumed by both runners; qualified speed requires warmup >= 1 and at least 1,000 warm observations per route across roots |
 | `semble_model_revision` | observed | pinned HF revision (drift fails) |
@@ -103,7 +103,7 @@ The JSON schema is the complete field authority; frequently used options:
 | `repetitions` | `1` | external reps on fresh state; qualified speed requires at least 5 |
 | `alternate_order` | `true` | alternate system order per rep; qualified speed rejects `false` |
 | `order` | `["quanta","semble"]` | base system order |
-| `baseline_route` | Semble route | report baseline |
+| `baseline_route` | Semble route | Must match `semble_route`; the spec loader refuses a different baseline label |
 | `scope` | `exploratory` | `exploratory` or `qualified` |
 | `admission` | required for `qualified` | v2 W0-B manifest plus frozen development suite, experiment-custody manifest, license receipt, two independent annotation receipts, and adjudication receipt; the verdict revalidates both suites and their source-bound cross-suite leakage boundary |
 | `host_profile` | required for `pair` | path to a generated host-profile JSON; the file is frozen, digest-bound, and matched against both host probes |

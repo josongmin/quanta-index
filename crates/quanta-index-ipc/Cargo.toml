@@ -19,6 +19,7 @@ quanta-index-core = { version = "0.1.0", path = "../quanta-index-core" }
 rustix = { workspace = true, features = ["event", "net", "process"] }
 serde = { workspace = true }
 sha2 = { workspace = true }
+zstd = { workspace = true }
 
 # `getpeereid(3)` for the peer-credential check (QI-BB-014): rustix has no
 # wrapper on the BSDs, nix's is the safe one. Linux uses rustix's

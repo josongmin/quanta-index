@@ -15,6 +15,7 @@
 //! batches all flow through here.
 
 use libfuzzer_sys::fuzz_target;
+use std::io::Cursor;
 
 use quanta_index_contract::{
     CurrentGenerationRequest, DirtyIngestBatch, GenerationStatusRequest, HistoryIngestBatch,
@@ -27,8 +28,13 @@ use quanta_index_contract::{
     SemanticIngestBatch, SemanticQueryRequest, StructuralIngestBatch, StructuralQueryRequest,
     SymbolQueryRequest, TextQueryRequest,
 };
+use quanta_index_ipc::decode_request;
 
 fuzz_target!(|data: &[u8]| {
+    // Exercise the length-prefixed IPC frame reader as well as the contract's
+    // raw CBOR decoders, including its bounded compressed-request path.
+    let _ = decode_request::<SearchPlaneIngestIpcRequestEnvelope, _>(&mut Cursor::new(data));
+
     // Query DTOs (per-variant + envelope).
     let _ = ciborium::de::from_reader::<TextQueryRequest, _>(data);
     let _ = ciborium::de::from_reader::<SymbolQueryRequest, _>(data);
