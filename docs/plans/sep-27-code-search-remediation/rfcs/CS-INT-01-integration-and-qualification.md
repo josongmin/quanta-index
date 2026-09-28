@@ -52,10 +52,43 @@ receipts do not update the implementation state.
 | 4 | MISC-03/04/05 and external owner: execute the selected owner tests, full Rust/Python/daemon rails, adapter-specific large success/failure I/O, real issuer and public SDK/installed daemon mutation/restart/rollback, and supported platform/hosted CI on the final source. | Report each requested scope `VERIFIED`, `FAILED`, `BLOCKED` or `NOT_RUN`; focused local fixtures cannot close external, installed or hosted scopes. |
 | 5 | MISC-06/07: run qualified quality, equal-work latency/resource and incremental/recovery comparisons only with admitted inputs, product index scope and quiet-host controls. | Publish denominators, independent units, intervals, costs and exclusions; decide defaults against the frozen thresholds. Otherwise retain a diagnostic result with no win/speed claim. |
 
-BENCH input/oracle preparation may proceed while ENG-04/02 are implemented, but
-captures must use the final selected source and one serial integration boundary.
-Run expensive full-suite and quiet-host measurement rails after affected code and
-normative contracts settle; rerun only evidence whose inputs changed.
+## Parallel execution lanes
+
+The table above is the dependency order, not a requirement to serialize code
+edits. Start from one recorded base and use separate checkouts for these disjoint
+owners. Account for the existing dirty documentation before branch creation;
+do not copy or overwrite another owner's working-tree edits.
+
+| Lane | Exclusive edit ownership | Parallel deliverable | Handoff / dependency |
+| --- | --- | --- | --- |
+| R — regex | `quanta-index-lq-regex`; lexical `searcher/*`, `query_admission.rs` and `regex.rs`; structural matcher/universe and regex lowering call sites. The integrator alone changes `Cargo.lock` or shared request-budget contracts if the feasibility result requires it. | Prove allocator API feasibility, then implement one request-lifetime physical admission owner and typed refusal for every selected compile/search route. Run differential truth/range, cancellation/drop and focused SDK fixtures. | Supply the selected dependency/API change and exact affected tests to integration. Do not claim a hard heap ceiling if any parser/compiler/cache allocation bypasses pre-admission. |
+| C — coverage | Lexical `adapter_ingest`, `adapter_open`, `sealed_generation/*`, search-plane `ingest_dispatcher/search_corpus` and their owning tests. No searcher/regex edits. | Instrument both preflights, build, seal and open; measure growing deltas, then implement a pinned authenticated base handle only if it preserves pre-intent and lock-held refusal. Verify tamper, lineage, retry and old readers. | Supply phase counters and bounded physical claim. Keep full verification if safe reuse cannot be established; cost optimization cannot weaken identity checks. |
+| G — gold and corpus | `corpus_release.py`, `corpus_binding.py`, `retrieval/corpus_set.py`, oracle/recipe/label fixtures and their tests. No native capture, verdict or shared registry edits. | Produce independent immutable source/gold releases, query-family/repository splits and a sealed holdout with explicit unsupported/unjudged strata. | Give the release/pack identity and declared semantics to lane V. Generated product results cannot become gold; absent reviewed labels block qualified quality only. |
+| V — validation and integration | One owner for `code_search_workflow.py`, `live_lexical_external.py`, retrieval evaluator/verdict, native capture adapters, IO-5 harness, shared schemas/registry/`Justfile`/`benchctl.py`/`evidence_bridge.py` and plan documents. | Close admitted native-entrypoint negative controls, add a fail-closed matrix cell inventory and a separate predeclared product-decision gate; prepare large-output/metadata adapter tests and real-product readiness checks. | Synthetic controls can run before G completes. Final capture/scoring waits for G's admitted release and the merged R/C source; no duplicate parser or second run-store authority. |
+
+Wave 0 is a short serial baseline: inventory owned dirty paths, freeze the
+cross-lane interface and required claim matrix, and check availability of
+independent labels, native product/index access, installed producer/daemon and
+supported Linux/hosted runners. Missing access is a scoped `BLOCKED` result,
+not an invented passing fixture. Lanes R/C/G/V can then edit and run narrow
+owner tests independently. Do not run competing heavy Cargo builds or any
+timing qualification on the shared host.
+
+Integration is serial: reconcile each lane against the latest selected source,
+merge shared contracts once, then run affected owner tests and the selected
+full Rust/Python/daemon gates. After that, exercise the actual issuer, public
+SDK, installed process, restart/rollback, adapter I/O and supported platform
+paths. Only the resulting frozen source, admitted G inputs and verified native
+index scopes may enter quiet-host quality, latency, resource and incremental
+measurements. Reuse compatible captures; rerun evidence only when its bound
+source, inputs or configuration changed.
+
+Closure is a per-claim matrix, not a single green label: implementation,
+owner-local tests, installed producer/daemon, native five-product matrix,
+qualified quality/speed, hosted CI and Linux each receive their own terminal
+status and exclusion. A missing external product, reviewed label, host or
+platform cannot be papered over by a diagnostic run; it blocks only the
+dependent claim and leaves completed local code independently reviewable.
 
 ## Verification boundary
 

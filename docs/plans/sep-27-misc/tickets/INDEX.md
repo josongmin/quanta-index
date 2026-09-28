@@ -29,7 +29,8 @@ historical proof cleanup; do not recreate per-run repository evidence files.
 
 ## Execution order and shared boundary
 
-Use the source-first [CS-INT-01 execution plan](../../sep-27-code-search-remediation/rfcs/CS-INT-01-integration-and-qualification.md#current-source-audit-and-decision-order):
+Use the source-first [CS-INT-01 execution plan](../../sep-27-code-search-remediation/rfcs/CS-INT-01-integration-and-qualification.md#current-source-audit-and-decision-order)
+and its [disjoint parallel lanes](../../sep-27-code-search-remediation/rfcs/CS-INT-01-integration-and-qualification.md#parallel-execution-lanes):
 regex allocation feasibility/admission and measured coverage cost → one serial
 combined-source integration with IO-5/actual-producer acceptance → admitted
 MISC-06/07 measurements. Independent benchmark inputs can be prepared in
