@@ -132,6 +132,9 @@ impl StructuralProducerPort for RecordingStructuralProducer {
                 StructuralError::InvalidRequest(message) => {
                     StructuralError::InvalidRequest(message.clone())
                 }
+                StructuralError::RegexPlanLimitExceeded(message) => {
+                    StructuralError::RegexPlanLimitExceeded(message.clone())
+                }
                 StructuralError::ProducerExecution(message) => {
                     StructuralError::ProducerExecution(message.clone())
                 }

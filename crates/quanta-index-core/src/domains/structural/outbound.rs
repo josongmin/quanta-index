@@ -57,6 +57,9 @@ pub enum StructuralError {
     HoleKindUnsupported(String),
     #[error("structural: invalid request: {0}")]
     InvalidRequest(String),
+    /// A structural regex filter exceeded the shared regex executor's resource budget.
+    #[error("structural: regex plan limit exceeded: {0}")]
+    RegexPlanLimitExceeded(String),
     #[error("structural: producer execution failed: {0}")]
     ProducerExecution(String),
     /// The request pinned a structural authority epoch the producer no
@@ -90,6 +93,7 @@ impl StructuralError {
                 SearchPlaneErrorCodeV2::Lexical(LexicalErrorCode::StrHoleKindUnsupported)
             }
             Self::InvalidRequest(_) => SearchPlaneErrorCodeV2::StrInvalidRequest,
+            Self::RegexPlanLimitExceeded(_) => SearchPlaneErrorCodeV2::LexRegexPlanLimitExceeded,
             Self::ProducerExecution(_) => SearchPlaneErrorCodeV2::StrProducerExecutionFailed,
             Self::AuxEpochExpired(_) => crate::domains::auxiliary::AUX_EPOCH_EXPIRED_CODE,
             Self::AuxEpochUnknown(_) => crate::domains::auxiliary::AUX_EPOCH_UNKNOWN_CODE,

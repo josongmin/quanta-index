@@ -68,19 +68,17 @@ fn compile_file_filters(
         .collect()
 }
 
-fn repo_matches_structural_filters(
-    pin: &GenerationPin,
+fn compile_repo_filters(
     filters: &[StructuralExecutableFilter],
-) -> Result<bool, CoreError> {
-    for filter in filters {
-        if let StructuralExecutableFilter::RepoRegexNoRev { pattern } = filter {
-            let executor = compile_structural_filter_regex("repo", pattern)?;
-            if !executor.verify(pin.repo_id.as_str().as_bytes()) {
-                return Ok(false);
-            }
-        }
-    }
-    Ok(true)
+) -> Result<Vec<RegexExecutor>, CoreError> {
+    filters
+        .iter()
+        .filter_map(|filter| match filter {
+            StructuralExecutableFilter::RepoRegexNoRev { pattern } => Some(pattern),
+            StructuralExecutableFilter::FileRegex { .. } => None,
+        })
+        .map(|pattern| compile_structural_filter_regex("repo", pattern))
+        .collect()
 }
 
 fn chunk_matches_structural_filters(chunk: &ChunkRecord, filters: &[CompiledFileFilter]) -> bool {
@@ -114,12 +112,17 @@ pub(super) fn build_pinned_structural_universe(
     requested_lang: Option<&str>,
     filters: &[StructuralExecutableFilter],
 ) -> Result<StructuralCandidateBuckets, CoreError> {
-    if !repo_matches_structural_filters(pin, filters)? {
+    // Validate all filters before any repo mismatch or empty candidate set can
+    // short circuit and turn an invalid request into a successful empty result.
+    let repo_filters = compile_repo_filters(filters)?;
+    let file_filters = compile_file_filters(filters)?;
+    if !repo_filters
+        .iter()
+        .all(|executor| executor.verify(pin.repo_id.as_str().as_bytes()))
+    {
         return Ok(StructuralCandidateBuckets::new());
     }
-    // Compile each file filter once for this universe; every eligible chunk
-    // verifies against the same executor and its byte-match semantics.
-    let file_filters = compile_file_filters(filters)?;
+    // Every eligible chunk verifies against the same executor and its byte-match semantics.
     let mut buckets = StructuralCandidateBuckets::new();
     for (chunk_id, chunk) in structural_state.chunks() {
         if let Some(lang) = requested_lang
@@ -149,10 +152,13 @@ pub(super) fn build_pinned_structural_universe(
 
 #[cfg(test)]
 mod tests {
-    use quanta_index_contract::SearchPlaneErrorCodeV2;
-    use quanta_index_core::CoreError;
+    use crate::readiness::StructuralAuthorityState;
+    use quanta_index_contract::{
+        GenerationPin, LqFileScope, ManifestGeneration, RepoId, RevisionId, SearchPlaneErrorCodeV2,
+    };
+    use quanta_index_core::{CoreError, domains::structural::StructuralExecutableFilter};
 
-    use super::compile_structural_filter_regex;
+    use super::{build_pinned_structural_universe, compile_structural_filter_regex};
 
     #[test]
     fn structural_filter_regex_preserves_resource_vs_syntax_errors() {
@@ -173,6 +179,37 @@ mod tests {
                     code: SearchPlaneErrorCodeV2::StrInvalidRequest,
                     ..
                 })
+            ));
+        }
+    }
+
+    #[test]
+    fn invalid_file_filter_is_rejected_even_when_repo_misses_empty_universe() {
+        let pin = GenerationPin::new(
+            RepoId::new("repo".to_owned()).expect("static repo ID"),
+            RevisionId::new("rev".to_owned()).expect("static revision ID"),
+            ManifestGeneration::new(1),
+        );
+        let state = StructuralAuthorityState::default();
+        for (pattern, expected) in [
+            ("[".to_owned(), SearchPlaneErrorCodeV2::StrInvalidRequest),
+            (
+                "x".repeat(65_537),
+                SearchPlaneErrorCodeV2::LexRegexPlanLimitExceeded,
+            ),
+        ] {
+            let filters = [
+                StructuralExecutableFilter::RepoRegexNoRev {
+                    pattern: "^another-repo$".to_owned(),
+                },
+                StructuralExecutableFilter::FileRegex {
+                    pattern,
+                    scope: LqFileScope::PathOnly,
+                },
+            ];
+            assert!(matches!(
+                build_pinned_structural_universe(&pin, &state, None, &filters),
+                Err(CoreError::Typed { code, .. }) if code == expected
             ));
         }
     }
