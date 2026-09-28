@@ -756,6 +756,7 @@ def validate(repo: Path, root: Path, registry: dict) -> dict:
         if document["source"] != source_identity(repo, "benchmark-retrieval"):
             raise EvidenceError("pair capture source differs from the current owner")
         store = RunStore(root)
+        pair_identity = None
         for row in document["runs"]:
             evidence = store.load(row["run_id"])
             if not evidence["run_id"].startswith(document["capture_id"] + "-") or evidence["build"][
@@ -765,4 +766,18 @@ def validate(repo: Path, root: Path, registry: dict) -> dict:
             expected = {FAMILY: _replay_run(store, evidence, workspace)}
             if document["expected_cases"] != expected:
                 raise EvidenceError("pair complete-profile case inventory differs from native rows")
+            # Each case is replayed independently above. The capture is one
+            # native execution, so its cases must also share one exact input,
+            # executable/command identity and original route specification.
+            raw = store.run_dir(evidence["run_id"]) / "raw"
+            identity = (
+                _read_regular_file(raw / "original-spec.json"),
+                evidence["inputs"],
+                evidence["build"],
+                evidence["command"],
+            )
+            if pair_identity is None:
+                pair_identity = identity
+            elif identity != pair_identity:
+                raise EvidenceError("pair capture mixes native inputs or spec across runs")
         return document

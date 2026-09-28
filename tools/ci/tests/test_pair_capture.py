@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import zipfile
+from contextlib import nullcontext
 from pathlib import Path
 
 import pytest
@@ -571,6 +572,71 @@ def test_pair_registration_drift_refuses(changes):
     registry["families"][bridge.FAMILY].update(changes)
     with pytest.raises(ValueError, match="registration differs"):
         bridge.require_registration(registry)
+
+
+@pytest.mark.parametrize("changed_role", [None, "inputs", "spec", "build", "command"])
+def test_pair_validation_binds_one_spec_and_input_inventory(tmp_path, monkeypatch, changed_role):
+    import benchctl
+
+    capture_id = "pair-capture"
+    run_ids = [f"{capture_id}-case-a", f"{capture_id}-case-b"]
+    source = {"revision": "a" * 40, "dirty": False}
+    document = {
+        "capture_id": capture_id,
+        "source": source,
+        "runs": [{"run_id": run_id} for run_id in run_ids],
+        "expected_cases": {bridge.FAMILY: ["case-a", "case-b"]},
+    }
+    evidence = {
+        run_id: {
+            "run_id": run_id,
+            "build": {"lockfile_digest": bridge.digest_bytes(b"lock")},
+            "inputs": [{"id": "suite", "digest": "same"}],
+            "command": {"argv": ["pair"]},
+        }
+        for run_id in run_ids
+    }
+    if changed_role == "inputs":
+        evidence[run_ids[1]]["inputs"] = [{"id": "suite", "digest": "different"}]
+    elif changed_role == "build":
+        evidence[run_ids[1]]["build"]["profile"] = "different"
+    elif changed_role == "command":
+        evidence[run_ids[1]]["command"]["argv"] = ["different"]
+
+    class Store:
+        def __init__(self, _root):
+            pass
+
+        def load(self, run_id):
+            return evidence[run_id]
+
+        def run_dir(self, run_id):
+            return tmp_path / "capture" / "runs" / run_id
+
+    def read(path):
+        if path.name == "uv.lock":
+            return b"lock"
+        assert path.name == "original-spec.json"
+        if changed_role == "spec" and run_ids[1] in path.parts:
+            return b"different spec"
+        return b"same spec"
+
+    monkeypatch.setattr(benchctl, "require_clean_worktree", lambda *_: None)
+    monkeypatch.setattr(bridge, "require_registration", lambda *_: None)
+    monkeypatch.setattr(bridge, "registry_digest", lambda *_: "registry")
+    monkeypatch.setattr(bridge, "custody", lambda *_: nullcontext())
+    monkeypatch.setattr(bridge, "_ReplayWorkspace", nullcontext)
+    monkeypatch.setattr(bridge, "load_capture", lambda *_, **__: document)
+    monkeypatch.setattr(bridge, "source_identity", lambda *_: source)
+    monkeypatch.setattr(bridge, "RunStore", Store)
+    monkeypatch.setattr(bridge, "_read_regular_file", read)
+    monkeypatch.setattr(bridge, "_replay_run", lambda *_: ["case-a", "case-b"])
+
+    if changed_role is None:
+        assert bridge.validate(tmp_path, tmp_path / "capture", {}) == document
+    else:
+        with pytest.raises(bridge.EvidenceError, match="mixes native inputs or spec"):
+            bridge.validate(tmp_path, tmp_path / "capture", {})
 
 
 def test_capture_complete_profile_and_replay_with_original_corpus_changed(tmp_path, monkeypatch):
