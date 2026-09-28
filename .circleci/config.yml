@@ -30,12 +30,12 @@ jobs:
             fi
             . "$HOME/.cargo/env"
             rustup toolchain install 1.92.0 --profile minimal --component clippy --component rustfmt
-            curl --proto '=https' --tlsv1.2 -sSf https://get.nexte.st/0.9.104/linux |
+              curl --proto '=https' --tlsv1.2 -LsSf https://get.nexte.st/0.9.104/linux |
               tar zxf - -C "$HOME/.cargo/bin"
             curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh |
               bash -s -- --tag 1.58.0 --to "$HOME/.cargo/bin"
             cargo install cargo-deny --version 0.19.7 --locked
-            curl --proto '=https' --tlsv1.2 -sSf https://astral.sh/uv/0.9.11/install.sh | sh
+            curl --proto '=https' --tlsv1.2 -LsSf https://astral.sh/uv/0.9.11/install.sh | sh
             printf 'export PATH="%s/.cargo/bin:%s/.local/bin:$PATH"\n' "$HOME" "$HOME" >> "$BASH_ENV"
       - run:
           name: Verify tool versions
@@ -138,9 +138,9 @@ jobs:
             rustup toolchain install 1.92.0 --profile minimal
             rustup toolchain install nightly --profile minimal
             cargo +nightly install cargo-fuzz --locked
-            curl --proto '=https' --tlsv1.2 -sSf https://get.nexte.st/0.9.104/linux |
+              curl --proto '=https' --tlsv1.2 -LsSf https://get.nexte.st/0.9.104/linux |
               tar zxf - -C "$HOME/.cargo/bin"
-            curl --proto '=https' --tlsv1.2 -sSf https://astral.sh/uv/0.9.11/install.sh | sh
+            curl --proto '=https' --tlsv1.2 -LsSf https://astral.sh/uv/0.9.11/install.sh | sh
             printf 'export PATH="%s/.cargo/bin:%s/.local/bin:$PATH"\n' "$HOME" "$HOME" >> "$BASH_ENV"
       - run:
           name: Verify checked-out source

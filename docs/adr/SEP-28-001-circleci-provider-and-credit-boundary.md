@@ -37,13 +37,17 @@ and pipeline definition `38e6fc99-c983-4c03-bb02-da8d53bad4ae`, with
 `1247685100`. `.circleci/info.yml` binds this checkout to the native project
 slug for subsequent CLI commands.
 
-Two enabled GitHub App triggers select default-branch pushes and pushes to
-branches with an open PR; there is no schedule or all-branches push trigger.
+Two enabled GitHub App triggers select default-branch pushes and PR open,
+reopen, or synchronize events. The latter uses an explicit PR-only rule:
+CircleCI's `only-build-prs` preset also includes default-branch pushes and
+caused duplicate runs on the first `main` push. There is no schedule or
+all-branches push trigger.
 The project enables redundant-workflow auto-cancel and disables secret
 environment variables for fork PR jobs. Registration and repository access
-were verified through the CLI, but the project had zero hosted runs at
-registration. Verify a run on the exact commit and its emitted test-authority
-artifact before calling hosted CI active. A merge queue or scheduled
+were verified through the CLI. The first hosted run checked out the intended
+commit but failed during tool installation because the Nextest download
+redirect was not followed. Verify a run on the exact commit and its emitted
+test-authority artifact before calling hosted CI active. A merge queue or scheduled
 correctness claim additionally requires its own observed trigger and run.
 
 The former GitHub-only proof bundle dispatch, P00 hosted manifest, sanitizer,
