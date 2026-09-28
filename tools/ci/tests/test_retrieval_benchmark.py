@@ -1368,6 +1368,121 @@ def test_current_freeze_pack_is_blind(tmp_path):
     assert all(set(t) == {"task_id", "query", "query_sha256"} for t in pack["tasks"])
 
 
+def test_suite_intent_and_review_claims_remain_blind_and_require_review_evidence(tmp_path):
+    repo, suite, run, suite_path, runner_path, _ = fixture_v3(tmp_path)
+    _, original_pack, _ = ev.validate_suite(repo, suite)
+    suite["diagnostic_policy"] = ev.OBSERVED_PREFIX_DIAGNOSTIC_POLICY
+    task = suite["tasks"][0]
+    task["query_intent"] = "bare_symbol"
+    task["label_review"] = {
+        "assessment": "reviewed_ambiguous",
+        "reviewer_id": "fixture-reviewer",
+        "evidence_sha256": "a" * 64,
+    }
+    jsonschema.validate(
+        suite, json.loads((Path(ev.__file__).with_name("suite.schema.json")).read_text())
+    )
+    _, pack, _ = ev.validate_suite(repo, suite)
+    assert pack["suite_commitment_sha256"] != original_pack["suite_commitment_sha256"]
+    assert ev.digest(ev.canonical(pack)) != run["query_pack_sha256"]
+    assert "query_intent" not in json.dumps(pack)
+    assert "label_review" not in json.dumps(pack)
+    run["query_pack_sha256"] = ev.digest(ev.canonical(pack))
+    report = ev.evaluate(*record_v3(repo, suite, run, suite_path, runner_path), "lexical", "hybrid")
+    row = next(
+        row for row in report["per_query"] if row["task_id"] == "T1" and row["route"] == "lexical"
+    )
+    assert row["query_intent_claim"] == "bare_symbol"
+    assert row["label_review_claim"] == task["label_review"]
+    assert row["observed_prefix"]["first_gold_file_rank"] == 1
+    assert row["observed_prefix"]["first_gold_returned_context_span_rank"] == 2
+    assert row["observed_prefix"]["first_gold_indexed_span_rank"] is None
+    for bad in (
+        {"assessment": "reviewed_ambiguous"},
+        {"assessment": "unreviewed", "reviewer_id": "fixture-reviewer"},
+    ):
+        task["label_review"] = bad
+        with pytest.raises((ev.EvidenceError, jsonschema.ValidationError)):
+            jsonschema.validate(
+                suite, json.loads((Path(ev.__file__).with_name("suite.schema.json")).read_text())
+            )
+            ev.validate_suite(repo, suite)
+
+
+def test_unknown_diagnostic_policy_rejected_and_legacy_report_shape_preserved(tmp_path):
+    repo, suite, run, suite_path, runner_path, _ = fixture_v3(tmp_path)
+    schema = json.loads((Path(ev.__file__).with_name("suite.schema.json")).read_text())
+    report = ev.evaluate(*record_v3(repo, suite, run, suite_path, runner_path), "lexical", "hybrid")
+    assert all("observed_prefix" not in row for row in report["per_query"])
+    assert all("query_intent_claim" not in row for row in report["per_query"])
+    suite["diagnostic_policy"] = "unknown"
+    with pytest.raises(ev.EvidenceError, match="unsupported suite diagnostic_policy"):
+        ev.validate_suite(repo, suite)
+    suite.pop("diagnostic_policy")
+    for key, value in (
+        ("query_intent", "bare_symbol"),
+        ("label_review", {"assessment": "unreviewed"}),
+    ):
+        suite["tasks"][0][key] = value
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(suite, schema)
+        with pytest.raises(ev.EvidenceError, match="task annotations require"):
+            ev.validate_suite(repo, suite)
+        suite["tasks"][0].pop(key)
+    suite["diagnostic_policy"] = ev.OBSERVED_PREFIX_DIAGNOSTIC_POLICY
+    suite["comparison_contract"]["top_k"] = 5
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(suite, schema)
+    with pytest.raises(ev.EvidenceError, match="require top_k >= 10"):
+        ev.validate_suite(repo, suite)
+    suite["comparison_contract"]["top_k"] = 10
+    jsonschema.validate(suite, schema)
+    ev.validate_suite(repo, suite)
+
+
+def test_recorded_prefix_does_not_infer_gold_rank_past_top_k():
+    gold = [{"path": "gold.go", "start_byte": 10, "end_byte": 20}]
+    candidates = [
+        {
+            "path": "gold.go",
+            "start_byte": 0,
+            "end_byte": 10,
+            "rank": 1,
+            "span_accounting": {"indexed_start_byte": 0, "indexed_end_byte": 10},
+        },
+        {
+            "path": "gold.go",
+            "start_byte": 0,
+            "end_byte": 30,
+            "rank": 2,
+            "span_accounting": {"indexed_start_byte": 0, "indexed_end_byte": 10},
+        },
+        {
+            "path": "other.go",
+            "start_byte": 0,
+            "end_byte": 30,
+            "rank": 3,
+            "span_accounting": {"indexed_start_byte": 0, "indexed_end_byte": 30},
+        },
+    ]
+    observed = ev.observed_prefix_diagnostics(
+        candidates, gold, status="capped", declared_top_k=10, indexed_span_authority=True
+    )
+    assert observed["observed_depth"] == 3
+    assert observed["result_status"] == "capped"
+    assert observed["unique_files"] == 2
+    assert observed["duplicate_file_candidates"] == 1
+    assert observed["first_gold_file_rank"] == 1
+    assert observed["first_gold_returned_context_span_rank"] == 2
+    assert observed["first_gold_indexed_span_rank"] is None
+    assert observed["indexed_span_authority"] == "published_unit_v1"
+    unavailable = ev.observed_prefix_diagnostics(
+        candidates, gold, status="success", declared_top_k=10, indexed_span_authority=False
+    )
+    assert unavailable["first_gold_indexed_span_rank"] is None
+    assert unavailable["indexed_span_authority"] == "unavailable"
+
+
 def test_current_hand_calculated_rank_metrics(tmp_path):
     repo, suite, run, suite_path, runner_path, _ = fixture_v3(tmp_path)
     loaded = record_v3(repo, suite, run, suite_path, runner_path)

@@ -87,6 +87,9 @@ CHUNK_STRATEGIES = (
     "brace_heuristic",
     "semble_native",
 )
+QUERY_INTENTS = ("bare_symbol", "semantic_intent")
+LABEL_REVIEW_ASSESSMENTS = ("unreviewed", "reviewed_unambiguous", "reviewed_ambiguous")
+OBSERVED_PREFIX_DIAGNOSTIC_POLICY = "observed_prefix_v1"
 CAPTURE_SYSTEMS = ("quanta", "semble")
 NOT_APPLICABLE = "not_applicable"
 MIN_CI_SAMPLE = 20
@@ -643,14 +646,22 @@ def validate_suite(
     suite = object_keys_optional(
         payload,
         required,
-        ["leakage_allowlist"],
+        ["leakage_allowlist", "diagnostic_policy"],
         "suite",
     )
     require(
         type(suite["schema_version"]) is int and suite["schema_version"] == SCHEMA_VERSION,
         "unsupported suite schema",
     )
-    validate_comparison_contract(suite["comparison_contract"], "suite.comparison_contract")
+    contract = validate_comparison_contract(
+        suite["comparison_contract"], "suite.comparison_contract"
+    )
+    if "diagnostic_policy" in suite:
+        require(
+            suite["diagnostic_policy"] == OBSERVED_PREFIX_DIAGNOSTIC_POLICY,
+            "unsupported suite diagnostic_policy",
+        )
+        require(contract["top_k"] >= MRR_K, "observed-prefix diagnostics require top_k >= 10")
     string(suite["suite_id"], "suite_id")
     commit = suite["repository_commit"]
     require(
@@ -694,15 +705,45 @@ def validate_suite(
         task = object_keys_optional(
             raw,
             task_required,
-            ["category"],
+            ["category", "query_intent", "label_review"],
             "task",
         )
         task_id = string(task["task_id"], "task_id")
         require(task_id not in seen_ids, "duplicate task_id: " + task_id)
         seen_ids.add(task_id)
+        require(
+            not ("query_intent" in task or "label_review" in task)
+            or suite.get("diagnostic_policy") == OBSERVED_PREFIX_DIAGNOSTIC_POLICY,
+            "task annotations require observed-prefix diagnostic_policy: " + task_id,
+        )
         require(task["split"] in ("train", "eval"), "invalid task split: " + task_id)
         if "category" in task:
             string(task["category"], "category for " + task_id)
+        if "query_intent" in task:
+            require(
+                task["query_intent"] in QUERY_INTENTS,
+                "invalid query_intent for " + task_id,
+            )
+        if "label_review" in task:
+            review = object_keys_optional(
+                task["label_review"],
+                ["assessment"],
+                ["reviewer_id", "evidence_sha256"],
+                "label_review for " + task_id,
+            )
+            require(
+                review["assessment"] in LABEL_REVIEW_ASSESSMENTS,
+                "invalid label_review assessment for " + task_id,
+            )
+            reviewed = review["assessment"] != "unreviewed"
+            require(
+                ("reviewer_id" in review) == reviewed and ("evidence_sha256" in review) == reviewed,
+                "reviewed label requires reviewer_id and evidence_sha256; unreviewed label forbids them: "
+                + task_id,
+            )
+            if reviewed:
+                string(review["reviewer_id"], "label_review.reviewer_id for " + task_id)
+                sha(review["evidence_sha256"], "label_review.evidence_sha256 for " + task_id)
         query = string(task["query"], "query")
         query_hash = sha(task["query_sha256"], "query_sha256")
         require(digest(query.encode("utf-8")) == query_hash, "query hash mismatch: " + task_id)
@@ -1185,6 +1226,50 @@ def collapse_by_file(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
             seen.add(candidate["path"])
             collapsed.append(candidate)
     return collapsed
+
+
+def observed_prefix_diagnostics(
+    candidates: list[dict[str, Any]],
+    labels: list[dict[str, Any]],
+    *,
+    status: str,
+    declared_top_k: int,
+    indexed_span_authority: bool,
+) -> dict[str, Any]:
+    """Describe only ranks present in the recorded top-10 prefix.
+
+    A null rank means no matching candidate was observed here. It never
+    asserts the candidate's rank beyond this prefix or in a larger search.
+    """
+    top = candidates[:MRR_K] if status in SCORED_STATUSES else []
+    gold_files = {label["path"] for label in labels}
+    first_file = next((item["rank"] for item in top if item["path"] in gold_files), None)
+    first_context = next(
+        (item["rank"] for item in top if any(covers(item, label) for label in labels)), None
+    )
+    first_indexed = (
+        next(
+            (item["rank"] for item in top if any(indexed_covers(item, label) for label in labels)),
+            None,
+        )
+        if indexed_span_authority
+        else None
+    )
+    unique_files = len({item["path"] for item in top})
+    return {
+        "scope": "recorded_top_10_prefix",
+        "declared_top_k": declared_top_k,
+        "observed_depth": len(top),
+        "result_status": status,
+        "unique_files": unique_files,
+        "duplicate_file_candidates": len(top) - unique_files,
+        "first_gold_file_rank": first_file,
+        "first_gold_returned_context_span_rank": first_context,
+        "first_gold_indexed_span_rank": first_indexed,
+        "indexed_span_authority": (
+            "published_unit_v1" if indexed_span_authority else "unavailable"
+        ),
+    }
 
 
 def recall_at_k(candidates: list[dict[str, Any]], labels: list[dict[str, Any]], k: int) -> float:
@@ -1717,6 +1802,7 @@ def evaluate(
     )
     primary_metric = "ndcg_at_10" if graded else "recall_at_10"
     declared_top_k = int(suite["comparison_contract"]["top_k"])
+    prefix_diagnostics = suite.get("diagnostic_policy") == OBSERVED_PREFIX_DIAGNOSTIC_POLICY
     ordered = sorted(suite["file_universe"], key=lambda e: str(e["path"]))
     file_universe_digest = digest(canonical(ordered))
     output: dict[str, Any] = {
@@ -2050,6 +2136,22 @@ def evaluate(
                     "error_code": _result_error_code(result),
                     "query_latency_ms": _result_latency(result),
                 }
+            if prefix_diagnostics:
+                capture_id = run["route_provenance"][route]["capture_id"]
+                indexed_authority = (
+                    run.get("span_accounting_version") == 1
+                    and run["captures"][capture_id]["system"] == "quanta"
+                    and status in SCORED_STATUSES
+                )
+                row["query_intent_claim"] = task.get("query_intent", "not_declared")
+                row["label_review_claim"] = task.get("label_review", {"assessment": "not_declared"})
+                row["observed_prefix"] = observed_prefix_diagnostics(
+                    candidates,
+                    labels,
+                    status=status,
+                    declared_top_k=declared_top_k,
+                    indexed_span_authority=indexed_authority,
+                )
             rows.append(row)
     output["per_query"] = rows
     return output
