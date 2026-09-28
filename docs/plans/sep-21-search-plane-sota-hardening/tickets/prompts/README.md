@@ -1,23 +1,29 @@
-# SEP-21 current execution entrypoints
+# SEP-21 execution entrypoints
 
-The former P00-P09 copy/paste prompts and common lane contract are in Git
-history. They described the initial implementation wave and are not current
-execution instructions. Use the live code, `tools/ci/proof-authority.toml`,
-`Justfile`, and [remaining status](../CURRENT-RESIDUAL-2026-09-26.md) to determine
-the required gate. Current source identity and execution come from the selected
-run; historical execution bodies are recoverable through the plan archive.
+Current proof IDs, command bindings, dependencies, host class and staging state
+are owned by `tools/ci/proof-authority.toml` and its independent checker. Select
+live targets from `Justfile` and `tools/ci/test-authority.toml`; a command name,
+old prompt or historical handoff is not a passing receipt.
 
-- [Residual work](../FINAL-RESIDUAL-EXECUTION-PLAN.md): remaining evidence
-  and source boundaries.
-- [P10 state custody](P10-state-migration.md): current-format operations and
-  typed legacy refusal.
-- [P11 exact pair](P11-cross-repo-cutover.md): producer protocol and four
-  separate release/operational receipts.
-- [P12A infrastructure](P12A-final-proof-infrastructure.md): proof tooling
-  and exact-source owner receipt.
-- [P12 final qualification](P12-final-qualification.md): final-source
-  dependency graph and aggregate receipt.
+| Stage | Entry command | Remaining acceptance |
+| --- | --- | --- |
+| P10 owner | `just proof-p10-state-migration-owner` | [S21-11](../S21-11-state-migration-backup-and-restore.md): disposable-root custody and exact-source owner result; Linux release/authorized target is separate |
+| P11 protocol | `just rust-verify-hellgate-cross-repo <semantica-root>` | [S21-12](../S21-12-cross-repo-terminal-receipt-cutover.md): frozen source pair, dependency locks, attested daemon, positive/negative V2 and replay |
+| P12A infrastructure | `QUANTA_PROOF_RAW_DIR=<external-raw-dir> just proof-p12a-proof-infrastructure` | [S21-13](../S21-13-release-evidence-and-sota-qualification.md): raw Python inventory/JUnit and source-bound P12A manifest; independent of P11 issuance |
+| P12 final | `SEMANTICA_CHECKOUT=<frozen-root> just proof-authority-final-qualification` | Complete final-source graph and separate code/deploy/activate/rollback verdicts |
 
-An implementation ticket, prompt, owner test, or historical handoff cannot
-promote a staged proof. Record code completion, owner tests, exact-pair
-release, deployment, activation, and rollback separately.
+The P10 release node and P11 protocol/deployment/activation/rollback nodes remain
+staged until their registered host, producer and operational results exist.
+`proof-p11-{deployment,activation,rollback}` entries in the registry are not
+executable action recipes yet. Do not issue a receipt from their names or infer
+one action from another. The final recipe writes and then checks the aggregate
+with `--require-all --bind-source`; an unready artifact is diagnostic only.
+
+Freeze relevant source/dirty state, input/dependency locks, selected command,
+release binary and host before proof. P10 must reject old roots and avoid legacy
+import. P11 must compare actual producer payload, terminal receipt, candidate,
+activation and exact ACK replay; a local CAS result is insufficient. P12A needs
+complete raw selected/executed outcomes and the independent DAG oracle. Reject
+missing, stale, wrong-source/host/binary, duplicate or partial input. Report
+`NOT_RUN` or `BLOCKED` for every unexecuted dependency. Historical handoffs are
+[separate archive audit](../handoffs/README.md), not final release prerequisites.

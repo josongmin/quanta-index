@@ -156,3 +156,21 @@ are in [SEP-27-003](../adr/SEP-27-003-code-search-source-and-preview-contract.md
 [SEP-27-004](../adr/SEP-27-004-benchmark-capture-and-resource-custody.md) and
 [SEP-26-003](../adr/SEP-26-003-retrieval-evidence-custody-and-qualification.md).
 Historical local outcomes do not qualify the current checkout.
+
+## SEP-21 proof-prompt compaction
+
+Pre-deletion HEAD: `e56ce86d62bc71225d6994c79d1bd5fefe42bc1f`.
+The four unchanged `sep-21-search-plane-sota-hardening/tickets/prompts/P10*`,
+`P11*`, `P12A*` and `P12-final-qualification.md` bodies matched that revision
+byte-for-byte before removal. `git show <HEAD>:<path>` recovers each one.
+Their current commands and staged boundaries remain in the
+[execution entrypoint](sep-21-search-plane-sota-hardening/tickets/prompts/README.md);
+P10/P11 acceptance remains in S21-11/12, and complete final graph/threshold
+acceptance in [S21-13](sep-21-search-plane-sota-hardening/tickets/S21-13-release-evidence-and-sota-qualification.md).
+S21-12 was also reduced from 135 to 75 lines: its exact-pair chain, negative
+matrix, four proof nodes and stop conditions remain active. Its unchanged
+preimage matched the same HEAD and is in the external backup below.
+The dirty preimage of this archive index and exact preimages of all affected
+files are retained outside the checkout at `/tmp/qi-sep21-prompt-compaction-8mq_zouv`.
+Deleting duplicate prompts neither issues P10/P11/P12A receipts nor qualifies
+release/deployment/activation/rollback.
