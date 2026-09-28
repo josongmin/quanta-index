@@ -151,13 +151,16 @@ ALLOWED_CRATE_DEPS: dict[str, frozenset[str]] = {
         }
     ),
     # The composition root: the one crate that names concrete adapters,
-    # the embedding provider and the structural matcher included.
+    # the embedding provider and the structural matcher included. Structural
+    # repo/file filters compile once per request through the shared regex
+    # executor so their resource refusals match lexical and search-plane paths.
     "quanta-index-searchd": frozenset(
         {
             "quanta-index-contract",
             "quanta-index-core",
             "quanta-index-embed",
             "quanta-index-lexical",
+            "quanta-index-lq-regex",
             "quanta-index-lq-structural",
             "quanta-index-semantic",
             "quanta-index-ipc",
