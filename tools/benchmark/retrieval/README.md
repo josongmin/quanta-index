@@ -169,6 +169,14 @@ alternating system order, warmup and at least 1,000 warm observations per route.
 Increase `query_repetitions_per_root` and `repetitions` for more observations;
 add distinct tasks to the external suite and re-freeze its pack for more queries.
 Repeating a 20-task suite does not create 1,000 distinct queries.
+Within each fresh root, `query_repetitions_per_root` reuses the loaded Quanta
+and Semble indexes for all measured passes; it does not rebuild an index per
+query. `repetitions` creates new roots and rebuilds both indexes. A later
+invocation also rebuilds them: the current runner refuses a nonempty state
+root, and Semble's index exists only in the worker process. For a descriptive
+warm-query diagnostic on 100 tasks, set `repetitions: 1`,
+`query_warmup_passes: 1` and `query_repetitions_per_root: 10` before capture;
+report the single setup/index cost separately from the 1,000 measured calls.
 See [qualification and scoring policy](../../../docs/adr/SEP-26-003-retrieval-evidence-custody-and-qualification.md)
 for acceptance rules.
 
