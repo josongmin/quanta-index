@@ -64,6 +64,9 @@ per product: Quanta and Semble return chunks, while Sourcegraph, OpenGrok and
 cs return distinct files. Its common evidence uses separate metric names for
 these two units. The mechanically generated gold and unverified external
 indexed universes keep the result `diagnostic_unqualified`.
+The standalone lexical scorer checks frozen rows and paired report/verdict
+digests; an actual-execution claim additionally requires the paired capture
+replay and the external raw HTTP/process capture replay through the workflow.
 
 Input formats:
 

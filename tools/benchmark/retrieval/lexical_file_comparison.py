@@ -22,7 +22,7 @@ from tools.benchmark.evidence import (
     _read_control_file,
     file_digest,
 )
-from tools.benchmark.retrieval.evaluator import canonical, digest
+from tools.benchmark.retrieval.evaluator import canonical, digest, validate_comparison_contract
 from tools.benchmark.retrieval.finite_json import is_finite_json_number
 from tools.benchmark.retrieval.query_plan import execution_profile
 
@@ -145,19 +145,31 @@ def _canonical_result_path(path: object) -> bool:
 def _tasks(suite: dict, pack: dict) -> dict[str, tuple[str, list[str]]]:
     if pack.get("suite_commitment_sha256") != digest(canonical(suite)):
         raise ValueError("pack and suite commitment differ")
+    if (
+        type(suite.get("schema_version")) is not int
+        or suite["schema_version"] != 3
+        or type(pack.get("schema_version")) is not int
+        or pack["schema_version"] != 3
+        or not isinstance(suite.get("suite_id"), str)
+        or not suite["suite_id"].strip()
+        or pack.get("suite_id") != suite["suite_id"]
+    ):
+        raise ValueError("suite and pack metadata differ from the v3 lexical contract")
     if suite.get("repository_commit") != pack.get("repository_commit"):
         raise ValueError("pack and suite repository commits differ")
-    suite_contract = suite.get("comparison_contract")
-    pack_contract = pack.get("comparison_contract")
-    if (
-        not isinstance(suite_contract, dict)
-        or not isinstance(pack_contract, dict)
-        or type(suite_contract.get("top_k")) is not int
-        or type(pack_contract.get("top_k")) is not int
-        or suite_contract["top_k"] != 10
-        or pack_contract["top_k"] != 10
-    ):
+    if pack.get("comparison_contract") != suite.get("comparison_contract"):
+        raise ValueError("pack and suite comparison contract differ")
+    contract = validate_comparison_contract(suite.get("comparison_contract"), "lexical contract")
+    if contract["top_k"] != 10:
         raise ValueError("lexical diagnostic requires top_k 10 in suite and pack")
+    routes = [QUANTA_LEXICAL_ROUTE, SEMBLE_LEXICAL_ROUTE]
+    if suite.get("routes") != routes or pack.get("routes") != routes:
+        raise ValueError("suite and pack route inventory is not the lexical pair")
+    if (
+        pack.get("tokenizer") != contract["tokenizer"]
+        or pack.get("tokenizer_budget_version") != contract["tokenizer_budget_version"]
+    ):
+        raise ValueError("pack metadata tokenizer contract differs")
     pack_tasks = pack.get("tasks")
     suite_tasks = suite.get("tasks")
     if (
@@ -339,6 +351,31 @@ def pair_result(
         or report.get("comparison_contract") != suite.get("comparison_contract")
     ):
         raise ValueError("pair top_k contract differs from the lexical suite")
+    comparisons = verdict.get("comparisons")
+    record_digest = report.get("runner_record_sha256")
+    if (
+        not isinstance(comparisons, list)
+        or len(comparisons) != 1
+        or not isinstance(comparisons[0], dict)
+        or not isinstance(comparisons[0].get("strategy"), str)
+        or not comparisons[0]["strategy"]
+        or not isinstance(record_digest, str)
+        or re.fullmatch(r"[0-9a-f]{64}", record_digest) is None
+        or lock.get("strategies") != [comparisons[0].get("strategy")]
+        or comparisons[0].get("candidate_route") != QUANTA_LEXICAL_ROUTE
+        or comparisons[0].get("baseline_route") != SEMBLE_LEXICAL_ROUTE
+        or comparisons[0].get("report_digest") != hashlib.sha256(raw[0]).hexdigest()
+        or comparisons[0].get("record_digest") != record_digest
+    ):
+        raise ValueError("pair verdict does not bind the lexical report and runner record")
+    observed_counts = verdict.get("counts")
+    if observed_counts != {
+        "selected": 2 * task_count,
+        "executed": 2 * task_count,
+        "passed": 2 * task_count,
+        "failed": 0,
+    } or any(type(value) is not int for value in observed_counts.values()):
+        raise ValueError("pair verdict execution counts differ from the lexical task inventory")
     counts = native.get("lane_call_counts", {})
     events = native.get("execution_events")
     if (

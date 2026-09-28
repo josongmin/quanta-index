@@ -969,6 +969,15 @@ def _validate_run(
         set(provenance) == set(suite["routes"]),
         f"route_provenance has missing/unknown routes: {sorted(set(provenance) ^ set(suite['routes']))}",
     )
+    if version == 5 and any(
+        entry["system"] == "quanta"
+        and entry["execution_profile"]["policy"] == "exact_symbol_name"
+        for entry in captures.values()
+    ):
+        require(
+            set(provenance) == {"symbol"},
+            "exact_symbol_name profile requires only the symbol route",
+        )
     for route, entry in provenance.items():
         item = object_keys(entry, ["capture_id"], f"route_provenance.{route}")
         capture_id = string(item["capture_id"], f"route_provenance.{route}.capture_id")
@@ -976,13 +985,6 @@ def _validate_run(
             capture_id in captures,
             f"route_provenance.{route} references unknown capture_id: {capture_id}",
         )
-        capture = captures[capture_id]
-        if (
-            version == 5
-            and capture["system"] == "quanta"
-            and capture["execution_profile"]["policy"] == "exact_symbol_name"
-        ):
-            require(route == "symbol", "exact_symbol_name profile requires the symbol route")
     universe: set[str] | None = None
     if "file_universe" in suite:
         universe = {entry["path"] for entry in suite["file_universe"]}

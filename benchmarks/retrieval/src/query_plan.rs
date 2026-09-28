@@ -800,6 +800,22 @@ mod tests {
             .unwrap_err(),
             QueryPlanError::InvalidSymbolName
         );
+        for name in ["OR", "AND", "case", "select", "_"] {
+            let planned = plan_query(QueryInputPolicy::ExactSymbolName, name, &config)
+                .expect("bare identifier must remain valid inside a predicate argument");
+            assert_eq!(
+                planned.lexical_request,
+                format!("symbol.local_name.exact({name}) case:yes")
+            );
+        }
+        assert!(
+            plan_query(
+                QueryInputPolicy::ExactSymbolName,
+                &"a".repeat(4096),
+                &config
+            )
+            .is_ok()
+        );
     }
 
     #[test]

@@ -44,10 +44,18 @@ def fixture_inputs(tmp_path):
         )
         pack_tasks.append({"task_id": task_id, "query": query, "query_sha256": sha})
     common_suite = {
+        "schema_version": 3,
+        "suite_id": "lexical-fixture-v1",
         "repository_commit": "a" * 40,
         "file_universe_digest": "b" * 64,
         "file_universe": [],
-        "comparison_contract": {"top_k": 10},
+        "comparison_contract": {
+            "top_k": 10,
+            "tokenizer": "qi-regex-v1",
+            "tokenizer_budget_version": "qb-v1",
+            "output_unit_policy": "rank_prefix",
+            "span_unit": "byte_span_with_line_projection_v1",
+        },
         "routes": ["lexical", "semble-lexical-only"],
     }
     suite = {**common_suite, "tasks": suite_tasks}
@@ -55,6 +63,8 @@ def fixture_inputs(tmp_path):
     pack = {
         **common_suite,
         "tasks": pack_tasks,
+        "tokenizer": "qi-regex-v1",
+        "tokenizer_budget_version": "qb-v1",
         "suite_commitment_sha256": digest(canonical(suite)),
     }
     base = {
@@ -182,6 +192,31 @@ def test_symbol_diagnostic_requires_native_top_10_contract(tmp_path):
         _tasks(suite, pack)
 
 
+def test_symbol_diagnostic_refuses_different_pack_contract_at_same_top_k(tmp_path):
+    _, _, suite, pack = fixture_inputs(tmp_path)
+    pack["comparison_contract"] = dict(pack["comparison_contract"])
+    pack["comparison_contract"]["output_unit_policy"] = "unknown"
+    with pytest.raises(ValueError, match="comparison contract"):
+        _tasks(suite, pack)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("schema_version", 4),
+        ("suite_id", "different-suite"),
+        ("routes", ["hybrid"]),
+        ("tokenizer", "other-tokenizer"),
+        ("tokenizer_budget_version", "other-budget"),
+    ],
+)
+def test_symbol_diagnostic_refuses_unbound_pack_metadata(tmp_path, field, value):
+    _, _, suite, pack = fixture_inputs(tmp_path)
+    pack[field] = value
+    with pytest.raises(ValueError, match="pack metadata|route inventory"):
+        _tasks(suite, pack)
+
+
 def test_symbol_diagnostic_refuses_unbound_file_universe(tmp_path):
     _, _, suite, pack = fixture_inputs(tmp_path)
     files = [{"path": "src/answer.go", "file_sha256": "a" * 64}]
@@ -204,6 +239,7 @@ def test_pair_result_rejects_semantic_lane_even_if_report_has_hits(tmp_path, rec
         pack["suite_commitment_sha256"] = digest(canonical(suite))
     report = {
         "query_pack_sha256": digest(canonical(pack)),
+        "runner_record_sha256": "f" * 64,
         "repository_commit": suite["repository_commit"],
         "file_universe_digest": suite["file_universe_digest"],
         "comparison_contract": suite["comparison_contract"],
@@ -248,6 +284,7 @@ def test_pair_result_rejects_semantic_lane_even_if_report_has_hits(tmp_path, rec
         "quanta_routes": ["lexical"],
         "semble_route": "semble-lexical-only",
         "top_k": 10,
+        "strategies": ["fixed_window_strict"],
     }
     native = {
         "semble_profile": "lexical-only",
@@ -255,7 +292,19 @@ def test_pair_result_rejects_semantic_lane_even_if_report_has_hits(tmp_path, rec
         "lane_call_counts": {"bm25": 1, "semantic": 0, "encode": 0},
         "execution_events": [{"lane_entry_counts": {"bm25": 1, "semantic": 0}}],
     }
-    verdict = {"states": {"PAIR_VALID": "pass"}}
+    verdict = {
+        "states": {"PAIR_VALID": "pass"},
+        "counts": {"selected": 40, "executed": 40, "passed": 40, "failed": 0},
+        "comparisons": [
+            {
+                "strategy": "fixed_window_strict",
+                "candidate_route": "lexical",
+                "baseline_route": "semble-lexical-only",
+                "report_digest": hashlib.sha256(json.dumps(report).encode()).hexdigest(),
+                "record_digest": report["runner_record_sha256"],
+            }
+        ],
+    }
     paths = [tmp_path / f"{name}.json" for name in ("report", "lock", "native", "verdict")]
     for path, value in zip(paths, (report, lock, native, verdict), strict=True):
         path.write_text(json.dumps(value), encoding="utf-8")
@@ -266,6 +315,17 @@ def test_pair_result_rejects_semantic_lane_even_if_report_has_hits(tmp_path, rec
     assert route["rank_unit"] == "chunk"
     assert route["file_recall_at_10"] == recall
     assert route["file_hit_rate_at_10"] == 1.0
+    verdict["counts"]["passed"] = 39
+    paths[3].write_text(json.dumps(verdict), encoding="utf-8")
+    with pytest.raises(ValueError, match="execution counts differ"):
+        pair_result(*paths, pack, suite, 20)
+    verdict["counts"]["passed"] = 40
+    verdict["comparisons"][0]["record_digest"] = "0" * 64
+    paths[3].write_text(json.dumps(verdict), encoding="utf-8")
+    with pytest.raises(ValueError, match="does not bind the lexical report"):
+        pair_result(*paths, pack, suite, 20)
+    verdict["comparisons"][0]["record_digest"] = report["runner_record_sha256"]
+    paths[3].write_text(json.dumps(verdict), encoding="utf-8")
     lock["top_k"] = 20
     paths[1].write_text(json.dumps(lock), encoding="utf-8")
     with pytest.raises(ValueError, match="pair top_k contract differs"):
@@ -274,10 +334,16 @@ def test_pair_result_rejects_semantic_lane_even_if_report_has_hits(tmp_path, rec
     paths[1].write_text(json.dumps(lock), encoding="utf-8")
     report["per_query"][0]["file_recall_at_10"] = 0.0
     paths[0].write_text(json.dumps(report))
+    with pytest.raises(ValueError, match="does not bind the lexical report"):
+        pair_result(*paths, pack, suite, 20)
+    verdict["comparisons"][0]["report_digest"] = hashlib.sha256(paths[0].read_bytes()).hexdigest()
+    paths[3].write_text(json.dumps(verdict), encoding="utf-8")
     with pytest.raises(ValueError, match="recall/hit observations"):
         pair_result(*paths, pack, suite, 20)
     report["per_query"][0]["file_recall_at_10"] = recall
     paths[0].write_text(json.dumps(report))
+    verdict["comparisons"][0]["report_digest"] = hashlib.sha256(paths[0].read_bytes()).hexdigest()
+    paths[3].write_text(json.dumps(verdict), encoding="utf-8")
     native["lane_call_counts"]["semantic"] = 1
     paths[2].write_text(json.dumps(native), encoding="utf-8")
     with pytest.raises(ValueError, match="did not execute lexical-only"):

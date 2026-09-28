@@ -89,6 +89,7 @@ def inputs(tmp_path, lexical_release_seed):
     ]
     report = {
         "query_pack_sha256": digest(canonical(pack)),
+        "runner_record_sha256": "f" * 64,
         "repository_commit": suite["repository_commit"],
         "file_universe_digest": suite["file_universe_digest"],
         "comparison_contract": suite["comparison_contract"],
@@ -122,9 +123,22 @@ def inputs(tmp_path, lexical_release_seed):
             "quanta_routes": ["lexical"],
             "semble_route": "semble-lexical-only",
             "top_k": 10,
+            "strategies": ["fixed_window_strict"],
         },
         "semble_native": native,
-        "pair_verdict": {"states": {"PAIR_VALID": "pass"}},
+        "pair_verdict": {
+            "states": {"PAIR_VALID": "pass"},
+            "counts": {"selected": 40, "executed": 40, "passed": 40, "failed": 0},
+            "comparisons": [
+                {
+                    "strategy": "fixed_window_strict",
+                    "candidate_route": "lexical",
+                    "baseline_route": "semble-lexical-only",
+                    "report_digest": digest(json.dumps(report).encode()),
+                    "record_digest": report["runner_record_sha256"],
+                }
+            ],
+        },
     }
     paths = {}
     for role, value in content.items():

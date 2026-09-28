@@ -737,6 +737,10 @@ def test_exact_symbol_name_policy_keeps_bare_query_identity_and_refuses_dsl():
     assert identity["effective_lexical_request_sha256"] == hashlib.sha256(
         request.encode()
     ).hexdigest()
+    for name in ("OR", "AND", "case", "select", "_", "a" * 4096):
+        assert qp.plan_lexical_request("exact_symbol_name", name) == (
+            f"symbol.local_name.exact({name}) case:yes"
+        )
     for invalid in ("", "two words", "select:file Next", "WriteContentType)", "\u00e9", "a" * 4097):
         with pytest.raises(qp.QueryPlanError, match="bare ASCII symbol name"):
             qp.plan_lexical_request("exact_symbol_name", invalid)
@@ -8972,7 +8976,36 @@ def test_exact_symbol_profile_refuses_lexical_route_record(tmp_path):
     profile = qp.execution_profile("exact_symbol_name")
     run["captures"]["q0"]["execution_profile"] = profile
     run["captures"]["q0"]["execution_profile_sha256"] = ev.digest(ev.canonical(profile))
-    with pytest.raises(ev.EvidenceError, match="requires the symbol route"):
+    with pytest.raises(ev.EvidenceError, match="requires only the symbol route"):
+        record_v3(repo, suite, run, suite_path, runner_path)
+
+
+def test_exact_symbol_profile_refuses_mixed_route_record(tmp_path):
+    repo, suite, run, suite_path, runner_path, _ = fixture_v3(tmp_path)
+    suite["routes"] = ["symbol", "lexical"]
+    for task, name in zip(suite["tasks"], ["AlphaOne", "BetaTwo"], strict=True):
+        task["query"] = name
+        task["query_sha256"] = ev.digest(name.encode())
+    _, pack, _ = ev.validate_suite(repo, suite)
+    run["query_pack_sha256"] = ev.digest(ev.canonical(pack))
+    exact = qp.execution_profile("exact_symbol_name")
+    run["captures"]["q0"]["execution_profile"] = exact
+    run["captures"]["q0"]["execution_profile_sha256"] = ev.digest(ev.canonical(exact))
+    run["captures"]["q1"] = copy.deepcopy(run["captures"]["q0"])
+    native = qp.execution_profile("native")
+    run["captures"]["q1"]["execution_profile"] = native
+    run["captures"]["q1"]["execution_profile_sha256"] = ev.digest(ev.canonical(native))
+    run["route_provenance"] = {
+        "symbol": {"capture_id": "q0"},
+        "lexical": {"capture_id": "q1"},
+    }
+    queries = {task["task_id"]: task["query"] for task in pack["tasks"]}
+    for result in run["results"]:
+        if result["route"] == "hybrid":
+            result["route"] = "symbol"
+        policy = "exact_symbol_name" if result["route"] == "symbol" else "native"
+        result["query_identity"] = qp.derive_query_identity(policy, queries[result["task_id"]])
+    with pytest.raises(ev.EvidenceError, match="requires only the symbol route"):
         record_v3(repo, suite, run, suite_path, runner_path)
 
 
