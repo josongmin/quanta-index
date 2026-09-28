@@ -37,8 +37,12 @@ def test_native_pair_root_checks_socket_budget_before_external_capture(tmp_path)
     assert not short_root.exists()
 
     long_root = tmp_path / ("q" * 120)
-    with pytest.raises(workflow.run.RunError, match="Unix socket path.*limit 103"):
+    limit = {"darwin": 103, "linux": 107}.get(sys.platform)
+    if limit is None:
+        pytest.skip("native Unix socket path limit is defined for macOS and Linux")
+    with pytest.raises(workflow.run.RunError, match=rf"Unix socket path.*limit {limit}"):
         workflow._preflight_native_output(long_root, pair)
+    assert not long_root.exists()
 
 
 def test_preflight_contract_requires_lexical_only_route_labels():
