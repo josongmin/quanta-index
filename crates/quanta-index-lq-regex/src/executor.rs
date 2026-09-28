@@ -324,6 +324,32 @@ impl RegexExecutor {
         budget_ms: u64,
         interrupted: &dyn Fn() -> bool,
     ) -> Result<Vec<DocId>, RegexError> {
+        self.execute_interruptible_with_reservation(
+            candidates,
+            corpus,
+            budget_ms,
+            interrupted,
+            |out| Self::reserve_verified_result(out, 1),
+        )
+    }
+
+    fn reserve_verified_result(out: &mut Vec<DocId>, additional: usize) -> Result<(), RegexError> {
+        out.try_reserve(additional).map_err(|error| {
+            RegexError::plan_limit(
+                LimitDimension::VerifiedResults,
+                format!("regex verified-result allocation refused: {error}"),
+            )
+        })
+    }
+
+    fn execute_interruptible_with_reservation(
+        &self,
+        candidates: &[DocId],
+        corpus: &dyn DocResolver,
+        budget_ms: u64,
+        interrupted: &dyn Fn() -> bool,
+        mut reserve: impl FnMut(&mut Vec<DocId>) -> Result<(), RegexError>,
+    ) -> Result<Vec<DocId>, RegexError> {
         let started = Instant::now();
         let budget = if budget_ms == 0 {
             None
@@ -350,12 +376,7 @@ impl RegexExecutor {
                 )
             })?;
             if self.verify(bytes) {
-                out.try_reserve(1).map_err(|error| {
-                    RegexError::new(
-                        RegexErrorCode::ExecutionInternal,
-                        format!("regex verified-result allocation refused: {error}"),
-                    )
-                })?;
+                reserve(&mut out)?;
                 out.push(*cand);
             }
             if let Some(b) = budget {
@@ -963,6 +984,35 @@ mod tests {
         let verified = executor.execute_with_budget(&candidates, &fixture(), 0)?;
         assert!(verified.is_empty());
         assert_eq!(verified.capacity(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn verified_result_allocation_refusal_discards_matched_prefix()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let executor = RegexExecutor::compile(r"fn\s+handle_\w+")?;
+        let mut observed_prefix = Vec::new();
+        let result = executor.execute_interruptible_with_reservation(
+            &[DocId(1), DocId(2), DocId(3)],
+            &fixture(),
+            0,
+            &|| false,
+            |out| {
+                if out.is_empty() {
+                    return RegexExecutor::reserve_verified_result(out, 1);
+                }
+                observed_prefix.extend_from_slice(out);
+                // Capacity overflow is deterministic; it exercises the same
+                // resource mapping used by the public executor path.
+                RegexExecutor::reserve_verified_result(out, usize::MAX)
+            },
+        );
+        assert_eq!(observed_prefix, vec![DocId(1)]);
+        let Err(error) = result else {
+            return Err("allocation refusal cannot publish a prefix".into());
+        };
+        assert_eq!(error.code, RegexErrorCode::PlanLimitExceeded);
+        assert_eq!(error.dimension, Some(LimitDimension::VerifiedResults));
         Ok(())
     }
 

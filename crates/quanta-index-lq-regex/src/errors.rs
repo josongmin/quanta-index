@@ -22,7 +22,7 @@ pub enum RegexErrorCode {
     /// construct fired.
     ForbiddenSyntax,
     /// A resource cap was exceeded (planning-state charge, compiled engine
-    /// bytes, literal bytes, or candidate-set size).
+    /// bytes, literal bytes, candidate-set size, or verified-result storage).
     ///
     /// The accompanying [`LimitDimension`] qualifier identifies which
     /// cap fired.
@@ -122,6 +122,8 @@ pub enum LimitDimension {
     LiteralLen,
     /// Pre-verify candidate set exceeded the per-query cap.
     CandidateSet,
+    /// Verified-result storage could not grow.
+    VerifiedResults,
 }
 
 impl LimitDimension {
@@ -134,6 +136,7 @@ impl LimitDimension {
             Self::CompiledBytes => "regex-compiled-bytes",
             Self::LiteralLen => "regex-literal-len",
             Self::CandidateSet => "regex-candidate-set",
+            Self::VerifiedResults => "regex-verified-results",
         }
     }
 
@@ -146,6 +149,7 @@ impl LimitDimension {
             "regex-compiled-bytes" => Self::CompiledBytes,
             "regex-literal-len" => Self::LiteralLen,
             "regex-candidate-set" => Self::CandidateSet,
+            "regex-verified-results" => Self::VerifiedResults,
             _ => return None,
         };
         Some(v)
@@ -354,6 +358,7 @@ mod tests {
         LimitDimension::CompiledBytes,
         LimitDimension::LiteralLen,
         LimitDimension::CandidateSet,
+        LimitDimension::VerifiedResults,
     ];
 
     const ALL_FORBIDDEN: &[ForbiddenKind] = &[
