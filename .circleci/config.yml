@@ -34,7 +34,10 @@ jobs:
               tar zxf - -C "$HOME/.cargo/bin"
             curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh |
               bash -s -- --tag 1.58.0 --to "$HOME/.cargo/bin"
-            cargo install cargo-deny --version 0.19.7 --locked
+            curl --proto '=https' --tlsv1.2 -LsSf \
+              https://github.com/EmbarkStudios/cargo-deny/releases/download/0.19.7/cargo-deny-0.19.7-x86_64-unknown-linux-musl.tar.gz |
+              tar xzf - -C "$HOME/.cargo/bin" --strip-components=1 \
+                cargo-deny-0.19.7-x86_64-unknown-linux-musl/cargo-deny
             curl --proto '=https' --tlsv1.2 -LsSf https://astral.sh/uv/0.9.11/install.sh | sh
             printf 'export PATH="%s/.cargo/bin:%s/.local/bin:$PATH"\n' "$HOME" "$HOME" >> "$BASH_ENV"
       - run:
@@ -51,7 +54,7 @@ jobs:
           no_output_timeout: 20m
           command: |
             set -euo pipefail
-            uv run --frozen --extra dev bash scripts/run-tooling-tests.sh
+            uv run --frozen --extra dev bash scripts/run-tooling-tests.sh -x -vv
             uv run --frozen --extra dev python tools/prompt-manager/pm.py lint
             uv run --frozen --extra dev python -m ruff check .
             uv run --frozen --extra dev python -m ruff format --check .
