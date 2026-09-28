@@ -78,11 +78,11 @@ def _write_catalog(path: Path, body: str) -> Path:
     if "[[invariants]]" in body:
         body = body.replace(
             'consumer_target = "demo-covered"',
-            'consumer_target = "demo-covered"\n        pr_rail = "pr-workspace"\n        merge_rail = "merge-workspace"\n        nightly_rail = "nightly-workspace"',
+            'consumer_target = "demo-covered"\n        pr_rail = "pr-workspace"\n        main_rail = "main-workspace"\n        manual_heavy_rail = "manual-heavy-workspace"',
         )
         body = body.replace(
             '[rails.pr-workspace]\n        tier = "pr"',
-            '[rails.merge-workspace]\n        tier = "merge"\n        command = "./scripts/cargow nextest run --workspace --all-features --locked"\n        target_kind = "integration"\n        workflow = ".github/workflows/test.yml"\n        job = "test"\n        step = "run"\n\n        [rails.nightly-workspace]\n        tier = "nightly"\n        command = "./scripts/cargow nextest run --workspace --all-features --locked"\n        target_kind = "integration"\n        workflow = ".github/workflows/test.yml"\n        job = "test"\n        step = "run"\n\n        [rails.pr-workspace]\n        tier = "pr"',
+            '[rails.main-workspace]\n        tier = "main"\n        command = "./scripts/cargow nextest run --workspace --all-features --locked"\n        target_kind = "integration"\n        workflow = ".github/workflows/test.yml"\n        job = "test"\n        step = "run"\n\n        [rails.manual-heavy-workspace]\n        tier = "correctness"\n        command = "./scripts/cargow nextest run --workspace --all-features --locked"\n        target_kind = "integration"\n        workflow = ".github/workflows/test.yml"\n        job = "test"\n        step = "run"\n\n        [rails.pr-workspace]\n        tier = "pr"',
         )
         invariant_rows = re.findall(
             r'\[\[invariants\]\]\s+id = "([^"]+)"\s+risk = "([^"]+)"\s+owner = "([^"]+)"\s+source = "([^"]+)"',
@@ -740,25 +740,16 @@ def test_grouped_integration_sources_require_manifest_and_launcher_binding(tmp_p
 
 
 def test_full_corpus_has_one_hosted_workspace_owner_per_event():
-    workflow = yaml.safe_load(
-        (REPO_ROOT / ".github" / "workflows" / "correctness.yml").read_text(encoding="utf-8")
-    )
-    assert "rust-full-corpus" not in workflow["jobs"]
-
-    job = workflow["jobs"]["rust-authority-nextest"]
-    assert job["if"] == (
-        "github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && "
-        "inputs.proof_bundle_run_id == '')"
-    )
-    assert any(
-        step.get("uses") == "taiki-e/install-action@nextest"
+    workflow = yaml.safe_load((REPO_ROOT / ".circleci/config.yml").read_text())
+    assert workflow["parameters"]["run_heavy"]["default"] is False
+    assert workflow["workflows"]["manual-heavy"]["when"] == ("<< pipeline.parameters.run_heavy >>")
+    job = workflow["jobs"]["heavy-correctness"]
+    scripts = [
+        step["run"]["command"]
         for step in job["steps"]
-        if isinstance(step, dict)
-    )
-    run = "\n".join(
-        step["run"] for step in job["steps"] if isinstance(step, dict) and "run" in step
-    )
-    assert "nextest run --workspace --all-features --locked" in run
+        if isinstance(step, dict) and isinstance(step.get("run"), dict)
+    ]
+    assert sum("nextest run --workspace --all-features --locked" in run for run in scripts) == 1
 
 
 def test_local_scope_rejects_unknown_target(tmp_path: Path):

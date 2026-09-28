@@ -77,7 +77,7 @@ PROFILES = {
         # Bind it; unrelated planning/history remains outside this closure.
         "cargo_packages": ("quanta-index-bench-protocol",),
         "paths": (
-            ".github/workflows/ci.yml",
+            ".circleci/config.yml",
             "docs/adr/JUN-08-001-verification-hellgate-and-benchmark-separation.md",
             "docs/adr/SEP-26-003-retrieval-evidence-custody-and-qualification.md",
             "docs/adr/SEP-27-002-single-benchmark-orchestrator-and-typed-evidence.md",

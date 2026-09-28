@@ -121,7 +121,7 @@ def _discover_fuzz_targets(root: Path) -> set[str]:
 def _load_workflow(
     *, root: Path, catalog: Path, workflow_path: str, violations: list[Violation]
 ) -> dict[str, Any] | None:
-    """Load a repository-owned GitHub workflow without silently accepting drift."""
+    """Load a repository-owned CI configuration without accepting YAML drift."""
     path = root / workflow_path
     if not path.is_file():
         violations.append(_violation(catalog, f"rail workflow does not exist: {workflow_path}"))
@@ -191,6 +191,19 @@ def _validate_rail_binding(
     )
     if workflow_path is None or job_id is None or step_name is None:
         return
+    if workflow_path == ".circleci/config.yml":
+        _validate_circleci_rail_binding(
+            root=root,
+            catalog=catalog,
+            rail_id=rail_id,
+            workflow_path=workflow_path,
+            job_id=job_id,
+            step_name=step_name,
+            command=command,
+            tier=raw_rail.get("tier"),
+            violations=violations,
+        )
+        return
     workflow = _load_workflow(
         root=root, catalog=catalog, workflow_path=workflow_path, violations=violations
     )
@@ -256,6 +269,102 @@ def _validate_rail_binding(
             return
         run = step.get("run")
         if isinstance(run, str) and _executes_declared_command(run, command, shell_pipefail=shell):
+            return
+        violations.append(
+            _violation(
+                catalog,
+                f"rail {rail_id} workflow step {step_name!r} does not execute declared command",
+            )
+        )
+        return
+    violations.append(
+        _violation(catalog, f"rail {rail_id} workflow step does not exist: {step_name!r}")
+    )
+
+
+def _validate_circleci_rail_binding(
+    *,
+    root: Path,
+    catalog: Path,
+    rail_id: str,
+    workflow_path: str,
+    job_id: str,
+    step_name: str,
+    command: str,
+    tier: object,
+    violations: list[Violation],
+) -> None:
+    """Bind a rail to a reachable CircleCI job and a fail-closed run step.
+
+    Project trigger installation is an external activation check. This static
+    guard proves only the committed config, never a hosted execution.
+    """
+    workflow = _load_workflow(
+        root=root, catalog=catalog, workflow_path=workflow_path, violations=violations
+    )
+    if workflow is None:
+        return
+    if workflow.get("version") != 2.1:
+        violations.append(_violation(catalog, f"rail {rail_id} requires CircleCI config 2.1"))
+        return
+    jobs = workflow.get("jobs")
+    job = jobs.get(job_id) if isinstance(jobs, dict) else None
+    if not isinstance(job, dict):
+        violations.append(
+            _violation(catalog, f"rail {rail_id} workflow job does not exist: {job_id}")
+        )
+        return
+    workflows = workflow.get("workflows")
+    if not isinstance(workflows, dict):
+        violations.append(_violation(catalog, f"rail {rail_id} has no CircleCI workflows"))
+        return
+    required_workflow = (
+        "manual-heavy" if tier in {"correctness", "nightly", "weekly"} else "regular"
+    )
+    selected = workflows.get(required_workflow)
+    entries = selected.get("jobs") if isinstance(selected, dict) else None
+    if not isinstance(entries, list) or job_id not in entries:
+        violations.append(
+            _violation(catalog, f"rail {rail_id} job is not in CircleCI {required_workflow}")
+        )
+        return
+    parameters = workflow.get("parameters")
+    heavy = parameters.get("run_heavy") if isinstance(parameters, dict) else None
+    if (
+        not isinstance(heavy, dict)
+        or heavy.get("type") != "boolean"
+        or heavy.get("default") is not False
+    ):
+        violations.append(_violation(catalog, f"rail {rail_id} must default heavy work off"))
+        return
+    expected_gate = "<< pipeline.parameters.run_heavy >>"
+    if required_workflow == "regular" and selected.get("unless") != expected_gate:
+        violations.append(
+            _violation(catalog, f"rail {rail_id} regular workflow is not enabled by default")
+        )
+        return
+    if required_workflow == "manual-heavy" and selected.get("when") != expected_gate:
+        violations.append(
+            _violation(catalog, f"rail {rail_id} heavy workflow is not explicitly gated")
+        )
+        return
+    steps = job.get("steps")
+    if not isinstance(steps, list):
+        violations.append(_violation(catalog, f"rail {rail_id} job {job_id} has no steps"))
+        return
+    for step in steps:
+        run = step.get("run") if isinstance(step, dict) else None
+        if not isinstance(run, dict) or run.get("name") != step_name:
+            continue
+        if run.get("when", "on_success") != "on_success":
+            violations.append(_violation(catalog, f"rail {rail_id} CircleCI step is conditional"))
+            return
+        script = run.get("command")
+        if (
+            isinstance(script, str)
+            and script.lstrip().startswith("set -euo pipefail\n")
+            and _executes_declared_command(script, command)
+        ):
             return
         violations.append(
             _violation(
@@ -1167,6 +1276,9 @@ def _validate_workflow_test_selectors(
     valid_pairs = {(target["owner"], target["target"]) for target in targets.values()}
     workflows = sorted((root / ".github" / "workflows").glob("*.yml"))
     workflows += sorted((root / ".github" / "workflows").glob("*.yaml"))
+    circleci = root / ".circleci" / "config.yml"
+    if circleci.is_file():
+        workflows.append(circleci)
     for workflow_path in workflows:
         workflow = _load_workflow(
             root=root,
@@ -1186,9 +1298,13 @@ def _validate_workflow_test_selectors(
             if not isinstance(steps, list):
                 continue
             for step in steps:
-                if not isinstance(step, dict) or not isinstance(step.get("run"), str):
+                if not isinstance(step, dict):
                     continue
-                run = re.sub(r"\\\r?\n[ \t]*", " ", step["run"])
+                action = step.get("run")
+                script = action.get("command") if isinstance(action, dict) else action
+                if not isinstance(script, str):
+                    continue
+                run = re.sub(r"\\\r?\n[ \t]*", " ", script)
                 for raw_line in run.splitlines():
                     if "--test" not in raw_line or raw_line.lstrip().startswith("#"):
                         continue
@@ -1730,8 +1846,8 @@ def _validate_invariants(
             )
         for tier_role, expected_tier in (
             ("pr_rail", "pr"),
-            ("merge_rail", "merge"),
-            ("nightly_rail", "nightly"),
+            ("main_rail", "main"),
+            ("manual_heavy_rail", "correctness"),
         ):
             rail_id = entry.get(tier_role)
             if not isinstance(rail_id, str) or rail_id not in rails:

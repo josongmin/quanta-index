@@ -191,6 +191,7 @@ def test_receipt_refuses_input_changed_after_summary_before_publication(tmp_path
 def _writer_env(**overrides: str) -> dict[str, str]:
     env = os.environ.copy()
     env.pop("GITHUB_SHA", None)
+    env.pop("CIRCLE_SHA1", None)
     env.update(overrides)
     return env
 
@@ -284,7 +285,10 @@ def test_receipt_binds_revision_evidence_digest_and_test_count(tmp_path: Path) -
 
 
 @pytest.mark.parametrize("matching", [False, True])
-def test_receipt_binds_github_sha_to_checked_out_head(tmp_path: Path, matching: bool) -> None:
+@pytest.mark.parametrize("sha_variable", ["GITHUB_SHA", "CIRCLE_SHA1"])
+def test_receipt_binds_ci_sha_to_checked_out_head(
+    tmp_path: Path, matching: bool, sha_variable: str
+) -> None:
     source = _clean_repo(tmp_path)
     head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source, text=True).strip()
     evidence = _one_test_nextest(tmp_path / "nextest.jsonl")
@@ -305,7 +309,7 @@ def test_receipt_binds_github_sha_to_checked_out_head(tmp_path: Path, matching: 
             str(output),
         ],
         cwd=source,
-        env=_writer_env(GITHUB_SHA=head if matching else "0" * 40),
+        env=_writer_env(**{sha_variable: head if matching else "0" * 40}),
         capture_output=True,
         text=True,
     )
@@ -314,7 +318,7 @@ def test_receipt_binds_github_sha_to_checked_out_head(tmp_path: Path, matching: 
         assert json.loads(output.read_text(encoding="utf-8"))["revision"] == head
     else:
         assert result.returncode != 0
-        assert "GITHUB_SHA differs from checked-out HEAD" in result.stderr
+        assert f"{sha_variable} differs from checked-out HEAD" in result.stderr
         assert not output.exists()
 
 

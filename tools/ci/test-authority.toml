@@ -12,81 +12,73 @@ format_version = 2
 tier = "pr"
 command = "./scripts/cargow nextest run --workspace --all-features --locked --message-format libtest-json-plus --message-format-version 0.1"
 target_kind = "integration"
-workflow = ".github/workflows/ci.yml"
-job = "rust-test"
-step = "rust nextest"
-
-[rails.merge-workspace-nextest]
-tier = "merge"
-command = "./scripts/cargow nextest run --workspace --all-features --locked --message-format libtest-json-plus --message-format-version 0.1"
-target_kind = "integration"
-workflow = ".github/workflows/ci.yml"
-job = "rust-test"
+workflow = ".circleci/config.yml"
+job = "verify"
 step = "rust nextest"
 
 [rails.main-workspace-nextest]
 tier = "main"
 command = "./scripts/cargow nextest run --workspace --all-features --locked --message-format libtest-json-plus --message-format-version 0.1"
 target_kind = "integration"
-workflow = ".github/workflows/ci.yml"
-job = "rust-test"
+workflow = ".circleci/config.yml"
+job = "verify"
 step = "rust nextest"
 
-[rails.nightly-workspace-nextest]
-tier = "nightly"
+[rails.manual-heavy-workspace-nextest]
+tier = "correctness"
 command = "./scripts/cargow nextest run --workspace --all-features --locked --message-format libtest-json-plus --message-format-version 0.1"
 target_kind = "integration"
-workflow = ".github/workflows/correctness.yml"
-job = "rust-authority-nextest"
+workflow = ".circleci/config.yml"
+job = "heavy-correctness"
 step = "rust nextest authority receipt"
 
 [rails.pr-proof-authority-python]
 tier = "pr"
-command = "just proof-p00-authority-freeze"
+command = "uv run --frozen --extra dev just proof-p00-authority-freeze"
 target_kind = "python"
-workflow = ".github/workflows/ci.yml"
-job = "proof-authority-current-gate"
-step = "Produce P00 authority proof from the static gate"
+workflow = ".circleci/config.yml"
+job = "verify"
+step = "P00 authority owner tests"
 
 [rails.pr-benchmark-control-python]
 tier = "pr"
 command = "uv run --frozen --extra dev just benchmark-control-contract-local"
 target_kind = "python"
-workflow = ".github/workflows/ci.yml"
-job = "rust-policy"
+workflow = ".circleci/config.yml"
+job = "verify"
 step = "Benchmark capture and custody contracts"
 
 [rails.correctness-fuzz-ipc-request]
 tier = "correctness"
 command = "cargo +nightly fuzz run ipc_request_decode -- -max_total_time=60"
 target_kind = "fuzz"
-workflow = ".github/workflows/correctness.yml"
-job = "rust-fuzz-smoke"
-step = "Smoke-run ipc_request_decode (60s)"
+workflow = ".circleci/config.yml"
+job = "heavy-correctness"
+step = "Fuzz all registered decoders"
 
 [rails.correctness-fuzz-ipc-response]
 tier = "correctness"
 command = "cargo +nightly fuzz run ipc_response_decode -- -max_total_time=60"
 target_kind = "fuzz"
-workflow = ".github/workflows/correctness.yml"
-job = "rust-fuzz-smoke"
-step = "Smoke-run ipc_response_decode (60s)"
+workflow = ".circleci/config.yml"
+job = "heavy-correctness"
+step = "Fuzz all registered decoders"
 
 [rails.correctness-fuzz-search-corpus]
 tier = "correctness"
 command = "cargo +nightly fuzz run search_corpus_ingest_decode -- -dict=dictionaries/search_corpus_ingest.dict -max_total_time=60"
 target_kind = "fuzz"
-workflow = ".github/workflows/correctness.yml"
-job = "rust-fuzz-smoke"
-step = "Smoke-run search_corpus_ingest_decode (60s)"
+workflow = ".circleci/config.yml"
+job = "heavy-correctness"
+step = "Fuzz all registered decoders"
 
 [rails.correctness-fuzz-lq-parse]
 tier = "correctness"
 command = "cargo +nightly fuzz run lq_parse_pipeline -- -max_total_time=60"
 target_kind = "fuzz"
-workflow = ".github/workflows/correctness.yml"
-job = "rust-fuzz-smoke"
-step = "Smoke-run lq_parse_pipeline (60s)"
+workflow = ".circleci/config.yml"
+job = "heavy-correctness"
+step = "Fuzz all registered decoders"
 
 # Local scopes reuse the authoritative target IDs below. The runner expands a
 # scope into one cargo-nextest process, so adding a second hand-maintained path
@@ -1699,7 +1691,7 @@ owner = "quanta-index-searchd-runtime"
 source = "crates/quanta-index-searchd-runtime/src/lib.rs"
 
 # P0/P1 rows must name independent positive, negative, recovery, and consumer
-# proof targets plus PR, merge, and nightly rails. The guard verifies those ids,
+# proof targets plus PR, main, and explicit heavy rails. The guard verifies those ids,
 # role independence, owner-local positive/negative proof, and CI bindings.
 [[invariants]]
 id = "GEN-ACTIVATE-ATOMIC-01"
@@ -1711,8 +1703,8 @@ negative_target = "semantic-persisted"
 recovery_target = "searchd-runtime-restart-replay-determinism"
 consumer_target = "searchd-runtime-end-to-end"
 pr_rail = "pr-workspace-nextest"
-merge_rail = "merge-workspace-nextest"
-nightly_rail = "nightly-workspace-nextest"
+main_rail = "main-workspace-nextest"
+manual_heavy_rail = "manual-heavy-workspace-nextest"
 
 [[invariants]]
 id = "GEN-ROLLBACK-RECOVERY-01"
@@ -1724,8 +1716,8 @@ negative_target = "semantic-persisted"
 recovery_target = "searchd-runtime-restart-replay-determinism"
 consumer_target = "searchd-runtime-sdk-frontdoor"
 pr_rail = "pr-workspace-nextest"
-merge_rail = "merge-workspace-nextest"
-nightly_rail = "nightly-workspace-nextest"
+main_rail = "main-workspace-nextest"
+manual_heavy_rail = "manual-heavy-workspace-nextest"
 
 [[invariants]]
 id = "SEMANTIC-OWNER-IDENTITY-01"
@@ -1737,8 +1729,8 @@ negative_target = "semantic-persisted"
 recovery_target = "semantic-generation-lifecycle-model"
 consumer_target = "searchd-runtime-end-to-end"
 pr_rail = "pr-workspace-nextest"
-merge_rail = "merge-workspace-nextest"
-nightly_rail = "nightly-workspace-nextest"
+main_rail = "main-workspace-nextest"
+manual_heavy_rail = "manual-heavy-workspace-nextest"
 
 [[invariants]]
 id = "CONTRACT-WIRE-FAIL-CLOSED-01"
@@ -1750,8 +1742,8 @@ negative_target = "contract-lxe-unified-surface"
 recovery_target = "contract-scv2-semantic-source-wire"
 consumer_target = "searchd-runtime-sdk-frontdoor"
 pr_rail = "pr-workspace-nextest"
-merge_rail = "merge-workspace-nextest"
-nightly_rail = "nightly-workspace-nextest"
+main_rail = "main-workspace-nextest"
+manual_heavy_rail = "manual-heavy-workspace-nextest"
 
 [[invariants]]
 id = "HYBRID-PAYLOAD-PRECEDENCE-01"
@@ -1763,8 +1755,8 @@ negative_target = "core-lexical-policy"
 recovery_target = "core-semantic-policy"
 consumer_target = "searchd-runtime-end-to-end"
 pr_rail = "pr-workspace-nextest"
-merge_rail = "merge-workspace-nextest"
-nightly_rail = "nightly-workspace-nextest"
+main_rail = "main-workspace-nextest"
+manual_heavy_rail = "manual-heavy-workspace-nextest"
 
 [[invariants]]
 id = "SDK-FRONTDOOR-ROUNDTRIP-01"
@@ -1776,8 +1768,8 @@ negative_target = "searchd-runtime-composite-generation-authority-restart"
 recovery_target = "searchd-runtime-restart-replay-determinism"
 consumer_target = "searchd-runtime-end-to-end"
 pr_rail = "pr-workspace-nextest"
-merge_rail = "merge-workspace-nextest"
-nightly_rail = "nightly-workspace-nextest"
+main_rail = "main-workspace-nextest"
+manual_heavy_rail = "manual-heavy-workspace-nextest"
 
 [[invariants]]
 id = "REPOMAP-ACTIVATION-FAIL-CLOSED-01"
@@ -1789,8 +1781,8 @@ negative_target = "repomap-owner-surface"
 recovery_target = "searchd-runtime-repo-map-end-to-end"
 consumer_target = "searchd-runtime-end-to-end"
 pr_rail = "pr-workspace-nextest"
-merge_rail = "merge-workspace-nextest"
-nightly_rail = "nightly-workspace-nextest"
+main_rail = "main-workspace-nextest"
+manual_heavy_rail = "manual-heavy-workspace-nextest"
 
 [[invariants]]
 id = "DSL-CAPABILITY-TRUTH-01"
@@ -1802,8 +1794,8 @@ negative_target = "searchd-runtime-filter-execution"
 recovery_target = "searchd-runtime-restart-replay-determinism"
 consumer_target = "searchd-harness-dsl-scenario-truth"
 pr_rail = "pr-workspace-nextest"
-merge_rail = "merge-workspace-nextest"
-nightly_rail = "nightly-workspace-nextest"
+main_rail = "main-workspace-nextest"
+manual_heavy_rail = "manual-heavy-workspace-nextest"
 
 [[python_targets]]
 id = "benchmark-resource-admission-python-owner"

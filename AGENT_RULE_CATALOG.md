@@ -97,7 +97,7 @@ These checks apply **while you write**, not as a cleanup pass. Every diff should
 
 ### Fail-closed deserialization
 
-- IPC request/response decoders are fuzzed via cargo-fuzz under `crates/quanta-index-contract/fuzz/` in the heavy correctness rail (`just rust-fuzz-smoke`, `.github/workflows/correctness.yml` job `rust-fuzz-smoke`, 60s/target). Any panic, infinite loop, or non-`Err` exit on malformed bytes is treated as a fail-closed violation.
+- IPC request/response decoders are fuzzed via cargo-fuzz under `crates/quanta-index-contract/fuzz/` in the explicit CircleCI heavy correctness rail (`just rust-fuzz-smoke`, `.circleci/config.yml` job `heavy-correctness`, 60s/target). Any panic, infinite loop, or non-`Err` exit on malformed bytes is treated as a fail-closed violation.
 
 ### Structural integrity (workspace shape)
 
@@ -175,9 +175,9 @@ These checks apply **while you write**, not as a cleanup pass. Every diff should
 - Tooling tests: `python3 -m pytest tools -q`
 - Agent output envelope and evidence binding (PR-changed only): `python3 tools/ci/agent/validate_agent_output.py <file>`
 
-### Heavy rail (correctness.yml, nightly + workflow_dispatch)
+### Heavy rail (CircleCI `run_heavy=true`, explicit dispatch)
 
-- Miri, cargo-careful, TSan, ASan, cargo-mutants, cargo-udeps (existing)
+- Miri, cargo-careful, TSan, ASan, cargo-mutants, cargo-udeps remain local `just` rails; they are not part of the current CircleCI heavy job.
 - real-engine full corpus: `just rust-test-full-corpus`
 - Monomorphization budget: `python3 tools/ci/lint/check-llvm-lines.py`
 - Contract surface diff: `python3 tools/ci/lint/check-public-api.py`

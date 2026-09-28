@@ -1,11 +1,9 @@
 name: ci
 
+# Historical manual rail only. GitHub Actions is disabled at repository level;
+# the replacement CI definition is .circleci/config.yml (project activation pending).
 on:
-  push:
-    branches:
-      - main
-  pull_request:
-  merge_group:
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -30,8 +28,7 @@ jobs:
 
       - name: Run pre-commit
         env:
-          # Dedicated jobs below own these whole-revision checks. Keep this
-          # job for action/shell policy, generic file integrity, and hygiene.
+          # Historical manual job; repository Actions is disabled.
           SKIP: ruff,ruff-format,prompt-manager-lint,cargo-fmt-check,cargo-check,hexagonal-boundaries,rust-derive-allowlist,rust-cargo-toml-hygiene,proof-authority,rust-digest-fallibility
         run: bash -lc 'source scripts/quanta-index-env.sh && python -m pre_commit run --all-files --show-diff-on-failure'
 

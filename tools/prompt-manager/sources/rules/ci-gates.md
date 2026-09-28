@@ -19,9 +19,9 @@
 - Tooling tests: `python3 -m pytest tools -q`
 - Agent output envelope and evidence binding (PR-changed only): `python3 tools/ci/agent/validate_agent_output.py <file>`
 
-### Heavy rail (correctness.yml, nightly + workflow_dispatch)
+### Heavy rail (CircleCI `run_heavy=true`, explicit dispatch)
 
-- Miri, cargo-careful, TSan, ASan, cargo-mutants, cargo-udeps (existing)
+- Miri, cargo-careful, TSan, ASan, cargo-mutants, cargo-udeps remain local `just` rails; they are not part of the current CircleCI heavy job.
 - real-engine full corpus: `just rust-test-full-corpus`
 - Monomorphization budget: `python3 tools/ci/lint/check-llvm-lines.py`
 - Contract surface diff: `python3 tools/ci/lint/check-public-api.py`

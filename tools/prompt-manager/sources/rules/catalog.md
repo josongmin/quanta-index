@@ -52,7 +52,7 @@ These checks apply **while you write**, not as a cleanup pass. Every diff should
 
 ### Fail-closed deserialization
 
-- IPC request/response decoders are fuzzed via cargo-fuzz under `crates/quanta-index-contract/fuzz/` in the heavy correctness rail (`just rust-fuzz-smoke`, `.github/workflows/correctness.yml` job `rust-fuzz-smoke`, 60s/target). Any panic, infinite loop, or non-`Err` exit on malformed bytes is treated as a fail-closed violation.
+- IPC request/response decoders are fuzzed via cargo-fuzz under `crates/quanta-index-contract/fuzz/` in the explicit CircleCI heavy correctness rail (`just rust-fuzz-smoke`, `.circleci/config.yml` job `heavy-correctness`, 60s/target). Any panic, infinite loop, or non-`Err` exit on malformed bytes is treated as a fail-closed violation.
 
 ### Structural integrity (workspace shape)
 

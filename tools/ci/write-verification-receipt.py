@@ -31,9 +31,10 @@ def _revision() -> str:
         sample = ", ".join(dirty[:5])
         raise SystemExit(f"refusing verification receipt from dirty source: {sample}")
     head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
-    value = os.environ.get("GITHUB_SHA", "").strip()
-    if value and value != head:
-        raise SystemExit(f"GITHUB_SHA differs from checked-out HEAD: {value} != {head}")
+    for name in ("GITHUB_SHA", "CIRCLE_SHA1"):
+        value = os.environ.get(name, "").strip()
+        if value and value != head:
+            raise SystemExit(f"{name} differs from checked-out HEAD: {value} != {head}")
     return head
 
 

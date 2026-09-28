@@ -1,0 +1,193 @@
+version: 2.1
+
+# Connect only default-branch pushes and PR updates in CircleCI project settings.
+# The private repository uses the Free plan credit pool; expensive exploration
+# requires an explicit pipeline parameter and has no schedule trigger.
+parameters:
+  run_heavy:
+    type: boolean
+    default: false
+
+jobs:
+  verify:
+    machine:
+      image: ubuntu-2404:2026.05.1
+    resource_class: medium
+    environment:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_TERM_COLOR: always
+    steps:
+      - checkout
+      - run:
+          name: Install verification tools
+          command: |
+            set -euo pipefail
+            sudo apt-get update
+            sudo apt-get install -y build-essential pkg-config libssl-dev python3-venv
+            if ! command -v rustup >/dev/null 2>&1; then
+              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
+                sh -s -- -y --profile minimal --default-toolchain none
+            fi
+            . "$HOME/.cargo/env"
+            rustup toolchain install 1.92.0 --profile minimal --component clippy --component rustfmt
+            curl --proto '=https' --tlsv1.2 -sSf https://get.nexte.st/0.9.104/linux |
+              tar zxf - -C "$HOME/.cargo/bin"
+            curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh |
+              bash -s -- --tag 1.58.0 --to "$HOME/.cargo/bin"
+            cargo install cargo-deny --version 0.19.7 --locked
+            curl --proto '=https' --tlsv1.2 -sSf https://astral.sh/uv/0.9.11/install.sh | sh
+            printf 'export PATH="%s/.cargo/bin:%s/.local/bin:$PATH"\n' "$HOME" "$HOME" >> "$BASH_ENV"
+      - run:
+          name: Verify tool versions
+          command: |
+            set -euo pipefail
+            test "$(git rev-parse HEAD)" = "$CIRCLE_SHA1"
+            rustc --version
+            cargo nextest --version
+            just --version
+            uv --version
+      - run:
+          name: Python policy and tooling tests
+          no_output_timeout: 20m
+          command: |
+            set -euo pipefail
+            uv run --frozen --extra dev bash scripts/run-tooling-tests.sh
+            uv run --frozen --extra dev python tools/prompt-manager/pm.py lint
+            uv run --frozen --extra dev python -m ruff check .
+            uv run --frozen --extra dev python -m ruff format --check .
+            uv run --frozen --extra dev just rust-policy
+            uv run --frozen --extra dev just rust-semantic-outcomes
+            uv run --frozen --extra dev just rust-fallbacks
+            uv run --frozen --extra dev just benchmark-policy-local
+            uv run --frozen --extra dev bash scripts/check-semgrep-rules.sh
+            uv run --frozen --extra dev bash scripts/run-semgrep.sh
+      - run:
+          name: Validate tracked agent outputs
+          command: |
+            set -euo pipefail
+            git ls-files -z -- ':(glob)**/agent_output*.json' |
+              while IFS= read -r -d '' file; do
+                uv run --frozen --extra dev python tools/ci/agent/validate_agent_output.py "$file"
+              done
+      - run:
+          name: Benchmark capture and custody contracts
+          no_output_timeout: 20m
+          command: |
+            set -euo pipefail
+            uv run --frozen --extra dev just benchmark-control-contract-local
+      - run:
+          name: P00 authority owner tests
+          no_output_timeout: 20m
+          command: |
+            set -euo pipefail
+            uv run --frozen --extra dev just proof-p00-authority-freeze
+      - run:
+          name: Rust format and clippy
+          no_output_timeout: 20m
+          command: |
+            set -euo pipefail
+            ./scripts/cargow fmt --all -- --check
+            ./scripts/cargow clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - run:
+          name: rust nextest
+          no_output_timeout: 30m
+          command: |
+            set -euo pipefail
+            mkdir -p artifacts/test-authority
+            export NEXTEST_EXPERIMENTAL_LIBTEST_JSON=1
+            ./scripts/cargow nextest list --workspace --all-features --locked \
+              --message-format json > artifacts/test-authority/inventory.json
+            ./scripts/cargow nextest run --workspace --all-features --locked \
+              --message-format libtest-json-plus --message-format-version 0.1 \
+              | tee artifacts/test-authority/nextest.jsonl
+            if [[ -n "${CIRCLE_PULL_REQUEST:-}" ]]; then
+              tier=pr
+              rail=pr-workspace-nextest
+            elif [[ "${CIRCLE_BRANCH:-}" == main ]]; then
+              tier=main
+              rail=main-workspace-nextest
+            else
+              echo "No PR/main verification receipt for branch ${CIRCLE_BRANCH:-unknown}"
+              exit 0
+            fi
+            uv run --frozen --extra dev python tools/ci/write-verification-receipt.py \
+              --rail "$rail" --tier "$tier" \
+              --command "./scripts/cargow nextest run --workspace --all-features --locked --message-format libtest-json-plus --message-format-version 0.1" \
+              --evidence artifacts/test-authority/nextest.jsonl \
+              --inventory artifacts/test-authority/inventory.json \
+              --out artifacts/test-authority/receipt.json
+      - store_artifacts:
+          path: artifacts/test-authority
+          destination: test-authority
+
+  heavy-correctness:
+    machine:
+      image: ubuntu-2404:2026.05.1
+    resource_class: large
+    steps:
+      - checkout
+      - run:
+          name: Install nightly fuzz tooling
+          command: |
+            set -euo pipefail
+            if ! command -v rustup >/dev/null 2>&1; then
+              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
+                sh -s -- -y --profile minimal --default-toolchain none
+            fi
+            . "$HOME/.cargo/env"
+            rustup toolchain install 1.92.0 --profile minimal
+            rustup toolchain install nightly --profile minimal
+            cargo +nightly install cargo-fuzz --locked
+            curl --proto '=https' --tlsv1.2 -sSf https://get.nexte.st/0.9.104/linux |
+              tar zxf - -C "$HOME/.cargo/bin"
+            curl --proto '=https' --tlsv1.2 -sSf https://astral.sh/uv/0.9.11/install.sh | sh
+            printf 'export PATH="%s/.cargo/bin:%s/.local/bin:$PATH"\n' "$HOME" "$HOME" >> "$BASH_ENV"
+      - run:
+          name: Verify checked-out source
+          command: |
+            set -euo pipefail
+            test "$(git rev-parse HEAD)" = "$CIRCLE_SHA1"
+      - run:
+          name: rust nextest authority receipt
+          no_output_timeout: 30m
+          command: |
+            set -euo pipefail
+            mkdir -p artifacts/test-authority
+            export NEXTEST_EXPERIMENTAL_LIBTEST_JSON=1
+            ./scripts/cargow nextest list --workspace --all-features --locked \
+              --message-format json > artifacts/test-authority/inventory.json
+            ./scripts/cargow nextest run --workspace --all-features --locked \
+              --message-format libtest-json-plus --message-format-version 0.1 \
+              | tee artifacts/test-authority/nextest.jsonl
+            uv run --frozen --extra dev python tools/ci/write-verification-receipt.py \
+              --rail manual-heavy-workspace-nextest --tier correctness \
+              --command "./scripts/cargow nextest run --workspace --all-features --locked --message-format libtest-json-plus --message-format-version 0.1" \
+              --evidence artifacts/test-authority/nextest.jsonl \
+              --inventory artifacts/test-authority/inventory.json \
+              --out artifacts/test-authority/receipt.json
+      - store_artifacts:
+          path: artifacts/test-authority
+          destination: test-authority
+      - run:
+          name: Fuzz all registered decoders
+          no_output_timeout: 20m
+          command: |
+            set -euo pipefail
+            cd crates/quanta-index-contract/fuzz
+            cargo +nightly fuzz build
+            cargo +nightly fuzz run ipc_request_decode -- -max_total_time=60
+            cargo +nightly fuzz run ipc_response_decode -- -max_total_time=60
+            cargo +nightly fuzz run search_corpus_ingest_decode -- -dict=dictionaries/search_corpus_ingest.dict -max_total_time=60
+            cd ../../quanta-index-lq-norm/fuzz
+            cargo +nightly fuzz build
+            cargo +nightly fuzz run lq_parse_pipeline -- -max_total_time=60
+
+workflows:
+  regular:
+    unless: << pipeline.parameters.run_heavy >>
+    jobs:
+      - verify
+  manual-heavy:
+    when: << pipeline.parameters.run_heavy >>
+    jobs:
+      - heavy-correctness

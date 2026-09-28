@@ -201,6 +201,14 @@ repos:
         files: ^(tools/ci/(proof-authority\.toml|proof-(?:manifest|aggregate)\.schema\.json|write-proof-(?:manifest|aggregate)\.py|lint/check-(?:proof-authority|lane-handoff)\.py|tests/test_check_(?:proof_authority|lane_handoff)\.py|tests/test_write_proof_(?:manifest|aggregate)\.py)|docs/(?:adr/SEP-21-.*\.md|plans/sep-21-search-plane-sota-hardening/tickets/handoffs/lane-handoff\.schema\.json))$
         stages: [pre-commit, pre-push]
 
+      - id: test-authority
+        name: executable test authority bindings
+        entry: uv run --frozen --extra dev python tools/ci/lint/check-test-authority.py
+        language: system
+        pass_filenames: false
+        files: ^(\.circleci/config\.yml|tools/ci/(test-authority\.toml|lint/check-test-authority\.py|tests/.*\.py)|(?:crates|benchmarks)/.*/tests/.*\.rs|crates/.*/fuzz/(Cargo\.toml|fuzz_targets/.*\.rs))$
+        stages: [pre-commit, pre-push]
+
       - id: rust-digest-fallibility
         name: rust digest fallibility
         entry: python3 tools/ci/lint/check-digest-fallibility.py
@@ -262,7 +270,7 @@ repos:
         entry: bash -lc 'source scripts/quanta-index-env.sh && python3 -m pytest tools/ci/tests/test_precommit_scopes.py -q -o cache_dir="$PYTEST_CACHE_DIR"'
         language: system
         pass_filenames: false
-        files: ^(\.pre-commit-config\.yaml|\.github/workflows/ci\.yml|Justfile|tools/ci/tests/test_precommit_scopes\.py)$
+        files: ^(\.pre-commit-config\.yaml|\.circleci/config\.yml|\.github/workflows/(ci|correctness|potion-code-parity)\.yml|Justfile|tools/ci/tests/test_precommit_scopes\.py)$
         stages: [pre-push]
 
       - id: prompt-manager-tests

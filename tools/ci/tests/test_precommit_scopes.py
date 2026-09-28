@@ -11,14 +11,17 @@ ROOT = Path(__file__).resolve().parents[3]
 CONFIG = ROOT / ".pre-commit-config.yaml"
 WORKFLOW = ROOT / ".github/workflows/ci.yml"
 CORRECTNESS_WORKFLOW = ROOT / ".github/workflows/correctness.yml"
+CIRCLECI = ROOT / ".circleci/config.yml"
 
 
-def test_ci_avoids_duplicate_branch_push_and_pull_request_runs() -> None:
-    workflow = yaml.load(WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
-    triggers = workflow["on"]
-    assert triggers["push"] == {"branches": ["main"]}
-    assert "pull_request" in triggers
-    assert "merge_group" in triggers
+def test_github_actions_has_no_automatic_trigger_and_circleci_is_default() -> None:
+    for path in (WORKFLOW, CORRECTNESS_WORKFLOW, ROOT / ".github/workflows/potion-code-parity.yml"):
+        workflow = yaml.load(path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+        assert set(workflow["on"]) == {"workflow_dispatch"}
+    config = yaml.safe_load(CIRCLECI.read_text(encoding="utf-8"))
+    assert config["parameters"]["run_heavy"]["default"] is False
+    assert config["workflows"]["regular"]["jobs"] == ["verify"]
+    assert config["workflows"]["manual-heavy"]["jobs"] == ["heavy-correctness"]
 
 
 def test_p00_proof_step_stops_before_manifest_when_recipe_fails(tmp_path: Path) -> None:
@@ -105,6 +108,13 @@ def test_scoped_repository_lints_skip_unrelated_docs_and_cover_their_inputs() ->
             "crates/quanta-index-core/src/lib.rs",
             "tools/ci/lint/check-digest-fallibility.py",
         ),
+        "test-authority": (
+            ".circleci/config.yml",
+            "tools/ci/test-authority.toml",
+            "crates/quanta-index-contract/tests/ipc_query_result_v2.rs",
+            "crates/quanta-index-contract/fuzz/fuzz_targets/ipc_request_decode.rs",
+            "tools/ci/tests/test_circleci_authority.py",
+        ),
         "semgrep": (
             "crates/quanta-index-searchd/src/lib.rs",
             ".github/workflows/ci.yml",
@@ -132,7 +142,10 @@ def test_scoped_repository_lints_skip_unrelated_docs_and_cover_their_inputs() ->
         ),
         "precommit-scope-tests": (
             ".pre-commit-config.yaml",
+            ".circleci/config.yml",
             ".github/workflows/ci.yml",
+            ".github/workflows/correctness.yml",
+            ".github/workflows/potion-code-parity.yml",
             "Justfile",
             "tools/ci/tests/test_precommit_scopes.py",
         ),

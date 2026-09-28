@@ -1,16 +1,10 @@
 name: correctness
 
-# Heavy correctness tooling. PRs retain source-specific structural gates and
-# changed-line coverage; exhaustive interpreter, sanitizer, mutation, unused-
-# dependency and fuzz exploration runs nightly or on explicit dispatch. These
-# are intentionally separate from `ci.yml` because they take significantly
-# longer than the regular test rail. A proof bundle dispatch selects code
-# qualification or final production qualification; ordinary PRs run neither.
+# Historical manual workflow. GitHub Actions is disabled at repository level.
+# The CircleCI config defines explicit heavy nextest/fuzz; the remaining
+# jobs here have no CircleCI equivalent and must not be counted as current CI.
 
 on:
-  pull_request:
-  schedule:
-    - cron: "17 5 * * *"
   workflow_dispatch:
     inputs:
       proof_bundle_run_id:
