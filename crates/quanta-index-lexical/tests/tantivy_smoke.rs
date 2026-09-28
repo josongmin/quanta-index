@@ -1859,6 +1859,42 @@ fn tantivy_select_file_collapses_multiple_chunks_per_path() -> TestResult {
         .into());
     }
 
+    // The first two chunk rows belong to the same file. Grouping must run
+    // before the top-k cut so a two-file page still includes src/main.rs.
+    let query = make_query_with_filters(
+        LqExpr::Leaf(LqLeaf::Keyword("file_projection_needle".to_string())),
+        vec![LqFilter::Select {
+            dim: LqSelect::File,
+        }],
+    );
+    let file_hits = searcher.search(&query, 2, &RequestBudgetV1::unbounded())?;
+    let file_ids: Vec<&str> = file_hits
+        .iter()
+        .map(|hit| hit.candidate_id.as_str())
+        .collect();
+    if file_ids != vec!["alpha", "gamma"] {
+        return Err(format!(
+            "expected select:file top-2 to group before cutting the page, got {file_ids:?}"
+        )
+        .into());
+    }
+
+    let chunk_query = make_query_with_filters(
+        LqExpr::Leaf(LqLeaf::Keyword("file_projection_needle".to_string())),
+        Vec::new(),
+    );
+    let chunk_hits = searcher.search(&chunk_query, 2, &RequestBudgetV1::unbounded())?;
+    let chunk_ids: Vec<&str> = chunk_hits
+        .iter()
+        .map(|hit| hit.candidate_id.as_str())
+        .collect();
+    if chunk_ids != vec!["alpha", "beta"] {
+        return Err(format!(
+            "expected ordinary top-2 to preserve chunk ranking, got {chunk_ids:?}"
+        )
+        .into());
+    }
+
     Ok(())
 }
 
