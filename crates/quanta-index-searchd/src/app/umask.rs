@@ -23,5 +23,14 @@ const DAEMON_UMASK_RAW: rustix::fs::RawMode = 0o077;
 /// force, so the boot log can name what the daemon inherited.
 #[must_use]
 pub fn harden_umask() -> u32 {
-    u32::from(rustix::process::umask(Mode::from_raw_mode(DAEMON_UMASK_RAW)).as_raw_mode())
+    let inherited = rustix::process::umask(Mode::from_raw_mode(DAEMON_UMASK_RAW)).as_raw_mode();
+    // RawMode is already u32 on Linux/Android; Darwin uses a narrower mode_t.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        inherited
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    {
+        u32::from(inherited)
+    }
 }

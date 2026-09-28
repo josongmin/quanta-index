@@ -52,6 +52,14 @@ jobs:
             just --version
             uv --version
       - run:
+          name: Rust format and clippy
+          no_output_timeout: 20m
+          command: |
+            set -euo pipefail
+            unset BASH_ENV ENV
+            ./scripts/cargow fmt --all -- --check
+            ./scripts/cargow clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - run:
           name: Python policy and tooling tests
           no_output_timeout: 20m
           command: |
@@ -86,14 +94,6 @@ jobs:
             set -euo pipefail
             unset BASH_ENV ENV
             uv run --frozen --extra dev just proof-p00-authority-freeze
-      - run:
-          name: Rust format and clippy
-          no_output_timeout: 20m
-          command: |
-            set -euo pipefail
-            unset BASH_ENV ENV
-            ./scripts/cargow fmt --all -- --check
-            ./scripts/cargow clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run:
           name: rust nextest
           no_output_timeout: 30m
