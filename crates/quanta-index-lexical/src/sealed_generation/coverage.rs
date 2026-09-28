@@ -24,11 +24,38 @@ pub(crate) use pages::{
 
 pub(crate) type CoverageSnapshot = FileCoverageSnapshot;
 
+/// Successful coverage decodes only. These are logical bytes read and hashed
+/// by the coverage decoder, not filesystem block I/O or process RSS.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct LexicalCoverageReadStats {
+    pub decodes: u64,
+    pub root_bytes: u64,
+    pub pages: u64,
+    pub page_bytes: u64,
+    pub rows: u64,
+    /// Maximum conservative decode-heap admission charge, not measured RSS.
+    pub max_decode_heap_admission_bytes: u64,
+}
+
+impl LexicalCoverageReadStats {
+    pub(crate) fn absorb(&mut self, other: Self) {
+        self.decodes = self.decodes.saturating_add(other.decodes);
+        self.root_bytes = self.root_bytes.saturating_add(other.root_bytes);
+        self.pages = self.pages.saturating_add(other.pages);
+        self.page_bytes = self.page_bytes.saturating_add(other.page_bytes);
+        self.rows = self.rows.saturating_add(other.rows);
+        self.max_decode_heap_admission_bytes = self
+            .max_decode_heap_admission_bytes
+            .max(other.max_decode_heap_admission_bytes);
+    }
+}
+
 /// Both values are proved by one manifest commitment and one generation open.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CoverageArtifact {
     pub(crate) coverage: CoverageSnapshot,
     pub(crate) publication: SourcePublicationEvent,
+    pub(crate) read_stats: LexicalCoverageReadStats,
 }
 
 fn corrupt(generation_dir: &Path, reason: &str) -> CoreError {

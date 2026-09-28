@@ -68,12 +68,28 @@ impl MetricSourcePort for LexicalAdapter {
         let regex = self.regex_match_cache_stats()?;
         let text_authority = self.text_authority_update_stats()?;
         let seals = self.seal_commitment_stats()?;
+        let coverage = self.coverage_read_stats()?;
         Ok(vec![
             MetricPointV1::counter("lexical_seals_total", seals.seals),
             MetricPointV1::counter("lexical_seal_files_hashed_total", seals.files_hashed),
             MetricPointV1::counter("lexical_seal_bytes_hashed_total", seals.bytes_hashed),
             MetricPointV1::counter("lexical_seal_files_inherited_total", seals.files_inherited),
             MetricPointV1::counter("lexical_seal_bytes_inherited_total", seals.bytes_inherited),
+            MetricPointV1::counter("lexical_coverage_decodes_total", coverage.decodes),
+            MetricPointV1::counter(
+                "lexical_coverage_root_bytes_read_total",
+                coverage.root_bytes,
+            ),
+            MetricPointV1::counter("lexical_coverage_pages_read_total", coverage.pages),
+            MetricPointV1::counter(
+                "lexical_coverage_page_bytes_read_total",
+                coverage.page_bytes,
+            ),
+            MetricPointV1::counter("lexical_coverage_rows_decoded_total", coverage.rows),
+            MetricPointV1::gauge_count(
+                "lexical_coverage_max_decode_heap_admission_bytes",
+                coverage.max_decode_heap_admission_bytes,
+            ),
             MetricPointV1::counter(
                 "lexical_text_authority_rebuilds_total",
                 text_authority.rebuilds,
@@ -182,6 +198,7 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
                 }) if batch.mode == BatchIngestMode::ReplaceGeneration => return Ok(()),
                 Err(error) => return Err(error),
             };
+            self.record_coverage_read(proved.coverage_read_stats)?;
             if proved.source_publication.as_ref() != Some(&batch.source_event) {
                 return Err(CoreError::InvalidContract(
                     "lexical: sealed target belongs to another source event".into(),
@@ -230,6 +247,7 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
             self.validate_generation_identity(&candidate)?;
             let verified =
                 walk_sealed_generation(&generation_dir, &candidate, &mut DiscardingVisitor)?;
+            self.record_coverage_read(verified.coverage_read_stats)?;
             if verified.source_publication.as_ref() != Some(&batch.source_event) {
                 return Err(CoreError::InvalidContract(
                     "lexical: sealed generation belongs to a different source event".into(),
@@ -467,6 +485,7 @@ impl LexicalAdapter {
                 }
                 let verified =
                     walk_sealed_generation(&base_dir, &identity, &mut DiscardingVisitor)?;
+                self.record_coverage_read(verified.coverage_read_stats)?;
                 // A current source high-water alone cannot authorize cloning an
                 // older physical snapshot: unchanged files would be resurrected
                 // while the new event claims to extend the current lineage.
@@ -512,7 +531,11 @@ impl LexicalAdapter {
             &tombstones,
             &batch.clear_surfaces,
         )?;
-        match read_staged_coverage(generation_dir, candidate)? {
+        let staged = read_staged_coverage(generation_dir, candidate)?;
+        if let Some(staged) = staged.as_ref() {
+            self.record_coverage_read(staged.read_stats)?;
+        }
+        match staged {
             Some(staged)
                 if staged.publication != batch.source_event
                     || staged.coverage != *coverage.snapshot() =>

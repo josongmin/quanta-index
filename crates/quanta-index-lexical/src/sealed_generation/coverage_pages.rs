@@ -13,7 +13,10 @@ use quanta_index_contract::{GenerationSnapshot, SourceFileCoverage, SourcePublic
 use quanta_index_core::{CoreError, SealedArtifactCommitmentV1};
 use sha2::{Digest as _, Sha256};
 
-use super::{CoverageArtifact, CoverageSnapshot, SOURCE_FILE_COVERAGE_FILE_NAME, corrupt};
+use super::{
+    CoverageArtifact, CoverageSnapshot, LexicalCoverageReadStats, SOURCE_FILE_COVERAGE_FILE_NAME,
+    corrupt,
+};
 
 pub(crate) const COVERAGE_FORMAT: u32 = 2;
 pub(crate) const MAX_COVERAGE_ROOT_BYTES: usize = 32 * 1024;
@@ -241,7 +244,7 @@ pub(crate) fn is_coverage_page(name: &str) -> bool {
     name.starts_with(PAGE_PREFIX)
 }
 
-fn decode_root(bytes: &[u8], directory: &Path) -> Result<CoverageRow, CoreError> {
+fn decode_root(bytes: &[u8], directory: &Path) -> Result<(CoverageRow, u64), CoreError> {
     if bytes.len() > MAX_COVERAGE_ROOT_BYTES {
         return Err(corrupt(directory, "coverage root exceeds its byte ceiling"));
     }
@@ -308,7 +311,7 @@ fn decode_root(bytes: &[u8], directory: &Path) -> Result<CoverageRow, CoreError>
             "effective coverage exceeds supported decode residency",
         ));
     }
-    Ok(root)
+    Ok((root, heap_charge))
 }
 
 pub(crate) fn root_page_commitments(
@@ -326,7 +329,7 @@ pub(crate) fn root_page_commitments(
             "coverage root differs from its commitment",
         ));
     }
-    let (_, identity, _, pages) = decode_root(&bytes, directory)?;
+    let ((_, identity, _, pages), _) = decode_root(&bytes, directory)?;
     if identity != *expected {
         return Err(corrupt(
             directory,
@@ -380,7 +383,7 @@ fn decode_coverage_pages_impl(
     expected: &GenerationSnapshot,
     allow_orphans: bool,
 ) -> Result<CoverageArtifact, CoreError> {
-    let (_, identity, publication, pages) = decode_root(bytes, directory)?;
+    let ((_, identity, publication, pages), heap_admission) = decode_root(bytes, directory)?;
     if identity != *expected {
         return Err(corrupt(
             directory,
@@ -389,10 +392,24 @@ fn decode_coverage_pages_impl(
     }
     let mut coverage = CoverageSnapshot::new();
     let mut names = BTreeSet::new();
+    let mut read_stats = LexicalCoverageReadStats {
+        decodes: 1,
+        root_bytes: u64::try_from(bytes.len())
+            .map_err(|error| resource(&format!("coverage root count overflow: {error}")))?,
+        max_decode_heap_admission_bytes: heap_admission,
+        ..LexicalCoverageReadStats::default()
+    };
     for (slot, length, digest, count) in pages {
         let name = page_name(slot, &digest);
         let _inserted = names.insert(name.clone());
         let raw = read_bounded(&directory.join(&name), MAX_COVERAGE_PAGE_BYTES)?;
+        read_stats.pages = read_stats.pages.saturating_add(1);
+        read_stats.page_bytes =
+            read_stats
+                .page_bytes
+                .saturating_add(u64::try_from(raw.len()).map_err(|error| {
+                    resource(&format!("coverage page count overflow: {error}"))
+                })?);
         if !has_length(&raw, length) || <[u8; 32]>::from(Sha256::digest(&raw)) != digest {
             return Err(corrupt(
                 directory,
@@ -414,6 +431,7 @@ fn decode_coverage_pages_impl(
         }
         let mut previous = None;
         for row in rows {
+            read_stats.rows = read_stats.rows.saturating_add(1);
             row.validate()
                 .map_err(|error| corrupt(directory, &error.to_string()))?;
             let key = row.source.file.clone();
@@ -445,6 +463,7 @@ fn decode_coverage_pages_impl(
     Ok(CoverageArtifact {
         coverage,
         publication,
+        read_stats,
     })
 }
 
@@ -488,7 +507,7 @@ pub(crate) fn write_coverage_pages(
                 "coverage base root changed after admission",
             ));
         }
-        let root = decode_root(&raw, &base.directory)?;
+        let (root, _) = decode_root(&raw, &base.directory)?;
         inherited.extend(root.3.into_iter().map(|row| (row.0, row)));
     }
     let mut pages = Vec::new();
@@ -553,7 +572,7 @@ pub(crate) fn write_coverage_pages(
             .map_err(|error| resource(&format!("coverage root length overflow: {error}")))?,
         sha256: Sha256::digest(&root).into(),
     };
-    let (_, _, _, pages) = decode_root(&root, directory)?;
+    let ((_, _, _, pages), _) = decode_root(&root, directory)?;
     let planned_rows: u64 = pages.iter().map(|(_, _, _, rows)| u64::from(*rows)).sum();
     if u64::try_from(snapshot.len()) != Ok(planned_rows) {
         return Err(corrupt(

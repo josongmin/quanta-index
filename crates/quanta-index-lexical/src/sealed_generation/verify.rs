@@ -33,7 +33,8 @@ use tantivy::{Index, IndexReader, ReloadPolicy};
 use crate::overlay_codec::OverlayFamily;
 use crate::ranked_keys::{self, MAX_RANKED_KEYS_BYTES, RankedKeyTables, SegmentKeys};
 use crate::sealed_generation::coverage::{
-    CoverageArtifact, CoverageSnapshot, SOURCE_FILE_COVERAGE_FILE_NAME, decode_coverage,
+    CoverageArtifact, CoverageSnapshot, LexicalCoverageReadStats, SOURCE_FILE_COVERAGE_FILE_NAME,
+    decode_coverage,
 };
 use crate::sealed_generation::index_files::referenced_index_files;
 use crate::sealed_generation::manifest::{LexicalSealedManifest, read_bound_manifest};
@@ -76,6 +77,7 @@ pub(crate) struct VerifiedGeneration {
     /// Decoded from this generation's committed artifact; None is unavailable.
     pub(crate) coverage: Option<CoverageSnapshot>,
     pub(crate) source_publication: Option<SourcePublicationEvent>,
+    pub(crate) coverage_read_stats: LexicalCoverageReadStats,
 }
 
 /// Prove `generation_dir` against the manifest sealed for `identity`.
@@ -95,15 +97,23 @@ pub(crate) fn walk_sealed_generation<V: SealedGenerationVisitor>(
     verify_text_authority(generation_dir, manifest.text_authority.as_deref(), visitor)?;
     let coverage =
         verify_source_coverage(generation_dir, identity, manifest.source_coverage.as_ref())?;
-    let (coverage, source_publication) = coverage.map_or((None, None), |artifact| {
-        (Some(artifact.coverage), Some(artifact.publication))
-    });
+    let (coverage, source_publication, coverage_read_stats) = coverage.map_or(
+        (None, None, LexicalCoverageReadStats::default()),
+        |artifact| {
+            (
+                Some(artifact.coverage),
+                Some(artifact.publication),
+                artifact.read_stats,
+            )
+        },
+    );
     Ok(VerifiedGeneration {
         manifest,
         index,
         ranked_keys,
         coverage,
         source_publication,
+        coverage_read_stats,
     })
 }
 

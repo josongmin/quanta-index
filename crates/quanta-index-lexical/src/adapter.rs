@@ -79,6 +79,7 @@ impl LexicalAdapter {
             regex_match_cache: Arc::new(Mutex::new(RegexMatchCache::new(regex_match_cache_policy))),
             text_authority_updates: Arc::new(Mutex::new(TextAuthorityUpdateStats::default())),
             seal_commitments: Arc::new(Mutex::new(LexicalSealCommitmentStats::default())),
+            coverage_reads: Arc::new(Mutex::new(crate::LexicalCoverageReadStats::default())),
             regex_policy,
             execution_budget,
             directory_lifecycle: Mutex::new(()),
@@ -149,6 +150,25 @@ impl LexicalAdapter {
             .lock()
             .map_err(|err| CoreError::Storage(format!("lexical seal stats poisoned: {err}")))?
             .absorb(seal);
+        Ok(())
+    }
+
+    /// Successful coverage decoder work across preflight, build and open.
+    pub fn coverage_read_stats(&self) -> Result<crate::LexicalCoverageReadStats, CoreError> {
+        self.coverage_reads
+            .lock()
+            .map(|stats| *stats)
+            .map_err(|err| CoreError::Storage(format!("lexical coverage stats poisoned: {err}")))
+    }
+
+    pub(crate) fn record_coverage_read(
+        &self,
+        read: crate::LexicalCoverageReadStats,
+    ) -> Result<(), CoreError> {
+        self.coverage_reads
+            .lock()
+            .map_err(|err| CoreError::Storage(format!("lexical coverage stats poisoned: {err}")))?
+            .absorb(read);
         Ok(())
     }
 

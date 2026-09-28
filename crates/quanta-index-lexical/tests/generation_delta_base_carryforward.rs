@@ -39,7 +39,7 @@ use quanta_index_core::{
     LexicalIndexOpenPort, RepoCommitRecencyIngestPort, RequestBudgetV1, SearchCorpusBatchBuildPort,
     TextAuthorityUpdateStats,
 };
-use quanta_index_lexical::LexicalAdapter;
+use quanta_index_lexical::{LexicalAdapter, LexicalCoverageReadStats};
 
 #[path = "support/current_source_fixture.rs"]
 mod current_source_fixture;
@@ -513,7 +513,52 @@ fn delta_generation_does_not_rewrite_unchanged_index_bytes() -> TestResult {
 /// Run each size in a fresh process and measure peak process RSS externally.
 /// Durations are observations, not admission thresholds. Seal counters exclude
 /// base verification and decoder reads.
-fn measure_total_delta_pipeline(filler_scopes: usize) -> TestResult {
+fn coverage_read_delta(
+    before: LexicalCoverageReadStats,
+    after: LexicalCoverageReadStats,
+) -> Result<LexicalCoverageReadStats, Box<dyn Error>> {
+    Ok(LexicalCoverageReadStats {
+        decodes: after
+            .decodes
+            .checked_sub(before.decodes)
+            .ok_or("decode counter regressed")?,
+        root_bytes: after
+            .root_bytes
+            .checked_sub(before.root_bytes)
+            .ok_or("root byte counter regressed")?,
+        pages: after
+            .pages
+            .checked_sub(before.pages)
+            .ok_or("page counter regressed")?,
+        page_bytes: after
+            .page_bytes
+            .checked_sub(before.page_bytes)
+            .ok_or("page byte counter regressed")?,
+        rows: after
+            .rows
+            .checked_sub(before.rows)
+            .ok_or("row counter regressed")?,
+        max_decode_heap_admission_bytes: after.max_decode_heap_admission_bytes,
+    })
+}
+
+fn emit_coverage_phase(phase: &str, stats: LexicalCoverageReadStats) {
+    emit_evidence(&[
+        ("kind", "coverage_read".into()),
+        ("phase", phase.into()),
+        ("decodes", stats.decodes.to_string()),
+        ("root_bytes", stats.root_bytes.to_string()),
+        ("pages", stats.pages.to_string()),
+        ("page_bytes", stats.page_bytes.to_string()),
+        ("rows", stats.rows.to_string()),
+        (
+            "max_decode_heap_admission_bytes",
+            stats.max_decode_heap_admission_bytes.to_string(),
+        ),
+    ]);
+}
+
+fn measure_total_delta_pipeline(filler_scopes: usize, mixed: bool) -> TestResult {
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
     let g1 = ManifestGeneration::new(1);
@@ -526,42 +571,76 @@ fn measure_total_delta_pipeline(filler_scopes: usize) -> TestResult {
     let (base_inodes, base_bytes) = inodes_and_bytes(&base_dir)?;
 
     let mut delta = delta_batch(g2, g1)?;
-    delta.replace_scopes.push(scope(
-        "src/new.rs",
-        "chunk-new",
-        "new_marker in a newly admitted file",
-    )?);
-    delta.replace_scopes.sort_by(|left, right| {
-        left.coverage
-            .source
-            .file
-            .repo_relative_path
-            .as_str()
-            .cmp(right.coverage.source.file.repo_relative_path.as_str())
-    });
-    delta
-        .tombstone_scopes
-        .push(quanta_index_contract::SearchCorpusTombstoneScope {
-            file: quanta_index_contract::SourceFileKey {
-                source_repo_id: repo(),
-                repo_relative_path: RepoRelativePath::new("src/filler/mod_00007.rs"),
-            },
+    if mixed {
+        delta.replace_scopes.push(scope(
+            "src/new.rs",
+            "chunk-new",
+            "new_marker in a newly admitted file",
+        )?);
+        delta.replace_scopes.sort_by(|left, right| {
+            left.coverage
+                .source
+                .file
+                .repo_relative_path
+                .as_str()
+                .cmp(right.coverage.source.file.repo_relative_path.as_str())
         });
-    current_source_fixture::finish_batch(&mut delta)?;
+        delta
+            .tombstone_scopes
+            .push(quanta_index_contract::SearchCorpusTombstoneScope {
+                file: quanta_index_contract::SourceFileKey {
+                    source_repo_id: repo(),
+                    repo_relative_path: RepoRelativePath::new("src/filler/mod_00007.rs"),
+                },
+            });
+        current_source_fixture::finish_batch(&mut delta)?;
+    }
 
+    let before_preflight = adapter.coverage_read_stats()?;
     let start = Instant::now();
     adapter.preflight_batch(&delta)?;
-    let preflight_ms = start.elapsed().as_millis();
+    let first_preflight_ms = start.elapsed().as_millis();
+    let after_first_preflight = adapter.coverage_read_stats()?;
+    let first_preflight_read = coverage_read_delta(before_preflight, after_first_preflight)?;
+    // SearchCorpus runs this again after acquiring the publication lock.
+    let start = Instant::now();
+    adapter.preflight_batch(&delta)?;
+    let second_preflight_ms = start.elapsed().as_millis();
+    let after_second_preflight = adapter.coverage_read_stats()?;
+    let second_preflight_read = coverage_read_delta(after_first_preflight, after_second_preflight)?;
+    let before_seal = adapter.seal_commitment_stats()?;
     let start = Instant::now();
     adapter.build_batch(&delta)?;
     let build_ms = start.elapsed().as_millis();
+    let after_build = adapter.coverage_read_stats()?;
+    let build_read = coverage_read_delta(after_second_preflight, after_build)?;
+    let after_seal = adapter.seal_commitment_stats()?;
     let start = Instant::now();
     let opened = adapter.open(&repo(), &revision(), g2)?;
     let open_ms = start.elapsed().as_millis();
+    let after_open = adapter.coverage_read_stats()?;
+    let open_read = coverage_read_delta(after_build, after_open)?;
     drop(opened);
 
-    assert_hits(&adapter, g2, "new_marker", &["chunk-new"], "mixed delta")?;
-    assert_hits(&adapter, g2, "quartz_00007", &[], "mixed tombstone")?;
+    if mixed {
+        assert_hits(&adapter, g2, "new_marker", &["chunk-new"], "mixed delta")?;
+        assert_hits(&adapter, g2, "quartz_00007", &[], "mixed tombstone")?;
+    }
+    let file_count = u64::try_from(filler_scopes.checked_add(2).ok_or("file count overflow")?)?;
+    for (phase, read) in [
+        ("first_preflight", first_preflight_read),
+        ("second_preflight", second_preflight_read),
+        ("build", build_read),
+        ("open", open_read),
+    ] {
+        if read.decodes != 1 || read.rows != file_count {
+            return Err(format!(
+                "{phase}: expected one complete {file_count}-row coverage decode, got {read:?}"
+            )
+            .into());
+        }
+        emit_coverage_phase(phase, read);
+    }
     let (fresh_bytes, fresh_entries) =
         bytes_not_shared_with(&generation_dir(dir.path(), g2)?, &base_inodes)?;
     let fresh_coverage_bytes: u64 = fresh_entries
@@ -571,6 +650,7 @@ fn measure_total_delta_pipeline(filler_scopes: usize) -> TestResult {
         .sum();
     emit_evidence(&[
         ("kind", "diagnostic_total_pipeline".into()),
+        ("mutation", if mixed { "mixed" } else { "one_file" }.into()),
         (
             "files",
             filler_scopes
@@ -579,9 +659,18 @@ fn measure_total_delta_pipeline(filler_scopes: usize) -> TestResult {
                 .to_string(),
         ),
         ("base_ms", base_ms.to_string()),
-        ("preflight_ms", preflight_ms.to_string()),
+        ("first_preflight_ms", first_preflight_ms.to_string()),
+        ("second_preflight_ms", second_preflight_ms.to_string()),
         ("delta_build_ms", build_ms.to_string()),
         ("delta_open_ms", open_ms.to_string()),
+        (
+            "delta_seal_hash_bytes",
+            after_seal
+                .bytes_hashed
+                .checked_sub(before_seal.bytes_hashed)
+                .ok_or("seal hash counter regressed")?
+                .to_string(),
+        ),
         ("base_bytes", base_bytes.to_string()),
         ("delta_fresh_bytes", fresh_bytes.to_string()),
         (
@@ -595,19 +684,37 @@ fn measure_total_delta_pipeline(filler_scopes: usize) -> TestResult {
 #[test]
 #[ignore = "manual whole-adapter cost probe; run in a fresh process for RSS"]
 fn total_delta_pipeline_cost_128_files() -> TestResult {
-    measure_total_delta_pipeline(126)
+    measure_total_delta_pipeline(126, true)
 }
 
 #[test]
 #[ignore = "manual whole-adapter cost probe; run in a fresh process for RSS"]
 fn total_delta_pipeline_cost_512_files() -> TestResult {
-    measure_total_delta_pipeline(510)
+    measure_total_delta_pipeline(510, true)
 }
 
 #[test]
 #[ignore = "manual whole-adapter cost probe; run in a fresh process for RSS"]
 fn total_delta_pipeline_cost_2048_files() -> TestResult {
-    measure_total_delta_pipeline(2046)
+    measure_total_delta_pipeline(2046, true)
+}
+
+#[test]
+#[ignore = "manual whole-adapter cost probe; run in a fresh process for RSS"]
+fn one_file_delta_pipeline_cost_128_files() -> TestResult {
+    measure_total_delta_pipeline(126, false)
+}
+
+#[test]
+#[ignore = "manual whole-adapter cost probe; run in a fresh process for RSS"]
+fn one_file_delta_pipeline_cost_512_files() -> TestResult {
+    measure_total_delta_pipeline(510, false)
+}
+
+#[test]
+#[ignore = "manual whole-adapter cost probe; run in a fresh process for RSS"]
+fn one_file_delta_pipeline_cost_2048_files() -> TestResult {
+    measure_total_delta_pipeline(2046, false)
 }
 
 /// Resolves the on-disk directory for one generation of the fixture corpus.

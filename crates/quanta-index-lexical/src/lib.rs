@@ -116,6 +116,7 @@ mod writer_cache;
 pub(crate) use quanta_index_lq_text_normalizer as normalize;
 
 pub use sealed_generation::LexicalSealCommitmentStats;
+pub use sealed_generation::coverage::LexicalCoverageReadStats;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -448,6 +449,7 @@ pub struct LexicalAdapter {
     /// What the adapter's seals read to commit their generations
     /// (QI-BB-006 보완 #4).
     seal_commitments: Arc<Mutex<LexicalSealCommitmentStats>>,
+    coverage_reads: Arc<Mutex<LexicalCoverageReadStats>>,
     /// Per-deployment regex policy injected at construction time.
     ///
     /// Owned by the adapter (not fabricated at the leaf call site) so all
