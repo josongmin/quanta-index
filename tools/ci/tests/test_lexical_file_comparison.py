@@ -49,10 +49,18 @@ def fixture_inputs(tmp_path):
         )
         pack_tasks.append({"task_id": task_id, "query": query, "query_sha256": sha})
     common_suite = {
+        "schema_version": 3,
+        "suite_id": "lexical-fixture-v1",
         "repository_commit": "a" * 40,
         "file_universe_digest": "b" * 64,
         "file_universe": [],
-        "comparison_contract": {"top_k": 10},
+        "comparison_contract": {
+            "top_k": 10,
+            "tokenizer": "qi-regex-v1",
+            "tokenizer_budget_version": "qb-v1",
+            "output_unit_policy": "rank_prefix",
+            "span_unit": "byte_span_with_line_projection_v1",
+        },
         "routes": ["lexical", "semble-lexical-only"],
     }
     suite = {**common_suite, "tasks": suite_tasks}
@@ -60,6 +68,8 @@ def fixture_inputs(tmp_path):
     pack = {
         **common_suite,
         "tasks": pack_tasks,
+        "tokenizer": "qi-regex-v1",
+        "tokenizer_budget_version": "qb-v1",
         "suite_commitment_sha256": digest(canonical(suite)),
     }
     base = {
@@ -131,6 +141,7 @@ def test_product_result_rejects_wrong_query_and_duplicate(tmp_path):
     path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
     universe = {gold[0] for _, gold in expected.values()}
     assert product_result("sourcegraph", path, expected, universe)["hits"] == 20
+    assert product_result("sourcegraph", path, expected, universe)["rank_unit"] == "distinct_file"
     rows[0]["submitted_query"] = "wrong"
     path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
     with pytest.raises(ValueError, match="query or gold differs"):
@@ -228,6 +239,40 @@ def test_product_result_separates_answerable_recall_and_no_gold_empty_rate(tmp_p
     assert result["file_recall_at_10"] == "not_applicable"
 
 
+def test_symbol_diagnostic_requires_native_top_10_contract(tmp_path):
+    _, _, suite, pack = fixture_inputs(tmp_path)
+    suite["comparison_contract"]["top_k"] = 20
+    pack["comparison_contract"]["top_k"] = 20
+    pack["suite_commitment_sha256"] = digest(canonical(suite))
+    with pytest.raises(ValueError, match="requires top_k 10"):
+        _tasks(suite, pack)
+
+
+def test_symbol_diagnostic_refuses_different_pack_contract_at_same_top_k(tmp_path):
+    _, _, suite, pack = fixture_inputs(tmp_path)
+    pack["comparison_contract"] = dict(pack["comparison_contract"])
+    pack["comparison_contract"]["output_unit_policy"] = "unknown"
+    with pytest.raises(ValueError, match="comparison contract"):
+        _tasks(suite, pack)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("schema_version", 4),
+        ("suite_id", "different-suite"),
+        ("routes", ["hybrid"]),
+        ("tokenizer", "other-tokenizer"),
+        ("tokenizer_budget_version", "other-budget"),
+    ],
+)
+def test_symbol_diagnostic_refuses_unbound_pack_metadata(tmp_path, field, value):
+    _, _, suite, pack = fixture_inputs(tmp_path)
+    pack[field] = value
+    with pytest.raises(ValueError, match="pack metadata|route inventory"):
+        _tasks(suite, pack)
+
+
 def test_symbol_diagnostic_refuses_unbound_file_universe(tmp_path):
     _, _, suite, pack = fixture_inputs(tmp_path)
     files = [{"path": "src/answer.go", "file_sha256": "a" * 64}]
@@ -250,8 +295,10 @@ def test_pair_result_rejects_semantic_lane_even_if_report_has_hits(tmp_path, rec
         pack["suite_commitment_sha256"] = digest(canonical(suite))
     report = {
         "query_pack_sha256": digest(canonical(pack)),
+        "runner_record_sha256": "f" * 64,
         "repository_commit": suite["repository_commit"],
         "file_universe_digest": suite["file_universe_digest"],
+        "comparison_contract": suite["comparison_contract"],
         "sample_count": 20,
         "rank_metrics": {
             "routes": {
@@ -292,6 +339,8 @@ def test_pair_result_rejects_semantic_lane_even_if_report_has_hits(tmp_path, rec
         },
         "quanta_routes": ["lexical"],
         "semble_route": "semble-lexical-only",
+        "top_k": 10,
+        "strategies": ["fixed_window_strict"],
     }
     native = {
         "semble_profile": "lexical-only",
@@ -299,7 +348,19 @@ def test_pair_result_rejects_semantic_lane_even_if_report_has_hits(tmp_path, rec
         "lane_call_counts": {"bm25": 1, "semantic": 0, "encode": 0},
         "execution_events": [{"lane_entry_counts": {"bm25": 1, "semantic": 0}}],
     }
-    verdict = {"states": {"PAIR_VALID": "pass"}}
+    verdict = {
+        "states": {"PAIR_VALID": "pass"},
+        "counts": {"selected": 40, "executed": 40, "passed": 40, "failed": 0},
+        "comparisons": [
+            {
+                "strategy": "fixed_window_strict",
+                "candidate_route": "lexical",
+                "baseline_route": "semble-lexical-only",
+                "report_digest": hashlib.sha256(json.dumps(report).encode()).hexdigest(),
+                "record_digest": report["runner_record_sha256"],
+            }
+        ],
+    }
     paths = [tmp_path / f"{name}.json" for name in ("report", "lock", "native", "verdict")]
     for path, value in zip(paths, (report, lock, native, verdict), strict=True):
         path.write_text(json.dumps(value), encoding="utf-8")
@@ -307,14 +368,38 @@ def test_pair_result_rejects_semantic_lane_even_if_report_has_hits(tmp_path, rec
     assert scored["routes"]["quanta_lexical"]["hits"] == 20
     assert scored["routes"]["semble_lexical_only"]["hits"] == 20
     route = scored["routes"]["quanta_lexical"]
+    assert route["rank_unit"] == "chunk"
     assert route["file_recall_at_10"] == recall
     assert route["file_hit_rate_at_10"] == 1.0
+    verdict["counts"]["passed"] = 39
+    paths[3].write_text(json.dumps(verdict), encoding="utf-8")
+    with pytest.raises(ValueError, match="execution counts differ"):
+        pair_result(*paths, pack, suite, 20)
+    verdict["counts"]["passed"] = 40
+    verdict["comparisons"][0]["record_digest"] = "0" * 64
+    paths[3].write_text(json.dumps(verdict), encoding="utf-8")
+    with pytest.raises(ValueError, match="does not bind the lexical report"):
+        pair_result(*paths, pack, suite, 20)
+    verdict["comparisons"][0]["record_digest"] = report["runner_record_sha256"]
+    paths[3].write_text(json.dumps(verdict), encoding="utf-8")
+    lock["top_k"] = 20
+    paths[1].write_text(json.dumps(lock), encoding="utf-8")
+    with pytest.raises(ValueError, match="pair top_k contract differs"):
+        pair_result(*paths, pack, suite, 20)
+    lock["top_k"] = 10
+    paths[1].write_text(json.dumps(lock), encoding="utf-8")
     report["per_query"][0]["file_recall_at_10"] = 0.0
     paths[0].write_text(json.dumps(report))
+    with pytest.raises(ValueError, match="does not bind the lexical report"):
+        pair_result(*paths, pack, suite, 20)
+    verdict["comparisons"][0]["report_digest"] = hashlib.sha256(paths[0].read_bytes()).hexdigest()
+    paths[3].write_text(json.dumps(verdict), encoding="utf-8")
     with pytest.raises(ValueError, match="recall/hit observations"):
         pair_result(*paths, pack, suite, 20)
     report["per_query"][0]["file_recall_at_10"] = recall
     paths[0].write_text(json.dumps(report))
+    verdict["comparisons"][0]["report_digest"] = hashlib.sha256(paths[0].read_bytes()).hexdigest()
+    paths[3].write_text(json.dumps(verdict), encoding="utf-8")
     native["lane_call_counts"]["semantic"] = 1
     paths[2].write_text(json.dumps(native), encoding="utf-8")
     with pytest.raises(ValueError, match="did not execute lexical-only"):
@@ -329,6 +414,8 @@ def test_pair_result_keeps_no_gold_out_of_recall_denominator(tmp_path):
     routes = ("lexical", "semble-lexical-only")
     report = {
         "query_pack_sha256": digest(canonical(pack)),
+        "runner_record_sha256": "f" * 64,
+        "comparison_contract": suite["comparison_contract"],
         "repository_commit": suite["repository_commit"],
         "file_universe_digest": suite["file_universe_digest"],
         "sample_count": 20,
@@ -374,25 +461,45 @@ def test_pair_result_keeps_no_gold_out_of_recall_denominator(tmp_path):
         },
         "quanta_routes": ["lexical"],
         "semble_route": "semble-lexical-only",
+        "top_k": 10,
+        "strategies": ["fixed_window_strict"],
     }
     native = {
         "semble_profile": "lexical-only",
         "rerank_applied": False,
-        "lane_call_counts": {"bm25": 1, "semantic": 0, "encode": 0},
-        "execution_events": [{"lane_entry_counts": {"bm25": 1, "semantic": 0}}],
+        "lane_call_counts": {"bm25": 20, "semantic": 0, "encode": 0},
+        "execution_events": [{"lane_entry_counts": {"bm25": 1, "semantic": 0}} for _ in range(20)],
     }
     paths = [tmp_path / f"{name}.json" for name in ("report", "lock", "native", "verdict")]
-    for path, value in zip(
-        paths, (report, lock, native, {"states": {"PAIR_VALID": "pass"}}), strict=True
-    ):
-        path.write_text(json.dumps(value))
+    verdict = {
+        "states": {"PAIR_VALID": "pass"},
+        "counts": {"selected": 40, "executed": 40, "passed": 40, "failed": 0},
+        "comparisons": [
+            {
+                "strategy": "fixed_window_strict",
+                "candidate_route": "lexical",
+                "baseline_route": "semble-lexical-only",
+                "report_digest": "",
+                "record_digest": report["runner_record_sha256"],
+            }
+        ],
+    }
+
+    def write_report():
+        paths[0].write_text(json.dumps(report))
+        verdict["comparisons"][0]["report_digest"] = digest(paths[0].read_bytes())
+        paths[3].write_text(json.dumps(verdict))
+
+    paths[1].write_text(json.dumps(lock))
+    paths[2].write_text(json.dumps(native))
+    write_report()
     result = pair_result(*paths, pack, suite, 20)["routes"]["quanta_lexical"]
     assert result["answerable_tasks"] == 19
     assert result["no_gold_tasks"] == 1
     assert result["file_recall_at_10"] == result["file_hit_rate_at_10"] == 1.0
     assert result["no_gold_empty_rate_at_10"] == 1.0
     report["per_query"][0]["file_recall_at_10"] = 0.0
-    paths[0].write_text(json.dumps(report))
+    write_report()
     with pytest.raises(ValueError, match="recall/hit observations"):
         pair_result(*paths, pack, suite, 20)
     for task in suite["tasks"]:
@@ -410,7 +517,7 @@ def test_pair_result_keeps_no_gold_out_of_recall_denominator(tmp_path):
             file_recall_at_10="not_applicable",
             file_hit_at_10="not_applicable",
         )
-    paths[0].write_text(json.dumps(report))
+    write_report()
     result = pair_result(*paths, pack, suite, 20)["routes"]["quanta_lexical"]
     assert result["answerable_tasks"] == 0
     assert result["file_recall_at_10"] == result["file_hit_rate_at_10"] == "not_applicable"

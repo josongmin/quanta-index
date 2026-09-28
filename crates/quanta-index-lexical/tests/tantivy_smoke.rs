@@ -1863,6 +1863,60 @@ fn tantivy_select_file_collapses_multiple_chunks_per_path() -> TestResult {
 }
 
 #[test]
+fn tantivy_select_file_fills_page_after_more_than_ten_duplicate_chunks() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+    let mut ops = Vec::new();
+    for index in 0..12 {
+        ops.push(upsert_with_metadata(
+            &format!("frequent-{index:02}"),
+            "src/frequent_test.go",
+            "go",
+            index * 10 + 1,
+            index * 10 + 2,
+            "declaration_needle declaration_needle declaration_needle",
+        )?);
+    }
+    ops.push(upsert_with_metadata(
+        "definition",
+        "src/definition.go",
+        "go",
+        1,
+        2,
+        "declaration_needle",
+    )?);
+    adapter.build(&repo(), &revision(), generation(), &ops)?;
+
+    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let expr = LqExpr::Leaf(LqLeaf::Keyword("declaration_needle".to_string()));
+    let chunk_page =
+        searcher.search(&make_query(expr.clone()), 10, &RequestBudgetV1::unbounded())?;
+    assert_eq!(chunk_page.len(), 10);
+    assert!(
+        chunk_page
+            .iter()
+            .all(|hit| hit.repo_relative_path.as_str() == "src/frequent_test.go")
+    );
+
+    let file_page = searcher.search(
+        &make_query_with_filters(
+            expr,
+            vec![LqFilter::Select {
+                dim: LqSelect::File,
+            }],
+        ),
+        2,
+        &RequestBudgetV1::unbounded(),
+    )?;
+    let paths: Vec<&str> = file_page
+        .iter()
+        .map(|hit| hit.repo_relative_path.as_str())
+        .collect();
+    assert_eq!(paths, ["src/frequent_test.go", "src/definition.go"]);
+    Ok(())
+}
+
+#[test]
 fn tantivy_select_path_collapses_multiple_chunks_per_path() -> TestResult {
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());

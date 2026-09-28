@@ -50,6 +50,15 @@ PROFILE = "lexical-diagnostic"
 FAMILY = "lexical-file-comparison"
 PRODUCTS = (*owner.PRODUCTS, "quanta_lexical", "semble_lexical_only")
 MODULE = "tools.benchmark.retrieval.lexical_file_comparison"
+RANK_UNITS = {
+    **dict.fromkeys(owner.PRODUCTS, "distinct_file"),
+    "quanta_lexical": "chunk",
+    "semble_lexical_only": "chunk",
+}
+METRICS = {
+    "distinct_file": "gold_file_recall_in_top_10_distinct_files",
+    "chunk": "gold_file_recall_in_top_10_chunks",
+}
 
 
 def require_registration(registry: dict) -> None:
@@ -80,6 +89,12 @@ def require_registration(registry: dict) -> None:
 
 
 def payloads(summary: dict, suite: dict, pack: dict) -> dict[str, dict]:
+    if (
+        summary.get("status") != "diagnostic_unqualified"
+        or summary.get("rank_unit_equivalence") != "non_equivalent"
+        or summary.get("metric") != "gold_file_recall_in_native_top_10"
+    ):
+        raise EvidenceError("lexical capture claims an unsupported rank comparison")
     tasks = [task["task_id"] for task in pack["tasks"]]
     if not tasks or len(tasks) != len(set(tasks)):
         raise EvidenceError("lexical query inventory is empty or duplicate")
@@ -89,6 +104,9 @@ def payloads(summary: dict, suite: dict, pack: dict) -> dict[str, dict]:
         raise EvidenceError("lexical scorer product inventory is incomplete")
     result = {}
     for product in PRODUCTS:
+        rank_unit = products[product].get("rank_unit")
+        if rank_unit != RANK_UNITS[product]:
+            raise EvidenceError(f"{product}: lexical rank unit differs from native result unit")
         rows = products[product]["per_query"]
         by_id = {row["task_id"]: row for row in rows}
         if len(rows) != len(tasks) or len(by_id) != len(rows) or set(by_id) != set(tasks):
@@ -136,7 +154,7 @@ def payloads(summary: dict, suite: dict, pack: dict) -> dict[str, dict]:
             typed_rows.append(
                 {
                     "query_id": task,
-                    "metric": metric,
+                    "metric": metric if no_gold else METRICS[rank_unit],
                     "unit": "ratio",
                     "value": float(value) if value is not None else None,
                     "state": state,

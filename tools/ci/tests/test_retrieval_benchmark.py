@@ -13,6 +13,7 @@ import math
 import os
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -721,6 +722,31 @@ def test_query_plan_oracle_enforces_utf8_term_boundary():
     assert qp.plan_lexical_request("natural_language", "\uac00" * 85)
     with pytest.raises(qp.QueryPlanError, match="258 bytes"):
         qp.plan_lexical_request("natural_language", "\uac00" * 86)
+
+
+def test_exact_symbol_name_policy_keeps_bare_query_identity_and_refuses_dsl():
+    request = qp.plan_lexical_request("exact_symbol_name", "writeContentType")
+    assert request == "symbol.local_name.exact(writeContentType) case:yes"
+    profile = qp.execution_profile("exact_symbol_name")
+    jsonschema.validate(profile, _load_schema("runner.schema.json")["$defs"]["execution_profile"])
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(
+            profile, _load_schema("pair-spec.schema.json")["$defs"]["quanta_profile"]
+        )
+    identity = qp.derive_query_identity("exact_symbol_name", "writeContentType")
+    assert identity["original_query_sha256"] == hashlib.sha256(b"writeContentType").hexdigest()
+    assert (
+        identity["effective_lexical_request_sha256"] == hashlib.sha256(request.encode()).hexdigest()
+    )
+    for name in ("OR", "AND", "case", "select", "_", "a" * 4096):
+        assert qp.plan_lexical_request("exact_symbol_name", name) == (
+            f"symbol.local_name.exact({name}) case:yes"
+        )
+    for invalid in ("", "two words", "select:file Next", "WriteContentType)", "\u00e9", "a" * 4097):
+        with pytest.raises(qp.QueryPlanError, match="bare ASCII symbol name"):
+            qp.plan_lexical_request("exact_symbol_name", invalid)
+    with pytest.raises(qp.QueryPlanError, match="unsupported v4"):
+        qp.derive_query_identity_v4("exact_symbol_name", "writeContentType")
 
 
 def test_retrieval_diagnostic_binds_complete_record_and_lanes():
@@ -4369,6 +4395,34 @@ def _bound_conditional_results(command, kind, *, matches=True):
     }
 
 
+class _NonSeekableLogSink:
+    def __init__(self):
+        self.buffer = io.BytesIO()
+
+    def tell(self):
+        return self.buffer.tell()
+
+    def write(self, data):
+        return self.buffer.write(data)
+
+    def flush(self):
+        self.buffer.flush()
+
+
+def _canonical_log_zip(entries: dict[str, bytes]) -> bytes:
+    """Independent stdlib fixture matching the frozen log archive contract."""
+    sink = _NonSeekableLogSink()
+    with zipfile.ZipFile(sink, "w", compression=zipfile.ZIP_STORED) as archive:
+        for name, payload in sorted(entries.items()):
+            entry = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+            entry.create_system = 3
+            entry.external_attr = (stat.S_IFREG | 0o600) << 16
+            entry.file_size = len(payload)
+            with archive.open(entry, "w") as target:
+                target.write(payload)
+    return sink.buffer.getvalue()
+
+
 def _full_receipts(commit, binary_digest, binary_dir):
     py_cmd = "python3 -m pytest tools/ci/tests/test_retrieval_benchmark.py -q"
     rs_cmd = (
@@ -4630,15 +4684,16 @@ def _full_receipts(commit, binary_digest, binary_dir):
         context_bytes = json.dumps(context).encode()
         artifacts[f"{rail}_execution_context"] = context_bytes
         artifacts[f"{rail}_source_closure"] = closure_bytes
-        log_buffer = io.BytesIO()
-        with zipfile.ZipFile(log_buffer, "w", compression=zipfile.ZIP_STORED) as archive:
-            for filename in sorted(
-                f"{name}.{stream}"
-                for name in pairrun.CONTEXT_COMMAND_NAMES[rail]
-                for stream in ("stdout", "stderr")
-            ):
-                archive.writestr(filename, transcripts.get(filename, b""))
-        artifacts[f"{rail}_execution_logs"] = log_buffer.getvalue()
+        artifacts[f"{rail}_execution_logs"] = _canonical_log_zip(
+            {
+                filename: transcripts.get(filename, b"")
+                for filename in (
+                    f"{name}.{stream}"
+                    for name in pairrun.CONTEXT_COMMAND_NAMES[rail]
+                    for stream in ("stdout", "stderr")
+                )
+            }
+        )
         for side in ("python", "rust") if rail == "contract" else ("sdk",):
             receipt = artifacts[f"contract_{side}_receipt" if rail == "contract" else "sdk_receipt"]
             receipt["input_evidence"].append(
@@ -6152,9 +6207,11 @@ def test_verdict_refuses_bound_execution_context_tampering(tmp_path, rail, state
                 if command["stdout"] in changed:
                     command["stdout_sha256"] = ev.digest(changed[command["stdout"]])
             forged_logs = tmp_path / f"native-build-{rail}-{case}.zip"
-            with zipfile.ZipFile(forged_logs, "w", compression=zipfile.ZIP_STORED) as archive:
-                for filename, payload in original_logs.items():
-                    archive.writestr(filename, changed.get(filename, payload))
+            forged_logs.write_bytes(
+                _canonical_log_zip(
+                    {name: changed.get(name, payload) for name, payload in original_logs.items()}
+                )
+            )
             refuse_context(forged, forged_logs=forged_logs, match="native reused build refused")
         native_role = next(role for role in context["binaries"] if role.startswith("nextest-"))
         for mutation_kind in ("missing", "extra", "path", "digest"):
@@ -6198,14 +6255,16 @@ def test_verdict_refuses_bound_execution_context_tampering(tmp_path, rail, state
             command["stdout_sha256"] = ev.digest(changed)
             forged_logs = tmp_path / f"changed-{rail}-{command_name}.zip"
             with zipfile.ZipFile(receipt_dir / f"{rail}_execution_logs.json") as source_archive:
-                with zipfile.ZipFile(forged_logs, "w", compression=zipfile.ZIP_STORED) as archive:
-                    for filename in source_archive.namelist():
-                        archive.writestr(
-                            filename,
-                            changed
-                            if filename == command["stdout"]
-                            else source_archive.read(filename),
-                        )
+                forged_logs.write_bytes(
+                    _canonical_log_zip(
+                        {
+                            name: changed
+                            if name == command["stdout"]
+                            else source_archive.read(name)
+                            for name in source_archive.namelist()
+                        }
+                    )
+                )
             refuse_context(forged, forged_logs=forged_logs)
         # Fully recompute the inventory/context/log mapping, but reuse one
         # executable path for two distinct selected binary IDs: forbidden.
@@ -6232,12 +6291,14 @@ def test_verdict_refuses_bound_execution_context_tampering(tmp_path, rail, state
         command["stdout_sha256"] = ev.digest(changed)
         forged_logs = tmp_path / f"duplicate-{rail}-collection.zip"
         with zipfile.ZipFile(receipt_dir / f"{rail}_execution_logs.json") as source_archive:
-            with zipfile.ZipFile(forged_logs, "w", compression=zipfile.ZIP_STORED) as archive:
-                for filename in source_archive.namelist():
-                    archive.writestr(
-                        filename,
-                        changed if filename == command["stdout"] else source_archive.read(filename),
-                    )
+            forged_logs.write_bytes(
+                _canonical_log_zip(
+                    {
+                        name: changed if name == command["stdout"] else source_archive.read(name)
+                        for name in source_archive.namelist()
+                    }
+                )
+            )
         refuse_context(forged, {"raw": {**raw_paths, collection_name: forged_raw}}, forged_logs)
         duplicate_file.unlink()
         for key, value in (
@@ -6371,9 +6432,7 @@ def test_verdict_refuses_frozen_command_log_tampering(tmp_path, mutation):
                 archive.writestr("python-test.stdout", b"")
     else:
         members["python-test.stdout"] = b"forged transcript"
-        with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_STORED) as archive:
-            for name, payload in members.items():
-                archive.writestr(name, payload)
+        archive_path.write_bytes(_canonical_log_zip(members))
         if mutation == "crc":
             archive_path.write_bytes(
                 archive_path.read_bytes().replace(b"forged transcript", b"forged transcripu")
@@ -8944,6 +9003,44 @@ def test_v5_literal_and_nl_policies_replay_through_the_python_oracle(tmp_path):
     # any of the three canonical policies with self-consistent evidence.
     _suite, _pack, loaded_nl = record_v3(repo, suite, run, suite_path, runner_path)
     assert loaded_nl["captures"]["q0"]["execution_profile"]["policy"] == "natural_language"
+
+
+def test_exact_symbol_profile_refuses_lexical_route_record(tmp_path):
+    repo, suite, run, suite_path, runner_path, _ = fixture_v3(tmp_path)
+    profile = qp.execution_profile("exact_symbol_name")
+    run["captures"]["q0"]["execution_profile"] = profile
+    run["captures"]["q0"]["execution_profile_sha256"] = ev.digest(ev.canonical(profile))
+    with pytest.raises(ev.EvidenceError, match="requires only the symbol route"):
+        record_v3(repo, suite, run, suite_path, runner_path)
+
+
+def test_exact_symbol_profile_refuses_mixed_route_record(tmp_path):
+    repo, suite, run, suite_path, runner_path, _ = fixture_v3(tmp_path)
+    suite["routes"] = ["symbol", "lexical"]
+    for task, name in zip(suite["tasks"], ["AlphaOne", "BetaTwo"], strict=True):
+        task["query"] = name
+        task["query_sha256"] = ev.digest(name.encode())
+    _, pack, _ = ev.validate_suite(repo, suite)
+    run["query_pack_sha256"] = ev.digest(ev.canonical(pack))
+    exact = qp.execution_profile("exact_symbol_name")
+    run["captures"]["q0"]["execution_profile"] = exact
+    run["captures"]["q0"]["execution_profile_sha256"] = ev.digest(ev.canonical(exact))
+    run["captures"]["q1"] = copy.deepcopy(run["captures"]["q0"])
+    native = qp.execution_profile("native")
+    run["captures"]["q1"]["execution_profile"] = native
+    run["captures"]["q1"]["execution_profile_sha256"] = ev.digest(ev.canonical(native))
+    run["route_provenance"] = {
+        "symbol": {"capture_id": "q0"},
+        "lexical": {"capture_id": "q1"},
+    }
+    queries = {task["task_id"]: task["query"] for task in pack["tasks"]}
+    for result in run["results"]:
+        if result["route"] == "hybrid":
+            result["route"] = "symbol"
+        policy = "exact_symbol_name" if result["route"] == "symbol" else "native"
+        result["query_identity"] = qp.derive_query_identity(policy, queries[result["task_id"]])
+    with pytest.raises(ev.EvidenceError, match="requires only the symbol route"):
+        record_v3(repo, suite, run, suite_path, runner_path)
 
 
 @pytest.mark.parametrize("old_version", [1, 2])

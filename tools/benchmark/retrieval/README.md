@@ -50,6 +50,24 @@ Use `--embedder hash-dev` only for development diagnostics. The default
 corpus, stale state root or existing output is refused. `freeze` creates a blind
 pack from an authored suite; it does not generate gold labels.
 
+For a **declaration-name** diagnostic, keep bare ASCII names in a separate
+suite with `routes: ["symbol"]` and run with `--routes symbol
+--query-input-policy exact_symbol_name`. The runner plans each name as
+`symbol.local_name.exact(name) case:yes`, binds that effective request in the
+record, and refuses DSL text or any other route. This is a different query
+intent from bare lexical content search. Mechanically generated declaration
+labels still need independent review before quality qualification; this
+standalone profile is not a five-product file-rank comparison.
+
+The five-product bare-symbol diagnostic records the native top-10 rank unit
+per product: Quanta and Semble return chunks, while Sourcegraph, OpenGrok and
+cs return distinct files. Its common evidence uses separate metric names for
+these two units. The mechanically generated gold and unverified external
+indexed universes keep the result `diagnostic_unqualified`.
+The standalone lexical scorer checks frozen rows and paired report/verdict
+digests; an actual-execution claim additionally requires the paired capture
+replay and the external raw HTTP/process capture replay through the workflow.
+
 Input formats:
 
 - [Suite schema](suite.schema.json)

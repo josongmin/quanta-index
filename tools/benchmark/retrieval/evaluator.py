@@ -919,7 +919,7 @@ def _validate_run(
         )
         policy = policy_block["policy"]
         require(
-            policy in query_plan_contract.SUPPORTED_POLICIES,
+            policy in query_plan_contract.V4_SUPPORTED_POLICIES,
             f"unknown query input policy: {policy!r}",
         )
         config = policy_block["config"]
@@ -969,6 +969,14 @@ def _validate_run(
         set(provenance) == set(suite["routes"]),
         f"route_provenance has missing/unknown routes: {sorted(set(provenance) ^ set(suite['routes']))}",
     )
+    if version == 5 and any(
+        entry["system"] == "quanta" and entry["execution_profile"]["policy"] == "exact_symbol_name"
+        for entry in captures.values()
+    ):
+        require(
+            set(provenance) == {"symbol"},
+            "exact_symbol_name profile requires only the symbol route",
+        )
     for route, entry in provenance.items():
         item = object_keys(entry, ["capture_id"], f"route_provenance.{route}")
         capture_id = string(item["capture_id"], f"route_provenance.{route}.capture_id")

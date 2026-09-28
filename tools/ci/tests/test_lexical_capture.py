@@ -89,8 +89,10 @@ def inputs(tmp_path, lexical_release_seed):
     ]
     report = {
         "query_pack_sha256": digest(canonical(pack)),
+        "runner_record_sha256": "f" * 64,
         "repository_commit": suite["repository_commit"],
         "file_universe_digest": suite["file_universe_digest"],
+        "comparison_contract": suite["comparison_contract"],
         "sample_count": 20,
         "rank_metrics": {
             "routes": {
@@ -120,9 +122,23 @@ def inputs(tmp_path, lexical_release_seed):
             },
             "quanta_routes": ["lexical"],
             "semble_route": "semble-lexical-only",
+            "top_k": 10,
+            "strategies": ["fixed_window_strict"],
         },
         "semble_native": native,
-        "pair_verdict": {"states": {"PAIR_VALID": "pass"}},
+        "pair_verdict": {
+            "states": {"PAIR_VALID": "pass"},
+            "counts": {"selected": 40, "executed": 40, "passed": 40, "failed": 0},
+            "comparisons": [
+                {
+                    "strategy": "fixed_window_strict",
+                    "candidate_route": "lexical",
+                    "baseline_route": "semble-lexical-only",
+                    "report_digest": digest(json.dumps(report).encode()),
+                    "record_digest": report["runner_record_sha256"],
+                }
+            ],
+        },
     }
     paths = {}
     for role, value in content.items():
@@ -402,6 +418,9 @@ def test_no_gold_symbol_uses_independent_empty_result_metric(tmp_path, lexical_r
                 file_hit_at_10="not_applicable",
             )
     paths["pair_report"].write_text(json.dumps(report))
+    verdict = capture.owner._read(paths["pair_verdict"])
+    verdict["comparisons"][0]["report_digest"] = digest(paths["pair_report"].read_bytes())
+    paths["pair_verdict"].write_text(json.dumps(verdict))
     for product in capture.owner.PRODUCTS:
         path = paths[product + "_rows"]
         rows = [json.loads(line) for line in path.read_text().splitlines()]
@@ -409,7 +428,7 @@ def test_no_gold_symbol_uses_independent_empty_result_metric(tmp_path, lexical_r
         path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
     summary = capture.owner.evaluate_capture(paths)
     payloads = capture.payloads(summary, suite, pack)
-    for payload in payloads.values():
+    for product, payload in payloads.items():
         assert payload["rows"][0] == {
             "query_id": "S00",
             "metric": "no_gold_empty_at_10",
@@ -417,7 +436,27 @@ def test_no_gold_symbol_uses_independent_empty_result_metric(tmp_path, lexical_r
             "value": 1.0,
             "state": "no_answer",
         }
-        assert payload["rows"][1]["metric"] == "file_recall_at_10"
+        assert payload["rows"][1]["metric"] == capture.METRICS[capture.RANK_UNITS[product]]
+
+
+def test_native_rank_units_are_distinct_metrics_and_tampering_refuses(
+    tmp_path, lexical_release_seed
+):
+    _, paths = inputs(tmp_path, lexical_release_seed)
+    summary = capture.owner.evaluate_capture(paths)
+    assert summary["rank_unit_equivalence"] == "non_equivalent"
+    pack = capture.owner._read(paths["query_pack"])
+    payloads = capture.payloads(summary, capture.owner._read(paths["suite"]), pack)
+    assert {product: payload["rows"][0]["metric"] for product, payload in payloads.items()} == {
+        product: capture.METRICS[capture.RANK_UNITS[product]] for product in capture.PRODUCTS
+    }
+    summary["rank_unit_equivalence"] = "equivalent"
+    with pytest.raises(ValueError, match="unsupported rank comparison"):
+        capture.payloads(summary, capture.owner._read(paths["suite"]), pack)
+    summary["rank_unit_equivalence"] = "non_equivalent"
+    summary["pair"]["routes"]["quanta_lexical"]["rank_unit"] = "distinct_file"
+    with pytest.raises(ValueError, match="rank unit differs"):
+        capture.payloads(summary, capture.owner._read(paths["suite"]), pack)
 
 
 @pytest.mark.parametrize(
