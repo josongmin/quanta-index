@@ -32,6 +32,18 @@
     },
     "tasks": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/task"}}
   },
+  "allOf": [
+    {
+      "if": {"required": ["diagnostic_policy"]},
+      "then": {"properties": {"comparison_contract": {"properties": {"top_k": {"minimum": 10}}}}}
+    },
+    {
+      "if": {"properties": {"tasks": {"contains": {"anyOf": [
+        {"required": ["query_intent"]}, {"required": ["label_review"]}
+      ]}}}},
+      "then": {"required": ["diagnostic_policy"]}
+    }
+  ],
   "$defs": {
     "comparison_contract": {
       "type": "object", "additionalProperties": false,

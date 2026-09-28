@@ -1385,6 +1385,7 @@ def test_suite_intent_and_review_claims_remain_blind_and_require_review_evidence
 
 def test_unknown_diagnostic_policy_rejected_and_legacy_report_shape_preserved(tmp_path):
     repo, suite, run, suite_path, runner_path, _ = fixture_v3(tmp_path)
+    schema = json.loads((Path(ev.__file__).with_name("suite.schema.json")).read_text())
     report = ev.evaluate(*record_v3(repo, suite, run, suite_path, runner_path), "lexical", "hybrid")
     assert all("observed_prefix" not in row for row in report["per_query"])
     assert all("query_intent_claim" not in row for row in report["per_query"])
@@ -1393,12 +1394,19 @@ def test_unknown_diagnostic_policy_rejected_and_legacy_report_shape_preserved(tm
         ev.validate_suite(repo, suite)
     suite.pop("diagnostic_policy")
     suite["tasks"][0]["query_intent"] = "bare_symbol"
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(suite, schema)
     with pytest.raises(ev.EvidenceError, match="task annotations require"):
         ev.validate_suite(repo, suite)
     suite["diagnostic_policy"] = ev.OBSERVED_PREFIX_DIAGNOSTIC_POLICY
     suite["comparison_contract"]["top_k"] = 5
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(suite, schema)
     with pytest.raises(ev.EvidenceError, match="require top_k >= 10"):
         ev.validate_suite(repo, suite)
+    suite["comparison_contract"]["top_k"] = 10
+    jsonschema.validate(suite, schema)
+    ev.validate_suite(repo, suite)
 
 
 def test_recorded_prefix_does_not_infer_gold_rank_past_top_k():
