@@ -21,6 +21,10 @@
       "type": "string", "pattern": "^[0-9a-f]{64}$",
       "description": "sha256 of the canonical path-sorted universe entries; the evaluator recomputes it."
     },
+    "diagnostic_policy": {
+      "const": "observed_prefix_v1",
+      "description": "Opt-in per-query observed-prefix diagnostics. Omission preserves historical report bytes during replay."
+    },
     "leakage_allowlist": {
       "type": "array",
       "items": {"$ref": "#/$defs/allowlisted_span"},
@@ -96,12 +100,37 @@
         },
         "answerable": {"type": "boolean"},
         "category": {"type": "string", "minLength": 1},
+        "query_intent": {
+          "enum": ["bare_symbol", "semantic_intent"],
+          "description": "Suite-author declaration. This is omitted from the blinded runner pack."
+        },
+        "label_review": {"$ref": "#/$defs/label_review"},
         "gold": {"type": "array", "items": {"$ref": "#/$defs/block"}}
       },
       "allOf": [
         {"if": {"properties": {"answerable": {"const": true}}}, "then": {"properties": {"gold": {"minItems": 1}}}},
         {"if": {"properties": {"answerable": {"const": false}}}, "then": {"properties": {"gold": {"maxItems": 0}}}}
       ]
+    },
+    "label_review": {
+      "type": "object", "additionalProperties": false,
+      "required": ["assessment"],
+      "properties": {
+        "assessment": {"enum": ["unreviewed", "reviewed_unambiguous", "reviewed_ambiguous"]},
+        "reviewer_id": {"type": "string", "minLength": 1},
+        "evidence_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"assessment": {"const": "unreviewed"}}},
+          "then": {"not": {"anyOf": [{"required": ["reviewer_id"]}, {"required": ["evidence_sha256"]}]}}
+        },
+        {
+          "if": {"properties": {"assessment": {"enum": ["reviewed_unambiguous", "reviewed_ambiguous"]}}},
+          "then": {"required": ["reviewer_id", "evidence_sha256"]}
+        }
+      ],
+      "description": "Authored review claim, bound to external review evidence; evaluator does not verify reviewer independence."
     }
   }
 }
