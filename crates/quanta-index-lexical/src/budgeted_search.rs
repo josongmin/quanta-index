@@ -83,17 +83,16 @@ impl CollectionBudget {
         if self.stopped() {
             return false;
         }
-        match self
+        let Ok(_) = self
             .admitted
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
                 (count < self.policy.max_examined_candidates()).then(|| count.saturating_add(1))
-            }) {
-            Ok(_) => true,
-            Err(_) => {
-                self.exceeded.store(true, Ordering::Release);
-                false
-            }
-        }
+            })
+        else {
+            self.exceeded.store(true, Ordering::Release);
+            return false;
+        };
+        true
     }
 
     pub(crate) fn stopped(&self) -> bool {
