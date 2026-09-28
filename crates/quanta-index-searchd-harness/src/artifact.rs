@@ -519,7 +519,7 @@ fn total_memory_bytes() -> Result<u64, BenchProvenanceError> {
     let kib_text = meminfo
         .lines()
         .find_map(|line| line.strip_prefix("MemTotal:"))
-        .and_then(|rest| rest.trim().split_whitespace().next())
+        .and_then(|rest| rest.split_whitespace().next())
         .ok_or_else(|| BenchProvenanceError::HostUnobservable {
             fact: "mem_bytes",
             detail: "/proc/meminfo has no MemTotal line".to_string(),
