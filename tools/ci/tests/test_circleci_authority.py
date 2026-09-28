@@ -75,6 +75,18 @@ def test_real_catalog_binds_to_circleci():
     assert _checker().audit_catalog() == []
 
 
+def test_circleci_custody_unset_allows_only_shell_startup_hooks(tmp_path: Path):
+    data, path = _config(tmp_path)
+    command = data["jobs"]["verify"]["steps"][0]["run"]
+    command["command"] = "set -euo pipefail\nunset BASH_ENV ENV\njust owner-test\n"
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
+    assert _rail_violations(tmp_path) == []
+
+    command["command"] = "set -euo pipefail\nunset PATH\njust owner-test\n"
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
+    assert any("does not execute declared command" in item for item in _rail_violations(tmp_path))
+
+
 def test_circleci_rail_rejects_detached_and_failure_swallowing_steps(tmp_path: Path):
     data, path = _config(tmp_path)
     assert _rail_violations(tmp_path) == []

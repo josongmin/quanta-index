@@ -534,6 +534,16 @@ def _executes_declared_command(run: str, command: str, *, shell_pipefail: bool =
             # execute the foreground rail. It must be the last statement;
             # errexit does not abort on an AND list's failed left operand.
             node = parts[1]
+        if node.type == "unset_command":
+            # CircleCI sources BASH_ENV before each run step. Clear the shell
+            # startup hooks before an evidence-producing command executes.
+            if _literal_shell_argv(source[node.start_byte : node.end_byte].decode()) != [
+                "unset",
+                "BASH_ENV",
+                "ENV",
+            ]:
+                return False
+            continue
         if node.type == "command":
             if any(child.type == "variable_assignment" for child in node.named_children):
                 # Prefix assignments are not argv[0] and can change command

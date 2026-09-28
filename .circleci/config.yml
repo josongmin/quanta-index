@@ -45,6 +45,7 @@ jobs:
           name: Verify tool versions
           command: |
             set -euo pipefail
+            unset BASH_ENV ENV
             test "$(git rev-parse HEAD)" = "$CIRCLE_SHA1"
             rustc --version
             cargo nextest --version
@@ -55,6 +56,7 @@ jobs:
           no_output_timeout: 20m
           command: |
             set -euo pipefail
+            unset BASH_ENV ENV
             uv run --frozen --extra dev bash scripts/run-tooling-tests.sh -x -vv
             uv run --frozen --extra dev python tools/prompt-manager/pm.py lint
             uv run --frozen --extra dev python -m ruff check .
@@ -69,6 +71,7 @@ jobs:
           name: Validate tracked agent outputs
           command: |
             set -euo pipefail
+            unset BASH_ENV ENV
             git ls-files -z -- ':(glob)**/agent_output*.json' |
               while IFS= read -r -d '' file; do
                 uv run --frozen --extra dev python tools/ci/agent/validate_agent_output.py "$file"
@@ -78,18 +81,21 @@ jobs:
           no_output_timeout: 20m
           command: |
             set -euo pipefail
+            unset BASH_ENV ENV
             uv run --frozen --extra dev just benchmark-control-contract-local
       - run:
           name: P00 authority owner tests
           no_output_timeout: 20m
           command: |
             set -euo pipefail
+            unset BASH_ENV ENV
             uv run --frozen --extra dev just proof-p00-authority-freeze
       - run:
           name: Rust format and clippy
           no_output_timeout: 20m
           command: |
             set -euo pipefail
+            unset BASH_ENV ENV
             ./scripts/cargow fmt --all -- --check
             ./scripts/cargow clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run:
@@ -97,6 +103,7 @@ jobs:
           no_output_timeout: 30m
           command: |
             set -euo pipefail
+            unset BASH_ENV ENV
             mkdir -p artifacts/test-authority
             export NEXTEST_EXPERIMENTAL_LIBTEST_JSON=1
             ./scripts/cargow nextest list --workspace --all-features --locked \
@@ -152,12 +159,14 @@ jobs:
           name: Verify checked-out source
           command: |
             set -euo pipefail
+            unset BASH_ENV ENV
             test "$(git rev-parse HEAD)" = "$CIRCLE_SHA1"
       - run:
           name: rust nextest authority receipt
           no_output_timeout: 30m
           command: |
             set -euo pipefail
+            unset BASH_ENV ENV
             mkdir -p artifacts/test-authority
             export NEXTEST_EXPERIMENTAL_LIBTEST_JSON=1
             ./scripts/cargow nextest list --workspace --all-features --locked \
@@ -179,6 +188,7 @@ jobs:
           no_output_timeout: 20m
           command: |
             set -euo pipefail
+            unset BASH_ENV ENV
             cd crates/quanta-index-contract/fuzz
             cargo +nightly fuzz build
             cargo +nightly fuzz run ipc_request_decode -- -max_total_time=60
