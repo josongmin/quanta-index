@@ -16,6 +16,10 @@ pub const POTION_CODE_FULL_V2_MODEL_REVISION: &str =
     "e9d2a44ca6a05ac6685f3b23709ea57eb7352d5b:model2vec-rs-0.3.0:fancy-regex:full-length-v2";
 pub const POTION_CODE_DIMENSION: usize = 256;
 const BATCH_SIZE: usize = 1024;
+// V2 removes tokenizer truncation, so bound the work admitted to one model
+// call. These limits are above the benchmark's 4,096-byte source windows.
+const FULL_V2_MAX_TEXT_BYTES: usize = 16 * 1024;
+const FULL_V2_MAX_BATCH_TEXT_BYTES: usize = 4 * 1024 * 1024;
 const TOKENIZER_SHA256: &str = "107bbdcbad4bff1d299b7a4c3a2fb17c52890688b7dd0e4c9deab79d3c4f3d45";
 const MODEL_SHA256: &str = "75cf7a6c2171b230ad19b1e7d8e0b1aee86da5a02af8e7cacedd9921d227623c";
 const CONFIG_SHA256: &str = "148e5691a6fcc553437156859701fba017a1ba5d340b170f17e0f3668fb861a7";
@@ -31,7 +35,8 @@ pub struct PotionCodeEmbeddingProvider {
 }
 
 /// Explicit encoder policy. V1 preserves historical vectors; V2 removes the
-/// pinned tokenizer's 512-token cap in memory and requires a new generation.
+/// pinned tokenizer's 512-token cap in memory within bounded input admission
+/// and requires a new generation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PotionCodeEncodingPolicy {
     Pinned512V1,
@@ -93,7 +98,14 @@ impl PotionCodeEmbeddingProvider {
         texts: &[&str],
         budget: Option<&RequestBudgetV1>,
     ) -> Result<Vec<Vec<f32>>, CoreError> {
-        let mut vectors = Vec::with_capacity(texts.len());
+        if self.policy == PotionCodeEncodingPolicy::FullLengthV2 {
+            validate_full_v2_texts(texts)?;
+        }
+        let mut vectors = if self.policy == PotionCodeEncodingPolicy::FullLengthV2 {
+            Vec::new()
+        } else {
+            Vec::with_capacity(texts.len())
+        };
         for batch in texts.chunks(BATCH_SIZE) {
             if let Some(budget) = budget {
                 budget.checkpoint(EMBED_CHECKPOINT)?;
@@ -116,6 +128,35 @@ impl PotionCodeEmbeddingProvider {
         }
         Ok(vectors)
     }
+}
+
+fn validate_full_v2_texts(texts: &[&str]) -> Result<(), CoreError> {
+    for batch in texts.chunks(BATCH_SIZE) {
+        validate_full_v2_batch(batch)?;
+    }
+    Ok(())
+}
+
+fn validate_full_v2_batch(texts: &[&str]) -> Result<(), CoreError> {
+    let mut total_bytes = 0_usize;
+    for text in texts {
+        if text.len() > FULL_V2_MAX_TEXT_BYTES {
+            return Err(CoreError::InvalidContract(format!(
+                "model2vec: full-length-v2 text exceeds {FULL_V2_MAX_TEXT_BYTES} UTF-8 bytes"
+            )));
+        }
+        total_bytes = total_bytes.checked_add(text.len()).ok_or_else(|| {
+            CoreError::InvalidContract(
+                "model2vec: full-length-v2 batch byte count overflow".to_string(),
+            )
+        })?;
+        if total_bytes > FULL_V2_MAX_BATCH_TEXT_BYTES {
+            return Err(CoreError::InvalidContract(format!(
+                "model2vec: full-length-v2 batch exceeds {FULL_V2_MAX_BATCH_TEXT_BYTES} UTF-8 bytes"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Remove the pinned tokenizer's 512-token cap in memory.
@@ -263,6 +304,42 @@ mod tests {
         );
     }
 
+    #[test]
+    fn full_v2_admission_bounds_each_text_and_model_batch() {
+        let window = "x".repeat(4096);
+        let windows = vec![window.as_str(); BATCH_SIZE];
+        assert!(validate_full_v2_batch(&windows).is_ok());
+
+        let at_text_limit = "x".repeat(FULL_V2_MAX_TEXT_BYTES);
+        assert!(validate_full_v2_batch(&[&at_text_limit]).is_ok());
+        let over_text_limit = "x".repeat(FULL_V2_MAX_TEXT_BYTES + 1);
+        assert!(
+            validate_full_v2_batch(&[&over_text_limit])
+                .expect_err("oversized text must fail before model call")
+                .to_string()
+                .contains("text exceeds")
+        );
+
+        let at_batch_limit =
+            vec![at_text_limit.as_str(); FULL_V2_MAX_BATCH_TEXT_BYTES / FULL_V2_MAX_TEXT_BYTES];
+        assert!(validate_full_v2_batch(&at_batch_limit).is_ok());
+        let over_batch_limit = vec![at_text_limit.as_str(); at_batch_limit.len() + 1];
+        assert!(
+            validate_full_v2_batch(&over_batch_limit)
+                .expect_err("oversized batch must fail before model call")
+                .to_string()
+                .contains("batch exceeds")
+        );
+        let mut later_batch = windows;
+        later_batch.push(&over_text_limit);
+        assert!(
+            validate_full_v2_texts(&later_batch)
+                .expect_err("later oversized batch must fail before any model call")
+                .to_string()
+                .contains("text exceeds")
+        );
+    }
+
     #[expect(
         clippy::indexing_slicing,
         reason = "the negative control and corrected output are length-checked before indexing"
@@ -300,6 +377,14 @@ mod tests {
         let default =
             PotionCodeEmbeddingProvider::from_local_dir(dir).expect("default V1 model loads");
         assert_eq!(default.model_revision(), POTION_CODE_MODEL_REVISION);
+        let over_v2_limit = "x".repeat(FULL_V2_MAX_TEXT_BYTES + 1);
+        assert_eq!(
+            default
+                .embed_batch(&[&over_v2_limit])
+                .expect("historical V1 admits its previous input domain")
+                .len(),
+            1
+        );
         assert_eq!(
             default
                 .embed_batch(&[&left, &right])

@@ -47,7 +47,8 @@ python3 -m tools.benchmark.retrieval evaluate \
 
 Use `--embedder hash-dev` only for development diagnostics. The default
 `potion-code` uses the historical effective 512-token V1 encoder with verified
-local assets. `potion-code-full-v2` explicitly removes that cap and requires a
+local assets. `potion-code-full-v2` removes that tokenizer cap, admits at most
+16 KiB of UTF-8 per text and 4 MiB per 1,024-text model batch, and requires a
 fresh vector generation; pair captures under it are exploratory with no quality,
 speed, or same-model claim. A dirty/wrong-HEAD
 corpus, stale state root or existing output is refused. `freeze` creates a blind
