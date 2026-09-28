@@ -42,11 +42,11 @@ step = "P00 authority owner tests"
 
 [rails.pr-benchmark-control-python]
 tier = "pr"
-command = "uv run --frozen --extra dev just benchmark-control-contract-local"
+command = "uv run --frozen --extra dev python -m pytest tools -q --ignore=tools/ci/tests/test_semgrep_policy.py --ignore=tools/ci/tests/test_check_rust_fallbacks.py -x -vv"
 target_kind = "python"
 workflow = ".circleci/config.yml"
 job = "verify"
-step = "Benchmark capture and custody contracts"
+step = "Python policy and tooling tests"
 
 [rails.correctness-fuzz-ipc-request]
 tier = "correctness"

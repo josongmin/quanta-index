@@ -1572,6 +1572,7 @@ def _validate_local_scopes(
 def _python_command_selects_path(root: Path, command: str, path: str) -> bool:
     # Only the exact locked dependency wrapper is transparent. Do not infer
     # execution from arbitrary uv flags, environment assignments or scripts.
+    locked_wrapper = command.startswith("uv run --frozen --extra dev ")
     command = command.removeprefix("uv run --frozen --extra dev ")
     if command.startswith("just "):
         recipe = command.removeprefix("just ")
@@ -1597,6 +1598,8 @@ def _python_command_selects_path(root: Path, command: str, path: str) -> bool:
         tokens = _literal_shell_argv(line)
         if tokens is None:
             continue
+        if locked_wrapper and tokens[0] == "python":
+            tokens[0] = "python3"
         locked = tokens[:6] == ["uv", "run", "--frozen", "--extra", "dev", "python"]
         if locked:
             tokens = ["python3", *tokens[6:]]
@@ -1605,17 +1608,33 @@ def _python_command_selects_path(root: Path, command: str, path: str) -> bool:
         if tokens[:3] != ["python3", "-m", "pytest"]:
             continue
         selectors = tokens[3:]
-        # A target path beside --help/--co/--lf or attached filters is not
-        # complete execution. Only presentation flags and full files bind it.
-        presentation = {"-q", "-v", "-vv", "-ra", "--disable-warnings"}
-        if not selectors or any(
-            item not in presentation
-            and re.fullmatch(r"tools/ci/tests/test_[a-z0-9_]+\.py", item) is None
-            for item in selectors
-        ):
-            continue
-        if path in selectors:
-            return True
+        # A target beside collection-only, selection filters, or an ignored
+        # file is not executed. The broad tools suite is an authority rail only
+        # for test files it does not exclude.
+        presentation = {"-q", "-v", "-vv", "-ra", "-x", "--disable-warnings"}
+        files: set[str] = set()
+        ignored: set[str] = set()
+        broad_tools = False
+        for item in selectors:
+            if item in presentation:
+                continue
+            if item == "tools":
+                broad_tools = True
+                continue
+            if item.startswith("--ignore="):
+                ignored_file = item.removeprefix("--ignore=")
+                if re.fullmatch(r"tools/ci/tests/test_[a-z0-9_]+\.py", ignored_file):
+                    ignored.add(ignored_file)
+                    continue
+            if re.fullmatch(r"tools/ci/tests/test_[a-z0-9_]+\.py", item):
+                files.add(item)
+                continue
+            break
+        else:
+            if path not in ignored and (
+                path in files or (broad_tools and path.startswith("tools/"))
+            ):
+                return True
     return False
 
 

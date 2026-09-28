@@ -451,6 +451,18 @@ def test_python_rail_requires_unfiltered_pytest_execution(tmp_path: Path) -> Non
     )
 
 
+def test_python_rail_broad_tools_selection_honors_ignores(tmp_path: Path) -> None:
+    module = _load_module()
+    path = "tools/ci/tests/test_aggregate.py"
+    command = "uv run --frozen --extra dev python -m pytest tools -q -x -vv"
+    assert module._python_command_selects_path(tmp_path, command, path)
+    assert not module._python_command_selects_path(tmp_path, f"{command} --ignore={path}", path)
+    assert not module._python_command_selects_path(
+        tmp_path, f"{command} --ignore=tools/ci/tests", path
+    )
+    assert not module._python_command_selects_path(tmp_path, f"{command} -k smoke", path)
+
+
 @pytest.mark.parametrize("option", ["--help", "--co", "--version", "--lf", "-kselected", "-mfast"])
 def test_python_rail_cannot_promote_nonexecution_or_partial_selection(
     tmp_path: Path, option: str

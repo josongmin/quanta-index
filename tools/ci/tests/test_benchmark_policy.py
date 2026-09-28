@@ -99,14 +99,9 @@ def test_capture_contracts_have_one_local_and_ci_entrypoint() -> None:
     assert "pytest" not in prep
     workflow = yaml.safe_load((REPO_ROOT / ".circleci/config.yml").read_text())
     steps = workflow["jobs"]["verify"]["steps"]
-    assert (
-        sum(
-            invocation in step.get("run", {}).get("command", "")
-            for step in steps
-            if isinstance(step, dict)
-        )
-        == 1
-    )
+    commands = [step.get("run", {}).get("command", "") for step in steps if isinstance(step, dict)]
+    assert sum("python -m pytest tools -q" in script for script in commands) == 1
+    assert not any(invocation in script for script in commands)
 
 
 def test_execution_regressions_are_registered_to_the_real_owner_scope():
