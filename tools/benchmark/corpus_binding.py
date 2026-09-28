@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import tempfile
+from importlib.metadata import version
 from pathlib import Path
 
 import corpus_release as corpus
@@ -17,6 +18,7 @@ from evidence import (
     RawFile,
     _read_control_file,
     _read_regular_file,
+    canonical_json,
     digest_bytes,
     parse_json,
 )
@@ -258,3 +260,105 @@ def _replay(capsule: RawFile, selection: dict, suite: bytes, pack: bytes) -> dic
             raise EvidenceError("selected repository/view is absent")
         manifest = _read_regular_file(restored / repository["views"][selection["view"]]["manifest"])
         return _bind(expected, manifest, selection, suite, pack)
+
+
+def _gold_material(root: Path, selection: dict, recipe_raw: bytes) -> dict[str, bytes]:
+    """Re-derive labels from a validated release, never captured product rows."""
+    from tools.benchmark.retrieval import gold_oracle
+
+    _selection(selection)
+    if root.absolute() != Path(selection["release_path"]):
+        raise EvidenceError("gold release path differs from selected corpus")
+    recipe = _json(recipe_raw)
+    gold_oracle.validate_recipe(recipe)
+    document = corpus.validate(root)
+    if document["digest"] != selection["release_digest"]:
+        raise EvidenceError("gold recipe selected a different corpus release")
+    repositories = [
+        row for row in document["repositories"] if row["recipe"]["name"] == selection["repository"]
+    ]
+    if len(repositories) != 1:
+        raise EvidenceError("gold repository is absent or ambiguous")
+    metadata = repositories[0]["views"][selection["view"]]
+    manifest_raw = _read_control_file(root / metadata["manifest"])
+    if digest_bytes(manifest_raw) != metadata["manifest_digest"]:
+        raise EvidenceError("gold manifest differs from selected release")
+    view = root / "views" / selection["repository"] / selection["view"]
+    gold, blind = gold_oracle.derive(recipe, _json(manifest_raw), view)
+    context = {
+        "release_digest": document["digest"],
+        "manifest_digest": metadata["manifest_digest"],
+        "repository": selection["repository"],
+        "view": selection["view"],
+        "repository_commit": repositories[0]["recipe"]["revision"],
+    }
+    gold.update(context)
+    blind.update(context)
+    material = {
+        "selection.json": canonical_json(selection).encode() + b"\n",
+        "recipe.json": recipe_raw,
+        "gold.json": canonical_json(gold).encode() + b"\n",
+        "blind.json": canonical_json(blind).encode() + b"\n",
+    }
+    if any(len(raw) > 16 * 1024 * 1024 for raw in material.values()):
+        raise EvidenceError("gold control document exceeds 16 MiB")
+    identity = {
+        "schema_version": 1,
+        "kind": "source_derived_gold_capsule",
+        "qualification": "mechanical_unreviewed_diagnostic",
+        "holdout_custody": "unsealed_external_custody_required",
+        "release_digest": document["digest"],
+        "manifest_digest": metadata["manifest_digest"],
+        "oracle_source_digest": digest_bytes(_read_regular_file(Path(gold_oracle.__file__))),
+        "binding_source_digest": digest_bytes(_read_regular_file(Path(__file__))),
+        "parser_runtime": {
+            "tree_sitter": version("tree-sitter"),
+            "tree_sitter_language_pack": version("tree-sitter-language-pack"),
+        },
+        "files": {name: digest_bytes(raw) for name, raw in sorted(material.items())},
+    }
+    material["identity.json"] = canonical_json(identity).encode() + b"\n"
+    return material
+
+
+def capture_gold(root: Path, selection: dict, recipe_raw: bytes, target: Path) -> dict:
+    """Publish a fresh, external gold capsule and label-free runner pack."""
+    if (
+        not target.is_absolute()
+        or ".." in target.parts
+        or target.exists()
+        or target.is_symlink()
+        or target.resolve().is_relative_to(corpus.ROOT)
+        or target.resolve().is_relative_to(root.resolve())
+        or root.resolve().is_relative_to(target.resolve())
+    ):
+        raise EvidenceError("gold target must be fresh, external and disjoint from corpus")
+    stage = target.with_name(target.name + ".staging")
+    if stage.exists() or stage.is_symlink():
+        raise EvidenceError("gold staging target already exists")
+    material = _gold_material(root, selection, recipe_raw)
+    stage.mkdir(parents=True)
+    for name, raw in material.items():
+        with (stage / name).open("xb") as output:
+            output.write(raw)
+    identity = validate_gold(stage)
+    if target.exists() or target.is_symlink():
+        raise EvidenceError("gold output appeared before publication")
+    stage.rename(target)
+    return identity
+
+
+def validate_gold(target: Path) -> dict:
+    """Reconstruct the exact oracle output from source and reject forged digests."""
+    names = corpus.regular_tree(target)
+    expected = {"selection.json", "recipe.json", "gold.json", "blind.json", "identity.json"}
+    if names != expected:
+        raise EvidenceError("gold capsule inventory differs")
+    selection = _json(_read_control_file(target / "selection.json"))
+    _selection(selection)
+    recipe_raw = _read_control_file(target / "recipe.json")
+    material = _gold_material(Path(selection["release_path"]), selection, recipe_raw)
+    for name in expected:
+        if _read_control_file(target / name) != material[name]:
+            raise EvidenceError("gold capsule differs from source-derived oracle: " + name)
+    return _json(material["identity.json"])
