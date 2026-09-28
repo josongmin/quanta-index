@@ -40,6 +40,13 @@ engine or parser. Tantivy's indexed scope `RegexQuery::from_pattern` also wraps
 the `tantivy-fst` resource variants in a string-valued `InvalidArgument`, so a
 typed scope resource refusal requires a controlled dependency API change rather
 than matching error text.
+Indexed file filters compile only the requested path/name field; combined
+name-and-path filters share one `Arc`-owned FST automaton. The dependency stays
+on the pinned external `tantivy-fst` release. Verified-result vector growth
+uses fallible reservation with typed `PlanLimitExceeded` /
+`regex-verified-results`, including overflow refusal before any prefix escapes.
+These changes reduce duplicate compilation and preserve resource errors; they
+do not supply parser/compiler allocation hooks.
 
 The lockfile pins `regex 1.12.4`, `regex-automata 0.4.14` and
 `regex-syntax 0.8.11`. The pinned meta-engine exposes separate NFA/one-pass/DFA
