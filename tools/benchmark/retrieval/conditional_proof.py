@@ -158,7 +158,7 @@ def model_rows(observed: object, baseline: object, inputs: object) -> tuple[list
         or baseline["dimension"] != 256
         or observed["model_id"] != "model2vec:minishlab/potion-code-16M-v2"
         or observed["model_revision"]
-        != "e9d2a44ca6a05ac6685f3b23709ea57eb7352d5b:model2vec-rs-0.3.0:fancy-regex:full-length-v1"
+        != "e9d2a44ca6a05ac6685f3b23709ea57eb7352d5b:model2vec-rs-0.3.0:fancy-regex:full-length-v2"
         or observed["normalization"] != "l2_unit"
         or observed["max_length"] is not None
         or model["id"] != reference.MODEL_ID
@@ -166,7 +166,11 @@ def model_rows(observed: object, baseline: object, inputs: object) -> tuple[list
         or baseline["profile"] != reference.REFERENCE_PROFILE
         or baseline["library"] != {"model2vec": reference.MODEL2VEC_VERSION}
         or baseline["policy"]
-        != {"max_length": None, "normalization": "approx-unit-fp16 (rail L2-normalizes both sides)"}
+        != {
+            "max_length": None,
+            "tokenizer_embedded_truncation_disabled": True,
+            "normalization": "approx-unit-fp16 (rail L2-normalizes both sides)",
+        }
     ):
         raise ValueError("encoder policy/model identity drift")
     for name, expected in reference.PINNED_ASSET_SHA256.items():
@@ -1377,7 +1381,7 @@ def validate_results(value: object, kind: str, *, verify_source: bool = False) -
             (
                 "quanta",
                 "model2vec:minishlab/potion-code-16M-v2",
-                "e9d2a44ca6a05ac6685f3b23709ea57eb7352d5b:model2vec-rs-0.3.0:fancy-regex:full-length-v1",
+                "e9d2a44ca6a05ac6685f3b23709ea57eb7352d5b:model2vec-rs-0.3.0:fancy-regex:full-length-v2",
             ),
             ("semble", "minishlab/potion-code-16M-v2", "e9d2a44ca6a05ac6685f3b23709ea57eb7352d5b"),
         }

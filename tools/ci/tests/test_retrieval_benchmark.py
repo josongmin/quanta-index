@@ -10008,7 +10008,7 @@ def test_conditional_vector_replay_checks_full_vector_and_batch_permutation():
     observed = {
         "schema_version": 1,
         "model_id": "model2vec:minishlab/potion-code-16M-v2",
-        "model_revision": "e9d2a44ca6a05ac6685f3b23709ea57eb7352d5b:model2vec-rs-0.3.0:fancy-regex:full-length-v1",
+        "model_revision": "e9d2a44ca6a05ac6685f3b23709ea57eb7352d5b:model2vec-rs-0.3.0:fancy-regex:full-length-v2",
         "dimension": 256,
         "normalization": "l2_unit",
         "max_length": None,
@@ -10030,6 +10030,7 @@ def test_conditional_vector_replay_checks_full_vector_and_batch_permutation():
         },
         "policy": {
             "max_length": None,
+            "tokenizer_embedded_truncation_disabled": True,
             "normalization": "approx-unit-fp16 (rail L2-normalizes both sides)",
         },
         "inputs": inputs,
@@ -10039,6 +10040,10 @@ def test_conditional_vector_replay_checks_full_vector_and_batch_permutation():
         "dimension": 256,
     }
     assert cp.model_rows(observed, baseline, inputs)[1] == 2
+    capped_reference = json.loads(json.dumps(baseline))
+    capped_reference["policy"]["tokenizer_embedded_truncation_disabled"] = False
+    with pytest.raises(ValueError, match="encoder policy/model identity drift"):
+        cp.model_rows(observed, capped_reference, inputs)
     for bad in (True, float("nan"), float("inf"), 10**400, 1.1):
         mutant = json.loads(json.dumps(baseline))
         mutant["pairwise_cosine_upper"][0][0] = bad

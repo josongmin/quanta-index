@@ -69,7 +69,7 @@ DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 POTION_CODE_MODEL_REVISION = (
     "model2vec:minishlab/potion-code-16M-v2@"
     "e9d2a44ca6a05ac6685f3b23709ea57eb7352d5b:"
-    "model2vec-rs-0.3.0:fancy-regex:full-length-v1:d256"
+    "model2vec-rs-0.3.0:fancy-regex:full-length-v2:d256"
 )
 
 try:

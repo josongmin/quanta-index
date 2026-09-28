@@ -678,6 +678,18 @@ fn ensure_query_model_matches_index_v1_fails_closed_on_model_drift() {
     expect_model_mismatch(
         ensure_query_model_matches_index_v1("m", "1", "m", Some("2"), "hybrid seed").unwrap_err(),
     );
+    // V1 pooled only the first 512 tokenizer IDs despite its full-length
+    // name. The corrected V2 query must not search a V1 vector generation.
+    expect_model_mismatch(
+        ensure_query_model_matches_index_v1(
+            "model2vec:minishlab/potion-code-16M-v2",
+            "e9d2a44ca6a05ac6685f3b23709ea57eb7352d5b:model2vec-rs-0.3.0:fancy-regex:full-length-v2",
+            "model2vec:minishlab/potion-code-16M-v2",
+            Some("e9d2a44ca6a05ac6685f3b23709ea57eb7352d5b:model2vec-rs-0.3.0:fancy-regex:full-length-v1"),
+            "semantic",
+        )
+        .unwrap_err(),
+    );
 
     // CORNER: an index sealed without a revision cannot be compared and
     // is refused rather than assumed to match.

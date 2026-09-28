@@ -8,9 +8,11 @@ use quanta_index_core::{CoreError, EMBED_CHECKPOINT, RequestBudgetV1, TextEmbedd
 use sha2::{Digest, Sha256};
 
 pub const POTION_CODE_MODEL_ID: &str = "model2vec:minishlab/potion-code-16M-v2";
-// Include the encoder and no-truncation policy: changing either changes vector identity.
+// Include the encoder and effective no-truncation policy: changing either
+// changes vector identity. V1 inadvertently retained tokenizer.json's 512-token
+// truncation even though encode_with_args received None.
 pub const POTION_CODE_MODEL_REVISION: &str =
-    "e9d2a44ca6a05ac6685f3b23709ea57eb7352d5b:model2vec-rs-0.3.0:fancy-regex:full-length-v1";
+    "e9d2a44ca6a05ac6685f3b23709ea57eb7352d5b:model2vec-rs-0.3.0:fancy-regex:full-length-v2";
 pub const POTION_CODE_DIMENSION: usize = 256;
 const BATCH_SIZE: usize = 1024;
 const TOKENIZER_SHA256: &str = "107bbdcbad4bff1d299b7a4c3a2fb17c52890688b7dd0e4c9deab79d3c4f3d45";
@@ -35,6 +37,7 @@ impl PotionCodeEmbeddingProvider {
             ));
         }
         let tokenizer = read_verified(dir, "tokenizer.json", TOKENIZER_SHA256)?;
+        let tokenizer = tokenizer_without_persisted_truncation(&tokenizer)?;
         let weights = read_verified(dir, "model.safetensors", MODEL_SHA256)?;
         let config = read_verified(dir, "config.json", CONFIG_SHA256)?;
         // The shared Quanta wrapper performs the same final L2 normalization on
@@ -72,6 +75,33 @@ impl PotionCodeEmbeddingProvider {
         }
         Ok(vectors)
     }
+}
+
+/// Remove the pinned tokenizer's 512-token cap in memory.
+///
+/// `model2vec-rs`'s
+/// `encode_with_args(None, ..)` bypasses its own cap but still honors the
+/// tokenizer's serialized cap. Clear that cap only after verifying the raw
+/// asset digest; the installed snapshot remains unchanged.
+fn tokenizer_without_persisted_truncation(bytes: &[u8]) -> Result<Vec<u8>, CoreError> {
+    let mut tokenizer: serde_json::Value = serde_json::from_slice(bytes).map_err(|error| {
+        CoreError::InvalidContract(format!("model2vec: tokenizer JSON: {error}"))
+    })?;
+    let object = tokenizer.as_object_mut().ok_or_else(|| {
+        CoreError::InvalidContract("model2vec: tokenizer JSON must be an object".to_string())
+    })?;
+    let max_length = object
+        .get("truncation")
+        .and_then(|value| value.get("max_length"))
+        .and_then(serde_json::Value::as_u64);
+    if max_length != Some(512) {
+        return Err(CoreError::InvalidContract(
+            "model2vec: pinned tokenizer truncation must be 512 before disabling it".to_string(),
+        ));
+    }
+    let _pinned_truncation = object.insert("truncation".to_string(), serde_json::Value::Null);
+    serde_json::to_vec(&tokenizer)
+        .map_err(|error| CoreError::InvalidContract(format!("model2vec: tokenizer JSON: {error}")))
 }
 
 fn read_verified(dir: &Path, name: &str, expected: &str) -> Result<Vec<u8>, CoreError> {
@@ -147,6 +177,73 @@ mod tests {
         let result = PotionCodeEmbeddingProvider::from_local_dir(directory.path());
         assert!(
             matches!(result, Err(CoreError::InvalidContract(message)) if message.contains("SHA-256 mismatch"))
+        );
+    }
+
+    #[test]
+    fn pinned_tokenizer_cap_is_removed_only_in_memory() {
+        let raw = br#"{"truncation":{"max_length":512},"model":{}}"#;
+        let decoded = tokenizer_without_persisted_truncation(raw).expect("pinned cap");
+        let value: serde_json::Value = serde_json::from_slice(&decoded).expect("valid JSON");
+        assert!(
+            value
+                .get("truncation")
+                .is_some_and(serde_json::Value::is_null)
+        );
+        assert_eq!(value.get("model"), Some(&serde_json::json!({})));
+        assert!(tokenizer_without_persisted_truncation(br#"{"truncation":null}"#).is_err());
+        assert!(
+            tokenizer_without_persisted_truncation(br#"{"truncation":{"max_length":256}}"#)
+                .is_err()
+        );
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the negative control and corrected output are length-checked before indexing"
+    )]
+    #[test]
+    #[ignore = "requires the pinned 33 MB upstream model assets"]
+    fn pinned_model_uses_tokens_after_the_old_512_token_cap() {
+        let dir = std::env::var("QUANTA_INDEX_TEST_POTION_CODE_MODEL_DIR")
+            .expect("set QUANTA_INDEX_TEST_POTION_CODE_MODEL_DIR");
+        let dir = Path::new(&dir);
+        let provider =
+            PotionCodeEmbeddingProvider::from_local_dir(dir).expect("pinned model loads");
+        let prefix = "route ".repeat(600);
+        let left = format!("{prefix}render content type");
+        let right = format!("{prefix}binding form values");
+        // Independent negative control: the raw pinned tokenizer cap makes
+        // these distinct long inputs exactly equal under the old encoder.
+        let raw_tokenizer =
+            read_verified(dir, "tokenizer.json", TOKENIZER_SHA256).expect("pinned tokenizer reads");
+        let weights =
+            read_verified(dir, "model.safetensors", MODEL_SHA256).expect("pinned weights read");
+        let config = read_verified(dir, "config.json", CONFIG_SHA256).expect("pinned config reads");
+        let legacy = StaticModel::from_bytes(&raw_tokenizer, &weights, &config, Some(false))
+            .expect("legacy model loads");
+        let legacy_vectors =
+            legacy.encode_with_args(&[left.clone(), right.clone()], None, BATCH_SIZE);
+        assert_eq!(legacy_vectors.len(), 2);
+        assert_eq!(
+            legacy_vectors[0], legacy_vectors[1],
+            "old cap masks both suffixes"
+        );
+        let vectors = provider
+            .embed_batch(&[&prefix, &left, &right])
+            .expect("long-input inference");
+        assert_eq!(vectors.len(), 3);
+        assert_ne!(
+            vectors[0], vectors[1],
+            "suffix after token 512 must affect pooling"
+        );
+        assert_ne!(
+            vectors[0], vectors[2],
+            "suffix after token 512 must affect pooling"
+        );
+        assert_ne!(
+            vectors[1], vectors[2],
+            "distinct suffixes must affect pooling"
         );
     }
 

@@ -39,6 +39,7 @@ struct Policy {
     // Unlike Option<T>, Value is a required field: explicit null is accepted,
     // a missing key is a deserialization error.
     max_length: serde_json::Value,
+    tokenizer_embedded_truncation_disabled: bool,
     normalization: String,
 }
 
@@ -142,23 +143,37 @@ impl<'de> Deserialize<'de> for Policy {
                 formatter.write_str("complete explicit-null reference policy")
             }
             fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Policy, M::Error> {
-                let (mut max_length, mut normalization) = (None, None);
+                let (mut max_length, mut tokenizer_embedded_truncation_disabled, mut normalization) =
+                    (None, None, None);
                 while let Some(key) = map.next_key::<String>()? {
                     match key.as_str() {
                         "max_length" => take_field(&mut max_length, &mut map, "max_length")?,
+                        "tokenizer_embedded_truncation_disabled" => take_field(
+                            &mut tokenizer_embedded_truncation_disabled,
+                            &mut map,
+                            "tokenizer_embedded_truncation_disabled",
+                        )?,
                         "normalization" => {
                             take_field(&mut normalization, &mut map, "normalization")?;
                         }
                         _ => {
                             return Err(M::Error::unknown_field(
                                 &key,
-                                &["max_length", "normalization"],
+                                &[
+                                    "max_length",
+                                    "tokenizer_embedded_truncation_disabled",
+                                    "normalization",
+                                ],
                             ));
                         }
                     }
                 }
                 Ok(Policy {
                     max_length: max_length.ok_or_else(|| M::Error::missing_field("max_length"))?,
+                    tokenizer_embedded_truncation_disabled: tokenizer_embedded_truncation_disabled
+                        .ok_or_else(|| {
+                            M::Error::missing_field("tokenizer_embedded_truncation_disabled")
+                        })?,
                     normalization: normalization
                         .ok_or_else(|| M::Error::missing_field("normalization"))?,
                 })
@@ -244,6 +259,8 @@ fn canonical_inputs() -> Vec<String> {
         String::new(),
         "   ".into(),
         "a".repeat(5000),
+        format!("{}render content type", "route ".repeat(600)),
+        format!("{}binding form values", "route ".repeat(600)),
         "refresh access token".into(),
     ]
 }
@@ -260,7 +277,7 @@ impl ParityFixture {
     }
 
     fn validate(&self) -> Result<(), String> {
-        if self.schema_version != 2
+        if self.schema_version != 3
             || self.profile != "model2vec-static-potion-code-16M-v2"
             || self.library.model2vec != "0.9.0"
             || self.model.id != "minishlab/potion-code-16M-v2"
@@ -270,6 +287,7 @@ impl ParityFixture {
             || self.model.tokenizer_sha256 != TOKENIZER_SHA256
             || self.model.config_sha256 != CONFIG_SHA256
             || self.policy.max_length != serde_json::Value::Null
+            || !self.policy.tokenizer_embedded_truncation_disabled
             || self.policy.normalization != NORMALIZATION
             || self.dimension != POTION_CODE_DIMENSION
         {
@@ -331,7 +349,8 @@ mod tests {
     fn valid() -> serde_json::Value {
         // An independent, exact basis-vector oracle: norm and each cosine = 1.
         // Asset-free fixture validity is distinct from parity with a real model.
-        let vectors: Vec<Vec<f64>> = (0..9)
+        let count = canonical_inputs().len();
+        let vectors: Vec<Vec<f64>> = (0..count)
             .map(|_| {
                 let mut vector = vec![0.0; POTION_CODE_DIMENSION];
                 *vector.first_mut().expect("nonempty vector") = 1.0;
@@ -339,7 +358,7 @@ mod tests {
             })
             .collect();
         serde_json::json!({
-            "schema_version": 2,
+            "schema_version": 3,
             "profile": "model2vec-static-potion-code-16M-v2",
             "library": {"model2vec": "0.9.0"},
             "model": {
@@ -350,11 +369,11 @@ mod tests {
                 "tokenizer_sha256": TOKENIZER_SHA256,
                 "config_sha256": CONFIG_SHA256
             },
-            "policy": {"max_length": null, "normalization": NORMALIZATION},
+            "policy": {"max_length": null, "tokenizer_embedded_truncation_disabled": true, "normalization": NORMALIZATION},
             "inputs": canonical_inputs(),
             "vectors": vectors,
-            "norms": vec![1.0; 9],
-            "pairwise_cosine_upper": (0..9).map(|i| vec![1.0; 8_usize.checked_sub(i).expect("bounded triangular oracle")]).collect::<Vec<_>>(),
+            "norms": vec![1.0; count],
+            "pairwise_cosine_upper": (0..count).map(|i| vec![1.0; count.checked_sub(i).and_then(|n| n.checked_sub(1)).expect("bounded triangular oracle")]).collect::<Vec<_>>(),
             "dimension": POTION_CODE_DIMENSION
         })
     }
@@ -422,10 +441,20 @@ mod tests {
             *mutant.get_mut(key).expect("field") = replacement;
             assert!(!parses(&mutant), "forged {key}");
         }
+        let mut capped = baseline.clone();
+        *capped
+            .get_mut("policy")
+            .expect("policy")
+            .get_mut("tokenizer_embedded_truncation_disabled")
+            .expect("policy field") = serde_json::json!(false);
+        assert!(
+            !parses(&capped),
+            "embedded tokenizer cap is not the v2 policy"
+        );
         let encoded = serde_json::to_string(&baseline).expect("JSON encodes");
         let duplicate = encoded.replacen(
-            "\"schema_version\":2",
-            "\"schema_version\":2,\"schema_version\":2",
+            "\"schema_version\":3",
+            "\"schema_version\":3,\"schema_version\":3",
             1,
         );
         assert!(ParityFixture::parse(duplicate.as_bytes()).is_err());
