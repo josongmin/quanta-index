@@ -13,6 +13,7 @@ import json
 import sys
 from pathlib import Path
 
+from tools.benchmark.evidence import parse_json, read_control
 from tools.benchmark.retrieval import run
 from tools.benchmark.retrieval.evaluator import qualified_query_family_ci
 from tools.benchmark.retrieval.finite_json import is_finite_json_number
@@ -203,18 +204,27 @@ def evaluate_decision(
 
 def build_decision(repo: Path, suite: Path, manifest_path: Path, policy_path: Path) -> dict:
     """Replay capture authority before inspecting selected effect and resources."""
+    initial: dict[Path, str] = {}
+
+    def bound_json(path: Path) -> object:
+        raw = read_control(path)
+        observed = hashlib.sha256(raw).hexdigest()
+        expected = initial.setdefault(path, observed)
+        if observed != expected:
+            raise DecisionError("decision inputs changed during replay")
+        return parse_json(raw.decode("utf-8"))
+
     root = manifest_path.resolve().parent
-    manifest = run._validate_manifest_shape(run.read_json(manifest_path))
+    manifest = run._validate_manifest_shape(bound_json(manifest_path))
     if manifest["scope"] != "qualified":
         raise DecisionError("default decision requires a qualified run")
     artifacts = manifest["artifacts"]
     admission_path = run._resolve_artifact(root, artifacts["admission_manifest"], "admission")
-    admission = run.validate_admission_manifest(run.read_json(admission_path))
-    policy_bytes = policy_path.read_bytes()
-    policy_digest = hashlib.sha256(policy_bytes).hexdigest()
+    admission = run.validate_admission_manifest(bound_json(admission_path))
+    policy = validate_policy(bound_json(policy_path))
+    policy_digest = initial[policy_path]
     if admission.get("decision_policy_sha256") != policy_digest:
         raise DecisionError("decision policy is not frozen in qualified admission")
-    policy = validate_policy(json.loads(policy_bytes))
     paths = {
         "matrix": run._resolve_artifact(root, artifacts["latency_matrix"], "latency_matrix"),
         "reports": [run._resolve_artifact(root, ref, "reports") for ref in artifacts["reports"]],
@@ -234,7 +244,8 @@ def build_decision(repo: Path, suite: Path, manifest_path: Path, policy_path: Pa
         *paths["resources"],
         paths["matrix"],
     ]
-    initial = {path: run.sha_file(path) for path in tracked}
+    for path in tracked:
+        initial.setdefault(path, run.sha_file(path))
     verdict = run.build_verdict(repo, suite, manifest_path)
     selected_reports = [
         path
@@ -248,13 +259,13 @@ def build_decision(repo: Path, suite: Path, manifest_path: Path, policy_path: Pa
     ]
     if len(selected_reports) != 1:
         raise DecisionError("selected report does not match a verified comparison digest")
-    report = run.read_json(selected_reports[0])
-    suite_payload = run.read_json(suite)
+    report = bound_json(selected_reports[0])
+    suite_payload = bound_json(suite)
     comparison = policy["comparison"]
     cluster_ci = qualified_query_family_ci(
         suite_payload, report, comparison["baseline_route"], comparison["candidate_route"]
     )
-    matrix = run.read_json(paths["matrix"])
+    matrix = bound_json(paths["matrix"])
     key = f"quanta:{comparison['strategy']}:{comparison['candidate_route']}"
     samples = matrix.get("samples") if isinstance(matrix, dict) else None
     floors = matrix.get("floors") if isinstance(matrix, dict) else None
@@ -278,7 +289,7 @@ def build_decision(repo: Path, suite: Path, manifest_path: Path, policy_path: Pa
         raise DecisionError("selected candidate latency floor or samples are invalid")
     by_subject = {}
     for path in paths["resources"]:
-        value = run.read_json(path)
+        value = bound_json(path)
         if (
             not isinstance(value, dict)
             or not run._is_hex(value.get("subject_sha256"), 64)
@@ -288,7 +299,7 @@ def build_decision(repo: Path, suite: Path, manifest_path: Path, policy_path: Pa
         by_subject[value["subject_sha256"]] = value
     selected_resources = []
     for path in paths["records"]:
-        record = run.read_json(path)
+        record = bound_json(path)
         if run._record_identity(record, str(path)) != ("quanta", comparison["strategy"]):
             continue
         metric = by_subject.get(run.sha_file(path))

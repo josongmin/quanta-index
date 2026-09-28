@@ -143,6 +143,26 @@ def test_policy_must_be_frozen_in_admission_before_replay(monkeypatch, tmp_path)
         decision.build_decision(tmp_path, tmp_path / "suite.json", manifest, policy)
 
 
+def test_policy_rejects_duplicate_keys_before_replay(monkeypatch, tmp_path) -> None:
+    policy = tmp_path / "policy.json"
+    policy.write_text('{"schema_version": 1, "schema_version": 1}', encoding="utf-8")
+    manifest = tmp_path / "run-manifest.json"
+    manifest.write_text("{}", encoding="utf-8")
+    admission = tmp_path / "admission.json"
+    admission.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        decision.run,
+        "_validate_manifest_shape",
+        lambda _value: {
+            "scope": "qualified",
+            "artifacts": {"admission_manifest": "admission.json"},
+        },
+    )
+    monkeypatch.setattr(decision.run, "validate_admission_manifest", lambda _value: {})
+    with pytest.raises(ValueError, match="duplicate JSON key"):
+        decision.build_decision(tmp_path, tmp_path / "suite.json", manifest, policy)
+
+
 def test_capture_binding_selects_report_and_owned_resource_root(monkeypatch, tmp_path) -> None:
     policy, verdict, report, cluster, _measurements = fixture_inputs()
     policy_path = tmp_path / "policy.json"
@@ -212,4 +232,26 @@ def test_capture_binding_selects_report_and_owned_resource_root(monkeypatch, tmp
         encoding="utf-8",
     )
     with pytest.raises(decision.DecisionError, match="floor or samples"):
+        decision.build_decision(tmp_path, suite, manifest, policy_path)
+
+    # Mutation after parsing but before collecting the artifact inventory must
+    # not replace the hash of the manifest whose references were consumed.
+    matrix.write_text(
+        json.dumps(
+            {
+                "samples": {"quanta:whole_file:hybrid:task-1": [88.0, 90.0]},
+                "floors": {"quanta:whole_file:hybrid": 2},
+            }
+        ),
+        encoding="utf-8",
+    )
+    resolve_artifact = decision.run._resolve_artifact
+
+    def mutate_manifest(root, ref, label):
+        if label == "admission":
+            manifest.write_text('{"substituted": true}', encoding="utf-8")
+        return resolve_artifact(root, ref, label)
+
+    monkeypatch.setattr(decision.run, "_resolve_artifact", mutate_manifest)
+    with pytest.raises(decision.DecisionError, match="inputs changed"):
         decision.build_decision(tmp_path, suite, manifest, policy_path)
