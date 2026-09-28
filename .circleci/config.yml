@@ -19,7 +19,7 @@ jobs:
       UV_PYTHON: "3.12"
     steps:
       - checkout
-      - run:
+      - run: &install_verification_tools
           name: Install verification tools
           command: |
             set -euo pipefail
@@ -41,7 +41,7 @@ jobs:
                 cargo-deny-0.19.7-x86_64-unknown-linux-musl/cargo-deny
             curl --proto '=https' --tlsv1.2 -LsSf https://astral.sh/uv/0.9.11/install.sh | sh
             printf 'export PATH="%s/.cargo/bin:%s/.local/bin:$PATH"\n' "$HOME" "$HOME" >> "$BASH_ENV"
-      - run:
+      - run: &verify_tool_versions
           name: Verify tool versions
           command: |
             set -euo pipefail
@@ -59,6 +59,51 @@ jobs:
             unset BASH_ENV ENV
             ./scripts/cargow fmt --all -- --check
             ./scripts/cargow clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - run:
+          name: rust nextest
+          no_output_timeout: 30m
+          command: |
+            set -euo pipefail
+            unset BASH_ENV ENV
+            mkdir -p artifacts/test-authority
+            export NEXTEST_EXPERIMENTAL_LIBTEST_JSON=1
+            ./scripts/cargow nextest list --workspace --all-features --locked \
+              --message-format json > artifacts/test-authority/inventory.json
+            ./scripts/cargow nextest run --workspace --all-features --locked \
+              --message-format libtest-json-plus --message-format-version 0.1 \
+              | tee artifacts/test-authority/nextest.jsonl
+            if [[ -n "${CIRCLE_PULL_REQUEST:-}" ]]; then
+              tier=pr
+              rail=pr-workspace-nextest
+            elif [[ "${CIRCLE_BRANCH:-}" == main ]]; then
+              tier=main
+              rail=main-workspace-nextest
+            else
+              echo "No PR/main verification receipt for branch ${CIRCLE_BRANCH:-unknown}"
+              exit 0
+            fi
+            uv run --frozen --extra dev python tools/ci/write-verification-receipt.py \
+              --rail "$rail" --tier "$tier" \
+              --command "./scripts/cargow nextest run --workspace --all-features --locked --message-format libtest-json-plus --message-format-version 0.1" \
+              --evidence artifacts/test-authority/nextest.jsonl \
+              --inventory artifacts/test-authority/inventory.json \
+              --out artifacts/test-authority/receipt.json
+      - store_artifacts:
+          path: artifacts/test-authority
+          destination: test-authority
+
+  verify-python:
+    machine:
+      image: ubuntu-2404:2026.05.1
+    resource_class: medium
+    environment:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_TERM_COLOR: always
+      UV_PYTHON: "3.12"
+    steps:
+      - checkout
+      - run: *install_verification_tools
+      - run: *verify_tool_versions
       - run:
           name: Python policy and tooling tests
           no_output_timeout: 20m
@@ -94,38 +139,6 @@ jobs:
             set -euo pipefail
             unset BASH_ENV ENV
             uv run --frozen --extra dev just proof-p00-authority-freeze
-      - run:
-          name: rust nextest
-          no_output_timeout: 30m
-          command: |
-            set -euo pipefail
-            unset BASH_ENV ENV
-            mkdir -p artifacts/test-authority
-            export NEXTEST_EXPERIMENTAL_LIBTEST_JSON=1
-            ./scripts/cargow nextest list --workspace --all-features --locked \
-              --message-format json > artifacts/test-authority/inventory.json
-            ./scripts/cargow nextest run --workspace --all-features --locked \
-              --message-format libtest-json-plus --message-format-version 0.1 \
-              | tee artifacts/test-authority/nextest.jsonl
-            if [[ -n "${CIRCLE_PULL_REQUEST:-}" ]]; then
-              tier=pr
-              rail=pr-workspace-nextest
-            elif [[ "${CIRCLE_BRANCH:-}" == main ]]; then
-              tier=main
-              rail=main-workspace-nextest
-            else
-              echo "No PR/main verification receipt for branch ${CIRCLE_BRANCH:-unknown}"
-              exit 0
-            fi
-            uv run --frozen --extra dev python tools/ci/write-verification-receipt.py \
-              --rail "$rail" --tier "$tier" \
-              --command "./scripts/cargow nextest run --workspace --all-features --locked --message-format libtest-json-plus --message-format-version 0.1" \
-              --evidence artifacts/test-authority/nextest.jsonl \
-              --inventory artifacts/test-authority/inventory.json \
-              --out artifacts/test-authority/receipt.json
-      - store_artifacts:
-          path: artifacts/test-authority
-          destination: test-authority
 
   heavy-correctness:
     machine:
@@ -199,6 +212,7 @@ workflows:
     unless: << pipeline.parameters.run_heavy >>
     jobs:
       - verify
+      - verify-python
   manual-heavy:
     when: << pipeline.parameters.run_heavy >>
     jobs:
