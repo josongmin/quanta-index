@@ -74,7 +74,10 @@ def build_spec(
     ):
         if original_suite.get(key) != suite.get(key) or suite.get(key) != pack.get(key):
             raise ValueError(f"{key} differs across frozen inputs")
-    if suite.get("routes") != [QUANTA_LEXICAL_ROUTE, SEMBLE_LEXICAL_ROUTE] or pack.get("routes") != suite["routes"]:
+    if (
+        suite.get("routes") != [QUANTA_LEXICAL_ROUTE, SEMBLE_LEXICAL_ROUTE]
+        or pack.get("routes") != suite["routes"]
+    ):
         raise ValueError("lexical suite must declare lexical and semble-lexical-only routes")
     if pack.get("suite_commitment_sha256") != digest(canonical(suite)):
         raise ValueError("query pack does not bind the lexical suite")

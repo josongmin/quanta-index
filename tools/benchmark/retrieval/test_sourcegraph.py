@@ -108,13 +108,17 @@ class SourcegraphCaptureTests(unittest.TestCase):
         extensions = file_extensions([row["path"] for row in FILES])
         raw = b"".join(
             [
-                event("progress", {"done": False, "skipped": [], "matchCount": 0,
-                                    "durationMs": 1}),
-                event("matches", [
-                    hit("outside.py", 1), hit("b.py", 2), hit("other.py", 3), hit("a.py", 4),
-                ]),
-                event("progress", {"done": True, "skipped": [], "matchCount": 4,
-                                    "durationMs": 2}),
+                event("progress", {"done": False, "skipped": [], "matchCount": 0, "durationMs": 1}),
+                event(
+                    "matches",
+                    [
+                        hit("outside.py", 1),
+                        hit("b.py", 2),
+                        hit("other.py", 3),
+                        hit("a.py", 4),
+                    ],
+                ),
+                event("progress", {"done": True, "skipped": [], "matchCount": 4, "durationMs": 2}),
                 event("done", {}),
             ]
         )
@@ -155,9 +159,7 @@ class SourcegraphCaptureTests(unittest.TestCase):
         self.assertEqual([row["path"] for row in result["raw_match_order"]], ["b.py", "a.py"])
         self.assertEqual([row["path"] for row in result["file_order"]], ["b.py", "a.py"])
         self.assertEqual([row["first_match_rank"] for row in result["file_order"]], [1, 2])
-        self.assertEqual(
-            [row["first_native_match_rank"] for row in result["file_order"]], [2, 4]
-        )
+        self.assertEqual([row["first_native_match_rank"] for row in result["file_order"]], [2, 4])
 
     def test_extension_filter_refuses_results_outside_declared_suffixes(self) -> None:
         request, _, manifest, _ = inputs()
@@ -165,8 +167,7 @@ class SourcegraphCaptureTests(unittest.TestCase):
         raw = b"".join(
             [
                 event("matches", [hit("outside.md", 1)]),
-                event("progress", {"done": True, "skipped": [], "matchCount": 1,
-                                    "durationMs": 1}),
+                event("progress", {"done": True, "skipped": [], "matchCount": 1, "durationMs": 1}),
                 event("done", {}),
             ]
         )
@@ -370,13 +371,13 @@ class SourcegraphCaptureTests(unittest.TestCase):
 
     def test_extension_query_filter_is_short_and_closed(self) -> None:
         extensions = file_extensions([row["path"] for row in FILES])
-        query = query_expression(
-            QUERY, REPOSITORY, REVISION, file_extensions_filter=extensions
-        )
+        query = query_expression(QUERY, REPOSITORY, REVISION, file_extensions_filter=extensions)
         self.assertIn('file:"^(?:.*\\\\.(?:py))$"', query)
         with self.assertRaises(CaptureError):
             query_expression(
-                QUERY, REPOSITORY, REVISION,
+                QUERY,
+                REPOSITORY,
+                REVISION,
                 file_paths=[row["path"] for row in FILES],
                 file_extensions_filter=extensions,
             )

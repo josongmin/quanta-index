@@ -112,6 +112,8 @@ def test_matrix_verification_binds_every_native_cell(tmp_path, monkeypatch, fail
             "claims": {"quality": False, "speed": False, "same_model": False, "incremental": False},
             "routes": [route],
             "candidate_route": matrix.PAIR_MODES[mode][0],
+            "baseline_route": matrix.pair_run.SEMBLE_ROUTE_BY_MODE[matrix.PAIR_MODES[mode][1]],
+            "semble_route": matrix.pair_run.SEMBLE_ROUTE_BY_MODE[matrix.PAIR_MODES[mode][1]],
             "execution_profiles": {"semble": {"mode": matrix.PAIR_MODES[mode][1]}},
             "top_k": 10,
         }
@@ -143,10 +145,17 @@ def test_matrix_mode_requires_matching_single_route_and_exploratory_claims():
         "claims": {"quality": False, "speed": False, "same_model": False, "incremental": False},
         "routes": ["hybrid"],
         "candidate_route": "hybrid",
+        "baseline_route": "semble-hybrid",
+        "semble_route": "semble-hybrid",
         "execution_profiles": {"semble": {"mode": "hybrid-no-rerank"}},
         "top_k": 10,
     }
     matrix._mode(spec, "hybrid")
-    for mutation in ({"routes": ["lexical"]}, {"claims": {"quality": True}}, {"top_k": True}):
+    for mutation in (
+        {"routes": ["lexical"]},
+        {"claims": {"quality": True}},
+        {"top_k": True},
+        {"baseline_route": "semble-semantic-only"},
+    ):
         with pytest.raises(ValueError, match="another route, mode or claim"):
             matrix._mode({**spec, **mutation}, "hybrid")

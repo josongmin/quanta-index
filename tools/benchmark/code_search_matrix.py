@@ -139,13 +139,15 @@ def _pair(repo: Path, root: Path, registry: dict) -> tuple[dict, dict, dict]:
 
 def _mode(spec: dict, mode: str) -> None:
     route, semble = PAIR_MODES[mode]
+    baseline = pair_run.SEMBLE_ROUTE_BY_MODE[semble]
     if (
         spec.get("scope") != "exploratory"
         or spec.get("claims")
         != {"quality": False, "speed": False, "same_model": False, "incremental": False}
         or spec.get("routes") != [route]
         or spec.get("candidate_route") != route
-        or spec.get("baseline_route", "semble-hybrid") != spec.get("semble_route", "semble-hybrid")
+        or spec.get("baseline_route") != baseline
+        or spec.get("semble_route") != baseline
         or not isinstance(spec.get("execution_profiles"), dict)
         or not isinstance(spec["execution_profiles"].get("semble"), dict)
         or spec["execution_profiles"]["semble"].get("mode") != semble

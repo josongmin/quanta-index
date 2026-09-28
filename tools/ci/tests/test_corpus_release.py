@@ -115,10 +115,7 @@ def test_complete_git_inventory_two_views_and_portable_replay(source, tmp_path):
         inventory["build/generated.rs"]["view_exclusions"]["code_only"]
         == "generated_or_vendor_component"
     )
-    assert (
-        inventory["syntax-error.rs"]["view_exclusions"]["code_only"]
-        == "no_alphanumeric_token"
-    )
+    assert inventory["syntax-error.rs"]["view_exclusions"]["code_only"] == "no_alphanumeric_token"
     assert inventory["src/main.rs"]["view_exclusions"]["code_only"] is None
     assert inventory["encoding.rs"]["view_exclusions"]["developer_search"] == "non_utf8"
     assert inventory["README.md"]["view_exclusions"] == {

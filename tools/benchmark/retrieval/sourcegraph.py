@@ -116,9 +116,13 @@ def file_extensions(paths: list[str]) -> list[str]:
     return extensions
 
 
-def query_expression(query: str, repository: str, revision: str,
-                     file_paths: list[str] | None = None,
-                     file_extensions_filter: list[str] | None = None) -> str:
+def query_expression(
+    query: str,
+    repository: str,
+    revision: str,
+    file_paths: list[str] | None = None,
+    file_extensions_filter: list[str] | None = None,
+) -> str:
     """Conservative keyword-term lane, with no caller-provided query syntax."""
     if (
         not isinstance(query, str)
@@ -146,8 +150,10 @@ def query_expression(query: str, repository: str, revision: str,
         if (
             not file_extensions_filter
             or file_extensions_filter != sorted(set(file_extensions_filter))
-            or any(re.fullmatch(r"\.[A-Za-z0-9]+", extension) is None
-                   for extension in file_extensions_filter)
+            or any(
+                re.fullmatch(r"\.[A-Za-z0-9]+", extension) is None
+                for extension in file_extensions_filter
+            )
         ):
             raise CaptureError("file extensions must be sorted, unique suffixes")
         suffixes = "|".join(re.escape(extension[1:]) for extension in file_extensions_filter)
@@ -184,18 +190,18 @@ def validate_capture(
 ) -> dict[str, Any]:
     """Bind an offline stream to explicit inputs; emit diagnostic evidence only."""
     request_keys = {
-            "capture_version",
-            "api_version",
-            "endpoint",
-            "query",
-            "query_sha256",
-            "request_query",
-            "repository",
-            "revision",
-            "response_sha256",
-            "http_status",
-            "content_type",
-            "server_image_digest",
+        "capture_version",
+        "api_version",
+        "endpoint",
+        "query",
+        "query_sha256",
+        "request_query",
+        "repository",
+        "revision",
+        "response_sha256",
+        "http_status",
+        "content_type",
+        "server_image_digest",
     }
     if not isinstance(request, dict):
         raise CaptureError("request must be an object")
@@ -233,7 +239,8 @@ def validate_capture(
     if (
         type(universe["proof_version"]) is not int
         or universe["proof_version"] != 1
-        or universe["method"] not in (
+        or universe["method"]
+        not in (
             "operator_asserted_indexed_universe",
             "input_manifest_only",
             "input_manifest_postfiltered",
@@ -253,16 +260,21 @@ def validate_capture(
     admitted_by_path = {row["path"]: row["file_sha256"] for row in admitted}
     if capture_version == 1:
         expected_query = query_expression(
-            request["query"], request["repository"], request["revision"],
+            request["query"],
+            request["repository"],
+            request["revision"],
             [row["path"] for row in admitted]
-            if universe["method"] == "input_manifest_only" else None,
+            if universe["method"] == "input_manifest_only"
+            else None,
         )
     elif universe["method"] == "input_manifest_postfiltered":
         expected_extensions = file_extensions([row["path"] for row in admitted])
         if request["file_filter_extensions"] != expected_extensions:
             raise CaptureError("file extension filter differs from the admitted manifest")
         expected_query = query_expression(
-            request["query"], request["repository"], request["revision"],
+            request["query"],
+            request["repository"],
+            request["revision"],
             file_extensions_filter=expected_extensions,
         )
     else:
@@ -325,8 +337,10 @@ def validate_capture(
                 in_manifest = path in admitted_by_path
                 if not in_manifest and capture_version == 1:
                     raise CaptureError(f"result outside admitted universe: {path}")
-                if (not in_manifest and PurePosixPath(path).suffix
-                        not in request["file_filter_extensions"]):
+                if (
+                    not in_manifest
+                    and PurePosixPath(path).suffix not in request["file_filter_extensions"]
+                ):
                     raise CaptureError(f"result outside the declared extension filter: {path}")
                 line_matches = hit.get("lineMatches")
                 if (
@@ -415,7 +429,8 @@ def validate_capture(
         "request": request,
         "rank_semantics": (
             "observed_stream_order_postfiltered_to_input_manifest"
-            if capture_version == 2 else "observed_stream_order_only"
+            if capture_version == 2
+            else "observed_stream_order_only"
         ),
         "query_sha256": request["query_sha256"],
         "repository": request["repository"],

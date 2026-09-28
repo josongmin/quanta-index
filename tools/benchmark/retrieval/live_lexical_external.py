@@ -242,13 +242,25 @@ def _row(task: dict, gold: list[str], result_paths: list[str], elapsed: float, *
     }
 
 
-def _sourcegraph(config: dict, task: dict, gold: list[str], manifest: dict,
-                 view: Path, admitted: dict[str, str], target: Path) -> dict:
+def _sourcegraph(
+    config: dict,
+    task: dict,
+    gold: list[str],
+    manifest: dict,
+    view: Path,
+    admitted: dict[str, str],
+    target: Path,
+) -> dict:
     extensions = sourcegraph.file_extensions([row["path"] for row in manifest["files"]])
-    query = sourcegraph.query_expression(task["query"], config["repository"],
-        manifest["repository_commit"], file_extensions_filter=extensions)
-    status, content_type, raw, elapsed = _http(config, "/.api/search/stream",
-        {"q": query, "v": "V3"}, "text/event-stream", "token")
+    query = sourcegraph.query_expression(
+        task["query"],
+        config["repository"],
+        manifest["repository_commit"],
+        file_extensions_filter=extensions,
+    )
+    status, content_type, raw, elapsed = _http(
+        config, "/.api/search/stream", {"q": query, "v": "V3"}, "text/event-stream", "token"
+    )
     _write(target, raw)
     _write(
         target.with_suffix(".transport.json"),
@@ -267,30 +279,62 @@ def _sourcegraph(config: dict, task: dict, gold: list[str], manifest: dict,
     )
 
 
-def _sourcegraph_response(config: dict, task: dict, gold: list[str], manifest: dict,
-                         view: Path, admitted: dict[str, str], status: int,
-                         content_type: str, raw: bytes, elapsed: float) -> dict:
+def _sourcegraph_response(
+    config: dict,
+    task: dict,
+    gold: list[str],
+    manifest: dict,
+    view: Path,
+    admitted: dict[str, str],
+    status: int,
+    content_type: str,
+    raw: bytes,
+    elapsed: float,
+) -> dict:
     extensions = sourcegraph.file_extensions([row["path"] for row in manifest["files"]])
-    query = sourcegraph.query_expression(task["query"], config["repository"],
-        manifest["repository_commit"], file_extensions_filter=extensions)
+    query = sourcegraph.query_expression(
+        task["query"],
+        config["repository"],
+        manifest["repository_commit"],
+        file_extensions_filter=extensions,
+    )
     request = {
-        "capture_version": 2, "api_version": "V3", "endpoint": "/.api/search/stream",
-        "query": task["query"], "query_sha256": task["query_sha256"],
+        "capture_version": 2,
+        "api_version": "V3",
+        "endpoint": "/.api/search/stream",
+        "query": task["query"],
+        "query_sha256": task["query_sha256"],
         "file_filter_extensions": extensions,
-        "request_query": query, "repository": config["repository"],
-        "revision": manifest["repository_commit"], "response_sha256": _sha(raw),
-        "http_status": status, "content_type": content_type,
+        "request_query": query,
+        "repository": config["repository"],
+        "revision": manifest["repository_commit"],
+        "response_sha256": _sha(raw),
+        "http_status": status,
+        "content_type": content_type,
         "server_image_digest": config["server_image_digest"],
     }
-    binding = {"proof_version": 1, "method": "input_manifest_postfiltered",
-               "repository": config["repository"], "revision": manifest["repository_commit"],
-               "files": manifest["files"]}
+    binding = {
+        "proof_version": 1,
+        "method": "input_manifest_postfiltered",
+        "repository": config["repository"],
+        "revision": manifest["repository_commit"],
+        "files": manifest["files"],
+    }
     result = sourcegraph.validate_capture(request, raw, manifest, binding)
     paths = _paths([hit["path"] for hit in result["file_order"][:10]], admitted, view)
-    return _row(task, gold, paths, elapsed, http_status=status, error=None,
-                file_paths_top_10=paths, request_query=query,
-                out_of_manifest_match_count=result["out_of_manifest_match_count"],
-                response_sha256=_sha(raw), server_image_digest=config["server_image_digest"])
+    return _row(
+        task,
+        gold,
+        paths,
+        elapsed,
+        http_status=status,
+        error=None,
+        file_paths_top_10=paths,
+        request_query=query,
+        out_of_manifest_match_count=result["out_of_manifest_match_count"],
+        response_sha256=_sha(raw),
+        server_image_digest=config["server_image_digest"],
+    )
 
 
 def _preflight_sourcegraph_request_targets(
@@ -300,7 +344,9 @@ def _preflight_sourcegraph_request_targets(
     max_target_bytes = 0
     for task in tasks:
         query = sourcegraph.query_expression(
-            task["query"], config["repository"], manifest["repository_commit"],
+            task["query"],
+            config["repository"],
+            manifest["repository_commit"],
             file_extensions_filter=extensions,
         )
         target = "/.api/search/stream?" + urllib.parse.urlencode({"q": query, "v": "V3"})
@@ -311,12 +357,17 @@ def _preflight_sourcegraph_request_targets(
     return extensions, max_target_bytes
 
 
-def _opengrok(config: dict, task: dict, gold: list[str], view: Path,
-              admitted: dict[str, str], target: Path) -> dict:
-    params = {"full": task["query"], "projects": config["project"],
-              "maxresults": 10, "start": 0, "sort": "relevancy"}
-    status, content_type, raw, elapsed = _http(config, "/api/v1/search", params,
-                                                "application/json")
+def _opengrok(
+    config: dict, task: dict, gold: list[str], view: Path, admitted: dict[str, str], target: Path
+) -> dict:
+    params = {
+        "full": task["query"],
+        "projects": config["project"],
+        "maxresults": 10,
+        "start": 0,
+        "sort": "relevancy",
+    }
+    status, content_type, raw, elapsed = _http(config, "/api/v1/search", params, "application/json")
     _write(target, raw)
     _write(
         target.with_suffix(".transport.json"),
@@ -672,10 +723,10 @@ def capture(spec_path: Path) -> dict:
     files = {row["path"]: row["file_sha256"] for row in manifest["files"]}
     if set(files) != admitted:
         raise ValueError("live capture file universe differs from selected release")
-    _, sourcegraph_max_request_target_bytes = (
-        _preflight_sourcegraph_request_targets(
-            spec["sourcegraph"], pack["tasks"], manifest,
-        )
+    _, sourcegraph_max_request_target_bytes = _preflight_sourcegraph_request_targets(
+        spec["sourcegraph"],
+        pack["tasks"],
+        manifest,
     )
     binary = Path(spec["cs"]["binary"]).resolve(strict=True)
     if not binary.is_file() or not os.access(binary, os.X_OK):
@@ -865,14 +916,17 @@ def verify(root: Path) -> dict:
         raise ValueError("retained manifest differs from release")
     binding = corpus_binding._bind(document, manifest_raw, spec["corpus"], suite_raw, pack_raw)
     _, sourcegraph_max_request_target_bytes = _preflight_sourcegraph_request_targets(
-        spec["sourcegraph"], pack["tasks"], _json(manifest_raw),
+        spec["sourcegraph"],
+        pack["tasks"],
+        _json(manifest_raw),
     )
     if (
         canonical_json(binding) != canonical_json(_json(_read_control_file(root / "binding.json")))
         or canonical_json(binding) != canonical_json(summary.get("binding"))
         or summary.get("tasks") != len(tasks)
         or summary.get("release_digest") != document["digest"]
-        or summary.get("sourcegraph_max_request_target_bytes") != sourcegraph_max_request_target_bytes
+        or summary.get("sourcegraph_max_request_target_bytes")
+        != sourcegraph_max_request_target_bytes
     ):
         raise ValueError("external capture binding differs")
     manifest = _json(manifest_raw)

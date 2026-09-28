@@ -34,7 +34,14 @@ def _read_spec(path: Path) -> dict:
         set(value)
         not in (
             {"schema_version", "pair_spec", "external_spec", "output_root", "timeout_secs"},
-            {"schema_version", "pair_spec", "external_spec", "output_root", "native_output_root", "timeout_secs"},
+            {
+                "schema_version",
+                "pair_spec",
+                "external_spec",
+                "output_root",
+                "native_output_root",
+                "timeout_secs",
+            },
         )
         or type(value["schema_version"]) is not int
         or value["schema_version"] != 1
@@ -57,8 +64,12 @@ def _read_spec(path: Path) -> dict:
 def _require_pure_lexical_pair(pair: dict) -> None:
     expected_profiles = {
         "quanta": query_plan.execution_profile("native"),
-        "semble": {"profile_id": "semble-lexical-only-v1", "mode": "lexical-only",
-                   "alpha": None, "rerank": "not_applicable"},
+        "semble": {
+            "profile_id": "semble-lexical-only-v1",
+            "mode": "lexical-only",
+            "alpha": None,
+            "rerank": "not_applicable",
+        },
     }
     if (
         pair["execution_profiles"] != expected_profiles
