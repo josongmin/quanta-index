@@ -630,7 +630,7 @@ fn measure_total_delta_pipeline(filler_scopes: usize, mixed: bool) -> TestResult
     // Large roots intentionally stay outside the bounded decode cache.
     let repeated_decodes =
         u64::from(first_preflight_read.max_decode_heap_admission_bytes > 8 * 1024 * 1024);
-    let repeated_rows = repeated_decodes * file_count;
+    let repeated_rows = if repeated_decodes == 0 { 0 } else { file_count };
     for (phase, read, decodes, rows) in [
         ("first_preflight", first_preflight_read, 1, file_count),
         (
@@ -650,11 +650,11 @@ fn measure_total_delta_pipeline(filler_scopes: usize, mixed: bool) -> TestResult
         }
         emit_coverage_phase(phase, read);
     }
-    assert_eq!(
-        second_preflight_read.page_bytes,
-        first_preflight_read.page_bytes
-    );
-    assert_eq!(build_read.page_bytes, first_preflight_read.page_bytes);
+    if second_preflight_read.page_bytes != first_preflight_read.page_bytes
+        || build_read.page_bytes != first_preflight_read.page_bytes
+    {
+        return Err("repeated coverage admission changed authenticated page bytes".into());
+    }
     let (fresh_bytes, fresh_entries) =
         bytes_not_shared_with(&generation_dir(dir.path(), g2)?, &base_inodes)?;
     let fresh_coverage_bytes: u64 = fresh_entries
