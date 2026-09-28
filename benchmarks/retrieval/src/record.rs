@@ -644,6 +644,11 @@ fn duration_ms(latency: Duration) -> BenchResult<f64> {
     Ok(ms)
 }
 
+struct ProvenHit {
+    candidate: Value,
+    scored_span: (String, u64, u64),
+}
+
 /// Prove one SDK hit against pinned source bytes and emit the evaluator's
 /// candidate object. Returned with its 1-based rank.
 ///
@@ -657,7 +662,7 @@ fn prove_hit(
     rank: usize,
     files: &BTreeMap<String, SourceFile>,
     units: &PublishedUnitRegistry,
-) -> BenchResult<Value> {
+) -> BenchResult<ProvenHit> {
     let file = files.get(&hit.path).ok_or_else(|| {
         BenchError::Protocol(format!("SDK hit outside admitted universe: {}", hit.path))
     })?;
@@ -769,7 +774,7 @@ fn prove_hit(
         .map_err(|err| BenchError::Protocol(format!("SDK hit start byte cannot fit u64: {err}")))?;
     let end_byte = u64::try_from(end)
         .map_err(|err| BenchError::Protocol(format!("SDK hit end byte cannot fit u64: {err}")))?;
-    Ok(serde_json::json!({
+    let candidate = serde_json::json!({
         "path": hit.path,
         "start_byte": start_byte,
         "end_byte": end_byte,
@@ -789,7 +794,11 @@ fn prove_hit(
             "sdk_end_line": hit.end_line,
             "extra_context_bytes": extra_context_bytes,
         },
-    }))
+    });
+    Ok(ProvenHit {
+        candidate,
+        scored_span: (hit.path.clone(), start_byte, end_byte),
+    })
 }
 
 fn error_value(code: &str, message: &str) -> Value {
@@ -860,8 +869,21 @@ pub fn result_value(
                 }));
             }
             let mut candidates = Vec::with_capacity(hits.len());
-            for (index, hit) in hits.iter().enumerate() {
-                candidates.push(prove_hit(hit, index.saturating_add(1), files, units)?);
+            let mut seen_spans = BTreeSet::new();
+            let mut seen_unit_ids = BTreeSet::new();
+            for hit in hits {
+                // Every SDK hit must prove its published unit, even when its
+                // scored line projection duplicates an earlier candidate.
+                let proven = prove_hit(hit, candidates.len().saturating_add(1), files, units)?;
+                if !seen_unit_ids.insert(&hit.candidate_id) {
+                    return Err(BenchError::Protocol(format!(
+                        "SDK returned a duplicate published unit ID: {}",
+                        hit.candidate_id
+                    )));
+                }
+                if seen_spans.insert(proven.scored_span) {
+                    candidates.push(proven.candidate);
+                }
             }
             Ok(serde_json::json!({
                 "task_id": task_id,
@@ -1072,6 +1094,7 @@ mod tests {
     use crate::chunking::Chunk;
     use crate::query_plan::plan_query;
     use crate::sdk::RouteExplanation;
+    use quanta_index_contract::QueryResultWindowV2;
 
     #[test]
     fn gold_bearing_pack_keys_are_rejected() {
@@ -1171,7 +1194,9 @@ mod tests {
             score: 1.0,
             contributions: Vec::new(),
         };
-        let candidate = prove_hit(&hit, 1, &files, &units).expect("anchored by published ID");
+        let candidate = prove_hit(&hit, 1, &files, &units)
+            .expect("anchored by published ID")
+            .candidate;
         assert_eq!(
             candidate.get("start_line"),
             Some(&Value::Number(1_u64.into()))
@@ -1608,7 +1633,9 @@ mod tests {
             score: 1.0,
             contributions: Vec::new(),
         };
-        let candidate = prove_hit(&hit, 1, &files, &units).expect("source-bound hit");
+        let candidate = prove_hit(&hit, 1, &files, &units)
+            .expect("source-bound hit")
+            .candidate;
         assert_eq!(candidate["start_byte"], 0);
         assert_eq!(candidate["end_byte"], 14);
         assert_eq!(candidate["span_accounting"]["indexed_start_byte"], 3);
@@ -1616,6 +1643,119 @@ mod tests {
         assert_eq!(candidate["span_accounting"]["sdk_start_line"], 1);
         assert_eq!(candidate["span_accounting"]["sdk_end_line"], 1);
         assert_eq!(candidate["span_accounting"]["extra_context_bytes"], 4);
+    }
+
+    #[test]
+    fn scored_span_projection_keeps_first_rank_and_proves_duplicate_hits() {
+        let text = "fn a() {} fn b() {}\nfn c() {}\n";
+        let second_line = text.find("fn c").expect("second line");
+        let file = SourceFile {
+            path: "a.rs".to_string(),
+            bytes: text.as_bytes().to_vec(),
+            text: text.to_string(),
+            line_starts: vec![0, second_line],
+            sha256: sha256_hex(text.as_bytes()),
+        };
+        let files = BTreeMap::from([("a.rs".to_string(), file)]);
+        let chunks: Vec<_> = [
+            ("a", "fn a() {}", 1),
+            ("b", "fn b() {}", 1),
+            ("c", "fn c() {}", 2),
+        ]
+        .into_iter()
+        .map(|(id, source, line)| {
+            let start = text.find(source).expect("published source");
+            Chunk {
+                path: "a.rs".to_string(),
+                start_byte: u32::try_from(start).expect("short source"),
+                end_byte: u32::try_from(start + source.len()).expect("short source"),
+                start_line: line,
+                end_line: line,
+                text: source.to_string(),
+                strategy: "fixed_window_strict".to_string(),
+                version: "test".to_string(),
+                config: "test".to_string(),
+                chunk_id: id.to_string(),
+                fallback: false,
+            }
+        })
+        .collect();
+        let units = PublishedUnitRegistry::from_chunks_and_symbols(
+            &BTreeMap::from([("a.rs".to_string(), chunks)]),
+            &BTreeMap::new(),
+            &files,
+        )
+        .expect("published units");
+        let hits: Vec<_> = [("a", 1), ("b", 1), ("c", 2)]
+            .into_iter()
+            .map(|(id, line)| RankedHit {
+                candidate_id: id.to_string(),
+                path: "a.rs".to_string(),
+                start_line: line,
+                end_line: line,
+                snippet: id.to_string(),
+                score: 1.0,
+                contributions: Vec::new(),
+            })
+            .collect();
+        let plan = plan_query(QueryInputPolicy::Native, "needle", &NlPlanConfig::default())
+            .expect("native plan");
+        let outcome = |hits: Vec<RankedHit>| QueryOutcome::ReturnedWindow {
+            window: QueryResultWindowV2::exact_probe(
+                u32::try_from(hits.len()).expect("short fixture"),
+            ),
+            hits,
+            explanation: Some(RouteExplanation::default()),
+            latency: Duration::from_millis(1),
+        };
+        let record = result_value(
+            "T1",
+            "semantic",
+            &outcome(hits.clone()),
+            &plan,
+            10,
+            &files,
+            &units,
+        )
+        .expect("source-bound record");
+        let candidates = record["candidates"].as_array().expect("candidates");
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[0]["span_accounting"]["unit_id"], "a");
+        assert_eq!(candidates[0]["rank"], 1);
+        assert_eq!(candidates[1]["span_accounting"]["unit_id"], "c");
+        assert_eq!(candidates[1]["rank"], 2);
+
+        let mut forged = hits.clone();
+        forged.get_mut(1).expect("duplicate hit").candidate_id = "unknown".to_string();
+        assert!(
+            result_value(
+                "T1",
+                "semantic",
+                &outcome(forged),
+                &plan,
+                10,
+                &files,
+                &units
+            )
+            .is_err()
+        );
+
+        let repeated_unit = vec![hits[0].clone(), hits[0].clone()];
+        let duplicate = result_value(
+            "T1",
+            "semantic",
+            &outcome(repeated_unit),
+            &plan,
+            10,
+            &files,
+            &units,
+        )
+        .expect_err("repeated published unit must not be hidden by span collapse");
+        assert!(
+            duplicate
+                .to_string()
+                .contains("duplicate published unit ID")
+        );
     }
 
     #[test]

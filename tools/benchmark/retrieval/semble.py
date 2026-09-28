@@ -1302,8 +1302,9 @@ def normalize_record(
             )
             continue
         candidates = []
+        seen_spans = set()
         hit_error = None
-        for rank, hit in enumerate(hits, start=1):
+        for hit in hits:
             # Per-hit content failures become error rows (pair-incomplete at
             # verdict) instead of silently clamped spans or fabricated bytes.
             path = hit.get("file_path") if isinstance(hit, dict) else None
@@ -1352,6 +1353,14 @@ def normalize_record(
                 }
                 break
             start_byte = sum(len(line) for line in lines[: start - 1])
+            span = (path, start_byte, start_byte + len(block))
+            # Native hits remain in the raw capture. The scored record has
+            # one candidate per source span, preserving first-hit order.
+            # Validate every hit before this collapse so a malformed duplicate
+            # cannot disappear behind an earlier valid result.
+            if span in seen_spans:
+                continue
+            seen_spans.add(span)
             candidates.append(
                 {
                     "path": path,
@@ -1362,7 +1371,7 @@ def normalize_record(
                     "file_sha256": file_shas[path],
                     "block_sha256": hashlib.sha256(block).hexdigest(),
                     "tokens": tokens,
-                    "rank": rank,
+                    "rank": len(candidates) + 1,
                 }
             )
         if hit_error is not None:

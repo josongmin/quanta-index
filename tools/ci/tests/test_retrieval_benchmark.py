@@ -4033,6 +4033,36 @@ def test_normalize_record_proves_spans_and_order(tmp_path):
     assert identity["original_query_sha256"] == hashlib.sha256(first_query.encode()).hexdigest()
     assert identity["original_query_sha256"] == pack["tasks"][0]["query_sha256"]
 
+    duplicate_native = [
+        {
+            "task_id": "T1",
+            "results": [
+                native[0]["results"][0],
+                dict(native[0]["results"][0], score=0.8),
+                native[0]["results"][1],
+            ],
+        },
+        native[1],
+    ]
+    collapsed = build(duplicate_native, {"T1": [3.0], "T2": [1.0]})
+    first = collapsed["results"][0]["candidates"]
+    assert [(row["path"], row["rank"]) for row in first] == [("a.txt", 1), ("b.txt", 2)]
+    assert len(first) == 2
+
+    malformed_duplicate = [
+        {
+            "task_id": "T1",
+            "results": [
+                native[0]["results"][0],
+                dict(native[0]["results"][0], start_line=True),
+            ],
+        },
+        native[1],
+    ]
+    refused = build(malformed_duplicate, {"T1": [3.0], "T2": [1.0]})
+    assert refused["results"][0]["status"] == "error"
+    assert refused["results"][0]["error"]["code"] == "semble_hit_bad_span"
+
     drifted = build(
         [
             {
