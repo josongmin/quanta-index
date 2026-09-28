@@ -374,9 +374,50 @@ def test_typed_retrieval_retains_non_scored_states_without_zero(
     summary = capture.owner.evaluate_capture(paths)
     summary["pair"]["routes"]["quanta_lexical"]["per_query"][0]["status"] = status
     summary["pair"]["routes"]["quanta_lexical"]["per_query"][0]["file_recall_at_10"] = 0.0
-    result = capture.payloads(summary, capture.owner._read(paths["query_pack"]))
+    result = capture.payloads(
+        summary, capture.owner._read(paths["suite"]), capture.owner._read(paths["query_pack"])
+    )
     row = result["quanta_lexical"]["rows"][0]
     assert row["state"] == state and row["value"] is None
+
+
+def test_no_gold_symbol_uses_independent_empty_result_metric(tmp_path, lexical_release_seed):
+    _, paths = inputs(tmp_path, lexical_release_seed)
+    suite = capture.owner._read(paths["suite"])
+    suite["tasks"][0]["gold"] = []
+    suite["tasks"][0]["answerable"] = False
+    paths["suite"].write_text(json.dumps(suite))
+    pack = capture.owner._read(paths["query_pack"])
+    pack["suite_commitment_sha256"] = digest(canonical(suite))
+    paths["query_pack"].write_text(json.dumps(pack))
+    report = capture.owner._read(paths["pair_report"])
+    report["query_pack_sha256"] = digest(canonical(pack))
+    for row in report["per_query"]:
+        if row["task_id"] == "S00":
+            row.update(
+                answerable=False,
+                status="abstained",
+                candidates=0,
+                file_recall_at_10="not_applicable",
+                file_hit_at_10="not_applicable",
+            )
+    paths["pair_report"].write_text(json.dumps(report))
+    for product in capture.owner.PRODUCTS:
+        path = paths[product + "_rows"]
+        rows = [json.loads(line) for line in path.read_text().splitlines()]
+        rows[0].update(gold_paths=[], file_paths_top_10=[], paths=[], file_hit_at_10=False)
+        path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+    summary = capture.owner.evaluate_capture(paths)
+    payloads = capture.payloads(summary, suite, pack)
+    for payload in payloads.values():
+        assert payload["rows"][0] == {
+            "query_id": "S00",
+            "metric": "no_gold_empty_at_10",
+            "unit": "ratio",
+            "value": 1.0,
+            "state": "no_answer",
+        }
+        assert payload["rows"][1]["metric"] == "file_recall_at_10"
 
 
 @pytest.mark.parametrize(
@@ -393,4 +434,6 @@ def test_malformed_or_unrepresentable_rows_refuse(tmp_path, change, lexical_rele
     summary = capture.owner.evaluate_capture(paths)
     summary["pair"]["routes"]["quanta_lexical"]["per_query"][0].update(change)
     with pytest.raises(ValueError):
-        capture.payloads(summary, capture.owner._read(paths["query_pack"]))
+        capture.payloads(
+            summary, capture.owner._read(paths["suite"]), capture.owner._read(paths["query_pack"])
+        )

@@ -31,12 +31,17 @@ def fixture_inputs(tmp_path):
         task_id = f"S{number:02d}"
         query = f"symbol_{number}"
         sha = hashlib.sha256(query.encode()).hexdigest()
-        common = {"task_id": task_id, "gold": [{"path": f"src/{number}.go"}]}
+        common = {
+            "task_id": task_id,
+            "answerable": True,
+            "gold": [{"path": f"src/{number}.go"}],
+        }
         suite_tasks.append({**common, "query": query, "query_sha256": sha})
         original_query = f"Find function named {query}."
         original_tasks.append(
             {
                 "task_id": task_id,
+                "answerable": True,
                 "gold": [{"path": f"src/{number}.go"}],
                 "query": original_query,
                 "query_sha256": hashlib.sha256(original_query.encode()).hexdigest(),
@@ -172,6 +177,57 @@ def test_symbol_diagnostic_refuses_non_bare_query(tmp_path):
         _tasks(suite, pack)
 
 
+def test_symbol_diagnostic_distinguishes_judged_no_answer_from_unjudged(tmp_path):
+    _, _, suite, pack = fixture_inputs(tmp_path)
+    suite["tasks"][0]["gold"] = []
+    suite["tasks"][0]["answerable"] = False
+    pack["suite_commitment_sha256"] = digest(canonical(suite))
+    assert _tasks(suite, pack)["S00"] == ("symbol_0", [])
+    suite["tasks"][0].pop("answerable")
+    pack["suite_commitment_sha256"] = digest(canonical(suite))
+    with pytest.raises(ValueError, match="judged answerability"):
+        _tasks(suite, pack)
+
+
+def test_product_result_separates_answerable_recall_and_no_gold_empty_rate(tmp_path):
+    expected = {"positive": ("symbol_a", ["answer.go"]), "negative": ("symbol_b", [])}
+    rows = [
+        {
+            "lane": "symbol_only",
+            "task_id": task_id,
+            "submitted_query": query,
+            "gold_paths": gold,
+            "http_status": 200,
+            "error": None,
+            "file_paths_top_10": gold,
+            "file_hit_at_10": bool(gold),
+            "elapsed_ms": 1.0,
+        }
+        for task_id, (query, gold) in expected.items()
+    ]
+    path = tmp_path / "rows.jsonl"
+    path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+    result = product_result("sourcegraph", path, expected, {"answer.go", "other.go"})
+    assert result["answerable_tasks"] == result["no_gold_tasks"] == 1
+    assert result["file_recall_at_10"] == result["file_hit_rate_at_10"] == 1.0
+    assert result["no_gold_empty_rate_at_10"] == 1.0
+    assert next(row for row in result["per_query"] if row["task_id"] == "negative") == {
+        "task_id": "negative",
+        "file_hit_at_10": "not_applicable",
+        "file_recall_at_10": "not_applicable",
+        "no_gold_empty_at_10": True,
+        "query_latency_ms": 1.0,
+    }
+    rows[1]["file_paths_top_10"] = ["other.go"]
+    path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+    result = product_result("sourcegraph", path, expected, {"answer.go", "other.go"})
+    assert result["file_recall_at_10"] == 1.0
+    assert result["no_gold_empty_rate_at_10"] == 0.0
+    path.write_text(json.dumps(rows[1]) + "\n")
+    result = product_result("sourcegraph", path, {"negative": expected["negative"]}, {"other.go"})
+    assert result["file_recall_at_10"] == "not_applicable"
+
+
 def test_symbol_diagnostic_refuses_unbound_file_universe(tmp_path):
     _, _, suite, pack = fixture_inputs(tmp_path)
     files = [{"path": "src/answer.go", "file_sha256": "a" * 64}]
@@ -263,6 +319,102 @@ def test_pair_result_rejects_semantic_lane_even_if_report_has_hits(tmp_path, rec
     paths[2].write_text(json.dumps(native), encoding="utf-8")
     with pytest.raises(ValueError, match="did not execute lexical-only"):
         pair_result(*paths, pack, suite, 20)
+
+
+def test_pair_result_keeps_no_gold_out_of_recall_denominator(tmp_path):
+    _, _, suite, pack = fixture_inputs(tmp_path)
+    suite["tasks"][0]["gold"] = []
+    suite["tasks"][0]["answerable"] = False
+    pack["suite_commitment_sha256"] = digest(canonical(suite))
+    routes = ("lexical", "semble-lexical-only")
+    report = {
+        "query_pack_sha256": digest(canonical(pack)),
+        "repository_commit": suite["repository_commit"],
+        "file_universe_digest": suite["file_universe_digest"],
+        "sample_count": 20,
+        "rank_metrics": {
+            "routes": {
+                route: {
+                    "sample_count": 20,
+                    "chunk": {"file_recall_at_10": 1.0},
+                    "mean_query_latency_ms": 1.0,
+                }
+                for route in routes
+            }
+        },
+        "per_query": [
+            {
+                "route": route,
+                "task_id": task["task_id"],
+                "answerable": index != 0,
+                "status": "abstained" if index == 0 else "success",
+                "candidates": 0 if index == 0 else 1,
+                "query_latency_ms": 1.0,
+                "file_recall_at_10": "not_applicable" if index == 0 else 1.0,
+                "file_hit_at_10": "not_applicable" if index == 0 else True,
+            }
+            for route in routes
+            for index, task in enumerate(pack["tasks"])
+        ],
+    }
+    lock = {
+        "execution_profiles": {
+            "quanta": {
+                "profile_id": "quanta-native-v1",
+                "policy": "native",
+                "config": {},
+                "planning_cost_in_latency": False,
+            },
+            "semble": {
+                "profile_id": "semble-lexical-only-v1",
+                "mode": "lexical-only",
+                "alpha": None,
+                "rerank": "not_applicable",
+            },
+        },
+        "quanta_routes": ["lexical"],
+        "semble_route": "semble-lexical-only",
+    }
+    native = {
+        "semble_profile": "lexical-only",
+        "rerank_applied": False,
+        "lane_call_counts": {"bm25": 1, "semantic": 0, "encode": 0},
+        "execution_events": [{"lane_entry_counts": {"bm25": 1, "semantic": 0}}],
+    }
+    paths = [tmp_path / f"{name}.json" for name in ("report", "lock", "native", "verdict")]
+    for path, value in zip(
+        paths, (report, lock, native, {"states": {"PAIR_VALID": "pass"}}), strict=True
+    ):
+        path.write_text(json.dumps(value))
+    result = pair_result(*paths, pack, suite, 20)["routes"]["quanta_lexical"]
+    assert result["answerable_tasks"] == 19
+    assert result["no_gold_tasks"] == 1
+    assert result["file_recall_at_10"] == result["file_hit_rate_at_10"] == 1.0
+    assert result["no_gold_empty_rate_at_10"] == 1.0
+    report["per_query"][0]["file_recall_at_10"] = 0.0
+    paths[0].write_text(json.dumps(report))
+    with pytest.raises(ValueError, match="recall/hit observations"):
+        pair_result(*paths, pack, suite, 20)
+    for task in suite["tasks"]:
+        task["gold"] = []
+        task["answerable"] = False
+    pack["suite_commitment_sha256"] = digest(canonical(suite))
+    report["query_pack_sha256"] = digest(canonical(pack))
+    for route in routes:
+        report["rank_metrics"]["routes"][route]["chunk"]["file_recall_at_10"] = "not_applicable"
+    for row in report["per_query"]:
+        row.update(
+            answerable=False,
+            status="abstained",
+            candidates=0,
+            file_recall_at_10="not_applicable",
+            file_hit_at_10="not_applicable",
+        )
+    paths[0].write_text(json.dumps(report))
+    result = pair_result(*paths, pack, suite, 20)["routes"]["quanta_lexical"]
+    assert result["answerable_tasks"] == 0
+    assert result["file_recall_at_10"] == result["file_hit_rate_at_10"] == "not_applicable"
+    assert result["no_gold_empty_rate_at_10"] == 1.0
 
 
 def test_pair_result_rejects_hybrid_route_label_for_lexical_execution(tmp_path):

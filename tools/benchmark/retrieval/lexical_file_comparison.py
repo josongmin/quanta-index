@@ -187,7 +187,7 @@ def _tasks(suite: dict, pack: dict) -> dict[str, tuple[str, list[str]]]:
         gold = task.get("gold")
         if (
             not isinstance(gold, list)
-            or not gold
+            or task.get("answerable") is not bool(gold)
             or any(
                 not isinstance(label, dict)
                 or not isinstance(label.get("path"), str)
@@ -195,7 +195,7 @@ def _tasks(suite: dict, pack: dict) -> dict[str, tuple[str, list[str]]]:
                 for label in gold
             )
         ):
-            raise ValueError("this diagnostic requires answerable file labels")
+            raise ValueError("lexical task requires judged answerability and file labels")
         paths = sorted({label["path"] for label in gold})
         expected[task_id] = task["query"], paths
     return expected
@@ -209,17 +209,16 @@ def product_result(
 
     if not expected or any(
         not isinstance(gold, list)
-        or not gold
         or any(not isinstance(value, str) or not value for value in gold)
         or len(gold) != len(set(gold))
         for _, gold in expected.values()
     ):
-        raise ValueError(f"{product}: empty or duplicate golden file inventory")
+        raise ValueError(f"{product}: invalid or duplicate golden file inventory")
     raw = RawFile.capture(path)
 
     def consume(lines):
         seen: set[str] = set()
-        hits = metadata_bytes = 0
+        hits = empty_no_gold = metadata_bytes = 0
         elapsed: list[object] = []
         per_query = []
         for line in lines:
@@ -260,12 +259,17 @@ def product_result(
             if row.get("file_hit_at_10") is not hit:
                 raise ValueError(f"{product}: {task_id} hit flag differs from paths")
             hits += hit
+            if not gold:
+                empty_no_gold += not paths
             elapsed.append(row.get("elapsed_ms"))
             per_query.append(
                 {
                     "task_id": task_id,
-                    "file_hit_at_10": hit,
-                    "file_recall_at_10": len(set(paths) & set(gold)) / len(gold),
+                    "file_hit_at_10": hit if gold else "not_applicable",
+                    "file_recall_at_10": (
+                        len(set(paths) & set(gold)) / len(gold) if gold else "not_applicable"
+                    ),
+                    "no_gold_empty_at_10": not paths if not gold else "not_applicable",
                     "query_latency_ms": row.get("elapsed_ms"),
                 }
             )
@@ -274,15 +278,28 @@ def product_result(
                 raise ValueError("lexical result metadata exceeds explicit control byte limit")
         if len(seen) != len(expected):
             raise ValueError(f"{product}: incomplete symbol-only lane")
-        return hits, elapsed, per_query
+        return hits, empty_no_gold, elapsed, per_query
 
-    hits, elapsed, per_query = raw.consume_lines(consume)
+    hits, empty_no_gold, elapsed, per_query = raw.consume_lines(consume)
+    answerable = sum(bool(gold) for _, gold in expected.values())
+    no_gold = len(expected) - answerable
     return {
         "hits": hits,
         "tasks": len(expected),
-        "file_hit_rate_at_10": hits / len(expected),
-        "file_recall_at_10": math.fsum(row["file_recall_at_10"] for row in per_query)
-        / len(expected),
+        "answerable_tasks": answerable,
+        "no_gold_tasks": no_gold,
+        "file_hit_rate_at_10": hits / answerable if answerable else "not_applicable",
+        "file_recall_at_10": (
+            math.fsum(
+                row["file_recall_at_10"]
+                for row in per_query
+                if row["file_recall_at_10"] != "not_applicable"
+            )
+            / answerable
+            if answerable
+            else "not_applicable"
+        ),
+        "no_gold_empty_rate_at_10": empty_no_gold / no_gold if no_gold else "not_applicable",
         "per_query": sorted(per_query, key=lambda row: row["task_id"]),
         "latency_ms": latency_summary(elapsed, len(expected), TIMING_LAYERS[product]),
         "raw_sha256": raw.sha256.removeprefix("sha256:"),
@@ -363,6 +380,17 @@ def pair_result(
         )
     ):
         raise ValueError("pair report has incomplete per-query observations")
+    judged = {
+        task["task_id"]: bool(task["gold"])
+        for task in suite["tasks"]
+        if isinstance(task, dict)
+        and isinstance(task.get("task_id"), str)
+        and isinstance(task.get("gold"), list)
+    }
+    if len(judged) != task_count or set(judged) != {task["task_id"] for task in pack["tasks"]}:
+        raise ValueError("pair report suite task inventory differs")
+    answerable = sum(judged.values())
+    no_gold = task_count - answerable
     result = {}
     for route, label in (
         (QUANTA_LEXICAL_ROUTE, "quanta_lexical"),
@@ -375,23 +403,38 @@ def pair_result(
         if not isinstance(chunk, dict):
             raise ValueError(f"pair report {route} has malformed chunk metrics")
         recall = chunk.get("file_recall_at_10")
-        if type(recall) not in (int, float) or not 0 <= recall <= 1:
+        if (answerable and (type(recall) not in (int, float) or not 0 <= recall <= 1)) or (
+            not answerable and recall != "not_applicable"
+        ):
             raise ValueError(f"pair report {route} file recall is invalid")
         route_rows = [row for row in per_query if row.get("route") == route]
         if len(route_rows) != task_count or {row.get("task_id") for row in route_rows} != {
             task["task_id"] for task in pack["tasks"]
         }:
             raise ValueError(f"pair report {route} per-query tasks differ")
-        recalls = [row.get("file_recall_at_10") for row in route_rows]
-        flags = [row.get("file_hit_at_10") for row in route_rows]
+        positive_rows = [row for row in route_rows if judged[row["task_id"]]]
+        negative_rows = [row for row in route_rows if not judged[row["task_id"]]]
+        recalls = [row.get("file_recall_at_10") for row in positive_rows]
+        flags = [row.get("file_hit_at_10") for row in positive_rows]
         if (
             any(not is_finite_json_number(value) or not 0 <= value <= 1 for value in recalls)
             or any(type(value) is not bool for value in flags)
             or any(flag != (value > 0) for flag, value in zip(flags, recalls, strict=True))
-            or abs(math.fsum(recalls) / task_count - recall) > 1e-10
+            or (answerable and abs(math.fsum(recalls) / answerable - recall) > 1e-10)
+            or any(
+                row.get("answerable") is not False
+                or row.get("file_recall_at_10") != "not_applicable"
+                or row.get("file_hit_at_10") != "not_applicable"
+                or row.get("status") not in {"success", "capped", "abstained"}
+                or type(row.get("candidates")) is not int
+                or row["candidates"] < 0
+                or (row["status"] == "abstained" and row["candidates"] != 0)
+                for row in negative_rows
+            )
         ):
             raise ValueError(f"pair report {route} recall/hit observations differ from aggregate")
         hits = sum(flags)
+        empty_no_gold = sum(row["candidates"] == 0 for row in negative_rows)
         latency = latency_summary(
             [row.get("query_latency_ms") for row in route_rows],
             task_count,
@@ -406,8 +449,11 @@ def pair_result(
         result[label] = {
             "hits": hits,
             "tasks": task_count,
+            "answerable_tasks": answerable,
+            "no_gold_tasks": no_gold,
             "file_recall_at_10": recall,
-            "file_hit_rate_at_10": hits / task_count,
+            "file_hit_rate_at_10": hits / answerable if answerable else "not_applicable",
+            "no_gold_empty_rate_at_10": (empty_no_gold / no_gold if no_gold else "not_applicable"),
             "per_query": sorted(route_rows, key=lambda row: row["task_id"]),
             "latency_ms": latency,
         }

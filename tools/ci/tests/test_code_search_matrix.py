@@ -69,17 +69,28 @@ def test_matrix_inventory_accepts_only_complete_cartesian_product(tmp_path):
     assert matrix._spec(value, {"repo-a", "repo-b"}) == value
 
 
-@pytest.mark.parametrize("failure", [None, "source", "inputs", "mode"])
-def test_matrix_verification_binds_every_native_cell(tmp_path, monkeypatch, failure):
+@pytest.mark.parametrize("cohort", ["prose", "negative-bare"])
+@pytest.mark.parametrize("failure", [None, "source", "inputs", "mode", "policy", "kind"])
+def test_matrix_verification_binds_every_native_cell(tmp_path, monkeypatch, failure, cohort):
     value = _spec(tmp_path)
-    value["query_families"] = ["prose"]
-    value["cells"] = [_cell(tmp_path, family="prose")]
+    value["query_families"] = [cohort]
+    value["cells"] = [_cell(tmp_path, family=cohort)]
+    if cohort == "negative-bare":
+        value["cells"][0]["captures"]["lexical-only"]["kind"] = "workflow"
+    if failure == "kind":
+        value["cells"][0]["captures"]["lexical-only"]["kind"] = (
+            "pair" if cohort == "negative-bare" else "workflow"
+        )
     spec_path = tmp_path / "matrix.json"
     spec_path.write_text(json.dumps(value))
     release = tmp_path / "release"
     release.mkdir()
     (release / "manifest.json").write_bytes(b"manifest")
-    suite, pack = b"{}", b'{"tasks":[{"query":"two words"}]}'
+    if cohort == "negative-bare":
+        suite = b'{"tasks":[{"task_id":"q","answerable":false,"gold":[]}]}'
+        pack = b'{"tasks":[{"task_id":"q","query":"symbol"}]}'
+    else:
+        suite, pack = b"{}", b'{"tasks":[{"query":"two words"}]}'
     Path(value["cells"][0]["suite"]).write_bytes(suite)
     Path(value["cells"][0]["query_pack"]).write_bytes(pack)
     source = {"revision": "a" * 40, "dirty": False}
@@ -99,27 +110,44 @@ def test_matrix_verification_binds_every_native_cell(tmp_path, monkeypatch, fail
     )
     monkeypatch.setattr(matrix, "load_registry", lambda path: {})
     monkeypatch.setattr(matrix.corpus_binding, "_bind", lambda *args: {"binding": "fixed"})
+    if cohort == "negative-bare":
+        monkeypatch.setattr(matrix.lexical, "_file_universe", lambda *_: {"answer.go"})
+        monkeypatch.setattr(matrix.lexical, "_tasks", lambda *_: {"q": ("symbol", [])})
+        monkeypatch.setattr(
+            matrix.code_search_workflow,
+            "verify",
+            lambda *_: {"source": source, "binding": {"binding": "fixed"}},
+        )
 
-    def pair(_repo, root, _registry):
-        mode = next(mode for mode in matrix.MODES if root.name.endswith(mode))
+    def pair_spec(mode):
         route = (
             "lexical"
             if failure == "mode" and mode == "semantic-only"
             else matrix.PAIR_MODES[mode][0]
         )
-        pair_spec = {
+        return {
             "scope": "exploratory",
             "claims": {"quality": False, "speed": False, "same_model": False, "incremental": False},
             "routes": [route],
             "candidate_route": matrix.PAIR_MODES[mode][0],
             "baseline_route": matrix.pair_run.SEMBLE_ROUTE_BY_MODE[matrix.PAIR_MODES[mode][1]],
             "semble_route": matrix.pair_run.SEMBLE_ROUTE_BY_MODE[matrix.PAIR_MODES[mode][1]],
-            "execution_profiles": {"semble": {"mode": matrix.PAIR_MODES[mode][1]}},
+            "execution_profiles": {
+                "quanta": matrix.query_plan.execution_profile(
+                    "natural_language"
+                    if failure == "policy" and mode == "semantic-only"
+                    else "native"
+                ),
+                "semble": {"mode": matrix.PAIR_MODES[mode][1]},
+            },
             "top_k": 10,
         }
+
+    def pair(_repo, root, _registry):
+        mode = next(mode for mode in matrix.MODES if root.name.endswith(mode))
         return (
             {"revision": "b" * 40 if failure == "source" else "a" * 40, "dirty": False},
-            pair_spec,
+            pair_spec(mode),
             {
                 "manifest": b"manifest",
                 "suite": suite,
@@ -128,13 +156,16 @@ def test_matrix_verification_binds_every_native_cell(tmp_path, monkeypatch, fail
         )
 
     monkeypatch.setattr(matrix, "_pair", pair)
+    if cohort == "negative-bare":
+        monkeypatch.setattr(matrix.pair_run, "load_spec", lambda *_: pair_spec("lexical-only"))
     if failure is None:
         result = matrix.verify(tmp_path, spec_path)
         assert result["verified_cells"] == result["expected_cells"] == 3
         assert result["status"] == "diagnostic_unqualified"
     else:
         with pytest.raises(
-            ValueError, match="source or corpus/query binding differs|native inputs|route"
+            ValueError,
+            match="source or corpus/query binding differs|native inputs|route|query support",
         ):
             matrix.verify(tmp_path, spec_path)
 
@@ -147,7 +178,10 @@ def test_matrix_mode_requires_matching_single_route_and_exploratory_claims():
         "candidate_route": "hybrid",
         "baseline_route": "semble-hybrid",
         "semble_route": "semble-hybrid",
-        "execution_profiles": {"semble": {"mode": "hybrid-no-rerank"}},
+        "execution_profiles": {
+            "quanta": matrix.query_plan.execution_profile("native"),
+            "semble": {"mode": "hybrid-no-rerank"},
+        },
         "top_k": 10,
     }
     matrix._mode(spec, "hybrid")
@@ -156,9 +190,28 @@ def test_matrix_mode_requires_matching_single_route_and_exploratory_claims():
         {"claims": {"quality": True}},
         {"top_k": True},
         {"baseline_route": "semble-semantic-only"},
+        {
+            "execution_profiles": {
+                "quanta": matrix.query_plan.execution_profile("natural_language"),
+                "semble": {"mode": "hybrid-no-rerank"},
+            }
+        },
     ):
         with pytest.raises(ValueError, match="another route, mode or claim"):
             matrix._mode({**spec, **mutation}, "hybrid")
+
+
+def test_matrix_routes_judged_no_answer_bare_symbols_to_five_product_workflow():
+    suite = {"tasks": [{"task_id": "q", "gold": [{"path": "answer.go"}]}]}
+    pack = {"tasks": [{"task_id": "q", "query": "symbol"}]}
+    assert matrix._supports_lexical_workflow(suite, pack)
+    suite["tasks"][0]["gold"] = []
+    assert matrix._supports_lexical_workflow(suite, pack)
+    suite["tasks"][0].pop("gold")
+    assert matrix._supports_lexical_workflow(suite, pack)  # scorer rejects malformed gold
+    suite["tasks"][0]["gold"] = [{"path": "answer.go"}]
+    pack["tasks"][0]["query"] = "two words"
+    assert not matrix._supports_lexical_workflow(suite, pack)
 
 
 @pytest.mark.parametrize("changed_role", [None, "manifest", "suite", "query_pack", "spec"])

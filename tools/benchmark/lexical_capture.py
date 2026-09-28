@@ -79,10 +79,11 @@ def require_registration(registry: dict) -> None:
         raise EvidenceError("lexical registration differs from implemented scorer contract")
 
 
-def payloads(summary: dict, pack: dict) -> dict[str, dict]:
+def payloads(summary: dict, suite: dict, pack: dict) -> dict[str, dict]:
     tasks = [task["task_id"] for task in pack["tasks"]]
     if not tasks or len(tasks) != len(set(tasks)):
         raise EvidenceError("lexical query inventory is empty or duplicate")
+    judged = owner._tasks(suite, pack)
     products = {**summary["products"], **summary["pair"]["routes"]}
     if set(products) != set(PRODUCTS):
         raise EvidenceError("lexical scorer product inventory is incomplete")
@@ -96,10 +97,34 @@ def payloads(summary: dict, pack: dict) -> dict[str, dict]:
         for task in tasks:
             row = by_id[task]
             value = row.get("file_recall_at_10")
-            if type(value) not in (float, int) or not math.isfinite(value) or not 0 <= value <= 1:
-                raise EvidenceError("lexical row has malformed file recall")
-            state = "judged"
-            if product in {"quanta_lexical", "semble_lexical_only"}:
+            no_gold = not judged[task][1]
+            if no_gold:
+                if value != "not_applicable":
+                    raise EvidenceError("no-gold lexical row must not carry recall")
+                if product in {"quanta_lexical", "semble_lexical_only"}:
+                    if (
+                        row.get("answerable") is not False
+                        or row.get("status") not in {"success", "capped", "abstained"}
+                        or type(row.get("candidates")) is not int
+                        or row["candidates"] < 0
+                    ):
+                        raise EvidenceError("no-gold paired row lacks valid candidate observation")
+                    empty = row["candidates"] == 0
+                else:
+                    empty = row.get("no_gold_empty_at_10")
+                    if type(empty) is not bool:
+                        raise EvidenceError("no-gold external row lacks empty-result observation")
+                value = float(empty)
+                metric, state = "no_gold_empty_at_10", "no_answer"
+            else:
+                if (
+                    type(value) not in (float, int)
+                    or not math.isfinite(value)
+                    or not 0 <= value <= 1
+                ):
+                    raise EvidenceError("lexical row has malformed file recall")
+                metric, state = "file_recall_at_10", "judged"
+            if not no_gold and product in {"quanta_lexical", "semble_lexical_only"}:
                 status = row.get("status")
                 if status in {"timeout", "unavailable"}:
                     state = "timeout" if status == "timeout" else "unsupported"
@@ -111,7 +136,7 @@ def payloads(summary: dict, pack: dict) -> dict[str, dict]:
             typed_rows.append(
                 {
                     "query_id": task,
-                    "metric": "file_recall_at_10",
+                    "metric": metric,
                     "unit": "ratio",
                     "value": float(value) if value is not None else None,
                     "state": state,
@@ -206,7 +231,10 @@ def replay_run(store: RunStore, evidence: dict) -> None:
     if parse_json(_read_control_file(raw / "report.json").decode()) != summary:
         raise EvidenceError("lexical raw report differs from owner recomputation")
     pack = owner._read(paths["query_pack"])
-    if evidence["payload"] != payloads(summary, pack)[evidence["case_id"]]:
+    if (
+        evidence["payload"]
+        != payloads(summary, owner._read(paths["suite"]), pack)[evidence["case_id"]]
+    ):
         raise EvidenceError("lexical typed rows differ from raw observations")
     inputs = [
         {
@@ -320,7 +348,9 @@ def _capture_admitted(
     summary = owner.evaluate_capture(frozen_inputs(native))
     if parse_json(_read_control_file(native / "report.json").decode()) != summary:
         raise EvidenceError("lexical producer report differs from independent raw replay")
-    typed = payloads(summary, owner._read(native / "input-query_pack"))
+    typed = payloads(
+        summary, owner._read(native / "input-suite"), owner._read(native / "input-query_pack")
+    )
     if any(file_digest(raw.path) != (raw.sha256, raw.size) for raw in frozen.values()):
         raise EvidenceError("lexical frozen inputs changed during scoring")
     raw = {

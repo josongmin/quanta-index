@@ -21,6 +21,7 @@ from registry import load_registry, registry_digest
 
 from tools.benchmark.retrieval import lexical_file_comparison as lexical
 from tools.benchmark.retrieval import live_lexical_external as live
+from tools.benchmark.retrieval import query_plan
 from tools.benchmark.retrieval import run as pair_run
 
 MODES = ("lexical-only", "semantic-only", "hybrid")
@@ -159,12 +160,30 @@ def _mode(spec: dict, mode: str) -> None:
         or spec.get("baseline_route") != baseline
         or spec.get("semble_route") != baseline
         or not isinstance(spec.get("execution_profiles"), dict)
+        or spec["execution_profiles"].get("quanta") != query_plan.execution_profile("native")
         or not isinstance(spec["execution_profiles"].get("semble"), dict)
         or spec["execution_profiles"]["semble"].get("mode") != semble
         or type(spec.get("top_k")) is not int
         or spec["top_k"] != 10
     ):
         raise ValueError(f"matrix {mode} pair uses another route, mode or claim")
+
+
+def _supports_lexical_workflow(suite: dict, pack: dict) -> bool:
+    """The five-product scorer accepts judged bare symbols, including no-answer tasks."""
+    tasks, suite_tasks = pack.get("tasks"), suite.get("tasks")
+    return (
+        isinstance(tasks, list)
+        and bool(tasks)
+        and isinstance(suite_tasks, list)
+        and len(suite_tasks) == len(tasks)
+        and all(
+            isinstance(task, dict)
+            and isinstance(task.get("query"), str)
+            and lexical.BARE_SYMBOL.fullmatch(task["query"]) is not None
+            for task in tasks
+        )
+    )
 
 
 def verify(repo: Path, spec_path: Path) -> dict:
@@ -210,17 +229,7 @@ def verify(repo: Path, spec_path: Path) -> dict:
         family_input_digests.add(input_digests)
         binding = corpus_binding._bind(document, manifest, selection, suite, pack)
         suite_data, pack_data = live._json(suite), live._json(pack)
-        tasks = pack_data.get("tasks")
-        bare = (
-            isinstance(tasks, list)
-            and bool(tasks)
-            and all(
-                isinstance(task, dict)
-                and isinstance(task.get("query"), str)
-                and lexical.BARE_SYMBOL.fullmatch(task["query"]) is not None
-                for task in tasks
-            )
-        )
+        bare = _supports_lexical_workflow(suite_data, pack_data)
         if bare:
             lexical._file_universe(suite_data, pack_data)
             lexical._tasks(suite_data, pack_data)
