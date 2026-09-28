@@ -1,5 +1,5 @@
 // These test assertions intentionally panic to preserve the failing fixture context.
-#![allow(
+#![expect(
     clippy::panic_in_result_fn,
     clippy::indexing_slicing,
     reason = "fixture assertions intentionally fail by panic"

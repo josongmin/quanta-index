@@ -120,3 +120,51 @@ reason = "requires debug daemon crash hooks: set QUANTA_INDEX_L2_TEST_BINARY and
 owner = "quanta-index-sdk"
 cadence = "release"
 review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-lexical/tests/generation_delta_base_carryforward.rs"
+test = "total_delta_pipeline_cost_128_files"
+reason = "manual whole-adapter cost probe; run in a fresh process for RSS"
+owner = "quanta-index-lexical"
+cadence = "quarterly"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-lexical/tests/generation_delta_base_carryforward.rs"
+test = "total_delta_pipeline_cost_512_files"
+reason = "manual whole-adapter cost probe; run in a fresh process for RSS"
+owner = "quanta-index-lexical"
+cadence = "quarterly"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-lexical/tests/generation_delta_base_carryforward.rs"
+test = "total_delta_pipeline_cost_2048_files"
+reason = "manual whole-adapter cost probe; run in a fresh process for RSS"
+owner = "quanta-index-lexical"
+cadence = "quarterly"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-lexical/tests/generation_delta_base_carryforward.rs"
+test = "one_file_delta_pipeline_cost_128_files"
+reason = "manual whole-adapter cost probe; run in a fresh process for RSS"
+owner = "quanta-index-lexical"
+cadence = "quarterly"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-lexical/tests/generation_delta_base_carryforward.rs"
+test = "one_file_delta_pipeline_cost_512_files"
+reason = "manual whole-adapter cost probe; run in a fresh process for RSS"
+owner = "quanta-index-lexical"
+cadence = "quarterly"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-lexical/tests/generation_delta_base_carryforward.rs"
+test = "one_file_delta_pipeline_cost_2048_files"
+reason = "manual whole-adapter cost probe; run in a fresh process for RSS"
+owner = "quanta-index-lexical"
+cadence = "quarterly"
+review_by = "2026-12-31"

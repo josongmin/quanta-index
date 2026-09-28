@@ -83,17 +83,16 @@ impl CollectionBudget {
         if self.stopped() {
             return false;
         }
-        if self
+        match self
             .admitted
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
                 (count < self.policy.max_examined_candidates()).then(|| count.saturating_add(1))
-            })
-            .is_ok()
-        {
-            true
-        } else {
-            self.exceeded.store(true, Ordering::Release);
-            false
+            }) {
+            Ok(_) => true,
+            Err(_) => {
+                self.exceeded.store(true, Ordering::Release);
+                false
+            }
         }
     }
 

@@ -75,7 +75,7 @@ jobs:
             uname -a
             record_tool rustc -Vv
             record_tool cargo -V
-            record_tool cargo nextest --version
+            record_tool ./scripts/cargow nextest --version
             record_tool python --version
             record_tool uv --version
             record_tool just --version
