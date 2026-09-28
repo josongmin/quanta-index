@@ -20,7 +20,7 @@ platform qualification. A historical local test total is not current-source proo
 
 ## Current-source audit and decision order
 
-Audit basis: the Sep-28 integrated source through `fb7f98b6`. Recheck these
+Historical audit basis: the Sep-28 integrated source through `fb7f98b6`. Recheck these
 call paths after source changes; concurrent documentation edits and historical
 receipts do not update the implementation state.
 
@@ -141,7 +141,7 @@ RCA bodies are recoverable through the [plan archive](../../ARCHIVE-INDEX.md).
 
 ## Sep-28 integrated code audit
 
-Selected integration branch: `codex/benchmark-validation`, based on
+Historical Sep-28 integration branch: `codex/benchmark-validation`, based on
 `d7d62b8d`. The R/C/G/V owner changes were integrated serially; use the final
 commit printed by `git rev-parse HEAD` for subsequent source-bound runs. The
 main checkout's unrelated dirty documentation was not copied into this branch.
@@ -158,3 +158,29 @@ Do not collapse these rows into a single `VERIFIED` claim. The owner tests and
 lint/format rail are local code checks; installed producer, native products,
 independent labels, Linux/hosted CI, quiet-host benchmark and activation remain
 separate execution gates.
+
+## Sep-29 source remediation
+
+The live searchd structural producer now compiles every repo/file regex through
+the common regex executor before an empty candidate set or repo mismatch can
+short-circuit. It reuses compiled file filters across chunks and preserves a
+typed plan-limit error. The pure-negative search-plane universe also validates
+all filters before returning an empty result. This closes the direct daemon
+input-limit bypass and the malformed-filter empty-success paths; it does not
+provide the request-wide **physical** regex allocation ceiling required by
+ENG-04.
+
+The code-search matrix now requires Quanta's frozen `native` execution profile
+in every mode. Its bare-symbol five-product scorer admits explicitly judged
+no-answer tasks without assigning them recall: answerable tasks alone form the
+recall denominator, while no-answer tasks report an independent empty-result
+rate. The capture adapter preserves those distinct typed observations on
+replay. This is diagnostic scoring machinery, not independent gold, a complete
+live five-product capture, indexed-universe attestation or a qualified product
+comparison.
+
+The raw archive reader now checks the writer's canonical ZIP metadata in both
+central and local records before extraction, including streaming ZIP64 and
+descriptors. Noncanonical historical ZIPs must be refrozen; matching payload
+bytes alone do not make their envelope admissible. Adapter-specific IO-5
+resource and actual-product acceptance remain open.

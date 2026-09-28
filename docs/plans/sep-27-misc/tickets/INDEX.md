@@ -37,6 +37,16 @@ coverage scan reuse requires authenticated immutable base ownership across the
 port; independent labels, real native products, installed producer/daemon and
 supported hosted/Linux measurement still require execution on frozen inputs.
 
+Sep-29 current-source correction: the live searchd and pure-negative structural
+paths now precompile all repo/file filters before early empty results and reuse
+the common bounded regex executor; ENG-04's aggregate physical allocation
+boundary remains open. The declared code-search matrix binds Quanta's native
+query policy, and the five-product lexical scorer distinguishes answerable
+recall from judged no-answer empty-result rate. Raw archive extraction rejects
+noncanonical ZIP metadata before writing output. These changes close the
+identified local code paths, not the independent gold, actual native captures,
+installed producer/daemon, IO-5 resource or hosted qualification rows above.
+
 ## Execution order and shared boundary
 
 Use the source-first [CS-INT-01 execution plan](../../sep-27-code-search-remediation/rfcs/CS-INT-01-integration-and-qualification.md#current-source-audit-and-decision-order)
