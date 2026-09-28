@@ -71,15 +71,21 @@ impl<'de, T: Deserialize<'de>, const MAX: usize> Deserialize<'de> for BoundedRow
                 write!(formatter, "at most {MAX} coverage rows")
             }
             fn visit_seq<A: SeqAccess<'de>>(self, mut access: A) -> Result<Self::Value, A::Error> {
-                if access.size_hint().is_some_and(|length| length > MAX) {
-                    return Err(de::Error::custom("coverage row count exceeds its ceiling"));
-                }
                 let mut rows = Vec::new();
+                if let Some(length) = access.size_hint() {
+                    if length > MAX {
+                        return Err(de::Error::custom("coverage row count exceeds its ceiling"));
+                    }
+                    rows.try_reserve_exact(length).map_err(de::Error::custom)?;
+                }
                 while rows.len() < MAX {
                     let Some(row) = access.next_element()? else {
                         return Ok(BoundedRows(rows));
                     };
-                    rows.try_reserve_exact(1).map_err(de::Error::custom)?;
+                    // Indefinite CBOR arrays have no length hint. Grow
+                    // geometrically within MAX instead of reallocating for
+                    // every decoded row.
+                    rows.try_reserve(1).map_err(de::Error::custom)?;
                     rows.push(row);
                 }
                 if access.next_element::<de::IgnoredAny>()?.is_some() {
@@ -769,5 +775,27 @@ mod tests {
         let allowed = [0x82, 0x01, 0x02];
         let rows = ciborium::from_reader::<BoundedRows<u8, 2>, _>(&allowed[..]);
         assert!(matches!(rows, Ok(rows) if rows.0 == vec![1, 2]));
+    }
+
+    #[test]
+    fn indefinite_page_rows_reach_the_ceiling_and_refuse_the_next_row() {
+        let mut encoded = Vec::with_capacity(super::MAX_COVERAGE_PAGE_ROWS + 3);
+        encoded.push(0x9f); // Indefinite CBOR array: no size hint.
+        encoded.extend(std::iter::repeat_n(0x01, super::MAX_COVERAGE_PAGE_ROWS));
+        encoded.push(0xff);
+        let rows = ciborium::from_reader::<BoundedRows<u8, { super::MAX_COVERAGE_PAGE_ROWS }>, _>(
+            encoded.as_slice(),
+        )
+        .expect("the maximum admitted row count must decode");
+        assert_eq!(rows.len(), super::MAX_COVERAGE_PAGE_ROWS);
+        assert!(rows.0.capacity() <= super::MAX_COVERAGE_PAGE_ROWS);
+
+        encoded.insert(encoded.len() - 1, 0x01);
+        assert!(
+            ciborium::from_reader::<BoundedRows<u8, { super::MAX_COVERAGE_PAGE_ROWS }>, _>(
+                encoded.as_slice()
+            )
+            .is_err()
+        );
     }
 }
