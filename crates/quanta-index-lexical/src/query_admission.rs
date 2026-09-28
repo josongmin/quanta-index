@@ -218,6 +218,7 @@ fn admit_query_scope_regex(query: &LqQuery, source: &str, name: &str) -> Result<
 fn admit_scope_regex(source: &str) -> Result<(), CoreError> {
     // Indexed scope execution uses Tantivy's grammar. The field ordinal does not
     // affect compilation and this constructs no index or reader.
+    crate::query_errors::admit_scope_regex_pattern_size(source)?;
     let _query =
         tantivy::query::RegexQuery::from_pattern(source, tantivy::schema::Field::from_field_id(0))
             .map_err(|err| {
@@ -274,4 +275,24 @@ fn admit_repo_file_predicate(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod regex_admission_tests {
+    use super::admit_scope_regex;
+    use quanta_index_contract::SearchPlaneErrorCodeV2;
+    use quanta_index_core::CoreError;
+
+    #[test]
+    fn indexed_scope_regex_refuses_oversized_input_before_tantivy_compile() {
+        let oversized = "[".repeat(65_537);
+        assert!(matches!(
+            admit_scope_regex(&oversized),
+            Err(CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::LexRegexPlanLimitExceeded,
+                ..
+            })
+        ));
+        assert!(admit_scope_regex("path.*").is_ok());
+    }
 }

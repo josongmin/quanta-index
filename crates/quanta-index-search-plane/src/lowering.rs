@@ -10,7 +10,7 @@ use quanta_index_lq_bridge::{
 use quanta_index_lq_norm::{
     LqParseError, LqParseErrorCode, normalizer::normalize, parser::parse, tokenizer::tokenize,
 };
-use quanta_index_lq_regex::RegexExecutor;
+use quanta_index_lq_regex::{RegexErrorCode, RegexExecutor};
 
 use quanta_index_core::CoreError;
 
@@ -395,7 +395,11 @@ fn lower_sourcegraph_structural_regex_body(
     regex_body: &str,
 ) -> Result<LqStructuralBlock, CoreError> {
     let _validated_regex = RegexExecutor::compile(regex_body).map_err(|err| CoreError::Typed {
-        code: map_bridge_code(BridgeErrorCode::BridgeTranslateFail),
+        code: if err.code == RegexErrorCode::PlanLimitExceeded {
+            quanta_index_contract::SearchPlaneErrorCodeV2::LexRegexPlanLimitExceeded
+        } else {
+            map_bridge_code(BridgeErrorCode::BridgeTranslateFail)
+        },
         message: format!("bridge: invalid Sourcegraph structural regex body: {err}"),
     })?;
     let capture = structural_regex_capture_name(regex_body);
@@ -479,7 +483,8 @@ fn map_bridge_error(err: &BridgeError) -> CoreError {
 mod tests {
     use super::{
         StructuralLeafVerdict, lower_lq_query_text, lower_sourcegraph_query_text,
-        lower_sourcegraph_structural_query_text, structural_leaf_verdict,
+        lower_sourcegraph_structural_query_text, lower_sourcegraph_structural_regex_body,
+        structural_leaf_verdict,
     };
     use quanta_index_contract::{
         LQ_VERSION_TAG, LqCase, LqCountBound, LqExpr, LqFileScope, LqFilter, LqLeaf, LqPatternType,
@@ -835,6 +840,20 @@ mod tests {
         }
         if !message.starts_with("bridge: invalid Sourcegraph structural regex body:") {
             return Err(format!("unexpected structural regex rejection message: {message}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn sourcegraph_structural_regex_resource_refusal_stays_typed() -> TestResult {
+        let Err(err) = lower_sourcegraph_structural_regex_body(r"[\x{80}-\x{10FFFF}]{20000}")
+        else {
+            return Err("oversized compiled regex must be refused".into());
+        };
+        let (code, _message) = typed_error(err)?;
+        let expected = quanta_index_contract::SearchPlaneErrorCodeV2::LexRegexPlanLimitExceeded;
+        if code != expected.to_string() {
+            return Err(format!("expected {expected}, got {code}").into());
         }
         Ok(())
     }

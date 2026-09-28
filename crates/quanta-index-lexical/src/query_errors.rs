@@ -11,7 +11,7 @@ use crate::phrase::PhrasePlannerError;
 use quanta_index_contract::SearchPlaneErrorCodeV2 as Code;
 use quanta_index_core::CoreError;
 use quanta_index_lq_positions::{PositionsError, PositionsErrorCode};
-use quanta_index_lq_regex::RegexErrorCode;
+use quanta_index_lq_regex::{RegexErrorCode, RegexExecutor};
 use quanta_index_lq_trigram::{TrigramError, TrigramErrorCode};
 
 pub(crate) fn map_trigram_error(context: &str, err: &TrigramError) -> CoreError {
@@ -57,6 +57,15 @@ pub(crate) const fn regex_wire_code(code: RegexErrorCode) -> Code {
         RegexErrorCode::Interrupted => Code::LexRegexInterrupted,
         RegexErrorCode::ExecutionInternal => Code::LexRegexExecutionInternal,
     }
+}
+
+/// Tantivy scope regexes use a different grammar from LQ content regexes,
+/// but must hit the same input-byte gate before Tantivy starts compiling.
+pub(crate) fn admit_scope_regex_pattern_size(pattern: &str) -> Result<(), CoreError> {
+    RegexExecutor::validate_pattern_size(pattern).map_err(|err| CoreError::Typed {
+        code: regex_wire_code(err.code),
+        message: format!("lexical: regex filter input refused: {err}"),
+    })
 }
 
 /// Tokenize a keyword or phrase literal for lowering, refusing typed when

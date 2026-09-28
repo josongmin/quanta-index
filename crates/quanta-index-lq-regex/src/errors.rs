@@ -112,6 +112,8 @@ impl<'de> serde::Deserialize<'de> for RegexErrorCode {
 /// [`RegexErrorCode::PlanLimitExceeded`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum LimitDimension {
+    /// Input bytes refused before either regex-syntax parser allocates.
+    PatternBytes,
     /// Structural planning charge exceeded the `100_000` cap.
     NfaStates,
     /// The compiled engine exceeded its configured byte ceiling.
@@ -127,6 +129,7 @@ impl LimitDimension {
     #[must_use]
     pub const fn as_code_str(self) -> &'static str {
         match self {
+            Self::PatternBytes => "regex-pattern-bytes",
             Self::NfaStates => "regex-nfa-states",
             Self::CompiledBytes => "regex-compiled-bytes",
             Self::LiteralLen => "regex-literal-len",
@@ -138,6 +141,7 @@ impl LimitDimension {
     #[must_use]
     pub fn from_code_str(s: &str) -> Option<Self> {
         let v = match s {
+            "regex-pattern-bytes" => Self::PatternBytes,
             "regex-nfa-states" => Self::NfaStates,
             "regex-compiled-bytes" => Self::CompiledBytes,
             "regex-literal-len" => Self::LiteralLen,
@@ -345,6 +349,7 @@ mod tests {
     ];
 
     const ALL_DIMS: &[LimitDimension] = &[
+        LimitDimension::PatternBytes,
         LimitDimension::NfaStates,
         LimitDimension::CompiledBytes,
         LimitDimension::LiteralLen,

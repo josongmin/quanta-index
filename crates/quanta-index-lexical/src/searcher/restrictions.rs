@@ -35,6 +35,7 @@ impl TantivySearcher {
         field: Field,
         pattern: &str,
     ) -> Result<Box<dyn Query>, CoreError> {
+        crate::query_errors::admit_scope_regex_pattern_size(pattern)?;
         let query = RegexQuery::from_pattern(pattern, field).map_err(|err| {
             CoreError::InvalidContract(format!("lexical: regex filter compile: {err}"))
         })?;

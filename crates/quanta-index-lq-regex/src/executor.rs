@@ -48,6 +48,9 @@ use crate::literal_extract::extract_prefilter_literal_alternation;
 // per-NFA and per-lazy-DFA-cache limits, not an aggregate allocation bound.
 const ENGINE_NFA_SIZE_LIMIT_BYTES: usize = 10 * (1 << 20);
 const ENGINE_DFA_CACHE_LIMIT_BYTES: usize = 2 * (1 << 20);
+// A hard input-size gate before both the dialect AST walk and HIR parser.
+// This limits parser work per pattern, not aggregate compiler/cache memory.
+const MAX_REGEX_PATTERN_BYTES: usize = 64 * (1 << 10);
 
 /// Compiled regex paired with its HIR so callers can re-run
 /// literal extraction without re-parsing.
@@ -128,6 +131,7 @@ impl RegexExecutor {
 
     /// Validate and plan without allocating the regex engine's automata.
     pub fn prepare(pattern: &str) -> Result<RegexCompilationPlan, RegexError> {
+        Self::validate_pattern_size(pattern)?;
         // Precise AST-level rejection of `(?>...)`, `\k<name>`, and
         // mid-pattern `(?i)` MUST run before `parse_hir`: the first two
         // surface as generic `FlagUnrecognized` / `EscapeUnrecognized`
@@ -149,6 +153,21 @@ impl RegexExecutor {
             execution_pattern: execution_pattern.into_owned().into_boxed_str(),
             estimated_states,
         })
+    }
+
+    /// Refuse oversized input before any parser, including callers that use
+    /// another regex grammar or engine after this common byte gate.
+    pub fn validate_pattern_size(pattern: &str) -> Result<(), RegexError> {
+        if pattern.len() > MAX_REGEX_PATTERN_BYTES {
+            return Err(RegexError::plan_limit(
+                LimitDimension::PatternBytes,
+                format!(
+                    "regex pattern has {} bytes, limit {MAX_REGEX_PATTERN_BYTES}",
+                    pattern.len()
+                ),
+            ));
+        }
+        Ok(())
     }
 
     /// Compile an already validated plan without repeating dialect parsing.
@@ -471,7 +490,7 @@ fn span_slice<'a>(pattern: &'a str, span: &regex_syntax::ast::Span) -> &'a str {
     reason = "Result-returning range regressions propagate setup errors and assert byte-exact fixture oracles"
 )]
 mod tests {
-    use super::RegexExecutor;
+    use super::{MAX_REGEX_PATTERN_BYTES, RegexExecutor};
     use crate::errors::{ForbiddenKind, LimitDimension, RegexErrorCode};
     use quanta_index_lq_trigram::{DocId, DocResolver};
     use std::collections::BTreeMap;
@@ -951,5 +970,21 @@ mod tests {
             Some("regex-compiled-bytes")
         );
         Ok(())
+    }
+
+    #[test]
+    fn pattern_size_is_refused_before_syntax_parsing() {
+        let mut oversized = "[".repeat(MAX_REGEX_PATTERN_BYTES);
+        oversized.push('[');
+        let Err(error) = RegexExecutor::prepare(&oversized) else {
+            assert!(false, "oversized input must be refused");
+            return;
+        };
+        assert_eq!(error.code, RegexErrorCode::PlanLimitExceeded);
+        assert_eq!(error.dimension, Some(LimitDimension::PatternBytes));
+        assert_eq!(
+            RegexExecutor::compile(&oversized).err().map(|e| e.code),
+            Some(RegexErrorCode::PlanLimitExceeded)
+        );
     }
 }
