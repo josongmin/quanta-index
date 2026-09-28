@@ -359,6 +359,27 @@ class SourcegraphCaptureTests(unittest.TestCase):
                 }
             )
 
+        line = "é" + QUERY
+        for span in ([len(line), 1], [len(line) - 1, 2]):
+            self.assert_match_refused(
+                {
+                    **hit("a.py", 1),
+                    "lineMatches": [{"line": line, "lineNumber": 1, "offsetAndLengths": [span]}],
+                }
+            )
+        native = {
+            **hit("a.py", 1),
+            "lineMatches": [{"line": line, "lineNumber": 1, "offsetAndLengths": [[1, len(QUERY)]]}],
+        }
+        raw = (
+            event("matches", [native])
+            + event("progress", {"done": True, "skipped": [], "matchCount": 1, "durationMs": 1})
+            + event("done", {})
+        )
+        request, raw, manifest, universe = inputs(raw)
+        result = validate_capture(request, raw, manifest, universe)
+        self.assertEqual(result["file_order"][0]["path"], "a.py")
+
     def test_chunk_match_refused(self) -> None:
         self.assert_match_refused({**hit("a.py", 1), "chunkMatches": [{"content": QUERY}]})
 

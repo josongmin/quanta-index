@@ -94,7 +94,7 @@ semantic native-to-normalized consistency, not another run store or process owne
   that recompute normalized-row digests and still require native disagreement
   refusal. Preserve a bare-scorer control to distinguish diagnostic scope.
 - [x] Refuse a Sourcegraph native line-match span whose end exceeds the supplied
-  line's UTF-8 byte length; retain a fixed out-of-range native regression.
+  line's character length; retain ASCII and non-ASCII out-of-range regressions.
 - [ ] Equivalent path/span/order/query-binding mutations are tested for each
   participating product, including legitimate zero-result complete responses.
 - [ ] HTTP-success/error-body, partial SSE, timeout, duplicate/missing task,

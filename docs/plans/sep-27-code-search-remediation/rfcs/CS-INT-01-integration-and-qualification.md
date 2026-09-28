@@ -196,10 +196,19 @@ HEAD or release qualification. The following changes and checks are owner-local:
 | --- | --- | --- |
 | ENG-04 | The executor reuses one validated AST for dialect filtering, HIR translation and capture erasure. Regex package 98 tests, lexical preview 17 and SDK/daemon preview/restart 7 passed; Clippy passed. | Pinned parser/compiler/cache APIs have no request pre-allocation hook. Aggregate physical admission remains `BLOCKED`, with no observed overrun claim. Dependency hooks and a cross-route lease, or a separately designed OS-isolated worker, are required. |
 | ENG-02 | Coverage-row decoding no longer requests exact allocation per row. Owner tests and 128/512/2,048-file diagnostics passed; a 4,097th row refuses. | Three authenticated base scans still occur. At 2,048 mixed files, each reads 256 pages and 883,542 encoded bytes. Total ingest sidecars and phase physical heap remain unqualified. |
-| BENCH-02 | Sourcegraph native line spans beyond the supplied line's UTF-8 byte length now refuse; the Sourcegraph adapter suite passed 32 tests. | This is an offline native fixture, not live five-product capture or indexed-universe attestation. |
+| BENCH-02 | Sourcegraph native line spans beyond the supplied line's character length now refuse, including non-ASCII input; the Sourcegraph adapter suite passed 32 tests. | This is an offline native fixture, not live five-product capture or indexed-universe attestation. |
 | IO-5 | External JSONL replay now validates bounded lines and complete pinned bytes without a 16 MiB whole-file cap. The adapter suite passed 20 tests, including a larger-than-16-MiB file and malformed inventory. | Other actual adapters, fresh-process RSS and hosted limits remain open. |
 | Local process | The clean-owner `runtime_extended_suite` crash matrix passed 4 tests with a launched daemon and public SDK. Three selected ignored SDK L2 tests also passed against a real daemon, including delta/restart, cross-stream activation and named crash cuts. | The runs included the shared dirty dependency overlay; the SDK L2 test and client were themselves pre-existing dirty files. Installed distribution, external Semantica issuer, full suite and supported Linux/hosted claims remain separate. |
 
 The source changes above require a serial final-source check before integration
 closure. Passing local owner tests does not change the independent benchmark
 gold, holdout, product or performance statuses.
+
+The broad `just python-test` run observed 2,815 passes, 9 platform skips and
+one retrieval proof-inventory failure on the changing shared overlay. The
+new Sourcegraph refusal initially introduced a collected test identity outside
+the existing required-test authority. Its assertions now live in the existing
+native-span test; the Sourcegraph and proof-contract selectors passed 66/66 on
+the corrected source, and repository-wide Ruff lint/format passed. The broad
+run was not repeated on an immutable final source, so it is not a full-suite
+`VERIFIED` result.
