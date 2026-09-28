@@ -148,10 +148,12 @@ def parse_args(
         "code-search", help="live five-product workflow over one frozen corpus view"
     )
     workflow_modes = code_search.add_subparsers(dest="code_search_action", required=True)
-    for action in ("run", "verify", "external", "external-verify"):
+    for action in ("run", "verify", "external", "external-verify", "matrix-verify"):
         mode = workflow_modes.add_parser(action)
         mode.add_argument(
-            "--spec" if action in {"run", "external"} else "--capture", type=Path, required=True
+            "--spec" if action in {"run", "external", "matrix-verify"} else "--capture",
+            type=Path,
+            required=True,
         )
     corpus = subparsers.add_parser(
         "corpus", help="create or validate an immutable external corpus release"
@@ -1423,6 +1425,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             if repo_root != ROOT:
                 raise EvidenceError("workflow driver must come from the requested checkout")
+            from code_search_matrix import verify as verify_code_search_matrix
             from code_search_workflow import capture as capture_code_search
             from code_search_workflow import verify as verify_code_search
 
@@ -1435,9 +1438,18 @@ def main(argv: list[str] | None = None) -> int:
             elif args.code_search_action == "external":
                 require_clean_worktree(repo_root)
                 result = live_lexical_external.capture(args.spec)
+            elif args.code_search_action == "matrix-verify":
+                result = verify_code_search_matrix(repo_root, args.spec)
             else:
                 result = live_lexical_external.verify(args.capture)
-        except (ValueError, RuntimeError, OSError, UnicodeError, StopIteration) as error:
+        except (
+            EvidenceError,
+            ValueError,
+            RuntimeError,
+            OSError,
+            UnicodeError,
+            StopIteration,
+        ) as error:
             print(f"ERROR: code-search workflow refused: {error}", file=sys.stderr)
             return 2
         print(json.dumps(result, sort_keys=True, indent=2))

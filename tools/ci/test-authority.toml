@@ -350,6 +350,7 @@ targets = [
 targets = [
   "benchmark-live-external-python-owner",
   "benchmark-code-search-workflow-python-owner",
+  "benchmark-code-search-matrix-python-owner",
   "benchmark-profile-capture-python-owner",
   "benchmark-criterion-capture-python-owner",
   "benchmark-recorded-capture-python-owner",
@@ -384,6 +385,12 @@ rail = "pr-benchmark-control-python"
 id = "benchmark-code-search-workflow-python-owner"
 path = "tools/ci/tests/test_code_search_workflow.py"
 owner = "tools/benchmark/code_search_workflow.py"
+rail = "pr-benchmark-control-python"
+
+[[python_targets]]
+id = "benchmark-code-search-matrix-python-owner"
+path = "tools/ci/tests/test_code_search_matrix.py"
+owner = "tools/benchmark/code_search_matrix.py"
 rail = "pr-benchmark-control-python"
 
 [[python_targets]]

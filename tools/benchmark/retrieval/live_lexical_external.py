@@ -22,6 +22,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from contextlib import ExitStack
 from pathlib import Path
 
 BENCH_ROOT = Path(__file__).resolve().parents[1]
@@ -30,7 +31,7 @@ if str(BENCH_ROOT) not in sys.path:
 
 import corpus_binding  # noqa: E402
 import corpus_release  # noqa: E402
-from evidence import _read_control_file, canonical_json  # noqa: E402
+from evidence import _read_control_file, canonical_json, file_digest  # noqa: E402
 
 from tools.benchmark.retrieval import lexical_file_comparison as lexical  # noqa: E402
 from tools.benchmark.retrieval import sourcegraph  # noqa: E402
@@ -75,6 +76,10 @@ def _sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _sha_file(path: Path) -> str:
+    return file_digest(path)[0].removeprefix("sha256:")
+
+
 def _source_hashes() -> dict[str, str]:
     sources = {
         "producer": Path(__file__),
@@ -83,7 +88,7 @@ def _source_hashes() -> dict[str, str]:
         "corpus_binding": Path(corpus_binding.__file__),
         "corpus_release": Path(corpus_release.__file__),
     }
-    return {name: _sha(path.read_bytes()) for name, path in sources.items()}
+    return {name: _sha_file(path) for name, path in sources.items()}
 
 
 def _write(path: Path, data: bytes) -> None:
@@ -220,7 +225,7 @@ def _paths(paths: list[str], admitted: dict[str, str], view: Path) -> list[str]:
     for path in paths:
         if not lexical._canonical_result_path(path) or path not in admitted:
             raise ValueError(f"result outside corpus view: {path!r}")
-        if _sha(_read_control_file(view / path)) != admitted[path]:
+        if _sha_file(view / path) != admitted[path]:
             raise ValueError(f"result file changed after release validation: {path}")
     return paths
 
@@ -678,7 +683,7 @@ def capture(spec_path: Path) -> dict:
     code, version, stderr, _ = _process([str(binary), "--version"], 10)
     if code != 0 or stderr or not version.strip():
         raise ValueError("cs version command failed")
-    binary_sha = _sha(binary.read_bytes())
+    binary_sha = _sha_file(binary)
     source_hashes = _source_hashes()
     stage.mkdir(parents=True)
     _write(stage / "spec.json", _read_control_file(spec_path))
@@ -689,42 +694,49 @@ def capture(spec_path: Path) -> dict:
     probe_indexed_view = spec["opengrok"].get("indexed_view_probe") == "full"
     if probe_indexed_view:
         _opengrok_indexed_view(spec["opengrok"], manifest, view, stage / "opengrok-view")
-    rows = {name: [] for name in ("sourcegraph", "opengrok", "cs")}
-    for task in pack["tasks"]:
-        task_id = task["task_id"]
-        gold = tasks[task_id][1]
-        rows["sourcegraph"].append(
-            _sourcegraph(
-                spec["sourcegraph"],
-                task,
-                gold,
-                manifest,
-                view,
-                files,
-                stage / "sourcegraph" / f"{task_id}.stream",
-            )
-        )
-        rows["opengrok"].append(
-            _opengrok(
-                spec["opengrok"], task, gold, view, files, stage / "opengrok" / f"{task_id}.json"
-            )
-        )
-        rows["cs"].append(_cs(binary, task, gold, view, files, stage / "cs" / f"{task_id}.json"))
+    products = ("sourcegraph", "opengrok", "cs")
+    with ExitStack() as stack:
+        streams = {
+            name: stack.enter_context((stage / f"{name}_rows.jsonl").open("xb"))
+            for name in products
+        }
+        for task in pack["tasks"]:
+            task_id = task["task_id"]
+            gold = tasks[task_id][1]
+            rows = {
+                "sourcegraph": _sourcegraph(
+                    spec["sourcegraph"],
+                    task,
+                    gold,
+                    manifest,
+                    view,
+                    files,
+                    stage / "sourcegraph" / f"{task_id}.stream",
+                ),
+                "opengrok": _opengrok(
+                    spec["opengrok"],
+                    task,
+                    gold,
+                    view,
+                    files,
+                    stage / "opengrok" / f"{task_id}.json",
+                ),
+                "cs": _cs(binary, task, gold, view, files, stage / "cs" / f"{task_id}.json"),
+            }
+            for name, row in rows.items():
+                streams[name].write(json.dumps(row, sort_keys=True).encode() + b"\n")
     if probe_indexed_view:
         # Two fixed, independently bounded full probes bracket every search.
         _opengrok_indexed_view(spec["opengrok"], manifest, view, stage / "opengrok-view-post")
-    for name, data in rows.items():
+    for name in products:
         destination = stage / f"{name}_rows.jsonl"
-        _write(
-            destination, b"".join(json.dumps(row, sort_keys=True).encode() + b"\n" for row in data)
-        )
         lexical.product_result(name, destination, tasks, admitted)
     if (
         corpus_release.validate(release) != document
         or _read_control_file(spec_path) != _read_control_file(stage / "spec.json")
         or _read_control_file(Path(spec["suite"])) != suite_raw
         or _read_control_file(Path(spec["query_pack"])) != pack_raw
-        or _sha(binary.read_bytes()) != binary_sha
+        or _sha_file(binary) != binary_sha
         or _source_hashes() != source_hashes
     ):
         raise ValueError(
@@ -745,17 +757,19 @@ def capture(spec_path: Path) -> dict:
         ),
         "opengrok_indexed_view_files": len(manifest["files"]) if probe_indexed_view else 0,
         "producer_sources_sha256": source_hashes,
-        "python_executable_sha256": _sha(Path(sys.executable).resolve().read_bytes()),
+        "python_executable_sha256": _sha_file(Path(sys.executable).resolve()),
         "python_version": sys.version.split()[0],
         "server_image_digests_operator_supplied": {
-            name: spec[name]["server_image_digest"] for name in ("sourcegraph", "opengrok")},
+            name: spec[name]["server_image_digest"] for name in ("sourcegraph", "opengrok")
+        },
         "sourcegraph_max_request_target_bytes": sourcegraph_max_request_target_bytes,
-        "cs_binary_sha256": binary_sha, "cs_version": version.decode().strip(),
-        "rows_sha256": {name: _sha((stage / f"{name}_rows.jsonl").read_bytes()) for name in rows},
+        "cs_binary_sha256": binary_sha,
+        "cs_version": version.decode().strip(),
+        "rows_sha256": {name: _sha_file(stage / f"{name}_rows.jsonl") for name in products},
         "raw_capture_sha256": {
-            path.relative_to(stage).as_posix(): _sha(path.read_bytes())
+            path.relative_to(stage).as_posix(): _sha_file(path)
             for name in (
-                *rows,
+                *products,
                 *(("opengrok-view", "opengrok-view-post") if probe_indexed_view else ()),
             )
             for path in sorted((stage / name).iterdir())
@@ -816,13 +830,12 @@ def verify(root: Path) -> dict:
         or type(summary.get("tasks")) is not int
         or summary["tasks"] <= 0
         or summary.get("producer_sources_sha256") != _source_hashes()
-        or summary.get("python_executable_sha256")
-        != _sha(Path(sys.executable).resolve().read_bytes())
+        or summary.get("python_executable_sha256") != _sha_file(Path(sys.executable).resolve())
         or summary.get("python_version") != sys.version.split()[0]
         or summary.get("server_image_digests_operator_supplied")
         != {name: spec[name]["server_image_digest"] for name in ("sourcegraph", "opengrok")}
         or summary.get("cs_binary_sha256")
-        != _sha(Path(spec["cs"]["binary"]).resolve(strict=True).read_bytes())
+        != _sha_file(Path(spec["cs"]["binary"]).resolve(strict=True))
         or not isinstance(summary.get("rows_sha256"), dict)
         or set(summary["rows_sha256"]) != set(lexical.PRODUCTS)
         or summary.get("exclusions")
@@ -907,7 +920,7 @@ def verify(root: Path) -> dict:
     ):
         raise ValueError("external capture raw inventory differs")
     for name in expected_raw:
-        if _sha(_read_control_file(root / name)) != summary["raw_capture_sha256"][name]:
+        if _sha_file(root / name) != summary["raw_capture_sha256"][name]:
             raise ValueError("external native bytes differ from capture")
     if probe_indexed_view:
         endpoint = (
@@ -956,7 +969,7 @@ def verify(root: Path) -> dict:
                 )
     for name in lexical.PRODUCTS:
         row_path = root / f"{name}_rows.jsonl"
-        if _sha(_read_control_file(row_path)) != summary.get("rows_sha256", {}).get(name):
+        if _sha_file(row_path) != summary.get("rows_sha256", {}).get(name):
             raise ValueError("external rows differ from capture")
         lexical.product_result(name, row_path, tasks, admitted)
         rows = [_json(line) for line in _read_control_file(row_path).splitlines()]

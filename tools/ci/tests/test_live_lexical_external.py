@@ -1,5 +1,6 @@
 """Local fake services prove that live rows come from HTTP/process responses."""
 
+import hashlib
 import json
 import selectors
 import sys
@@ -14,6 +15,20 @@ from tools.benchmark.retrieval import live_lexical_external as live
 from tools.ci.tests.test_lexical_capture import inputs
 
 pytest_plugins = ["tools.ci.tests.test_lexical_capture"]
+
+
+def test_result_file_larger_than_control_document_is_hashed_as_payload(tmp_path):
+    view = tmp_path / "view"
+    (view / "src").mkdir(parents=True)
+    payload = view / "src" / "large.go"
+    digest = hashlib.sha256()
+    with payload.open("wb") as stream:
+        for _ in range(17):
+            chunk = b"x" * (1024 * 1024)
+            stream.write(chunk)
+            digest.update(chunk)
+    admitted = {"src/large.go": digest.hexdigest()}
+    assert live._paths(["src/large.go"], admitted, view) == ["src/large.go"]
 
 
 def test_cs_process_refuses_excessive_output_and_timeout():

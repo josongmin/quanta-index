@@ -25,8 +25,10 @@ def test_live_workflow_and_owner_tests_are_bound(profile: str) -> None:
     paths = set(module.PROFILES[profile]["paths"])
     assert {
         "tools/benchmark/code_search_workflow.py",
+        "tools/benchmark/code_search_matrix.py",
         "tools/ci/tests/test_live_lexical_external.py",
         "tools/ci/tests/test_code_search_workflow.py",
+        "tools/ci/tests/test_code_search_matrix.py",
     } <= paths
 
 

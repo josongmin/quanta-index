@@ -15,17 +15,19 @@ and [SEP-27-004](../../docs/adr/SEP-27-004-benchmark-capture-and-resource-custod
 | Capture current-source SDK/contract proof | `benchctl run retrieval-contract` | Real daemon SDK proof and contract tests | Typed correctness proof; no relevance or speed |
 | Compare Quanta with Semble | `benchctl run retrieval-diagnostic --pair-spec ...` | Both products search the frozen repo/query pack | Exploratory paired diagnostic; not qualified quality or speed |
 | Run all five lexical products | `benchctl code-search run --spec ...` | External live capture, live SDK pair, five-product score, validation and replay | Fresh five-product diagnostic; no qualified quality or speed |
+| Verify the declared complete matrix | `benchctl code-search matrix-verify --spec ...` | Revalidates the release and every declared pair/workflow capture, then checks all repository × family × mode cells | Complete declared diagnostic matrix; no independent gold, speed or indexed-universe claim |
 | Capture the three external lexical products | `benchctl code-search external --spec ...` | Live Sourcegraph/OpenGrok HTTP requests and cs processes; retains native responses | Fresh external recorded diagnostic; indexed-universe attestation remains absent |
 | Score five lexical products | `benchctl run lexical-diagnostic --lexical-spec ...` | Re-scores **recorded** Quanta, Semble, Sourcegraph, OpenGrok and cs observations | Corpus-bound recorded file-recall diagnostic; **no live product search** |
 
 The `code-search` workflow composes the existing registered pair and lexical
 profiles with live external collection over one frozen corpus view and query pack.
 `lexical-diagnostic` itself never starts or calls Sourcegraph, OpenGrok or cs.
-The current workflow validates one lexical input per invocation. No aggregate
-runner yet enforces completeness of the three-mode matrix below; the execution
-summary must explicitly reconcile expected and completed cells. A fail-closed
-matrix inventory is tracked in
-[CS-INT-01](../../docs/plans/sep-27-code-search-remediation/rfcs/CS-INT-01-integration-and-qualification.md#current-source-audit-and-decision-order).
+The workflow validates one lexical input per invocation. `matrix-verify` checks
+the complete Cartesian product of the release repository inventory and the
+matrix spec's declared query-family inventory. The family list is an input
+declaration, not an independently discovered benchmark population. Freeze and
+review it before capture; a verifier cannot discover families omitted from its
+own declaration.
 
 ## Complete comparison is the default
 
@@ -65,6 +67,24 @@ queries per external product when each suite has 20 tasks. If those inputs do
 not match, run all 60 mode pairs separately.
 Use fresh output roots for every run. A missing, failed or unverified applicable
 cell keeps the matrix incomplete.
+
+After capture, write an external matrix spec with `schema_version: 1`, the
+absolute `release_path`, its validated `release_digest`, a nonempty unique
+`query_families` list, and one `cells` entry per repository/family. Each cell
+contains `repository`, `view`, absolute `suite` and `query_pack` paths, and a
+`captures` object with `lexical-only`, `semantic-only` and `hybrid` keys. Each
+mode contains an absolute `root` and `kind` (`workflow` for a supported
+bare-symbol lexical cell, otherwise `pair`). Roots cannot be reused. The
+verifier checks exact source, native input bytes, corpus/query binding,
+exploratory claims, route and Semble execution mode, then replays each capture.
+
+```sh
+uv run --frozen --extra dev python tools/benchmark/benchctl.py code-search matrix-verify \
+  --spec /absolute/external/code-search-matrix.json
+```
+
+The result is `diagnostic_unqualified`. It cannot qualify independent labels,
+whole-product indexed scope, latency, or a default-policy change.
 
 Within each repository/query family, compare products only when commit,
 manifest/file universe, suite and query pack match. Across repositories, report
