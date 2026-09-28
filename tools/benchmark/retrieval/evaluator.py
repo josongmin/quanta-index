@@ -653,7 +653,9 @@ def validate_suite(
         type(suite["schema_version"]) is int and suite["schema_version"] == SCHEMA_VERSION,
         "unsupported suite schema",
     )
-    contract = validate_comparison_contract(suite["comparison_contract"], "suite.comparison_contract")
+    contract = validate_comparison_contract(
+        suite["comparison_contract"], "suite.comparison_contract"
+    )
     if "diagnostic_policy" in suite:
         require(
             suite["diagnostic_policy"] == OBSERVED_PREFIX_DIAGNOSTIC_POLICY,
@@ -724,7 +726,9 @@ def validate_suite(
             )
         if "label_review" in task:
             review = object_keys_optional(
-                task["label_review"], ["assessment"], ["reviewer_id", "evidence_sha256"],
+                task["label_review"],
+                ["assessment"],
+                ["reviewer_id", "evidence_sha256"],
                 "label_review for " + task_id,
             )
             require(
@@ -733,8 +737,7 @@ def validate_suite(
             )
             reviewed = review["assessment"] != "unreviewed"
             require(
-                ("reviewer_id" in review) == reviewed
-                and ("evidence_sha256" in review) == reviewed,
+                ("reviewer_id" in review) == reviewed and ("evidence_sha256" in review) == reviewed,
                 "reviewed label requires reviewer_id and evidence_sha256; unreviewed label forbids them: "
                 + task_id,
             )

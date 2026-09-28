@@ -1353,7 +1353,9 @@ def test_suite_intent_and_review_claims_remain_blind_and_require_review_evidence
         "reviewer_id": "fixture-reviewer",
         "evidence_sha256": "a" * 64,
     }
-    jsonschema.validate(suite, json.loads((Path(ev.__file__).with_name("suite.schema.json")).read_text()))
+    jsonschema.validate(
+        suite, json.loads((Path(ev.__file__).with_name("suite.schema.json")).read_text())
+    )
     _, pack, _ = ev.validate_suite(repo, suite)
     assert pack["suite_commitment_sha256"] != original_pack["suite_commitment_sha256"]
     assert ev.digest(ev.canonical(pack)) != run["query_pack_sha256"]
@@ -1375,7 +1377,9 @@ def test_suite_intent_and_review_claims_remain_blind_and_require_review_evidence
     ):
         task["label_review"] = bad
         with pytest.raises((ev.EvidenceError, jsonschema.ValidationError)):
-            jsonschema.validate(suite, json.loads((Path(ev.__file__).with_name("suite.schema.json")).read_text()))
+            jsonschema.validate(
+                suite, json.loads((Path(ev.__file__).with_name("suite.schema.json")).read_text())
+            )
             ev.validate_suite(repo, suite)
 
 
@@ -1401,15 +1405,24 @@ def test_recorded_prefix_does_not_infer_gold_rank_past_top_k():
     gold = [{"path": "gold.go", "start_byte": 10, "end_byte": 20}]
     candidates = [
         {
-            "path": "gold.go", "start_byte": 0, "end_byte": 10, "rank": 1,
+            "path": "gold.go",
+            "start_byte": 0,
+            "end_byte": 10,
+            "rank": 1,
             "span_accounting": {"indexed_start_byte": 0, "indexed_end_byte": 10},
         },
         {
-            "path": "gold.go", "start_byte": 0, "end_byte": 30, "rank": 2,
+            "path": "gold.go",
+            "start_byte": 0,
+            "end_byte": 30,
+            "rank": 2,
             "span_accounting": {"indexed_start_byte": 0, "indexed_end_byte": 10},
         },
         {
-            "path": "other.go", "start_byte": 0, "end_byte": 30, "rank": 3,
+            "path": "other.go",
+            "start_byte": 0,
+            "end_byte": 30,
+            "rank": 3,
             "span_accounting": {"indexed_start_byte": 0, "indexed_end_byte": 30},
         },
     ]
