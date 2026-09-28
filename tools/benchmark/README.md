@@ -5,8 +5,9 @@ outputs and evidence outside the checkout. Captures need clean source and fresh
 output roots. Use `list` and `plan` while editing.
 
 - [Code-search runbook](CODE_SEARCH_RUNBOOK.md): the complete live five-product
-  lexical plus Quanta–Semble lexical/semantic/hybrid matrix, required result
-  table with all five products side by side and execution-coverage summary.
+  lexical plus Quanta–Semble lexical/semantic/hybrid matrix, [one result table
+  and reading guide](CODE_SEARCH_RUNBOOK.md#required-result-table) with mode
+  input scope and execution coverage.
 - [Retrieval usage](retrieval/README.md): native runner, pair options and replay.
 - [Agent recording usage](agent_outcome/README.md): A/B/C JSONL inputs.
 - [Architecture decisions](../../docs/adr/README.md): contracts and measurement policy.
