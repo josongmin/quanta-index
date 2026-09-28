@@ -1162,10 +1162,10 @@ fn restore_admits_catalog_directory_change_from_read_only_sidecars() -> TestResu
 impl StateMigrationFaultPort for ChangeBackupAuthorityV1 {
     fn reach(&self, point: StateMigrationFaultPointV1) -> Result<(), CoreError> {
         if point == StateMigrationFaultPointV1::AfterDataSync {
-            let result = match &self.bytes {
-                Some(bytes) => fs::write(&self.path, bytes),
-                None => fs::remove_file(&self.path),
-            };
+            let result = self.bytes.as_ref().map_or_else(
+                || fs::remove_file(&self.path),
+                |bytes| fs::write(&self.path, bytes),
+            );
             result.map_err(|error| CoreError::Storage(error.to_string()))?;
         }
         Ok(())

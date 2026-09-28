@@ -10,6 +10,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 HARNESS = ROOT / "crates/quanta-index-searchd-harness/src/harness.rs"
+SOURCE_PUBLICATION = ROOT / "crates/quanta-index-searchd-harness/src/harness/source_publication.rs"
 
 
 def read_harness() -> str:
@@ -71,23 +72,29 @@ def test_sealed_ingest_receipt_identity_reaches_composite_cas_v1() -> None:
     source = read_harness()
     runtime = rust_item_body(source, "pub struct E2eRuntime {")
     seal = rust_item_body(source, "pub fn seal_lexical_generation_for_tracks(")
+    publish = rust_item_body(source, "pub fn publish_search_corpus_batch(")
+    dispatch = rust_item_body(source, "fn dispatch_ingest_response(")
     activate = rust_item_body(source, "activate_last_sealed_generation(")
+    publication = SOURCE_PUBLICATION.read_text(encoding="utf-8")
 
     assert "Option<SearchCorpusGenerationIdentityV1>" in runtime
-    assert "SearchPlaneIngestIpcResponse::SearchCorpusReceipt(receipt)" in seal
+    assert "self.publish_search_corpus_batch(batch)?" in seal
+    assert "SearchPlaneIngestIpcResponse::SearchCorpusReceipt(outcome)" in publish
+    assert "self.search_corpus_identity_from_sealed_receipt(" in publish
+    assert "outcome.publication.target.manifest_generation" in publish
+    assert "&outcome.receipt" in publish
+    assert "validate_receipt(requested, *sealed, &outcome.receipt)" in dispatch
+    assert "self.source_publication.accept(&batch, &outcome)?" in publish
     for receipt_field in (
-        "receipt.sealed",
-        "receipt.generation",
-        "receipt.manifest_digest",
         "receipt.accepted_clear_surfaces",
         "receipt.accepted_replace_scopes",
         "receipt.accepted_tombstone_scopes",
     ):
-        assert receipt_field in seal, receipt_field
+        assert receipt_field in publication, receipt_field
 
     stored_identity = re.search(
         r"self\.(?P<field>[A-Za-z0-9_]*sealed[A-Za-z0-9_]*)\s*=\s*Some\(",
-        seal,
+        publish,
     )
     assert stored_identity, "seal must retain the validated composite receipt identity"
     assert re.search(

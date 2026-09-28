@@ -1035,11 +1035,11 @@ fn delete_predicate_bytes(
     for (corpus, kind, id) in scopes {
         let bytes = literal_bytes(id)?;
         let group = groups.entry((corpus, kind)).or_default();
-        let separator = usize::from(*group != 0) * 2;
+        let separator = if *group == 0 { 0 } else { 2 };
         *group = add_predicate_bytes(*group, add_predicate_bytes(bytes, separator)?)?;
         if *corpus == SemanticCorpusKindV1::ClusterCard.as_code_str() {
             let group = membership_groups.entry(kind).or_default();
-            let separator = usize::from(*group != 0) * 2;
+            let separator = if *group == 0 { 0 } else { 2 };
             *group = add_predicate_bytes(*group, add_predicate_bytes(bytes, separator)?)?;
         }
     }
@@ -1052,7 +1052,7 @@ fn delete_predicate_bytes(
         let group = add_predicate_bytes(syntax, literal_bytes(corpus)?)?;
         let group = add_predicate_bytes(group, literal_bytes(kind)?)?;
         let group = add_predicate_bytes(group, ids)?;
-        semantic = add_predicate_bytes(semantic, usize::from(semantic != 0) * 4)?;
+        semantic = add_predicate_bytes(semantic, if semantic == 0 { 0 } else { 4 })?;
         semantic = add_predicate_bytes(semantic, group)?;
     }
     let mut membership = 0;
@@ -1062,7 +1062,7 @@ fn delete_predicate_bytes(
                 .len();
         let group = add_predicate_bytes(syntax, literal_bytes(kind)?)?;
         let group = add_predicate_bytes(group, ids)?;
-        membership = add_predicate_bytes(membership, usize::from(membership != 0) * 4)?;
+        membership = add_predicate_bytes(membership, if membership == 0 { 0 } else { 4 })?;
         membership = add_predicate_bytes(membership, group)?;
     }
     Ok((semantic, membership))

@@ -123,7 +123,9 @@ def test_rollback_contract_is_composite_only_v1() -> None:
         "previous_manifest_digest",
     ):
         assert legacy_scalar_field not in control, legacy_scalar_field
-        assert legacy_scalar_field not in production_sources, legacy_scalar_field
+        assert not re.search(rf"\b{re.escape(legacy_scalar_field)}\b", production_sources), (
+            legacy_scalar_field
+        )
 
     assert "SearchPlaneRollbackSearchCorpusGenerationCasRequest" in control
     assert "SearchPlaneSearchCorpusRollbackCasAck" in control
@@ -178,12 +180,14 @@ def test_activation_relation_validation_is_contract_owned_v1() -> None:
 
 def test_sdk_search_corpus_receipt_is_exact_bound_before_activation_v1() -> None:
     corpus = read_source(SDK_CORPUS)
+    binding = read_source(SDK_BINDING)
     tests = read_source(SDK_TESTS)
 
-    assert "validate_search_corpus_publish_receipt_v1" in corpus
+    assert "validate_search_corpus_publish_receipt_v1(batch, &outcome.receipt)?" in corpus
+    assert "validate_receipt(requested, *sealed, &outcome.receipt)" in binding
+    assert "&receipt.generation != generation" in binding
+    assert "&receipt.batch_digest != digest" in binding
     for field in (
-        "generation",
-        "manifest_digest",
         "sealed",
         "accepted_replace_scopes",
         "accepted_tombstone_scopes",

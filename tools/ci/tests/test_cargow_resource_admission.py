@@ -71,6 +71,7 @@ def cargo_env(tmp_path):
         "QUANTA_INDEX_PRESERVE_CARGO_TARGET_DIR",
         "CARGO_TARGET_DIR",
         "QUANTA_INDEX_RESOURCE_ADMISSION",
+        "QUANTA_INDEX_STATE_ROOT",
         "RUSTC_WRAPPER",
     ):
         env.pop(key, None)

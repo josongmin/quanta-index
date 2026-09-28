@@ -229,9 +229,11 @@ fn allocator_digest(next: Option<i64>, exhausted: bool) -> [u8; 32] {
     hasher.finalize().into()
 }
 
-/// The event's commitment: SEP-21-002 preimage over the allocation
-/// itself, the kind, and the two content digests. Infallible by construction:
-/// all inputs are fixed-width bytes and the hasher performs no encoding.
+/// The event's commitment: SEP-21-002 preimage over the allocation,
+/// kind, and two content digests.
+///
+/// Infallible by construction: all inputs are fixed-width bytes and the
+/// hasher performs no encoding.
 pub(crate) fn event_commitment(
     sequence: i64,
     kind: SequenceEventKindV1,

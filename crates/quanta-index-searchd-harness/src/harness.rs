@@ -1863,7 +1863,7 @@ impl E2eRuntime {
         Ok(())
     }
 
-    pub fn tombstone_structural_for_path(&mut self, path: &str) -> AnyResult<()> {
+    pub fn tombstone_structural_for_path(&mut self, path: &str) {
         use quanta_index_contract::StructuralTombstoneScope;
 
         self.pending_source_aux
@@ -1886,7 +1886,6 @@ impl E2eRuntime {
                     seal: false,
                 },
             ));
-        Ok(())
     }
 
     pub fn delete_chunk_for_path(&mut self, path: &str) -> AnyResult<()> {

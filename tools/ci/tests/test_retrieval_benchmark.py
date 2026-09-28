@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import copy
 import ctypes
 import hashlib
@@ -9340,8 +9341,22 @@ def test_benchmark_prep_does_not_repeat_retrieval_contracts():
     assert "--test l5_parser_regressions" in local
     portable_source = (root / "tools/benchmark/retrieval/portable_proof.py").read_text()
     assert "proof_inventory.PYTHON_SELECTOR" in portable_source
-    assert '"--test", "chunking_contract"' in portable_source
-    assert '"--test", "l5_parser_regressions"' in portable_source
+    selectors = [
+        [item.value for item in node.value.elts if isinstance(item, ast.Constant)]
+        for node in ast.walk(ast.parse(portable_source))
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "selector" for target in node.targets)
+        and isinstance(node.value, ast.List)
+    ]
+    assert (
+        sum(
+            ["--test", "chunking_contract"] == selector[index : index + 2]
+            and ["--test", "l5_parser_regressions"] == selector[index + 2 : index + 4]
+            for selector in selectors
+            for index in range(len(selector) - 3)
+        )
+        == 2
+    )
 
 
 def test_retrieval_verdict_recipe_matches_cli_parser():

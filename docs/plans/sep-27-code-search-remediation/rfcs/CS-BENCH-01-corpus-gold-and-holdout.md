@@ -7,7 +7,7 @@ Category: benchmark inputs. Finding: F07; supports F02/F04 and G02.
 Existing release/binding and symbol-coverage helpers remain implemented; this
 status does not claim those owners are missing. The current benchmark overlay is
 not an independently audited gold/holdout release. Remaining input/acceptance
-boundary: [CS-INT-01](CS-INT-01-integration-and-qualification.md#remaining-work).
+boundary: [CS-INT-01](CS-INT-01-integration-and-qualification.md#serial-acceptance-boundary).
 
 ## Purpose and RCA
 

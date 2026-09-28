@@ -9,7 +9,7 @@ Current `lexical_file_comparison` reports hit rate and macro file recall
 separately. This does not establish native-derived result authority, independent
 gold or equivalent work. Close BENCH-02 before qualification scoring; then run
 the declared track units, statistical admission and ablation. Latest boundary:
-[CS-INT-01](CS-INT-01-integration-and-qualification.md#remaining-work).
+[CS-INT-01](CS-INT-01-integration-and-qualification.md#serial-acceptance-boundary).
 
 ## Purpose
 

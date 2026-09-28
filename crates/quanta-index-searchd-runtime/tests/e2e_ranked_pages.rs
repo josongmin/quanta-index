@@ -161,7 +161,7 @@ fn a_byte_budget_cuts_pages_with_an_explicit_continuation() -> TestResult {
         )
         .into());
     }
-    let budget = ResponsePayloadBudget::new(lower + (full_bytes - lower) / 2)?;
+    let budget = ResponsePayloadBudget::new(lower.midpoint(full_bytes))?;
     let (mut rt, pin) = seeded(E2eRuntime::boot_with_query_response_budget(budget)?)?;
     let first = served(rt.query_text_page(
         TextQuerySyntax::Native,

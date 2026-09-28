@@ -52,11 +52,12 @@ matcher for truth and ranges and the current query recall/case/NFC semantics.
   claim, including indexed verification, manual scan and preview; changing only
   the selected-preview wrapper leaves other executor allocations outside it.
 
-Current dirty source maps `CompiledTooBig` to typed `PlanLimitExceeded` /
+The implemented executor maps `CompiledTooBig` to typed `PlanLimitExceeded` /
 `regex-compiled-bytes`, and selected-preview compilation turns that resource
-refusal into `WorkBudget`. These are current mitigations requiring their new
-owner regressions; they do not close aggregate allocation admission. Do not
-retain the superseded blanket `ExecutionInternal` mapping as a current defect.
+refusal into `WorkBudget`. Owner regressions exercise the typed engine refusal
+and preview work-budget path; these mitigations do not close aggregate
+allocation admission. Do not retain the superseded blanket `ExecutionInternal`
+mapping as a current defect.
 
 ## Acceptance
 
@@ -97,6 +98,15 @@ retain the superseded blanket `ExecutionInternal` mapping as a current defect.
   compilations are not cached. This removes repeated compilation for common
   leaves but retains up to four engines and does not provide aggregate heap
   admission.
+- The manual `repo.has.*` gate cache collects each canonical predicate/options
+  key once per scan, with at most 64 distinct retained sets and a separate
+  logical retained-byte account capped by the configured collection-byte limit.
+  The set is materialized before the cache reserves its charge; each native
+  collector has its own account. These limits stop unbounded cache retention,
+  but do not admit transient allocation, cumulative collector work or physical
+  request heap. Cache unit tests and
+  `unindexed_repo_gates_refuse_excess_distinct_materializations` exercise
+  refusal through the public search route.
 - Scoped content predicates select their scope-regex admission engine from
   `index:no` versus indexed execution. The manual route accepts the same
   word-boundary grammar in preflight and execution and retains the predicate

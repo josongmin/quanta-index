@@ -12,7 +12,7 @@ independent gold and qualified speed. Do not promote that producer's presence to
 a completed comparison. Add L2 coverage/ranked-sidecar total update cost to the
 measurement scope; index-only bytes cannot establish total update cost.
 Actual workload/host admission and final source execution remain required:
-[CS-INT-01](CS-INT-01-integration-and-qualification.md#remaining-work).
+[CS-INT-01](CS-INT-01-integration-and-qualification.md#serial-acceptance-boundary).
 
 ## Purpose and existing limitation
 

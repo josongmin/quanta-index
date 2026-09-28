@@ -8,9 +8,16 @@ This ledger owns only remaining code-search integration and acceptance.
 [MISC](../../sep-27-misc/tickets/INDEX.md) owns common execution, CI enrollment,
 producer/consumer/replay and supported-platform qualification once.
 
-## Current implementation and remaining acceptance
+## Implementation ledger and remaining acceptance
 
-Owner-local checks used HEAD `5522f86b34b82d5f3a04e5ec4ec2aa4a4acfb4a7`
+The owner-local evidence below belongs to HEAD
+`5522f86b34b82d5f3a04e5ec4ec2aa4a4acfb4a7`, not the later
+`ce466325236821d5bbc4e51dc5c7b4c418fe2f8c` source. Its scratch logs and
+manifests still exist with their recorded digests, but their source binding is
+stale for current qualification. Re-execute selected gates at the release
+source rather than promoting these historical results.
+
+Those owner-local checks used HEAD `5522f86b34b82d5f3a04e5ec4ec2aa4a4acfb4a7`
 plus a dirty concurrent checkout on macOS 15.6/arm64, Rust 1.92.0. The
 earlier selected nine-crate Rust source/config snapshot (323 files) was unchanged
 before and after its tests, SHA-256
@@ -31,25 +38,25 @@ six executed test binary hashes are in
 These are owner-local inputs, not a clean-tree or release receipt. The earlier
 nine-crate proofs do not inherit the later process source identity.
 
-| Owner | Current implementation | Remaining acceptance |
+| Owner | Observed implementation | Remaining acceptance |
 | --- | --- | --- |
 | INT-C1 | Five ranked-key column constants moved to schema ownership; module cycle, affected ranked/storage tests and scoped all-target Clippy pass without a new cycle baseline. | Full repository and hosted CI at the release source. |
 | Process source authority | Delta-base readiness now precedes lexical batch preparation. The E2E producer harness seals source chunks before publishing dependent structural/catalog rows; orphan structural rows refuse at ingest. Synthetic strict-symbol fixtures explicitly declare zero-symbol completion for files with no symbol rows. | Actual Semantica producer and installed SDK/daemon process qualification, crash and platform acceptance. |
 | ENG-02 | Shared logical coverage snapshot; manifest format 9 bounded root/pages, changed-page encoding, hard-linked inheritance, strict decode and lifecycle commitment/scrub ownership. See [ADR](../../../adr/SEP-27-003-code-search-source-and-preview-contract.md). | Total pipeline cost/physical heap at growing sizes and current-format public process qualification. Full base/open/retry decode remains O(files). |
 | BENCH-02 | Permanent fake-native cs/Sourcegraph/OpenGrok path/hit mutations recompute normalized digests and are refused by live verification. | Remaining admitted formats/callers and real external capture/replay. |
 | MISC-04 enrollment | Both owners enrolled in existing Just Python rail, test authority and source closures; live collection rejects empty/duplicate modules. | Hosted CI and actual consumers remain separate. |
-| ENG-04 | Typed engine byte refusal and logical preview charges exist; no hard aggregate allocation authority. | Coordinate parser/compiler/cache physical admission across every executor caller while preserving matcher truth/ranges. |
-| External producer / rollout | Format 8 and earlier explicitly require rebuilding for format 9. Static inspection of the current Semantica issuer shows source-byte-bound coverage and a Structural dispatch loader gated on delivered lexical authority; this is not execution proof. | Run its QBC owner tests, paired consumer migration, installed rebuild and activation/rollback against a frozen combined source. |
+| ENG-04 | Typed engine byte refusal, logical preview charges and bounded manual repo-gate retention exist; no hard aggregate allocation authority. | Coordinate parser/compiler/cache physical admission across every executor caller while preserving matcher truth/ranges. |
+| External producer / rollout | Format 8 and earlier explicitly require rebuilding for format 9. Prior static inspection of the Semantica issuer showed source-byte-bound coverage and a Structural dispatch loader gated on delivered lexical authority; this is not execution proof or a current-source claim. | Run its QBC owner tests, paired consumer migration, installed rebuild and activation/rollback against a frozen combined source. |
 | BENCH-01/03/04 | Local fake-native and owner fixtures are diagnostic. | Independent gold/holdout, quiet admitted host and real equal-work comparator/update runs. |
 
-## Owner-local evidence boundary
+## Historical owner-local evidence boundary
 
-- `VERIFIED` owner-local: `just rust-module-cycles`, `just rust-cargo-modules`,
+- `VERIFIED` on the recorded source, owner-local: `just rust-module-cycles`, `just rust-cargo-modules`,
   `just rust-public-api` (contract and SDK), and
   `./scripts/cargow --lane clippy-lane clippy -p quanta-index-contract -p quanta-index-core -p quanta-index-lexical -p quanta-index-lq-regex --all-targets --locked --message-format short -- -D warnings`.
   The Clippy log is `/tmp/qi-clippy-owner-4.log`, SHA-256
   `a2719d99a07bab19cb3d54f3430286b9b31a84541f54c47ebedccf9bfbeb6118`.
-- `VERIFIED` owner-local: `./scripts/cargow test --locked -p quanta-index-lexical
+- `VERIFIED` on the recorded source, owner-local: `./scripts/cargow test --locked -p quanta-index-lexical
   --lib --test sealed_manifest --test sealed_commitment_cost --test ranked_pages
   --test l2_file_mutation --test generation_delta_base_carryforward
   --test l4_match_anchored_preview --test planner_authority
@@ -60,16 +67,16 @@ nine-crate proofs do not inherit the later process source identity.
   The page fixture observed 1024/2048/4096 files, fresh coverage bytes
   20362/22742/25869 and inherited page inodes 252/255/255. This is page
   writing only, not total ingest or RSS.
-- `VERIFIED` owner-local: `./scripts/cargow test --locked -p
+- `VERIFIED` on the recorded source, owner-local: `./scripts/cargow test --locked -p
   quanta-index-contract -p quanta-index-core -p quanta-index-lq-regex --lib
   -- --nocapture`: 349 passed, zero failed/ignored. Log
   `/tmp/qi-owner-contract-core-regex-final.log`, SHA-256
   `03881429b58b564b2ce18bbdbe2fbcd09d73da1dc35181e6169e0f4066421531`.
-- `VERIFIED` owner-local current lexical scan owner: `./scripts/cargow test
+- `VERIFIED` on the recorded source, lexical scan owner: `./scripts/cargow test
   --locked -p quanta-index-lexical --test tantivy_smoke -- --nocapture`:
   38 passed, zero failed/ignored. Log `/tmp/qi-owner-manual-current.log`,
   SHA-256 `0c0da5b4f001b87aaf8c34c78088d2ffe28ae6f8eef9136d25fe69a59a824eb9`.
-- `VERIFIED` owner-local current combined process: `./scripts/cargow test
+- `VERIFIED` on the recorded source, combined process: `./scripts/cargow test
   --locked -p quanta-index-search-plane --lib -p quanta-index-searchd-runtime
   --test runtime_fast_suite --test runtime_extended_suite --test runtime_risk_suite
   --test l4_preview_sdk -- --nocapture`: search-plane library 474, L4 SDK 7,
@@ -80,7 +87,7 @@ nine-crate proofs do not inherit the later process source identity.
   These process tests use the local synthetic producer and development hash
   embedder; they do not exercise the external Semantica producer or an installed
   service.
-- `VERIFIED` owner-local current Python: `uv run --frozen --extra dev python
+- `VERIFIED` on the recorded source, Python: `uv run --frozen --extra dev python
   -m pytest tools/ci/tests/test_live_lexical_external.py
   tools/ci/tests/test_code_search_workflow.py
   tools/ci/tests/test_pair_capture.py tools/ci/tests/test_corpus_release.py
@@ -93,15 +100,23 @@ nine-crate proofs do not inherit the later process source identity.
   These use local fake native services. `just rust-test-authority`, `just
   rust-ignored-test-policy`, `just lint-doc-paths`, `just lint-prompt-drift`,
   affected Rust `rustfmt --check` and `git diff --check` pass locally.
-- `FAILED` broad Python style gates on this checkout: `just python-lint`
-  reports 20 Ruff errors in three files that match HEAD, and `just
-  python-format-check` reports 73 files requiring formatting. The eight Python
-  owner/test files selected above pass targeted Ruff lint. Raw logs are
+- `FAILED` broad Python style gates on the recorded 5522 checkout: `just
+  python-lint` reported 20 Ruff errors in three files, and `just
+  python-format-check` reported 73 files requiring formatting. These are not
+  current defects: both commands returned exit 0 on clean HEAD
+  `ce466325236821d5bbc4e51dc5c7b4c418fe2f8c`. The old raw logs are
   `/tmp/qi-owner-python-lint-current.log` (SHA-256
   `f0f5c1a7de6b3afbe5d416912d0cb4bbe9c5ce78523fa729bc70a8d7fbb9aa71`)
   and `/tmp/qi-owner-python-format-current.log` (SHA-256
   `90f6b7d2e4da87574a325db423ea6650baf3022b5828cf64237e01593e5edeed`).
-  No broad style or repository qualification is claimed from focused tests.
+  No repository qualification is claimed from the style checks or old focused
+  tests.
+- Current working-tree Python tooling: `just python-lint` and `just
+  python-format-check` exit 0 with Ruff 0.16.8; `just python-test` exits 0
+  with 2,610 passed and nine Linux-only skips on macOS. Test log
+  `/tmp/qi-python-test-complete.log` has SHA-256
+  `ffa3898c110ca59edb79a1e7f6810321e3914b28ef7f6a576986648512916d27`.
+  This is local tooling coverage, not hosted CI or installed-service proof.
 - `NOT_RUN` for full repository/hosted CI, installed daemon, actual external
   producer/consumer migration, independent benchmark and physical regex/RSS
   qualification. The local scratch logs do not supply that evidence.

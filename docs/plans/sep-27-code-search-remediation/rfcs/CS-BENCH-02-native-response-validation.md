@@ -31,7 +31,7 @@ now runs in the permanent fake-service owner fixture selected by the existing
 benchmark-control rail. It is not a production capture.
 
 Remaining integration is in
-[CS-INT-01](CS-INT-01-integration-and-qualification.md#remaining-work).
+[CS-INT-01](CS-INT-01-integration-and-qualification.md#serial-acceptance-boundary).
 Historical reproduction bodies are recoverable through the
 [plan archive](../../ARCHIVE-INDEX.md).
 Inventory every admitted acquisition/scoring/replay entrypoint. Qualification

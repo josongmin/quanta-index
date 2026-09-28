@@ -4529,6 +4529,10 @@ fn sdk_wait_not_ready_then_ready_recovers() {
 // L2: real SDK + sockets + durable journal/catalog + paired storage. The
 // original source publication survives retargeting and a runtime restart.
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "test assertions check the oracle after fallible setup"
+)]
 fn l2_source_replay_keeps_original_publication_through_sdk_activation_and_restart() -> TestResult {
     use quanta_index_contract::{IngestObservationStatus, SourcePublicationEvent};
     let root = quanta_index_searchd_harness::private_tempdir()?;

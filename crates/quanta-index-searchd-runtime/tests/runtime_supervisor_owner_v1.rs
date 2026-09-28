@@ -742,7 +742,14 @@ fn stop_callback_time_consumes_every_shutdown_phase_budget() {
                 assert_eq!(failed, "refused");
                 assert_eq!(escalated, vec!["budget-held"]);
             }
-            other => panic!("{phase}: deadline must escalate its live child: {other:?}"),
+            other @ (SupervisionOutcome::StoppedClean { .. }
+            | SupervisionOutcome::StartupRollback { .. }
+            | SupervisionOutcome::RequiredChildLost { .. }
+            | SupervisionOutcome::DrainFailed { .. }
+            | SupervisionOutcome::HardDeadlineEscalated { .. }
+            | SupervisionOutcome::SignalAbort { .. }) => {
+                panic!("{phase}: deadline must escalate its live child: {other:?}");
+            }
         }
         assert!(
             elapsed < Duration::from_millis(700),

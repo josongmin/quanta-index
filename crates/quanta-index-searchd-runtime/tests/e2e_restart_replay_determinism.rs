@@ -1128,9 +1128,7 @@ fn reopen_preserves_structural_tombstone_not_ready_state() -> AnyResult<()> {
         .map_err(|error| {
             anyhow::anyhow!("structural tombstone generation 2 structural ingest: {error}")
         })?;
-    rt.tombstone_structural_for_path(path).map_err(|error| {
-        anyhow::anyhow!("structural tombstone generation 2 structural tombstone: {error}")
-    })?;
+    rt.tombstone_structural_for_path(path);
     _ = rt
         .seal_lexical_generation_for_tracks(&[
             SearchPlaneTrackKind::Lexical,
