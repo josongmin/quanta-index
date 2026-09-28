@@ -26,11 +26,14 @@ import math
 import sys
 from pathlib import Path
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 REFERENCE_PROFILE = "model2vec-static-potion-code-16M-v2"
 MODEL_ID = "minishlab/potion-code-16M-v2"
 MODEL_REVISION = "e9d2a44ca6a05ac6685f3b23709ea57eb7352d5b"
 MODEL2VEC_VERSION = "0.9.0"
+FULL_V2_MAX_TEXT_BYTES = 16 * 1024
+FULL_V2_MAX_BATCH_TEXT_BYTES = 4 * 1024 * 1024
+FULL_V2_BATCH_SIZE = 1024
 PINNED_ASSET_SHA256 = {
     "model.safetensors": "75cf7a6c2171b230ad19b1e7d8e0b1aee86da5a02af8e7cacedd9921d227623c",
     "tokenizer.json": "107bbdcbad4bff1d299b7a4c3a2fb17c52890688b7dd0e4c9deab79d3c4f3d45",
@@ -46,6 +49,8 @@ INPUTS = [
     "",
     "   ",
     "a" * 5000,
+    "route " * 600 + "render content type",
+    "route " * 600 + "binding form values",
     "refresh access token",
 ]
 
@@ -79,6 +84,19 @@ def cosine(left: list[float], right: list[float]) -> float:
     return sum(a * b for a, b in zip(left, right))
 
 
+def validate_v2_input_envelope(inputs: list[str]) -> None:
+    """Bind parity vectors to the product V2 admission domain."""
+    for offset in range(0, len(inputs), FULL_V2_BATCH_SIZE):
+        total_bytes = 0
+        for text in inputs[offset : offset + FULL_V2_BATCH_SIZE]:
+            size = len(text.encode("utf-8"))
+            if size > FULL_V2_MAX_TEXT_BYTES:
+                raise ValueError("full-length-v2 parity text exceeds 16 KiB")
+            total_bytes += size
+            if total_bytes > FULL_V2_MAX_BATCH_TEXT_BYTES:
+                raise ValueError("full-length-v2 parity model batch exceeds 4 MiB")
+
+
 def main() -> int:
     if sys.version_info[:2] != (3, 13):
         raise ValueError("reference execution requires Python 3.13")
@@ -95,17 +113,34 @@ def main() -> int:
         or any(not isinstance(text, str) for text in inputs)
     ):
         raise ValueError("reference inputs must be 1..4096 strings")
+    validate_v2_input_envelope(inputs)
+    long_suffix_pair = INPUTS[-3:-1]
+    if any(text not in inputs for text in long_suffix_pair):
+        raise ValueError("reference inputs must include both long suffix probes")
 
     asset_digests = verify_reference_inputs(args.model_dir)
     from model2vec import StaticModel
 
     model = StaticModel.from_pretrained(str(args.model_dir))
+    # The pinned tokenizer.json itself carries a 512-token truncation. The
+    # encode(max_length=None) argument alone does not override that stored
+    # tokenizer policy. Disable it on this in-memory model before reference
+    # generation, leaving the digest-pinned asset untouched.
+    if model.tokenizer.truncation is None or model.tokenizer.truncation["max_length"] != 512:
+        raise ValueError("pinned tokenizer must carry a 512-token truncation")
+    model.tokenizer.no_truncation()
+    if model.tokenizer.truncation is not None:
+        raise ValueError("tokenizer truncation remains enabled")
+    if any(len(model.tokenizer.encode(text).ids) <= 512 for text in long_suffix_pair):
+        raise ValueError("adversarial suffix input does not exceed the old cap")
 
     # The reference contract: no truncation (max_length=None), matching
     # the Rust decoder's unbounded pooling. model2vec 0.9.0 encode applies
     # internal L2 normalization, so the pinned reference output IS the
     # unit layer; the Rust rail compares its L2-normalized output here.
     vectors = model.encode(inputs, max_length=None).tolist()
+    if vectors[inputs.index(long_suffix_pair[0])] == vectors[inputs.index(long_suffix_pair[1])]:
+        raise ValueError("long suffix probes embedded identically")
     permuted = model.encode(list(reversed(inputs)), max_length=None).tolist()
     if len(vectors) != len(inputs) or len(permuted) != len(inputs):
         raise ValueError("reference encoder returned an incomplete batch")
@@ -136,6 +171,7 @@ def main() -> int:
         },
         "policy": {
             "max_length": None,
+            "tokenizer_embedded_truncation_disabled": True,
             "normalization": "approx-unit-fp16 (rail L2-normalizes both sides)",
         },
         "inputs": inputs,

@@ -81,7 +81,8 @@ fn print_help() -> BenchResult<()> {
          --searchd-bin PATH --searchd-expected-sha256 HEX\n\
          [--source-stream-id ID] [--source-event-id ID] [--source-base-event-id ID]\n\
          [--symbol-preflight-out PATH]\n\
-         --out PATH --refusal-out PATH [--metrics-out PATH] [--diagnostics-out PATH] [--embedder potion-code|hash-dev]\n\
+         --out PATH --refusal-out PATH [--metrics-out PATH] [--diagnostics-out PATH] [--embedder potion-code|potion-code-full-v2|hash-dev]\n\
+         potion-code: historical effective 512-token V1; potion-code-full-v2: no 512-token truncation, 16 KiB/text and 4 MiB/model batch admission, rebuild required\n\
          [--max-file-bytes N]\n\
          [--io-timeout-secs N] [--ready-timeout-secs N]\n",
         )

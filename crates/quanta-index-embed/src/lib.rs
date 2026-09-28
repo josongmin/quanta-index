@@ -17,8 +17,8 @@ pub use cache::{
     FileEmbeddingCache, InMemoryEmbeddingCache,
 };
 pub use model2vec::{
-    POTION_CODE_DIMENSION, POTION_CODE_MODEL_ID, POTION_CODE_MODEL_REVISION,
-    PotionCodeEmbeddingProvider,
+    POTION_CODE_DIMENSION, POTION_CODE_FULL_V2_MODEL_REVISION, POTION_CODE_MODEL_ID,
+    POTION_CODE_MODEL_REVISION, PotionCodeEmbeddingProvider, PotionCodeEncodingPolicy,
 };
 pub use openai::{
     DEFAULT_CONCURRENCY, DEFAULT_MAX_BATCH, DEFAULT_MAX_ESTIMATED_TOKENS_PER_REQUEST,

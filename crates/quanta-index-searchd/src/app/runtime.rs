@@ -617,8 +617,12 @@ fn build_semantic_embedders(
                 provider_attempt_pool: None,
             })
         }
-        SemanticEmbedderProfile::PotionCode { model_dir } => {
-            let model = PotionCodeEmbeddingProvider::from_local_dir(model_dir)?;
+        SemanticEmbedderProfile::PotionCode {
+            model_dir,
+            encoding,
+        } => {
+            let model =
+                PotionCodeEmbeddingProvider::from_local_dir_with_policy(model_dir, *encoding)?;
             let normalized = L2UnitEmbeddingProvider::new(model)?;
             let raw_norms: Arc<dyn MetricSourcePort> = normalized.raw_norm_tallies();
             let provider: Arc<dyn TextEmbeddingProvider + Send + Sync> = Arc::new(normalized);
@@ -2216,6 +2220,7 @@ mod tests {
         } = super::build_semantic_embedders(
             &super::SemanticEmbedderProfile::PotionCode {
                 model_dir: model_dir.into(),
+                encoding: quanta_index_embed::PotionCodeEncodingPolicy::Pinned512V1,
             },
             state_root.path(),
             &test_budget(),

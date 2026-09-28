@@ -4,12 +4,15 @@ use std::io::Write;
 use std::path::Path;
 
 use quanta_index_core::{L2UnitEmbeddingProvider, TextEmbeddingProvider};
-use quanta_index_embed::PotionCodeEmbeddingProvider;
+use quanta_index_embed::{PotionCodeEmbeddingProvider, PotionCodeEncodingPolicy};
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
-    let [model_dir, inputs_path] = args.as_slice() else {
-        return Err("usage: quanta-index-vector-proof <absolute-model-dir> <inputs.json>".into());
+    let (model_dir, inputs_path, policy) = match args.as_slice() {
+        [model_dir, inputs_path] => (model_dir, inputs_path, PotionCodeEncodingPolicy::Pinned512V1),
+        [model_dir, inputs_path, selector] if selector == "potion-code-full-v2" =>
+            (model_dir, inputs_path, PotionCodeEncodingPolicy::FullLengthV2),
+        _ => return Err("usage: quanta-index-vector-proof <absolute-model-dir> <inputs.json> [potion-code-full-v2]".into()),
     };
     if !Path::new(model_dir).is_absolute() {
         return Err("vector proof model directory must be absolute".into());
@@ -22,9 +25,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     if inputs.is_empty() || inputs.len() > 4096 {
         return Err("vector proof requires 1..4096 input texts".into());
     }
-    let provider = L2UnitEmbeddingProvider::new(PotionCodeEmbeddingProvider::from_local_dir(
-        Path::new(model_dir),
-    )?)?;
+    let provider = L2UnitEmbeddingProvider::new(
+        PotionCodeEmbeddingProvider::from_local_dir_with_policy(Path::new(model_dir), policy)?,
+    )?;
     let texts = inputs.iter().map(String::as_str).collect::<Vec<_>>();
     let vectors = provider.embed_batch(&texts)?;
     let reverse = texts.iter().copied().rev().collect::<Vec<_>>();

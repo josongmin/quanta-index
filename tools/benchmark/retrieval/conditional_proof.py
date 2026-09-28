@@ -158,7 +158,7 @@ def model_rows(observed: object, baseline: object, inputs: object) -> tuple[list
         or baseline["dimension"] != 256
         or observed["model_id"] != "model2vec:minishlab/potion-code-16M-v2"
         or observed["model_revision"]
-        != "e9d2a44ca6a05ac6685f3b23709ea57eb7352d5b:model2vec-rs-0.3.0:fancy-regex:full-length-v1"
+        != "e9d2a44ca6a05ac6685f3b23709ea57eb7352d5b:model2vec-rs-0.3.0:fancy-regex:full-length-v2"
         or observed["normalization"] != "l2_unit"
         or observed["max_length"] is not None
         or model["id"] != reference.MODEL_ID
@@ -166,7 +166,11 @@ def model_rows(observed: object, baseline: object, inputs: object) -> tuple[list
         or baseline["profile"] != reference.REFERENCE_PROFILE
         or baseline["library"] != {"model2vec": reference.MODEL2VEC_VERSION}
         or baseline["policy"]
-        != {"max_length": None, "normalization": "approx-unit-fp16 (rail L2-normalizes both sides)"}
+        != {
+            "max_length": None,
+            "tokenizer_embedded_truncation_disabled": True,
+            "normalization": "approx-unit-fp16 (rail L2-normalizes both sides)",
+        }
     ):
         raise ValueError("encoder policy/model identity drift")
     for name, expected in reference.PINNED_ASSET_SHA256.items():
@@ -1301,7 +1305,7 @@ def validate_results(value: object, kind: str, *, verify_source: bool = False) -
     )
     if (
         not isinstance(run["argv"], list)
-        or len(run["argv"]) != 3
+        or len(run["argv"]) != (4 if kind == "model_vectors" else 3)
         or any(not isinstance(arg, str) for arg in run["argv"])
         or run["argv"][0] != executables[0]
         or type(run["exit_code"]) is not int
@@ -1373,11 +1377,13 @@ def validate_results(value: object, kind: str, *, verify_source: bool = False) -
     command_identity(build, context, source_root)
     command_identity(run, context, source_root)
     if kind == "model_vectors":
+        if run["argv"][3] != "potion-code-full-v2":
+            raise ValueError("full-length vector proof requires explicit V2 selector")
         expected_models = {
             (
                 "quanta",
                 "model2vec:minishlab/potion-code-16M-v2",
-                "e9d2a44ca6a05ac6685f3b23709ea57eb7352d5b:model2vec-rs-0.3.0:fancy-regex:full-length-v1",
+                "e9d2a44ca6a05ac6685f3b23709ea57eb7352d5b:model2vec-rs-0.3.0:fancy-regex:full-length-v2",
             ),
             ("semble", "minishlab/potion-code-16M-v2", "e9d2a44ca6a05ac6685f3b23709ea57eb7352d5b"),
         }
@@ -1627,7 +1633,12 @@ def _produce_controlled(args: argparse.Namespace, guard: tool_custody.ToolCustod
                 if entry["path"] == "tools/benchmark/retrieval/parity_reference.py"
             ),
         }
-        argv = [str(executable), str(args.model_dir.resolve()), str(out / "inputs.json")]
+        argv = [
+            str(executable),
+            str(args.model_dir.resolve()),
+            str(out / "inputs.json"),
+            "potion-code-full-v2",
+        ]
     else:
         argv = [str(executable), str(out / "inputs.json"), str(out / "fresh-state")]
     observed = portable_proof._run(
