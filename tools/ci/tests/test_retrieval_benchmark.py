@@ -723,6 +723,27 @@ def test_query_plan_oracle_enforces_utf8_term_boundary():
         qp.plan_lexical_request("natural_language", "\uac00" * 86)
 
 
+def test_exact_symbol_name_policy_keeps_bare_query_identity_and_refuses_dsl():
+    request = qp.plan_lexical_request("exact_symbol_name", "writeContentType")
+    assert request == "symbol.local_name.exact(writeContentType) case:yes"
+    profile = qp.execution_profile("exact_symbol_name")
+    jsonschema.validate(profile, _load_schema("runner.schema.json")["$defs"]["execution_profile"])
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(
+            profile, _load_schema("pair-spec.schema.json")["$defs"]["quanta_profile"]
+        )
+    identity = qp.derive_query_identity("exact_symbol_name", "writeContentType")
+    assert identity["original_query_sha256"] == hashlib.sha256(b"writeContentType").hexdigest()
+    assert identity["effective_lexical_request_sha256"] == hashlib.sha256(
+        request.encode()
+    ).hexdigest()
+    for invalid in ("", "two words", "select:file Next", "WriteContentType)", "\u00e9", "a" * 4097):
+        with pytest.raises(qp.QueryPlanError, match="bare ASCII symbol name"):
+            qp.plan_lexical_request("exact_symbol_name", invalid)
+    with pytest.raises(qp.QueryPlanError, match="unsupported v4"):
+        qp.derive_query_identity_v4("exact_symbol_name", "writeContentType")
+
+
 def test_retrieval_diagnostic_binds_complete_record_and_lanes():
     pack = {"tasks": [{"task_id": "T1", "query_sha256": "a" * 64}]}
     pack_sha = pairrun.digest(pairrun.canonical_bytes(pack))
@@ -8944,6 +8965,15 @@ def test_v5_literal_and_nl_policies_replay_through_the_python_oracle(tmp_path):
     # any of the three canonical policies with self-consistent evidence.
     _suite, _pack, loaded_nl = record_v3(repo, suite, run, suite_path, runner_path)
     assert loaded_nl["captures"]["q0"]["execution_profile"]["policy"] == "natural_language"
+
+
+def test_exact_symbol_profile_refuses_lexical_route_record(tmp_path):
+    repo, suite, run, suite_path, runner_path, _ = fixture_v3(tmp_path)
+    profile = qp.execution_profile("exact_symbol_name")
+    run["captures"]["q0"]["execution_profile"] = profile
+    run["captures"]["q0"]["execution_profile_sha256"] = ev.digest(ev.canonical(profile))
+    with pytest.raises(ev.EvidenceError, match="requires the symbol route"):
+        record_v3(repo, suite, run, suite_path, runner_path)
 
 
 @pytest.mark.parametrize("old_version", [1, 2])

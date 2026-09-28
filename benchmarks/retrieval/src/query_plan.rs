@@ -12,6 +12,8 @@
 //!   lexical lane receives a deterministic token-OR plan built from the
 //!   query alone (fixed tokenization, dedup, limits, escaping). Empty or
 //!   over-limit plans are typed refusals; there is no match-all fallback.
+//! * `exact_symbol_name` — one bare ASCII identifier becomes a case-sensitive
+//!   exact local-name predicate for the symbol route. Other text refuses.
 //!
 //! Every plan carries the four identity digests of the canonical profile
 //! contract (`docs/adr/SEP-26-001-retrieval-query-publication-and-result-proof.md`
@@ -34,6 +36,7 @@ pub const NL_PLAN_PROFILE: &str = "nl-token-or-v2";
 /// latency. Planning happens once per task before the cold probe, so the
 /// measured windows never contain it.
 pub const PLANNING_COST_IN_LATENCY: bool = false;
+const MAX_EXACT_SYMBOL_NAME_BYTES: usize = 4096;
 
 #[must_use]
 pub const fn execution_profile_id(policy: QueryInputPolicy) -> &'static str {
@@ -41,6 +44,7 @@ pub const fn execution_profile_id(policy: QueryInputPolicy) -> &'static str {
         QueryInputPolicy::Native => "quanta-native-v1",
         QueryInputPolicy::Literal => "quanta-literal-v1",
         QueryInputPolicy::NaturalLanguage => "quanta-natural-language-ucd17-v2",
+        QueryInputPolicy::ExactSymbolName => "quanta-exact-symbol-name-v1",
     }
 }
 
@@ -54,6 +58,8 @@ pub enum QueryInputPolicy {
     /// Keep the raw query for the semantic lane and derive a deterministic
     /// token-OR lexical plan from it.
     NaturalLanguage,
+    /// Query an exact, case-sensitive local symbol name on the symbol route.
+    ExactSymbolName,
 }
 
 impl QueryInputPolicy {
@@ -68,6 +74,7 @@ impl QueryInputPolicy {
             "native" => Ok(Self::Native),
             "literal" => Ok(Self::Literal),
             "natural_language" => Ok(Self::NaturalLanguage),
+            "exact_symbol_name" => Ok(Self::ExactSymbolName),
             other => Err(QueryPlanError::UnsupportedPolicy(other.to_string())),
         }
     }
@@ -79,6 +86,7 @@ impl QueryInputPolicy {
             Self::Native => "native",
             Self::Literal => "literal",
             Self::NaturalLanguage => "natural_language",
+            Self::ExactSymbolName => "exact_symbol_name",
         }
     }
 }
@@ -125,8 +133,10 @@ impl NlPlanConfig {
 /// broader or match-all request.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum QueryPlanError {
-    /// The policy string is not one of the three canonical policies.
+    /// The policy string is not one of the canonical policies.
     UnsupportedPolicy(String),
+    /// Exact symbol lookup requires one bounded bare ASCII identifier.
+    InvalidSymbolName,
     /// The natural-language plan produced no tokens after tokenization.
     EmptyTokenPlan,
     /// The distinct-token count exceeded the configured maximum.
@@ -165,6 +175,7 @@ impl QueryPlanError {
     pub const fn code(&self) -> &'static str {
         match self {
             Self::UnsupportedPolicy(_) => "RBR_QUERY_POLICY_UNSUPPORTED",
+            Self::InvalidSymbolName => "RBR_QUERY_SYMBOL_NAME_INVALID",
             Self::EmptyTokenPlan => "RBR_QUERY_NO_INDEXABLE_TOKENS",
             Self::TokenLimitExceeded { .. } => "RBR_QUERY_TOKEN_LIMIT_EXCEEDED",
             Self::TokenCharacterLimitExceeded { .. } => "RBR_QUERY_TOKEN_CHAR_LIMIT_EXCEEDED",
@@ -180,6 +191,10 @@ impl std::fmt::Display for QueryPlanError {
             Self::UnsupportedPolicy(raw) => {
                 write!(f, "unsupported query input policy: {raw}")
             }
+            Self::InvalidSymbolName => write!(
+                f,
+                "exact-symbol policy requires one bare ASCII symbol name of at most 4096 bytes"
+            ),
             Self::EmptyTokenPlan => {
                 write!(f, "natural-language plan produced no tokens")
             }
@@ -244,6 +259,9 @@ pub struct QueryPlan {
 pub fn policy_config_canonical(policy: QueryInputPolicy, config: &NlPlanConfig) -> String {
     match policy {
         QueryInputPolicy::Native => "{\"policy\":\"native\"}".to_string(),
+        QueryInputPolicy::ExactSymbolName => {
+            "{\"case\":\"sensitive\",\"field\":\"symbol.local_name.exact\",\"policy\":\"exact_symbol_name\"}".to_string()
+        }
         QueryInputPolicy::Literal => {
             "{\"escaping\":\"lq-norm-phrase-v1\",\"policy\":\"literal\"}".to_string()
         }
@@ -269,7 +287,9 @@ pub fn execution_profile_canonical(policy: QueryInputPolicy, config: &NlPlanConf
             policy.as_str(),
             profile_id,
         ),
-        QueryInputPolicy::Native | QueryInputPolicy::Literal => format!(
+        QueryInputPolicy::Native
+        | QueryInputPolicy::Literal
+        | QueryInputPolicy::ExactSymbolName => format!(
             "{{\"config\":{{}},\"planning_cost_in_latency\":false,\"policy\":\"{}\",\
              \"profile_id\":\"{}\"}}",
             policy.as_str(),
@@ -289,7 +309,9 @@ pub fn execution_profile_value(
             "max_tokens": config.max_tokens,
             "min_token_chars": config.min_token_chars,
         }),
-        QueryInputPolicy::Native | QueryInputPolicy::Literal => serde_json::json!({}),
+        QueryInputPolicy::Native
+        | QueryInputPolicy::Literal
+        | QueryInputPolicy::ExactSymbolName => serde_json::json!({}),
     };
     serde_json::json!({
         "profile_id": execution_profile_id(policy),
@@ -367,6 +389,18 @@ pub fn plan_query(
 ) -> Result<QueryPlan, QueryPlanError> {
     let lexical_request = match policy {
         QueryInputPolicy::Native => raw.to_string(),
+        QueryInputPolicy::ExactSymbolName => {
+            let mut bytes = raw.bytes();
+            if raw.len() > MAX_EXACT_SYMBOL_NAME_BYTES
+                || !bytes
+                    .next()
+                    .is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_')
+                || !bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+            {
+                return Err(QueryPlanError::InvalidSymbolName);
+            }
+            format!("symbol.local_name.exact({raw}) case:yes")
+        }
         QueryInputPolicy::Literal => {
             validate_indexable_text(raw)?;
             literalize(raw)
@@ -715,9 +749,57 @@ mod tests {
             QueryInputPolicy::parse("english").unwrap_err(),
             QueryPlanError::UnsupportedPolicy("english".to_string())
         );
-        for raw in ["native", "literal", "natural_language"] {
+        for raw in ["native", "literal", "natural_language", "exact_symbol_name"] {
             assert!(QueryInputPolicy::parse(raw).is_ok());
         }
+    }
+
+    #[test]
+    fn exact_symbol_name_policy_keeps_the_raw_identity_and_refuses_dsl_input() {
+        let config = NlPlanConfig::default();
+        let plan = plan_query(
+            QueryInputPolicy::ExactSymbolName,
+            "writeContentType",
+            &config,
+        )
+        .expect("bare symbol name plans");
+        assert_eq!(
+            plan.lexical_request,
+            "symbol.local_name.exact(writeContentType) case:yes"
+        );
+        assert_eq!(plan.original, "writeContentType");
+        assert_eq!(plan.semantic_text, "writeContentType");
+        assert_eq!(
+            plan.effective_lexical_request_sha256,
+            sha256_hex(plan.lexical_request.as_bytes())
+        );
+        assert_eq!(
+            plan.policy_config_sha256,
+            sha256_hex(
+                policy_config_canonical(QueryInputPolicy::ExactSymbolName, &config).as_bytes()
+            )
+        );
+        for invalid in [
+            "",
+            "two words",
+            "select:file Next",
+            "WriteContentType)",
+            "é",
+        ] {
+            assert_eq!(
+                plan_query(QueryInputPolicy::ExactSymbolName, invalid, &config).unwrap_err(),
+                QueryPlanError::InvalidSymbolName
+            );
+        }
+        assert_eq!(
+            plan_query(
+                QueryInputPolicy::ExactSymbolName,
+                &"a".repeat(4097),
+                &config
+            )
+            .unwrap_err(),
+            QueryPlanError::InvalidSymbolName
+        );
     }
 
     #[test]

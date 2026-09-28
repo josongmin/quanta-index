@@ -198,6 +198,16 @@
           "type": "object", "additionalProperties": false,
           "required": ["profile_id", "policy", "config", "planning_cost_in_latency"],
           "properties": {
+            "profile_id": {"const": "quanta-exact-symbol-name-v1"},
+            "policy": {"const": "exact_symbol_name"},
+            "config": {"type": "object", "additionalProperties": false, "maxProperties": 0},
+            "planning_cost_in_latency": {"const": false}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["profile_id", "policy", "config", "planning_cost_in_latency"],
+          "properties": {
             "profile_id": {"const": "quanta-natural-language-ucd17-v2"},
             "policy": {"const": "natural_language"},
             "config": {

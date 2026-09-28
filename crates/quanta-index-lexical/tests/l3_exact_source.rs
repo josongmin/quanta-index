@@ -281,6 +281,46 @@ fn l3_manual_exact_symbol_policy_preserves_overloads_and_source_owner() -> TestR
     clippy::panic_in_result_fn,
     reason = "fixed oracle assertions in a fallible fixture"
 )]
+fn l3_exact_symbol_case_distinguishes_definition_from_folded_names() -> TestResult {
+    let (_dir, searcher) = fixture_with_scopes(vec![
+        scope(
+            "source-a",
+            "render.go",
+            &[("definition", "writeContentType", "writeContentType", None)],
+        )?,
+        scope(
+            "source-a",
+            "json.go",
+            &[("other", "WriteContentType", "WriteContentType", None)],
+        )?,
+    ])?;
+    for manual in [false, true] {
+        for (sensitive, expected) in [
+            (false, BTreeSet::from(["definition", "other"])),
+            (true, BTreeSet::from(["definition"])),
+        ] {
+            let rows = searcher.search_symbols(
+                &query(
+                    "symbol.local_name.exact",
+                    "writeContentType",
+                    manual,
+                    sensitive,
+                ),
+                10,
+                &RequestBudgetV1::unbounded(),
+            )?;
+            let actual: BTreeSet<_> = rows.iter().map(|row| row.candidate_id.as_str()).collect();
+            assert_eq!(actual, expected, "manual={manual} sensitive={sensitive}");
+        }
+    }
+    Ok(())
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "fixed oracle assertions in a fallible fixture"
+)]
 fn l3_boolean_exact_names_use_symbol_fields_on_indexed_and_manual_routes() -> TestResult {
     let (_dir, searcher) = fixture()?;
     let local = query("symbol.local_name.exact", "Café", false, false).expr;

@@ -919,7 +919,7 @@ def _validate_run(
         )
         policy = policy_block["policy"]
         require(
-            policy in query_plan_contract.SUPPORTED_POLICIES,
+            policy in query_plan_contract.V4_SUPPORTED_POLICIES,
             f"unknown query input policy: {policy!r}",
         )
         config = policy_block["config"]
@@ -976,6 +976,13 @@ def _validate_run(
             capture_id in captures,
             f"route_provenance.{route} references unknown capture_id: {capture_id}",
         )
+        capture = captures[capture_id]
+        if (
+            version == 5
+            and capture["system"] == "quanta"
+            and capture["execution_profile"]["policy"] == "exact_symbol_name"
+        ):
+            require(route == "symbol", "exact_symbol_name profile requires the symbol route")
     universe: set[str] | None = None
     if "file_universe" in suite:
         universe = {entry["path"] for entry in suite["file_universe"]}

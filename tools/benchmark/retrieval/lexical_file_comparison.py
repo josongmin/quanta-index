@@ -147,6 +147,17 @@ def _tasks(suite: dict, pack: dict) -> dict[str, tuple[str, list[str]]]:
         raise ValueError("pack and suite commitment differ")
     if suite.get("repository_commit") != pack.get("repository_commit"):
         raise ValueError("pack and suite repository commits differ")
+    suite_contract = suite.get("comparison_contract")
+    pack_contract = pack.get("comparison_contract")
+    if (
+        not isinstance(suite_contract, dict)
+        or not isinstance(pack_contract, dict)
+        or type(suite_contract.get("top_k")) is not int
+        or type(pack_contract.get("top_k")) is not int
+        or suite_contract["top_k"] != 10
+        or pack_contract["top_k"] != 10
+    ):
+        raise ValueError("lexical diagnostic requires top_k 10 in suite and pack")
     pack_tasks = pack.get("tasks")
     suite_tasks = suite.get("tasks")
     if (
@@ -280,6 +291,7 @@ def product_result(
     return {
         "hits": hits,
         "tasks": len(expected),
+        "rank_unit": "distinct_file",
         "file_hit_rate_at_10": hits / len(expected),
         "file_recall_at_10": math.fsum(row["file_recall_at_10"] for row in per_query)
         / len(expected),
@@ -321,6 +333,12 @@ def pair_result(
         or lock.get("semble_route") != SEMBLE_LEXICAL_ROUTE
     ):
         raise ValueError("pair route labels do not match the pure-lexical execution profiles")
+    if (
+        type(lock.get("top_k")) is not int
+        or lock["top_k"] != 10
+        or report.get("comparison_contract") != suite.get("comparison_contract")
+    ):
+        raise ValueError("pair top_k contract differs from the lexical suite")
     counts = native.get("lane_call_counts", {})
     events = native.get("execution_events")
     if (
@@ -406,6 +424,7 @@ def pair_result(
         result[label] = {
             "hits": hits,
             "tasks": task_count,
+            "rank_unit": "chunk",
             "file_recall_at_10": recall,
             "file_hit_rate_at_10": hits / task_count,
             "per_query": sorted(route_rows, key=lambda row: row["task_id"]),
@@ -455,7 +474,8 @@ def evaluate_capture(paths: dict[str, Path]) -> dict:
     result = {
         "status": "diagnostic_unqualified",
         "query_form": "bare_symbol_v1",
-        "metric": "file_recall_at_10",
+        "metric": "gold_file_recall_in_native_top_10",
+        "rank_unit_equivalence": "non_equivalent",
         "latency_interpretation": "descriptive_only_not_cross_product_comparable",
         "repository_commit": suite["repository_commit"],
         "file_universe_digest": suite["file_universe_digest"],

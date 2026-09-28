@@ -91,6 +91,7 @@ def inputs(tmp_path, lexical_release_seed):
         "query_pack_sha256": digest(canonical(pack)),
         "repository_commit": suite["repository_commit"],
         "file_universe_digest": suite["file_universe_digest"],
+        "comparison_contract": suite["comparison_contract"],
         "sample_count": 20,
         "rank_metrics": {
             "routes": {
@@ -120,6 +121,7 @@ def inputs(tmp_path, lexical_release_seed):
             },
             "quanta_routes": ["lexical"],
             "semble_route": "semble-lexical-only",
+            "top_k": 10,
         },
         "semble_native": native,
         "pair_verdict": {"states": {"PAIR_VALID": "pass"}},
@@ -377,6 +379,28 @@ def test_typed_retrieval_retains_non_scored_states_without_zero(
     result = capture.payloads(summary, capture.owner._read(paths["query_pack"]))
     row = result["quanta_lexical"]["rows"][0]
     assert row["state"] == state and row["value"] is None
+
+
+def test_native_rank_units_are_distinct_metrics_and_tampering_refuses(
+    tmp_path, lexical_release_seed
+):
+    _, paths = inputs(tmp_path, lexical_release_seed)
+    summary = capture.owner.evaluate_capture(paths)
+    assert summary["rank_unit_equivalence"] == "non_equivalent"
+    pack = capture.owner._read(paths["query_pack"])
+    payloads = capture.payloads(summary, pack)
+    assert {
+        product: payload["rows"][0]["metric"] for product, payload in payloads.items()
+    } == {
+        product: capture.METRICS[capture.RANK_UNITS[product]] for product in capture.PRODUCTS
+    }
+    summary["rank_unit_equivalence"] = "equivalent"
+    with pytest.raises(ValueError, match="unsupported rank comparison"):
+        capture.payloads(summary, pack)
+    summary["rank_unit_equivalence"] = "non_equivalent"
+    summary["pair"]["routes"]["quanta_lexical"]["rank_unit"] = "distinct_file"
+    with pytest.raises(ValueError, match="rank unit differs"):
+        capture.payloads(summary, pack)
 
 
 @pytest.mark.parametrize(

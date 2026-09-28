@@ -126,6 +126,7 @@ def test_product_result_rejects_wrong_query_and_duplicate(tmp_path):
     path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
     universe = {gold[0] for _, gold in expected.values()}
     assert product_result("sourcegraph", path, expected, universe)["hits"] == 20
+    assert product_result("sourcegraph", path, expected, universe)["rank_unit"] == "distinct_file"
     rows[0]["submitted_query"] = "wrong"
     path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
     with pytest.raises(ValueError, match="query or gold differs"):
@@ -172,6 +173,15 @@ def test_symbol_diagnostic_refuses_non_bare_query(tmp_path):
         _tasks(suite, pack)
 
 
+def test_symbol_diagnostic_requires_native_top_10_contract(tmp_path):
+    _, _, suite, pack = fixture_inputs(tmp_path)
+    suite["comparison_contract"]["top_k"] = 20
+    pack["comparison_contract"]["top_k"] = 20
+    pack["suite_commitment_sha256"] = digest(canonical(suite))
+    with pytest.raises(ValueError, match="requires top_k 10"):
+        _tasks(suite, pack)
+
+
 def test_symbol_diagnostic_refuses_unbound_file_universe(tmp_path):
     _, _, suite, pack = fixture_inputs(tmp_path)
     files = [{"path": "src/answer.go", "file_sha256": "a" * 64}]
@@ -196,6 +206,7 @@ def test_pair_result_rejects_semantic_lane_even_if_report_has_hits(tmp_path, rec
         "query_pack_sha256": digest(canonical(pack)),
         "repository_commit": suite["repository_commit"],
         "file_universe_digest": suite["file_universe_digest"],
+        "comparison_contract": suite["comparison_contract"],
         "sample_count": 20,
         "rank_metrics": {
             "routes": {
@@ -236,6 +247,7 @@ def test_pair_result_rejects_semantic_lane_even_if_report_has_hits(tmp_path, rec
         },
         "quanta_routes": ["lexical"],
         "semble_route": "semble-lexical-only",
+        "top_k": 10,
     }
     native = {
         "semble_profile": "lexical-only",
@@ -251,8 +263,15 @@ def test_pair_result_rejects_semantic_lane_even_if_report_has_hits(tmp_path, rec
     assert scored["routes"]["quanta_lexical"]["hits"] == 20
     assert scored["routes"]["semble_lexical_only"]["hits"] == 20
     route = scored["routes"]["quanta_lexical"]
+    assert route["rank_unit"] == "chunk"
     assert route["file_recall_at_10"] == recall
     assert route["file_hit_rate_at_10"] == 1.0
+    lock["top_k"] = 20
+    paths[1].write_text(json.dumps(lock), encoding="utf-8")
+    with pytest.raises(ValueError, match="pair top_k contract differs"):
+        pair_result(*paths, pack, suite, 20)
+    lock["top_k"] = 10
+    paths[1].write_text(json.dumps(lock), encoding="utf-8")
     report["per_query"][0]["file_recall_at_10"] = 0.0
     paths[0].write_text(json.dumps(report))
     with pytest.raises(ValueError, match="recall/hit observations"):

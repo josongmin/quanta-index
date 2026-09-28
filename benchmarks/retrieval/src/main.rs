@@ -71,7 +71,7 @@ fn print_help() -> BenchResult<()> {
          fixed_window_*: --window-bytes N (default 4000) --overlap-bytes N (default 400)\n\
          brace_heuristic: --max-item-bytes N (default 32768)\n\
          run adds: --query-pack PATH --routes a,b --top-k N --state-root PATH\n\
-         [--query-protocol PATH] [--query-input-policy native|literal|natural_language]\n\
+         [--query-protocol PATH] [--query-input-policy native|literal|natural_language|exact_symbol_name]\n\
          [--query-stage-observation enabled|disabled] (default enabled; server query stages only)\n\
          [--experimental-hybrid-fetch-floor 25|50|100] (default 100; explicit experimental startup policy)\n\
          --repo-id ID --revision-id ID --generation N\n\
@@ -310,6 +310,7 @@ fn write_json_bound(path: &Path, value: &serde_json::Value) -> BenchResult<Strin
 fn query_plan_error_details(error: &QueryPlanError) -> serde_json::Value {
     match error {
         QueryPlanError::UnsupportedPolicy(policy) => serde_json::json!({"policy": policy}),
+        QueryPlanError::InvalidSymbolName => serde_json::json!({}),
         QueryPlanError::EmptyTokenPlan => serde_json::json!({}),
         QueryPlanError::TokenLimitExceeded { tokens, max_tokens } => {
             serde_json::json!({"tokens": tokens, "max_tokens": max_tokens})
@@ -397,6 +398,15 @@ fn plan_query_pack(
         }
     }
     Ok((policy, config, plans))
+}
+
+fn validate_policy_routes(policy: QueryInputPolicy, routes: &BTreeSet<&str>) -> BenchResult<()> {
+    if policy == QueryInputPolicy::ExactSymbolName && routes != &BTreeSet::from(["symbol"]) {
+        return Err(BenchError::Config(
+            "exact_symbol_name requires only the symbol route".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn require_external_path(repo: &Path, path: &Path, label: &str) -> BenchResult<PathBuf> {
@@ -818,6 +828,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
     // boot, publication, or measured request may happen before every task
     // has one accepted plan.
     let (policy, nl_plan_config, task_plans) = plan_query_pack(args, &pack, &refusal_out)?;
+    validate_policy_routes(policy, &selected)?;
     let limits = CorpusLimits {
         max_file_bytes: optional_u64(
             args,
@@ -1672,5 +1683,21 @@ mod tests {
         );
 
         assert!(plan_query_pack(&args, &pack, &refusal).is_err());
+    }
+
+    #[test]
+    fn exact_symbol_name_policy_refuses_other_routes_before_capture() {
+        let symbol = BTreeSet::from(["symbol"]);
+        let lexical = BTreeSet::from(["lexical"]);
+        let mixed = BTreeSet::from(["lexical", "symbol"]);
+        assert!(validate_policy_routes(QueryInputPolicy::ExactSymbolName, &symbol).is_ok());
+        for routes in [&lexical, &mixed] {
+            assert!(
+                validate_policy_routes(QueryInputPolicy::ExactSymbolName, routes).is_err_and(
+                    |error| error.to_string().contains("requires only the symbol route")
+                )
+            );
+        }
+        assert!(validate_policy_routes(QueryInputPolicy::Native, &lexical).is_ok());
     }
 }

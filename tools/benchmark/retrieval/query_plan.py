@@ -16,6 +16,7 @@ both in one commit and re-freezing evidence.
 from __future__ import annotations
 
 import hashlib
+import re
 
 import regex
 import unicodedata2
@@ -29,13 +30,17 @@ MAX_INPUT_BYTES = 16 * 1024
 #: Pinned natural-language plan profile (Rust ``NlPlanConfig::default()``).
 DEFAULT_NL_CONFIG = {"max_token_chars": 96, "max_tokens": 32, "min_token_chars": 1}
 
-#: The three canonical query input policies (RBR-02).
-SUPPORTED_POLICIES = ("native", "literal", "natural_language")
+#: Current policies and the immutable v4 policy inventory (RBR-02).
+V4_SUPPORTED_POLICIES = ("native", "literal", "natural_language")
+SUPPORTED_POLICIES = (*V4_SUPPORTED_POLICIES, "exact_symbol_name")
 PROFILE_IDS = {
     "native": "quanta-native-v1",
     "literal": "quanta-literal-v1",
     "natural_language": "quanta-natural-language-ucd17-v2",
+    "exact_symbol_name": "quanta-exact-symbol-name-v1",
 }
+_BARE_SYMBOL_NAME = re.compile(r"[A-Za-z_][A-Za-z_0-9]*\Z")
+MAX_EXACT_SYMBOL_NAME_BYTES = 4096
 
 _JOINING = "-_./"
 _ALPHANUMERIC = regex.compile(r"\A(?:\p{Alphabetic}|\p{Number})\Z")
@@ -54,6 +59,8 @@ def policy_config_canonical(policy: str, config: dict[str, int] | None = None) -
     """Canonical policy-config JSON (byte-identical to the Rust planner)."""
     if policy == "native":
         return '{"policy":"native"}'
+    if policy == "exact_symbol_name":
+        return '{"case":"sensitive","field":"symbol.local_name.exact","policy":"exact_symbol_name"}'
     if policy == "literal":
         return '{"escaping":"lq-norm-phrase-v1","policy":"literal"}'
     if policy == "natural_language":
@@ -176,6 +183,12 @@ def plan_lexical_request(policy: str, raw: str, config: dict[str, int] | None = 
         if len(request.encode()) > MAX_INPUT_BYTES:
             raise QueryPlanError("lexical request exceeds 16384 bytes")
         return request
+    if policy == "exact_symbol_name":
+        if len(raw.encode()) > MAX_EXACT_SYMBOL_NAME_BYTES or _BARE_SYMBOL_NAME.fullmatch(raw) is None:
+            raise QueryPlanError(
+                "exact-symbol policy requires one bare ASCII symbol name of at most 4096 bytes"
+            )
+        return f"symbol.local_name.exact({raw}) case:yes"
     if policy == "literal":
         if not _validate_indexable_text(raw):
             raise QueryPlanError("natural-language plan produced no tokens")
@@ -226,6 +239,8 @@ def derive_query_identity(
 
 def policy_config_canonical_v4(policy: str, config: dict[str, int] | None = None) -> str:
     """Immutable runner-v4 profile bytes (nl-token-or-v1)."""
+    if policy not in V4_SUPPORTED_POLICIES:
+        raise QueryPlanError(f"unsupported v4 query input policy: {policy}")
     if policy != "natural_language":
         return policy_config_canonical(policy, config)
     resolved = dict(DEFAULT_NL_CONFIG) if config is None else config
@@ -269,6 +284,8 @@ def _plan_lexical_request_v4(policy: str, raw: str, config: dict[str, int] | Non
 def derive_query_identity_v4(
     policy: str, raw: str, config: dict[str, int] | None = None
 ) -> dict[str, str]:
+    if policy not in V4_SUPPORTED_POLICIES:
+        raise QueryPlanError(f"unsupported v4 query input policy: {policy}")
     lexical_request = _plan_lexical_request_v4(policy, raw, config)
     return {
         "original_query_sha256": _sha256_hex(raw.encode()),
