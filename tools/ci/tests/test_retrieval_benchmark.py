@@ -6738,15 +6738,16 @@ def test_qualified_speed_replay_rejects_unalternated_system_order(tmp_path):
 
 
 def test_qualified_speed_entry_rejects_disabled_order_alternation():
+    spec = {
+        "scope": "qualified",
+        "admission": {},
+        "claims": {"speed": True},
+        "alternate_order": False,
+    }
+    if sys.platform == "linux":
+        spec.update(blinding="isolated", linux_cgroup_parent="/sys/fs/cgroup")
     with pytest.raises(pairrun.RunError, match="alternating system order"):
-        pairrun.run_pair(
-            {
-                "scope": "qualified",
-                "admission": {},
-                "claims": {"speed": True},
-                "alternate_order": False,
-            }
-        )
+        pairrun.run_pair(spec)
 
 
 def test_verdict_host_profile_fingerprint_is_enforced(tmp_path, monkeypatch):
