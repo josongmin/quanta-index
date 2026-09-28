@@ -351,7 +351,10 @@ mod l3_tests {
             .expect("object")
             .remove("source_repo_id");
         assert!(serde_json::from_value::<LexicalCursor>(missing).is_err());
-        let duplicated = format!("{{\"source_repo_id\":\"b\",{}", &raw[1..]);
+        let duplicated = format!(
+            "{{\"source_repo_id\":\"b\",{}",
+            raw.strip_prefix('{').expect("JSON object")
+        );
         assert!(serde_json::from_str::<LexicalCursor>(&duplicated).is_err());
         let mut invalid = cursor;
         invalid.source_repo_id.clear();

@@ -1,3 +1,10 @@
+// These test assertions intentionally panic to preserve the failing fixture context.
+#![allow(
+    clippy::panic_in_result_fn,
+    clippy::indexing_slicing,
+    reason = "fixture assertions intentionally fail by panic"
+)]
+
 use super::*;
 use quanta_index_contract::lex::{SymbolKindCode, SymbolRelationship, SymbolSpan};
 use quanta_index_contract::{BatchPublishReceipt, ChunkId, RepoRelativePath, SymbolId};
@@ -52,7 +59,7 @@ fn batch(state: &CorpusPublicationState, generation: u64) -> Result<SearchCorpus
         } else {
             BatchIngestMode::Delta
         },
-        (generation > 1).then(|| ManifestGeneration::new(generation - 1)),
+        (generation > 1).then(|| ManifestGeneration::new(generation.saturating_sub(1))),
         format!("fixture-event-{generation}"),
     )
 }

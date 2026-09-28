@@ -47,7 +47,9 @@ fn assert_only_sentinel(path: &str, source: &str, expected_line: u32) {
     assert_eq!(symbol.repo_relative_path.as_str(), path);
     assert_eq!(symbol.definition_span.path.as_ref(), path);
     let start = source.find(SENTINEL).expect("handwritten sentinel");
-    let end = start + SENTINEL.len();
+    let end = start
+        .checked_add(SENTINEL.len())
+        .expect("small fixture span");
     assert_eq!(
         symbol.definition_span.byte_start,
         u32::try_from(start).expect("small fixture offset")
@@ -70,7 +72,9 @@ fn source_file(path: &str, text: &str) -> SourceFile {
             .split_inclusive('\n')
             .scan(0usize, |offset, line| {
                 let start = *offset;
-                *offset += line.len();
+                *offset = offset
+                    .checked_add(line.len())
+                    .expect("small fixture line offset");
                 Some(start)
             })
             .collect(),
@@ -190,7 +194,7 @@ fn assert_definition_inventory(path: &str, source: &str, expected: &[(&str, &str
         );
     }
     assert_eq!(
-        preflight.report().files[0].coverage,
+        preflight.report().files.first().expect("one file").coverage,
         SymbolCoverage::Complete {
             symbol_count: u64::try_from(expected.len()).expect("count")
         }
@@ -353,7 +357,7 @@ fn typescript_anonymous_type_members_do_not_become_false_owner_methods() {
             .admit(SymbolCoveragePolicy::RequireComplete)
             .expect("skipped anonymous signatures must not exhaust symbol budget");
         assert_eq!(
-            preflight.report().files[0].coverage,
+            preflight.report().files.first().expect("one file").coverage,
             SymbolCoverage::Complete { symbol_count: 1 }
         );
     }

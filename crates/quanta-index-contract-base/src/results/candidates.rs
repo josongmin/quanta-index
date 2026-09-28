@@ -326,7 +326,10 @@ mod l3_tests {
             let mut value = serde_json::to_value(&row).expect("encode");
             let _removed = value.as_object_mut().expect("object").remove(field);
             assert!(serde_json::from_value::<LexicalCandidate>(value).is_err());
-            let duplicate = format!("{{\"{field}\":null,{}", &raw[1..]);
+            let duplicate = format!(
+                "{{\"{field}\":null,{}",
+                raw.strip_prefix('{').expect("JSON object")
+            );
             assert!(serde_json::from_str::<LexicalCandidate>(&duplicate).is_err());
         }
         let mut unbound = row;

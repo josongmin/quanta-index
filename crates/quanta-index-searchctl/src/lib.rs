@@ -275,7 +275,7 @@ enum CliRequest {
     HybridSeed(HybridSeedQueryRequest),
     Explain {
         generation: GenerationPin,
-        candidate: ExplainCandidateV1,
+        candidate: Box<ExplainCandidateV1>,
         text_query: Option<TextQueryRequest>,
         /// QI-BB-022: the dense query a hybrid row is re-derived under.
         semantic_query_text: Option<String>,
@@ -1192,7 +1192,7 @@ fn parse_explain(common: &mut CommonOptions, rest: &mut VecDeque<String>) -> Cli
     }
     Ok(CliRequest::Explain {
         generation,
-        candidate,
+        candidate: Box::new(candidate),
         text_query,
         semantic_query_text,
     })
@@ -1326,7 +1326,7 @@ fn dispatch_query_request(
             text_query,
             semantic_query_text,
         } => SearchPlaneQueryIpcResponse::Explain(
-            match (candidate, text_query, semantic_query_text) {
+            match (*candidate, text_query, semantic_query_text) {
                 (ExplainCandidateV1::Lexical(candidate), Some(text_query), None) => client
                     .search()
                     .explain_under_query(generation, candidate, text_query),
@@ -4787,7 +4787,7 @@ mod tests {
             panic!("expected explain payload");
         };
         assert_eq!(
-            candidate,
+            *candidate,
             ExplainCandidateV1::Hybrid(sample_hybrid_candidate())
         );
         let Some(text_query) = text_query else {

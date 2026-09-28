@@ -495,9 +495,11 @@ struct RawDefinition {
     byte_end: usize,
 }
 
-/// Method signatures in anonymous type positions are not methods of the
-/// nearest named function, class, or alias. Admit only direct interface/class
-/// members or members of an alias's own object/intersection type.
+/// Classify the owner of a TypeScript method signature.
+///
+/// Anonymous type positions do not inherit the nearest named function, class,
+/// or alias. Admit only direct interface/class members or members of an alias's
+/// own object/intersection type.
 fn typescript_signature_has_owner(
     definition: Node<'_>,
     control: Option<&ExtractionControl<'_>>,

@@ -137,9 +137,10 @@ fn semantic_scope(chunk: &Chunk) -> BenchResult<SemanticSourceReplaceScopeV1> {
     })
 }
 
-/// Assemble one canonical replacement for every admitted source file. Empty
-/// files remain members of the generation; coverage comes only from preflight
-/// over these exact bytes, never from the presence or absence of unit vectors.
+/// Assemble one canonical replacement for every admitted source file.
+///
+/// Empty files remain members of the generation; coverage comes only from
+/// preflight over these exact bytes, never from unit-vector presence.
 pub fn assemble_batch(
     identity: &BatchIdentity,
     chunks: &BTreeMap<String, Vec<Chunk>>,
@@ -356,12 +357,23 @@ mod tests {
             assert_eq!(scope.coverage.symbols, SymbolCoverage::Unsupported);
             assert!(scope.coverage.text_admitted);
             assert_eq!(scope.chunks.len(), 1);
-            assert_eq!(scope.chunks[0].language.as_str(), "text");
+            assert_eq!(
+                scope.chunks.first().expect("one chunk").language.as_str(),
+                "text"
+            );
         }
         assert_eq!(batch.semantic_replace_scopes().len(), 5);
         for scope in batch.semantic_replace_scopes() {
             assert_eq!(scope.sources.len(), 1);
-            assert_eq!(scope.sources[0].language.as_deref(), Some("text"));
+            assert_eq!(
+                scope
+                    .sources
+                    .first()
+                    .expect("one source")
+                    .language
+                    .as_deref(),
+                Some("text")
+            );
         }
     }
 
@@ -583,8 +595,7 @@ mod tests {
                 SymbolCoveragePolicy::RequireComplete,
                 event(),
             )
-            .err()
-            .expect("global collision refuses");
+            .expect_err("global collision refuses");
             assert!(
                 error
                     .to_string()

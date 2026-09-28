@@ -10,8 +10,8 @@ fn source_files(directory: &Path, files: &mut Vec<PathBuf>) -> Result<(), Box<dy
         let kind = entry.file_type()?;
         if kind.is_symlink() {
             return Err(format!(
-                "vendored grammar source must not be a symlink: {:?}",
-                entry.path()
+                "vendored grammar source must not be a symlink: {}",
+                entry.path().display()
             )
             .into());
         }
@@ -20,7 +20,11 @@ fn source_files(directory: &Path, files: &mut Vec<PathBuf>) -> Result<(), Box<dy
         } else if kind.is_file() {
             files.push(entry.path());
         } else {
-            return Err(format!("unexpected vendored grammar input: {:?}", entry.path()).into());
+            return Err(format!(
+                "unexpected vendored grammar input: {}",
+                entry.path().display()
+            )
+            .into());
         }
     }
     Ok(())

@@ -10,12 +10,11 @@ producer/consumer/replay and supported-platform qualification once.
 
 ## Implementation ledger and remaining acceptance
 
-The owner-local evidence below belongs to HEAD
-`5522f86b34b82d5f3a04e5ec4ec2aa4a4acfb4a7`, not the later
-`ce466325236821d5bbc4e51dc5c7b4c418fe2f8c` source. Its scratch logs and
-manifests still exist with their recorded digests, but their source binding is
-stale for current qualification. Re-execute selected gates at the release
-source rather than promoting these historical results.
+The implementation ledger below reflects HEAD `3272662c3cc2cc49cc881ac1b73dea226c01633e`
+plus the current parallel working-tree edits. The historical owner-local
+evidence section is bound to older HEAD `5522f86b34b82d5f3a04e5ec4ec2aa4a4acfb4a7`.
+Its scratch logs and manifests are stale for current qualification; re-execute
+selected gates at the release source.
 
 Those owner-local checks used HEAD `5522f86b34b82d5f3a04e5ec4ec2aa4a4acfb4a7`
 plus a dirty concurrent checkout on macOS 15.6/arm64, Rust 1.92.0. The
@@ -42,12 +41,12 @@ nine-crate proofs do not inherit the later process source identity.
 | --- | --- | --- |
 | INT-C1 | Five ranked-key column constants moved to schema ownership; module cycle, affected ranked/storage tests and scoped all-target Clippy pass without a new cycle baseline. | Full repository and hosted CI at the release source. |
 | Process source authority | Delta-base readiness now precedes lexical batch preparation. The E2E producer harness seals source chunks before publishing dependent structural/catalog rows; orphan structural rows refuse at ingest. Synthetic strict-symbol fixtures explicitly declare zero-symbol completion for files with no symbol rows. | Actual Semantica producer and installed SDK/daemon process qualification, crash and platform acceptance. |
-| ENG-02 | Shared logical coverage snapshot; manifest format 9 bounded root/pages, changed-page encoding, hard-linked inheritance, strict decode and lifecycle commitment/scrub ownership. See [ADR](../../../adr/SEP-27-003-code-search-source-and-preview-contract.md). | Total pipeline cost/physical heap at growing sizes and current-format public process qualification. Full base/open/retry decode remains O(files). |
+| ENG-02 | Shared logical coverage snapshot; manifest format 9 bounded root/pages, changed-page encoding, hard-linked inheritance, strict decode and lifecycle commitment/scrub ownership. The same build passes verified coverage commitment to seal, eliminating its duplicate decode while preserving full page re-hash. See [ADR](../../../adr/SEP-27-003-code-search-source-and-preview-contract.md). | Total pipeline cost/physical heap at growing sizes and current-format public process qualification. Preflight/build/open scans remain O(files). |
 | BENCH-02 | Permanent fake-native cs/Sourcegraph/OpenGrok path/hit mutations recompute normalized digests and are refused by live verification. | Remaining admitted formats/callers and real external capture/replay. |
 | MISC-04 enrollment | Both owners enrolled in existing Just Python rail, test authority and source closures; live collection rejects empty/duplicate modules. | Hosted CI and actual consumers remain separate. |
-| ENG-04 | Typed engine byte refusal, logical preview charges and bounded manual repo-gate retention exist; no hard aggregate allocation authority. | Coordinate parser/compiler/cache physical admission across every executor caller while preserving matcher truth/ranges. |
+| ENG-04 | Typed engine byte refusal, explicit NFA/cache limits, logical preview charges and bounded manual repo-gate retention exist. Structural universe file regex compiles once per request and preserves typed resource refusal. No hard aggregate allocation authority. | Coordinate parser/compiler/cache physical admission across every executor caller while preserving matcher truth/ranges. |
 | External producer / rollout | Format 8 and earlier explicitly require rebuilding for format 9. Prior static inspection of the Semantica issuer showed source-byte-bound coverage and a Structural dispatch loader gated on delivered lexical authority; this is not execution proof or a current-source claim. | Run its QBC owner tests, paired consumer migration, installed rebuild and activation/rollback against a frozen combined source. |
-| BENCH-01/03/04 | Local fake-native and owner fixtures are diagnostic. | Independent gold/holdout, quiet admitted host and real equal-work comparator/update runs. |
+| BENCH-01/03/04 | Qualified verdict now refuses insufficient independent query-family clusters; an opt-in OpenGrok indexed inventory/source-view probe brackets local comparator queries. The probe remains diagnostic without posting freshness or other products' index scope. | Independent gold/holdout, fresh external index admission, quiet admitted host and real equal-work comparator/update runs. |
 
 ## Historical owner-local evidence boundary
 
@@ -111,12 +110,33 @@ nine-crate proofs do not inherit the later process source identity.
   `90f6b7d2e4da87574a325db423ea6650baf3022b5828cf64237e01593e5edeed`).
   No repository qualification is claimed from the style checks or old focused
   tests.
-- Current working-tree Python tooling: `just python-lint` and `just
+- Earlier working-tree Python tooling before the current parallel changes: `just python-lint` and `just
   python-format-check` exit 0 with Ruff 0.16.8; `just python-test` exits 0
   with 2,610 passed and nine Linux-only skips on macOS. Test log
   `/tmp/qi-python-test-complete.log` has SHA-256
   `ffa3898c110ca59edb79a1e7f6810321e3914b28ef7f6a576986648512916d27`.
   This is local tooling coverage, not hosted CI or installed-service proof.
+
+## Current owner-local verification
+
+- Current `3272662c` plus working-tree edits: `just rust-profile test-fast`
+  passed 2,339 tests across 48 suites; `just rust-profile test-daemon`
+  passed 207 tests with one registered skip. The benchmark parser integration
+  owner passed 26/26, and the three selected lexical integration owners passed
+  24 tests with three manual cost probes ignored. `just fmt-check`, `just
+  python-lint`, `just python-format-check`, `just lint-doc-paths` and
+  prompt-manager lint exit 0.
+  `just python-test` passes 2,626 tests with nine Linux-only skips; the
+  BENCH-03 retrieval subset passes 341/341. These are local source and daemon
+  harness checks, not external-producer or installed-release proof.
+- Whole-workspace `just rust-clippy` is **VERIFIED** on the current working
+  tree (`--workspace --all-targets --all-features --locked -- -D warnings`).
+  Repair covered the retrieval build script, searchctl enum sizing, benchmark
+  and scan helpers, and test-only source/lock/fixture warnings across the
+  search-plane, SDK, contract and lexical crates. The source-publication
+  fixture has a test-only assertion/indexing lint exception with a recorded
+  reason; production lint severity was not reduced. This is local static
+  checking, not runtime or hosted CI qualification.
 - `NOT_RUN` for full repository/hosted CI, installed daemon, actual external
   producer/consumer migration, independent benchmark and physical regex/RSS
   qualification. The local scratch logs do not supply that evidence.

@@ -11,8 +11,10 @@ execution and acceptance ledger. Historical counts are not required inventories.
 | Owner | Remaining action / acceptance |
 | --- | --- |
 | BENCH-02 | Current live verification rederives and refuses local cs/Sourcegraph/OpenGrok fixed-native path/hit mutants. Audit every admitted acquisition/scoring/replay entrypoint and remaining formats; complete the remaining native negative matrix and qualify actual captures. [Native authority](../../sep-27-code-search-remediation/rfcs/CS-BENCH-02-native-response-validation.md) owns semantics; the bare normalized scorer is diagnostic. |
-| MISC-05 / ENG-04 | Complete physical regex planning/compiler/retained-engine/cache admission with correct lifetimes, differential truth/ranges and optional-preview hit stability. Logical policy charges are implemented mitigations. [Regex ticket](../../sep-27-code-search-remediation/rfcs/CS-ENG-04-match-anchored-snippets.md) owns the structural gap; no current runtime overrun is established. |
-| MISC-05 / ENG-02 | Qualify total coverage pipeline work/physical heap/bytes, including remaining full-base/seal/open decoding and every sidecar. Shared snapshots and bounded committed page writes are implemented in format 9. [Coverage ticket](../../sep-27-code-search-remediation/rfcs/CS-ENG-02-capability-publication-and-freshness.md) owns the cost issue; no stale-result defect is implied. |
+| BENCH-03 | Current qualified verdict resamples whole query families and refuses insufficient independent families/categories; task-level intervals are descriptive. Admit independent multi-repository gold/holdout, frozen effects/budgets and repository-level inference before broader quality claims. [Statistics ticket](../../sep-27-code-search-remediation/rfcs/CS-BENCH-03-tracks-metrics-and-statistics.md) owns the remaining acceptance. |
+| BENCH-04 | OpenGrok can opt into exact indexed-file inventory and served-byte probes bracketing search queries; this remains diagnostic without posting freshness and current admitted external corpus. Sourcegraph/cs index scope, product mutation/restart and equal-work timing are unrun. [Comparator ticket](../../sep-27-code-search-remediation/rfcs/CS-BENCH-04-comparators-performance-and-incremental.md) owns execution. |
+| MISC-05 / ENG-04 | Complete physical regex planning/compiler/retained-engine/cache admission with correct lifetimes and differential truth/ranges. NFA/cache defaults are pinned; optional-preview hit stability is covered; structural file filters now compile once per request with typed resource refusal. [Regex ticket](../../sep-27-code-search-remediation/rfcs/CS-ENG-04-match-anchored-snippets.md) owns the remaining aggregate-allocation gap; no current runtime overrun is established. |
+| MISC-05 / ENG-02 | Qualify total coverage pipeline work/physical heap/bytes, including remaining preflight/build/open full scans and every sidecar. Same-build seal no longer decodes coverage twice, but re-hashes every effective page. [Coverage ticket](../../sep-27-code-search-remediation/rfcs/CS-ENG-02-capability-publication-and-freshness.md) owns the cost issue; no stale-result defect is implied. |
 | MISC-04 / actual producers and consumers | After owner changes, execute required Python/Rust contracts, actual native/Criterion/SDK/contract production, fresh promoted-path validation and relocated Python/Rust consumers/replay. Preserve process/monitor/capture failure controls and live test identities. Local selected passes do not establish hosted/product qualification. |
 | MISC-03 / IO-5 | Complete adapter-specific large successful/failed output, many-entry metadata/archive and interruption/corruption acceptance through prepare/execute/publish/load/replay. Declare retained-metadata limits separately; use independent bytes/digests and fresh-process RSS for actual resource claims. Generic streaming/probe success is not every adapter's acceptance. |
 | MISC-05 / product/platform | Execute selected functional invariants, combined Rust/daemon, actual installed ingest/restart/crash and supported Linux delegated-cgroup/Landlock scopes. External producer issuance and format-9 rebuild/activation need their own boundary; no unrun platform promotion. |
@@ -41,9 +43,10 @@ to rerun every historical target.
 
 ### Integration acceptance
 
-The current owner-local search-plane library and daemon fast/extended/risk/L4
-process slices passed on one Rust source snapshot; commands, counts, source
-binding and exclusions are in [CS-INT-01](../../sep-27-code-search-remediation/rfcs/CS-INT-01-integration-and-qualification.md).
+The current owner-local Rust fast/daemon, selected lexical/benchmark integration,
+and whole-workspace all-target Clippy gates pass on the working tree; commands,
+counts, source binding and exclusions are in
+[CS-INT-01](../../sep-27-code-search-remediation/rfcs/CS-INT-01-integration-and-qualification.md).
 This does not close the installed, external-producer, hosted or platform rows
 below.
 

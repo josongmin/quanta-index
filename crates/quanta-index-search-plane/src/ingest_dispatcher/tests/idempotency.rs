@@ -181,6 +181,7 @@ fn dispatcher(
     catalog: Arc<MemoryIdempotencyCatalog>,
 ) -> SearchPlaneIngestDispatcher {
     let unreachable = Arc::new(Unreachable);
+    let source_publication = catalog.source_publication.clone();
     SearchPlaneIngestDispatcher::new(
         unreachable.clone(),
         unreachable.clone(),
@@ -193,8 +194,8 @@ fn dispatcher(
         runtime,
         unreachable.clone(),
         unreachable,
-        catalog.clone(),
-        catalog.source_publication.clone(),
+        catalog,
+        source_publication,
         Arc::new(super::support::RecordingSearchCorpusAuthority {
             exact: true,
             ..Default::default()
@@ -233,6 +234,7 @@ fn search_corpus_dispatcher_with_authority(
     authority: Arc<dyn crate::ingest_dispatcher::SearchCorpusAuthorityInspectPort>,
 ) -> SearchPlaneIngestDispatcher {
     let unreachable = Arc::new(Unreachable);
+    let source_publication = catalog.source_publication.clone();
     SearchPlaneIngestDispatcher::new(
         lexical,
         unreachable.clone(),
@@ -245,8 +247,8 @@ fn search_corpus_dispatcher_with_authority(
         unreachable.clone(),
         unreachable.clone(),
         unreachable,
-        catalog.clone(),
-        catalog.source_publication.clone(),
+        catalog,
+        source_publication,
         authority,
     )
 }
@@ -537,9 +539,11 @@ fn a_well_formed_but_wrong_digest_is_a_mismatch() -> TestRes {
     Ok(())
 }
 
+/// Reject a malformed source batch before mutable work.
+///
 /// Canonical source publication validates its complete intrinsic contract
-/// before any journal, source reservation, mutable preflight or builder work.
-/// Correcting the invalid body permits a fresh original publication.
+/// before journaling, reservation, preflight or building. A corrected body
+/// permits a fresh original publication.
 #[test]
 fn malformed_source_batch_refuses_before_journal_or_preflight() -> TestRes {
     let catalog = memory_catalog();
@@ -948,6 +952,7 @@ fn repomap_dispatcher(
     catalog: Arc<MemoryIdempotencyCatalog>,
 ) -> SearchPlaneIngestDispatcher {
     let unreachable = Arc::new(Unreachable);
+    let source_publication = catalog.source_publication.clone();
     SearchPlaneIngestDispatcher::new(
         unreachable.clone(),
         unreachable.clone(),
@@ -960,8 +965,8 @@ fn repomap_dispatcher(
         unreachable.clone(),
         unreachable,
         repomap,
-        catalog.clone(),
-        catalog.source_publication.clone(),
+        catalog,
+        source_publication,
         Arc::new(super::support::RecordingSearchCorpusAuthority {
             exact: true,
             ..Default::default()
@@ -1188,7 +1193,7 @@ fn source_event_repair_refusal_leaves_the_stream_available_for_a_new_publication
     use quanta_index_core::{GenerationIdentityValidatePort, SourcePublicationCatalogPort as _};
 
     struct CorruptTarget {
-        generation: ManifestGeneration,
+        manifest_generation: ManifestGeneration,
         track: SearchPlaneTrackKind,
     }
     impl GenerationIdentityValidatePort for CorruptTarget {
@@ -1196,7 +1201,9 @@ fn source_event_repair_refusal_leaves_the_stream_available_for_a_new_publication
             &self,
             candidate: &GenerationSnapshot,
         ) -> Result<(), CoreError> {
-            if candidate.manifest_generation == self.generation && candidate.track == self.track {
+            if candidate.manifest_generation == self.manifest_generation
+                && candidate.track == self.track
+            {
                 return Err(CoreError::Typed {
                     code: SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
                     message: "injected target sidecar corruption".into(),
@@ -1218,7 +1225,7 @@ fn source_event_repair_refusal_leaves_the_stream_available_for_a_new_publication
         let catalog = memory_catalog();
         let ledger = Arc::new(RwLock::new(Ledger::new()));
         let validator = Arc::new(CorruptTarget {
-            generation: delta.generation,
+            manifest_generation: delta.generation,
             track,
         });
         let lexical_builder = Arc::new(FakeSearchCorpusBuilder::default());
@@ -1494,11 +1501,12 @@ fn completed_delta_recovers_after_retention_retires_base_before_journal_ack() ->
             .ok_or("target chunk universe absent")?
             .chunks()
             .keys()
-            .map(|id| id.as_str())
+            .map(quanta_index_contract::ChunkId::as_str)
             .collect();
         if ids != ["a-1", "a-2", "b-1", "c-1", "c-2"] {
             return Err(format!("target lost inherited chunks: {ids:?}").into());
         }
+        drop(ledger);
     }
     // Neither an exact sealed pair without chunk completion, nor a completion
     // marker without the original source reservation may waive the base check.
@@ -1596,12 +1604,12 @@ fn source_event_apply_errors_retry_the_original_journal_without_retargeting() ->
         ) -> Result<quanta_index_contract::SearchCorpusPublishOutcome, CoreError> {
             let _prior = self.applies.fetch_add(1, Ordering::SeqCst);
             let outcome = self.inner.publish_batch(batch, budget)?;
-            if let Some(error) = self
+            let injected_error = self
                 .error
                 .lock()
                 .map_err(|error| CoreError::Storage(error.to_string()))?
-                .take()
-            {
+                .take();
+            if let Some(error) = injected_error {
                 return Err(error);
             }
             Ok(outcome)
@@ -1732,7 +1740,7 @@ fn source_event_apply_errors_retry_the_original_journal_without_retargeting() ->
     Ok(())
 }
 
-/// Journal evidence survives in this test, so UNKNOWN_GENERATION must come
+/// Journal evidence survives in this test, so `UNKNOWN_GENERATION` must come
 /// from the retained generation authority rather than a missing journal row.
 #[test]
 fn source_event_replay_refuses_reclaimed_original_even_when_journal_survives() -> TestRes {

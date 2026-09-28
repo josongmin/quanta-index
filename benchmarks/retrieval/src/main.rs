@@ -745,15 +745,14 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             refusal_out.display()
         )));
     }
-    let symbol_preflight_out = args
-        .flags
-        .get("symbol-preflight-out")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
+    let symbol_preflight_out = args.flags.get("symbol-preflight-out").map_or_else(
+        || {
             let mut path = out.as_os_str().to_os_string();
             path.push(".symbol-preflight.json");
             PathBuf::from(path)
-        });
+        },
+        PathBuf::from,
+    );
     let _external_path =
         require_external_path(&repo, &symbol_preflight_out, "--symbol-preflight-out")?;
     if symbol_preflight_out.exists() {
@@ -894,7 +893,10 @@ fn run_capture(args: &Args) -> BenchResult<()> {
                 quanta_index_contract::SymbolCoverage::Complete { symbol_count } => {
                     Some(symbol_count)
                 }
-                _ => None,
+                quanta_index_contract::SymbolCoverage::NotRequested
+                | quanta_index_contract::SymbolCoverage::Unsupported
+                | quanta_index_contract::SymbolCoverage::ParseFailed
+                | quanta_index_contract::SymbolCoverage::ProducerFailed => None,
             };
             serde_json::json!({
                 "path": file.path, "source_sha256": file.source_sha256, "language": file.language,

@@ -101,6 +101,7 @@ fn activate(catalog: &ActivationCatalog, binding: &SourceEventBindingV1) -> Resu
     let prepared = PreparedSearchCorpusGenerationV1::new(candidate, None)?;
     let _activation =
         catalog.activate_prepared_under_guard_v1(&guard, &prepared, Some(&binding.event))?;
+    drop(guard);
     Ok(())
 }
 
@@ -120,7 +121,7 @@ fn source_event_cross_revision_replay_preserves_original_binding_and_cas() -> Te
     };
     assert_eq!(existing.binding, first);
     assert_eq!(existing.phase, SourceEventPhaseV1::Pending);
-    let mut conflict = replay.clone();
+    let mut conflict = replay;
     conflict.event.payload_sha256[0] ^= 1;
     assert!(catalog.reserve_source_event(&conflict).is_err());
     assert!(
@@ -347,7 +348,8 @@ fn concurrent_revision_activations_preserve_both_roots_and_stream_heads() -> Tes
     }
     assert_eq!(
         std::fs::read_dir(dir.path())?
-            .filter_map(Result::ok)
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
             .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
             .count(),
         1
@@ -468,24 +470,34 @@ fn envelope_rejects_legacy_duplicate_reordered_and_oversized_inputs() -> TestRes
         .join(repository_envelope::file_name(&event.target.repo_id));
     let bytes = std::fs::read(&path)?;
     let row: serde_json::Value = serde_json::from_slice(&bytes)?;
+    let first_event = row
+        .get(4)
+        .and_then(serde_json::Value::as_array)
+        .and_then(|events| events.first())
+        .ok_or("missing first event")?
+        .clone();
     let mut duplicate = row.clone();
-    duplicate[4]
+    duplicate
+        .get_mut(4)
+        .ok_or("missing event slot")?
         .as_array_mut()
         .expect("events array")
-        .push(row[4][0].clone());
+        .push(first_event.clone());
     assert!(repository_envelope::decode(&path, &serde_json::to_vec(&duplicate)?).is_err());
     let mut wrong_format = row.clone();
-    wrong_format[0] = serde_json::json!(1);
+    *wrong_format.get_mut(0).ok_or("missing format slot")? = serde_json::json!(1);
     assert!(repository_envelope::decode(&path, &serde_json::to_vec(&wrong_format)?).is_err());
     assert!(repository_envelope::decode(&path, br#"{"lexical":{},"semantic":{}}"#).is_err());
     let mut overlimit = row;
-    overlimit[4] = serde_json::Value::Array(vec![
-        duplicate[4][0].clone();
-        repository_envelope::MAX_EVENTS + 1
-    ]);
+    *overlimit.get_mut(4).ok_or("missing event slot")? =
+        serde_json::Value::Array(vec![first_event; repository_envelope::MAX_EVENTS + 1]);
     assert!(repository_envelope::decode(&path, &serde_json::to_vec(&overlimit)?).is_err());
     let file = std::fs::OpenOptions::new().write(true).open(&path)?;
-    file.set_len(repository_envelope::MAX_ENVELOPE_BYTES as u64 + 1)?;
+    file.set_len(
+        u64::try_from(repository_envelope::MAX_ENVELOPE_BYTES)?
+            .checked_add(1)
+            .ok_or("envelope limit overflow")?,
+    )?;
     assert!(repository_envelope::read_bounded(&path).is_err());
     Ok(())
 }
@@ -519,7 +531,13 @@ fn envelope_rejects_multiple_events_for_one_target_generation() -> TestResult {
         let mut target = first.target.clone();
         target.manifest_digest.clone_from(manifest_digest);
         let mut forged = row.clone();
-        forged[4][1][1] = serde_json::to_value(target)?;
+        *forged
+            .get_mut(4)
+            .and_then(serde_json::Value::as_array_mut)
+            .and_then(|events| events.get_mut(1))
+            .and_then(serde_json::Value::as_array_mut)
+            .and_then(|event| event.get_mut(1))
+            .ok_or("missing target slot")? = serde_json::to_value(target)?;
         let forged_bytes = serde_json::to_vec(&forged)?;
         assert!(repository_envelope::decode(&path, &forged_bytes).is_err());
         // Exercise the production restart path as well as the decoder.
@@ -534,10 +552,7 @@ fn envelope_rejects_multiple_events_for_one_target_generation() -> TestResult {
         .expect("decoded repository history");
     let duplicate = history
         .records
-        .get_mut(&(
-            second.event.stream_id.clone(),
-            second.event.event_id.clone(),
-        ))
+        .get_mut(&(second.event.stream_id.clone(), second.event.event_id))
         .expect("second event");
     duplicate.binding.target = first.target.clone();
     duplicate.binding.journal_key.generation = first.target.manifest_generation;
@@ -672,7 +687,9 @@ fn stream_capacity_refusal_does_not_evict_identity_or_modify_root() -> TestResul
             &format!("stream-{index:04}"),
             "event",
             None,
-            index as u64 + 1,
+            u64::try_from(index)?
+                .checked_add(1)
+                .ok_or("stream index overflow")?,
         );
         let _reserved = catalog.reserve_source_event(&event)?;
     }

@@ -1742,9 +1742,10 @@ fn typed_symbol_source_scope(id: &str, path: &str, text: &str) -> SemanticSource
     }
 }
 
-/// Tests that change the body after taking the fixture must re-stamp both
-/// commitments with `restamp_search_corpus_fixture`, unless the mismatch is
-/// the point. Restamping does not replace the producer event or its lineage.
+/// Restamp both commitments after changing a fixture body.
+///
+/// Tests may intentionally leave a mismatch. Restamping does not replace the
+/// producer event or its lineage.
 pub(super) fn restamp_search_corpus_fixture(batch: &mut SearchCorpusIngestBatch) -> TestRes {
     batch.source_event.payload_sha256 = quanta_index_contract::source_event_payload_sha256(batch)?;
     stamp_batch_digest_v1(batch)?;
@@ -1920,12 +1921,10 @@ pub(super) fn scope_with_chunks(
     _digest: &str,
     chunks: Vec<ChunkRecord>,
 ) -> SearchCorpusReplaceScope {
-    let language = chunks
-        .first()
-        .map(|chunk| chunk.language.clone())
-        .unwrap_or_else(|| {
-            quanta_index_contract::lex::LanguageCode::new("rust").expect("fixture language")
-        });
+    let language = chunks.first().map_or_else(
+        || quanta_index_contract::lex::LanguageCode::new("rust").expect("fixture language"),
+        |chunk| chunk.language.clone(),
+    );
     let unit_set_sha256 = quanta_index_contract::source_file_unit_set_sha256(&chunks, &[])
         .expect("fixture unique unit IDs");
     SearchCorpusReplaceScope {
@@ -2090,6 +2089,7 @@ impl TestSourceCatalog {
             &prepared,
             Some(&binding.event),
         )?;
+        drop(guard);
         Ok(())
     }
 }

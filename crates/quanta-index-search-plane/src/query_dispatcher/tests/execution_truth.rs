@@ -526,6 +526,7 @@ fn l1_composite_routes_admit_primitives_before_language_shortcut() -> TestResult
                         lexical.opened_pins.len(), lexical.primitive_queries.len(),
                     ));
                 }
+                drop(lexical);
             }
         }
     }

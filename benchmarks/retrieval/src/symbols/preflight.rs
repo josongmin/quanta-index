@@ -240,9 +240,11 @@ pub struct SymbolPreflight {
 }
 
 impl SymbolPreflight {
+    #[must_use]
     pub fn report(&self) -> &SymbolPreflightReport {
         &self.report
     }
+    #[must_use]
     pub fn symbols(&self) -> &BTreeMap<String, Vec<SymbolRecord>> {
         &self.symbols
     }
@@ -307,18 +309,16 @@ impl SymbolPreflight {
             .report
             .files
             .binary_search_by(|file| file.path.as_str().cmp(path))
-            .map_err(|_| {
-                BenchError::Protocol(format!("coverage source was not admitted: {path}"))
+            .map_err(|insertion_index| {
+                BenchError::Protocol(format!(
+                    "coverage source was not admitted: {path}; insertion_index={insertion_index}"
+                ))
             })?;
         let report =
             self.report.files.get(index).ok_or_else(|| {
                 BenchError::Protocol("coverage report index is absent".to_string())
             })?;
-        let digest = source
-            .source_sha256
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
+        let digest = encode_hex(&source.source_sha256)?;
         if digest != report.source_sha256
             || file.path != path
             || file.sha256 != report.source_sha256
@@ -389,6 +389,19 @@ impl SymbolPreflight {
     }
 }
 
+fn encode_hex(bytes: &[u8]) -> BenchResult<String> {
+    let mut encoded = String::with_capacity(bytes.len().saturating_mul(2));
+    for byte in bytes {
+        for nibble in [byte >> 4, byte & 0x0f] {
+            let digit = char::from_digit(u32::from(nibble), 16).ok_or_else(|| {
+                BenchError::Protocol("byte nibble is outside the hexadecimal range".to_string())
+            })?;
+            encoded.push(digit);
+        }
+    }
+    Ok(encoded)
+}
+
 fn producer_policy(options: &SymbolPreflightOptions<'_>) -> [u8; 32] {
     let mut hash = Sha256::new();
     for part in [
@@ -419,7 +432,7 @@ fn producer_policy(options: &SymbolPreflightOptions<'_>) -> [u8; 32] {
     hash.finalize().into()
 }
 
-fn failure_report(path: &str, file: &SourceFile, error: SymbolExtractError) -> SymbolFileReport {
+fn failure_report(path: &str, file: &SourceFile, error: &SymbolExtractError) -> SymbolFileReport {
     let detail = error.to_string();
     let failure_detail_truncated = detail.chars().count() > 512;
     let failure_detail = Some(detail.chars().take(512).collect());
@@ -548,7 +561,7 @@ fn inspect_file(
                 }
                 let symbols =
                     extract_parsed_symbols(language, path, &file.text, &tree, Some(&control))?;
-                let symbol_count = u64::try_from(symbols.len()).map_err(|_| {
+                let symbol_count = u64::try_from(symbols.len()).map_err(|_overflow| {
                     SymbolExtractError::ResourceLimit {
                         path: path.to_string(),
                     }
@@ -596,7 +609,7 @@ pub fn preflight_corpus_symbols(
         producer_identity: SYMBOL_PRODUCER_IDENTITY,
         grammar_identity: SYMBOL_PRODUCER_GRAMMARS,
         lockfile_sha256: sha256_hex(include_bytes!("../../../../Cargo.lock")),
-        producer_policy_sha256: policy.iter().map(|byte| format!("{byte:02x}")).collect(),
+        producer_policy_sha256: encode_hex(&policy)?,
         policy: options.into(),
         files: Vec::with_capacity(files.len()),
         admitted_files: files.len(),
@@ -614,7 +627,7 @@ pub fn preflight_corpus_symbols(
             options.max_symbols_total.saturating_sub(retained_symbols),
         ) {
             Ok(value) => value,
-            Err(error) => (failure_report(path, file, error), Vec::new()),
+            Err(error) => (failure_report(path, file, &error), Vec::new()),
         };
         row.diagnostics.truncate(
             options

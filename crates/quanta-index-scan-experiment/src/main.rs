@@ -333,10 +333,7 @@ fn ingest_batch(
             )
         })
         .collect();
-    let digest_refs: Vec<&[u8]> = scope_digests
-        .iter()
-        .map(|digest| digest.as_bytes())
-        .collect();
+    let digest_refs: Vec<&[u8]> = scope_digests.iter().map(String::as_bytes).collect();
     let manifest_digest = framed_digest(DIGEST_DOMAIN_MANIFEST, &digest_refs);
     let mut batch = SearchCorpusIngestBatch {
         source_event: SourcePublicationEvent {
@@ -558,20 +555,33 @@ mod tests {
         let generation = ManifestGeneration::new(1);
         let batch = ingest_batch(&corpus, generation)?;
         let expected_source_sha256: [u8; 32] = Sha256::digest(body.as_bytes()).into();
-        assert_eq!(
-            batch.replace_scopes[0].coverage.source.source_sha256,
-            expected_source_sha256
+        anyhow::ensure!(
+            batch
+                .replace_scopes
+                .first()
+                .ok_or_else(|| anyhow!("missing replacement scope"))?
+                .coverage
+                .source
+                .source_sha256
+                == expected_source_sha256,
+            "replacement source digest differs"
         );
-        assert!(matches!(
-            quanta_index_ipc::verify_batch_digest_v1(&mut batch.clone())?,
-            BatchDigestVerdictV1::Verified(_)
-        ));
+        anyhow::ensure!(
+            matches!(
+                quanta_index_ipc::verify_batch_digest_v1(&mut batch.clone())?,
+                BatchDigestVerdictV1::Verified(_)
+            ),
+            "batch digest is unverified"
+        );
 
         let root = tempfile::tempdir()?;
         let adapter = LexicalAdapter::with_state_root(root.path().join("index"));
         adapter.build_batch(&batch)?;
         let searcher = adapter.open(&batch.repo_id, &batch.revision_id, generation)?;
-        assert_eq!(measure_query(searcher.as_ref(), 1)?.hits, 1);
+        anyhow::ensure!(
+            measure_query(searcher.as_ref(), 1)?.hits == 1,
+            "indexed hit count differs"
+        );
         Ok(())
     }
 }

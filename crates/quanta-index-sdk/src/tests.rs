@@ -286,32 +286,34 @@ impl IngestTransport for StubIngestTransport {
             .lock()
             .map_err(|err| crate::SdkError::Protocol(format!("ingest transport poisoned: {err}")))?
             .push(request.clone());
-        let mut payload = self
+        let original_payload = self
             .response
             .lock()
             .map_err(|err| crate::SdkError::Protocol(format!("ingest response poisoned: {err}")))?
             .take()
             .ok_or_else(|| crate::SdkError::Protocol("missing stub ingest response".to_string()))?;
-        if let Some(receipt) = self
+        let corpus_receipt = self
             .corpus_receipt
             .lock()
             .map_err(|error| crate::SdkError::Protocol(error.to_string()))?
-            .take()
-        {
+            .take();
+        let mut payload = if let Some(receipt) = corpus_receipt {
             let SearchPlaneIngestIpcRequest::PublishSearchCorpusBatch(batch) = &request.payload
             else {
                 return Err(crate::SdkError::Protocol(
                     "corpus fixture received another route".into(),
                 ));
             };
-            payload = SearchPlaneIngestIpcResponse::SearchCorpusReceipt(
+            SearchPlaneIngestIpcResponse::SearchCorpusReceipt(
                 quanta_index_contract::SearchCorpusPublishOutcome {
                     publication: quanta_index_contract::SourcePublicationBinding::for_batch(batch),
                     receipt,
                     observation: None,
                 },
-            );
-        }
+            )
+        } else {
+            original_payload
+        };
         if let (true, Some(digest)) = (self.names_request_digest, verified) {
             name_receipt_digest(&mut payload, &digest);
         }

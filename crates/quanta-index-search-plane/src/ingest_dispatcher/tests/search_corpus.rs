@@ -139,6 +139,7 @@ fn delta_finalization_inherits_untouched_chunk_authority_and_retries_after_base_
                 .structural_state(&delta.repo_id, &delta.revision_id, delta.generation)
                 .is_none()
         );
+        drop(guard);
     }
     // The retention transaction can retire the original base. Reconciliation
     // must retain the complete already-published target chunk universe.
@@ -150,7 +151,11 @@ fn delta_finalization_inherits_untouched_chunk_authority_and_retries_after_base_
         let state = guard
             .structural_state(&delta.repo_id, &delta.revision_id, delta.generation)
             .ok_or("missing delta chunk authority")?;
-        let ids: Vec<_> = state.chunks().keys().map(|id| id.as_str()).collect();
+        let ids: Vec<_> = state
+            .chunks()
+            .keys()
+            .map(quanta_index_contract::ChunkId::as_str)
+            .collect();
         assert_eq!(ids, vec!["b-1", "new-a-1", "new-a-2"]);
         assert_eq!(
             state.source_batch_digest(),
@@ -1336,7 +1341,7 @@ fn durable_retention_error_fences_same_process_rollback_authority() -> TestRes {
         state
             .chunks()
             .keys()
-            .map(|id| id.as_str())
+            .map(quanta_index_contract::ChunkId::as_str)
             .collect::<Vec<_>>(),
         vec!["chunk-1"]
     );
@@ -1356,6 +1361,7 @@ fn durable_retention_error_fences_same_process_rollback_authority() -> TestRes {
         )
         .is_err()
     );
+    drop(guard);
     Ok(())
 }
 
