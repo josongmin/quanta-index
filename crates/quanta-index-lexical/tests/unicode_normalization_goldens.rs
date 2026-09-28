@@ -682,6 +682,20 @@ const GOLDENS: &[Golden] = &[
     row(
         Leaf::Regex,
         Case::Insensitive,
+        "(?i)CAFÉ",
+        ALL_CAFE,
+        "a leading explicit flag composes with the case:no prefix",
+    ),
+    row(
+        Leaf::Regex,
+        Case::Insensitive,
+        "(?m)CAFÉ",
+        ALL_CAFE,
+        "case:no preserves another leading flag",
+    ),
+    row(
+        Leaf::Regex,
+        Case::Insensitive,
         "検索",
         &["cjk_joined", "cjk_spaced"],
         "regex CJK",

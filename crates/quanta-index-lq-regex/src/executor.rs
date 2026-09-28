@@ -644,6 +644,31 @@ mod tests {
     }
 
     #[test]
+    fn leading_flag_prefix_composition_keeps_truth_and_ranges()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for pattern in ["(?i)(?i)CAFÉ", "(?i)(?m)CAFÉ", "(?i)(?-i)CAFÉ"] {
+            let executor = RegexExecutor::compile(pattern)?;
+            let expected = if pattern.contains("(?-i)") {
+                std::iter::once(6..11).collect::<Vec<_>>()
+            } else {
+                vec![0..5, 6..11]
+            };
+            let actual =
+                executor.find_ranges_bounded("café CAFÉ".as_bytes(), 11, 3, &|| false)?;
+            assert_eq!(actual.ranges, expected, "{pattern}");
+            assert!(actual.exhausted);
+            assert!(executor.verify("CAFÉ".as_bytes()));
+        }
+        for pattern in ["(?i)(?m)", "(?i)foo(?m)bar", "((?i)foo)"] {
+            let Some(error) = RegexExecutor::compile(pattern).err() else {
+                return Err(format!("non-leading/bodyless flags were accepted: {pattern}").into());
+            };
+            assert_eq!(error.forbidden, Some(ForbiddenKind::InlineFlagMidPattern));
+        }
+        Ok(())
+    }
+
+    #[test]
     fn l4_range_cap_never_claims_exhaustion() -> Result<(), Box<dyn std::error::Error>> {
         let executor = RegexExecutor::compile("a")?;
         for source in [b"a".as_slice(), b"aaa".as_slice()] {

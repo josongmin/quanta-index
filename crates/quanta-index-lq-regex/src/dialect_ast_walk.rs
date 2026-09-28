@@ -19,8 +19,8 @@
 //!   AST node inside the surrounding `Concat`. Walking the HIR cannot
 //!   recover the construct (flags have already been folded into class
 //!   `case_insensitive` bits). The AST walk inspects the top-level
-//!   `Concat` and rejects any `Ast::Flags` node that does not appear at
-//!   index 0 of that concatenation. Leading position is **accepted** as a
+//!   `Concat` and rejects any `Ast::Flags` node after its first body node.
+//!   A contiguous leading flag prefix is **accepted** as a
 //!   canonicalization opportunity (PRE-NORM strips it before tokenizer
 //!   handoff).
 //!
@@ -72,7 +72,7 @@ use crate::errors::{ForbiddenKind, RegexError, RegexErrorCode};
 /// - `FORBIDDEN_SYNTAX(inline-flag-midpattern)` when an inline-flag
 ///   `(?i)` / `(?m)` / `(?s)` / `(?x)` / `(?U)` / `(?u)` / `(?R)` /
 ///   `(?-i)` (i.e. any `(?flags)` set-flag) appears at any position
-///   **other than** index 0 of the top-level concatenation.
+///   after the first body node of the top-level concatenation.
 pub fn ast_walk_filter(pattern: &str) -> Result<(), RegexError> {
     match AstParser::new().parse(pattern) {
         Ok(ast) => walk_for_inline_flag(&ast),
@@ -162,11 +162,11 @@ fn is_named_capture_ref_open(bytes: &[u8], start: usize) -> bool {
 ///   such a pattern matches the empty string and has no semantic content
 ///   beyond the flag switch. We treat it as a degenerate mid-pattern
 ///   switch.
-/// - A top-level `Ast::Concat` with `Ast::Flags(_)` at index 0 and the
-///   rest of the concat free of further `Ast::Flags` is **accepted**.
+/// - A top-level `Ast::Concat` with a contiguous `Ast::Flags(_)` prefix
+///   and a body free of further `Ast::Flags` is **accepted**.
 ///   This is the canonicalization-friendly shape PRE-NORM strips before
 ///   handoff.
-/// - Any `Ast::Flags(_)` at index `i > 0` of the top-level concat is
+/// - Any `Ast::Flags(_)` after the first body node of the top-level concat is
 ///   rejected as [`ForbiddenKind::InlineFlagMidPattern`].
 /// - Any `Ast::Flags(_)` nested inside an `Ast::Alternation`,
 ///   `Ast::Group`, `Ast::Repetition`, etc. is rejected as
@@ -176,19 +176,16 @@ fn is_named_capture_ref_open(bytes: &[u8], start: usize) -> bool {
 fn walk_for_inline_flag(ast: &Ast) -> Result<(), RegexError> {
     match *ast {
         Ast::Concat(ref c) => {
-            // Inspect each child. Index 0 may be `Ast::Flags(_)`; any
-            // other position with `Ast::Flags(_)` is a mid-pattern flag
-            // switch. All children are also recursively walked to catch
-            // nested inline-flag switches inside groups/repetitions/
-            // alternations.
-            for (idx, child) in c.asts.iter().enumerate() {
+            // Case policy prepends an engine flag to an already valid pattern.
+            // Consecutive leading switches must compose in source order; only
+            // a switch after a body or inside a subtree is mid-pattern.
+            let mut has_body = false;
+            for child in &c.asts {
                 match *child {
                     Ast::Flags(ref sf) => {
-                        if idx != 0 {
+                        if has_body {
                             return Err(inline_flag_error(sf.span.start.offset));
                         }
-                        // Leading `(?i)` accepted — canonicalization
-                        // hand-off to PRE-NORM.
                     }
                     Ast::Empty(_)
                     | Ast::Literal(_)
@@ -200,8 +197,14 @@ fn walk_for_inline_flag(ast: &Ast) -> Result<(), RegexError> {
                     | Ast::Repetition(_)
                     | Ast::Group(_)
                     | Ast::Alternation(_)
-                    | Ast::Concat(_) => walk_disallow_any_flags(child)?,
+                    | Ast::Concat(_) => {
+                        has_body = true;
+                        walk_disallow_any_flags(child)?;
+                    }
                 }
+            }
+            if !has_body {
+                return Err(inline_flag_error(ast.span().start.offset));
             }
             Ok(())
         }
@@ -260,7 +263,7 @@ fn inline_flag_error(byte_offset: usize) -> RegexError {
         dimension: None,
         forbidden: Some(ForbiddenKind::InlineFlagMidPattern),
         detail: format!(
-            "regex dialect rejection at byte {byte_offset}: mid-pattern inline-flag switch is forbidden (leading `(?i)` is the only accepted form)"
+            "regex dialect rejection at byte {byte_offset}: mid-pattern inline-flag switch is forbidden (only a leading flag prefix is accepted)"
         ).into_boxed_str(),
     }
 }
