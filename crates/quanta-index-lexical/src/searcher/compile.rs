@@ -404,8 +404,8 @@ impl TantivySearcher {
                 clauses.push((Occur::Must, compiled_filter));
             }
         }
-        if let Some(paths) = prepared.allowed_paths.as_ref() {
-            clauses.push((Occur::Must, self.path_restriction_query(paths)));
+        if let Some(files) = prepared.allowed_files.as_ref() {
+            clauses.push((Occur::Must, self.source_file_restriction_query(files)));
         }
         if let Some(repo_ids) = prepared.allowed_repo_ids.as_ref() {
             clauses.push((Occur::Must, self.repo_id_restriction_query(repo_ids)));

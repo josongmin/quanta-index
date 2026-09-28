@@ -363,30 +363,31 @@ impl TantivySearcher {
         prepared: &PreparedPredicatePlan,
         candidate_id: &str,
         repo_id: &str,
-        repo_relative_path: &str,
-    ) -> bool {
+        doc: &TantivyDocument,
+    ) -> Result<bool, CoreError> {
         if prepared
             .allowed_candidate_ids
             .as_ref()
             .is_some_and(|ids| !ids.contains(candidate_id))
         {
-            return false;
+            return Ok(false);
         }
         if prepared
             .allowed_repo_ids
             .as_ref()
             .is_some_and(|ids| !ids.contains(repo_id))
         {
-            return false;
+            return Ok(false);
         }
-        if prepared
-            .allowed_paths
-            .as_ref()
-            .is_some_and(|paths| !paths.contains(repo_relative_path))
+        if let Some(files) = prepared.allowed_files.as_ref()
+            && !files.contains(&crate::documents::stored_source_file_key(
+                doc,
+                &self.fields,
+            )?)
         {
-            return false;
+            return Ok(false);
         }
-        true
+        Ok(true)
     }
 
     pub(crate) fn manual_repo_gate_matches(
@@ -1016,8 +1017,8 @@ impl TantivySearcher {
             &prepared.predicate_plan,
             candidate_id,
             source_repo_id,
-            repo_relative_path,
-        ) {
+            doc,
+        )? {
             return Ok(false);
         }
         let include_path_terms =

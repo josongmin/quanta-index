@@ -616,11 +616,11 @@ impl TantivySearcher {
         content_leaf_from_scalar(&constraint.content)
     }
 
-    pub(crate) fn collect_matching_paths_for_content_scope(
+    pub(crate) fn collect_matching_files_for_content_scope(
         &self,
         constraint: &ContentPredicateConstraint,
         budget: &RequestBudgetV1,
-    ) -> Result<Option<BTreeSet<String>>, CoreError> {
+    ) -> Result<Option<BTreeSet<quanta_index_contract::SourceFileKey>>, CoreError> {
         let mut clauses: Vec<(Occur, Box<dyn Query>)> = Vec::new();
         if let Some(ContentPathScope { pattern, scope }) = constraint.path_scope.as_ref() {
             clauses.push((Occur::Must, self.compile_file_filter(pattern, *scope)?));
@@ -643,32 +643,33 @@ impl TantivySearcher {
         let compiled = self.with_doc_kind(Box::new(BooleanQuery::new(clauses)), TEXT_DOC_KIND);
         let searcher = self.reader.searcher();
         let rows =
-            self.collect_whole_set(&searcher, &*compiled, 1.0, "scoped content paths", budget)?;
-        let mut out: BTreeSet<String> = BTreeSet::new();
+            self.collect_whole_set(&searcher, &*compiled, 1.0, "scoped content files", budget)?;
+        let mut out: BTreeSet<quanta_index_contract::SourceFileKey> = BTreeSet::new();
         for row in rows {
             budget.checkpoint("lexical:scope-decode")?;
             let doc_address = row.address;
             let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
                 CoreError::Storage(format!("lexical: fetch doc {doc_address:?}: {err}"))
             })?;
-            let path =
-                required_stored_text(&doc, self.fields.repo_relative_path, "repo_relative_path")?;
-            let _inserted: bool = out.insert(path.to_owned());
+            let _inserted: bool = out.insert(crate::documents::stored_source_file_key(
+                &doc,
+                &self.fields,
+            )?);
         }
         Ok(Some(out))
     }
 
-    /// The text documents at `paths`, as authority doc ids.
-    pub(crate) fn path_match_set(
+    /// The text documents at `files`, as authority doc ids.
+    pub(crate) fn source_file_match_set(
         &self,
-        paths: &BTreeSet<String>,
+        files: &BTreeSet<quanta_index_contract::SourceFileKey>,
         budget: &RequestBudgetV1,
     ) -> Result<RoaringBitmap, CoreError> {
         let mut out = RoaringBitmap::new();
-        if paths.is_empty() {
+        if files.is_empty() {
             return Ok(out);
         }
-        let compiled = self.with_doc_kind(self.path_restriction_query(paths), TEXT_DOC_KIND);
+        let compiled = self.with_doc_kind(self.source_file_restriction_query(files), TEXT_DOC_KIND);
         let searcher = self.reader.searcher();
         let rows = self.collect_whole_set(
             &searcher,
@@ -691,19 +692,19 @@ impl TantivySearcher {
         Ok(out)
     }
 
-    pub(crate) fn allowed_paths_for_content_predicate(
+    pub(crate) fn allowed_files_for_content_predicate(
         &self,
         constraint: &ContentPredicateConstraint,
         budget: &RequestBudgetV1,
-    ) -> Result<BTreeSet<String>, CoreError> {
+    ) -> Result<BTreeSet<quanta_index_contract::SourceFileKey>, CoreError> {
         let content_leaf = self.predicate_content_leaf_from_constraint(constraint);
-        let content_paths = self.collect_matching_paths_for_leaf(&content_leaf, budget)?;
-        let Some(scope_paths) =
-            self.collect_matching_paths_for_content_scope(constraint, budget)?
+        let content_files = self.collect_matching_files_for_leaf(&content_leaf, budget)?;
+        let Some(scope_files) =
+            self.collect_matching_files_for_content_scope(constraint, budget)?
         else {
-            return Ok(content_paths);
+            return Ok(content_files);
         };
-        Ok(content_paths.intersection(&scope_paths).cloned().collect())
+        Ok(content_files.intersection(&scope_files).cloned().collect())
     }
 
     /// The text documents a scoped content predicate admits, as authority
@@ -713,8 +714,8 @@ impl TantivySearcher {
         constraint: &ContentPredicateConstraint,
         budget: &RequestBudgetV1,
     ) -> Result<RoaringBitmap, CoreError> {
-        let allowed_paths = self.allowed_paths_for_content_predicate(constraint, budget)?;
-        self.path_match_set(&allowed_paths, budget)
+        let allowed_files = self.allowed_files_for_content_predicate(constraint, budget)?;
+        self.source_file_match_set(&allowed_files, budget)
     }
 
     pub(crate) fn repo_has_file_constraint(

@@ -10,7 +10,9 @@ use crate::metadata_normalize::normalize_language;
 use crate::normalize::CaseMode;
 use crate::{SYMBOL_DOC_KIND, SchemaFields, TEXT_DOC_KIND, normalize};
 use quanta_index_contract::lex::SymbolRecord;
-use quanta_index_contract::{ChunkRecord, LqExpr, SourceFileRevision};
+use quanta_index_contract::{
+    ChunkRecord, LqExpr, RepoId, RepoRelativePath, SourceFileKey, SourceFileRevision,
+};
 use quanta_index_core::CoreError;
 use sha2::{Digest as _, Sha256};
 use std::path::Path;
@@ -178,6 +180,25 @@ pub(crate) fn stored_doc_kind(doc: &TantivyDocument, field: Field) -> Result<&st
         )));
     }
     Ok(kind)
+}
+
+/// File predicates retain both source owner and relative path throughout
+/// discovery and restriction. A path alone can alias another source file.
+pub(crate) fn stored_source_file_key(
+    doc: &TantivyDocument,
+    fields: &SchemaFields,
+) -> Result<SourceFileKey, CoreError> {
+    let source_repo_id = required_stored_text(doc, fields.repo_id, "repo_id")?;
+    let path = required_stored_text(doc, fields.repo_relative_path, "repo_relative_path")?;
+    let file = SourceFileKey {
+        source_repo_id: RepoId::new(source_repo_id).map_err(|error| {
+            CoreError::Storage(format!("lexical: invalid source repo: {error}"))
+        })?,
+        repo_relative_path: RepoRelativePath::new(path),
+    };
+    file.validate()
+        .map_err(|error| CoreError::Storage(format!("lexical: invalid source file: {error}")))?;
+    Ok(file)
 }
 
 pub(crate) fn stored_u32(doc: &TantivyDocument, field: Field) -> Result<Option<u32>, CoreError> {

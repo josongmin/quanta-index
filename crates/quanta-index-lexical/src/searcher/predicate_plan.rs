@@ -302,7 +302,7 @@ impl TantivySearcher {
             {
                 return Ok(PreparedPredicatePlan {
                     expr: query.expr.clone(),
-                    allowed_paths: None,
+                    allowed_files: None,
                     allowed_repo_ids: None,
                     allowed_candidate_ids: None,
                     force_empty: false,
@@ -324,18 +324,18 @@ impl TantivySearcher {
                             name: canonical_name,
                             args: canonical_args,
                         }),
-                        allowed_paths: None,
+                        allowed_files: None,
                         allowed_repo_ids: None,
                         allowed_candidate_ids: None,
                         force_empty: false,
                     });
                 }
-                let allowed_paths =
-                    self.collect_matching_paths_for_content_scope(&constraint, budget)?;
-                if allowed_paths.as_ref().is_some_and(BTreeSet::is_empty) {
+                let allowed_files =
+                    self.collect_matching_files_for_content_scope(&constraint, budget)?;
+                if allowed_files.as_ref().is_some_and(BTreeSet::is_empty) {
                     return Ok(PreparedPredicatePlan {
                         expr: LqExpr::Empty,
-                        allowed_paths: None,
+                        allowed_files: None,
                         allowed_repo_ids: None,
                         allowed_candidate_ids: None,
                         force_empty: true,
@@ -344,7 +344,7 @@ impl TantivySearcher {
                 let lowered = self.predicate_content_leaf_from_constraint(&constraint);
                 return Ok(PreparedPredicatePlan {
                     expr: LqExpr::Leaf(lowered),
-                    allowed_paths,
+                    allowed_files,
                     allowed_repo_ids: None,
                     allowed_candidate_ids: None,
                     force_empty: false,
@@ -374,7 +374,7 @@ impl TantivySearcher {
             if repo_ids.is_empty() {
                 return Ok(PreparedPredicatePlan {
                     expr: LqExpr::Empty,
-                    allowed_paths: None,
+                    allowed_files: None,
                     allowed_repo_ids: None,
                     allowed_candidate_ids: None,
                     force_empty: true,
@@ -388,33 +388,33 @@ impl TantivySearcher {
         if allowed_repo_ids.as_ref().is_some_and(BTreeSet::is_empty) {
             return Ok(PreparedPredicatePlan {
                 expr: LqExpr::Empty,
-                allowed_paths: None,
+                allowed_files: None,
                 allowed_repo_ids: None,
                 allowed_candidate_ids: None,
                 force_empty: true,
             });
         }
-        let mut allowed_paths: Option<BTreeSet<String>> = None;
+        let mut allowed_files: Option<BTreeSet<quanta_index_contract::SourceFileKey>> = None;
         for predicate in &file_predicates {
-            let paths = self.allowed_paths_for_content_predicate(predicate, budget)?;
-            if paths.is_empty() {
+            let files = self.allowed_files_for_content_predicate(predicate, budget)?;
+            if files.is_empty() {
                 return Ok(PreparedPredicatePlan {
                     expr: LqExpr::Empty,
-                    allowed_paths: None,
+                    allowed_files: None,
                     allowed_repo_ids: None,
                     allowed_candidate_ids: None,
                     force_empty: true,
                 });
             }
-            allowed_paths = Some(match allowed_paths.take() {
-                Some(existing) => existing.intersection(&paths).cloned().collect(),
-                None => paths,
+            allowed_files = Some(match allowed_files.take() {
+                Some(existing) => existing.intersection(&files).cloned().collect(),
+                None => files,
             });
         }
-        if allowed_paths.as_ref().is_some_and(BTreeSet::is_empty) {
+        if allowed_files.as_ref().is_some_and(BTreeSet::is_empty) {
             return Ok(PreparedPredicatePlan {
                 expr: LqExpr::Empty,
-                allowed_paths: None,
+                allowed_files: None,
                 allowed_repo_ids: None,
                 allowed_candidate_ids: None,
                 force_empty: true,
@@ -422,7 +422,7 @@ impl TantivySearcher {
         }
         Ok(PreparedPredicatePlan {
             expr,
-            allowed_paths,
+            allowed_files,
             allowed_repo_ids,
             allowed_candidate_ids: None,
             force_empty: false,

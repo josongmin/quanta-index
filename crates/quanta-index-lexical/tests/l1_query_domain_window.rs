@@ -996,3 +996,110 @@ fn l1_audit_exact_all_repo_projection_retains_each_source() -> TestResult {
         Err(failures.join("\n").into())
     }
 }
+
+#[test]
+fn file_content_predicates_keep_source_identity_for_colliding_paths() -> TestResult {
+    let mut scopes = Vec::new();
+    for (index, owner, text, language) in [
+        (0, "source-a", "needle shared", "rust"),
+        (1, "source-b", "other shared", "javascript"),
+    ] {
+        let mut replacement = scope(index, MATCHES, SearchScopeSurface::Chunk)?;
+        let source = RepoId::new(owner)?;
+        let path = RepoRelativePath::new("src/shared.rs");
+        replacement.coverage.source.file = SourceFileKey {
+            source_repo_id: source.clone(),
+            repo_relative_path: path.clone(),
+        };
+        replacement.coverage.source.source_sha256 = Sha256::digest(text.as_bytes()).into();
+        replacement.coverage.language = LanguageCode::new(language).map_err(str::to_string)?;
+        for chunk in &mut replacement.chunks {
+            chunk.source_repo_id = Some(source.clone());
+            chunk.repo_relative_path = path.clone();
+            chunk.language = replacement.coverage.language.clone();
+            chunk.text = text.into();
+            chunk.end_byte = u32::try_from(text.len())?;
+        }
+        replacement.coverage.unit_set_sha256 =
+            source_file_unit_set_sha256(&replacement.chunks, &replacement.symbols)?;
+        scopes.push(replacement);
+    }
+    let (_dir, searcher) = fixture_with_scopes(scopes)?;
+    let predicate = |content: &str| {
+        LqExpr::Leaf(LqLeaf::Predicate {
+            name: "file.contains".into(),
+            args: vec![LqPredicateArg::Keyword(content.into())],
+        })
+    };
+    let mut failures = Vec::new();
+    for manual in [false, true] {
+        for (expr, expected) in [
+            (predicate("needle"), vec!["chunk-00"]),
+            (
+                LqExpr::All(vec![
+                    predicate("needle"),
+                    LqExpr::Leaf(LqLeaf::Keyword("shared".into())),
+                ]),
+                vec!["chunk-00"],
+            ),
+            (
+                LqExpr::Any(vec![
+                    predicate("needle"),
+                    LqExpr::Leaf(LqLeaf::Keyword("absent_term".into())),
+                ]),
+                vec!["chunk-00"],
+            ),
+            (LqExpr::Not(Box::new(predicate("needle"))), vec!["chunk-01"]),
+            (
+                LqExpr::All(vec![predicate("needle"), predicate("other")]),
+                Vec::new(),
+            ),
+        ] {
+            let mut request = query("shared", manual, false);
+            request.expr = expr;
+            request.options.count = Some(LqCountBound::All);
+            let page = searcher.search_constrained(
+                &request,
+                &QueryConstraintSetV1::unconstrained(),
+                &LexicalPageSpec::first(10),
+                &RequestBudgetV1::unbounded(),
+            )?;
+            let actual: Vec<_> = page
+                .candidates
+                .iter()
+                .map(|row| row.candidate_id.as_str())
+                .collect();
+            if actual != expected || page.exact_total != Some(u64::try_from(expected.len())?) {
+                failures.push(format!(
+                    "manual={manual} expr={:?}: expected {expected:?}, got {actual:?} total={:?}",
+                    request.expr, page.exact_total
+                ));
+            }
+        }
+    }
+    // A scope and content match must belong to the same source file even when
+    // another source has the same relative path and matching content.
+    let mut request = query("shared", false, false);
+    request.expr = LqExpr::Leaf(LqLeaf::Predicate {
+        name: "file.contains".into(),
+        args: vec![
+            LqPredicateArg::Keyword("shared".into()),
+            LqPredicateArg::Filter {
+                name: "lang".into(),
+                value: "rust".into(),
+            },
+        ],
+    });
+    let rows = searcher.search(&request, 10, &RequestBudgetV1::unbounded())?;
+    let actual: Vec<_> = rows.iter().map(|row| row.candidate_id.as_str()).collect();
+    if actual != ["chunk-00"] {
+        failures.push(format!(
+            "language scope admitted another source: {actual:?}"
+        ));
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("\n").into())
+    }
+}

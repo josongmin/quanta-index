@@ -556,7 +556,7 @@ struct TantivySearcher {
 
 struct PreparedPredicatePlan {
     expr: LqExpr,
-    allowed_paths: Option<BTreeSet<String>>,
+    allowed_files: Option<BTreeSet<quanta_index_contract::SourceFileKey>>,
     allowed_repo_ids: Option<BTreeSet<String>>,
     allowed_candidate_ids: Option<BTreeSet<String>>,
     force_empty: bool,

@@ -6,7 +6,6 @@
 )]
 
 use crate::authority_doc_set::AuthorityDocSetQuery;
-use crate::documents::required_stored_text;
 use crate::metadata_normalize::standard_pattern_options;
 use crate::normalize::TextQueryError;
 use crate::query_errors::{map_text_query_error, text_query_tokens};
@@ -169,20 +168,20 @@ impl TantivySearcher {
         ))
     }
 
-    pub(crate) fn path_restriction_query(&self, paths: &BTreeSet<String>) -> Box<dyn Query> {
-        if paths.len() == 1
-            && let Some(path) = paths.iter().next()
-        {
-            return self.exact_text_query(self.fields.repo_relative_path, path);
+    pub(crate) fn source_file_restriction_query(
+        &self,
+        files: &BTreeSet<quanta_index_contract::SourceFileKey>,
+    ) -> Box<dyn Query> {
+        if files.is_empty() {
+            return self.match_none_query();
         }
         Box::new(BooleanQuery::new(
-            paths
+            files
                 .iter()
-                .map(|path| {
-                    (
-                        Occur::Should,
-                        self.exact_text_query(self.fields.repo_relative_path, path),
-                    )
+                .map(|file| {
+                    let query: Box<dyn Query> =
+                        Box::new(crate::text_docs::source_file_query(&self.fields, file));
+                    (Occur::Should, query)
                 })
                 .collect(),
         ))
@@ -307,14 +306,14 @@ impl TantivySearcher {
         Box::new(BooleanQuery::new(clauses))
     }
 
-    pub(crate) fn collect_matching_paths_for_leaf(
+    pub(crate) fn collect_matching_files_for_leaf(
         &self,
         leaf: &LqLeaf,
         budget: &RequestBudgetV1,
-    ) -> Result<BTreeSet<String>, CoreError> {
+    ) -> Result<BTreeSet<quanta_index_contract::SourceFileKey>, CoreError> {
         // Predicate scope collection (`file.contains` / `file.has.content`)
         // intentionally compiles with `LqPatternType::Standard` regardless of
-        // the caller's pattern type: it is a path-discovery prelude, not a
+        // the caller's pattern type: it is a file-discovery prelude, not a
         // user-facing leaf evaluation. The full caller options carry through
         // to the user-facing executor pass downstream.
         let scope_options = standard_pattern_options();
@@ -324,16 +323,17 @@ impl TantivySearcher {
         );
         let searcher = self.reader.searcher();
         let rows = self.collect_whole_set(&searcher, &*compiled, 1.0, "predicate scope", budget)?;
-        let mut out: BTreeSet<String> = BTreeSet::new();
+        let mut out: BTreeSet<quanta_index_contract::SourceFileKey> = BTreeSet::new();
         for row in rows {
             budget.checkpoint("lexical:scope-decode")?;
             let doc_address = row.address;
             let doc: TantivyDocument = searcher.doc(doc_address).map_err(|err| {
                 CoreError::Storage(format!("lexical: fetch doc {doc_address:?}: {err}"))
             })?;
-            let path =
-                required_stored_text(&doc, self.fields.repo_relative_path, "repo_relative_path")?;
-            let _inserted: bool = out.insert(path.to_owned());
+            let _inserted: bool = out.insert(crate::documents::stored_source_file_key(
+                &doc,
+                &self.fields,
+            )?);
         }
         Ok(out)
     }
