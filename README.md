@@ -7,7 +7,7 @@ activation and lexical/semantic/hybrid serving over Unix sockets.
 ## Usage
 
 - [Search CLI](crates/quanta-index-searchctl/README.md): query, diagnose and scrape the daemon.
-- [Code-search benchmark](tools/benchmark/CODE_SEARCH_RUNBOOK.md): complete live five-product lexical and Quanta–Semble three-mode matrix with required result tables.
+- [Code-search benchmark](tools/benchmark/CODE_SEARCH_RUNBOOK.md): complete live five-product lexical and Quanta–Semble three-mode matrix in one required result table.
 - [Other benchmark profiles](tools/benchmark/README.md): corpus releases, Criterion, DSL gates and recording imports.
 - [State operations](docs/operator/state-cutover-runbook.md): verify, backup, restore and rebuild.
 - [Embedding provider](docs/potion-code-embedder.md): local model preparation.

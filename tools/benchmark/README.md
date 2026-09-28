@@ -6,7 +6,7 @@ output roots. Use `list` and `plan` while editing.
 
 - [Code-search runbook](CODE_SEARCH_RUNBOOK.md): the complete live five-product
   lexical plus Quanta–Semble lexical/semantic/hybrid matrix, required result
-  table and execution-coverage summary.
+  table with all five products side by side and execution-coverage summary.
 - [Retrieval usage](retrieval/README.md): native runner, pair options and replay.
 - [Agent recording usage](agent_outcome/README.md): A/B/C JSONL inputs.
 - [Architecture decisions](../../docs/adr/README.md): contracts and measurement policy.

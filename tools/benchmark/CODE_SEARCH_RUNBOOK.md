@@ -77,31 +77,30 @@ shown in the table.
 
 ### Required result table
 
-After the matrix finishes, show both tables below. Compare products within each
-repository only under the exact same universe; include the corpus view in each
-summary and keep each per-run universe digest in the execution summary. Populate
-every value from current validated reports; use `N/A` only
-for unsupported external routes or query forms, and `NOT_RUN` or `FAILED` for
-missing or failed applicable work. Never render missing values as zero.
+After the matrix finishes, show **one table** containing all five product columns
+for every row. Do not split external products from Quanta/Semble modes. Compare
+products within each repository only under the exact same universe. Include the
+corpus view/cohort in each row; do not combine two different manifests for the
+same repository. Across repositories, aggregate per-repository metrics with a
+declared weighting and retain each manifest digest. Populate values from current
+validated reports. Use `N/A` only for unsupported external routes or query
+forms, and `NOT_RUN` or `FAILED` for missing or failed applicable work. Never
+render missing values as zero.
 
-**Five-product lexical results**
+| Corpus view / universe | Query family | Mode | Quanta (NDCG@10 / file recall@10) | Semble (NDCG@10 / file recall@10) | Sourcegraph (file recall@10) | cs (file recall@10) | OpenGrok (file recall@10) | Δ NDCG@10 (95% CI; Quanta − Semble) | Tasks/provider | Coverage note |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `<same five-product universe>` | bare-symbol | lexical-only | ... | ... | ... | ... | ... | ... | ... | all five live |
+| `<same common universe>` | bare | lexical-only | ... | ... | ... | ... | ... | ... | ... | all five live; same manifest |
+| `<mode-matrix universe>` | bare | semantic-only | ... | ... | `N/A` | `N/A` | `N/A` | ... | ... | no external semantic route |
+| `<mode-matrix universe>` | bare | hybrid | ... | ... | `N/A` | `N/A` | `N/A` | ... | ... | no external hybrid route |
+| `<mode-matrix universe>` | natural | lexical-only | ... | ... | `N/A` | `N/A` | `N/A` | ... | ... | bare-symbol scorer does not accept natural queries |
+| `<mode-matrix universe>` | natural | semantic-only | ... | ... | `N/A` | `N/A` | `N/A` | ... | ... | no external semantic route |
+| `<mode-matrix universe>` | natural | hybrid | ... | ... | `N/A` | `N/A` | `N/A` | ... | ... | no external hybrid route |
+| `<same corpus-view cohort>` | all | each mode | ... | ... | ... | ... | ... | ... | ... | per-repository matched inputs |
 
-| Corpus view / universe set | Query family | Quanta file recall@10 | Semble file recall@10 | Sourcegraph file recall@10 | OpenGrok file recall@10 | cs file recall@10 | Tasks/provider |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `<manifest_digest>` | `<bare-symbol>` | ... | ... | ... | ... | ... | ... |
-| `<all matched lexical inputs>` | `<aggregate>` | ... | ... | ... | ... | ... | ... |
-
-**Quanta--Semble mode results**
-
-| Corpus view / universe set | Query family | Mode | Quanta NDCG@10 / file recall@10 | Semble NDCG@10 / file recall@10 | Δ NDCG@10 (95% CI; Quanta − Semble) | Paired tasks |
-| --- | --- | --- | ---: | ---: | ---: | ---: |
-| `<manifest_digest>` | bare | lexical-only | ... | ... | ... | ... |
-| `<manifest_digest>` | bare | semantic-only | ... | ... | ... | ... |
-| `<manifest_digest>` | bare | hybrid | ... | ... | ... | ... |
-| `<manifest_digest>` | natural | lexical-only | ... | ... | ... | ... |
-| `<manifest_digest>` | natural | semantic-only | ... | ... | ... | ... |
-| `<manifest_digest>` | natural | hybrid | ... | ... | ... | ... |
-| `<each identical universe>` | all | each mode | ... | ... | ... | ... |
+The bare-symbol lexical row is complete only when all five columns contain
+results from the same manifest, suite and query pack. If a product was not
+queried on that exact input, show `NOT_RUN` and mark the matrix incomplete.
 
 Include a compact execution summary with expected/completed workflows, paired
 results, live task rows per external product, validation/replay counts, source

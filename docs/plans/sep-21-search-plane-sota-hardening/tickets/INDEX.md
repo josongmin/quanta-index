@@ -27,7 +27,7 @@ operation replay, one SQLite visibility authority, request-held read handles,
 truthful windows, default-deny provider admission and continuous runtime lease
 custody. Reopen implemented owners only for a reproduced current failure.
 
-[Execution entrypoints](prompts/README.md) and
+[Execution commands](prompts/README.md) and
 [handoff custody/schema](handoffs/README.md) remain active acceptance guidance;
 these are not historical handoff bodies. Authentic old handoff audit is distinct
 from current-source release qualification. Common execution and measurement
