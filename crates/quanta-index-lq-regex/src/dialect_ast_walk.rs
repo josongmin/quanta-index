@@ -30,9 +30,11 @@
 //! 1. **AST walk** — this module. Fires FIRST for `Possessive`,
 //!    `NamedCaptureRef`, `InlineFlagMidPattern` so the [`ForbiddenKind`]
 //!    is precise.
-//! 2. **HIR dialect filter** — [`crate::dialect::dialect_filter`]. Hook
+//! 2. **AST error classification** — the executor classifies other parse
+//!    failures from the same parser error without a second AST parse.
+//! 3. **HIR dialect filter** — [`crate::dialect::dialect_filter`]. Hook
 //!    for unicode-class policy and other HIR-level rejections.
-//! 3. NFA estimator → `regex::Regex::new`.
+//! 4. NFA estimator → `regex::Regex::new`.
 //!
 //! AST-level vs HIR-level rationale: lookahead / lookbehind / backref are
 //! rejected by `regex_syntax::ast` parse itself with typed
@@ -60,9 +62,8 @@ use crate::errors::{ForbiddenKind, RegexError, RegexErrorCode};
 ///
 /// Forbidden constructs whose AST-stage error kind is itself typed
 /// (`UnsupportedLookAround`, `UnsupportedBackreference`) are intentionally
-/// **not** classified here — they remain the responsibility of the
-/// parse-error path in [`crate::executor`], because surfacing them twice
-/// would duplicate logic. This function only handles the three constructs
+/// **not** classified here — the executor classifies the same AST parse error,
+/// without parsing again. This function only handles the three constructs
 /// where AST-stage error kinds are insufficient.
 ///
 /// # Errors
@@ -84,14 +85,16 @@ pub fn ast_walk_filter(pattern: &str) -> Result<(), RegexError> {
 /// On AST parse failure, surface a typed `Possessive` / `NamedCaptureRef`.
 ///
 /// Every other parse failure (including `UnsupportedLookAround` and
-/// `UnsupportedBackreference`) is left for the executor's `parse_hir`
-/// path to surface, to avoid duplicating the lookaround/backref typed
-/// classification across two layers.
+/// `UnsupportedBackreference`) is classified by the executor from the same
+/// parser error, without another parse.
 #[expect(
     clippy::wildcard_enum_match_arm,
-    reason = "AstErrorKind is non_exhaustive; non-possessive / non-named-capture-ref parse failures are surfaced by the downstream `parse_hir` path, not duplicated here"
+    reason = "AstErrorKind is non_exhaustive; other parse failures are classified by the executor from the same parser error"
 )]
-fn classify_parse_failure(pattern: &str, err: &regex_syntax::ast::Error) -> Result<(), RegexError> {
+pub(crate) fn classify_parse_failure(
+    pattern: &str,
+    err: &regex_syntax::ast::Error,
+) -> Result<(), RegexError> {
     let span = err.span();
     let start = span.start.offset;
     let bytes = pattern.as_bytes();
@@ -177,7 +180,7 @@ fn is_named_capture_ref_open(bytes: &[u8], start: usize) -> bool {
 ///   `InlineFlagMidPattern`.
 ///   (Scoped flags `(?i:foo)` use `Ast::Group { kind: NonCapturing(Flags) }`,
 ///   a different AST shape entirely — those remain allowed.)
-fn walk_for_inline_flag(ast: &Ast) -> Result<(), RegexError> {
+pub(crate) fn walk_for_inline_flag(ast: &Ast) -> Result<(), RegexError> {
     if let Ast::Alternation(a) = ast {
         if let Some(first) = a.asts.first() {
             // `(?i)foo|bar` applies `i` to the whole alternation, although the
@@ -418,14 +421,14 @@ mod tests {
     #[test]
     fn unrelated_parse_failure_returns_ok() {
         // `foo(` is an unclosed group. The AST walk leaves this for the
-        // downstream `parse_hir` path to surface as `ParseFail`. We
+        // executor's same-error classification to surface as `ParseFail`. We
         // verify we return `Ok(())` (no forbidden classification).
         match ast_walk_filter("foo(") {
             Ok(()) => {}
             Err(e) => {
                 assert!(
                     false,
-                    "expected Ok(()) (downstream parse_hir surfaces ParseFail), got {e}"
+                    "expected Ok(()) (executor surfaces ParseFail), got {e}"
                 );
             }
         }

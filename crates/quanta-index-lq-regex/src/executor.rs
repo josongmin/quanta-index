@@ -3,20 +3,16 @@
 //!
 //! Compile path:
 //!
-//! 1. run [`crate::dialect_ast_walk::ast_walk_filter`] FIRST — this fires
+//! 1. parse one AST, classify parse failures, then run the dialect AST walk —
+//!    these fire
 //!    typed [`crate::errors::ForbiddenKind::Possessive`],
 //!    [`crate::errors::ForbiddenKind::NamedCaptureRef`], and
 //!    [`crate::errors::ForbiddenKind::InlineFlagMidPattern`] before the
-//!    HIR parse can either accept them (mid-pattern `(?i)`) or surface
-//!    them with a generic untyped error (possessive / named-capture-ref);
-//! 2. parse with `regex_syntax::parse`;
-//! 3. on AST-stage rejection, classify the construct via
-//!    [`crate::dialect::classify_ast_error`] and surface
-//!    [`RegexErrorCode::ForbiddenSyntax`] when applicable; otherwise
-//!    [`RegexErrorCode::ParseFail`];
-//! 4. run [`crate::dialect::dialect_filter`] over the HIR;
-//! 5. compute the structural planning charge via [`crate::estimate_nfa_states`];
-//! 6. remove unobserved explicit captures, then compile with
+//!    HIR translation can erase their syntax;
+//! 2. translate that AST into HIR without parsing it again;
+//! 3. run [`crate::dialect::dialect_filter`] over the HIR;
+//! 4. compute the structural planning charge via [`crate::estimate_nfa_states`];
+//! 5. remove unobserved explicit captures from that AST, then compile with
 //!    `regex::bytes::RegexBuilder`, wrapping `regex::Error`
 //!    size refusals into [`RegexErrorCode::PlanLimitExceeded`] and other
 //!    engine failures into [`RegexErrorCode::ExecutionInternal`].
@@ -39,7 +35,7 @@ use quanta_index_lq_trigram::{DocId, DocResolver};
 use regex_syntax::hir::Hir;
 
 use crate::dialect::{classify_ast_error, classify_construct_from_slice, dialect_filter};
-use crate::dialect_ast_walk::ast_walk_filter;
+use crate::dialect_ast_walk::{classify_parse_failure, walk_for_inline_flag};
 use crate::errors::{LimitDimension, RegexError, RegexErrorCode};
 use crate::estimator::estimate_nfa_states;
 use crate::literal_extract::extract_prefilter_literal_alternation;
@@ -48,7 +44,7 @@ use crate::literal_extract::extract_prefilter_literal_alternation;
 // per-NFA and per-lazy-DFA-cache limits, not an aggregate allocation bound.
 const ENGINE_NFA_SIZE_LIMIT_BYTES: usize = 10 * (1 << 20);
 const ENGINE_DFA_CACHE_LIMIT_BYTES: usize = 2 * (1 << 20);
-// A hard input-size gate before both the dialect AST walk and HIR parser.
+// A hard input-size gate before the dialect AST parse and HIR translation.
 // This limits parser work per pattern, not aggregate compiler/cache memory.
 const MAX_REGEX_PATTERN_BYTES: usize = 64 * (1 << 10);
 
@@ -135,20 +131,35 @@ impl RegexExecutor {
     pub fn prepare(pattern: &str) -> Result<RegexCompilationPlan, RegexError> {
         Self::validate_pattern_size(pattern)?;
         // Precise AST-level rejection of `(?>...)`, `\k<name>`, and
-        // mid-pattern `(?i)` MUST run before `parse_hir`: the first two
+        // mid-pattern `(?i)` MUST run before HIR translation: the first two
         // surface as generic `FlagUnrecognized` / `EscapeUnrecognized`
         // parse errors (losing typed classification), and the third is
         // accepted unconditionally by `regex_syntax` so the HIR walk
         // cannot see it.
-        ast_walk_filter(pattern)?;
-        let hir = parse_hir(pattern)?;
+        let mut ast = regex_syntax::ast::parse::Parser::new()
+            .parse(pattern)
+            .map_err(|error| {
+                classify_parse_failure(pattern, &error)
+                    .err()
+                    .unwrap_or_else(|| {
+                        classify_parse_error(pattern, &regex_syntax::Error::Parse(error))
+                    })
+            })?;
+        walk_for_inline_flag(&ast)?;
+        // Translate the checked AST directly. The standard `parse` entrypoint
+        // would allocate and parse a second AST for the same pattern.
+        let hir = regex_syntax::hir::translate::Translator::new()
+            .translate(pattern, &ast)
+            .map_err(|error| {
+                classify_parse_error(pattern, &regex_syntax::Error::Translate(error))
+            })?;
         dialect_filter(&hir)?;
         let estimated_states = estimate_nfa_states(&hir)?;
         // Only boolean truth and whole-match ranges escape this executor.
         // Backreferences are forbidden, so explicit capture storage cannot
         // affect either result. Keeping it grows the engine's per-state cache
         // with every capture, even when the actual source focus is tiny.
-        let execution_pattern = without_explicit_captures(pattern, &hir)?;
+        let execution_pattern = without_explicit_captures(pattern, &hir, &mut ast);
         Ok(RegexCompilationPlan {
             pattern: pattern.into(),
             hir,
@@ -410,20 +421,16 @@ impl RegexExecutor {
 }
 
 /// Drop capture storage that is unobservable through truth and whole-match APIs.
-fn without_explicit_captures<'a>(pattern: &'a str, hir: &Hir) -> Result<Cow<'a, str>, RegexError> {
+fn without_explicit_captures<'a>(
+    pattern: &'a str,
+    hir: &Hir,
+    ast: &mut regex_syntax::ast::Ast,
+) -> Cow<'a, str> {
     if hir.properties().explicit_captures_len() == 0 {
-        return Ok(Cow::Borrowed(pattern));
+        return Cow::Borrowed(pattern);
     }
-    let mut ast = regex_syntax::ast::parse::Parser::new()
-        .parse(pattern)
-        .map_err(|error| {
-            RegexError::new(
-                RegexErrorCode::ExecutionInternal,
-                format!("validated regex AST could not be reconstructed: {error}"),
-            )
-        })?;
-    erase_capture_storage(&mut ast);
-    Ok(Cow::Owned(ast.to_string()))
+    erase_capture_storage(ast);
+    Cow::Owned(ast.to_string())
 }
 
 fn erase_capture_storage(ast: &mut regex_syntax::ast::Ast) {
@@ -457,15 +464,6 @@ fn erase_capture_storage(ast: &mut regex_syntax::ast::Ast) {
         | Ast::ClassUnicode(_)
         | Ast::ClassPerl(_)
         | Ast::ClassBracketed(_) => {}
-    }
-}
-
-/// Parse `pattern` through `regex_syntax`, translating AST-stage
-/// rejections into typed [`RegexErrorCode::ForbiddenSyntax`] where applicable.
-fn parse_hir(pattern: &str) -> Result<Hir, RegexError> {
-    match regex_syntax::parse(pattern) {
-        Ok(h) => Ok(h),
-        Err(e) => Err(classify_parse_error(pattern, &e)),
     }
 }
 
@@ -620,6 +618,47 @@ mod tests {
                     reference.is_match(source.as_bytes()),
                     "{pattern:?} on {source:?}"
                 );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn reused_checked_ast_preserves_reference_ranges_for_unicode_and_repetition()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let patterns = [
+            "(?i)(é|K){1,3}",
+            "([À-Ö]|[a-z]){2,4}",
+            "(?m)^(a|é)?$",
+            r"(\b)([\x{80}-\x{7FF}]{1,2})(\b)",
+        ];
+        let sources = [
+            "", "éK", "ÉK", "Kééé", "Àb", "a\né", " café ", "αβ", "a\r\nb",
+        ];
+        for pattern in patterns {
+            let reference = regex::bytes::Regex::new(pattern)?;
+            for _ in 0..2 {
+                let plan = RegexExecutor::prepare(pattern)?;
+                let executor = RegexExecutor::compile_prepared(plan)?;
+                for source in sources {
+                    let expected: Vec<_> = reference
+                        .find_iter(source.as_bytes())
+                        .map(|found| found.range())
+                        .collect();
+                    let actual = executor.find_ranges_bounded(
+                        source.as_bytes(),
+                        source.len(),
+                        64,
+                        &|| false,
+                    )?;
+                    assert!(actual.exhausted, "{pattern:?} on {source:?}");
+                    assert_eq!(actual.ranges, expected, "{pattern:?} on {source:?}");
+                    assert_eq!(
+                        executor.verify(source.as_bytes()),
+                        reference.is_match(source.as_bytes()),
+                        "{pattern:?} on {source:?}"
+                    );
+                }
             }
         }
         Ok(())
