@@ -115,6 +115,22 @@ def test_heavy_work_is_off_by_default():
     assert config["workflows"]["manual-heavy"]["when"] == "<< pipeline.parameters.run_heavy >>"
 
 
+def test_regular_python_and_rust_jobs_are_independent_and_source_bound():
+    config = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
+    assert config["workflows"]["regular"]["jobs"] == ["verify", "verify-python"]
+    rust_steps = config["jobs"]["verify"]["steps"]
+    python_steps = config["jobs"]["verify-python"]["steps"]
+    assert rust_steps[0] == python_steps[0] == "checkout"
+    assert rust_steps[1:3] == python_steps[1:3]
+    assert 'test "$(git rev-parse HEAD)" = "$CIRCLE_SHA1"' in rust_steps[2]["run"]["command"]
+    rust_names = {step["run"]["name"] for step in rust_steps if "run" in step}
+    python_names = {step["run"]["name"] for step in python_steps if "run" in step}
+    assert "rust nextest" in rust_names and "rust nextest" not in python_names
+    assert "Python policy and tooling tests" in python_names
+    assert "P00 authority owner tests" in python_names
+    assert "Python policy and tooling tests" not in rust_names
+
+
 def test_circleci_explicit_test_selector_must_be_registered(tmp_path: Path):
     data, path = _config(tmp_path)
     data["jobs"]["verify"]["steps"][0]["run"]["command"] = (
