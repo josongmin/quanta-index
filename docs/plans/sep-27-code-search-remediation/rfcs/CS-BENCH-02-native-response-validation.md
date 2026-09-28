@@ -93,6 +93,8 @@ semantic native-to-normalized consistency, not another run store or process owne
 - [x] Enroll permanent cs/Sourcegraph/OpenGrok unchanged-native path/hit controls
   that recompute normalized-row digests and still require native disagreement
   refusal. Preserve a bare-scorer control to distinguish diagnostic scope.
+- [x] Refuse a Sourcegraph native line-match span whose end exceeds the supplied
+  line's UTF-8 byte length; retain a fixed out-of-range native regression.
 - [ ] Equivalent path/span/order/query-binding mutations are tested for each
   participating product, including legitimate zero-result complete responses.
 - [ ] HTTP-success/error-body, partial SSE, timeout, duplicate/missing task,

@@ -47,6 +47,17 @@ noncanonical ZIP metadata before writing output. These changes close the
 identified local code paths, not the independent gold, actual native captures,
 installed producer/daemon, IO-5 resource or hosted qualification rows above.
 
+Sep-29 follow-up on `a9a43529` plus scoped local edits: the external JSONL
+capture verifier no longer treats a valid result file larger than 16 MiB as a
+control document; it replays bounded lines and validates complete bytes. A
+Sourcegraph native match span past its supplied line now refuses. Focused adapter
+tests passed. The regex executor's repeated AST parses and coverage decoder's
+per-row exact reserve were removed; their owner tests passed, but the aggregate
+regex allocation boundary and three authenticated coverage base scans remain.
+A clean-owner local daemon/public-SDK crash matrix passed four cases on the
+shared overlay. This is not installed-release, actual external issuer/product,
+full-source or platform qualification; MISC-03/05 and BENCH-02 remain active.
+
 ## Execution order and shared boundary
 
 Use the source-first [CS-INT-01 execution plan](../../sep-27-code-search-remediation/rfcs/CS-INT-01-integration-and-qualification.md#current-source-audit-and-decision-order)

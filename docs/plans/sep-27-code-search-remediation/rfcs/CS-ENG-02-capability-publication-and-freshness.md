@@ -57,6 +57,15 @@ authenticated immutable base token; external file mutation remains possible
 under the process-local lock. Removing a recheck would weaken the demonstrated
 tamper refusal, so the scan optimization remains open.
 
+Sep-29 local owner update: bounded coverage-row decoding now reserves an
+admitted definite CBOR row count once and grows indefinite rows geometrically,
+instead of requesting exact capacity for each row. A 4,096-row indefinite page
+decodes; the 4,097th row refuses. Focused owner tests and growing 128/512/2,048
+file diagnostics passed. The 2,048-file mixed delta still reads 256 pages and
+883,542 encoded bytes at each of the three preflight/build phases, with a
+separate verified open. This removes avoidable decoder reallocations, not the
+authenticated base scans or the unmeasured total-pipeline physical heap.
+
 ## Remaining acceptance
 
 - [ ] Measure one-file replacement/delete and mixed batches over increasing file

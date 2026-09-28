@@ -61,6 +61,18 @@ high-level limit for the aggregate returned value. Cache reporting is separate.
 Switching to that API improves ownership visibility but does not make planner,
 compiler temporary and cache allocations fallible before admission.
 
+Sep-29 feasibility and owner update: the pinned `regex-syntax` parser allocates
+AST/HIR nodes through ordinary `Box`/`Vec`; `regex-automata` meta construction
+allocates strategy and pool state before returning, and cache creation has no
+fallible request-admission callback. The current public API therefore cannot
+establish the requested hard aggregate bound. The local executor now reuses one
+parsed AST for dialect validation, HIR translation and explicit-capture erasure;
+this removes redundant parsing but does not change that conclusion. The regex
+owner suite, lexical preview owner target and Clippy passed on the updated
+source. Dependency allocation hooks plus one cross-route request lease remain
+the implementation boundary; a separate worker process would also require
+explicit IPC, failure mapping and worker lifecycle design.
+
 Owners: canonical regex executor/prepared holder, lexical preview preparation,
 request resource/lifetime owner and dependency configuration. Preserve one
 matcher for truth and ranges and the current query recall/case/NFC semantics.
