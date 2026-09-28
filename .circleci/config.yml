@@ -72,7 +72,8 @@ jobs:
           command: |
             set -euo pipefail
             unset BASH_ENV ENV
-            git ls-files -z -- ':(glob)**/agent_output*.json' |
+            git ls-files -z -- ':(glob)**/agent_output*.json' \
+              ':(exclude,glob)**/agent_output*.schema.json' |
               while IFS= read -r -d '' file; do
                 uv run --frozen --extra dev python tools/ci/agent/validate_agent_output.py "$file"
               done
