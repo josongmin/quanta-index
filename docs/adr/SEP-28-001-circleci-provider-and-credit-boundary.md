@@ -1,6 +1,6 @@
 # SEP-28-001: CircleCI provider and credit boundary
 
-Status: accepted for repository configuration; hosted activation pending.
+Status: accepted; CircleCI project and triggers registered, hosted run pending.
 
 ## Decision
 
@@ -17,8 +17,7 @@ pipeline parameter defaults to false; setting it true selects the manual
 full-workspace nextest and four bounded fuzz targets. No heavy schedule is
 declared. `tools/ci/test-authority.toml` binds the selected commands to the
 CircleCI config, while the guard checks that the jobs and fail-closed steps are
-reachable. This static binding does not prove that a CircleCI project or
-trigger exists.
+reachable. Static binding alone does not prove that a hosted run passed.
 
 `quanta-index` is private. The CircleCI Free plan has a finite monthly credit
 pool for private builds; keep the heavy workflow manual, and review actual
@@ -29,13 +28,23 @@ passing check.
 ## Activation and limits
 
 The CircleCI account available on 2026-09-28 is not a member of
-`gh/josongmin`, so `circleci project create quanta-index --org gh/josongmin`
-was refused. The repository is not yet connected to a CircleCI project.
-Connect the GitHub repository to CircleCI, then configure triggers for
-default-branch pushes and PR updates. Verify a run on the exact commit and
-the emitted test-authority artifact before calling hosted CI active. A merge
-queue or scheduled correctness claim additionally requires its own observed
-trigger and run.
+`gh/josongmin`; that legacy organization slug refused project creation. The
+existing CircleCI-native organization `circleci/Q3G2VbitoZmaQSKihvptcF`
+has a GitHub App connection that can list `josongmin/quanta-index` and its
+`main` branch. The CLI created project `a705c75e-6631-4e99-afca-ada4e0040a4b`
+and pipeline definition `38e6fc99-c983-4c03-bb02-da8d53bad4ae`, with
+`.circleci/config.yml` and checkout both bound to GitHub repository ID
+`1247685100`. `.circleci/info.yml` binds this checkout to the native project
+slug for subsequent CLI commands.
+
+Two enabled GitHub App triggers select default-branch pushes and pushes to
+branches with an open PR; there is no schedule or all-branches push trigger.
+The project enables redundant-workflow auto-cancel and disables secret
+environment variables for fork PR jobs. Registration and repository access
+were verified through the CLI, but the project had zero hosted runs at
+registration. Verify a run on the exact commit and its emitted test-authority
+artifact before calling hosted CI active. A merge queue or scheduled
+correctness claim additionally requires its own observed trigger and run.
 
 The former GitHub-only proof bundle dispatch, P00 hosted manifest, sanitizer,
 Miri, mutation, dependency and parity jobs are not reproduced by this CircleCI
