@@ -7,10 +7,17 @@ F09; gaps: G01/G02.
 Depends on BENCH-01/02/03 and shared MISC execution/custody prerequisites.
 
 `live_lexical_external.py` explicitly labels its output diagnostic/unqualified,
-retains raw responses and excludes backend indexed-universe attestation,
-independent gold and qualified speed. Do not promote that producer's presence to
-a completed comparison. Add L2 coverage/ranked-sidecar total update cost to the
-measurement scope; index-only bytes cannot establish total update cost.
+retains raw responses and supports an opt-in OpenGrok full indexed-view probe.
+The probe compares the native indexed-file list with the release manifest and
+checks every served plain-text file byte against its release SHA before and
+after all queries. It preserves both probes for replay. This establishes an
+OpenGrok file-inventory/source-view observation, not Lucene posting freshness,
+Sourcegraph/cs scope or whole-product indexed-universe attestation; the capture
+remains diagnostic. A mutation that is reversed between the two probes may
+escape this observation. Independent gold and qualified speed are also absent. Do
+not promote that producer's presence to a completed comparison. Add L2
+coverage/ranked-sidecar total update cost to the measurement scope; index-only
+bytes cannot establish total update cost.
 Actual workload/host admission and final source execution remain required:
 [CS-INT-01](CS-INT-01-integration-and-qualification.md#serial-acceptance-boundary).
 
@@ -47,6 +54,18 @@ endpoint, worker topology, CPU/memory limits, model assets and indexing config.
 Use supported readiness/manifest evidence; equal file count is insufficient.
 If a product cannot prove part of its universe, label the dependent comparison
 diagnostic. Unsupported capabilities remain visible, not zero-point failures.
+
+The new OpenGrok `indexed_view_probe: "full"` path uses the documented
+[`/projects/{project}/files` and `/file/content` APIs](https://github.com/oracle/opengrok/blob/master/openapi.yaml).
+It is opt-in and bounded to
+4,096 files, 512 MiB of release files and 900 seconds per probe. A local fake
+service verifies extra/missing/duplicate paths, stale/missing content, replay
+tampering and a mutation between the two probes. A read-only authenticated
+local gin probe returned HTTP 200 and 99 unique canonical `/gin/` indexed paths,
+matching two inspected manifests. `/file/content` returned HTTP 404 for
+`fs.go`, and current `corpus_release.validate` rejected both inspected
+releases. Those inputs are **FAILED** for full capture, not a qualified run.
+A fresh reindex/release and full capture remain **NOT_RUN**.
 
 ## Equivalent work and timing boundaries
 

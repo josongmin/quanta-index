@@ -51,6 +51,7 @@ try:
         digest,
         evaluate,
         load_evidence,
+        qualified_query_family_ci,
         validate_comparison_contract,
         validate_experiment_custody,
         validate_suite,
@@ -79,6 +80,7 @@ except ImportError:  # direct script invocation: import the sibling module
         digest,
         evaluate,
         load_evidence,
+        qualified_query_family_ci,
         validate_comparison_contract,
         validate_experiment_custody,
         validate_suite,
@@ -4847,6 +4849,38 @@ def _qualified_uncertainty(comparison: object) -> bool:
     return True
 
 
+def _qualified_cluster_uncertainty(comparison: object) -> bool:
+    if not isinstance(comparison, dict):
+        return False
+    ci = comparison.get("primary_delta_cluster_ci_95")
+    if not isinstance(ci, dict) or ci.get("status") is not None:
+        return False
+    sample_count = comparison.get("sample_count")
+    cluster_count = ci.get("cluster_count")
+    strata = ci.get("strata")
+    if (
+        ci.get("method") != "paired_query_family_cluster_bootstrap_percentile_v1"
+        or type(sample_count) is not int
+        or type(cluster_count) is not int
+        or type(ci.get("sample_count")) is not int
+        or ci["sample_count"] != sample_count
+        or type(ci.get("min_cluster_count")) is not int
+        or not 2 <= ci["min_cluster_count"] <= 20
+        or not ci["min_cluster_count"] <= cluster_count <= sample_count
+        or not isinstance(strata, dict)
+        or any(type(count) is not int or count < 1 for count in strata.values())
+        or sum(strata.values()) != cluster_count
+        or ci.get("resamples") != 10_000
+        or not _is_hex(ci.get("seed_sha256"), 64)
+        or any(not is_finite_json_number(ci.get(key)) for key in ("mean", "lower_95", "upper_95"))
+        or not is_finite_json_number(comparison.get("primary_delta"))
+    ):
+        return False
+    return math.isclose(
+        float(ci["mean"]), float(comparison["primary_delta"]), rel_tol=1e-12, abs_tol=1e-12
+    )
+
+
 def _validate_phase_metrics(payload: object, where: str) -> dict:
     if not isinstance(payload, dict):
         raise RunError(f"{where} must be an object")
@@ -6313,6 +6347,9 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 comparison.get("candidate"),
                 strict_k=protocol_payload.get("rank_metric_k_policy") == "declared_top_k_v1",
             )
+            cluster_ci = qualified_query_family_ci(
+                suite, rescored, comparison.get("baseline"), comparison.get("candidate")
+            )
         except (RunError, ValueError, TypeError):
             pair_note("report_rescore_failed", ("T04", "T13"))
             continue
@@ -6339,6 +6376,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 "report_digest": report_digest,
                 "graded": bool(rescored.get("graded")),
                 "primary_delta_ci_95": rank_comparison["primary_delta_ci_95"],
+                "primary_delta_cluster_ci_95": cluster_ci,
                 "stratified_primary_delta": rank_comparison["stratified_primary_delta"],
                 "no_answer_abstention_delta": rank_comparison["no_answer_abstention_delta"],
                 "report_sha": digest(canonical(content)),
@@ -7459,7 +7497,10 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     elif not all(entry["graded"] for entry in matched):
         set_state("QUALITY_DELTA", "fail", "reports_ungraded", None)
         classes.append("scoring")
-    elif any(not _qualified_uncertainty(entry) for entry in matched):
+    elif any(
+        not _qualified_uncertainty(entry) or not _qualified_cluster_uncertainty(entry)
+        for entry in matched
+    ):
         set_state("QUALITY_DELTA", "fail", "uncertainty_unqualified", None)
         classes.append("scoring")
     elif qualification_dependency is not None:
@@ -7480,6 +7521,10 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                     {
                         "admission": admission_evidence,
                         "reports": sorted(entry["report_sha"] for entry in matched),
+                        "cluster_uncertainty": sorted(
+                            (entry["primary_delta_cluster_ci_95"] for entry in matched),
+                            key=lambda ci: ci["seed_sha256"],
+                        ),
                         "isolation": isolation_evidence,
                     }
                 )

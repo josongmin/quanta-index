@@ -1910,6 +1910,12 @@ def test_current_confidence_interval_available_on_sufficient_sample(tmp_path):
     assert ci["strata"] == {"uncategorized": 20}
     assert len(ci["seed_sha256"]) == 64
     assert ci["lower_95"] <= ci["mean"] <= ci["upper_95"]
+    cluster_ci = ev.qualified_query_family_ci(suite, report, "lexical", "hybrid")
+    assert cluster_ci["cluster_count"] == 20
+    assert cluster_ci["method"] == "paired_query_family_cluster_bootstrap_percentile_v1"
+    assert pairrun._qualified_cluster_uncertainty(
+        {"sample_count": 20, "primary_delta": ci["mean"], "primary_delta_cluster_ci_95": cluster_ci}
+    )
     repeated = ev.evaluate(*ev.load_evidence(repo, suite_path, runner_path), "lexical", "hybrid")[
         "rank_metrics"
     ]["comparison"]["primary_delta_ci_95"]
@@ -1935,6 +1941,26 @@ def test_bootstrap_is_order_independent_and_rejects_invalid_pairs(monkeypatch):
         ev.mean_ci(deltas, [("T1", "a"), ("T1", "b"), ("T3", "a"), ("T4", "b")])
     with pytest.raises(ev.EvidenceError, match="deltas must be finite"):
         ev.mean_ci([0.0, 1.0, float("nan"), 2.0], strata)
+
+
+def test_qualified_cluster_interval_refuses_correlated_task_pseudoreplication():
+    rows = [(f"T{i:02d}", "one-family", "symbol", 0.5 if i % 2 else -0.5) for i in range(20)]
+    ci = ev.query_family_cluster_ci(rows, "a" * 40)
+    assert ci["sample_count"] == 20
+    assert ci["cluster_count"] == 1
+    assert ci["status"] == ev.NOT_APPLICABLE
+    assert ci["reason"] == "insufficient_independent_clusters"
+    assert not pairrun._qualified_cluster_uncertainty(
+        {"sample_count": 20, "primary_delta": 0.0, "primary_delta_cluster_ci_95": ci}
+    )
+    with pytest.raises(ev.EvidenceError, match="crosses categories"):
+        ev.query_family_cluster_ci(
+            [("T1", "same", "symbol", 0.5), ("T2", "same", "file", -0.5)], "a" * 40
+        )
+    sparse = [(f"T{i:02d}", f"F{i:02d}", "symbol" if i < 19 else "file", 0.5) for i in range(20)]
+    assert ev.query_family_cluster_ci(sparse, "a" * 40)["reason"] == (
+        "insufficient_clusters_in_stratum"
+    )
 
 
 def test_stratified_delta_summary_binds_category_language_and_repository(monkeypatch):

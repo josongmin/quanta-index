@@ -188,6 +188,7 @@
     "tools.ci.tests.test_retrieval_benchmark.test_qualified_admission_is_reverified_after_capture",
     "tools.ci.tests.test_retrieval_benchmark.test_qualified_claims_require_pair_contract_and_sdk_states[quality]",
     "tools.ci.tests.test_retrieval_benchmark.test_qualified_claims_require_pair_contract_and_sdk_states[speed]",
+    "tools.ci.tests.test_retrieval_benchmark.test_qualified_cluster_interval_refuses_correlated_task_pseudoreplication",
     "tools.ci.tests.test_retrieval_benchmark.test_qualified_contract_refuses_coordinated_receipt_closure_rebind",
     "tools.ci.tests.test_retrieval_benchmark.test_qualified_custody_refuses_rebound_wrong_source_and_shared_gold_file",
     "tools.ci.tests.test_retrieval_benchmark.test_qualified_quality_requires_estimable_uncertainty",

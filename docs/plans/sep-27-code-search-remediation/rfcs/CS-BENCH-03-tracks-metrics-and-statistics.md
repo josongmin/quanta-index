@@ -1,8 +1,11 @@
 # CS-BENCH-03 — Task tracks, metric units and statistical admission
 
 Status: acceptance **OPEN**. Existing metric helpers and separate timing-layer
-labels are present; independently admitted task-track/statistical/holdout
-execution is **NOT_RUN** in the current remaining-work audit.
+labels are present. The qualified verdict now independently resamples whole
+query families within category, requires at least 20 independent families and
+at least two per category, and refuses correlated-task pseudoreplication.
+Independently admitted task-track/holdout execution is **NOT_RUN** in the current
+remaining-work audit.
 Category: benchmark evaluation. Findings: F04/F09; depends on BENCH-01/02.
 
 Current `lexical_file_comparison` reports hit rate and macro file recall
@@ -81,6 +84,16 @@ paired per-query deltas on identical tasks, plus wins/losses/ties and stratum co
 Bootstrap at the repository/query-family clustering level consistent with the
 sampling design; many copied queries are not independent samples. When independent
 clusters are too few, report descriptive intervals/limitations, not significance.
+The current single-repository qualified gate implements the within-repository
+query-family boundary. It does not establish inference across repositories;
+multi-repository macro inference still needs independently admitted repos and a
+repository-level procedure. The task-level interval remains descriptive and
+cannot alone pass `QUALITY_DELTA`.
+
+Owner-local check on `3272662c` plus working-tree changes: `uv run --frozen
+--extra dev python -m pytest tools/ci/tests/test_retrieval_benchmark.py -q`
+passed 341/341. This verifies the gate and fixtures, not independent labels or
+a qualified benchmark run.
 
 Before tuning or opening holdout, freeze: primary metric/track, minimum useful
 effect, tolerated regressions per critical stratum, latency/memory/index-cost

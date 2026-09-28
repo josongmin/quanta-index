@@ -1474,6 +1474,128 @@ def _bootstrap_bounds(seed_bytes: bytes, resamples: int) -> tuple[float, float]:
     return quantile(0.025), quantile(0.975)
 
 
+def query_family_cluster_ci(
+    rows: list[tuple[str, str, str, float]], repository_commit: str
+) -> dict[str, Any]:
+    """Qualification-only paired interval: resample whole query families."""
+    require(bool(COMMIT_RE.fullmatch(repository_commit)), "cluster repository identity is invalid")
+    seen: set[str] = set()
+    families: dict[str, tuple[str, list[tuple[str, float]]]] = {}
+    for task_id, family_id, category, delta in rows:
+        require(
+            bool(task_id) and bool(family_id) and bool(category),
+            "cluster task, family and category identities must be nonempty",
+        )
+        require(task_id not in seen, "cluster task identities must be unique")
+        require(math.isfinite(delta), "cluster deltas must be finite")
+        seen.add(task_id)
+        if family_id not in families:
+            families[family_id] = (category, [])
+        family_category, members = families[family_id]
+        require(family_category == category, "query family crosses categories")
+        members.append((task_id, delta))
+    clusters = [
+        (family_id, category, sorted(members))
+        for family_id, (category, members) in sorted(families.items())
+    ]
+    strata: dict[str, list[tuple[float, int]]] = {}
+    for _family_id, category, members in clusters:
+        strata.setdefault(category, []).append(
+            (sum(delta for _task_id, delta in members), len(members))
+        )
+    summary: dict[str, Any] = {
+        "method": "paired_query_family_cluster_bootstrap_percentile_v1",
+        "sample_count": len(rows),
+        "cluster_count": len(clusters),
+        "min_cluster_count": MIN_CI_SAMPLE,
+        "strata": {category: len(group) for category, group in sorted(strata.items())},
+    }
+    if len(clusters) < MIN_CI_SAMPLE:
+        return {
+            **summary,
+            "status": NOT_APPLICABLE,
+            "reason": "insufficient_independent_clusters",
+        }
+    if MIN_CI_SAMPLE >= 20 and any(len(group) < 2 for group in strata.values()):
+        return {
+            **summary,
+            "status": NOT_APPLICABLE,
+            "reason": "insufficient_clusters_in_stratum",
+        }
+    seed = canonical(
+        {
+            "repository_commit": repository_commit,
+            "clusters": [
+                {"family_id": family_id, "category": category, "members": members}
+                for family_id, category, members in clusters
+            ],
+        }
+    )
+    rng = random.Random(int(digest(seed)[:16], 16))
+    sampled_means = []
+    for _ in range(10_000):
+        total = count = 0
+        for category in sorted(strata):
+            group = strata[category]
+            for _cluster in group:
+                cluster_sum, cluster_size = group[rng.randrange(len(group))]
+                total += cluster_sum
+                count += cluster_size
+        sampled_means.append(total / count)
+    sampled_means.sort()
+
+    def quantile(p: float) -> float:
+        position = p * (len(sampled_means) - 1)
+        lower, upper = math.floor(position), math.ceil(position)
+        weight = position - lower
+        return sampled_means[lower] * (1.0 - weight) + sampled_means[upper] * weight
+
+    return {
+        **summary,
+        "resamples": 10_000,
+        "seed_sha256": digest(seed),
+        "mean": sum(delta for _task_id, _family_id, _category, delta in rows) / len(rows),
+        "lower_95": quantile(0.025),
+        "upper_95": quantile(0.975),
+    }
+
+
+def qualified_query_family_ci(
+    suite: dict[str, Any], report: dict[str, Any], baseline: str, candidate: str
+) -> dict[str, Any]:
+    """Derive independent-family uncertainty from the re-scored report rows."""
+    primary = report["rank_metrics"]["comparison"]["primary_metric"]
+    field = "ndcg_at_10" if primary == "ndcg_at_10" else "chunk_recall_at_10"
+    require(primary in {"ndcg_at_10", "recall_at_10"}, "unsupported cluster primary metric")
+    by_key = {(row["task_id"], row["route"]): row for row in report["per_query"]}
+    tasks = sorted(
+        (task for task in suite["tasks"] if task["split"] == "eval" and task["gold"]),
+        key=lambda task: task["task_id"],
+    )
+    rows = []
+    for task in tasks:
+        task_id = task["task_id"]
+        require(
+            (task_id, baseline) in by_key and (task_id, candidate) in by_key,
+            "cluster report is missing a paired task row",
+        )
+        before = by_key[(task_id, baseline)][field]
+        after = by_key[(task_id, candidate)][field]
+        require(
+            type(before) in (float, int) and type(after) in (float, int),
+            "cluster primary metric is not numeric",
+        )
+        rows.append(
+            (
+                task_id,
+                task["query_family_id"],
+                str(task.get("category", "uncategorized")),
+                float(after - before),
+            )
+        )
+    return query_family_cluster_ci(rows, suite["repository_commit"])
+
+
 def _task_language(task: dict[str, Any]) -> str:
     suffixes = sorted(
         {

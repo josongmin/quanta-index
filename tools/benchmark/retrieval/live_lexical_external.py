@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import selectors
@@ -36,6 +37,9 @@ from tools.benchmark.retrieval import sourcegraph  # noqa: E402
 
 MAX_HTTP_BYTES = 16 * 1024 * 1024
 MAX_PROCESS_BYTES = 16 * 1024 * 1024
+MAX_INDEXED_VIEW_FILES = 4096
+MAX_INDEXED_VIEW_BYTES = 512 * 1024 * 1024
+MAX_INDEXED_VIEW_SECONDS = 900
 HTTP_TIMEOUT = 50
 
 
@@ -106,8 +110,12 @@ def _url(value: object) -> str:
     return value.rstrip("/")
 
 
-def _service(value: object, keys: set[str]) -> dict:
-    if not isinstance(value, dict) or not keys <= set(value) or set(value) - keys - {"token_file"}:
+def _service(value: object, keys: set[str], optional: set[str] = frozenset()) -> dict:
+    if (
+        not isinstance(value, dict)
+        or not keys <= set(value)
+        or set(value) - keys - optional - {"token_file"}
+    ):
         raise ValueError("service spec keys differ")
     result = dict(value, base_url=_url(value["base_url"]))
     for key in keys - {"base_url", "server_image_digest"}:
@@ -151,7 +159,13 @@ def _spec(path: Path) -> dict:
     value["sourcegraph"] = _service(
         value["sourcegraph"], {"base_url", "repository", "server_image_digest"}
     )
-    value["opengrok"] = _service(value["opengrok"], {"base_url", "project", "server_image_digest"})
+    value["opengrok"] = _service(
+        value["opengrok"],
+        {"base_url", "project", "server_image_digest"},
+        {"indexed_view_probe"},
+    )
+    if value["opengrok"].get("indexed_view_probe") not in (None, "full"):
+        raise ValueError("OpenGrok indexed view probe must be full or absent")
     if not isinstance(value["cs"], dict) or set(value["cs"]) != {"binary"}:
         raise ValueError("cs spec requires only binary")
     for key in ("suite", "query_pack", "output_root"):
@@ -398,6 +412,114 @@ def _opengrok_response(
     )
 
 
+def _opengrok_indexed_view_response(
+    row: dict, view: Path, status: int, content_type: str, raw: bytes
+) -> None:
+    # text/plain checks indexed-document presence. Exact bytes bind the served
+    # source view, but do not prove that Lucene terms match the current bytes.
+    if status != 200 or content_type != "text/plain":
+        raise ValueError(
+            f"OpenGrok indexed document {row['path']} is unavailable or not plain text: "
+            f"HTTP {status} / {content_type}"
+        )
+    if (
+        _sha(raw) != row["file_sha256"]
+        or _sha(_read_control_file(view / row["path"])) != row["file_sha256"]
+    ):
+        raise ValueError(
+            f"OpenGrok indexed document {row['path']} source bytes differ from release"
+        )
+
+
+def _opengrok_indexed_inventory_response(
+    config: dict, manifest: dict, status: int, content_type: str, raw: bytes
+) -> None:
+    if status != 200 or content_type != "application/json":
+        raise ValueError(
+            f"OpenGrok indexed file inventory is unavailable: HTTP {status} / {content_type}"
+        )
+    native = json.loads(
+        raw.decode("utf-8"), object_pairs_hook=_object, parse_constant=_reject_constant
+    )
+    if not isinstance(native, list) or len(native) > MAX_INDEXED_VIEW_FILES:
+        raise ValueError("OpenGrok indexed file inventory is not a bounded path list")
+    prefix = "/" + config["project"] + "/"
+    paths = []
+    for path in native:
+        if not isinstance(path, str) or not path.startswith(prefix):
+            raise ValueError("OpenGrok indexed file inventory has an invalid project path")
+        relative = path[len(prefix) :]
+        if not lexical._canonical_result_path(relative):
+            raise ValueError("OpenGrok indexed file inventory has a noncanonical path")
+        paths.append(relative)
+    if len(paths) != len(set(paths)):
+        raise ValueError("OpenGrok indexed file inventory has duplicate paths")
+    expected = {row["path"] for row in manifest["files"]}
+    if set(paths) != expected:
+        raise ValueError("OpenGrok indexed file inventory differs from release manifest")
+
+
+def _opengrok_indexed_inventory(config: dict, manifest: dict, target: Path, phase: str) -> None:
+    endpoint = "/api/v1/projects/" + urllib.parse.quote(config["project"], safe="") + "/files"
+    status, content_type, raw, elapsed = _http(config, endpoint, {}, "application/json")
+    _write(target / f"indexed-files-{phase}.json", raw)
+    _write(
+        target / f"indexed-files-{phase}.transport.json",
+        json.dumps(
+            {
+                "endpoint": endpoint,
+                "status": status,
+                "content_type": content_type,
+                "elapsed_ms": elapsed,
+            },
+            sort_keys=True,
+        ).encode()
+        + b"\n",
+    )
+    _opengrok_indexed_inventory_response(config, manifest, status, content_type, raw)
+
+
+def _opengrok_indexed_view(config: dict, manifest: dict, view: Path, target: Path) -> None:
+    files = manifest["files"]
+    if (
+        len(files) > MAX_INDEXED_VIEW_FILES
+        or sum((view / row["path"]).stat().st_size for row in files) > MAX_INDEXED_VIEW_BYTES
+    ):
+        raise ValueError("OpenGrok full indexed view probe exceeds file or byte limit")
+    deadline = time.monotonic() + MAX_INDEXED_VIEW_SECONDS
+    _opengrok_indexed_inventory(config, manifest, target, "before")
+    if time.monotonic() >= deadline:
+        raise ValueError("OpenGrok full indexed view probe timed out")
+    for index, row in enumerate(files):
+        if time.monotonic() >= deadline:
+            raise ValueError("OpenGrok full indexed view probe timed out")
+        path = "/" + config["project"] + "/" + row["path"]
+        status, content_type, raw, elapsed = _http(
+            config, "/api/v1/file/content", {"path": path}, "text/plain"
+        )
+        name = f"{index:06d}"
+        _write(target / f"{name}.content", raw)
+        _write(
+            target / f"{name}.transport.json",
+            json.dumps(
+                {
+                    "path": path,
+                    "status": status,
+                    "content_type": content_type,
+                    "elapsed_ms": elapsed,
+                },
+                sort_keys=True,
+            ).encode()
+            + b"\n",
+        )
+        _opengrok_indexed_view_response(row, view, status, content_type, raw)
+        if time.monotonic() >= deadline:
+            raise ValueError("OpenGrok full indexed view probe timed out")
+    _opengrok_indexed_inventory(config, manifest, target, "after")
+    if time.monotonic() >= deadline:
+        raise ValueError("OpenGrok full indexed view probe timed out")
+
+
 def _process(argv: list[str], timeout: int) -> tuple[int, bytes, bytes, float]:
     start = time.monotonic_ns()
     deadline = time.monotonic() + timeout
@@ -419,13 +541,13 @@ def _process(argv: list[str], timeout: int) -> tuple[int, bytes, bytes, float]:
                         selector.unregister(key.fileobj)
                         continue
                     buffers[key.fileobj].extend(chunk)
-                    if len(buffers[key.fileobj]) > MAX_PROCESS_BYTES:
+                    if sum(map(len, buffers.values())) > MAX_PROCESS_BYTES:
                         raise ValueError("cs process output exceeds 16 MiB limit")
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise ValueError("cs process timed out")
         process.wait(timeout=remaining)
-    except (ValueError, subprocess.TimeoutExpired) as error:
+    except BaseException as error:
         try:
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
@@ -585,6 +707,9 @@ def capture(spec_path: Path) -> dict:
     _write(stage / "suite.json", suite_raw)
     _write(stage / "query-pack.json", pack_raw)
     _write(stage / "manifest.json", manifest_raw)
+    probe_indexed_view = spec["opengrok"].get("indexed_view_probe") == "full"
+    if probe_indexed_view:
+        _opengrok_indexed_view(spec["opengrok"], manifest, view, stage / "opengrok-view")
     rows = {name: [] for name in ("sourcegraph", "opengrok", "cs")}
     for task in pack["tasks"]:
         task_id = task["task_id"]
@@ -606,6 +731,9 @@ def capture(spec_path: Path) -> dict:
             )
         )
         rows["cs"].append(_cs(binary, task, gold, view, files, stage / "cs" / f"{task_id}.json"))
+    if probe_indexed_view:
+        # Two fixed, independently bounded full probes bracket every search.
+        _opengrok_indexed_view(spec["opengrok"], manifest, view, stage / "opengrok-view-post")
     for name, data in rows.items():
         destination = stage / f"{name}_rows.jsonl"
         _write(
@@ -630,6 +758,13 @@ def capture(spec_path: Path) -> dict:
         "binding": binding,
         "tasks": len(tasks),
         "indexed_universe_attested": False,
+        "opengrok_indexed_universe_attested": probe_indexed_view,
+        "opengrok_indexed_view_probe": (
+            "exact_indexed_inventory_and_served_bytes_bracketing_queries"
+            if probe_indexed_view
+            else "not_requested"
+        ),
+        "opengrok_indexed_view_files": len(manifest["files"]) if probe_indexed_view else 0,
         "producer_sources_sha256": source_hashes,
         "python_executable_sha256": _sha(Path(sys.executable).resolve().read_bytes()),
         "python_version": sys.version.split()[0],
@@ -641,7 +776,10 @@ def capture(spec_path: Path) -> dict:
         "rows_sha256": {name: _sha((stage / f"{name}_rows.jsonl").read_bytes()) for name in rows},
         "raw_capture_sha256": {
             path.relative_to(stage).as_posix(): _sha(path.read_bytes())
-            for name in rows
+            for name in (
+                *rows,
+                *(("opengrok-view", "opengrok-view-post") if probe_indexed_view else ()),
+            )
             for path in sorted((stage / name).iterdir())
         },
         "exclusions": [
@@ -669,6 +807,9 @@ def verify(root: Path) -> dict:
         "binding",
         "tasks",
         "indexed_universe_attested",
+        "opengrok_indexed_universe_attested",
+        "opengrok_indexed_view_probe",
+        "opengrok_indexed_view_files",
         "producer_sources_sha256",
         "python_executable_sha256",
         "python_version",
@@ -685,6 +826,14 @@ def verify(root: Path) -> dict:
         or summary["schema_version"] != 1
         or summary.get("status") != "diagnostic_unqualified"
         or summary.get("indexed_universe_attested") is not False
+        or summary.get("opengrok_indexed_universe_attested")
+        is not (spec["opengrok"].get("indexed_view_probe") == "full")
+        or summary.get("opengrok_indexed_view_probe")
+        != (
+            "exact_indexed_inventory_and_served_bytes_bracketing_queries"
+            if spec["opengrok"].get("indexed_view_probe") == "full"
+            else "not_requested"
+        )
         or type(summary.get("tasks")) is not int
         or summary["tasks"] <= 0
         or summary.get("producer_sources_sha256") != _source_hashes()
@@ -733,6 +882,11 @@ def verify(root: Path) -> dict:
     manifest = _json(manifest_raw)
     files = {row["path"]: row["file_sha256"] for row in manifest["files"]}
     view = release / "views" / spec["corpus"]["repository"] / view_name
+    probe_indexed_view = spec["opengrok"].get("indexed_view_probe") == "full"
+    if type(summary.get("opengrok_indexed_view_files")) is not int or summary[
+        "opengrok_indexed_view_files"
+    ] != (len(manifest["files"]) if probe_indexed_view else 0):
+        raise ValueError("external indexed view probe count differs")
     expected_raw = set()
     for task in pack["tasks"]:
         task_id = task["task_id"]
@@ -747,6 +901,14 @@ def verify(root: Path) -> dict:
                 f"cs/{task_id}.process.json",
             }
         )
+    if probe_indexed_view:
+        for probe in ("opengrok-view", "opengrok-view-post"):
+            for phase in ("before", "after"):
+                name = f"{probe}/indexed-files-{phase}"
+                expected_raw.update({f"{name}.json", f"{name}.transport.json"})
+            for index in range(len(manifest["files"])):
+                name = f"{probe}/{index:06d}"
+                expected_raw.update({f"{name}.content", f"{name}.transport.json"})
     fixed = {
         "spec.json",
         "capture.json",
@@ -764,6 +926,51 @@ def verify(root: Path) -> dict:
     for name in expected_raw:
         if _sha(_read_control_file(root / name)) != summary["raw_capture_sha256"][name]:
             raise ValueError("external native bytes differ from capture")
+    if probe_indexed_view:
+        endpoint = (
+            "/api/v1/projects/"
+            + urllib.parse.quote(spec["opengrok"]["project"], safe="")
+            + "/files"
+        )
+        for probe in ("opengrok-view", "opengrok-view-post"):
+            for phase in ("before", "after"):
+                name = f"{probe}/indexed-files-{phase}"
+                transport = _json(_read_control_file(root / f"{name}.transport.json"))
+                if (
+                    set(transport) != {"endpoint", "status", "content_type", "elapsed_ms"}
+                    or transport["endpoint"] != endpoint
+                    or type(transport["status"]) is not int
+                    or type(transport["elapsed_ms"]) not in (int, float)
+                    or not math.isfinite(transport["elapsed_ms"])
+                    or transport["elapsed_ms"] < 0
+                ):
+                    raise ValueError("OpenGrok indexed file inventory transport metadata differs")
+                _opengrok_indexed_inventory_response(
+                    spec["opengrok"],
+                    manifest,
+                    transport["status"],
+                    transport["content_type"],
+                    _read_control_file(root / f"{name}.json"),
+                )
+            for index, row in enumerate(manifest["files"]):
+                name = f"{probe}/{index:06d}"
+                transport = _json(_read_control_file(root / f"{name}.transport.json"))
+                if (
+                    set(transport) != {"path", "status", "content_type", "elapsed_ms"}
+                    or transport["path"] != "/" + spec["opengrok"]["project"] + "/" + row["path"]
+                    or type(transport["status"]) is not int
+                    or type(transport["elapsed_ms"]) not in (int, float)
+                    or not math.isfinite(transport["elapsed_ms"])
+                    or transport["elapsed_ms"] < 0
+                ):
+                    raise ValueError("OpenGrok indexed view transport metadata differs")
+                _opengrok_indexed_view_response(
+                    row,
+                    view,
+                    transport["status"],
+                    transport["content_type"],
+                    _read_control_file(root / f"{name}.content"),
+                )
     for name in lexical.PRODUCTS:
         row_path = root / f"{name}_rows.jsonl"
         if _sha(_read_control_file(row_path)) != summary.get("rows_sha256", {}).get(name):

@@ -30,6 +30,13 @@ backend indexed-universe attestation or full workflow execution. The control
 now runs in the permanent fake-service owner fixture selected by the existing
 benchmark-control rail. It is not a production capture.
 
+The live cs runner now applies one 16 MiB cap across stdout and stderr and
+reaps the child process group on interruption/I/O failure. Focused native
+controls accept complete zero-result cs/OpenGrok responses and reject nonzero
+exit, stderr, HTTP error, partial paging and out-of-universe paths. These are
+local decoder/process controls; the externally indexed source still needs its
+own BENCH-04 readiness proof.
+
 Remaining integration is in
 [CS-INT-01](CS-INT-01-integration-and-qualification.md#serial-acceptance-boundary).
 Historical reproduction bodies are recoverable through the
@@ -112,7 +119,7 @@ semantic native-to-normalized consistency, not another run store or process owne
 
 ## Tests and DoD
 
-- [ ] Enroll permanent cs/Sourcegraph/OpenGrok unchanged-native path/hit controls
+- [x] Enroll permanent cs/Sourcegraph/OpenGrok unchanged-native path/hit controls
   that recompute normalized-row digests and still require native disagreement
   refusal. Preserve a bare-scorer control to distinguish diagnostic scope.
 - [ ] Equivalent path/span/order/query-binding mutations are tested for each
