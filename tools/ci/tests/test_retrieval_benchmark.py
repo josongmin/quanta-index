@@ -521,6 +521,20 @@ def test_parity_reference_rejects_partial_nonfinite_or_zero_vectors():
     assert parity_reference.l2_normalize([1.0] * 256) == [0.0625] * 256
 
 
+def test_parity_reference_v2_input_envelope():
+    at_text_limit = "x" * parity_reference.FULL_V2_MAX_TEXT_BYTES
+    parity_reference.validate_v2_input_envelope([at_text_limit])
+    with pytest.raises(ValueError, match="text exceeds"):
+        parity_reference.validate_v2_input_envelope([at_text_limit + "x"])
+    at_batch_limit = [at_text_limit] * (
+        parity_reference.FULL_V2_MAX_BATCH_TEXT_BYTES // parity_reference.FULL_V2_MAX_TEXT_BYTES
+    )
+    parity_reference.validate_v2_input_envelope(at_batch_limit)
+    with pytest.raises(ValueError, match="batch exceeds"):
+        parity_reference.validate_v2_input_envelope(at_batch_limit + [at_text_limit])
+    parity_reference.validate_v2_input_envelope(["x" * 4096] * 1024)
+
+
 def test_retrieval_diagnostic_v5_binds_actual_server_observation_policy(tmp_path):
     stage = _pair_stage(tmp_path)
     path = next(stage["stage"].glob("rep-00/quanta/strategy-*/retrieval-diagnostic.json"))
