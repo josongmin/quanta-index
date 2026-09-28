@@ -11,7 +11,7 @@ use quanta_index_contract::QueryResultWindowV2;
 use quanta_index_search_plane::{HybridFetchFloorPolicy, QueryStageObservationPolicy};
 use serde_json::{Value, json};
 
-use crate::record::QueryPack;
+use crate::record::{NativeSpanProof, QueryPack};
 use crate::sdk::{QueryOutcome, RankedHit, RouteExplanation};
 use crate::{BenchError, BenchResult};
 
@@ -103,6 +103,7 @@ pub fn diagnostic_value(
     outcomes: &BTreeMap<(String, String), QueryOutcome>,
     observation_policy: QueryStageObservationPolicy,
     fetch_floor_policy: HybridFetchFloorPolicy,
+    native_spans: &BTreeMap<(String, String), Vec<NativeSpanProof>>,
 ) -> BenchResult<Value> {
     let top_k = pack.contract_top_k;
     if record_sha256.len() != 64
@@ -339,14 +340,86 @@ pub fn diagnostic_value(
                             "contributions": lanes,
                         }));
                     }
-                    (
-                        candidates,
-                        "returned_window",
-                        json!({
-                            "window": window,
-                            "explanation": explanation_value(explanation.as_ref()),
-                        }),
-                    )
+                    let mut response = json!({
+                        "window": window,
+                        "explanation": explanation_value(explanation.as_ref()),
+                    });
+                    if record_candidates.len() != hits.len() {
+                        let spans = native_spans.get(&key).ok_or_else(|| {
+                            BenchError::Protocol("collapsed diagnostic lacks source proofs".into())
+                        })?;
+                        if spans.len() != hits.len() {
+                            return Err(BenchError::Protocol(
+                                "native source proof count differs from hits".into(),
+                            ));
+                        }
+                        let mut scored_spans = BTreeMap::new();
+                        for (position, scored) in record_candidates.iter().enumerate() {
+                            let path =
+                                scored.get("path").and_then(Value::as_str).ok_or_else(|| {
+                                    BenchError::Protocol("scored path is malformed".into())
+                                })?;
+                            let start = scored
+                                .get("start_byte")
+                                .and_then(Value::as_u64)
+                                .ok_or_else(|| {
+                                    BenchError::Protocol("scored start byte is malformed".into())
+                                })?;
+                            let end = scored.get("end_byte").and_then(Value::as_u64).ok_or_else(
+                                || BenchError::Protocol("scored end byte is malformed".into()),
+                            )?;
+                            let rank = position.checked_add(1).ok_or_else(|| {
+                                BenchError::Protocol("scored projection rank overflow".into())
+                            })?;
+                            if scored_spans
+                                .insert((path.to_string(), start, end), rank)
+                                .is_some()
+                            {
+                                return Err(BenchError::Protocol(
+                                    "scored source spans are duplicated".into(),
+                                ));
+                            }
+                        }
+                        let mut projected = Vec::with_capacity(spans.len());
+                        let mut first_units = BTreeMap::new();
+                        for (proof, hit) in spans.iter().zip(hits) {
+                            if proof.unit_id != hit.candidate_id || proof.span.0 != hit.path {
+                                return Err(BenchError::Protocol(
+                                    "native source proof differs from hit".into(),
+                                ));
+                            }
+                            let rank = *scored_spans.get(&proof.span).ok_or_else(|| {
+                                BenchError::Protocol(
+                                    "native source span was omitted from scored record".into(),
+                                )
+                            })?;
+                            if !first_units.contains_key(&rank) {
+                                let expected = rank
+                                    .checked_sub(1)
+                                    .and_then(|position| record_candidates.get(position))
+                                    .and_then(|scored| scored.pointer("/span_accounting/unit_id"))
+                                    .and_then(Value::as_str);
+                                if expected != Some(proof.unit_id.as_str())
+                                    || first_units.len().checked_add(1) != Some(rank)
+                                {
+                                    return Err(BenchError::Protocol(
+                                        "scored record differs from first native source spans"
+                                            .into(),
+                                    ));
+                                }
+                                let _previous = first_units.insert(rank, proof.unit_id.as_str());
+                            }
+                            projected.push(json!({"candidate_id": proof.unit_id, "path": proof.span.0, "start_byte": proof.span.1, "end_byte": proof.span.2, "scored_rank": rank}));
+                        }
+                        let object = response.as_object_mut().ok_or_else(|| {
+                            BenchError::Protocol("diagnostic response is not an object".into())
+                        })?;
+                        let _previous = object.insert(
+                            "native_projection".to_string(),
+                            json!({"policy": "first-source-span-v1", "hits": projected}),
+                        );
+                    }
+                    (candidates, "returned_window", response)
                 }
                 QueryOutcome::RejectedResponse {
                     code,
@@ -571,9 +644,27 @@ mod tests {
                     "start_line": 4,
                     "end_line": 8,
                     "span_accounting": {"unit_id": "chunk-1"},
+                    "start_byte": 0,
+                    "end_byte": 10,
                 }]
             }]
         })
+    }
+
+    fn projection_fixture() -> BTreeMap<(String, String), Vec<crate::record::NativeSpanProof>> {
+        BTreeMap::from([(
+            ("T1".to_string(), "hybrid".to_string()),
+            vec![
+                crate::record::NativeSpanProof {
+                    unit_id: "chunk-1".to_string(),
+                    span: ("src/lib.rs".to_string(), 0, 10),
+                },
+                crate::record::NativeSpanProof {
+                    unit_id: "chunk-2".to_string(),
+                    span: ("src/lib.rs".to_string(), 0, 10),
+                },
+            ],
+        )])
     }
 
     #[test]
@@ -586,6 +677,7 @@ mod tests {
             &outcomes(),
             QueryStageObservationPolicy::Enabled,
             HybridFetchFloorPolicy::default(),
+            &projection_fixture(),
         )
         .expect("complete diagnostic");
         assert_eq!(value.get("record_sha256"), Some(&json!("e".repeat(64))));
@@ -631,10 +723,14 @@ mod tests {
             .get_mut(&("T1".to_string(), "hybrid".to_string()))
             .expect("fixture result");
         if let QueryOutcome::ReturnedWindow { hits, window, .. } = outcome {
-            let mut duplicate = hits[0].clone();
+            let mut duplicate = hits.first().expect("first fixture hit").clone();
             duplicate.candidate_id = "chunk-2".to_string();
             duplicate.score = 0.01;
-            duplicate.contributions[0].rank = 7;
+            duplicate
+                .contributions
+                .first_mut()
+                .expect("fixture contribution")
+                .rank = 7;
             hits.push(duplicate);
             *window = QueryResultWindowV2::exact_exhausted(
                 2,
@@ -654,33 +750,83 @@ mod tests {
             &raw,
             QueryStageObservationPolicy::Enabled,
             HybridFetchFloorPolicy::default(),
+            &projection_fixture(),
         )
         .expect("two native units project to one scored span");
         assert_eq!(
-            diagnostic["results"][0]["candidates"]
+            diagnostic
+                .pointer("/results/0/candidates")
+                .expect("candidates")
                 .as_array()
                 .unwrap()
                 .len(),
             1
         );
         assert_eq!(
-            diagnostic["results"][0]["candidates"][0]["candidate_id"],
+            diagnostic
+                .pointer("/results/0/candidates/0/candidate_id")
+                .expect("fixture field"),
             "chunk-1"
         );
         assert_eq!(
-            diagnostic["results"][0]["candidates"][0]["contributions"][0]["rank"],
+            diagnostic
+                .pointer("/results/0/candidates/0/contributions/0/rank")
+                .expect("fixture field"),
             2
         );
         assert_eq!(
-            diagnostic["results"][0]["response"]["window"]["returned"],
+            diagnostic
+                .pointer("/results/0/response/window/returned")
+                .expect("fixture field"),
             2
         );
+        assert_eq!(
+            diagnostic
+                .pointer("/results/0/response/native_projection")
+                .expect("fixture field"),
+            &json!({
+                "policy": "first-source-span-v1",
+                "hits": [
+                    {"candidate_id": "chunk-1", "path": "src/lib.rs", "start_byte": 0, "end_byte": 10, "scored_rank": 1},
+                    {"candidate_id": "chunk-2", "path": "src/lib.rs", "start_byte": 0, "end_byte": 10, "scored_rank": 1},
+                ],
+            })
+        );
+        let mut substituted = projection_fixture();
+        substituted
+            .values_mut()
+            .next()
+            .expect("fixture proofs")
+            .get_mut(1)
+            .expect("second proof")
+            .span
+            .2 = 11;
+        for proofs in [&BTreeMap::new(), &substituted] {
+            assert!(
+                diagnostic_value(
+                    &"e".repeat(64),
+                    &record(),
+                    &pack(),
+                    &["hybrid"],
+                    &raw,
+                    QueryStageObservationPolicy::Enabled,
+                    HybridFetchFloorPolicy::default(),
+                    proofs,
+                )
+                .is_err()
+            );
+        }
 
         if let QueryOutcome::ReturnedWindow { hits, .. } = raw
             .get_mut(&("T1".to_string(), "hybrid".to_string()))
             .expect("fixture result")
         {
-            hits[1].contributions[0].raw_score = f32::NAN;
+            hits.get_mut(1)
+                .expect("second hit")
+                .contributions
+                .first_mut()
+                .expect("fixture contribution")
+                .raw_score = f32::NAN;
         }
         assert!(
             diagnostic_value(
@@ -691,6 +837,7 @@ mod tests {
                 &raw,
                 QueryStageObservationPolicy::Enabled,
                 HybridFetchFloorPolicy::default(),
+                &projection_fixture(),
             )
             .is_err()
         );
@@ -699,8 +846,13 @@ mod tests {
             .get_mut(&("T1".to_string(), "hybrid".to_string()))
             .expect("fixture result")
         {
-            hits[1].contributions[0].raw_score = 3.0;
-            hits[1].candidate_id = "chunk-1".to_string();
+            hits.get_mut(1)
+                .expect("second hit")
+                .contributions
+                .first_mut()
+                .expect("fixture contribution")
+                .raw_score = 3.0;
+            hits.get_mut(1).expect("second hit").candidate_id = "chunk-1".to_string();
         }
         let error = diagnostic_value(
             &"e".repeat(64),
@@ -710,6 +862,7 @@ mod tests {
             &raw,
             QueryStageObservationPolicy::Enabled,
             HybridFetchFloorPolicy::default(),
+            &projection_fixture(),
         )
         .expect_err("duplicate native unit must not disappear behind span projection");
         assert!(error.to_string().contains("reuse a published unit ID"));
@@ -725,6 +878,7 @@ mod tests {
             &outcomes(),
             QueryStageObservationPolicy::Enabled,
             HybridFetchFloorPolicy::default(),
+            &projection_fixture(),
         )
         .expect("complete diagnostic");
         assert_eq!(value.get("schema_version"), Some(&json!(6)));
@@ -794,6 +948,7 @@ mod tests {
             &sparse,
             QueryStageObservationPolicy::Disabled,
             HybridFetchFloorPolicy::default(),
+            &projection_fixture(),
         )
         .expect("complete diagnostic");
         // Absent observations remain explicit nulls: no explanation, no
@@ -815,6 +970,7 @@ mod tests {
                 &BTreeMap::new(),
                 QueryStageObservationPolicy::Enabled,
                 HybridFetchFloorPolicy::default(),
+                &projection_fixture(),
             )
             .is_err()
         );
@@ -834,6 +990,7 @@ mod tests {
                 &missing_lane,
                 QueryStageObservationPolicy::Enabled,
                 HybridFetchFloorPolicy::default(),
+                &projection_fixture(),
             )
             .is_err()
         );
@@ -858,6 +1015,7 @@ mod tests {
             &unanchored,
             QueryStageObservationPolicy::Enabled,
             HybridFetchFloorPolicy::default(),
+            &projection_fixture(),
         )
         .expect("record supplies the normalized span");
         assert_eq!(

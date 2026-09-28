@@ -649,6 +649,40 @@ struct ProvenHit {
     scored_span: (String, u64, u64),
 }
 
+/// Source bytes proved for every native hit, before scored-span collapse.
+pub struct NativeSpanProof {
+    /// The published unit which produced this hit.
+    pub unit_id: String,
+    /// Canonical source file and half-open byte range used for scoring.
+    pub span: (String, u64, u64),
+}
+
+/// Reuse the recorder's source proof for diagnostic projection witnesses.
+pub fn native_span_proofs(
+    outcomes: &BTreeMap<(String, String), QueryOutcome>,
+    files: &BTreeMap<String, SourceFile>,
+    units: &PublishedUnitRegistry,
+) -> BenchResult<BTreeMap<(String, String), Vec<NativeSpanProof>>> {
+    let mut proofs = BTreeMap::new();
+    for (key, outcome) in outcomes {
+        if let QueryOutcome::ReturnedWindow { hits, .. } = outcome {
+            let mut spans = Vec::with_capacity(hits.len());
+            for (position, hit) in hits.iter().enumerate() {
+                let rank = position.checked_add(1).ok_or_else(|| {
+                    BenchError::Protocol("native projection rank overflow".to_string())
+                })?;
+                let proven = prove_hit(hit, rank, files, units)?;
+                spans.push(NativeSpanProof {
+                    unit_id: hit.candidate_id.clone(),
+                    span: proven.scored_span,
+                });
+            }
+            let _previous = proofs.insert(key.clone(), spans);
+        }
+    }
+    Ok(proofs)
+}
+
 /// Prove one SDK hit against pinned source bytes and emit the evaluator's
 /// candidate object. Returned with its 1-based rank.
 ///
@@ -1724,6 +1758,35 @@ mod tests {
         assert_eq!(candidates[0]["rank"], 1);
         assert_eq!(candidates[1]["span_accounting"]["unit_id"], "c");
         assert_eq!(candidates[1]["rank"], 2);
+
+        let proofs = super::native_span_proofs(
+            &BTreeMap::from([(
+                ("T1".to_string(), "semantic".to_string()),
+                outcome(hits.clone()),
+            )]),
+            &files,
+            &units,
+        )
+        .expect("every native unit is proved against published source bytes");
+        let raw = proofs
+            .get(&("T1".to_string(), "semantic".to_string()))
+            .expect("native proofs");
+        assert_eq!(raw.len(), 3);
+        assert_eq!(raw[0].unit_id, "a");
+        assert_eq!(raw[1].unit_id, "b");
+        assert_eq!(
+            raw[0].span,
+            (
+                "a.rs".to_string(),
+                0,
+                u64::try_from(second_line).expect("small span")
+            )
+        );
+        assert_eq!(raw[1].span, raw[0].span);
+        assert_eq!(
+            raw[2].span.1,
+            u64::try_from(second_line).expect("small span")
+        );
 
         let mut forged = hits.clone();
         forged.get_mut(1).expect("duplicate hit").candidate_id = "unknown".to_string();

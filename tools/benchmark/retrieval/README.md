@@ -209,6 +209,13 @@ scores use different units. Mechanical labels and descriptive timing are
 recorded diagnostics. Server stage timings may overlap; do not sum them into
 query wall time.
 
+The Quanta window counts native published units. The scored record keeps the
+first hit for each source byte span, so overlapping chunks can reduce its
+candidate count. Diagnostic v6 carries a `first-source-span-v1` projection for
+such responses: every native unit maps to an exact scored span and its rank.
+Replay rejects missing proofs, substituted spans, duplicate unit IDs and
+changes to first-hit order; it does not treat the scored count as exhaustion.
+
 Use `run.py verdict --help` for replay arguments. Immutable common captures
 support `benchctl replay --family retrieval-pair --evidence-root ROOT`.
 A changed source/input/binary or missing raw requires recapture, not relabeling.

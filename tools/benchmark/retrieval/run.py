@@ -3424,11 +3424,76 @@ def _validate_explanation(
         raise RunError(f"{where} final stage count differs from returned window")
 
 
+def _validate_native_span_projection(
+    payload: object, candidates: list, scored: list, returned: int, where: str
+) -> None:
+    projection = _exact_keys(payload, {"policy", "hits"}, f"{where}.native_projection")
+    if (
+        projection["policy"] != "first-source-span-v1"
+        or not isinstance(projection["hits"], list)
+        or len(projection["hits"]) != returned
+        or len(candidates) != len(scored)
+        or any(not isinstance(candidate, dict) for candidate in candidates)
+    ):
+        raise RunError(f"{where} native projection count or policy is invalid")
+    spans = {}
+    for rank, candidate in enumerate(scored, 1):
+        if not isinstance(candidate, dict):
+            raise RunError(f"{where} scored source span is malformed")
+        span = (candidate.get("path"), candidate.get("start_byte"), candidate.get("end_byte"))
+        if (
+            not isinstance(span[0], str)
+            or type(span[1]) is not int
+            or type(span[2]) is not int
+            or not 0 <= span[1] < span[2]
+            or span in spans
+        ):
+            raise RunError(f"{where} scored source span is invalid or duplicated")
+        spans[span] = rank
+    seen_units = set()
+    first_spans = set()
+    for value in projection["hits"]:
+        hit = _exact_keys(
+            value,
+            {"candidate_id", "path", "start_byte", "end_byte", "scored_rank"},
+            f"{where} native projection hit",
+        )
+        unit = hit["candidate_id"]
+        if not isinstance(unit, str) or not unit or unit in seen_units:
+            raise RunError(f"{where} native projection unit is invalid or duplicated")
+        seen_units.add(unit)
+        span = (hit["path"], hit["start_byte"], hit["end_byte"])
+        if (
+            not isinstance(span[0], str)
+            or type(span[1]) is not int
+            or type(span[2]) is not int
+            or not 0 <= span[1] < span[2]
+            or type(hit["scored_rank"]) is not int
+            or spans.get(span) != hit["scored_rank"]
+        ):
+            raise RunError(f"{where} native projection omitted or substituted a source span")
+        rank = hit["scored_rank"]
+        if span not in first_spans:
+            accounting = scored[rank - 1].get("span_accounting")
+            if (
+                rank != len(first_spans) + 1
+                or not isinstance(accounting, dict)
+                or accounting.get("unit_id") != unit
+                or candidates[rank - 1].get("candidate_id") != unit
+            ):
+                raise RunError(f"{where} native projection changed first-hit order or identity")
+            first_spans.add(span)
+    if len(first_spans) != len(scored):
+        raise RunError(f"{where} native projection lacks a scored source span")
+
+
 def _validate_diagnostic_response_v3(
     row: dict,
     key: tuple[str, str],
     version: int,
     observation_policy: str = "enabled",
+    reference: dict | None = None,
+    top_k: int | None = None,
 ) -> dict[str, bool]:
     where = f"retrieval diagnostic response for {key}"
     kind = row["response_kind"]
@@ -3444,8 +3509,14 @@ def _validate_diagnostic_response_v3(
     if not isinstance(response, dict):
         raise RunError(f"{where} is malformed")
     if kind == "returned_window":
-        detail = _exact_keys(response, {"window", "explanation"}, where)
+        fields = {"window", "explanation"}
+        projected = version == 6 and "native_projection" in response
+        if projected:
+            fields.add("native_projection")
+        detail = _exact_keys(response, fields, where)
         returned, exhausted, lanes = _typed_window(detail["window"], f"{where}.window")
+        if top_k is not None and returned > top_k:
+            raise RunError(f"{where} returned count exceeds top_k")
         _validate_explanation(
             detail["explanation"],
             f"{where}.explanation",
@@ -3454,7 +3525,17 @@ def _validate_diagnostic_response_v3(
             returned,
             observation_policy,
         )
-        if returned != len(row["candidates"]):
+        if projected:
+            if reference is None:
+                raise RunError(f"{where} native projection lacks its bound record")
+            _validate_native_span_projection(
+                detail["native_projection"],
+                row["candidates"],
+                reference["candidates"],
+                returned,
+                where,
+            )
+        elif returned != len(row["candidates"]):
             raise RunError(f"{where} returned count differs from candidates")
         expected_status = (
             "abstained"
@@ -3945,7 +4026,12 @@ def validate_retrieval_diagnostic(
             lane_execution: dict[str, bool] = {}
         else:
             lane_execution = _validate_diagnostic_response_v3(
-                row, key, diagnostic["schema_version"], observation_policy
+                row,
+                key,
+                diagnostic["schema_version"],
+                observation_policy,
+                reference,
+                diagnostic["top_k"],
             )
             if (
                 diagnostic["schema_version"] == 6

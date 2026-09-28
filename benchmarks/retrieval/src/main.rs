@@ -1259,6 +1259,15 @@ fn run_capture(args: &Args) -> BenchResult<()> {
         files: &by_path,
         units: &published_units,
     })?;
+    let native_spans = if diagnostics_out.is_some() {
+        quanta_index_retrieval_bench::record::native_span_proofs(
+            &outcomes,
+            &by_path,
+            &published_units,
+        )?
+    } else {
+        BTreeMap::new()
+    };
     let record_elapsed = record_start.elapsed();
     let verify_start = Instant::now();
     verify_capture_corpus(args, &repo, &manifest)?;
@@ -1294,6 +1303,7 @@ fn run_capture(args: &Args) -> BenchResult<()> {
             &outcomes,
             query_stage_observation,
             hybrid_fetch_floor,
+            &native_spans,
         )?;
         let detail = serde_json::json!({
             "clock": "runner_monotonic_wall_v1",
