@@ -20,7 +20,7 @@ def test_github_actions_has_no_automatic_trigger_and_circleci_is_default() -> No
         assert set(workflow["on"]) == {"workflow_dispatch"}
     config = yaml.safe_load(CIRCLECI.read_text(encoding="utf-8"))
     assert config["parameters"]["run_heavy"]["default"] is False
-    assert config["workflows"]["regular"]["jobs"] == ["verify"]
+    assert config["workflows"]["regular"]["jobs"] == ["verify", "verify-python"]
     assert config["workflows"]["manual-heavy"]["jobs"] == ["heavy-correctness"]
 
 

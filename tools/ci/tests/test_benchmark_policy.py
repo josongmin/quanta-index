@@ -98,9 +98,18 @@ def test_capture_contracts_have_one_local_and_ci_entrypoint() -> None:
     assert invocation in prep
     assert "pytest" not in prep
     workflow = yaml.safe_load((REPO_ROOT / ".circleci/config.yml").read_text())
-    steps = workflow["jobs"]["verify"]["steps"]
-    commands = [step.get("run", {}).get("command", "") for step in steps if isinstance(step, dict)]
+    commands = [
+        step.get("run", {}).get("command", "")
+        for job in workflow["workflows"]["regular"]["jobs"]
+        for step in workflow["jobs"][job]["steps"]
+        if isinstance(step, dict)
+    ]
     assert sum("python -m pytest tools -q" in script for script in commands) == 1
+    assert any(
+        "python -m pytest tools -q" in step.get("run", {}).get("command", "")
+        for step in workflow["jobs"]["verify-python"]["steps"]
+        if isinstance(step, dict)
+    )
     assert not any(invocation in script for script in commands)
 
 
