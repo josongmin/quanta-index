@@ -1475,7 +1475,6 @@ impl EmbeddingCache for FileEmbeddingCache {
             };
             if !ledger.admits(entry_bytes) {
                 let refused = ledger.insert(*key, entry_bytes, unix_nanos_now(), ());
-                drop(ledger);
                 if refused.displaced.is_some() {
                     remove_entry_file(&path);
                 }
@@ -1485,30 +1484,28 @@ impl EmbeddingCache for FileEmbeddingCache {
         if write_atomic(&path, &bytes).is_err() {
             return;
         }
-        // Account the entry as it is on disk now, so two writers of one key
-        // agree on its bytes whichever renamed last, and expire and evict
-        // under the same lock so the ceilings hold at every point a reader
-        // can see.
+        // A concurrent eviction can unlink the renamed entry. Check its
+        // presence and finish eviction cleanup under the same ledger lock so
+        // no writer can account an entry that another writer has removed.
+        let Some(mut ledger) = self.lock_ledger() else {
+            return;
+        };
         let Ok(on_disk) = std::fs::metadata(&path) else {
+            let _stale: Option<()> = ledger.remove(key);
             return;
         };
         let now = unix_nanos_now();
-        let removed: Vec<EmbeddingCacheKey> = {
-            let Some(mut ledger) = self.lock_ledger() else {
-                return;
-            };
-            let mut removed: Vec<EmbeddingCacheKey> = ledger
-                .expire_to_policy(now)
-                .into_iter()
-                .map(|(key, ())| key)
-                .collect();
-            let outcome = ledger.insert(*key, on_disk.len(), now, ());
-            removed.extend(outcome.evicted.into_iter().map(|(key, ())| key));
-            removed
-        };
+        let mut removed: Vec<EmbeddingCacheKey> = ledger
+            .expire_to_policy(now)
+            .into_iter()
+            .map(|(key, ())| key)
+            .collect();
+        let outcome = ledger.insert(*key, on_disk.len(), now, ());
+        removed.extend(outcome.evicted.into_iter().map(|(key, ())| key));
         for gone in removed {
             remove_entry_file(&self.path_for(&gone));
         }
+        drop(ledger);
         self.note_put();
     }
 
