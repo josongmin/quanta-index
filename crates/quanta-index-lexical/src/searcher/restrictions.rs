@@ -20,7 +20,6 @@ use std::sync::Arc;
 use tantivy::Term;
 use tantivy::query::{AllQuery, BooleanQuery, Occur, PhraseQuery, Query, RegexQuery, TermQuery};
 use tantivy::schema::{Field, IndexRecordOption, TantivyDocument};
-use tantivy_fst::Regex;
 
 impl TantivySearcher {
     pub(crate) fn exact_text_query(&self, field: Field, value: &str) -> Box<dyn Query> {
@@ -35,10 +34,8 @@ impl TantivySearcher {
         field: Field,
         pattern: &str,
     ) -> Result<Box<dyn Query>, CoreError> {
-        crate::query_errors::admit_scope_regex_pattern_size(pattern)?;
-        let query = RegexQuery::from_pattern(pattern, field).map_err(|err| {
-            CoreError::InvalidContract(format!("lexical: regex filter compile: {err}"))
-        })?;
+        let compiled = crate::query_errors::compile_scope_regex(pattern)?;
+        let query = RegexQuery::from_regex(compiled, field);
         Ok(Box::new(query))
     }
 
@@ -51,10 +48,7 @@ impl TantivySearcher {
             LqFileScope::PathOnly => self.regex_text_query(self.fields.repo_relative_path, pattern),
             LqFileScope::NameOnly => self.regex_text_query(self.fields.file_name, pattern),
             LqFileScope::NameAndPath => {
-                crate::query_errors::admit_scope_regex_pattern_size(pattern)?;
-                let shared = Arc::new(Regex::new(pattern).map_err(|err| {
-                    CoreError::InvalidContract(format!("lexical: regex filter compile: {err}"))
-                })?);
+                let shared = Arc::new(crate::query_errors::compile_scope_regex(pattern)?);
                 Ok(Box::new(BooleanQuery::new(vec![
                     (
                         Occur::Should,

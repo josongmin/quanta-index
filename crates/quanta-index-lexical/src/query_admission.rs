@@ -216,14 +216,9 @@ fn admit_query_scope_regex(query: &LqQuery, source: &str, name: &str) -> Result<
 }
 
 fn admit_scope_regex(source: &str) -> Result<(), CoreError> {
-    // Indexed scope execution uses Tantivy's grammar. The field ordinal does not
-    // affect compilation and this constructs no index or reader.
-    crate::query_errors::admit_scope_regex_pattern_size(source)?;
-    let _query =
-        tantivy::query::RegexQuery::from_pattern(source, tantivy::schema::Field::from_field_id(0))
-            .map_err(|err| {
-                CoreError::InvalidContract(format!("lexical: regex filter compile: {err}"))
-            })?;
+    // Indexed scope admission and execution share the pinned FST grammar and
+    // resource classification without constructing an index or reader.
+    let _compiled = crate::query_errors::compile_scope_regex(source)?;
     Ok(())
 }
 

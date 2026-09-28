@@ -13,6 +13,8 @@ use quanta_index_core::CoreError;
 use quanta_index_lq_positions::{PositionsError, PositionsErrorCode};
 use quanta_index_lq_regex::{RegexErrorCode, RegexExecutor};
 use quanta_index_lq_trigram::{TrigramError, TrigramErrorCode};
+use regex_syntax::hir::{Class, Hir, HirKind};
+use tantivy_fst::Regex;
 
 pub(crate) fn map_trigram_error(context: &str, err: &TrigramError) -> CoreError {
     match err.code {
@@ -66,6 +68,40 @@ pub(crate) fn admit_scope_regex_pattern_size(pattern: &str) -> Result<(), CoreEr
         code: regex_wire_code(err.code),
         message: format!("lexical: regex filter input refused: {err}"),
     })
+}
+
+/// Compile the pinned FST scope grammar without Tantivy's error erasure.
+///
+/// `tantivy-fst =0.5.0` keeps its error enum private. Its compiler can refuse
+/// syntax, byte classes, lazy repetition, look assertions, NFA size or DFA
+/// state count. On failure only, the same default parser and exhaustive HIR
+/// checks distinguish the syntax domain from the two resource refusals.
+/// Successful compilation is not repeated and diagnostic text is not authority.
+pub(crate) fn compile_scope_regex(pattern: &str) -> Result<Regex, CoreError> {
+    admit_scope_regex_pattern_size(pattern)?;
+    Regex::new(pattern).map_err(|err| {
+        let valid_domain = regex_syntax::Parser::new()
+            .parse(pattern)
+            .is_ok_and(|hir| fst_supports_hir(&hir));
+        if valid_domain {
+            CoreError::Typed {
+                code: Code::LexRegexPlanLimitExceeded,
+                message: format!("lexical: regex filter plan refused: {err}"),
+            }
+        } else {
+            CoreError::InvalidContract(format!("lexical: regex filter compile: {err}"))
+        }
+    })
+}
+
+fn fst_supports_hir(hir: &Hir) -> bool {
+    match hir.kind() {
+        HirKind::Empty | HirKind::Literal(_) | HirKind::Class(Class::Unicode(_)) => true,
+        HirKind::Class(Class::Bytes(_)) | HirKind::Look(_) => false,
+        HirKind::Repetition(repetition) => repetition.greedy && fst_supports_hir(&repetition.sub),
+        HirKind::Capture(capture) => fst_supports_hir(&capture.sub),
+        HirKind::Concat(parts) | HirKind::Alternation(parts) => parts.iter().all(fst_supports_hir),
+    }
 }
 
 /// Tokenize a keyword or phrase literal for lowering, refusing typed when
@@ -127,5 +163,85 @@ pub(crate) fn map_positions_error(context: &str, err: &PositionsError) -> CoreEr
         PositionsErrorCode::InvalidTerm | PositionsErrorCode::WindowOutOfRange => {
             CoreError::InvalidContract(format!("lexical: {context}: {err}"))
         }
+    }
+}
+
+#[cfg(test)]
+mod scope_regex_tests {
+    use super::compile_scope_regex;
+    use quanta_index_contract::SearchPlaneErrorCodeV2;
+    use quanta_index_core::CoreError;
+    use tantivy_fst::Automaton;
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    #[test]
+    fn indexed_scope_resource_refusals_are_typed() {
+        // Fixed witnesses exceed the pinned NFA-byte and DFA-state limits
+        // separately while remaining small, valid source patterns.
+        for pattern in ["a{700000}", "a{1001}"] {
+            assert!(
+                matches!(
+                    compile_scope_regex(pattern),
+                    Err(CoreError::Typed {
+                        code: SearchPlaneErrorCodeV2::LexRegexPlanLimitExceeded,
+                        ..
+                    })
+                ),
+                "resource witness {pattern}"
+            );
+        }
+        assert!(matches!(
+            compile_scope_regex(&"[".repeat(65_537)),
+            Err(CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::LexRegexPlanLimitExceeded,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn indexed_scope_syntax_refusals_stay_invalid_contracts() {
+        for pattern in ["[", "a+?", "^a", r"\ba\b", "(?-u:[a-z])", "x|(a+?)"] {
+            assert!(
+                matches!(
+                    compile_scope_regex(pattern),
+                    Err(CoreError::InvalidContract(_))
+                ),
+                "syntax witness {pattern}"
+            );
+        }
+    }
+
+    #[test]
+    fn indexed_scope_fst_grammar_and_full_term_truth_are_preserved() -> TestResult {
+        for (pattern, matches, misses) in [
+            (
+                r"src/.*\.rs",
+                ["src/lib.rs", "src/main.rs"],
+                ["lib.rs", "src/lib.py"],
+            ),
+            ("(?i)café", ["café", "CAFÉ"], ["cafe", "CAFÉ.rs"]),
+            ("(a|b){2}", ["ab", "ba"], ["a", "abc"]),
+            ("(?-u:a)", ["a", "a"], ["ab", "b"]),
+            ("a{0}", ["", ""], ["a", "b"]),
+        ] {
+            let compiled = compile_scope_regex(pattern)?;
+            for (terms, expected) in [(matches, true), (misses, false)] {
+                for term in terms {
+                    let state = term.bytes().fold(compiled.start(), |state, byte| {
+                        compiled.accept(&state, byte)
+                    });
+                    let actual = compiled.is_match(&state);
+                    if actual != expected {
+                        return Err(format!(
+                            "{pattern}: {term}: expected {expected}, got {actual}"
+                        )
+                        .into());
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 }

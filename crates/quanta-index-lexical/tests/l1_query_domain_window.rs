@@ -677,6 +677,51 @@ fn l1_opener_primitive_admission_never_opens_a_generation() -> TestResult {
 }
 
 #[test]
+fn l1_indexed_scope_resource_refusal_is_typed_before_open() -> TestResult {
+    use quanta_index_core::{LexicalEndpoint, LexicalPolicy};
+    let dir = tempfile::tempdir()?;
+    let absent_root = dir.path().join("not-opened");
+    let adapter = LexicalAdapter::with_state_root(absent_root.clone());
+    for pattern in ["a{700000}", "a{1001}"] {
+        for filter in [
+            LqFilter::Repo {
+                pattern: pattern.into(),
+                revs: Vec::new(),
+            },
+            LqFilter::File {
+                pattern: pattern.into(),
+                scope: quanta_index_contract::LqFileScope::PathOnly,
+            },
+            LqFilter::File {
+                pattern: pattern.into(),
+                scope: quanta_index_contract::LqFileScope::NameOnly,
+            },
+            LqFilter::File {
+                pattern: pattern.into(),
+                scope: quanta_index_contract::LqFileScope::NameAndPath,
+            },
+        ] {
+            let mut request = query("needle", false, false);
+            request.filters.push(filter);
+            let plan = LexicalPolicy::plan_query(
+                &request,
+                &QueryConstraintSetV1::unconstrained(),
+                LexicalEndpoint::Text,
+            )?;
+            require_code(
+                adapter.preflight_query_primitives(&plan, &RequestBudgetV1::unbounded()),
+                SearchPlaneErrorCodeV2::LexRegexPlanLimitExceeded,
+                "indexed scope resource refusal before open",
+            )?;
+        }
+    }
+    if absent_root.exists() {
+        return Err("scope resource refusal created adapter state".into());
+    }
+    Ok(())
+}
+
+#[test]
 fn l1_primitive_admission_uses_adapter_regex_policy_and_literal_limits() -> TestResult {
     use quanta_index_core::{LexicalEndpoint, LexicalPolicy};
     let dir = tempfile::tempdir()?;

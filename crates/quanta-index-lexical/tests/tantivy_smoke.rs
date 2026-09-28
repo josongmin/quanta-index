@@ -845,6 +845,30 @@ fn tantivy_executes_repo_file_path_and_lang_filters() -> TestResult {
         .into());
     }
 
+    for (pattern, expected_ids) in [("lib.rs", vec!["alpha"]), ("src/lib.rs", Vec::new())] {
+        let name_hits = searcher.search(
+            &make_query_with_filters(
+                LqExpr::Leaf(LqLeaf::Keyword("needle".to_string())),
+                vec![LqFilter::File {
+                    pattern: pattern.to_string(),
+                    scope: LqFileScope::NameOnly,
+                }],
+            ),
+            10,
+            &RequestBudgetV1::unbounded(),
+        )?;
+        let actual_ids = name_hits
+            .iter()
+            .map(|hit| hit.candidate_id.as_str())
+            .collect::<Vec<_>>();
+        if actual_ids != expected_ids {
+            return Err(format!(
+                "name-only filter {pattern}: expected {expected_ids:?}, got {actual_ids:?}"
+            )
+            .into());
+        }
+    }
+
     let repo_miss = searcher.search(
         &make_query_with_filters(
             LqExpr::Leaf(LqLeaf::Keyword("needle".to_string())),

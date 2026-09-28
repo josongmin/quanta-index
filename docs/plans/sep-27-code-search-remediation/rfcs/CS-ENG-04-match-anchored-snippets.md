@@ -36,10 +36,16 @@ an engine size refusal keeps `LexRegexPlanLimitExceeded`; neither change gives
 the structural route physical aggregate admission.
 Regex range output now uses fallible vector growth and maps allocation refusal
 to optional preview `WorkBudget`; this covers only the range carrier, not the
-engine or parser. Tantivy's indexed scope `RegexQuery::from_pattern` also wraps
-the `tantivy-fst` resource variants in a string-valued `InvalidArgument`, so a
-typed scope resource refusal requires a controlled dependency API change rather
-than matching error text.
+engine or parser. Indexed scope admission and execution now share a compiler
+that bypasses Tantivy's string-valued `RegexQuery::from_pattern` error wrapper.
+The pinned external `tantivy-fst =0.5.0` still keeps its error enum private.
+On compilation failure only, the same default `regex-syntax` parser and an
+exhaustive HIR check identify malformed syntax, byte classes, lazy repetitions
+and look assertions. A valid FST grammar leaves only the pinned compiler's
+NFA-size and DFA-state refusals, mapped to `LexRegexPlanLimitExceeded` without
+matching diagnostic text. Syntax failures remain invalid contracts. Successful
+compilation is not repeated; this classification depends on the pinned compiler
+refusal set and must be rechecked when its dependency/parser contract changes.
 Indexed file filters compile only the requested path/name field; combined
 name-and-path filters share one `Arc`-owned FST automaton. The dependency stays
 on the pinned external `tantivy-fst` release. Verified-result vector growth
