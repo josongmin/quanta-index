@@ -46,7 +46,10 @@ python3 -m tools.benchmark.retrieval evaluate \
 ```
 
 Use `--embedder hash-dev` only for development diagnostics. The default
-`potion-code` provider requires verified local model assets. A dirty/wrong-HEAD
+`potion-code` uses the historical effective 512-token V1 encoder with verified
+local assets. `potion-code-full-v2` explicitly removes that cap and requires a
+fresh vector generation; pair captures under it are exploratory with no quality,
+speed, or same-model claim. A dirty/wrong-HEAD
 corpus, stale state root or existing output is refused. `freeze` creates a blind
 pack from an authored suite; it does not generate gold labels.
 

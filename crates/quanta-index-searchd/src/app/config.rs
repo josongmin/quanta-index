@@ -210,7 +210,10 @@ pub enum SemanticEmbedderProfile {
     /// `boot_semantic_profile_is_dev` whenever it serves under it.
     Hash { dimension: usize },
     /// Pinned local `Model2Vec` code model used by Semble.
-    PotionCode { model_dir: PathBuf },
+    PotionCode {
+        model_dir: PathBuf,
+        encoding: quanta_index_embed::PotionCodeEncodingPolicy,
+    },
     /// Network-backed `OpenAI` embeddings. `api_key` is held here but redacted in
     /// `Debug` (R-SEC-01) and never logged. `tuning` carries the env-resolved
     /// operational knobs threaded into the provider/cache at the composition root.
@@ -252,9 +255,13 @@ impl std::fmt::Debug for SemanticEmbedderProfile {
                 .field("api_key", &"<redacted>")
                 .field("tuning", tuning)
                 .finish(),
-            Self::PotionCode { model_dir } => f
+            Self::PotionCode {
+                model_dir,
+                encoding,
+            } => f
                 .debug_struct("PotionCode")
                 .field("model_dir", model_dir)
+                .field("encoding", encoding)
                 .finish(),
             Self::Unavailable => f.write_str("Unavailable"),
         }
@@ -288,7 +295,7 @@ impl SemanticEmbedderProfile {
     pub const fn selector(&self) -> &'static str {
         match self {
             Self::Hash { .. } => DEV_HASH_EMBEDDER_SELECTOR,
-            Self::PotionCode { .. } => "potion-code",
+            Self::PotionCode { encoding, .. } => encoding.selector(),
             Self::OpenAi { .. } => "openai",
             Self::Unavailable => "unavailable",
         }
@@ -1508,8 +1515,9 @@ fn required_positive_raw_u64(name: &str, raw: Option<String>) -> Result<u64> {
 /// Resolve the semantic embedder profile from an injected lookup
 /// (QI-BB-007).
 ///
-/// `QUANTA_INDEX_EMBEDDER` names the profile: `potion-code` (pinned local
-/// `Model2Vec`), `openai` (a learned network provider), `unavailable` (queries
+/// `QUANTA_INDEX_EMBEDDER` names the profile: `potion-code` (historical
+/// effective-512 `Model2Vec`), `potion-code-full-v2` (explicit unbounded
+/// tokenizer; requires a newly indexed generation), `openai`, `unavailable` (queries
 /// fail closed), or `hash-dev` (the
 /// development hash embedder, by name). Unset selects `potion-code`;
 /// a deployment that names no embedder never serves token overlap as
@@ -1521,7 +1529,12 @@ fn semantic_embedder_profile_from_lookup(
     lookup: &EnvLookup<'_>,
 ) -> Result<SemanticEmbedderProfile> {
     match lookup("QUANTA_INDEX_EMBEDDER")?.as_deref() {
-        None | Some("" | "potion-code") => {
+        selector @ (None | Some("" | "potion-code" | "potion-code-full-v2")) => {
+            let encoding = if selector == Some("potion-code-full-v2") {
+                quanta_index_embed::PotionCodeEncodingPolicy::FullLengthV2
+            } else {
+                quanta_index_embed::PotionCodeEncodingPolicy::Pinned512V1
+            };
             let model_dir = match lookup("QUANTA_INDEX_EMBED_MODEL_DIR")?
                 .filter(|value| !value.trim().is_empty())
             {
@@ -1533,7 +1546,10 @@ fn semantic_embedder_profile_from_lookup(
                     "QUANTA_INDEX_EMBED_MODEL_DIR must be an absolute path"
                 ));
             }
-            Ok(SemanticEmbedderProfile::PotionCode { model_dir })
+            Ok(SemanticEmbedderProfile::PotionCode {
+                model_dir,
+                encoding,
+            })
         }
         Some(DEV_HASH_EMBEDDER_SELECTOR) => Ok(SemanticEmbedderProfile::Hash {
             dimension: embed_dim_from_lookup(lookup, SEARCH_OWNED_SEMANTIC_DIMENSION)?,
@@ -1563,7 +1579,7 @@ fn semantic_embedder_profile_from_lookup(
             })
         }
         Some(other) => Err(anyhow::anyhow!(
-            "unknown QUANTA_INDEX_EMBEDDER '{other}' (expected potion-code|openai|unavailable|{DEV_HASH_EMBEDDER_SELECTOR})"
+            "unknown QUANTA_INDEX_EMBEDDER '{other}' (expected potion-code|potion-code-full-v2|openai|unavailable|{DEV_HASH_EMBEDDER_SELECTOR})"
         )),
     }
 }
@@ -2328,7 +2344,8 @@ mod tests {
         assert_eq!(
             unset,
             SemanticEmbedderProfile::PotionCode {
-                model_dir: PathBuf::from("/opt/quanta-cache/models/potion-code-16M-v2-e9d2a44")
+                model_dir: PathBuf::from("/opt/quanta-cache/models/potion-code-16M-v2-e9d2a44"),
+                encoding: quanta_index_embed::PotionCodeEncodingPolicy::Pinned512V1,
             }
         );
         assert!(!unset.is_dev());
@@ -2365,6 +2382,7 @@ mod tests {
                 .expect("explicit root");
         let expected = SemanticEmbedderProfile::PotionCode {
             model_dir: PathBuf::from("/opt/quanta-cache/models/potion-code-16M-v2-e9d2a44"),
+            encoding: quanta_index_embed::PotionCodeEncodingPolicy::Pinned512V1,
         };
         assert_eq!(from_env.semantic_embedder_profile(), &expected);
         assert_eq!(explicit.semantic_embedder_profile(), &expected);
@@ -2400,6 +2418,36 @@ mod tests {
         .expect("pinned model selection");
         assert_eq!(profile.selector(), "potion-code");
         assert!(!profile.is_dev());
+    }
+
+    #[test]
+    fn full_length_policy_requires_explicit_selector() {
+        let lookup = |name: &str| -> Result<Option<String>> {
+            Ok(match name {
+                "QUANTA_INDEX_EMBEDDER" => Some("potion-code-full-v2".to_string()),
+                "QUANTA_INDEX_CACHE_ROOT" => Some("/opt/quanta-cache".to_string()),
+                _ => None,
+            })
+        };
+        let profile =
+            semantic_embedder_profile_from_lookup(&lookup).expect("explicit full-length profile");
+        assert_eq!(profile.selector(), "potion-code-full-v2");
+        assert_eq!(
+            profile,
+            SemanticEmbedderProfile::PotionCode {
+                model_dir: PathBuf::from("/opt/quanta-cache/models/potion-code-16M-v2-e9d2a44"),
+                encoding: quanta_index_embed::PotionCodeEncodingPolicy::FullLengthV2,
+            }
+        );
+        let unknown = semantic_embedder_profile_from_lookup(&|name| {
+            Ok((name == "QUANTA_INDEX_EMBEDDER").then(|| "potion-code-future".to_string()))
+        })
+        .expect_err("unknown policy must fail closed");
+        assert!(
+            unknown
+                .to_string()
+                .contains("unknown QUANTA_INDEX_EMBEDDER")
+        );
     }
 
     /// The one envelope (QI-BB-016): the config's resident byte policies

@@ -448,10 +448,10 @@ pub fn model_revision_of(
             dimension,
             ..
         } => Some(format!("{model}@{model_revision}:d{dimension}")),
-        SemanticEmbedderProfile::PotionCode { .. } => Some(format!(
+        SemanticEmbedderProfile::PotionCode { encoding, .. } => Some(format!(
             "{}@{}:d{}",
             quanta_index_embed::POTION_CODE_MODEL_ID,
-            quanta_index_embed::POTION_CODE_MODEL_REVISION,
+            encoding.model_revision(),
             quanta_index_embed::POTION_CODE_DIMENSION
         )),
         SemanticEmbedderProfile::Unavailable => None,
@@ -1072,7 +1072,8 @@ mod tests {
     }
 
     #[test]
-    fn model_revision_names_the_hash_embedder_and_none_when_unavailable() {
+    fn model_revision_names_selected_embedder_policy() {
+        use quanta_index_embed::PotionCodeEncodingPolicy;
         use quanta_index_searchd::app::SemanticEmbedderProfile;
         let hash = model_revision_of(&SemanticEmbedderProfile::Hash { dimension: 16 });
         assert_eq!(
@@ -1083,6 +1084,27 @@ mod tests {
             model_revision_of(&SemanticEmbedderProfile::Unavailable),
             None
         );
+        for policy in [
+            PotionCodeEncodingPolicy::Pinned512V1,
+            PotionCodeEncodingPolicy::FullLengthV2,
+        ] {
+            let profile = SemanticEmbedderProfile::PotionCode {
+                model_dir: "/unused/model".into(),
+                encoding: policy,
+            };
+            assert_eq!(
+                model_revision_of(&profile).as_deref(),
+                Some(
+                    format!(
+                        "{}@{}:d{}",
+                        quanta_index_embed::POTION_CODE_MODEL_ID,
+                        policy.model_revision(),
+                        quanta_index_embed::POTION_CODE_DIMENSION,
+                    )
+                    .as_str()
+                )
+            );
+        }
     }
 
     #[test]

@@ -203,7 +203,7 @@
               ]
             },
             "binary_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-            "embedder": {"enum": ["potion-code", "hash-dev"]}
+            "embedder": {"enum": ["potion-code", "potion-code-full-v2", "hash-dev"]}
           }
         },
         "semble": {
@@ -293,6 +293,27 @@
               }
             }
           }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["provenance"],
+        "properties": {"provenance": {
+          "required": ["quanta"],
+          "properties": {"quanta": {
+            "required": ["embedder"],
+            "properties": {"embedder": {"const": "potion-code-full-v2"}}
+          }}
+        }}
+      },
+      "then": {
+        "properties": {
+          "scope": {"const": "exploratory"},
+          "claims": {"properties": {
+            "quality": {"const": false}, "speed": {"const": false},
+            "same_model": {"const": false}, "incremental": {"const": false}
+          }}
         }
       }
     }

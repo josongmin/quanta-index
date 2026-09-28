@@ -21,13 +21,18 @@ impl EmbedderProfile {
                 model_id: quanta_index_embed::POTION_CODE_MODEL_ID,
                 model_revision: quanta_index_embed::POTION_CODE_MODEL_REVISION,
             }),
+            "potion-code-full-v2" => Ok(Self {
+                selector: "potion-code-full-v2",
+                model_id: quanta_index_embed::POTION_CODE_MODEL_ID,
+                model_revision: quanta_index_embed::POTION_CODE_FULL_V2_MODEL_REVISION,
+            }),
             "hash-dev" => Ok(Self {
                 selector: "hash-dev",
                 model_id: quanta_index_search_plane::SEARCH_OWNED_SEMANTIC_MODEL_ID,
                 model_revision: quanta_index_search_plane::SEARCH_OWNED_SEMANTIC_MODEL_REVISION,
             }),
             other => Err(BenchError::Config(format!(
-                "embedder {other:?} has no verified benchmark provenance; expected potion-code or hash-dev"
+                "embedder {other:?} has no verified benchmark provenance; expected potion-code, potion-code-full-v2, or hash-dev"
             ))),
         }
     }
@@ -58,5 +63,19 @@ mod tests {
         );
         assert!(EmbedderProfile::resolve(Some("hash")).is_err());
         assert!(EmbedderProfile::resolve(Some("openai")).is_err());
+    }
+
+    #[test]
+    fn full_length_requires_explicit_selector_and_new_revision() {
+        let historical = EmbedderProfile::resolve(None).expect("historical default");
+        let full = EmbedderProfile::resolve(Some("potion-code-full-v2"))
+            .expect("explicit full-length profile");
+        assert_eq!(full.selector, "potion-code-full-v2");
+        assert_eq!(full.model_id, historical.model_id);
+        assert_ne!(full.model_revision, historical.model_revision);
+        assert_eq!(
+            full.model_revision,
+            quanta_index_embed::POTION_CODE_FULL_V2_MODEL_REVISION
+        );
     }
 }

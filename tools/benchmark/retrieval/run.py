@@ -2759,8 +2759,12 @@ def load_spec(path: Path) -> dict:
         raise RunError("spec.blinding must be isolated or attested")
     if "scope" in spec and spec["scope"] not in ("exploratory", "qualified"):
         raise RunError("spec.scope must be exploratory or qualified")
-    if "embedder" in spec and spec["embedder"] not in ("potion-code", "hash-dev"):
-        raise RunError("spec.embedder must be potion-code or hash-dev")
+    if "embedder" in spec and spec["embedder"] not in (
+        "potion-code",
+        "potion-code-full-v2",
+        "hash-dev",
+    ):
+        raise RunError("spec.embedder must be potion-code, potion-code-full-v2 or hash-dev")
     if "cache_regime" in spec and spec["cache_regime"] not in (
         "true_process_cold",
         "warm_cache",
@@ -2820,6 +2824,10 @@ def load_spec(path: Path) -> dict:
         for key, value in claims.items():
             if type(value) is not bool:
                 raise RunError(f"spec.claims.{key} must be a strict boolean")
+    if spec.get("embedder") == "potion-code-full-v2" and (
+        spec.get("scope", "exploratory") != "exploratory" or any(spec.get("claims", {}).values())
+    ):
+        raise RunError("potion-code-full-v2 is exploratory diagnostic only; claims must be false")
     if "receipts" in spec:
         receipts = spec["receipts"]
         if not isinstance(receipts, dict):
@@ -4545,8 +4553,12 @@ def _validate_manifest_shape(payload: object) -> dict:
     )
     if not _is_hex(quanta["source_sha"], 40) or not _is_hex(quanta["binary_digest"], 64):
         raise RunError("manifest quanta provenance digests malformed")
-    if quanta["embedder"] not in ("potion-code", "hash-dev"):
+    if quanta["embedder"] not in ("potion-code", "potion-code-full-v2", "hash-dev"):
         raise RunError("manifest quanta embedder must be a frozen embedder")
+    if quanta["embedder"] == "potion-code-full-v2" and (
+        manifest["scope"] != "exploratory" or any(claims.values())
+    ):
+        raise RunError("potion-code-full-v2 manifest is exploratory diagnostic only")
     if manifest["scope"] == "qualified":
         if not _is_hex(quanta["source_closure_digest"], 64):
             raise RunError("qualified manifest source closure digest is malformed")
@@ -5924,6 +5936,26 @@ def _validate_isolation_proof(
     return result
 
 
+def _quanta_semantic_capture_identity_matches(validated: dict, selector: str) -> bool:
+    expected_revision = {
+        "potion-code": "e9d2a44ca6a05ac6685f3b23709ea57eb7352d5b:model2vec-rs-0.3.0:fancy-regex:full-length-v1",
+        "potion-code-full-v2": "e9d2a44ca6a05ac6685f3b23709ea57eb7352d5b:model2vec-rs-0.3.0:fancy-regex:full-length-v2",
+    }.get(selector)
+    if expected_revision is None:
+        return True
+    observed = {
+        (capture.get("model"), capture.get("model_revision"))
+        for entry in validated.values()
+        if entry["system"] == "quanta"
+        for route, binding in entry["run"]["route_provenance"].items()
+        if route in ("semantic", "hybrid")
+        for capture in [entry["run"]["captures"].get(binding.get("capture_id"), {})]
+    }
+    return not observed or observed == {
+        ("model2vec:minishlab/potion-code-16M-v2", expected_revision)
+    }
+
+
 def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     """Re-derive every digest from frozen bytes and emit the TEST-PLAN §8 verdict.
 
@@ -6436,6 +6468,10 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         receipts = [c.get("receipt_digest") for c in rep0_captures]
         if len(set(receipts)) != len(receipts):
             pair_note("strategy_receipt_reuse", ("T10",))
+    if not _quanta_semantic_capture_identity_matches(
+        validated, provenance_claims["quanta"]["embedder"]
+    ):
+        pair_note("embedder_revision_mismatch", ("T10",))
 
     # Record <-> capture-manifest binding.
     bound_records: set[str] = set()
@@ -7500,8 +7536,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         missing.append("T17")
         classes.append("admission")
     elif provenance_claims["quanta"].get("embedder") != "potion-code":
-        # T10: a quality claim over the hash-dev diagnostic control (or an
-        # undeclared embedder) is not model-quality evidence.
+        # T10: non-default encoder controls lack a qualified quality gate.
         set_state("QUALITY_DELTA", "fail", "model_quality_embedder", None)
         classes.append("model")
     elif isolation_claimed and not all_isolated:
@@ -7726,6 +7761,10 @@ def run_pair(spec: dict) -> int:
     root. Partial output is never resumed: rerun from a fresh root.
     """
     scope = spec.get("scope", "exploratory")
+    if spec.get("embedder") == "potion-code-full-v2" and (
+        scope != "exploratory" or any(spec.get("claims", {}).values())
+    ):
+        raise RunError("potion-code-full-v2 is exploratory diagnostic only; claims must be false")
     if scope != "qualified" and "linux_cgroup_parent" in spec:
         raise RunError("exploratory pair must not claim linux_cgroup_parent")
     if (
@@ -7759,7 +7798,7 @@ def run_pair(spec: dict) -> int:
         raise RunError("pair requires spec.host_profile naming the canonical host profile")
     if (
         spec.get("claims", {}).get("speed") is True
-        and spec.get("embedder", "potion-code") == "potion-code"
+        and spec.get("embedder", "potion-code") in ("potion-code", "potion-code-full-v2")
         and not spec.get("quanta_model_dir")
     ):
         raise RunError("qualified speed capture with potion-code requires quanta_model_dir")

@@ -9238,12 +9238,36 @@ def test_v3_pair_spec_schema():
     }
     jsonschema.validate(qualified, schema)
 
+    diagnostic_v2 = _g0_spec()
+    diagnostic_v2["embedder"] = "potion-code-full-v2"
+    jsonschema.validate(diagnostic_v2, schema)
+    diagnostic_v2["scope"] = "qualified"
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(diagnostic_v2, schema)
+    diagnostic_v2["scope"] = "exploratory"
+    diagnostic_v2["claims"]["quality"] = True
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(diagnostic_v2, schema)
+
 
 def test_v3_spec_accepts_lockfile_path(tmp_path):
     spec_path = tmp_path / "spec.json"
     spec_path.write_text(json.dumps(_g0_spec()), encoding="utf-8")
     loaded = pairrun.load_spec(spec_path)
     assert loaded["semble_lockfile"] == "/tmp/semble-lock.txt"
+    diagnostic_v2 = _g0_spec()
+    diagnostic_v2["embedder"] = "potion-code-full-v2"
+    spec_path.write_text(json.dumps(diagnostic_v2), encoding="utf-8")
+    assert pairrun.load_spec(spec_path)["embedder"] == "potion-code-full-v2"
+    for mutation in (
+        {"scope": "qualified"},
+        {"claims": {**diagnostic_v2["claims"], "quality": True}},
+        {"claims": {**diagnostic_v2["claims"], "speed": True}},
+        {"claims": {**diagnostic_v2["claims"], "same_model": True}},
+    ):
+        spec_path.write_text(json.dumps({**diagnostic_v2, **mutation}), encoding="utf-8")
+        with pytest.raises(pairrun.RunError, match="exploratory diagnostic only"):
+            pairrun.load_spec(spec_path)
     assert (
         pairrun.hybrid_fetch_policy_configuration(
             loaded.get("experimental_hybrid_fetch_floor", "100")
@@ -9305,6 +9329,40 @@ def test_v3_spec_accepts_lockfile_path(tmp_path):
         spec_path.write_text(json.dumps(bad), encoding="utf-8")
         with pytest.raises(pairrun.RunError, match="unknown keys"):
             pairrun.load_spec(spec_path)
+
+
+def test_quanta_encoder_selector_binds_semantic_capture_revision():
+    model = "model2vec:minishlab/potion-code-16M-v2"
+    prefix = "e9d2a44ca6a05ac6685f3b23709ea57eb7352d5b:model2vec-rs-0.3.0:fancy-regex:"
+
+    def captures(route, revision):
+        return {
+            "record": {
+                "system": "quanta",
+                "run": {
+                    "route_provenance": {route: {"capture_id": "capture"}},
+                    "captures": {"capture": {"model": model, "model_revision": revision}},
+                },
+            }
+        }
+
+    v1 = prefix + "full-length-v1"
+    v2 = prefix + "full-length-v2"
+    assert pairrun._quanta_semantic_capture_identity_matches(
+        captures("semantic", v1), "potion-code"
+    )
+    assert pairrun._quanta_semantic_capture_identity_matches(
+        captures("semantic", v2), "potion-code-full-v2"
+    )
+    for missing in (None, "not-applicable", v1):
+        assert not pairrun._quanta_semantic_capture_identity_matches(
+            captures("semantic", missing), "potion-code-full-v2"
+        )
+    assert pairrun._quanta_semantic_capture_identity_matches(
+        captures("lexical", "not-applicable"), "potion-code-full-v2"
+    )
+    with pytest.raises(pairrun.RunError, match="exploratory diagnostic only"):
+        pairrun.run_pair({"embedder": "potion-code-full-v2", "scope": "qualified"})
 
 
 def test_retrieval_recipes_download_nothing():
@@ -9490,6 +9548,15 @@ def _g0_manifest() -> dict:
 def test_current_manifest_schema():
     schema = _load_schema("run-manifest.schema.json")
     jsonschema.validate(_g0_manifest(), schema)
+    diagnostic_v2 = _g0_manifest()
+    diagnostic_v2["provenance"]["quanta"]["embedder"] = "potion-code-full-v2"
+    jsonschema.validate(diagnostic_v2, schema)
+    pairrun._validate_manifest_shape(diagnostic_v2)
+    diagnostic_v2["claims"]["quality"] = True
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(diagnostic_v2, schema)
+    with pytest.raises(pairrun.RunError, match="exploratory diagnostic only"):
+        pairrun._validate_manifest_shape(diagnostic_v2)
 
     def invalid(mutator):
         manifest = json.loads(json.dumps(_g0_manifest()))
@@ -10111,6 +10178,7 @@ def test_conditional_vector_replay_checks_full_vector_and_batch_permutation():
     with pytest.raises(ValueError, match="summary"):
         cp.validate_results(mutant, "model_vectors")
     for mutate in (
+        lambda context: context["run"]["argv"].__setitem__(3, "potion-code"),
         lambda context: context["reference_run"].update(argv=[]),
         lambda context: context["reference_run"]["argv"].__setitem__(3, "/wrong/model"),
         lambda context: context["reference_run"]["argv"].__setitem__(7, "/wrong/inputs.json"),
@@ -10547,7 +10615,8 @@ def _conditional_vector_context_unit_bundle(observed, baseline):
         )
     )
     context["run"].update(
-        argv=[binary, "/tmp/model", "/tmp/proof/inputs.json"], stdout=context["observed"]
+        argv=[binary, "/tmp/model", "/tmp/proof/inputs.json", "potion-code-full-v2"],
+        stdout=context["observed"],
     )
     script = "tools/benchmark/retrieval/parity_reference.py"
     closure = context["source_closure"]

@@ -8,10 +8,11 @@ use quanta_index_core::{CoreError, EMBED_CHECKPOINT, RequestBudgetV1, TextEmbedd
 use sha2::{Digest, Sha256};
 
 pub const POTION_CODE_MODEL_ID: &str = "model2vec:minishlab/potion-code-16M-v2";
-// Include the encoder and effective no-truncation policy: changing either
-// changes vector identity. V1 inadvertently retained tokenizer.json's 512-token
-// truncation even though encode_with_args received None.
+// V1 is the historical effective policy: tokenizer.json retains its 512-token
+// cap even when encode_with_args receives None. Keep that identity stable.
 pub const POTION_CODE_MODEL_REVISION: &str =
+    "e9d2a44ca6a05ac6685f3b23709ea57eb7352d5b:model2vec-rs-0.3.0:fancy-regex:full-length-v1";
+pub const POTION_CODE_FULL_V2_MODEL_REVISION: &str =
     "e9d2a44ca6a05ac6685f3b23709ea57eb7352d5b:model2vec-rs-0.3.0:fancy-regex:full-length-v2";
 pub const POTION_CODE_DIMENSION: usize = 256;
 const BATCH_SIZE: usize = 1024;
@@ -26,25 +27,65 @@ mod parity_fixture;
 
 pub struct PotionCodeEmbeddingProvider {
     model: StaticModel,
+    policy: PotionCodeEncodingPolicy,
+}
+
+/// Explicit encoder policy. V1 preserves historical vectors; V2 removes the
+/// pinned tokenizer's 512-token cap in memory and requires a new generation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PotionCodeEncodingPolicy {
+    Pinned512V1,
+    FullLengthV2,
+}
+
+impl PotionCodeEncodingPolicy {
+    #[must_use]
+    pub const fn model_revision(self) -> &'static str {
+        match self {
+            Self::Pinned512V1 => POTION_CODE_MODEL_REVISION,
+            Self::FullLengthV2 => POTION_CODE_FULL_V2_MODEL_REVISION,
+        }
+    }
+
+    #[must_use]
+    pub const fn selector(self) -> &'static str {
+        match self {
+            Self::Pinned512V1 => "potion-code",
+            Self::FullLengthV2 => "potion-code-full-v2",
+        }
+    }
 }
 
 impl PotionCodeEmbeddingProvider {
     /// Load only the exact upstream snapshot, never implicitly download or accept mutable weights.
     pub fn from_local_dir(dir: &Path) -> Result<Self, CoreError> {
+        Self::from_local_dir_with_policy(dir, PotionCodeEncodingPolicy::Pinned512V1)
+    }
+
+    /// Select V2 explicitly; the default constructor preserves V1 vectors.
+    pub fn from_local_dir_with_policy(
+        dir: &Path,
+        policy: PotionCodeEncodingPolicy,
+    ) -> Result<Self, CoreError> {
         if !dir.is_absolute() {
             return Err(CoreError::InvalidContract(
                 "model2vec: model directory must be absolute".to_string(),
             ));
         }
         let tokenizer = read_verified(dir, "tokenizer.json", TOKENIZER_SHA256)?;
-        let tokenizer = tokenizer_without_persisted_truncation(&tokenizer)?;
+        let tokenizer = match policy {
+            PotionCodeEncodingPolicy::Pinned512V1 => tokenizer,
+            PotionCodeEncodingPolicy::FullLengthV2 => {
+                tokenizer_without_persisted_truncation(&tokenizer)?
+            }
+        };
         let weights = read_verified(dir, "model.safetensors", MODEL_SHA256)?;
         let config = read_verified(dir, "config.json", CONFIG_SHA256)?;
         // The shared Quanta wrapper performs the same final L2 normalization on
         // both query and corpus vectors. Do not apply Model2Vec normalization twice.
         let model = StaticModel::from_bytes(&tokenizer, &weights, &config, Some(false))
             .map_err(|error| CoreError::Storage(format!("model2vec: invalid model: {error}")))?;
-        Ok(Self { model })
+        Ok(Self { model, policy })
     }
 
     fn encode(
@@ -137,7 +178,7 @@ impl TextEmbeddingProvider for PotionCodeEmbeddingProvider {
     }
 
     fn model_revision(&self) -> &str {
-        POTION_CODE_MODEL_REVISION
+        self.policy.model_revision()
     }
 
     fn dimension(&self) -> usize {
@@ -198,6 +239,30 @@ mod tests {
         );
     }
 
+    #[test]
+    fn policy_identity_and_default_remain_distinct() {
+        assert_eq!(
+            PotionCodeEncodingPolicy::Pinned512V1.model_revision(),
+            POTION_CODE_MODEL_REVISION
+        );
+        assert_eq!(
+            PotionCodeEncodingPolicy::FullLengthV2.model_revision(),
+            POTION_CODE_FULL_V2_MODEL_REVISION
+        );
+        assert_ne!(
+            POTION_CODE_MODEL_REVISION,
+            POTION_CODE_FULL_V2_MODEL_REVISION
+        );
+        assert_eq!(
+            PotionCodeEncodingPolicy::Pinned512V1.selector(),
+            "potion-code"
+        );
+        assert_eq!(
+            PotionCodeEncodingPolicy::FullLengthV2.selector(),
+            "potion-code-full-v2"
+        );
+    }
+
     #[expect(
         clippy::indexing_slicing,
         reason = "the negative control and corrected output are length-checked before indexing"
@@ -208,8 +273,11 @@ mod tests {
         let dir = std::env::var("QUANTA_INDEX_TEST_POTION_CODE_MODEL_DIR")
             .expect("set QUANTA_INDEX_TEST_POTION_CODE_MODEL_DIR");
         let dir = Path::new(&dir);
-        let provider =
-            PotionCodeEmbeddingProvider::from_local_dir(dir).expect("pinned model loads");
+        let provider = PotionCodeEmbeddingProvider::from_local_dir_with_policy(
+            dir,
+            PotionCodeEncodingPolicy::FullLengthV2,
+        )
+        .expect("pinned model loads");
         let prefix = "route ".repeat(600);
         let left = format!("{prefix}render content type");
         let right = format!("{prefix}binding form values");
@@ -228,6 +296,20 @@ mod tests {
         assert_eq!(
             legacy_vectors[0], legacy_vectors[1],
             "old cap masks both suffixes"
+        );
+        let default =
+            PotionCodeEmbeddingProvider::from_local_dir(dir).expect("default V1 model loads");
+        assert_eq!(default.model_revision(), POTION_CODE_MODEL_REVISION);
+        assert_eq!(
+            default
+                .embed_batch(&[&left, &right])
+                .expect("default inference"),
+            legacy_vectors,
+            "default constructor must preserve historical effective-512 vectors"
+        );
+        assert_eq!(
+            provider.model_revision(),
+            POTION_CODE_FULL_V2_MODEL_REVISION
         );
         let vectors = provider
             .embed_batch(&[&prefix, &left, &right])
@@ -319,8 +401,11 @@ mod tests {
         // L2Unit-normalized output below.
         let vectors_reference = &fixture.vectors;
 
-        let provider = PotionCodeEmbeddingProvider::from_local_dir(Path::new(&model_dir))
-            .expect("pinned model loads");
+        let provider = PotionCodeEmbeddingProvider::from_local_dir_with_policy(
+            Path::new(&model_dir),
+            PotionCodeEncodingPolicy::FullLengthV2,
+        )
+        .expect("pinned V2 model loads");
         // Audit hardening: a truncated fixture must fail loudly here,
         // not narrow the zip comparison below.
         assert_eq!(
@@ -445,7 +530,7 @@ mod tests {
                 "reference_sha256": format!("{:x}", Sha256::digest(&reference_bytes)),
                 "model": {
                     "id": POTION_CODE_MODEL_ID,
-                    "revision": POTION_CODE_MODEL_REVISION,
+                    "revision": POTION_CODE_FULL_V2_MODEL_REVISION,
                     "safetensors_sha256": MODEL_SHA256,
                     "tokenizer_sha256": TOKENIZER_SHA256,
                     "config_sha256": CONFIG_SHA256

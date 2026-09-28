@@ -1305,7 +1305,7 @@ def validate_results(value: object, kind: str, *, verify_source: bool = False) -
     )
     if (
         not isinstance(run["argv"], list)
-        or len(run["argv"]) != 3
+        or len(run["argv"]) != (4 if kind == "model_vectors" else 3)
         or any(not isinstance(arg, str) for arg in run["argv"])
         or run["argv"][0] != executables[0]
         or type(run["exit_code"]) is not int
@@ -1377,6 +1377,8 @@ def validate_results(value: object, kind: str, *, verify_source: bool = False) -
     command_identity(build, context, source_root)
     command_identity(run, context, source_root)
     if kind == "model_vectors":
+        if run["argv"][3] != "potion-code-full-v2":
+            raise ValueError("full-length vector proof requires explicit V2 selector")
         expected_models = {
             (
                 "quanta",
@@ -1631,7 +1633,12 @@ def _produce_controlled(args: argparse.Namespace, guard: tool_custody.ToolCustod
                 if entry["path"] == "tools/benchmark/retrieval/parity_reference.py"
             ),
         }
-        argv = [str(executable), str(args.model_dir.resolve()), str(out / "inputs.json")]
+        argv = [
+            str(executable),
+            str(args.model_dir.resolve()),
+            str(out / "inputs.json"),
+            "potion-code-full-v2",
+        ]
     else:
         argv = [str(executable), str(out / "inputs.json"), str(out / "fresh-state")]
     observed = portable_proof._run(
