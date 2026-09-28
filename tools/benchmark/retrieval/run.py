@@ -8228,12 +8228,14 @@ def aggregate_matrix(cells: list[dict], fresh_roots: int) -> dict:
         system = cell["system"]
         strategy = cell["strategy"]
         timings_by_task: dict[tuple[str, str], float | None] = {}
+        statuses_by_task: dict[tuple[str, str], str] = {}
         for route, task_id, status, timing in cell["rows"]:
             sys_key = f"{system}:{strategy}:{route}"
             bump(attempts, sys_key)
             sample_key = f"{sys_key}:{task_id}"
             value = _sample_value(timing, f"{sample_key}")
             timings_by_task[(route, task_id)] = value
+            statuses_by_task[(route, task_id)] = status
             if status in ERROR_STATUSES:
                 bump(errors, sys_key)
                 continue
@@ -8276,6 +8278,11 @@ def aggregate_matrix(cells: list[dict], fresh_roots: int) -> dict:
                         extras = values[1:]
                     for value in extras:
                         parsed = _sample_value(value, f"{sample_key}[warm]")
+                        # Apply the normalized row's failure policy to every
+                        # repetition; cheap failure timings are not retrieval
+                        # observations and must not inflate floors or p95.
+                        if statuses_by_task[(route, task_id)] in ERROR_STATUSES:
+                            continue
                         if parsed is None:
                             bump(nulls, sys_key)
                         else:
