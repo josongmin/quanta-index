@@ -2459,6 +2459,11 @@ def _is_hex(value: object, length: int) -> bool:
 
 def validate_admission_manifest(payload: object) -> dict:
     """Validate the closed W0-B qualification authority packet."""
+    policy_keys = (
+        {"decision_policy_sha256"}
+        if isinstance(payload, dict) and "decision_policy_sha256" in payload
+        else set()
+    )
     admission = _exact_keys(
         payload,
         {
@@ -2479,7 +2484,8 @@ def validate_admission_manifest(payload: object) -> dict:
             "host_profile_sha256",
             "cache_regime",
             "verification",
-        },
+        }
+        | policy_keys,
         "qualification admission",
     )
     if admission["schema_version"] != 2:
@@ -2501,6 +2507,8 @@ def validate_admission_manifest(payload: object) -> dict:
     ):
         if not _is_hex(admission[key], 64):
             raise RunError(f"qualification admission {key} must be a sha256")
+    if policy_keys and not _is_hex(admission["decision_policy_sha256"], 64):
+        raise RunError("qualification admission decision_policy_sha256 must be a sha256")
     if admission["cache_regime"] not in ("true_process_cold", "warm_cache"):
         raise RunError("qualified admission cannot use an undeclared cache regime")
 

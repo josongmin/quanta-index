@@ -34,6 +34,7 @@
     "suite_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "development_suite_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "experiment_custody_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "decision_policy_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$", "description": "Optional before capture; required by the separate default decision gate. Binds its predeclared effect, regression and resource limits into the admission authority."},
     "query_pack_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "license": {
       "type": "object",

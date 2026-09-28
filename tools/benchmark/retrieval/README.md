@@ -158,6 +158,20 @@ run cannot qualify isolated-blind quality. Linux qualified capture also requires
 an explicitly delegated `linux_cgroup_parent`. Missing controls refuse the
 corresponding claim; inspect verdict fields rather than command exit alone.
 
+`QUALITY_DELTA=pass` validates comparative evidence; it does not select a
+product default. Before qualified capture, put the SHA-256 of a decision policy
+in the admission manifest as `decision_policy_sha256`. The policy JSON declares
+`schema_version: 1`, one `comparison` (`strategy`, `baseline_route`,
+`candidate_route`, `primary_metric`), a positive `min_useful_delta`, a
+nonnegative `min_cluster_lower_95`,
+`confidence_method: paired_query_family_cluster_bootstrap_percentile_v1`, a
+nonempty list of `critical_strata` (`axis`, `name`, `min_delta`), and
+`resource_limits` (`max_query_p95_ms`, `max_peak_rss_bytes`,
+`max_index_bytes`). No threshold has a default. After capture and replay, run
+`python -m tools.benchmark.retrieval.decision --repo REPO --suite SUITE
+--run-manifest RUN_MANIFEST --policy POLICY --out DECISION_JSON`. Exit 0 admits,
+1 records a threshold refusal, and 2 refuses malformed or missing proof.
+
 For a Linux performance host, select the actual CPU thermal zone and limits:
 
 ```sh

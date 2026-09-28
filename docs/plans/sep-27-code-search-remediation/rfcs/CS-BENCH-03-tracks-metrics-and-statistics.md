@@ -96,6 +96,14 @@ whether the candidate delta is positive or meets a minimum useful effect.
 Default admission therefore needs a separate decision against predeclared
 effect, critical-stratum regression and resource limits. Negative or zero
 qualified deltas must not be described as a product win because this gate passes.
+The separate `tools/benchmark/retrieval/decision.py` gate requires the exact
+policy SHA-256 in the pre-capture qualification admission manifest, replays the
+qualified verdict, binds the selected scored report, and compares the primary
+delta, query-family cluster lower bound, declared critical strata, and captured
+candidate p95/RSS/index bytes with the frozen policy. Missing policy identity,
+qualified proof or observed dimension refuses; no numeric defaults are supplied.
+Existing admission manifests without `decision_policy_sha256` remain valid
+evidence but cannot admit a product default.
 
 The within-repository family gate has fixture coverage, but tests do not
 establish independent labels or a qualified benchmark run. Historical local
