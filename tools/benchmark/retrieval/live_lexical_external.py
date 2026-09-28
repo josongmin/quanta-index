@@ -31,7 +31,7 @@ if str(BENCH_ROOT) not in sys.path:
 
 import corpus_binding  # noqa: E402
 import corpus_release  # noqa: E402
-from evidence import _read_control_file, canonical_json, file_digest  # noqa: E402
+from evidence import RawFile, _read_control_file, canonical_json, file_digest  # noqa: E402
 
 from tools.benchmark.retrieval import lexical_file_comparison as lexical  # noqa: E402
 from tools.benchmark.retrieval import sourcegraph  # noqa: E402
@@ -838,6 +838,19 @@ def capture(spec_path: Path) -> dict:
     return summary
 
 
+def _replay_rows(path: Path, tasks: list[dict], replay) -> None:
+    """Check row order and completeness with bounded, fully hashed lines."""
+
+    def consume(lines):
+        for task, line in zip(tasks, lines, strict=True):
+            row = _json(line)
+            if row.get("task_id") != task["task_id"]:
+                raise ValueError("external capture row order differs")
+            replay(task, row)
+
+    RawFile.capture(path).consume_lines(consume)
+
+
 def verify(root: Path) -> dict:
     """Re-derive every external row from retained native bytes; no live searches."""
     inventory = corpus_release.regular_tree(root)
@@ -1026,10 +1039,8 @@ def verify(root: Path) -> dict:
         if _sha_file(row_path) != summary.get("rows_sha256", {}).get(name):
             raise ValueError("external rows differ from capture")
         lexical.product_result(name, row_path, tasks, admitted)
-        rows = [_json(line) for line in _read_control_file(row_path).splitlines()]
-        if [row["task_id"] for row in rows] != [task["task_id"] for task in pack["tasks"]]:
-            raise ValueError("external capture row order differs")
-        for task, row in zip(pack["tasks"], rows, strict=True):
+
+        def replay_row(task, row, name=name):
             task_id, gold = task["task_id"], tasks[task["task_id"]][1]
             if name == "cs":
                 terminal = _json(_read_control_file(root / name / f"{task_id}.process.json"))
@@ -1085,6 +1096,8 @@ def verify(root: Path) -> dict:
                     )
             if canonical_json(row) != canonical_json(derived):
                 raise ValueError("external row disagrees with retained native response")
+
+        _replay_rows(row_path, pack["tasks"], replay_row)
     return summary
 
 

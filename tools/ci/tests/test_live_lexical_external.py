@@ -11,10 +11,37 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
+from tools.benchmark.evidence import CONTROL_DOCUMENT_BYTES
 from tools.benchmark.retrieval import live_lexical_external as live
 from tools.ci.tests.test_lexical_capture import inputs
 
 pytest_plugins = ["tools.ci.tests.test_lexical_capture"]
+
+
+def test_external_row_replay_streams_large_jsonl_and_refuses_invalid_order(tmp_path):
+    path = tmp_path / "sourcegraph_rows.jsonl"
+    tasks = [{"task_id": f"S{index:02d}"} for index in range(20)]
+    padding = "x" * 900_000
+    with path.open("wb") as stream:
+        for task in tasks:
+            stream.write(json.dumps({**task, "padding": padding}).encode() + b"\n")
+    assert path.stat().st_size > CONTROL_DOCUMENT_BYTES
+    seen = []
+    live._replay_rows(path, tasks, lambda task, row: seen.append(row["task_id"]))
+    assert seen == [task["task_id"] for task in tasks]
+
+    path.write_bytes(b'{"task_id":"S00"}\n{"task_id":"S00"}\n')
+    with pytest.raises(ValueError, match="row order differs"):
+        live._replay_rows(path, tasks[:2], lambda *_: None)
+    path.write_bytes(b'{"task_id":"S00"}\n')
+    with pytest.raises(ValueError, match=r"zip\(\) argument 2 is shorter"):
+        live._replay_rows(path, tasks[:2], lambda *_: None)
+    path.write_bytes(b'{"task_id":"S00"}\n{"task_id":"S01"}\n')
+    with pytest.raises(ValueError, match=r"zip\(\) argument 2 is longer"):
+        live._replay_rows(path, tasks[:1], lambda *_: None)
+    path.write_bytes(b'{"task_id":"S00"}\n{"task_id":')
+    with pytest.raises(ValueError, match="unsafe benchmark evidence"):
+        live._replay_rows(path, tasks[:2], lambda *_: None)
 
 
 def test_result_file_larger_than_control_document_is_hashed_as_payload(tmp_path):
@@ -355,7 +382,7 @@ class SearchHandler(BaseHTTPRequestHandler):
 
 @pytest.mark.parametrize("index_changes_during_queries", [False, True])
 def test_live_capture_makes_three_product_requests_and_retains_raw(
-    tmp_path, lexical_release_seed, index_changes_during_queries
+    tmp_path, lexical_release_seed, index_changes_during_queries, monkeypatch
 ):
     lexical_spec, paths = inputs(tmp_path, lexical_release_seed)
     corpus = json.loads(lexical_spec.read_text())["corpus"]
@@ -441,7 +468,16 @@ def test_live_capture_makes_three_product_requests_and_retains_raw(
         rows = (root / f"{name}_rows.jsonl").read_text().splitlines()
         assert len(rows) == 20
         assert sum(json.loads(row)["file_hit_at_10"] for row in rows) == 1
-    assert live.verify(root) == result
+    original_read = live._read_control_file
+
+    def control_only(path):
+        if path.name.endswith("_rows.jsonl"):
+            raise AssertionError("external rows were read as a whole control document")
+        return original_read(path)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(live, "_read_control_file", control_only)
+        assert live.verify(root) == result
     assert (root / "sourcegraph" / "S00.stream").exists()
     assert (root / "opengrok" / "S00.json").exists()
     assert (root / "cs" / "S00.json").exists()

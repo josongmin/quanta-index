@@ -350,6 +350,15 @@ class SourcegraphCaptureTests(unittest.TestCase):
             }
         )
 
+    def test_out_of_range_line_match_refused(self) -> None:
+        for span in ([len(QUERY), 1], [len(QUERY) - 1, 2]):
+            self.assert_match_refused(
+                {
+                    **hit("a.py", 1),
+                    "lineMatches": [{"line": QUERY, "lineNumber": 1, "offsetAndLengths": [span]}],
+                }
+            )
+
     def test_chunk_match_refused(self) -> None:
         self.assert_match_refused({**hit("a.py", 1), "chunkMatches": [{"content": QUERY}]})
 

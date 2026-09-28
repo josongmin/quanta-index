@@ -368,6 +368,14 @@ def validate_capture(
                         )
                     ):
                         raise CaptureError("content result has malformed line matches")
+                    # The stream's offsets cannot extend beyond the supplied line.
+                    # UTF-8 bytes give a conservative bound across character-offset
+                    # conventions without rejecting non-ASCII native lines.
+                    line_bytes = len(line["line"].encode("utf-8"))
+                    if any(
+                        offset + length > line_bytes for offset, length in line["offsetAndLengths"]
+                    ):
+                        raise CaptureError("content result has out-of-range line match")
                 fingerprint = sha256(
                     json.dumps(
                         hit,
