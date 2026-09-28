@@ -4,13 +4,13 @@ Status: acceptance **OPEN**. Existing metric helpers and separate timing-layer
 labels are present. The qualified verdict now independently resamples whole
 query families within category, requires at least 20 independent families and
 at least two per category, and refuses correlated-task pseudoreplication.
-Independently admitted task-track/holdout execution is **NOT_RUN** in the current
-remaining-work audit.
+Independently admitted task-track/holdout execution is **NOT_RUN** for this
+acceptance scope.
 Category: benchmark evaluation. Findings: F04/F09; depends on BENCH-01/02.
 
 Current `lexical_file_comparison` reports hit rate and macro file recall
-separately. This does not establish native-derived result authority, independent
-gold or equivalent work. Close BENCH-02 before qualification scoring; then run
+separately. That scorer alone cannot attest native agreement, independent gold
+or equivalent work. Close BENCH-02 before qualification scoring; then run
 the declared track units, statistical admission and ablation. Latest boundary:
 [CS-INT-01](CS-INT-01-integration-and-qualification.md#serial-acceptance-boundary).
 
@@ -90,10 +90,16 @@ multi-repository macro inference still needs independently admitted repos and a
 repository-level procedure. The task-level interval remains descriptive and
 cannot alone pass `QUALITY_DELTA`.
 
-Owner-local check on `3272662c` plus working-tree changes: `uv run --frozen
---extra dev python -m pytest tools/ci/tests/test_retrieval_benchmark.py -q`
-passed 341/341. This verifies the gate and fixtures, not independent labels or
-a qualified benchmark run.
+In `retrieval/run.py`, `QUALITY_DELTA=pass` currently means the matched,
+blinded/graded evidence and uncertainty are admissible. The gate does not test
+whether the candidate delta is positive or meets a minimum useful effect.
+Default admission therefore needs a separate decision against predeclared
+effect, critical-stratum regression and resource limits. Negative or zero
+qualified deltas must not be described as a product win because this gate passes.
+
+The within-repository family gate has fixture coverage, but tests do not
+establish independent labels or a qualified benchmark run. Historical local
+test counts are recoverable through the [plan archive](../../ARCHIVE-INDEX.md).
 
 Before tuning or opening holdout, freeze: primary metric/track, minimum useful
 effect, tolerated regressions per critical stratum, latency/memory/index-cost
@@ -120,7 +126,8 @@ Do not compare incompatible metric definitions under identical column names.
   unsupported products/tasks cannot improve an aggregate by disappearing.
 - [ ] Development ablation isolates grouping, name/case ranking and presentation.
 - [ ] Primary metrics, effect/regression limits and resource budgets are frozen
-  before a fresh holdout; source-bound results determine default admission.
+  before a fresh holdout; source-bound results determine default admission. A
+  qualified negative/zero-effect control refuses a claimed product improvement.
 - [ ] Research context/agent tracks are labeled separately and reuse corpus/control
   owners without becoming prerequisites for core lexical conformance.
 

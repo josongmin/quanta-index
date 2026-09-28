@@ -1,7 +1,7 @@
 # CS-BENCH-01 — Shared corpus releases, independent gold and holdout
 
 Status: acceptance **OPEN**. Independent corrected definition gold, fresh release
-and sealed holdout execution: **NOT_RUN** in the current remaining-work audit.
+and sealed holdout execution are **NOT_RUN** for this acceptance scope.
 Category: benchmark inputs. Finding: F07; supports F02/F04 and G02.
 
 Existing release/binding and symbol-coverage helpers remain implemented; this
@@ -21,7 +21,7 @@ acceptance. Correct the oracle, then freeze fresh development/holdout inputs.
 No retrieval engine's output, including Quanta's symbol producer, is sufficient
 by itself to define gold for a comparison involving that engine.
 
-## Decision: one input release owner, multiple task views
+## Target input release contract
 
 Extend the existing [corpus release](../../../../tools/benchmark/corpus_release.py),
 [binding](../../../../tools/benchmark/corpus_binding.py) and retrieval
@@ -84,8 +84,8 @@ and unanswerable strata keep explicit denominators.
 
 ## Development and fresh evaluation
 
-Keep the existing 200 tasks as a corrected, versioned diagnostic/regression set.
-They have been inspected and must not become a fresh holdout after random reshuffle.
+Keep previously inspected tasks only as a corrected, versioned diagnostic or
+regression set. A reshuffle cannot turn those tasks into a fresh holdout.
 
 Proposed first expanded release: at least 12 repositories and 1,200 **fresh** cases
 across Rust, Go, Python, TS/JS and other independently supported languages, with

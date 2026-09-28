@@ -142,3 +142,17 @@ compacted without deleting pending acceptance. See the
 [document compaction record](../ARCHIVE-INDEX.md#sep-27-remaining-document-compaction)
 for exact dirty preimages. The lexical TOML ledger and all 143 purpose checks
 remain; canonical comparison/admission now lives in SEP-26-003.
+
+## SEP-27 code-search live-ledger evidence pruning
+
+Pre-edit revision: `e56ce86d62bc71225d6994c79d1bd5fefe42bc1f`.
+The active CS-INT-01, ENG-02/04 and BENCH-01/02/03/04 files remain live for open
+acceptance. Their pre-edit bodies at this revision retain the older HEAD-bound
+test totals, `/tmp` scratch receipts, one-off task count/cost table, local backend probe
+outcomes and completed implementation chronology removed from the live ledgers.
+Recover one with `git show e56ce86d62bc71225d6994c79d1bd5fefe42bc1f:<repository-relative-path>`.
+Accepted source/preview, native capture and statistical decision boundaries
+are in [SEP-27-003](../adr/SEP-27-003-code-search-source-and-preview-contract.md),
+[SEP-27-004](../adr/SEP-27-004-benchmark-capture-and-resource-custody.md) and
+[SEP-26-003](../adr/SEP-26-003-retrieval-evidence-custody-and-qualification.md).
+Historical local outcomes do not qualify the current checkout.

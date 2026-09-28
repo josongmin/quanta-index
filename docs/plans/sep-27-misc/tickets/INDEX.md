@@ -10,7 +10,7 @@ execution and acceptance ledger. Historical counts are not required inventories.
 
 | Owner | Remaining action / acceptance |
 | --- | --- |
-| BENCH-02 | Current live verification rederives and refuses local cs/Sourcegraph/OpenGrok fixed-native path/hit mutants. Audit every admitted acquisition/scoring/replay entrypoint and remaining formats; complete the remaining native negative matrix and qualify actual captures. [Native authority](../../sep-27-code-search-remediation/rfcs/CS-BENCH-02-native-response-validation.md) owns semantics; the bare normalized scorer is diagnostic. |
+| BENCH-02 | Local cs/Sourcegraph/OpenGrok fixed-native path/hit refusal is implemented. Audit every admitted acquisition/scoring/replay entrypoint and remaining format; complete the native negative matrix and qualify actual captures. The [native ticket](../../sep-27-code-search-remediation/rfcs/CS-BENCH-02-native-response-validation.md) owns remaining semantics; the bare normalized scorer is diagnostic. |
 | BENCH-03 | Current qualified verdict resamples whole query families and refuses insufficient independent families/categories; task-level intervals are descriptive. Admit independent multi-repository gold/holdout, frozen effects/budgets and repository-level inference before broader quality claims. [Statistics ticket](../../sep-27-code-search-remediation/rfcs/CS-BENCH-03-tracks-metrics-and-statistics.md) owns the remaining acceptance. |
 | BENCH-04 | OpenGrok can opt into exact indexed-file inventory and served-byte probes bracketing search queries; this remains diagnostic without posting freshness and current admitted external corpus. Sourcegraph/cs index scope, product mutation/restart and equal-work timing are unrun. [Comparator ticket](../../sep-27-code-search-remediation/rfcs/CS-BENCH-04-comparators-performance-and-incremental.md) owns execution. |
 | MISC-05 / ENG-04 | Complete physical regex planning/compiler/retained-engine/cache admission with correct lifetimes and differential truth/ranges. NFA/cache defaults are pinned; optional-preview hit stability is covered; structural file filters now compile once per request with typed resource refusal. [Regex ticket](../../sep-27-code-search-remediation/rfcs/CS-ENG-04-match-anchored-snippets.md) owns the remaining aggregate-allocation gap; no current runtime overrun is established. |
@@ -29,9 +29,11 @@ historical proof cleanup; do not recreate per-run repository evidence files.
 
 ## Execution order and shared boundary
 
-Finish structural regex admission and total-cost qualification → normative docs and
-combined source selection → one serial MISC-04/05 execution → IO-5/actual-producer
-acceptance → admitted MISC-06/07 measurements. Do not launch competing heavy
+Use the source-first [CS-INT-01 execution plan](../../sep-27-code-search-remediation/rfcs/CS-INT-01-integration-and-qualification.md#current-source-audit-and-decision-order):
+regex allocation feasibility/admission and measured coverage cost → one serial
+combined-source integration with IO-5/actual-producer acceptance → admitted
+MISC-06/07 measurements. Independent benchmark inputs can be prepared in
+parallel, but captures bind the final source. Do not launch competing heavy
 Cargo/timing jobs on the shared host or repeat one capture for multiple tickets.
 
 Preserve one owner for shared `benchctl.py`, `evidence_bridge.py`, selector,
@@ -43,12 +45,11 @@ to rerun every historical target.
 
 ### Integration acceptance
 
-The current owner-local Rust fast/daemon, selected lexical/benchmark integration,
-and whole-workspace all-target Clippy gates pass on the working tree; commands,
-counts, source binding and exclusions are in
-[CS-INT-01](../../sep-27-code-search-remediation/rfcs/CS-INT-01-integration-and-qualification.md).
-This does not close the installed, external-producer, hosted or platform rows
-below.
+Historical owner-local Rust/Python/daemon and Clippy results are archived and
+do not establish the final selected source's test state. The integration plan
+in [CS-INT-01](../../sep-27-code-search-remediation/rfcs/CS-INT-01-integration-and-qualification.md)
+sets the next execution boundary. Installed, external-producer, hosted and
+platform rows remain separate.
 
 - [x] New external owner modules have live nonempty collection, owner/scope/Just
   binding and source closure under the existing local rail. C4/C5 inventories,

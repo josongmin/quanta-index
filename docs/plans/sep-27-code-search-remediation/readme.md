@@ -14,7 +14,7 @@ exact bodies remain recoverable through the [plan archive](../ARCHIVE-INDEX.md).
 | [CS-ENG-02](rfcs/CS-ENG-02-capability-publication-and-freshness.md) | Total coverage pipeline cost, repeated base decode and physical heap qualification |
 | [CS-ENG-04](rfcs/CS-ENG-04-match-anchored-snippets.md) | Physical regex compilation/cache admission and its lifetime proof |
 | [CS-BENCH-01](rfcs/CS-BENCH-01-corpus-gold-and-holdout.md) | Independent source/gold releases and sealed holdout |
-| [CS-BENCH-02](rfcs/CS-BENCH-02-native-response-validation.md) | Native-derived scoring/replay and false-input refusal |
+| [CS-BENCH-02](rfcs/CS-BENCH-02-native-response-validation.md) | Remaining native entrypoint/format refusal coverage and real captures; local cs/Sourcegraph/OpenGrok path/hit refusal is implemented |
 | [CS-BENCH-03](rfcs/CS-BENCH-03-tracks-metrics-and-statistics.md) | Task/metric/statistical admission, ranking/context experiments |
 | [CS-BENCH-04](rfcs/CS-BENCH-04-comparators-performance-and-incremental.md) | Real comparator, update-cost and equal-work measurement |
 | [CS-INT-01](rfcs/CS-INT-01-integration-and-qualification.md) | Combined-source, external producer/consumer and release qualification |

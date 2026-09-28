@@ -186,6 +186,12 @@ improvement rule, with every stratum guard. Use query/repository clusters and
 leave-one-repository-out sensitivity; latency preserves query/root structure.
 Repeated calls are not independent queries. Bundle effects need separate ablation
 and holdout before attribution to individual changes; no post-hoc exclusions.
+Within a single repository, the qualified query-family interval resamples whole
+families within category, with at least 20 independent families and at least two
+per category. The task-level interval is descriptive and cannot alone pass a
+quality-delta gate. This local gate does not establish inference across
+repositories; that requires admitted independent repositories and a declared
+repository-level procedure.
 
 ### T00-T17 blocking matrix
 

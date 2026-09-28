@@ -2,7 +2,7 @@
 
 Status: acceptance **OPEN**. An exploratory external lexical producer is present;
 equivalent-work performance and qualified incremental comparison are **NOT_RUN**
-in the current remaining-work audit. Category: benchmark measurement. Findings:
+for this acceptance scope. Category: benchmark measurement. Findings:
 F09; gaps: G01/G02.
 Depends on BENCH-01/02/03 and shared MISC execution/custody prerequisites.
 
@@ -55,17 +55,14 @@ Use supported readiness/manifest evidence; equal file count is insufficient.
 If a product cannot prove part of its universe, label the dependent comparison
 diagnostic. Unsupported capabilities remain visible, not zero-point failures.
 
-The new OpenGrok `indexed_view_probe: "full"` path uses the documented
+The OpenGrok `indexed_view_probe: "full"` path uses the documented
 [`/projects/{project}/files` and `/file/content` APIs](https://github.com/oracle/opengrok/blob/master/openapi.yaml).
 It is opt-in and bounded to
-4,096 files, 512 MiB of release files and 900 seconds per probe. A local fake
-service verifies extra/missing/duplicate paths, stale/missing content, replay
-tampering and a mutation between the two probes. A read-only authenticated
-local gin probe returned HTTP 200 and 99 unique canonical `/gin/` indexed paths,
-matching two inspected manifests. `/file/content` returned HTTP 404 for
-`fs.go`, and current `corpus_release.validate` rejected both inspected
-releases. Those inputs are **FAILED** for full capture, not a qualified run.
-A fresh reindex/release and full capture remain **NOT_RUN**.
+4,096 files, 512 MiB of release files and 900 seconds per probe. Fake-service
+controls reject extra/missing/duplicate paths, stale/missing content, replay
+tampering and a mutation between the two probes. Historical local `gin` probes
+and failed release inputs are recoverable through the
+[plan archive](../../ARCHIVE-INDEX.md); they do not qualify a fresh capture.
 
 ## Equivalent work and timing boundaries
 

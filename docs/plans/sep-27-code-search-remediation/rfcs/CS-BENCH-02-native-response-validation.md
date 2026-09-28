@@ -1,58 +1,30 @@
 # CS-BENCH-02 — Native-derived normalization and evidence rejection
 
-Status: **OPEN** for remaining entrypoint/format coverage and real capture
-qualification. Permanent enrolled cs/Sourcegraph/OpenGrok negative controls are
-implemented in the live owner test. Current live verification rejects fixed-native normalized
-path/hit mutations for cs, Sourcegraph and OpenGrok in a local fixture control.
-Complete native-bound scoring/replay qualification remains **NOT_RUN**.
+Status: **OPEN** for entrypoint/format coverage, the remaining negative matrix
+and real capture qualification. Live cs/Sourcegraph/OpenGrok capture and replay
+share native decoders; enrolled local controls reject normalized path/hit
+mutations against unchanged native bytes. Complete native-bound qualification
+remains **NOT_RUN**.
 Category: benchmark evidence correctness. Finding: F08; supports F01/F09.
 
-## Current remaining work
+## Remaining boundary
 
 `lexical_file_comparison.py::product_result` is a normalized-row diagnostic
 scorer. It validates task/query/gold, paths and hit-flag consistency, but does
-not itself read native responses. Its historical F08 0→1 control establishes
-that boundary, not a current bypass of every guarded caller.
+not itself read native responses. `live_lexical_external.py::verify` rederives
+cs/Sourcegraph/OpenGrok rows from retained native bytes and bound process/HTTP
+metadata; `code_search_workflow.py` invokes it and binds component identities.
+This is the implemented local contract in
+[SEP-27-004](../../../adr/SEP-27-004-benchmark-capture-and-resource-custody.md),
+not a remaining implementation request.
 
-Current `live_lexical_external.py::verify` reuses `_cs_response`,
-`_sourcegraph_response` and `_opengrok_response` to rederive rows from retained
-native bytes plus bound process/HTTP metadata, then compares canonical rows.
-`code_search_workflow.py` calls this verifier in capture and replay verification
-and binds native/component identities. Do not request this implementation again
-or describe raw retention as the only current protection.
-
-A current local control changed an empty-result task's normalized path/hit,
-recomputed the row digest and kept all native bytes unchanged. For each of cs,
-Sourcegraph and OpenGrok, the normalized scorer's total changed 1→2 while the
-live verifier refused with `external row disagrees with retained native
-response`. This verifies those fixture refusals; it does not establish actual
-backend indexed-universe attestation or full workflow execution. The control
-now runs in the permanent fake-service owner fixture selected by the existing
-benchmark-control rail. It is not a production capture.
-
-The live cs runner now applies one 16 MiB cap across stdout and stderr and
-reaps the child process group on interruption/I/O failure. Focused native
-controls accept complete zero-result cs/OpenGrok responses and reject nonzero
-exit, stderr, HTTP error, partial paging and out-of-universe paths. These are
-local decoder/process controls; the externally indexed source still needs its
-own BENCH-04 readiness proof.
-
-Remaining integration is in
-[CS-INT-01](CS-INT-01-integration-and-qualification.md#serial-acceptance-boundary).
-Historical reproduction bodies are recoverable through the
-[plan archive](../../ARCHIVE-INDEX.md).
-Inventory every admitted acquisition/scoring/replay entrypoint. Qualification
-must require native validation on each reachable path; the bare diagnostic
-scorer cannot independently attest native agreement. Retain the current live
-refusals in enrolled owner tests, complete the negative matrix below and
-audit Semble/Quanta under their existing native owners before qualification.
-
-## Purpose and RCA
-
-Normalized path/hit consistency cannot establish agreement with native results.
-The unchanged-native mutation is now refused by the current live verifier for
-the three local fixtures above. Remaining work is caller enforcement and
-coverage of each admitted format, not a reproduced live-workflow bypass.
+Inventory every admitted acquisition/scoring/replay entrypoint and require
+native validation for each qualified path. Complete the negative matrix below,
+audit Semble/Quanta under their existing native owners and execute real captures
+before qualification. Local decoder/process fixtures and raw retention do not
+attest a backend indexed universe; [BENCH-04](CS-BENCH-04-comparators-performance-and-incremental.md)
+owns readiness. [CS-INT-01](CS-INT-01-integration-and-qualification.md#serial-acceptance-boundary)
+owns combined-source acceptance.
 
 Owner: [lexical file comparison](../../../../tools/benchmark/retrieval/lexical_file_comparison.py),
 especially the product result reader. Existing native adapters include
@@ -60,13 +32,12 @@ especially the product result reader. Existing native adapters include
 [Semble](../../../../tools/benchmark/retrieval/semble.py) and the
 [Quanta SDK recorder](../../../../benchmarks/retrieval/src/sdk.rs).
 
-## Decision
+## Target contract for remaining formats
 
-Use one versioned, deterministic native decoder per product/response format for
-both capture normalization and replay validation. The capture stores immutable
-native bytes; the scorer re-derives the normalized result and refuses disagreement.
-Remove normalized hit flags as trusted inputs. Compute hits from validated results
-and independently bound gold.
+Extend the existing shared-decoder pattern to every qualified product/response
+format: capture stores immutable native bytes; replay rederives normalized
+results and refuses disagreement. Compute hits from validated results and
+independently bound gold, never from an unverified normalized hit flag.
 
 Do not create two parsers with subtly different acceptance rules, one for capture
 and one for scoring. Native decoders are pure domain adapters under the current

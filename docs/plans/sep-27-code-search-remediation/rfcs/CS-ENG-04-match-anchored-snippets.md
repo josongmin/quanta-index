@@ -63,8 +63,7 @@ The implemented executor maps `CompiledTooBig` to typed `PlanLimitExceeded` /
 `regex-compiled-bytes`, and selected-preview compilation turns that resource
 refusal into `WorkBudget`. Owner regressions exercise the typed engine refusal
 and preview work-budget path; these mitigations do not close aggregate
-allocation admission. Do not retain the superseded blanket `ExecutionInternal`
-mapping as a current defect.
+allocation admission.
 
 ## Acceptance
 
@@ -80,74 +79,22 @@ mapping as a current defect.
   combined dependencies/configuration; native behavior does not alone prove heap.
 - [ ] Any RSS claim uses separately scoped actual-process measurement.
 
-## Permanent regression controls
+## Regression selection
 
-- Deployment `max_nfa_states` now gates the validated structural charge before
-  literal extraction or engine creation. The default preserves the upstream
-  100k admission ceiling; configured tighter limits cannot be bypassed through
-  indexed/manual routes or expression/content-filter leaf shapes. This estimator
-  is not an upper bound on Unicode byte-automaton states or physical allocation.
-- `require_literal=false` admits explicit bounded verify-only plans. A strict
-  policy rejects absent literals and any empty alternative, including empty
-  patterns, zero-width assertions and optional/empty alternations. Candidate
-  materialization remains under the canonical trigram cap and execution budget.
-  Dead candidate-cap/threshold/trace scaffolding was removed from the internal
-  Rust plan/policy; wire and persisted query shapes are unchanged.
-- `engine_size_limit_is_a_typed_resource_failure` exercises the pinned engine's
-  actual compiled-byte refusal. Required matching retains a typed resource
-  error in both content-search routes and manual scope filtering, distinct from
-  syntax or integrity failure. Malformed scope syntax keeps its existing query
-  refusal; a resource ceiling is not recast as malformed input.
-  Planner literal extraction operates on the prepared HIR without constructing
-  an engine. Manual text/symbol scans and dense candidate admission each use
-  a request-local, four-entry compiled-pattern cache across documents;
-  explanation uses the same matcher with a single-document cache. Failed
-  compilations are not cached. This removes repeated compilation for common
-  leaves but retains up to four engines and does not provide aggregate heap
-  admission.
-- The manual `repo.has.*` gate cache collects each canonical predicate/options
-  key once per scan, with at most 64 distinct retained sets and a separate
-  logical retained-byte account capped by the configured collection-byte limit.
-  The set is materialized before the cache reserves its charge; each native
-  collector has its own account. These limits stop unbounded cache retention,
-  but do not admit transient allocation, cumulative collector work or physical
-  request heap. Cache unit tests and
-  `unindexed_repo_gates_refuse_excess_distinct_materializations` exercise
-  refusal through the public search route.
-- Scoped content predicates select their scope-regex admission engine from
-  `index:no` versus indexed execution. The manual route accepts the same
-  word-boundary grammar in preflight and execution and retains the predicate
-  for per-document evaluation instead of running an indexed path/content
-  collector. The indexed route retains Tantivy's FST grammar. Dense admission
-  and single-candidate explanation also refuse unsupported manual language
-  authority before document matching.
-- `every_positive_match_in_the_emitted_window_has_a_typed_span` admits exactly
-  32 overlapping `aaa` witnesses and refuses the 33rd with empty preview output.
-  `indexed_and_manual_preserve_overlapping_raw_witnesses` covers both adapters.
-- `l4_unobserved_capture_removal_preserves_reference_ranges` compares truth and
-  every range for 18 patterns across 21 sources with the original bytes Regex,
-  including named/nested captures, scoped flags, Unicode and empty matches.
-- `optional_preview_refusal_preserves_selected_identity_score_and_order`
-  exhausts work and resident-memory accounts separately under the same policy.
-  Indexed and manual selection retain the same two selected IDs, score bits,
-  order and source identities while refusing every excerpt with `WorkBudget`.
-  Repeated and distinct regex leaves also retain hit identity, score and order
-  when optional preview refuses.
-- `l4_sdk_preview_survives_daemon_process_restart` checks original ingested bytes
-  after checkout overwrite/deletion across two actual daemon starts. The same
-  SDK route retains the pinned hit with typed `WorkBudget` refusal for 33
-  overlapping witnesses. This harness does not configure an external producer
-  checkout or establish aggregate allocation/RSS bounds.
+Accepted matcher, source-provenance, cache and refusal behavior is recorded in
+[SEP-27-003](../../../adr/SEP-27-003-code-search-source-and-preview-contract.md).
+Select the registered regex, lexical preview/manual/collection and structural
+owner controls for any executor change. Historical per-test counts and completed
+implementation chronology are recoverable through the
+[plan archive](../../ARCHIVE-INDEX.md).
 
 Run the owner libraries and `l4_match_anchored_preview` target, followed by the
 `l4_preview_sdk` runtime target through `./scripts/cargow test --locked`.
 Cache/cancellation/execution-budget and Unicode/regex integration targets are
 separate controls; passing them does not satisfy the physical admission items.
 
-Current owner-local focused checks on `3272662c` plus working-tree edits:
-regex library 92/92, lexical preview 17/17, and structural prepared-filter
-and typed-error tests 1/1 each. These are functional regressions, not an RSS
-or aggregate-allocation qualification.
+Re-run affected routes on the selected source; functional regressions do not
+qualify RSS or aggregate allocation.
 
 Context utility, payload cost and p95 overhead are separately owned by
 [CS-BENCH-03](CS-BENCH-03-tracks-metrics-and-statistics.md) and

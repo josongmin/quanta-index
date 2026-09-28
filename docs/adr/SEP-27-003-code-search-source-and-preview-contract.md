@@ -79,6 +79,12 @@ qualification belong in the [active code-search ledger](../plans/sep-27-code-sea
   coverage rewriting. Full base verification, seal validation, retry comparison
   and open still read the effective coverage. Total ingest remains O(files) at
   those stages; fresh-page bytes alone do not establish sublinear total work.
+- Within one build, seal reuses the verified candidate coverage commitment
+  instead of decoding that candidate a second time. It still hashes the actual
+  root and every effective page and rejects orphans. Independent preflight/build
+  calls and generation open still decode the full base; small page reads allocate
+  their encoded length. This is an I/O and allocation reduction, not a total
+  pipeline or physical peak-memory bound.
 - Check strict symbol authority over the effective pre-result source scope, for
   every plan using that authority. Incomplete coverage is a typed refusal, not
   exact zero. A text-admitted malformed file remains searchable under its profile.
@@ -170,6 +176,22 @@ qualification belong in the [active code-search ledger](../plans/sep-27-code-sea
   Preserve differential tests against the admitted matcher. The base/state policy
   charge is not aggregate allocator admission; the [open regex ticket](../plans/sep-27-code-search-remediation/rfcs/CS-ENG-04-match-anchored-snippets.md)
   owns that remaining boundary.
+- The canonical executor pins a 10 MiB compiled NFA limit and 2 MiB lazy-DFA
+  cache limit per engine and maps engine-size refusal to a typed resource error.
+  The validated structural state estimate is bounded before literal extraction;
+  the default ceiling is 100,000 states. Explicit `require_literal=false` admits
+  bounded verify-only plans, while strict policy rejects absent literals and
+  empty alternatives. Neither estimate bounds Unicode automaton bytes.
+  Manual text/symbol scans and manual dense admission each retain at most four
+  compiled patterns per request-local cache; failed compilations are not cached.
+  Manual scoped content predicates
+  use their supported word-boundary grammar and per-document evaluation, while
+  indexed scope collection retains Tantivy's FST grammar.
+  Structural negative-universe file regexes compile once per request and retain
+  distinct syntax and resource failures. Manual `repo.has.*` gates retain at
+  most 64 distinct canonical sets under a separate logical byte account; each
+  set is materialized before that charge. None of these limits admits parser or
+  compiler temporaries, cumulative collection work, or aggregate request heap.
 
 ### Producer syntax and ownership
 

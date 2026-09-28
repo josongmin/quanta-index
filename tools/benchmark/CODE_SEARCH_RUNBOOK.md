@@ -10,6 +10,7 @@ and [SEP-27-004](../../docs/adr/SEP-27-004-benchmark-capture-and-resource-custod
 
 | Goal | Command/owner | What actually runs | Maximum claim |
 | --- | --- | --- | --- |
+| Complete code-search comparison (default) | Every repository × query-family cell in [Complete comparison](#complete-comparison-is-the-default) | Five live lexical products plus Quanta--Semble lexical, semantic and hybrid pairs | Full diagnostic matrix only after all cells validate and replay |
 | Check retrieval code while editing | `just retrieval-contract-local` | Focused Python/Rust contract tests | Dirty-checkout diagnostic; no search quality or speed |
 | Capture current-source SDK/contract proof | `benchctl run retrieval-contract` | Real daemon SDK proof and contract tests | Typed correctness proof; no relevance or speed |
 | Compare Quanta with Semble | `benchctl run retrieval-diagnostic --pair-spec ...` | Both products search the frozen repo/query pack | Exploratory paired diagnostic; not qualified quality or speed |
@@ -20,8 +21,94 @@ and [SEP-27-004](../../docs/adr/SEP-27-004-benchmark-capture-and-resource-custod
 The `code-search` workflow composes the existing registered pair and lexical
 profiles with live external collection over one frozen corpus view and query pack.
 `lexical-diagnostic` itself never starts or calls Sourcegraph, OpenGrok or cs.
+The current workflow validates one lexical input per invocation. No aggregate
+runner yet enforces completeness of the three-mode matrix below; the execution
+summary must explicitly reconcile expected and completed cells. A fail-closed
+matrix inventory is tracked in
+[CS-INT-01](../../docs/plans/sep-27-code-search-remediation/rfcs/CS-INT-01-integration-and-qualification.md#current-source-audit-and-decision-order).
 
-## One-command live workflow
+## Complete comparison is the default
+
+When asked to run a code-search benchmark, run every applicable cell below. Do
+not stop after a Quanta--Semble pair or after rescoring recorded lexical rows.
+For each repository and mode query family, freeze the same commit,
+manifest/file universe, suite and query pack across the Quanta--Semble modes.
+The external five-product scorer currently accepts bare-symbol lexical queries;
+do not label natural-language external cells as missing work.
+
+| Mode | Required execution | Products with live search | Products not applicable |
+| --- | --- | --- | --- |
+| Lexical-only | Bare-symbol supported family: one `benchctl code-search run --spec ...` workflow. Other families: one `retrieval-diagnostic` pair, then validate and replay | Quanta, Semble; Sourcegraph, OpenGrok and cs only on admitted bare-symbol inputs | External products on unsupported query forms |
+| Semantic-only | One `benchctl run retrieval-diagnostic --pair-spec ...`, then validate and replay | Quanta, Semble | Sourcegraph, OpenGrok, cs |
+| Hybrid | One `benchctl run retrieval-diagnostic --pair-spec ...`, then validate and replay | Quanta, Semble | Sourcegraph, OpenGrok, cs |
+
+`code-search run` already performs the live external captures, the Quanta--Semble
+lexical pair, lexical scoring, validation and replay. Do not run a second lexical
+pair for that same repository/query family. Add the semantic-only and hybrid
+pairs, then move to the next family. The semantic/hybrid cells for the three
+external search products are `N/A`; they are not silently omitted or filled
+with lexical scores.
+
+For `R` repositories and `F` mode query families, require `3 × R × F`
+Quanta--Semble mode results. Let `B` be the number of bare-symbol query
+families supported by the five-product scorer. Require `R × B` live five-product
+workflows. If each workflow's commit, manifest, suite and query pack exactly
+match its corresponding lexical mode cell, that cell counts toward `3 × R × F`
+and `R × (3F - B)` additional pair runs remain. If any input differs, run the
+mode cell separately and report the workflow as a separate corpus/query track.
+Every workflow must list all five products and every pair must pass `run`,
+`validate` and `replay`. For example, 10
+repositories × 2 mode families (bare and natural) with one bare-symbol family
+requires 60 paired mode results, 10 five-product workflows, 50 additional mode
+pairs when each workflow exactly matches its lexical mode cell, and 200 live
+queries per external product when each suite has 20 tasks. If those inputs do
+not match, run all 60 mode pairs separately.
+Use fresh output roots for every run. A missing, failed or unverified applicable
+cell keeps the matrix incomplete.
+
+Within each repository/query family, compare products only when commit,
+manifest/file universe, suite and query pack match. Across repositories, report
+the aggregation method and retain each run's universe binding. The five-product
+lexical workflow and the mode pairs can each be internally matched while still
+covering different corpus views; never merge their scores into one overall row.
+External search products are `N/A` for semantic/hybrid
+modes and for query families rejected by the bare-symbol scorer, with the reason
+shown in the table.
+
+### Required result table
+
+After the matrix finishes, show both tables below. Compare products within each
+repository only under the exact same universe; include the corpus view in each
+summary and keep each per-run universe digest in the execution summary. Populate
+every value from current validated reports; use `N/A` only
+for unsupported external routes or query forms, and `NOT_RUN` or `FAILED` for
+missing or failed applicable work. Never render missing values as zero.
+
+**Five-product lexical results**
+
+| Corpus view / universe set | Query family | Quanta file recall@10 | Semble file recall@10 | Sourcegraph file recall@10 | OpenGrok file recall@10 | cs file recall@10 | Tasks/provider |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `<manifest_digest>` | `<bare-symbol>` | ... | ... | ... | ... | ... | ... |
+| `<all matched lexical inputs>` | `<aggregate>` | ... | ... | ... | ... | ... | ... |
+
+**Quanta--Semble mode results**
+
+| Corpus view / universe set | Query family | Mode | Quanta NDCG@10 / file recall@10 | Semble NDCG@10 / file recall@10 | Δ NDCG@10 (95% CI; Quanta − Semble) | Paired tasks |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| `<manifest_digest>` | bare | lexical-only | ... | ... | ... | ... |
+| `<manifest_digest>` | bare | semantic-only | ... | ... | ... | ... |
+| `<manifest_digest>` | bare | hybrid | ... | ... | ... | ... |
+| `<manifest_digest>` | natural | lexical-only | ... | ... | ... | ... |
+| `<manifest_digest>` | natural | semantic-only | ... | ... | ... | ... |
+| `<manifest_digest>` | natural | hybrid | ... | ... | ... | ... |
+| `<each identical universe>` | all | each mode | ... | ... | ... | ... |
+
+Include a compact execution summary with expected/completed workflows, paired
+results, live task rows per external product, validation/replay counts, source
+HEAD and the diagnostic/qualification boundary. Keep latency out of cross-product
+rankings unless a separate qualified speed protocol passes.
+
+## Lexical workflow command (repeat for every repository × supported bare-symbol family)
 
 Use the [workflow spec example](retrieval/examples/code-search-workflow.json)
 after preparing the pair and external specs below. The workflow refuses unequal

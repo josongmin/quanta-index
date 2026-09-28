@@ -4,8 +4,9 @@ Run commands from the repository root. Keep corpora, gold, models, recordings,
 outputs and evidence outside the checkout. Captures need clean source and fresh
 output roots. Use `list` and `plan` while editing.
 
-- [Code-search runbook](CODE_SEARCH_RUNBOOK.md): live five-product execution,
-  Quanta–Semble pairs and recorded lexical scoring.
+- [Code-search runbook](CODE_SEARCH_RUNBOOK.md): the complete live five-product
+  lexical plus Quanta–Semble lexical/semantic/hybrid matrix, required result
+  table and execution-coverage summary.
 - [Retrieval usage](retrieval/README.md): native runner, pair options and replay.
 - [Agent recording usage](agent_outcome/README.md): A/B/C JSONL inputs.
 - [Architecture decisions](../../docs/adr/README.md): contracts and measurement policy.

@@ -116,6 +116,17 @@ rewrite is part of this decision.
   execution identities and deterministic normalized rows. Replay re-derives rows
   and validates metadata/product inventories, exclusions and binary/version
   identity; retained raw and consistency checks do not authenticate remote servers.
+- Capture and replay derive cs, Sourcegraph and OpenGrok rows through the same
+  native-response decoders and refuse a normalized path or hit that disagrees
+  with retained native bytes, even when its derived digest is recomputed. A bare
+  normalized-row scorer remains diagnostic. The cs process owner bounds combined
+  stdout/stderr and reaps its process group on interruption or I/O failure.
+- OpenGrok's opt-in full indexed-view probe compares its native file inventory
+  and served file bytes with the release before and after queries. It is a
+  bounded observation, not proof of Lucene posting freshness, mutations between
+  probes, or Sourcegraph/cs indexed scope. An incomplete or mismatched probe
+  refuses that observation; no external product gets a qualified universe from
+  a release manifest alone.
 - `code-search run` composes external capture, the existing Quanta–Semble pair,
   five-product scorer, both profile validations and raw replays. Publication binds
   both complete capture identities and the external digest, cross-checking lexical
