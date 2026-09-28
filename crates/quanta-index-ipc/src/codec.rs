@@ -3,6 +3,8 @@
 use std::io::{ErrorKind, Read};
 use std::time::Duration;
 
+use sha2::Digest;
+
 /// Client operation that exceeded its configured I/O timeout.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IpcIoOperation {
@@ -14,8 +16,17 @@ pub enum IpcIoOperation {
     Write,
 }
 
-/// Maximum CBOR body size accepted on the wire.
+/// Maximum IPC frame body size accepted on the wire.
 pub const MAX_FRAME_BODY_BYTES: usize = 16 * 1024 * 1024;
+
+/// Maximum decoded body after bounded IPC request compression.
+const MAX_DECOMPRESSED_FRAME_BODY_BYTES: usize = 64 * 1024 * 1024;
+
+/// Private transport marker; the following bytes are decoded length, SHA-256,
+/// then one zstd frame containing the original CBOR request body.
+const COMPRESSED_REQUEST_MAGIC: &[u8; 8] = b"QIPCZST1";
+const COMPRESSED_REQUEST_HEADER_BYTES: usize = 8 + 8 + 32;
+const COMPRESSED_REQUEST_METADATA_BYTES: usize = 8 + 32;
 
 /// Width of the length-prefix header in bytes.
 const FRAME_HEADER_BYTES: usize = 4;
@@ -167,7 +178,48 @@ impl std::error::Error for IpcError {
 }
 
 pub fn encode_request<T: serde::Serialize>(envelope: &T) -> Result<Vec<u8>, IpcError> {
-    encode_frame(envelope)
+    let logical_len = usize::try_from(cbor_payload_len(envelope)?)
+        .map_err(|_overflow| IpcError::Encode("request body length overflowed usize".into()))?;
+    if logical_len <= MAX_FRAME_BODY_BYTES {
+        return encode_frame(envelope);
+    }
+    if logical_len > MAX_DECOMPRESSED_FRAME_BODY_BYTES {
+        return Err(IpcError::Encode(format!(
+            "request body is {logical_len} bytes, exceeding the {MAX_DECOMPRESSED_FRAME_BODY_BYTES} byte decoded-frame cap"
+        )));
+    }
+
+    let body = encode_cbor_payload(envelope)?;
+    if body.len() != logical_len {
+        return Err(IpcError::Encode(
+            "request body length changed between count and encode".into(),
+        ));
+    }
+    let digest = sha2::Sha256::digest(&body);
+    let compressed = zstd::bulk::compress(&body, 1)
+        .map_err(|err| IpcError::Encode(format!("request compression failed: {err}")))?;
+    let wire_len = COMPRESSED_REQUEST_HEADER_BYTES
+        .checked_add(compressed.len())
+        .ok_or_else(|| IpcError::Encode("compressed request length overflowed usize".into()))?;
+    if wire_len > MAX_FRAME_BODY_BYTES {
+        return Err(oversized_for(logical_len));
+    }
+    let wire_len_u32 = u32::try_from(wire_len)
+        .map_err(|_overflow| IpcError::Encode("compressed body length overflowed u32".into()))?;
+    let frame_len = wire_len
+        .checked_add(FRAME_HEADER_BYTES)
+        .ok_or_else(|| IpcError::Encode("compressed frame length overflowed usize".into()))?;
+    let mut frame = Vec::with_capacity(frame_len);
+    frame.extend_from_slice(&wire_len_u32.to_le_bytes());
+    frame.extend_from_slice(COMPRESSED_REQUEST_MAGIC);
+    frame.extend_from_slice(
+        &u64::try_from(logical_len)
+            .map_err(|_overflow| IpcError::Encode("request body length overflowed u64".into()))?
+            .to_le_bytes(),
+    );
+    frame.extend_from_slice(&digest);
+    frame.extend_from_slice(&compressed);
+    Ok(frame)
 }
 
 pub fn encode_response<T: serde::Serialize>(envelope: &T) -> Result<Vec<u8>, IpcError> {
@@ -213,7 +265,7 @@ where
     T: serde::de::DeserializeOwned,
     R: Read,
 {
-    decode_frame(reader)
+    decode_frame(reader, true)
 }
 
 pub fn decode_response<T, R>(reader: &mut R) -> Result<T, IpcError>
@@ -221,7 +273,7 @@ where
     T: serde::de::DeserializeOwned,
     R: Read,
 {
-    decode_frame(reader)
+    decode_frame(reader, false)
 }
 
 pub fn decode_cbor_payload<T>(bytes: &[u8]) -> Result<T, IpcError>
@@ -261,7 +313,7 @@ fn encode_frame<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, IpcError> {
     Ok(frame)
 }
 
-fn decode_frame<T, R>(reader: &mut R) -> Result<T, IpcError>
+fn decode_frame<T, R>(reader: &mut R, allow_compressed_request: bool) -> Result<T, IpcError>
 where
     T: serde::de::DeserializeOwned,
     R: Read,
@@ -283,7 +335,54 @@ where
 
     let mut body = vec![0u8; body_len];
     read_exact_or_truncated(reader, &mut body)?;
-    decode_cbor_payload(body.as_slice())
+    let Some(compressed) = body.strip_prefix(COMPRESSED_REQUEST_MAGIC) else {
+        return decode_cbor_payload(body.as_slice());
+    };
+    if !allow_compressed_request {
+        return Err(IpcError::Decode(
+            "compressed request framing is invalid for an IPC response".into(),
+        ));
+    }
+    if compressed.len() < COMPRESSED_REQUEST_METADATA_BYTES {
+        return Err(IpcError::Decode(
+            "compressed request header is truncated".into(),
+        ));
+    }
+    let (length_bytes, rest) = compressed.split_at(8);
+    let declared_len_u64 = u64::from_le_bytes(
+        length_bytes
+            .try_into()
+            .map_err(|_error| IpcError::Decode("compressed request length is malformed".into()))?,
+    );
+    let declared_len = usize::try_from(declared_len_u64).map_err(|_overflow| {
+        IpcError::Decode("compressed request length does not fit usize".into())
+    })?;
+    if declared_len > MAX_DECOMPRESSED_FRAME_BODY_BYTES {
+        return Err(IpcError::Decode(format!(
+            "compressed request expands to {declared_len} bytes, exceeding the {MAX_DECOMPRESSED_FRAME_BODY_BYTES} byte decoded-request cap"
+        )));
+    }
+    let (expected_digest, compressed_bytes) = rest.split_at(32);
+    if compressed_bytes.is_empty() {
+        return Err(IpcError::Decode(
+            "compressed request payload is empty".into(),
+        ));
+    }
+    let decoded = zstd::bulk::decompress(compressed_bytes, declared_len)
+        .map_err(|err| IpcError::Decode(format!("request decompression failed: {err}")))?;
+    if decoded.len() != declared_len {
+        return Err(IpcError::Decode(format!(
+            "compressed request declared {declared_len} decoded bytes but produced {}",
+            decoded.len()
+        )));
+    }
+    let actual_digest = sha2::Sha256::digest(&decoded);
+    if actual_digest.as_slice() != expected_digest {
+        return Err(IpcError::Decode(
+            "compressed request SHA-256 does not match decoded body".into(),
+        ));
+    }
+    decode_cbor_payload(decoded.as_slice())
 }
 
 /// Fill `buf` from `reader`, returning [`IpcError::Truncated`] on EOF and
@@ -312,7 +411,13 @@ fn read_exact_or_truncated<R: Read>(reader: &mut R, buf: &mut [u8]) -> Result<()
 
 #[cfg(test)]
 mod tests {
-    use super::{IpcError, decode_cbor_payload, encode_cbor_payload};
+    use std::io::Cursor;
+
+    use super::{
+        COMPRESSED_REQUEST_HEADER_BYTES, COMPRESSED_REQUEST_MAGIC, IpcError,
+        MAX_DECOMPRESSED_FRAME_BODY_BYTES, MAX_FRAME_BODY_BYTES, decode_cbor_payload,
+        decode_request, decode_response, encode_cbor_payload, encode_request,
+    };
 
     #[test]
     fn cbor_payload_round_trip_preserves_tuple_value() {
@@ -337,5 +442,89 @@ mod tests {
             result,
             Err(IpcError::Decode(ref message)) if !message.is_empty()
         ));
+    }
+
+    #[test]
+    fn compressible_request_larger_than_wire_cap_round_trips_under_wire_cap() {
+        let expected = "x".repeat(MAX_FRAME_BODY_BYTES + 1024);
+        let frame = encode_request(&expected).expect("bounded compressed request");
+        let header: [u8; 4] = frame
+            .get(..4)
+            .expect("length header")
+            .try_into()
+            .expect("length header width");
+        let wire_len = usize::try_from(u32::from_le_bytes(header)).expect("wire length fits usize");
+        assert!(wire_len <= MAX_FRAME_BODY_BYTES);
+        assert!(
+            frame
+                .get(4..)
+                .expect("body after length header")
+                .starts_with(COMPRESSED_REQUEST_MAGIC)
+        );
+        let actual: String = decode_request(&mut Cursor::new(frame)).expect("decoded request");
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn compressed_request_rejects_a_tampered_digest() {
+        let expected = "y".repeat(MAX_FRAME_BODY_BYTES + 1024);
+        let mut frame = encode_request(&expected).expect("bounded compressed request");
+        let digest_start = 4 + COMPRESSED_REQUEST_MAGIC.len() + 8;
+        let digest_byte = frame.get_mut(digest_start).expect("digest byte exists");
+        *digest_byte ^= 1;
+        let result: Result<String, IpcError> = decode_request(&mut Cursor::new(frame));
+        assert!(matches!(result, Err(IpcError::Decode(message)) if message.contains("SHA-256")));
+    }
+
+    #[test]
+    fn compressed_request_framing_is_not_accepted_for_responses() {
+        let expected = "z".repeat(MAX_FRAME_BODY_BYTES + 1024);
+        let frame = encode_request(&expected).expect("bounded compressed request");
+        let result: Result<String, IpcError> = decode_response(&mut Cursor::new(frame));
+        assert!(matches!(
+            result,
+            Err(IpcError::Decode(message)) if message.contains("invalid for an IPC response")
+        ));
+    }
+
+    #[test]
+    fn incompressible_request_larger_than_wire_cap_is_refused() {
+        let mut state = 0x9e37_79b9_u32;
+        let expected: Vec<u8> = (0..MAX_FRAME_BODY_BYTES + 1024)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                u8::try_from(state & 0xff).expect("masked value fits u8")
+            })
+            .collect();
+        let result = encode_request(&expected);
+        assert!(
+            matches!(result, Err(IpcError::Oversized(length)) if length > u64::try_from(MAX_FRAME_BODY_BYTES).expect("frame cap fits u64"))
+        );
+    }
+
+    #[test]
+    fn compressed_request_rejects_declared_decoded_size_above_cap() {
+        let mut body = Vec::from(COMPRESSED_REQUEST_MAGIC.as_slice());
+        body.extend_from_slice(
+            &u64::try_from(MAX_DECOMPRESSED_FRAME_BODY_BYTES + 1)
+                .expect("length fits u64")
+                .to_le_bytes(),
+        );
+        body.extend_from_slice(&[0; 32]);
+        body.push(0);
+        assert_eq!(body.len(), COMPRESSED_REQUEST_HEADER_BYTES + 1);
+        let mut frame = Vec::new();
+        frame.extend_from_slice(
+            &u32::try_from(body.len())
+                .expect("test frame fits u32")
+                .to_le_bytes(),
+        );
+        frame.extend_from_slice(&body);
+        let result: Result<Vec<u8>, IpcError> = decode_request(&mut Cursor::new(frame));
+        assert!(
+            matches!(result, Err(IpcError::Decode(message)) if message.contains("decoded-request cap"))
+        );
     }
 }

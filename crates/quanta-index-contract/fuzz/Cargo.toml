@@ -16,6 +16,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 ciborium = "0.2.2"
 quanta-index-contract = { path = ".." }
+quanta-index-ipc = { path = "../../quanta-index-ipc" }
 
 [[bin]]
 name = "ipc_request_decode"
