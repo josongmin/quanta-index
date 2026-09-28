@@ -1041,17 +1041,19 @@ mod tests {
         let source = "package render\nfunc writeContentType() {}\nfunc WriteContentType() {}\n";
         let records = extract_symbols("render/render.go", source).expect("go parses");
         assert_eq!(records.len(), 2);
-        for (record, name, line) in [
-            (&records[0], "writeContentType", 2),
-            (&records[1], "WriteContentType", 3),
-        ] {
+        for (record, (name, line)) in records
+            .iter()
+            .zip([("writeContentType", 2), ("WriteContentType", 3)])
+        {
             assert_eq!(record.local_name.as_ref(), name);
             assert_eq!(record.definition_span.path.as_ref(), "render/render.go");
             assert_eq!(record.definition_span.line_start, line);
             let start = usize::try_from(record.definition_span.byte_start).expect("byte start");
             let end = usize::try_from(record.definition_span.byte_end).expect("byte end");
             assert!(
-                source[start..end].starts_with(&format!("func {name}(")),
+                source
+                    .get(start..end)
+                    .is_some_and(|span| span.starts_with(&format!("func {name}("))),
                 "definition span must start at the declared function"
             );
         }

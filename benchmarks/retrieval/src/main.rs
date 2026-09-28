@@ -311,8 +311,9 @@ fn write_json_bound(path: &Path, value: &serde_json::Value) -> BenchResult<Strin
 fn query_plan_error_details(error: &QueryPlanError) -> serde_json::Value {
     match error {
         QueryPlanError::UnsupportedPolicy(policy) => serde_json::json!({"policy": policy}),
-        QueryPlanError::InvalidSymbolName => serde_json::json!({}),
-        QueryPlanError::EmptyTokenPlan => serde_json::json!({}),
+        QueryPlanError::InvalidSymbolName | QueryPlanError::EmptyTokenPlan => {
+            serde_json::json!({})
+        }
         QueryPlanError::TokenLimitExceeded { tokens, max_tokens } => {
             serde_json::json!({"tokens": tokens, "max_tokens": max_tokens})
         }
