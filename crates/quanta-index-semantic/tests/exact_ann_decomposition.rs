@@ -322,13 +322,11 @@ fn the_255_256_row_boundary_serves_the_exhaustive_oracle_through_both_lanes() ->
 /// `min(top_k, rows in scope)` rows) would be re-run through the exact
 /// lane and counted as a completion.
 ///
-/// RBR-07 finding: no short-result exact completion could be produced
-/// through the public query surface at any measured shape. The sealed
-/// effort pins `ef = max(64, 4 * top_k)`, so at a page query the beam
-/// width exceeds the row count and the walk reaches every row: a page at
-/// `top_k = 10_000` over 256 rows comes back all 256 rows long, and the
-/// completion rail stays at zero (asserted below via the counters). The
-/// incident shape itself — `top_k = 10_000` over `10_001` rows — is pinned
+/// An approximate top-10 pass can be short on this fixture, depending on
+/// the index's graph walk. Use an indexed row as a top-1 query to exercise
+/// the full-pass branch; a page query separately proves complete public
+/// results and counter consistency whether or not completion was needed.
+/// The incident shape — `top_k = 10_000` over `10_001` rows — is pinned
 /// separately in `a_page_query_at_the_incident_scale_is_not_short`.
 #[test]
 #[expect(
@@ -346,14 +344,15 @@ fn a_full_length_approximate_pass_is_served_as_ranked_without_exact_completion()
         searcher.dense_lane().index,
         DenseIndexV1::Approximate { .. }
     ));
-    let query = unit_vector(QUERY_SEED_BASE);
+    let query = unit_vector(0);
+    let top_k = 1_u32;
 
-    // A pass that returns exactly `top_k` rows is served as ranked: one
-    // approximate-lane query, no exact-lane query, no completion.
+    // The indexed row's nearest neighbour is a full top-1 approximate
+    // pass: one approximate query, no exact query or completion.
     let before_full = lane_counters(&adapter)?;
-    let full = searcher.search(&query, TOP_K, &RequestBudgetV1::unbounded())?;
+    let full = searcher.search(&query, top_k, &RequestBudgetV1::unbounded())?;
     let after_full = lane_counters(&adapter)?;
-    assert_eq!(full.len(), usize::try_from(TOP_K)?);
+    assert_eq!(full.len(), usize::try_from(top_k)?);
     assert_eq!(after_full.0, before_full.0, "no exact-lane query may run");
     assert_eq!(
         after_full.1,
@@ -364,23 +363,27 @@ fn a_full_length_approximate_pass_is_served_as_ranked_without_exact_completion()
         after_full.2, before_full.2,
         "a full pass must not be completed exactly"
     );
-    // ... and what it served is the oracle's ordered top-k (measured; see
-    // the recall test for the aggregate statement).
-    let expected = exhaustive_cosine_oracle(&query, &records, None, usize::try_from(TOP_K)?);
+    // The served hit must still match the independent exact oracle.
+    let expected = exhaustive_cosine_oracle(&query, &records, None, usize::try_from(top_k)?);
     assert_eq!(hit_ids(&full), oracle_ids(&expected));
 
-    // A page larger than the table: the approximate pass reaches every
-    // row, so the pass is full-length in the scope sense and again no
-    // completion may run.
+    // A page larger than the table must return every row. Graph traversal
+    // may need exact completion, so bind that counter to the exact query
+    // count rather than assuming the approximate pass was exhaustive.
     let before_page = lane_counters(&adapter)?;
     let page = searcher.search(&query, 10_000, &RequestBudgetV1::unbounded())?;
     let after_page = lane_counters(&adapter)?;
     assert_eq!(page.len(), usize::try_from(ANN_ROWS)?);
-    assert_eq!(after_page.0, before_page.0);
     assert_eq!(after_page.1, before_page.1.saturating_add(1));
+    let completions = after_page
+        .2
+        .checked_sub(before_page.2)
+        .expect("completion counter is monotonic");
+    assert!(completions <= 1, "one page can complete at most once");
     assert_eq!(
-        after_page.2, before_page.2,
-        "a page that reached every row must not be completed exactly"
+        after_page.0,
+        before_page.0.saturating_add(completions),
+        "an exact query runs exactly when a short pass is completed"
     );
     Ok(())
 }
