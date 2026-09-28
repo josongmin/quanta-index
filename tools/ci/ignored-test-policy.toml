@@ -82,6 +82,14 @@ cadence = "quarterly"
 review_by = "2026-12-31"
 
 [[exceptions]]
+path = "crates/quanta-index-embed/src/model2vec.rs"
+test = "pinned_model_uses_tokens_after_the_old_512_token_cap"
+reason = "requires the pinned 33 MB upstream model assets"
+owner = "quanta-index-embed"
+cadence = "quarterly"
+review_by = "2026-12-31"
+
+[[exceptions]]
 path = "crates/quanta-index-searchd/src/app/runtime.rs"
 test = "potion_code_profile_uses_one_model_for_query_and_corpus"
 reason = "requires the pinned 33 MB upstream model assets"

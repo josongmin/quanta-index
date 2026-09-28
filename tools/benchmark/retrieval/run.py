@@ -5936,7 +5936,9 @@ def _validate_isolation_proof(
     return result
 
 
-def _quanta_semantic_capture_identity_matches(validated: dict, selector: str) -> bool:
+def _quanta_semantic_capture_identity_matches(
+    validated: dict, selector: str, declared_quanta_routes: set[str]
+) -> bool:
     expected_revision = {
         "potion-code": "e9d2a44ca6a05ac6685f3b23709ea57eb7352d5b:model2vec-rs-0.3.0:fancy-regex:full-length-v1",
         "potion-code-full-v2": "e9d2a44ca6a05ac6685f3b23709ea57eb7352d5b:model2vec-rs-0.3.0:fancy-regex:full-length-v2",
@@ -5951,6 +5953,8 @@ def _quanta_semantic_capture_identity_matches(validated: dict, selector: str) ->
         if route in ("semantic", "hybrid")
         for capture in [entry["run"]["captures"].get(binding.get("capture_id"), {})]
     }
+    if declared_quanta_routes & {"semantic", "hybrid"} and not observed:
+        return False
     return not observed or observed == {
         ("model2vec:minishlab/potion-code-16M-v2", expected_revision)
     }
@@ -6469,7 +6473,9 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
         if len(set(receipts)) != len(receipts):
             pair_note("strategy_receipt_reuse", ("T10",))
     if not _quanta_semantic_capture_identity_matches(
-        validated, provenance_claims["quanta"]["embedder"]
+        validated,
+        provenance_claims["quanta"]["embedder"],
+        set(protocol_payload.get("quanta_routes", [])),
     ):
         pair_note("embedder_revision_mismatch", ("T10",))
 

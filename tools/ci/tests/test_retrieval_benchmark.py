@@ -9363,17 +9363,20 @@ def test_quanta_encoder_selector_binds_semantic_capture_revision():
     v1 = prefix + "full-length-v1"
     v2 = prefix + "full-length-v2"
     assert pairrun._quanta_semantic_capture_identity_matches(
-        captures("semantic", v1), "potion-code"
+        captures("semantic", v1), "potion-code", {"semantic"}
     )
     assert pairrun._quanta_semantic_capture_identity_matches(
-        captures("semantic", v2), "potion-code-full-v2"
+        captures("semantic", v2), "potion-code-full-v2", {"semantic"}
     )
     for missing in (None, "not-applicable", v1):
         assert not pairrun._quanta_semantic_capture_identity_matches(
-            captures("semantic", missing), "potion-code-full-v2"
+            captures("semantic", missing), "potion-code-full-v2", {"semantic"}
         )
     assert pairrun._quanta_semantic_capture_identity_matches(
-        captures("lexical", "not-applicable"), "potion-code-full-v2"
+        captures("lexical", "not-applicable"), "potion-code-full-v2", {"lexical"}
+    )
+    assert not pairrun._quanta_semantic_capture_identity_matches(
+        captures("lexical", "not-applicable"), "potion-code-full-v2", {"semantic"}
     )
     with pytest.raises(pairrun.RunError, match="exploratory diagnostic only"):
         pairrun.run_pair({"embedder": "potion-code-full-v2", "scope": "qualified"})
