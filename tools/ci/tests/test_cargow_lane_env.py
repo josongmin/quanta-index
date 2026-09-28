@@ -198,7 +198,10 @@ def _source_env(env: dict[str, str], shell: str = "/bin/bash") -> list[str]:
     return result.stdout.splitlines()
 
 
-def test_local_env_uses_repo_isolated_sccache_when_available(tmp_path: Path) -> None:
+@pytest.mark.parametrize("shell", ["/bin/bash", "/bin/zsh"])
+def test_local_env_uses_repo_isolated_sccache_when_available(tmp_path: Path, shell: str) -> None:
+    if not Path(shell).exists():
+        pytest.skip(f"shell unavailable: {shell}")
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     fake_sccache = fake_bin / "sccache"
@@ -214,13 +217,12 @@ def test_local_env_uses_repo_isolated_sccache_when_available(tmp_path: Path) -> 
     env["SCCACHE_SERVER_PORT"] = "40001"
     env.pop("CI", None)
 
-    for shell in ("/bin/bash", "/bin/zsh"):
-        wrapper, cache_dir, base_dirs, port = _source_env(env, shell)
+    wrapper, cache_dir, base_dirs, port = _source_env(env, shell)
 
-        assert wrapper == str(fake_sccache)
-        assert cache_dir == str(tmp_path / "cache" / "sccache")
-        assert base_dirs == str(REPO_ROOT)
-        assert 40000 <= int(port) < 60000
+    assert wrapper == str(fake_sccache)
+    assert cache_dir == str(tmp_path / "cache" / "sccache")
+    assert base_dirs == str(REPO_ROOT)
+    assert 40000 <= int(port) < 60000
 
 
 def test_local_env_can_disable_sccache(tmp_path: Path) -> None:
