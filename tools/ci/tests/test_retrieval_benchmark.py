@@ -2577,6 +2577,16 @@ def test_load_query_pack_refuses_smuggled_labels(tmp_path):
 
 def _write_stub_semble(root: Path) -> None:
     """A dual-lane stub mirroring the pinned Semble 0.6.0 module layout."""
+    resident_bytes = 64 * 1024 * 1024
+    if sys.platform == "linux":
+        import resource
+
+        # ru_maxrss survives exec, so the child must exceed pytest's inherited
+        # high-water mark before the worker can attribute index residency.
+        resident_bytes = max(
+            resident_bytes,
+            resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024 + 16 * 1024 * 1024,
+        )
     package = root / "semble"
     package.mkdir(exist_ok=True)
     (package / "__init__.py").write_text(
@@ -2606,7 +2616,9 @@ def _write_stub_semble(root: Path) -> None:
         "    @classmethod\n"
         "    def from_path(cls, corpus_dir, show_progress_bar=False):\n"
         "        self = cls()\n"
-        "        self._resident_index = bytearray(64 * 1024 * 1024)\n"
+        f"        self._resident_index = bytearray({resident_bytes})\n"
+        "        for offset in range(0, len(self._resident_index), 4096):\n"
+        "            self._resident_index[offset] = 1\n"
         "        self.model = _Model()\n"
         "        self._content = ('code',)\n"
         "        self._semantic_index = object()\n"

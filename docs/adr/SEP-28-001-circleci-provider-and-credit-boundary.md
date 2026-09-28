@@ -1,6 +1,7 @@
 # SEP-28-001: CircleCI provider and credit boundary
 
-Status: accepted; CircleCI project and triggers registered, hosted run pending.
+Status: accepted; CircleCI project and triggers registered. Hosted qualification
+requires a passing run and test-authority artifact on the exact source commit.
 
 ## Decision
 
@@ -44,10 +45,10 @@ caused duplicate runs on the first `main` push. There is no schedule or
 all-branches push trigger.
 The project enables redundant-workflow auto-cancel and disables secret
 environment variables for fork PR jobs. Registration and repository access
-were verified through the CLI. The first hosted run checked out the intended
-commit but failed during tool installation because the Nextest download
-redirect was not followed. Verify a run on the exact commit and its emitted
-test-authority artifact before calling hosted CI active. A merge queue or scheduled
+were verified through the CLI. Early hosted runs exposed tool-installation and
+Linux test-portability failures; those runs do not qualify any later source
+commit. Verify a run on the exact commit and its emitted test-authority artifact
+before calling hosted CI active. A merge queue or scheduled
 correctness claim additionally requires its own observed trigger and run.
 
 The former GitHub-only proof bundle dispatch, P00 hosted manifest, sanitizer,
