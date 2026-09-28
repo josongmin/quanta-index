@@ -317,15 +317,35 @@ def _parse_nextest_stream(
                             selected, collected_ignored, filtered = inventory.suite_counts[
                                 suite_identity
                             ]
+                            # In nextest 0.9.104 an ignored-only binary emits
+                            # starts but no ignored outcomes. Its suite's
+                            # filtered_out counter wraps as an unsigned u64.
+                            # Admit only this exact, inventory-bound shape.
+                            ignored_only = (
+                                selected == 0
+                                and collected_ignored > 0
+                                and filtered == 0
+                                and suite_state["test_count"] == collected_ignored
+                                and suite_state["terminal"] == 0
+                                and suite_state["ignored_started"] == collected_ignored
+                                and passed == failed == 0
+                                and ignored == collected_ignored
+                                and "filtered_out" in event
+                                and _nonnegative(event["filtered_out"], "filtered")
+                                == (1 << 64) - collected_ignored
+                            )
                             if (
-                                not suite_state["terminal"]
+                                (not suite_state["terminal"] and not ignored_only)
                                 or passed != suite_state["passed"]
                                 or ignored != collected_ignored
                             ):
                                 raise NextestEvidenceError(
                                     "nextest suite/test pass counts disagree"
                                 )
-                            if suite_state["terminal"] != suite_state["test_count"]:
+                            if (
+                                not ignored_only
+                                and suite_state["terminal"] != suite_state["test_count"]
+                            ):
                                 # 0.9.104's reporter decrements nonignored
                                 # `running` for TestSkippedIgnored and may close
                                 # then reopen a suite. Its counters describe the
@@ -344,7 +364,9 @@ def _parse_nextest_stream(
                                         "nextest announced test count disagrees"
                                     )
                             elif (
-                                "filtered_out" in event
+                                not ignored_only
+                                and suite_state["terminal"] == suite_state["test_count"]
+                                and "filtered_out" in event
                                 and _nonnegative(event["filtered_out"], "filtered") != filtered
                             ):
                                 raise NextestEvidenceError(
@@ -440,18 +462,18 @@ def _parse_nextest_stream(
         raise NextestEvidenceError("nextest suite/test pass counts disagree")
     if any(name not in started for name, outcome in terminal.items() if outcome != "ignored"):
         raise NextestEvidenceError("nextest test outcome lacks a start event")
-    if started - terminal.keys():
+    ignored_names = set(inventory.ignored) if inventory is not None else set()
+    if started - terminal.keys() - ignored_names:
         raise NextestEvidenceError("nextest evidence has incomplete test events")
     if not counts["ok"]:
         raise NextestEvidenceError("nextest evidence has no passing tests")
     if expected is not None:
-        ignored_names = set(inventory.ignored) if inventory is not None else set()
         if ignored_names - started:
             raise NextestEvidenceError("nextest ignored outcome lacks a start event")
-        if set(terminal) != set(expected) | ignored_names:
+        if not set(expected) <= set(terminal) <= set(expected) | ignored_names:
             raise NextestEvidenceError("nextest execution differs from collected tests")
         if any(terminal[name] != "ok" for name in expected) or any(
-            terminal[name] != "ignored" for name in ignored_names
+            terminal.get(name, "ignored") != "ignored" for name in ignored_names
         ):
             raise NextestEvidenceError("nextest required test did not pass")
     return NextestEvidence(

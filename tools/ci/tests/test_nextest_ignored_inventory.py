@@ -167,6 +167,71 @@ def test_explicit_ignored_inventory_does_not_become_selected_success(fragmented)
     assert parsed.passed_names == {PREFIX + "a", PREFIX + "b"}
 
 
+def ignored_only_fixture():
+    collected = inventory()
+    collected["test-count"] += 1
+    collected["rust-suites"]["demo::ignored_only"] = {
+        "package-name": "demo",
+        "binary-name": "ignored_only",
+        "kind": "test",
+        "status": "listed",
+        "testcases": {
+            "external": {
+                "ignored": True,
+                "filter-match": {"status": "mismatch", "reason": "ignored"},
+            },
+        },
+    }
+    identity = {"crate": "demo", "test_binary": "ignored_only", "kind": "test"}
+    rows = events(False) + [
+        {"type": "suite", "event": "started", "test_count": 1, "nextest": identity},
+        {"type": "test", "event": "started", "name": "demo::ignored_only$external"},
+        {
+            "type": "suite",
+            "event": "ok",
+            "passed": 0,
+            "failed": 0,
+            "ignored": 1,
+            "filtered_out": (1 << 64) - 1,
+            "nextest": identity,
+        },
+    ]
+    return collected, rows
+
+
+def test_inventory_bound_ignored_start_without_terminal_in_mixed_suite():
+    rows = events(False)
+    del rows[4]  # 0.9.104 can omit the ignored outcome after its start.
+    parsed = replay(rows)
+    assert (parsed.selected, parsed.executed, parsed.passed, parsed.failed) == (2, 2, 2, 0)
+
+
+def test_inventory_bound_ignored_only_suite_with_unsigned_filtered_count():
+    collected, rows = ignored_only_fixture()
+    parsed = replay(rows, collected)
+    assert (parsed.selected, parsed.executed, parsed.passed, parsed.failed) == (2, 2, 2, 0)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["missing_start", "wrong_underflow", "wrong_ignored_count", "unlisted_test", "missing_end"],
+)
+def test_ignored_only_suite_does_not_hide_incomplete_or_forged_evidence(mutation):
+    collected, rows = ignored_only_fixture()
+    if mutation == "missing_start":
+        del rows[-2]
+    elif mutation == "wrong_underflow":
+        rows[-1]["filtered_out"] = 0
+    elif mutation == "wrong_ignored_count":
+        rows[-1]["ignored"] = 0
+    elif mutation == "unlisted_test":
+        rows[-2]["name"] = "demo::ignored_only$forged"
+    elif mutation == "missing_end":
+        del rows[-1]
+    with pytest.raises(NextestEvidenceError):
+        replay(rows, collected)
+
+
 @pytest.mark.parametrize(
     "mutation",
     [
