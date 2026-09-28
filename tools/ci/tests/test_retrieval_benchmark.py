@@ -1393,11 +1393,16 @@ def test_unknown_diagnostic_policy_rejected_and_legacy_report_shape_preserved(tm
     with pytest.raises(ev.EvidenceError, match="unsupported suite diagnostic_policy"):
         ev.validate_suite(repo, suite)
     suite.pop("diagnostic_policy")
-    suite["tasks"][0]["query_intent"] = "bare_symbol"
-    with pytest.raises(jsonschema.ValidationError):
-        jsonschema.validate(suite, schema)
-    with pytest.raises(ev.EvidenceError, match="task annotations require"):
-        ev.validate_suite(repo, suite)
+    for key, value in (
+        ("query_intent", "bare_symbol"),
+        ("label_review", {"assessment": "unreviewed"}),
+    ):
+        suite["tasks"][0][key] = value
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(suite, schema)
+        with pytest.raises(ev.EvidenceError, match="task annotations require"):
+            ev.validate_suite(repo, suite)
+        suite["tasks"][0].pop(key)
     suite["diagnostic_policy"] = ev.OBSERVED_PREFIX_DIAGNOSTIC_POLICY
     suite["comparison_contract"]["top_k"] = 5
     with pytest.raises(jsonschema.ValidationError):
