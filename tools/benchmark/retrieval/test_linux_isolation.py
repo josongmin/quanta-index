@@ -372,7 +372,11 @@ def test_linux_exec_child_reports_deny_allow_after_enforcement(tmp_path):
     raw = _policy(tmp_path)
     python = Path(sys.executable).resolve()
     runtime = [python.parent.parent, Path("/lib"), Path("/usr/lib"), Path("/dev/urandom")]
-    raw["readonly"].extend(str(path.resolve()) for path in runtime if path.exists())
+    raw["readonly"] = list(
+        dict.fromkeys(
+            [*raw["readonly"], *(str(path.resolve()) for path in runtime if path.exists())]
+        )
+    )
     raw["writable"].append("/dev/null")
     isolation.validate_policy(raw)
     policy_path = tmp_path / "policy.json"

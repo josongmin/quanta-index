@@ -16,6 +16,7 @@ jobs:
     environment:
       CARGO_BUILD_JOBS: "2"
       CARGO_TERM_COLOR: always
+      UV_PYTHON: "3.12"
     steps:
       - checkout
       - run:
@@ -127,6 +128,8 @@ jobs:
     machine:
       image: ubuntu-2404:2026.05.1
     resource_class: large
+    environment:
+      UV_PYTHON: "3.12"
     steps:
       - checkout
       - run:
