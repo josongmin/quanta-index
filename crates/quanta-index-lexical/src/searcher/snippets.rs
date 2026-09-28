@@ -26,6 +26,26 @@ pub(crate) use super::preview_types::{
     SnippetLimits, integrity, token_allocation_bound,
 };
 
+/// Check stored bytes against the stored chunk digest before
+/// an optional preview budget can hide a corrupt selected row.
+pub(crate) fn verify_raw_digest(
+    raw: &str,
+    expected: [u8; 32],
+    request: &quanta_index_core::RequestBudgetV1,
+) -> Result<(), CoreError> {
+    let mut hasher = Sha256::new();
+    for chunk in raw.as_bytes().chunks(64 * 1024) {
+        request.checkpoint("lexical:preview-raw-digest")?;
+        hasher.update(chunk);
+    }
+    request.checkpoint("lexical:preview-raw-digest")?;
+    let actual: [u8; 32] = hasher.finalize().into();
+    if actual != expected {
+        return Err(integrity("immutable chunk digest mismatch"));
+    }
+    Ok(())
+}
+
 /// Render only a final selected row.
 ///
 /// Regexes are caller-prepared request-local executors, and metadata/structural truth comes from the canonical matcher.
@@ -86,20 +106,15 @@ fn render_selected_inner<'a>(
             "immutable chunk digest missing",
         )));
     }
+    if let Some(expected) = source.expected_raw_sha256 {
+        verify_raw_digest(raw, expected, context.request).map_err(PreviewStop::Mandatory)?;
+    }
     if raw.len() > context.limits.source_bytes || indexed.len() > context.limits.transformed_bytes {
         return Err(PreviewStop::Unavailable(
             PreviewUnavailableReason::WorkBudget,
         ));
     }
     context.charge(raw.len())?;
-    if let Some(expected) = source.expected_raw_sha256 {
-        let actual: [u8; 32] = Sha256::digest(raw.as_bytes()).into();
-        if actual != expected {
-            return Err(PreviewStop::Mandatory(integrity(
-                "immutable chunk digest mismatch",
-            )));
-        }
-    }
     context.checkpoint()?;
     if context.limits.witnesses == 0 {
         return Err(PreviewStop::Unavailable(
@@ -665,6 +680,50 @@ mod l4_selected_preview_regressions {
                 ..
             })
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn oversized_selected_source_does_not_mask_wrong_raw_digest() -> TestResult {
+        let raw = format!("needle{}", " ".repeat(65_536));
+        let expr = LqExpr::Leaf(LqLeaf::Keyword("needle".into()));
+        let options = LqOptions::defaults();
+        let bound = binding(&raw);
+        let request = RequestBudgetV1::unbounded();
+        let ledger = LexicalCollectionBudget::new(1_000_000, 16_000_000)?;
+        let context = SnippetContext {
+            expr: &expr,
+            filters: &[],
+            options: &options,
+            limits: SnippetLimits::default(),
+            ledger: &ledger,
+            request: &request,
+        };
+        let mut source = SelectedSnippetSource {
+            raw: Some(&raw),
+            indexed_nfc: Some(&raw),
+            path: "needle.rs",
+            kind: PreviewKind::SourceChunk,
+            source: Some(&bound),
+            chunk_start_byte: Some(0),
+            expected_raw_sha256: Some([0; 32]),
+        };
+        let absent_regex =
+            |_: &str| -> Result<&RegexExecutor, CoreError> { Err(integrity("unexpected regex")) };
+        let false_predicate = |_: &LqLeaf| Ok(false);
+        assert!(matches!(
+            render_selected(&context, &source, &absent_regex, &false_predicate),
+            Err(CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::SearchPreviewIntegrity,
+                ..
+            })
+        ));
+        source.expected_raw_sha256 = Some(Sha256::digest(raw.as_bytes()).into());
+        let valid = render_selected(&context, &source, &absent_regex, &false_predicate)?;
+        assert_eq!(
+            valid.preview.unavailable_reason,
+            Some(PreviewUnavailableReason::WorkBudget)
+        );
         Ok(())
     }
 

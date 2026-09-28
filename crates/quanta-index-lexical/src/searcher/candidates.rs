@@ -10,6 +10,7 @@ use crate::TantivySearcher;
 use crate::documents::stored_u32;
 use crate::searcher::snippets::{
     SelectedSnippetSource, SnippetContext, SnippetLimits, integrity, render_selected,
+    verify_raw_digest,
 };
 use quanta_index_contract::lex::{SymbolKindCode, SymbolKindFamily};
 use quanta_index_contract::{LexicalCandidate, RepoRelativePath, SymbolCandidate};
@@ -346,6 +347,9 @@ impl TantivySearcher {
         };
         let limits = SnippetLimits::default();
         if raw.len() > limits.source_bytes || indexed.len() > limits.transformed_bytes {
+            if let Some(expected) = digest {
+                verify_raw_digest(raw, expected, context.request)?;
+            }
             context.request.checkpoint("lexical:preview-unavailable")?;
             candidate.preview = Some(PreviewMetadata::unavailable(
                 kind,
