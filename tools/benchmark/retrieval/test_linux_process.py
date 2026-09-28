@@ -59,15 +59,25 @@ def test_exiting_stat_may_lose_process_group_but_live_stat_may_not():
 
 def test_kernel_task_zero_group_is_unrelated_to_owned_processes():
     kernel_task = row(2, ppid=0, pgid=0, rss=0)
+    kernel_child = row(3, ppid=2, pgid=0, rss=0)
     root = row(41)
     selected = linux_process._select_owned(
-        {kernel_task.identity.pid: kernel_task, root.identity.pid: root},
+        {
+            kernel_task.identity.pid: kernel_task,
+            kernel_child.identity.pid: kernel_child,
+            root.identity.pid: root,
+        },
         root.identity,
         set(),
     )
     assert set(selected) == {root.identity}
-    with pytest.raises(linux_process.ProcessError, match="invalid /proc stat"):
-        row(42, ppid=1, pgid=0)
+    zero_group_descendant = row(42, ppid=41, pgid=0)
+    selected = linux_process._select_owned(
+        {root.identity.pid: root, zero_group_descendant.identity.pid: zero_group_descendant},
+        root.identity,
+        set(),
+    )
+    assert set(selected) == {root.identity, zero_group_descendant.identity}
 
 
 def test_exiting_root_with_missing_group_retains_known_descendant():
