@@ -9,6 +9,7 @@ import unittest
 
 from tools.benchmark.retrieval.sourcegraph import (
     CaptureError,
+    file_extensions,
     query_expression,
     sha256,
     validate_capture,
@@ -101,6 +102,93 @@ class SourcegraphCaptureTests(unittest.TestCase):
         )
         self.assertEqual([row["path"] for row in result["file_order"]], ["b.py", "a.py"])
         self.assertEqual([row["first_match_rank"] for row in result["file_order"]], [1, 2])
+
+    def test_extension_filter_postfilters_to_manifest_and_preserves_native_rank(self) -> None:
+        extensions = file_extensions([row["path"] for row in FILES])
+        raw = b"".join(
+            [
+                event("progress", {"done": False, "skipped": [], "matchCount": 0,
+                                    "durationMs": 1}),
+                event("matches", [
+                    hit("outside.py", 1), hit("b.py", 2), hit("other.py", 3), hit("a.py", 4),
+                ]),
+                event("progress", {"done": True, "skipped": [], "matchCount": 4,
+                                    "durationMs": 2}),
+                event("done", {}),
+            ]
+        )
+        request = {
+            "capture_version": 2,
+            "api_version": "V3",
+            "endpoint": "/.api/search/stream",
+            "query": QUERY,
+            "query_sha256": sha256(QUERY.encode()),
+            "file_filter_extensions": extensions,
+            "request_query": query_expression(
+                QUERY, REPOSITORY, REVISION, file_extensions_filter=extensions
+            ),
+            "repository": REPOSITORY,
+            "revision": REVISION,
+            "response_sha256": sha256(raw),
+            "http_status": 200,
+            "content_type": "text/event-stream",
+            "server_image_digest": "e" * 64,
+        }
+        manifest = {"repository_commit": REVISION, "files": copy.deepcopy(FILES)}
+        universe = {
+            "proof_version": 1,
+            "method": "input_manifest_postfiltered",
+            "repository": REPOSITORY,
+            "revision": REVISION,
+            "files": copy.deepcopy(FILES),
+        }
+
+        result = validate_capture(request, raw, manifest, universe)
+
+        self.assertEqual(result["adapter_version"], 2)
+        self.assertEqual(
+            result["rank_semantics"], "observed_stream_order_postfiltered_to_input_manifest"
+        )
+        self.assertEqual(result["native_match_count"], 4)
+        self.assertEqual(result["out_of_manifest_match_count"], 2)
+        self.assertEqual([row["path"] for row in result["raw_match_order"]], ["b.py", "a.py"])
+        self.assertEqual([row["path"] for row in result["file_order"]], ["b.py", "a.py"])
+        self.assertEqual([row["first_match_rank"] for row in result["file_order"]], [1, 2])
+        self.assertEqual(
+            [row["first_native_match_rank"] for row in result["file_order"]], [2, 4]
+        )
+
+    def test_extension_filter_refuses_results_outside_declared_suffixes(self) -> None:
+        request, _, manifest, _ = inputs()
+        extensions = file_extensions([row["path"] for row in FILES])
+        raw = b"".join(
+            [
+                event("matches", [hit("outside.md", 1)]),
+                event("progress", {"done": True, "skipped": [], "matchCount": 1,
+                                    "durationMs": 1}),
+                event("done", {}),
+            ]
+        )
+        request.update(
+            {
+                "capture_version": 2,
+                "file_filter_extensions": extensions,
+                "request_query": query_expression(
+                    QUERY, REPOSITORY, REVISION, file_extensions_filter=extensions
+                ),
+                "response_sha256": sha256(raw),
+            }
+        )
+        universe = {
+            "proof_version": 1,
+            "method": "input_manifest_postfiltered",
+            "repository": REPOSITORY,
+            "revision": REVISION,
+            "files": copy.deepcopy(FILES),
+        }
+
+        with self.assertRaisesRegex(CaptureError, "outside the declared extension filter"):
+            validate_capture(request, raw, manifest, universe)
 
     def assert_refused(self, request: dict, raw: bytes, manifest: dict, universe: dict) -> None:
         with self.assertRaises(CaptureError):
@@ -278,6 +366,21 @@ class SourcegraphCaptureTests(unittest.TestCase):
         with self.assertRaises(CaptureError):
             query_expression("foo\nbar", REPOSITORY, REVISION)
         self.assertIn("type:file", query_expression("foo bar", REPOSITORY, REVISION))
+
+    def test_extension_query_filter_is_short_and_closed(self) -> None:
+        extensions = file_extensions([row["path"] for row in FILES])
+        query = query_expression(
+            QUERY, REPOSITORY, REVISION, file_extensions_filter=extensions
+        )
+        self.assertIn('file:"^(?:.*\\\\.(?:py))$"', query)
+        with self.assertRaises(CaptureError):
+            query_expression(
+                QUERY, REPOSITORY, REVISION,
+                file_paths=[row["path"] for row in FILES],
+                file_extensions_filter=extensions,
+            )
+        with self.assertRaises(CaptureError):
+            query_expression(QUERY, REPOSITORY, REVISION, file_extensions_filter=[".py", ".py"])
 
     def test_query_or_injection_refused(self) -> None:
         with self.assertRaises(CaptureError):
