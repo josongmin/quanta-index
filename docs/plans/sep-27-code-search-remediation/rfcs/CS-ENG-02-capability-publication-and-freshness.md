@@ -38,6 +38,18 @@ handles and resident accounting.
 measurements; [CS-INT-01](CS-INT-01-integration-and-qualification.md) owns combined
 producer/daemon qualification. No stale-result defect has been reproduced.
 
+Sep-28 owner measurement on the integrated branch: growing one-file and mixed
+deltas at 128/512/2,048 files confirm three full coverage reads. At 2,048
+files, each outer preflight, lock-held preflight and build reads 256 pages,
+2,048 rows and 883,542 encoded bytes; the three reads total 2,650,626 bytes
+before seal/open and other sidecars. Mutation after either preflight is refused
+before target creation, old readers remain valid, and retry succeeds after
+repair. Separate-process RSS from the lexical diagnostic includes base
+construction and is not phase allocator-heap qualification. The port has no
+authenticated immutable base token; external file mutation remains possible
+under the process-local lock. Removing a recheck would weaken the demonstrated
+tamper refusal, so the scan optimization remains open.
+
 ## Remaining acceptance
 
 - [ ] Measure one-file replacement/delete and mixed batches over increasing file

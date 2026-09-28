@@ -17,6 +17,16 @@ Pinned regex NFA size limits are per NFA. Forward/reverse retained engines,
 compiler temporaries and search caches are distinct allocations. The public
 bytes Regex wrapper does not expose one pre-allocation admission/cache owner.
 No current runtime aggregate overrun has been established by this ticket.
+Sep-28 mitigation caps pattern input at 64 KiB before parsing in the shared
+executor and direct Tantivy lexical scope compiler paths, and preserves typed
+resource refusal through Sourcegraph structural lowering. This bounds one
+input dimension only; it does not implement physical aggregate admission.
+`regex-automata 0.4.14` and `tantivy-fst 0.5.0` still allocate parser, compiler,
+DFA and cache structures before any request-scoped reservation API can approve
+growth. Completing the boundary requires controlled fallible dependency hooks,
+one request-lifetime lease across indexed/manual/preview/structural routes and
+typed structural/searchd resource mapping. The pinned API cannot prove a hard
+ceiling from post-build `memory_usage()`.
 The executor now pins the current 10 MiB NFA and 2 MiB lazy-DFA cache defaults
 explicitly, preventing a dependency-default change from silently moving those
 per-engine limits. This does not impose an aggregate request heap bound.

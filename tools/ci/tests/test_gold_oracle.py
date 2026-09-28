@@ -22,7 +22,7 @@ FIXTURES = Path(__file__).parent / "fixtures" / "gold_oracle"
 @pytest.mark.parametrize(
     "name,language,expected",
     [
-        ("python.py", "python", [29, 67]),
+        ("python.py", "python", [31, 75]),
         ("rust.rs", "rust", [27, 48, 92]),
         ("typescript.ts", "typescript", [24, 48, 67, 92]),
     ],
@@ -35,6 +35,16 @@ def test_named_function_oracle_has_fixed_declaration_spans(name, language, expec
     assert all(raw[start:end] == b"target" for start, end, _kind in spans)
     absent, error = gold_oracle._definition_spans(raw, b"absent", language)
     assert absent == [] and error is None
+
+
+def test_gold_source_read_refuses_oversize_before_materializing(tmp_path):
+    source = tmp_path / "source"
+    with source.open("wb") as stream:
+        stream.truncate(17 * 1024 * 1024)
+    with pytest.raises(gold_oracle.EvidenceError, match="byte limit"):
+        gold_oracle._bounded_source(source, 16 * 1024 * 1024)
+    source.write_bytes(b"fixed")
+    assert gold_oracle._bounded_source(source, 5) == b"fixed"
 
 
 def test_literal_oracle_uses_original_utf8_bytes_and_overlapping_spans():

@@ -136,3 +136,23 @@ invariants while integrating its stages:
 Current contract details and commands are in the ADRs, registered `Justfile` /
 `./scripts/cargow` rails and MISC acceptance. Historical handoffs, test totals and
 RCA bodies are recoverable through the [plan archive](../../ARCHIVE-INDEX.md).
+
+## Sep-28 integrated code audit
+
+Selected integration branch: `codex/benchmark-validation`, based on
+`d7d62b8d`. The R/C/G/V owner changes were integrated serially; use the final
+commit printed by `git rev-parse HEAD` for subsequent source-bound runs. The
+main checkout's unrelated dirty documentation was not copied into this branch.
+
+| Scope | Current code result | Remaining boundary |
+| --- | --- | --- |
+| ENG-04 | Pre-parser 64 KiB regex input gate now covers the common executor and direct Tantivy lexical scope compilers; Sourcegraph lowering preserves typed resource refusal. | **OPEN:** pinned `regex-automata` and `tantivy-fst` allocate AST/HIR/compiler/cache data without a fallible pre-allocation hook. A request-wide physical ceiling needs controlled dependency APIs/forks, shared leases and structural/searchd error mapping. This mitigation is not an aggregate heap cap. |
+| ENG-02 | Phase counters and growing/mixed lexical fixtures expose three base coverage walks. Mutation after either preflight is refused before target creation; old readers and repaired retry remain valid. | **OPEN:** at 2,048 files each walk read 256 pages, 2,048 rows and 883,542 encoded bytes. The current port supplies no immutable authenticated base token across preflight/build, and the internal lock cannot stop external disk changes. No full pipeline physical-heap claim. |
+| BENCH-01 | Source-derived raw-literal/named-function gold capsule and blind family pack have independent fixed-span fixtures; all labels explicitly remain mechanical/unreviewed. | **OPEN:** human adjudication, a fresh valid corpus release and externally sealed holdout are absent. Capsule blind format is distinct from the existing evaluator query pack. |
+| BENCH matrix | `code-search matrix-verify` checks the release repository inventory against every declared family and all three modes, replays each native capture, and rejects source/input/binding/route substitution. The owner is enrolled in source closure, test authority and the benchmark-control rail. | **OPEN:** the query-family declaration itself needs pre-capture external review; no valid complete external five-product capture or product indexed-universe attestation exists. Output remains `diagnostic_unqualified`. |
+| IO-5 | External rows are written incrementally and large result files/binaries are hashed as payload. Archive names with portable case/Unicode aliases refuse before extraction; large failed stdout/stderr and many-entry controls are added. | **OPEN:** all actual adapter prepare/execute/publish/load/replay paths, heap and hosted resource limits remain to be measured. |
+
+Do not collapse these rows into a single `VERIFIED` claim. The owner tests and
+lint/format rail are local code checks; installed producer, native products,
+independent labels, Linux/hosted CI, quiet-host benchmark and activation remain
+separate execution gates.

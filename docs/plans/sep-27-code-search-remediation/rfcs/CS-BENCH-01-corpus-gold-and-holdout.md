@@ -21,6 +21,16 @@ acceptance. Correct the oracle, then freeze fresh development/holdout inputs.
 No retrieval engine's output, including Quanta's symbol producer, is sufficient
 by itself to define gold for a comparison involving that engine.
 
+Sep-28 code addition: `gold_oracle.py` derives raw UTF-8 literal occurrences
+and a deliberately narrow named-function declaration cohort from release
+source bytes, with independent Python/Rust/TypeScript fixed-span fixtures.
+`corpus_binding.py` publishes/reconstructs an external capsule and label-free
+blind pack with source/oracle/parser identities and `query_family_id`; the
+capsule explicitly marks labels `mechanical_unreviewed_diagnostic` and holdout
+custody `unsealed_external_custody_required`. It does not replace the existing
+evaluator suite/pack format or provide a reviewed fresh release. Human labels,
+valid external corpus and sealed holdout execution remain open.
+
 ## Target input release contract
 
 Extend the existing [corpus release](../../../../tools/benchmark/corpus_release.py),

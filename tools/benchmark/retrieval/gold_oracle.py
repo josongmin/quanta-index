@@ -8,15 +8,16 @@ arbitrary semantic definitions. All generated labels remain unreviewed.
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 from pathlib import Path
 
 from tree_sitter_language_pack import get_parser
 
 try:
-    from evidence import EvidenceError, _read_regular_file
+    from evidence import IO_CHUNK_BYTES, EvidenceError, _consume_regular_file
 except ModuleNotFoundError:  # package import outside the benchmark script path
-    from tools.benchmark.evidence import EvidenceError, _read_regular_file
+    from tools.benchmark.evidence import IO_CHUNK_BYTES, EvidenceError, _consume_regular_file
 
 ORACLE_VERSION = 1
 MAX_TASKS = 2000
@@ -44,6 +45,21 @@ BARE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 
 def _sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def _bounded_source(path: Path, remaining: int) -> bytes:
+    def consume(handle) -> bytes:
+        if os.fstat(handle.fileno()).st_size > remaining:
+            raise EvidenceError("gold source exceeds release byte limit")
+        blocks, count = [], 0
+        while block := handle.read(min(IO_CHUNK_BYTES, remaining - count + 1)):
+            count += len(block)
+            if count > remaining:
+                raise EvidenceError("gold source exceeds release byte limit")
+            blocks.append(block)
+        return b"".join(blocks)
+
+    return _consume_regular_file(path, consume)
 
 
 def _path(path: object, *, allow_empty: bool = False) -> bool:
@@ -205,7 +221,7 @@ def derive(recipe: dict, manifest: dict, view: Path) -> tuple[dict, dict]:
             or not isinstance(row["file_sha256"], str)
         ):
             raise EvidenceError("gold release manifest has a duplicate or invalid file")
-        raw = _read_regular_file(view / row["path"])
+        raw = _bounded_source(view / row["path"], MAX_SOURCE_BYTES - total)
         total += len(raw)
         file_sha = _sha(raw)
         if total > MAX_SOURCE_BYTES or file_sha != row["file_sha256"]:

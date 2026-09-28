@@ -27,6 +27,16 @@ consumer, resource and product acceptance is owned above. Reopen implementation
 only for a demonstrated regression. Old proof-navigation work is closed after
 historical proof cleanup; do not recreate per-run repository evidence files.
 
+Sep-28 integration update: [CS-INT-01](../../sep-27-code-search-remediation/rfcs/CS-INT-01-integration-and-qualification.md#sep-28-integrated-code-audit)
+records the merged regex input gate, measured triple coverage walk and tamper
+tests, source-derived mechanical gold capsule, fail-closed declared matrix
+verifier, streaming external-row/file hashing and archive alias refusal. These
+are implemented local mitigations, not terminal closure of the open rows above.
+The remaining physical regex admission requires dependency allocation hooks;
+coverage scan reuse requires authenticated immutable base ownership across the
+port; independent labels, real native products, installed producer/daemon and
+supported hosted/Linux measurement still require execution on frozen inputs.
+
 ## Execution order and shared boundary
 
 Use the source-first [CS-INT-01 execution plan](../../sep-27-code-search-remediation/rfcs/CS-INT-01-integration-and-qualification.md#current-source-audit-and-decision-order)
