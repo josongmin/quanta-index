@@ -7,11 +7,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use quanta_index_contract::QueryResultWindowV2;
 use quanta_index_search_plane::{HybridFetchFloorPolicy, QueryStageObservationPolicy};
 use serde_json::{Value, json};
 
 use crate::record::QueryPack;
-use crate::sdk::{QueryOutcome, RouteExplanation};
+use crate::sdk::{QueryOutcome, RankedHit, RouteExplanation};
 use crate::{BenchError, BenchResult};
 
 /// Current diagnostic artifact version, independent of runner record schema.
@@ -34,6 +35,64 @@ fn explanation_value(explanation: Option<&RouteExplanation>) -> Value {
         "planner_trace": detail.planner_trace,
         "stage_timings": detail.stage_timings,
     })
+}
+
+fn proven_lanes(
+    hit: &RankedHit,
+    route: &str,
+    window: &QueryResultWindowV2,
+) -> BenchResult<Vec<Value>> {
+    if !hit.score.is_finite() || hit.candidate_id.is_empty() {
+        return Err(BenchError::Protocol(
+            "diagnostic hit has invalid identity or score".to_string(),
+        ));
+    }
+    if route == "hybrid" {
+        if hit.contributions.is_empty() || hit.contributions.len() > 2 {
+            return Err(BenchError::Protocol(
+                "hybrid diagnostic lacks lane provenance".to_string(),
+            ));
+        }
+    } else if !hit.contributions.is_empty() {
+        return Err(BenchError::Protocol(
+            "non-hybrid diagnostic has lane provenance".to_string(),
+        ));
+    }
+    let mut seen = BTreeSet::new();
+    let mut lanes = Vec::with_capacity(hit.contributions.len());
+    for contribution in &hit.contributions {
+        if !matches!(contribution.lane, "lexical" | "dense")
+            || !seen.insert(contribution.lane)
+            || contribution.rank == 0
+            || !contribution.raw_score.is_finite()
+        {
+            return Err(BenchError::Protocol(
+                "diagnostic has invalid lane contribution".to_string(),
+            ));
+        }
+        let executed_lanes = window
+            .coverage()
+            .lanes()
+            .iter()
+            .filter(|lane| lane.executed())
+            .map(quanta_index_contract::LaneTraceV1::lane)
+            .collect::<Vec<_>>();
+        if !executed_lanes
+            .iter()
+            .any(|lane| lane_trace_matches_contribution(lane, contribution.lane))
+        {
+            return Err(BenchError::Protocol(format!(
+                "candidate contribution lane {:?} is absent from executed lanes {:?}",
+                contribution.lane, executed_lanes
+            )));
+        }
+        lanes.push(json!({
+            "lane": contribution.lane,
+            "rank": contribution.rank,
+            "raw_score": contribution.raw_score,
+        }));
+    }
+    Ok(lanes)
 }
 
 pub fn diagnostic_value(
@@ -161,7 +220,8 @@ pub fn diagnostic_value(
                         .and_then(Value::as_str);
                     if record_row.get("status").and_then(Value::as_str)
                         != Some(classification.status)
-                        || record_candidates.len() != hits.len()
+                        || record_candidates.len() > hits.len()
+                        || record_candidates.is_empty() != hits.is_empty()
                         || record_error_code != classification.error_code.as_deref()
                     {
                         return Err(BenchError::Protocol(format!(
@@ -169,15 +229,47 @@ pub fn diagnostic_value(
                             task.task_id, route
                         )));
                     }
-                    let mut candidates = Vec::with_capacity(hits.len());
+                    // The runner record scores one candidate per proven source
+                    // span. Several distinct SDK units may project to that
+                    // span, while the typed window still counts every hit.
+                    // Validate all native hits, including those not scored.
+                    let mut hit_positions = BTreeMap::new();
+                    let mut hit_lanes = Vec::with_capacity(hits.len());
                     for (position, hit) in hits.iter().enumerate() {
-                        if !hit.score.is_finite() || hit.candidate_id.is_empty() {
+                        hit_lanes.push(proven_lanes(hit, route, window)?);
+                        if hit_positions
+                            .insert(hit.candidate_id.as_str(), position)
+                            .is_some()
+                        {
                             return Err(BenchError::Protocol(
-                                "diagnostic hit has invalid identity or score".to_string(),
+                                "diagnostic SDK hits reuse a published unit ID".to_string(),
                             ));
                         }
-                        let scored = record_candidates.get(position).ok_or_else(|| {
-                            BenchError::Protocol("record candidate disappeared".to_string())
+                    }
+                    let mut candidates = Vec::with_capacity(record_candidates.len());
+                    let mut previous_hit_position = None;
+                    for (position, scored) in record_candidates.iter().enumerate() {
+                        let unit_id = scored
+                            .pointer("/span_accounting/unit_id")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| {
+                                BenchError::Protocol(
+                                    "record candidate lacks a published unit ID".to_string(),
+                                )
+                            })?;
+                        let hit_position = *hit_positions.get(unit_id).ok_or_else(|| {
+                            BenchError::Protocol(
+                                "record candidate unit is absent from SDK hits".to_string(),
+                            )
+                        })?;
+                        if previous_hit_position.is_some_and(|previous| hit_position <= previous) {
+                            return Err(BenchError::Protocol(
+                                "record candidate order differs from SDK hits".to_string(),
+                            ));
+                        }
+                        previous_hit_position = Some(hit_position);
+                        let hit = hits.get(hit_position).ok_or_else(|| {
+                            BenchError::Protocol("diagnostic SDK hit disappeared".to_string())
                         })?;
                         let rank = position.checked_add(1).ok_or_else(|| {
                             BenchError::Protocol("diagnostic rank overflow".to_string())
@@ -234,50 +326,9 @@ pub fn diagnostic_value(
                                 task.task_id, route
                             )));
                         }
-                        if *route == "hybrid" {
-                            if hit.contributions.is_empty() || hit.contributions.len() > 2 {
-                                return Err(BenchError::Protocol(
-                                    "hybrid diagnostic lacks lane provenance".to_string(),
-                                ));
-                            }
-                        } else if !hit.contributions.is_empty() {
-                            return Err(BenchError::Protocol(
-                                "non-hybrid diagnostic has lane provenance".to_string(),
-                            ));
-                        }
-                        let mut seen = BTreeSet::new();
-                        let mut lanes = Vec::with_capacity(hit.contributions.len());
-                        for contribution in &hit.contributions {
-                            if !matches!(contribution.lane, "lexical" | "dense")
-                                || !seen.insert(contribution.lane)
-                                || contribution.rank == 0
-                                || !contribution.raw_score.is_finite()
-                            {
-                                return Err(BenchError::Protocol(
-                                    "diagnostic has invalid lane contribution".to_string(),
-                                ));
-                            }
-                            let executed_lanes = window
-                                .coverage()
-                                .lanes()
-                                .iter()
-                                .filter(|lane| lane.executed())
-                                .map(quanta_index_contract::LaneTraceV1::lane)
-                                .collect::<Vec<_>>();
-                            if !executed_lanes.iter().any(|lane| {
-                                lane_trace_matches_contribution(lane, contribution.lane)
-                            }) {
-                                return Err(BenchError::Protocol(format!(
-                                    "candidate contribution lane {:?} is absent from executed lanes {:?}",
-                                    contribution.lane, executed_lanes
-                                )));
-                            }
-                            lanes.push(json!({
-                                "lane": contribution.lane,
-                                "rank": contribution.rank,
-                                "raw_score": contribution.raw_score,
-                            }));
-                        }
+                        let lanes = hit_lanes.get(hit_position).ok_or_else(|| {
+                            BenchError::Protocol("diagnostic hit lanes disappeared".to_string())
+                        })?;
                         candidates.push(json!({
                             "rank": rank,
                             "candidate_id": hit.candidate_id,
@@ -519,6 +570,7 @@ mod tests {
                     "path": "src/lib.rs",
                     "start_line": 4,
                     "end_line": 8,
+                    "span_accounting": {"unit_id": "chunk-1"},
                 }]
             }]
         })
@@ -570,6 +622,97 @@ mod tests {
             value.pointer("/results/0/candidates/0/contributions/1/lane"),
             Some(&json!("dense"))
         );
+    }
+
+    #[test]
+    fn duplicate_scored_span_keeps_first_native_provenance_and_raw_window_count() {
+        let mut raw = outcomes();
+        let outcome = raw
+            .get_mut(&("T1".to_string(), "hybrid".to_string()))
+            .expect("fixture result");
+        if let QueryOutcome::ReturnedWindow { hits, window, .. } = outcome {
+            let mut duplicate = hits[0].clone();
+            duplicate.candidate_id = "chunk-2".to_string();
+            duplicate.score = 0.01;
+            duplicate.contributions[0].rank = 7;
+            hits.push(duplicate);
+            *window = QueryResultWindowV2::exact_exhausted(
+                2,
+                ExhaustionProofV1::ExactCount { total: 2 },
+                vec![
+                    LaneTraceV1::new("hybrid.lexical", true, true),
+                    LaneTraceV1::new("hybrid.dense", true, true),
+                ],
+            )
+            .expect("two returned hits");
+        }
+        let diagnostic = diagnostic_value(
+            &"e".repeat(64),
+            &record(),
+            &pack(),
+            &["hybrid"],
+            &raw,
+            QueryStageObservationPolicy::Enabled,
+            HybridFetchFloorPolicy::default(),
+        )
+        .expect("two native units project to one scored span");
+        assert_eq!(
+            diagnostic["results"][0]["candidates"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            diagnostic["results"][0]["candidates"][0]["candidate_id"],
+            "chunk-1"
+        );
+        assert_eq!(
+            diagnostic["results"][0]["candidates"][0]["contributions"][0]["rank"],
+            2
+        );
+        assert_eq!(
+            diagnostic["results"][0]["response"]["window"]["returned"],
+            2
+        );
+
+        if let QueryOutcome::ReturnedWindow { hits, .. } = raw
+            .get_mut(&("T1".to_string(), "hybrid".to_string()))
+            .expect("fixture result")
+        {
+            hits[1].contributions[0].raw_score = f32::NAN;
+        }
+        assert!(
+            diagnostic_value(
+                &"e".repeat(64),
+                &record(),
+                &pack(),
+                &["hybrid"],
+                &raw,
+                QueryStageObservationPolicy::Enabled,
+                HybridFetchFloorPolicy::default(),
+            )
+            .is_err()
+        );
+
+        if let QueryOutcome::ReturnedWindow { hits, .. } = raw
+            .get_mut(&("T1".to_string(), "hybrid".to_string()))
+            .expect("fixture result")
+        {
+            hits[1].contributions[0].raw_score = 3.0;
+            hits[1].candidate_id = "chunk-1".to_string();
+        }
+        let error = diagnostic_value(
+            &"e".repeat(64),
+            &record(),
+            &pack(),
+            &["hybrid"],
+            &raw,
+            QueryStageObservationPolicy::Enabled,
+            HybridFetchFloorPolicy::default(),
+        )
+        .expect_err("duplicate native unit must not disappear behind span projection");
+        assert!(error.to_string().contains("reuse a published unit ID"));
     }
 
     #[test]
