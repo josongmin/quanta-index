@@ -11,7 +11,7 @@ exact bodies remain recoverable through the [plan archive](../ARCHIVE-INDEX.md).
 
 | Active owner | Remaining scope |
 | --- | --- |
-| [CS-ENG-02](rfcs/CS-ENG-02-capability-publication-and-freshness.md) | Total coverage pipeline cost, repeated base decode and physical heap qualification |
+| [CS-ENG-02](rfcs/CS-ENG-02-capability-publication-and-freshness.md) | Total coverage pipeline cost, uncached large-root decode, full verification scans and physical heap qualification |
 | [CS-ENG-04](rfcs/CS-ENG-04-match-anchored-snippets.md) | Physical regex compilation/cache admission and its lifetime proof |
 | [CS-BENCH-01](rfcs/CS-BENCH-01-corpus-gold-and-holdout.md) | Independent source/gold releases and sealed holdout |
 | [CS-BENCH-02](rfcs/CS-BENCH-02-native-response-validation.md) | Remaining native entrypoint/format refusal coverage and real captures; local cs/Sourcegraph/OpenGrok path/hit refusal is implemented |

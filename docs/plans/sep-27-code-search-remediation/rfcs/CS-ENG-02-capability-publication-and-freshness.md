@@ -10,11 +10,18 @@ combined-source qualification.
 
 ## Remaining mechanism
 
-`plan_batch_coverage` still opens/verifies/decodes the entire sealed base.
+`plan_batch_coverage` still opens and verifies the entire sealed base.
 On the ordinary new-delta publication path, the materializer invokes lexical
 preflight before durable intent and repeats it under its operation lock;
 lexical `build_batch` plans coverage again. These are three separate base walks
 before counting seal/open work, although replay/repair shortcuts differ.
+An adapter retains at most one decoded coverage root admitted under an 8 MiB
+conservative decode-heap estimate. Identical root bytes authorize immutable row
+reuse only after the current root commitment, every page's hash/length and the
+directory inventory pass again. Coverage refusal discards the entry. Repeated
+preflight/build then records zero decoded rows while keeping the same page and
+byte reads. Larger roots use the uncached full-decode path; the estimate is not
+a physical memory cap and the cache does not remove any verification boundary.
 The candidate shares immutable rows and private derived tree indexes, and the
 writer serializes only changed bounded partitions plus the fixed-size root.
 Untouched pages carry authenticated base commitments and hard-linked inodes.
@@ -68,7 +75,9 @@ tamper refusal, so the scan optimization remains open.
   the combined format-9 source. Keep hosted, installed, Linux and activation
   claims separate from local owner fixtures.
 
-Owner fixtures compare every effective row against independently constructed
+Owner fixtures exercise cached page corruption, orphan/identity/root changes,
+refusal eviction and repaired retry, alongside uncached large-root admission.
+They compare every effective row against independently constructed
 inputs; prove old-reader retention, unchanged-row sharing, page inode inheritance
 and actual new coverage bytes; reject forged semantic rows after recomputing
 hashes, missing/tampered/symlink/orphan pages and encoded oversize before target
