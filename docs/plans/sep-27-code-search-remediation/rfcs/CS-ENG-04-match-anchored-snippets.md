@@ -154,11 +154,11 @@ Primary design, subject to the feasibility gate below:
 4. Thread the authority through primitive admission, indexed and manual
    execution, predicate matching, selected preview, Boolean structural
    preflight, structural universe, and searchd's live structural producer.
-   In particular, extend `StructuralProducerPort::execute` to receive the
-   request resource context: its current signature has only the query and
-   cannot charge the producer's `PreparedStructuralRegexes` or filters to the
-   caller. Remove or confine unmetered production constructors so a new call
-   site cannot bypass the authority.
+   `StructuralProducerPort::execute` now receives `RequestBudgetV1`; its
+   checkpoints only propagate cancellation/deadline, not allocation charges.
+   Use that seam for the producer's `PreparedStructuralRegexes` and filters.
+   Remove or confine unmetered production constructors so a new call site
+   cannot bypass the authority.
 5. Map budget exhaustion to the existing typed regex plan-limit family on
    required query paths. Keep syntax/dialect and integrity failures distinct.
    Optional preview reports `WorkBudget` while retaining selected hit IDs,
@@ -247,6 +247,44 @@ Owner-local `./scripts/cargow test --locked` structural scopes passed in
 and `quanta-index-searchd` (7 producer tests); affected-package all-target
 Clippy with `-D warnings` passed. This is functional proof of the transport
 and interruption seam, not allocation or daemon proof.
+
+### Remaining implementation order (current-source audit)
+
+The exact live-allocation claim above remains the target. The unmodified pinned
+dependency APIs are a **no-go** for that claim; a larger up-front reservation,
+`memory_usage()` reading, or the existing preview estimate cannot substitute
+for allocation-site admission. A Linux worker envelope is a different,
+platform-scoped containment contract and is not silently selected here.
+
+1. Prove a **controlled dependency slice** against the pinned
+   `regex-syntax 0.8.11`, `regex-automata 0.4.14` / `regex 1.12.4`, and
+   `tantivy-fst 0.5.0` sources. Use exact Git revisions rather than an
+   untracked local patch. Exercise parse, capture-erased HIR compilation,
+   first search, lazy cache growth, FST construction, failure and drop with a
+   tiny shared allowance. The slice must identify every uncharged allocation;
+   if it cannot make one fallible, stop before changing public executor APIs.
+2. Once the slice passes, put the checked shared ledger/RAII lease below core
+   and both regex adapters, then attach one finite owner to every
+   `RequestBudgetV1` constructor, including `unbounded()`; the IPC server must
+   retain it through response encoding. Count requested `Layout` bytes and
+   peak overlap on growth, not logical states or post-build capacity.
+3. Replace `RegexExecutor::prepare/compile_prepared/verify/find_ranges_bounded`
+   with owner-required, fallible operations. The existing builder reparses the
+   capture-erased pattern; an HIR-based replacement must compile that erased
+   execution HIR while retaining the original HIR for literal extraction.
+   Build a separate owner-aware FST constructor for indexed scope filters;
+   charge its parser, instructions, DFA states and temporary maps/sets.
+4. Migrate and statically gate all production construction paths: lexical
+   admission, indexed scope filters, match sets, manual scan, metadata
+   predicates, selected preview; Sourcegraph structural preflight, skipped
+   Boolean leaves, pinned universe and live producer. Convert every Boolean
+   `verify` use to error propagation. Keep optional-preview refusal separate
+   from required-match refusal and preserve hit/window invariants.
+5. Run allocation-site fault injection, arithmetic and peak-overlap tests,
+   concurrent-request and release tests, fixed truth/range oracles, then the
+   affected owner, SDK and daemon/restart rails. A CI guard must reject a new
+   production unmetered constructor. Only then close the exact allocation
+   item; report process RSS separately.
 
 ## Required coordinated change
 
