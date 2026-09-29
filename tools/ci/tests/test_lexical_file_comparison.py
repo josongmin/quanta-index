@@ -317,6 +317,9 @@ def test_pair_result_rejects_semantic_lane_even_if_report_has_hits(tmp_path, rec
                 "query_latency_ms": 1.0,
                 "file_recall_at_10": recall,
                 "file_hit_at_10": True,
+                "answerable": True,
+                "status": "success",
+                "candidates": 1,
             }
             for route in ("lexical", "semble-lexical-only")
             for task in pack["tasks"]
@@ -345,8 +348,15 @@ def test_pair_result_rejects_semantic_lane_even_if_report_has_hits(tmp_path, rec
     native = {
         "semble_profile": "lexical-only",
         "rerank_applied": False,
-        "lane_call_counts": {"bm25": 1, "semantic": 0, "encode": 0},
-        "execution_events": [{"lane_entry_counts": {"bm25": 1, "semantic": 0}}],
+        "lane_call_counts": {"bm25": 20, "semantic": 0, "encode": 0},
+        "execution_events": [
+            {
+                "phase": "measured",
+                "task_id": task["task_id"],
+                "lane_entry_counts": {"bm25": 1, "semantic": 0},
+            }
+            for task in pack["tasks"]
+        ],
     }
     verdict = {
         "states": {"PAIR_VALID": "pass"},
@@ -371,6 +381,44 @@ def test_pair_result_rejects_semantic_lane_even_if_report_has_hits(tmp_path, rec
     assert route["rank_unit"] == "chunk"
     assert route["file_recall_at_10"] == recall
     assert route["file_hit_rate_at_10"] == 1.0
+    missing_event = native["execution_events"].pop()
+    native["lane_call_counts"]["bm25"] -= 1
+    paths[2].write_text(json.dumps(native), encoding="utf-8")
+    with pytest.raises(ValueError, match="measured task coverage"):
+        pair_result(*paths, pack, suite, 20)
+    native["execution_events"].append(missing_event)
+    native["lane_call_counts"]["bm25"] += 1
+    paths[2].write_text(json.dumps(native), encoding="utf-8")
+    native["execution_events"][0]["task_id"] = []
+    paths[2].write_text(json.dumps(native), encoding="utf-8")
+    with pytest.raises(ValueError, match="measured task coverage"):
+        pair_result(*paths, pack, suite, 20)
+    native["execution_events"][0]["task_id"] = pack["tasks"][0]["task_id"]
+    paths[2].write_text(json.dumps(native), encoding="utf-8")
+    original_row = dict(report["per_query"][0])
+    report["per_query"][0]["status"] = "capped"
+    paths[0].write_text(json.dumps(report), encoding="utf-8")
+    verdict["comparisons"][0]["report_digest"] = hashlib.sha256(paths[0].read_bytes()).hexdigest()
+    paths[3].write_text(json.dumps(verdict), encoding="utf-8")
+    assert pair_result(*paths, pack, suite, 20)["routes"]["quanta_lexical"]["hits"] == 20
+    report["per_query"][0] = dict(original_row)
+    for change in (
+        {"answerable": False},
+        {"status": "error", "candidates": 0},
+        {"status": "success", "candidates": 0},
+    ):
+        report["per_query"][0].update(change)
+        paths[0].write_text(json.dumps(report), encoding="utf-8")
+        verdict["comparisons"][0]["report_digest"] = hashlib.sha256(
+            paths[0].read_bytes()
+        ).hexdigest()
+        paths[3].write_text(json.dumps(verdict), encoding="utf-8")
+        with pytest.raises(ValueError, match="recall/hit observations"):
+            pair_result(*paths, pack, suite, 20)
+        report["per_query"][0] = dict(original_row)
+    paths[0].write_text(json.dumps(report), encoding="utf-8")
+    verdict["comparisons"][0]["report_digest"] = hashlib.sha256(paths[0].read_bytes()).hexdigest()
+    paths[3].write_text(json.dumps(verdict), encoding="utf-8")
     verdict["counts"]["passed"] = 39
     paths[3].write_text(json.dumps(verdict), encoding="utf-8")
     with pytest.raises(ValueError, match="execution counts differ"):
@@ -468,7 +516,14 @@ def test_pair_result_keeps_no_gold_out_of_recall_denominator(tmp_path):
         "semble_profile": "lexical-only",
         "rerank_applied": False,
         "lane_call_counts": {"bm25": 20, "semantic": 0, "encode": 0},
-        "execution_events": [{"lane_entry_counts": {"bm25": 1, "semantic": 0}} for _ in range(20)],
+        "execution_events": [
+            {
+                "phase": "measured",
+                "task_id": task["task_id"],
+                "lane_entry_counts": {"bm25": 1, "semantic": 0},
+            }
+            for task in pack["tasks"]
+        ],
     }
     paths = [tmp_path / f"{name}.json" for name in ("report", "lock", "native", "verdict")]
     verdict = {
@@ -498,6 +553,22 @@ def test_pair_result_keeps_no_gold_out_of_recall_denominator(tmp_path):
     assert result["no_gold_tasks"] == 1
     assert result["file_recall_at_10"] == result["file_hit_rate_at_10"] == 1.0
     assert result["no_gold_empty_rate_at_10"] == 1.0
+    report["per_query"][0].update(status="success", candidates=0)
+    write_report()
+    with pytest.raises(ValueError, match="recall/hit observations"):
+        pair_result(*paths, pack, suite, 20)
+    report["per_query"][0].update(status="abstained", candidates=0)
+    positive = next(
+        row for row in report["per_query"] if row["route"] == "lexical" and row["answerable"]
+    )
+    positive.update(status="abstained", candidates=0, file_recall_at_10=0.0, file_hit_at_10=False)
+    report["rank_metrics"]["routes"]["lexical"]["chunk"]["file_recall_at_10"] = 18 / 19
+    write_report()
+    result = pair_result(*paths, pack, suite, 20)["routes"]["quanta_lexical"]
+    assert result["hits"] == 18
+    assert result["no_gold_empty_rate_at_10"] == 1.0
+    positive.update(status="success", candidates=1, file_recall_at_10=1.0, file_hit_at_10=True)
+    report["rank_metrics"]["routes"]["lexical"]["chunk"]["file_recall_at_10"] = 1.0
     report["per_query"][0]["file_recall_at_10"] = 0.0
     write_report()
     with pytest.raises(ValueError, match="recall/hit observations"):

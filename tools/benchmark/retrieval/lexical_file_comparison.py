@@ -411,6 +411,13 @@ def pair_result(
         for event in events
     ):
         raise ValueError("Semble event entered a non-lexical lane")
+    measured_tasks = [event.get("task_id") for event in events if event.get("phase") == "measured"]
+    if (
+        any(not isinstance(task_id, str) for task_id in measured_tasks)
+        or len(measured_tasks) != task_count
+        or set(measured_tasks) != {task["task_id"] for task in pack["tasks"]}
+    ):
+        raise ValueError("Semble native measured task coverage differs from the lexical pack")
     if (
         report.get("query_pack_sha256") != digest(canonical(pack))
         or report.get("repository_commit") != suite.get("repository_commit")
@@ -467,6 +474,15 @@ def pair_result(
             task["task_id"] for task in pack["tasks"]
         }:
             raise ValueError(f"pair report {route} per-query tasks differ")
+        if any(
+            row.get("answerable") is not judged[row["task_id"]]
+            or row.get("status") not in {"success", "capped", "abstained"}
+            or type(row.get("candidates")) is not int
+            or not 0 <= row["candidates"] <= 10
+            or (row["status"] == "abstained") != (row["candidates"] == 0)
+            for row in route_rows
+        ):
+            raise ValueError(f"pair report {route} recall/hit observations differ from execution")
         positive_rows = [row for row in route_rows if judged[row["task_id"]]]
         negative_rows = [row for row in route_rows if not judged[row["task_id"]]]
         recalls = [row.get("file_recall_at_10") for row in positive_rows]
@@ -475,15 +491,16 @@ def pair_result(
             any(not is_finite_json_number(value) or not 0 <= value <= 1 for value in recalls)
             or any(type(value) is not bool for value in flags)
             or any(flag != (value > 0) for flag, value in zip(flags, recalls, strict=True))
+            or any(
+                row["status"] == "abstained"
+                and (row["file_recall_at_10"] != 0 or row["file_hit_at_10"] is not False)
+                for row in positive_rows
+            )
             or (answerable and abs(math.fsum(recalls) / answerable - recall) > 1e-10)
             or any(
                 row.get("answerable") is not False
                 or row.get("file_recall_at_10") != "not_applicable"
                 or row.get("file_hit_at_10") != "not_applicable"
-                or row.get("status") not in {"success", "capped", "abstained"}
-                or type(row.get("candidates")) is not int
-                or row["candidates"] < 0
-                or (row["status"] == "abstained" and row["candidates"] != 0)
                 for row in negative_rows
             )
         ):
