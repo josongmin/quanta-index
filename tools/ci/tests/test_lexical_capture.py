@@ -73,13 +73,22 @@ def inputs(tmp_path, lexical_release_seed):
         "semble_profile": "lexical-only",
         "rerank_applied": False,
         "lane_call_counts": {"bm25": 20, "semantic": 0, "encode": 0},
-        "execution_events": [{"lane_entry_counts": {"bm25": 1, "semantic": 0}} for _ in range(20)],
+        "execution_events": [
+            {
+                "phase": "measured",
+                "task_id": task["task_id"],
+                "lane_entry_counts": {"bm25": 1, "semantic": 0},
+            }
+            for task in pack["tasks"]
+        ],
     }
     rows = [
         {
             "route": route,
             "task_id": task["task_id"],
             "query_latency_ms": 1.0,
+            "answerable": True,
+            "candidates": 1,
             "file_recall_at_10": 1.0,
             "file_hit_at_10": True,
             "status": "success",
