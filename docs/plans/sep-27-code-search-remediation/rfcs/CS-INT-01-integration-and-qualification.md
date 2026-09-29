@@ -50,7 +50,7 @@ receipts do not update the implementation state.
 | 0 | Record the source baseline, affected contracts/test authority and claim scope; keep unrelated dirty documentation outside implementation ownership. | One audited baseline and declared local, installed, hosted and benchmark claims. Re-open this audit when a relevant source path changes; freeze final source after implementation. |
 | 1 | ENG-04: prove parser, compiler, first-search and retained-cache allocation ownership on the pinned regex stack. If its API cannot authorize every relevant allocation before it occurs, choose a controlled dependency change before promising a hard bound. Then apply one request-lifetime owner across all live executor constructors. | Typed resource refusal before expensive allocation, correct release on failure/cancel, independent differential truth/range fixtures and optional-preview hit stability. An estimate or post-allocation RSS sample is not a hard bound. |
 | 2 | ENG-02: instrument outer preflight, lock-held preflight, build, seal and open on growing one-file and mixed deltas. Count bytes read/written, hash/page/row work, elapsed time and phase-specific temporary/retained heap. Remove repeated base work only through an authenticated pinned immutable handle that preserves the pre-intent refusal and lock-time ownership check. | Independent row/identity/tamper/retry/old-reader tests, measured end-to-end cost and declared physical claim. If reuse is unsafe or not material, retain verification and report the measured bound instead of weakening it. |
-| 3 | BENCH-01/02/03/04: admit an independent immutable corpus/gold/holdout; enforce native-derived validation at every qualified entrypoint and format; prove each comparator's indexed view; implement a fail-closed matrix inventory for applicable repository × query-family × mode cells. Freeze primary effect, critical-stratum regression and resource limits before holdout. | Every applicable cell has a bound `run`/`validate`/`replay` result or explicit failure; unsupported cells are `N/A`. Keep evidence-valid `QUALITY_DELTA` separate from a threshold-based product decision and use repository-level inference for cross-repository claims. |
+| 3 | BENCH-01/02/03/04: admit an independent immutable corpus/gold/holdout and review the query-family inventory before capture; enforce native-derived validation at every qualified entrypoint and format; prove each comparator's indexed view. Use the existing fail-closed declared repository × query-family × mode matrix verifier. Freeze primary effect, critical-stratum regression and resource limits before holdout. | Every applicable cell has a bound `run`/`validate`/`replay` result or explicit failure; unsupported cells are `N/A`. Keep evidence-valid `QUALITY_DELTA` separate from a threshold-based product decision and use repository-level inference for cross-repository claims. |
 | 4 | MISC-03/04/05 and external owner: execute the selected owner tests, full Rust/Python/daemon rails, adapter-specific large success/failure I/O, real issuer and public SDK/installed daemon mutation/restart/rollback, and supported platform/hosted CI on the final source. | Report each requested scope `VERIFIED`, `FAILED`, `BLOCKED` or `NOT_RUN`; focused local fixtures cannot close external, installed or hosted scopes. |
 | 5 | MISC-06/07: run qualified quality, equal-work latency/resource and incremental/recovery comparisons only with admitted inputs, product index scope and quiet-host controls. | Publish denominators, independent units, intervals, costs and exclusions; decide defaults against the frozen thresholds. Otherwise retain a diagnostic result with no win/speed claim. |
 
@@ -271,3 +271,40 @@ ENG-02's current 128-file mixed-delta probe still read 100 base pages and
 54,479 page bytes in each of three phases; both between-phase mutation tests
 passed. These source-local results do not close ENG-02's repeated scans or
 ENG-04's physical aggregate allocation boundary.
+
+## Sep-29 current-head audit and execution decision
+
+At `a6821da6`, `main` and `origin/main` match and the checkout is clean. The
+latest commit adds an indexed/manual selected-source integrity regression and
+changes only structural test formatting besides that test. On this head,
+`./scripts/cargow test --locked -p quanta-index-lexical --lib
+l4_source_decode_regressions` passed 4/4 and `./scripts/cargow test --locked -p
+quanta-index-search-plane --lib structural` passed 62/62. These focused owner
+results do not qualify the full repository, installed daemon or benchmark.
+
+The current code still calls lexical coverage planning from the outer
+materializer preflight, the lock-held preflight and lexical build. Each delta
+plan re-verifies the sealed base. Keep both pre-intent and lock-held tamper
+refusals; first measure all pipeline phases and physical heap, then remove a
+redundant walk only if an authenticated immutable base capability owns the
+verified bytes through build. If that capability is unsafe or the measured
+benefit is immaterial, retain the scans and report the observed cost.
+
+Structural lowering now counts distinct `where` regexes across the complete
+Boolean request before Sourcegraph engine compilation or producer work. The
+shared executor still applies only per-engine NFA/DFA limits, and parser,
+compiler and retained-cache allocations have no request-wide pre-allocation
+owner. Prove dependency hook feasibility across parse, compile, first search,
+cache and drop before promising a physical ceiling. If the pinned stack cannot
+provide that contract, choose a controlled dependency change or an explicitly
+designed isolated worker; logical charges and post-allocation RSS are not
+substitutes.
+
+The declared matrix verifier already exists and returns
+`diagnostic_unqualified`. BENCH-01–04 therefore need independently reviewed
+families/gold/holdout, remaining native entrypoint/format refusals, real
+five-product captures and indexed-universe attestations, then admitted
+equal-work quality/resource measurements. Do not reimplement the matrix
+inventory. Run full, installed, external-producer and hosted/platform
+qualification only after the affected implementation and input contracts are
+selected on one final source.
