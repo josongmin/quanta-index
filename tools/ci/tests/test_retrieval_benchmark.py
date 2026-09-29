@@ -11132,9 +11132,9 @@ def test_query_pool_guard_rejects_candidate_already_marked_reviewed_or_searched(
         with pytest.raises(ev.EvidenceError, match="invalid or duplicate proposal"):
             pool_guard._proposals(raw, "candidate.jsonl", require_unreviewed=True)
     row["status"] = "unreviewed_query_proposal"
-    assert pool_guard._proposals((json.dumps(row) + "\n").encode(), "candidate.jsonl", require_unreviewed=True) == [
-        ("H001", "Describe request body binding in Gin")
-    ]
+    assert pool_guard._proposals(
+        (json.dumps(row) + "\n").encode(), "candidate.jsonl", require_unreviewed=True
+    ) == [("H001", "Describe request body binding in Gin")]
 
 
 def test_v3_leakage_allowlist(tmp_path):
