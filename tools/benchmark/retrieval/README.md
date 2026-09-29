@@ -125,6 +125,24 @@ counts identifier words anywhere in file bytes, including comments and tests.
 `label_review` is forbidden on these tasks, and qualified annotation receipts
 reject them. Reports remain `diagnostic_unqualified`.
 
+Create reproducible, runnable single-route suites from an unannotated frozen
+source suite with a new external output root:
+
+```sh
+uv run --frozen --extra dev python -m tools.benchmark.retrieval.source_oracle_suite \
+  --repo /absolute/clean/corpus \
+  --baseline-suite /absolute/frozen-suite.json \
+  --output-root /absolute/new-oracle-output
+```
+
+The generator writes three suites and blind packs: identifier-word/file and
+Go declaration/file use the `lexical` route; Go declaration/symbol uses the
+`symbol` route. Each suite has exactly one route for `evaluate-diagnostic`.
+The output manifest binds the input suite, source commit, tool file bytes, and
+all outputs; exact tool sources are copied under `tool-sources/`. These are new
+diagnostic inputs; their blind-pack digests differ
+from historical captures, so historical runner records cannot be reused.
+
 Before review or search, check a new query proposal pool against every
 previously searched suite and proposal pool:
 
