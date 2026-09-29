@@ -1923,6 +1923,70 @@ fn tantivy_select_file_collapses_multiple_chunks_per_path() -> TestResult {
 }
 
 #[test]
+fn tantivy_select_file_top_ten_covers_ten_files_despite_fifteen_duplicate_chunks() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
+    let mut ops = Vec::new();
+    for index in 0..15 {
+        ops.push(upsert_with_metadata(
+            &format!("duplicate-{index:02}"),
+            "src/duplicate.rs",
+            "rust",
+            index + 1,
+            index + 1,
+            "file_projection_needle",
+        )?);
+    }
+    for index in 0..9 {
+        ops.push(upsert_with_metadata(
+            &format!("other-{index:02}"),
+            &format!("src/other-{index:02}.rs"),
+            "rust",
+            1,
+            1,
+            "file_projection_needle",
+        )?);
+    }
+    adapter.build(&repo(), &revision(), generation(), &ops)?;
+
+    let searcher = adapter.open(&repo(), &revision(), generation())?;
+    let query = make_query_with_filters(
+        LqExpr::Leaf(LqLeaf::Keyword("file_projection_needle".to_string())),
+        vec![LqFilter::Select {
+            dim: LqSelect::File,
+        }],
+    );
+    let page = searcher.search_constrained(
+        &query,
+        &QueryConstraintSetV1::unconstrained(),
+        &LexicalPageSpec::first(10),
+        &RequestBudgetV1::unbounded(),
+    )?;
+    let paths = page
+        .candidates
+        .iter()
+        .map(|row| row.repo_relative_path.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let expected_paths = [
+        "src/duplicate.rs",
+        "src/other-00.rs",
+        "src/other-01.rs",
+        "src/other-02.rs",
+        "src/other-03.rs",
+        "src/other-04.rs",
+        "src/other-05.rs",
+        "src/other-06.rs",
+        "src/other-07.rs",
+        "src/other-08.rs",
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(paths, expected_paths);
+    assert_eq!(page.candidates.len(), 10);
+    Ok(())
+}
+
+#[test]
 fn tantivy_select_file_fills_page_after_more_than_ten_duplicate_chunks() -> TestResult {
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
