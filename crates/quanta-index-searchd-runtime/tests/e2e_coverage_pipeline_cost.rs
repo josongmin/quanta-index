@@ -11,7 +11,9 @@
 use std::error::Error;
 use std::time::{Duration, Instant};
 
-use quanta_index_contract::{BatchIngestMode, MetricsSnapshotV1, TextQuerySyntax};
+use quanta_index_contract::{
+    BatchIngestMode, MetricsSnapshotV1, SearchCorpusTombstoneScope, TextQuerySyntax,
+};
 use quanta_index_core::ProcessMemoryProbePort as _;
 use quanta_index_core::domains::generation::unique_inode_tree_bytes;
 use quanta_index_searchd::app::KernelResidentMemoryProbe;
@@ -45,11 +47,29 @@ fn regular_file_bytes(rt: &E2eRuntime) -> Result<u64, Box<dyn Error>> {
     )?)
 }
 
+#[derive(Clone, Copy)]
+enum DeltaShape {
+    OneFile,
+    Mixed,
+}
+
+impl DeltaShape {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::OneFile => "one_file",
+            Self::Mixed => "mixed_replace_delete",
+        }
+    }
+}
+
 #[expect(
     clippy::print_stdout,
     reason = "the manual QI-BB-006-EVIDENCE line must reach the diagnostic run log"
 )]
-fn measure_delta(files: usize) -> TestResult {
+fn measure_delta(files: usize, shape: DeltaShape) -> TestResult {
+    if files < 3 {
+        return Err("cost probe requires three distinct files".into());
+    }
     let mut rt = E2eRuntime::boot_with_client_request_timeout(Duration::from_secs(300))?
         .with_history_max_bytes(256 * 1024 * 1024);
     rt.start()?;
@@ -58,10 +78,28 @@ fn measure_delta(files: usize) -> TestResult {
         "src/file_00000.rs",
         "fn base_00000() { old_only_marker(); }",
     )?;
+    let mut deleted_file = None;
+    let mut deleted_semantic_scopes = Vec::new();
     for index in 1..files {
         let path = format!("src/file_{index:05}.rs");
         let content = format!("fn base_{index:05}() {{}}");
         let next = rt.text_search_corpus_batch(&path, &content)?;
+        if index == 1 {
+            deleted_file = Some(
+                next.replace_scopes
+                    .first()
+                    .ok_or("missing deletion coverage")?
+                    .coverage
+                    .source
+                    .file
+                    .clone(),
+            );
+            deleted_semantic_scopes.extend(
+                next.semantic_replace_scopes
+                    .iter()
+                    .map(|scope| scope.scope.clone()),
+            );
+        }
         base.replace_scopes.extend(next.replace_scopes);
         base.semantic_replace_scopes
             .extend(next.semantic_replace_scopes);
@@ -78,6 +116,22 @@ fn measure_delta(files: usize) -> TestResult {
 
     let mut delta =
         rt.text_search_corpus_batch("src/file_00000.rs", "fn base_00000() { changed_needle(); }")?;
+    if matches!(shape, DeltaShape::Mixed) {
+        let second = rt.text_search_corpus_batch(
+            "src/file_00002.rs",
+            "fn replacement_00002() { second_changed_needle(); }",
+        )?;
+        delta.replace_scopes.extend(second.replace_scopes);
+        delta
+            .semantic_replace_scopes
+            .extend(second.semantic_replace_scopes);
+        delta.tombstone_scopes.push(SearchCorpusTombstoneScope {
+            file: deleted_file.ok_or("missing deletion target")?,
+        });
+        delta
+            .semantic_tombstone_scopes
+            .extend(deleted_semantic_scopes);
+    }
     if delta.mode != BatchIngestMode::Delta {
         return Err("successor must be a delta".into());
     }
@@ -102,7 +156,18 @@ fn measure_delta(files: usize) -> TestResult {
         )
         .into());
     }
-    for (query, expected) in [("old_only_marker", 0), ("base_00001", 1)] {
+    let expected_file_1 = usize::from(matches!(shape, DeltaShape::OneFile));
+    let expected_file_2 = usize::from(matches!(shape, DeltaShape::OneFile));
+    for (query, expected) in [
+        ("old_only_marker", 0),
+        ("base_00001", expected_file_1),
+        ("base_00002", expected_file_2),
+        (
+            "second_changed_needle",
+            usize::from(matches!(shape, DeltaShape::Mixed)),
+        ),
+        ("base_00003", 1),
+    ] {
         let result = rt.query_text(TextQuerySyntax::Native, query, 5);
         if let Some(error) = result.typed_error {
             return Err(format!("{query} query failed: {error}").into());
@@ -125,7 +190,8 @@ fn measure_delta(files: usize) -> TestResult {
         return Err("full delta did not exercise coverage reads and seal".into());
     }
     println!(
-        "QI-BB-006-EVIDENCE kind=daemon_total_pipeline files={files} base_ms={base_ms} delta_ms={delta_ms} coverage_pages_read={pages} coverage_rows_decoded={rows} coverage_root_bytes_read={root_bytes} coverage_page_bytes_read={page_bytes} lexical_seal_bytes_hashed={seal_bytes} base_disk_bytes={base_disk_bytes} delta_disk_bytes={delta_disk_bytes} base_process_rss_bytes={base_process_rss} delta_process_rss_bytes={delta_process_rss} rss_semantics={}",
+        "QI-BB-006-EVIDENCE kind=daemon_total_pipeline shape={} files={files} base_ms={base_ms} delta_ms={delta_ms} coverage_pages_read={pages} coverage_rows_decoded={rows} coverage_root_bytes_read={root_bytes} coverage_page_bytes_read={page_bytes} lexical_seal_bytes_hashed={seal_bytes} base_disk_bytes={base_disk_bytes} delta_disk_bytes={delta_disk_bytes} base_process_rss_bytes={base_process_rss} delta_process_rss_bytes={delta_process_rss} rss_semantics={}",
+        shape.name(),
         KernelResidentMemoryProbe::semantics(),
     );
     Ok(())
@@ -134,17 +200,29 @@ fn measure_delta(files: usize) -> TestResult {
 #[test]
 #[ignore = "manual full-daemon cost probe; run one case per fresh process"]
 fn one_file_delta_over_128_files() -> TestResult {
-    measure_delta(128)
+    measure_delta(128, DeltaShape::OneFile)
 }
 
 #[test]
 #[ignore = "manual full-daemon cost probe; run one case per fresh process"]
 fn one_file_delta_over_512_files() -> TestResult {
-    measure_delta(512)
+    measure_delta(512, DeltaShape::OneFile)
 }
 
 #[test]
 #[ignore = "manual full-daemon cost probe; run one case per fresh process"]
 fn one_file_delta_over_2048_files() -> TestResult {
-    measure_delta(2048)
+    measure_delta(2048, DeltaShape::OneFile)
+}
+
+#[test]
+#[ignore = "manual full-daemon cost probe; run one case per fresh process"]
+fn mixed_delta_over_128_files() -> TestResult {
+    measure_delta(128, DeltaShape::Mixed)
+}
+
+#[test]
+#[ignore = "manual full-daemon cost probe; run one case per fresh process"]
+fn mixed_delta_over_2048_files() -> TestResult {
+    measure_delta(2048, DeltaShape::Mixed)
 }
