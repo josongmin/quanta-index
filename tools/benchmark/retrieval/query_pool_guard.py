@@ -21,6 +21,7 @@ MAX_POOL_ROWS = 2_000
 MAX_QUERY_BYTES = 4_096
 MAX_REPORTED_CONFLICTS = 10_000
 PROPOSAL_ID = re.compile(r"[A-Za-z][A-Za-z0-9_.-]*\Z")
+UNREVIEWED_PROPOSAL_STATUS = "unreviewed_query_proposal"
 
 
 def _regular_bytes(path: Path) -> bytes:
@@ -50,7 +51,9 @@ def _json(raw: bytes, source: str) -> Any:
         raise evaluator.EvidenceError(f"invalid or duplicate JSON: {source}: {exc}") from exc
 
 
-def _proposals(raw: bytes, source: str) -> list[tuple[str, str]]:
+def _proposals(
+    raw: bytes, source: str, *, require_unreviewed: bool = False
+) -> list[tuple[str, str]]:
     rows: list[tuple[str, str]] = []
     seen: set[str] = set()
     try:
@@ -77,6 +80,7 @@ def _proposals(raw: bytes, source: str) -> list[tuple[str, str]]:
             or not row["stratum"].strip()
             or not isinstance(row["status"], str)
             or not row["status"].strip()
+            or (require_unreviewed and row["status"] != UNREVIEWED_PROPOSAL_STATUS)
         ):
             raise evaluator.EvidenceError(f"invalid or duplicate proposal: {source}:{index}")
         seen.add(task_id)
@@ -162,7 +166,9 @@ def main(argv: list[str] | None = None) -> int:
         candidate_raw = _regular_bytes(args.candidate_proposals)
         candidates = [
             ("candidate/" + task_id, query)
-            for task_id, query in _proposals(candidate_raw, str(args.candidate_proposals))
+            for task_id, query in _proposals(
+                candidate_raw, str(args.candidate_proposals), require_unreviewed=True
+            )
         ]
         bindings["candidate_proposals_sha256"] = hashlib.sha256(candidate_raw).hexdigest()
         report = {**bindings, **scan(references, candidates)}

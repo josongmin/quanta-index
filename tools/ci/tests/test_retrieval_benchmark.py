@@ -11120,6 +11120,23 @@ def test_query_pool_guard_cli_fails_closed_before_review(tmp_path):
     assert pool_guard.main([*args[:-1], str(tmp_path / "empty-normalized.json")]) == 2
 
 
+def test_query_pool_guard_rejects_candidate_already_marked_reviewed_or_searched():
+    for status in ("reviewed", "already_searched", "unreviewed"):
+        row = {
+            "proposal_id": "H001",
+            "query": "Describe request body binding in Gin",
+            "stratum": "semantic_intent",
+            "status": status,
+        }
+        raw = (json.dumps(row) + "\n").encode()
+        with pytest.raises(ev.EvidenceError, match="invalid or duplicate proposal"):
+            pool_guard._proposals(raw, "candidate.jsonl", require_unreviewed=True)
+    row["status"] = "unreviewed_query_proposal"
+    assert pool_guard._proposals((json.dumps(row) + "\n").encode(), "candidate.jsonl", require_unreviewed=True) == [
+        ("H001", "Describe request body binding in Gin")
+    ]
+
+
 def test_v3_leakage_allowlist(tmp_path):
     repo, suite, _run, _sp, _rp, files = fixture_v3(tmp_path, answerable_only=True)
     mutated = json.loads(json.dumps(suite))
