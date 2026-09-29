@@ -246,6 +246,7 @@
     "tools.ci.tests.test_retrieval_benchmark.test_query_plan_oracle_enforces_utf8_term_boundary",
     "tools.ci.tests.test_retrieval_benchmark.test_query_plan_oracle_uses_nfc_and_rejects_unindexable_runs",
     "tools.ci.tests.test_retrieval_benchmark.test_query_pool_guard_cli_fails_closed_before_review",
+    "tools.ci.tests.test_retrieval_benchmark.test_query_pool_guard_rejects_candidate_already_marked_reviewed_or_searched",
     "tools.ci.tests.test_retrieval_benchmark.test_query_pool_guard_reports_all_cross_pool_conflicts",
     "tools.ci.tests.test_retrieval_benchmark.test_rank_prefix_does_not_skip_oversize_candidate",
     "tools.ci.tests.test_retrieval_benchmark.test_rank_report_refuses_primary_at_10_from_top_5",
