@@ -83,8 +83,8 @@ the displaced shared row solely to return a value the planner discarded. The
 planner now consumes borrowed batch rows and the snapshot has explicit
 discard-result mutation methods; only the candidate's owned new row is cloned.
 This removes avoidable row copies without changing the authenticated base
-walks, publication identity, output format or physical-heap claim. Owner
-behavior tests are pending execution under the requested static-only phase.
+walks, publication identity, output format or physical-heap claim. Lexical
+owner behavior tests subsequently passed on the integrated source.
 
 Sep-29 full-daemon diagnostic on the mixed-case test source: the ignored
 `runtime_extended_suite::e2e_coverage_pipeline_cost` cases publish and

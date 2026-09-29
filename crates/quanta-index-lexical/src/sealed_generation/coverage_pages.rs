@@ -184,8 +184,7 @@ fn read_bounded(path: &Path, ceiling: usize) -> Result<Vec<u8>, CoreError> {
     if metadata.len() > ceiling_u64 {
         return Err(resource("encoded artifact exceeds its byte ceiling"));
     }
-    let mut file = File::open(path)
-        .map_err(|error| CoreError::Storage(format!("open {}: {error}", path.display())))?;
+    let mut file = open_coverage_regular_nofollow(path, directory)?;
     let opened = file
         .metadata()
         .map_err(|error| CoreError::Storage(error.to_string()))?;
@@ -201,6 +200,22 @@ fn read_bounded(path: &Path, ceiling: usize) -> Result<Vec<u8>, CoreError> {
     let expected_len = usize::try_from(opened.len())
         .map_err(|error| resource(&format!("coverage read length overflow: {error}")))?;
     read_admitted_bytes(&mut file, expected_len, path)
+}
+
+fn open_coverage_regular_nofollow(path: &Path, directory: &Path) -> Result<File, CoreError> {
+    // A prior metadata check cannot authorize a later path resolution.
+    let name = path
+        .file_name()
+        .ok_or_else(|| corrupt(directory, "coverage artifact has no name"))?;
+    super::super::open_regular_nofollow(directory, Path::new(name)).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound
+            || super::super::is_unsafe_artifact_path(&error)
+        {
+            corrupt(directory, "coverage artifact changed before open")
+        } else {
+            CoreError::Storage(format!("open {}: {error}", path.display()))
+        }
+    })
 }
 
 pub(crate) fn read_admitted_bytes(
@@ -689,6 +704,34 @@ pub(crate) fn write_coverage_pages(
 #[cfg(test)]
 mod tests {
     use super::{BoundedRows, MAX_COVERAGE_PAGE_BYTES, read_bounded};
+
+    #[test]
+    fn replaced_coverage_artifact_cannot_redirect_open_through_symlink()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("committed-page");
+        let outside = dir.path().join("outside");
+        std::fs::write(&path, [7_u8; 64])?;
+        std::fs::write(&outside, [7_u8; 64])?;
+        if !std::fs::symlink_metadata(&path)?.is_file() {
+            return Err("fixture artifact is not a regular file".into());
+        }
+        // Model replacement after the first metadata admission and before
+        // the open. Matching bytes must not make the redirect acceptable.
+        std::fs::remove_file(&path)?;
+        std::os::unix::fs::symlink(&outside, &path)?;
+        let result = super::open_coverage_regular_nofollow(&path, dir.path());
+        if !matches!(
+            result,
+            Err(quanta_index_core::CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
+                ..
+            })
+        ) {
+            return Err("redirected artifact open did not refuse typed".into());
+        }
+        Ok(())
+    }
 
     #[test]
     fn artifact_growth_after_length_admission_reads_only_one_sentinel()

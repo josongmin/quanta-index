@@ -17,6 +17,7 @@
 //!   typed `GENERATION_QUARANTINED`; the quarantine discard surface is the
 //!   one way it leaves the disk.
 
+use std::io::Read as _;
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -79,9 +80,18 @@ fn read_receipt_value(
     what: &str,
     format_version: u32,
 ) -> Result<Option<CborValue>, CoreError> {
-    let bytes = match std::fs::read(path) {
-        Ok(bytes) => bytes,
+    let directory = path
+        .parent()
+        .ok_or_else(|| receipt_invalid(path, "has no parent"))?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| receipt_invalid(path, "has no file name"))?;
+    let mut file = match super::open_regular_nofollow(directory, Path::new(name)) {
+        Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) if super::is_unsafe_artifact_path(&error) => {
+            return Err(receipt_invalid(path, "is not a regular file"));
+        }
         Err(error) => {
             return Err(CoreError::Storage(format!(
                 "lexical: read {what} {}: {error}",
@@ -89,6 +99,10 @@ fn read_receipt_value(
             )));
         }
     };
+    let mut bytes = Vec::new();
+    let _read = file.read_to_end(&mut bytes).map_err(|error| {
+        CoreError::Storage(format!("lexical: read {what} {}: {error}", path.display()))
+    })?;
     let value: CborValue = ciborium::from_reader(bytes.as_slice())
         .map_err(|error| receipt_invalid(path, &format!("does not decode: {error}")))?;
     let found = leading_format_version(&value, what, path)?;

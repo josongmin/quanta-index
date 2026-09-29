@@ -311,16 +311,23 @@ fn read_committed(
             "not a regular file at the committed length",
         ));
     }
-    let mut opened = std::fs::File::open(&path).map_err(|error| {
-        if error.kind() == std::io::ErrorKind::NotFound {
-            crate::index_store::sidecar_corrupt(generation_dir, &artifact.name, "missing")
-        } else {
-            CoreError::Storage(format!(
-                "lexical: read committed file {}: {error}",
-                path.display()
-            ))
-        }
-    })?;
+    let mut opened = super::open_regular_nofollow(generation_dir, Path::new(&artifact.name))
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound
+                || super::is_unsafe_artifact_path(&error)
+            {
+                crate::index_store::sidecar_corrupt(
+                    generation_dir,
+                    &artifact.name,
+                    "changed before open",
+                )
+            } else {
+                CoreError::Storage(format!(
+                    "lexical: read committed file {}: {error}",
+                    path.display()
+                ))
+            }
+        })?;
     let opened_metadata = opened.metadata().map_err(|error| {
         CoreError::Storage(format!(
             "lexical: inspect opened committed file {}: {error}",

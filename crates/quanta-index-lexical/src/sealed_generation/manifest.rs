@@ -42,6 +42,7 @@
 //! are refused typed: the migration is a rebuild, never a
 //! reinterpretation.
 
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
 use ciborium::Value as CborValue;
@@ -397,7 +398,11 @@ impl LexicalSealedManifest {
 /// normalizer this build does not serve.
 pub(crate) fn read_manifest(generation_dir: &Path) -> Result<LexicalSealedManifest, CoreError> {
     let path = manifest_path(generation_dir);
-    let bytes = std::fs::read(&path).map_err(|error| {
+    let mut file = super::open_regular_nofollow(
+        generation_dir,
+        Path::new(LEXICAL_SEALED_MANIFEST_FILE_NAME),
+    )
+    .map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
             CoreError::Typed {
                 code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestMissing,
@@ -406,12 +411,21 @@ pub(crate) fn read_manifest(generation_dir: &Path) -> Result<LexicalSealedManife
                     path.display()
                 ),
             }
+        } else if super::is_unsafe_artifact_path(&error) {
+            manifest_corrupt(&path, "manifest is not a regular file")
         } else {
             CoreError::Storage(format!(
                 "lexical: read sealed generation manifest {}: {error}",
                 path.display()
             ))
         }
+    })?;
+    let mut bytes = Vec::new();
+    let _read = file.read_to_end(&mut bytes).map_err(|error| {
+        CoreError::Storage(format!(
+            "lexical: read sealed generation manifest {}: {error}",
+            path.display()
+        ))
     })?;
     LexicalSealedManifest::decode(&bytes, &path)
 }
@@ -504,6 +518,31 @@ mod tests {
         let decoded = LexicalSealedManifest::decode(&bytes, Path::new("/g1/m")).expect("decode");
         assert_eq!(decoded, manifest);
         assert_eq!(decoded.all_commitments().count(), 8);
+    }
+
+    #[test]
+    fn sealed_manifest_does_not_follow_a_redirect_to_valid_bytes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let generation = tempfile::tempdir()?;
+        let outside = tempfile::tempdir()?;
+        let bytes = manifest().encode()?;
+        let outside_file = outside.path().join("valid-manifest.cbor");
+        std::fs::write(&outside_file, bytes)?;
+        std::os::unix::fs::symlink(
+            outside_file,
+            generation
+                .path()
+                .join(super::LEXICAL_SEALED_MANIFEST_FILE_NAME),
+        )?;
+        let result = super::read_manifest(generation.path());
+        if typed_code(&result)
+            != Some(quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt)
+        {
+            return Err(
+                format!("redirected manifest open did not refuse typed: {result:?}").into(),
+            );
+        }
+        Ok(())
     }
 
     #[test]

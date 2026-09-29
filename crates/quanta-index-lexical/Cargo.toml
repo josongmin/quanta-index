@@ -22,6 +22,7 @@ quanta-index-lq-text-normalizer = { version = "0.1.0", path = "../quanta-index-l
 quanta-index-lq-trigram = { version = "0.1.0", path = "../quanta-index-lq-trigram" }
 regex-syntax = { workspace = true }
 roaring = { workspace = true }
+rustix = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

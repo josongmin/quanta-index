@@ -135,18 +135,23 @@ impl BaseCommitments {
     fn inherited(
         &self,
         name: &str,
-        path: &Path,
+        target_dir: &Path,
     ) -> Result<Option<SealedArtifactCommitmentV1>, CoreError> {
         let Some(listed) = self.by_name.get(name) else {
             return Ok(None);
         };
-        let ours = std::fs::metadata(path).map_err(|error| {
-            CoreError::Storage(format!(
-                "lexical: inspect {} for commitment: {error}",
-                path.display()
-            ))
-        })?;
-        let theirs = match std::fs::metadata(self.dir.join(name)) {
+        let path = target_dir.join(name);
+        let ours = super::open_regular_nofollow(target_dir, Path::new(name))
+            .and_then(|file| file.metadata())
+            .map_err(|error| {
+                CoreError::Storage(format!(
+                    "lexical: inspect {} for commitment: {error}",
+                    path.display()
+                ))
+            })?;
+        let theirs = match super::open_regular_nofollow(&self.dir, Path::new(name))
+            .and_then(|file| file.metadata())
+        {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => {
@@ -156,7 +161,10 @@ impl BaseCommitments {
                 )));
             }
         };
-        let same_inode = ours.dev() == theirs.dev() && ours.ino() == theirs.ino();
+        let same_inode = ours.is_file()
+            && theirs.is_file()
+            && ours.dev() == theirs.dev()
+            && ours.ino() == theirs.ino();
         if same_inode && ours.len() == listed.bytes {
             return Ok(Some(listed.clone()));
         }
@@ -176,16 +184,23 @@ impl Measurer {
     /// counted.
     fn hash(&mut self, name: &str) -> Result<SealedArtifactCommitmentV1, CoreError> {
         let path = self.generation_dir.join(name);
-        let mut file = File::open(&path).map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                crate::index_store::sidecar_corrupt(&self.generation_dir, name, "missing")
-            } else {
-                CoreError::Storage(format!(
-                    "lexical: open {} for commitment: {error}",
-                    path.display()
-                ))
-            }
-        })?;
+        let mut file = super::open_regular_nofollow(&self.generation_dir, Path::new(name))
+            .map_err(|error| {
+                if error.kind() == std::io::ErrorKind::NotFound
+                    || super::is_unsafe_artifact_path(&error)
+                {
+                    crate::index_store::sidecar_corrupt(
+                        &self.generation_dir,
+                        name,
+                        "changed before open",
+                    )
+                } else {
+                    CoreError::Storage(format!(
+                        "lexical: open {} for commitment: {error}",
+                        path.display()
+                    ))
+                }
+            })?;
         let mut hasher = Sha256::new();
         let mut buffer = vec![0_u8; 1 << 16];
         let mut length = 0_u64;
@@ -223,9 +238,8 @@ impl Measurer {
     /// The commitment for `name`: the base's if the file is the base's
     /// inode, otherwise measured.
     fn commit(&mut self, name: &str) -> Result<SealedArtifactCommitmentV1, CoreError> {
-        let path = self.generation_dir.join(name);
         if let Some(base) = &self.base
-            && let Some(inherited) = base.inherited(name, &path)?
+            && let Some(inherited) = base.inherited(name, &self.generation_dir)?
         {
             self.stats.inherited(inherited.bytes);
             return Ok(inherited);
@@ -419,7 +433,7 @@ fn commit_ranked_keys(
             measurer
                 .base
                 .as_ref()
-                .map(|base| base.inherited(&name, &path))
+                .map(|base| base.inherited(&name, &measurer.generation_dir))
                 .transpose()?
                 .flatten()
         } else {

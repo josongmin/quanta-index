@@ -68,8 +68,10 @@ impl MetricSourcePort for LexicalAdapter {
         let regex = self.regex_match_cache_stats()?;
         let text_authority = self.text_authority_update_stats()?;
         let seals = self.seal_commitment_stats()?;
-        let coverage = self.coverage_read_stats()?;
         let phase = self.coverage_read_by_phase_stats()?;
+        // Total and phase counters must describe the same instant while
+        // publication can record another read concurrently with this scrape.
+        let coverage = phase.total;
         Ok(vec![
             MetricPointV1::counter("lexical_seals_total", seals.seals),
             MetricPointV1::counter("lexical_seal_files_hashed_total", seals.files_hashed),
