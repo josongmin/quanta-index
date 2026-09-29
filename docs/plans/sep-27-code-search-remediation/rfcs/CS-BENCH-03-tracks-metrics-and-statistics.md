@@ -124,6 +124,13 @@ Use an independent standard implementation such as pinned `trec_eval` for shared
 rank metrics on small qrel fixtures, and hand-computed sets/ranges for coverage.
 Do not compare incompatible metric definitions under identical column names.
 
+Current-main adversarial check: historical `exact_symbol_name` records may omit
+`rank_unit` and may collapse distinct declarations sharing a returned context
+line. The independent declaration diagnostic now requires an explicit recorded
+`rank_unit: symbol`; a rankless legacy record remains readable but is excluded
+from that metric with `rank_unit_mismatch`. This closes policy-only rank-unit
+promotion, not BENCH-01 independent labels or BENCH-02 native capture authority.
+
 ## DoD
 
 - [ ] Each registered profile declares track, semantics, unit, ordering, cutoff,
