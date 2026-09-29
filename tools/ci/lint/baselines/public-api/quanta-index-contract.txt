@@ -11864,6 +11864,7 @@ impl quanta_index_contract::FileCoverageSnapshot
 pub fn quanta_index_contract::FileCoverageSnapshot::contains_key(&self, key: &quanta_index_contract_base::source_file::SourceFileKey) -> bool
 pub fn quanta_index_contract::FileCoverageSnapshot::get(&self, key: &quanta_index_contract_base::source_file::SourceFileKey) -> core::option::Option<&quanta_index_contract::SourceFileCoverage>
 pub fn quanta_index_contract::FileCoverageSnapshot::insert(&mut self, key: quanta_index_contract_base::source_file::SourceFileKey, value: quanta_index_contract::SourceFileCoverage) -> core::option::Option<quanta_index_contract::SourceFileCoverage>
+pub fn quanta_index_contract::FileCoverageSnapshot::insert_without_previous(&mut self, key: quanta_index_contract_base::source_file::SourceFileKey, value: quanta_index_contract::SourceFileCoverage)
 pub fn quanta_index_contract::FileCoverageSnapshot::is_empty(&self) -> bool
 pub fn quanta_index_contract::FileCoverageSnapshot::iter(&self) -> quanta_index_contract::FileCoverageIter<'_>
 pub fn quanta_index_contract::FileCoverageSnapshot::last_key_value(&self) -> core::option::Option<(&quanta_index_contract_base::source_file::SourceFileKey, &quanta_index_contract::SourceFileCoverage)>
@@ -11872,6 +11873,7 @@ pub fn quanta_index_contract::FileCoverageSnapshot::new() -> Self
 pub fn quanta_index_contract::FileCoverageSnapshot::partition(&self, partition: u8) -> impl core::iter::traits::iterator::Iterator<Item = (&quanta_index_contract_base::source_file::SourceFileKey, &quanta_index_contract::SourceFileCoverage)>
 pub fn quanta_index_contract::FileCoverageSnapshot::partition_for(key: &quanta_index_contract_base::source_file::SourceFileKey) -> u8
 pub fn quanta_index_contract::FileCoverageSnapshot::remove(&mut self, key: &quanta_index_contract_base::source_file::SourceFileKey) -> core::option::Option<quanta_index_contract::SourceFileCoverage>
+pub fn quanta_index_contract::FileCoverageSnapshot::remove_without_previous(&mut self, key: &quanta_index_contract_base::source_file::SourceFileKey)
 pub fn quanta_index_contract::FileCoverageSnapshot::values(&self) -> impl core::iter::traits::iterator::Iterator<Item = &quanta_index_contract::SourceFileCoverage>
 impl core::clone::Clone for quanta_index_contract::FileCoverageSnapshot
 pub fn quanta_index_contract::FileCoverageSnapshot::clone(&self) -> quanta_index_contract::FileCoverageSnapshot

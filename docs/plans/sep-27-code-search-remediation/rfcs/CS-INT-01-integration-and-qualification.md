@@ -308,3 +308,22 @@ equal-work quality/resource measurements. Do not reimplement the matrix
 inventory. Run full, installed, external-producer and hosted/platform
 qualification only after the affected implementation and input contracts are
 selected on one final source.
+
+## Sep-29 static-only follow-up
+
+On `18a4716f`, lexical delta planning consumes borrowed replacement and
+tombstone inputs and uses snapshot mutation methods that discard displaced
+rows without cloning them. This removes avoidable row copies in the coverage
+candidate path; it does not remove the three authenticated base walks or prove
+a physical heap ceiling. The new public snapshot methods are recorded in the
+contract API baseline. Affected-crate Clippy and formatting passed; the
+contract API check exposed the missing baseline update, which was corrected.
+Owner behavior tests and runtime/installed/benchmark qualification remain
+`NOT_RUN` under the requested static-only phase.
+
+The pinned regex parser/compiler still lacks a pre-allocation request owner
+for its temporary, engine and cache allocations. The current logical guards
+cannot establish ENG-04's physical aggregate bound. BENCH-01–04 require
+independent inputs and real captures before qualified results can be claimed;
+the declared matrix remains diagnostic. Concurrent retrieval-benchmark edits
+outside this follow-up were not included in this source change.
