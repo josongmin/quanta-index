@@ -458,6 +458,20 @@ mod tests {
             Some(&replacements[0])
         );
         assert!(!plan.snapshot().contains_key(&deleted.source.file));
+        let replacement_partition = CoverageSnapshot::partition_for(&original.source.file);
+        assert_eq!(
+            plan.snapshot()
+                .partition(replacement_partition)
+                .find(|(key, _)| *key == &original.source.file)
+                .map(|(_, row)| row),
+            Some(&replacements[0])
+        );
+        let deleted_partition = CoverageSnapshot::partition_for(&deleted.source.file);
+        assert!(
+            plan.snapshot()
+                .partition(deleted_partition)
+                .all(|(key, _)| key != &deleted.source.file)
+        );
         assert_eq!(base.get(&original.source.file), Some(&original));
         assert_eq!(base.get(&deleted.source.file), Some(&deleted));
         assert_eq!(
