@@ -4,12 +4,15 @@ use std::collections::BTreeSet;
 
 use quanta_index_contract::{
     GenerationSelector, LqExpr, LqLeaf, LqOptions, LqStructuralBlock,
-    LqStructuralConstraintOperand, LqStructuralExpr, MAX_STRUCTURAL_WHERE_REGEX_ENGINES_V1,
+    MAX_STRUCTURAL_WHERE_REGEX_ENGINES_V1,
 };
 use quanta_index_core::domains::structural::StructuralExecutableFilter;
 use quanta_index_core::domains::structural::StructuralQueryRequest as DomainStructuralQueryRequest;
 use quanta_index_core::{CoreError, StructuralService};
 
+use crate::lowering::{
+    structural_where_regex_count_error, visit_block_where_regexes, visit_expr_where_regexes,
+};
 use crate::query_dispatcher::errors::structural_invalid_request;
 use crate::query_dispatcher::routes::structural::buckets::{
     StructuralCandidateBuckets, bucket_structural_matches, intersect_structural_buckets,
@@ -39,22 +42,6 @@ type StructuralLeafCache =
 pub(super) struct StructuralEvalContext {
     leaf_cache: StructuralLeafCache,
     short_circuit_regexes: BTreeSet<String>,
-}
-
-/// Enforce the distinct `where`-engine limit over the complete Boolean
-/// request. The producer's per-block limit alone can be bypassed by placing
-/// one regex in each of many structural leaves.
-pub(super) fn admit_structural_where_regex_cardinality(expr: &LqExpr) -> Result<(), CoreError> {
-    let mut distinct = BTreeSet::new();
-    visit_expr_where_regexes(expr, &mut |pattern| {
-        if !distinct.contains(pattern) {
-            if distinct.len() >= MAX_STRUCTURAL_WHERE_REGEX_ENGINES_V1 {
-                return Err(structural_where_regex_count_error());
-            }
-            let _inserted = distinct.insert(pattern.to_owned());
-        }
-        Ok(())
-    })
 }
 
 pub(super) fn structural_expr_has_structural_leaf(expr: &LqExpr) -> bool {
@@ -373,40 +360,6 @@ fn admit_short_circuited_where_regexes(
     })
 }
 
-fn structural_where_regex_count_error() -> CoreError {
-    CoreError::Typed {
-        code: quanta_index_contract::SearchPlaneErrorCodeV2::LexRegexPlanLimitExceeded,
-        message: format!(
-            "structural where regex engine count exceeds {MAX_STRUCTURAL_WHERE_REGEX_ENGINES_V1}"
-        ),
-    }
-}
-
-fn visit_block_where_regexes(
-    block: &LqStructuralBlock,
-    visit: &mut impl FnMut(&str) -> Result<(), CoreError>,
-) -> Result<(), CoreError> {
-    let mut pending = vec![block];
-    while let Some(block) = pending.pop() {
-        for expr in &block.exprs {
-            match expr {
-                LqStructuralExpr::Where(constraints) => {
-                    for constraint in constraints {
-                        if let LqStructuralConstraintOperand::Regex(pattern) = &constraint.right {
-                            visit(pattern)?;
-                        }
-                    }
-                }
-                LqStructuralExpr::Inside(nested) | LqStructuralExpr::Outside(nested) => {
-                    pending.push(nested);
-                }
-                LqStructuralExpr::Pattern(_) => {}
-            }
-        }
-    }
-    Ok(())
-}
-
 fn admit_skipped_structural_regexes(
     expr: &LqExpr,
     admitted: &mut BTreeSet<String>,
@@ -433,26 +386,6 @@ fn admit_one_short_circuited_where_regex(
     Ok(())
 }
 
-fn visit_expr_where_regexes(
-    expr: &LqExpr,
-    visit: &mut impl FnMut(&str) -> Result<(), CoreError>,
-) -> Result<(), CoreError> {
-    let mut pending = vec![expr];
-    while let Some(expr) = pending.pop() {
-        match expr {
-            LqExpr::Leaf(LqLeaf::StructuralBlock(block)) => {
-                visit_block_where_regexes(block, visit)?;
-            }
-            LqExpr::Not(inner) => pending.push(inner),
-            LqExpr::All(children) | LqExpr::Any(children) => {
-                pending.extend(children.iter().rev());
-            }
-            LqExpr::Empty | LqExpr::Leaf(_) => {}
-        }
-    }
-    Ok(())
-}
-
 fn map_structural_error(
     err: &quanta_index_core::domains::structural::StructuralError,
 ) -> CoreError {
@@ -464,7 +397,8 @@ fn map_structural_error(
 
 #[cfg(test)]
 mod tests {
-    use super::{admit_short_circuited_where_regexes, admit_structural_where_regex_cardinality};
+    use super::admit_short_circuited_where_regexes;
+    use crate::lowering::admit_structural_where_regex_cardinality;
     use quanta_index_contract::{
         LqExpr, LqLeaf, LqMetaVar, LqStructuralBlock, LqStructuralConstraint,
         LqStructuralConstraintOperand, LqStructuralExpr, LqStructuralHoleMultiplicity,

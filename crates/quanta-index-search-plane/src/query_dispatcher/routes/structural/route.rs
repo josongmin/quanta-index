@@ -28,6 +28,7 @@ use quanta_index_core::{
     CoreError, QueryRouteV1, RequestBudgetV1, StructuralService, validate_query_top_k,
 };
 
+use crate::lowering::admit_structural_where_regex_cardinality;
 use crate::query_dispatcher::continuation::{CursorRequestContextV2, require_token_pin};
 use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
 use crate::query_dispatcher::errors::structural_invalid_request;
@@ -35,9 +36,9 @@ use crate::query_dispatcher::keyset_page::{KeysetPageCollector, StreamEnd};
 use crate::query_dispatcher::read_view::{AuxEpochPinsV1, QueryReadViewV2, ReadViewRequestV1};
 use crate::query_dispatcher::routes::structural::buckets::StructuralCandidateBuckets;
 use crate::query_dispatcher::routes::structural::eval::{
-    StructuralEvalContext, admit_structural_where_regex_cardinality, evaluate_structural_expr,
-    extract_structural_requested_lang, structural_expr_has_non_structural_leaf,
-    structural_expr_has_structural_leaf, structural_expr_is_pure_negative_root,
+    StructuralEvalContext, evaluate_structural_expr, extract_structural_requested_lang,
+    structural_expr_has_non_structural_leaf, structural_expr_has_structural_leaf,
+    structural_expr_is_pure_negative_root,
 };
 use crate::query_dispatcher::routes::structural::lexical_leaves::LexicalSubexprEvaluator;
 use crate::query_dispatcher::routes::structural::lowering::{

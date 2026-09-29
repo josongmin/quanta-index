@@ -1,7 +1,10 @@
+use std::collections::BTreeSet;
+
 use quanta_index_contract::{
     LqExpr, LqLeaf, LqMetaVar, LqPatternType, LqQuery, LqStructuralBlock, LqStructuralConstraint,
     LqStructuralConstraintOperand, LqStructuralExpr, LqStructuralHoleMultiplicity,
-    LqStructuralHoleRef, LqStructuralNode, TextQueryRequest, TextQuerySyntax,
+    LqStructuralHoleRef, LqStructuralNode, MAX_STRUCTURAL_WHERE_REGEX_ENGINES_V1, TextQueryRequest,
+    TextQuerySyntax,
 };
 use quanta_index_lq_bridge::{
     BridgeError, BridgeErrorCode, SgFilter, SgQuery, SourcegraphVersionTag, parse_sourcegraph,
@@ -216,8 +219,83 @@ fn lower_sourcegraph_structural_shape(
                 .to_string(),
         });
     }
-    query.expr = rewrite_sourcegraph_structural_expr(query_text, &query.expr)?;
+    let mut sourcegraph_regexes = BTreeSet::new();
+    query.expr =
+        rewrite_sourcegraph_structural_expr(query_text, &query.expr, &mut sourcegraph_regexes)?;
+    admit_structural_where_regex_cardinality(&query.expr)?;
+    for pattern in sourcegraph_regexes {
+        validate_sourcegraph_structural_regex_body(&pattern)?;
+    }
     Ok(query)
+}
+
+/// Admit the complete structural Boolean request before any Sourcegraph
+/// slash-body engine is compiled. The native dispatcher uses the same rule.
+pub(crate) fn admit_structural_where_regex_cardinality(expr: &LqExpr) -> Result<(), CoreError> {
+    let mut distinct = BTreeSet::new();
+    visit_expr_where_regexes(expr, &mut |pattern| {
+        if !distinct.contains(pattern) {
+            if distinct.len() >= MAX_STRUCTURAL_WHERE_REGEX_ENGINES_V1 {
+                return Err(structural_where_regex_count_error());
+            }
+            let _inserted = distinct.insert(pattern.to_owned());
+        }
+        Ok(())
+    })
+}
+
+pub(crate) fn structural_where_regex_count_error() -> CoreError {
+    CoreError::Typed {
+        code: quanta_index_contract::SearchPlaneErrorCodeV2::LexRegexPlanLimitExceeded,
+        message: format!(
+            "structural where regex engine count exceeds {MAX_STRUCTURAL_WHERE_REGEX_ENGINES_V1}"
+        ),
+    }
+}
+
+pub(crate) fn visit_block_where_regexes(
+    block: &LqStructuralBlock,
+    visit: &mut impl FnMut(&str) -> Result<(), CoreError>,
+) -> Result<(), CoreError> {
+    let mut pending = vec![block];
+    while let Some(block) = pending.pop() {
+        for expr in &block.exprs {
+            match expr {
+                LqStructuralExpr::Where(constraints) => {
+                    for constraint in constraints {
+                        if let LqStructuralConstraintOperand::Regex(pattern) = &constraint.right {
+                            visit(pattern)?;
+                        }
+                    }
+                }
+                LqStructuralExpr::Inside(nested) | LqStructuralExpr::Outside(nested) => {
+                    pending.push(nested);
+                }
+                LqStructuralExpr::Pattern(_) => {}
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn visit_expr_where_regexes(
+    expr: &LqExpr,
+    visit: &mut impl FnMut(&str) -> Result<(), CoreError>,
+) -> Result<(), CoreError> {
+    let mut pending = vec![expr];
+    while let Some(expr) = pending.pop() {
+        match expr {
+            LqExpr::Leaf(LqLeaf::StructuralBlock(block)) => {
+                visit_block_where_regexes(block, visit)?;
+            }
+            LqExpr::Not(inner) => pending.push(inner),
+            LqExpr::All(children) | LqExpr::Any(children) => {
+                pending.extend(children.iter().rev());
+            }
+            LqExpr::Empty | LqExpr::Leaf(_) => {}
+        }
+    }
+    Ok(())
 }
 
 /// Per-leaf legality verdict on the Sourcegraph structural route.
@@ -322,6 +400,7 @@ fn structural_route_typed_fail() -> CoreError {
 fn rewrite_sourcegraph_structural_expr(
     query_text: &str,
     expr: &LqExpr,
+    sourcegraph_regexes: &mut BTreeSet<String>,
 ) -> Result<LqExpr, CoreError> {
     match expr {
         LqExpr::Empty => Err(CoreError::Typed {
@@ -342,20 +421,28 @@ fn rewrite_sourcegraph_structural_expr(
             StructuralLeafVerdict::LowerPhraseBody(body) => Ok(LqExpr::Leaf(
                 LqLeaf::StructuralBlock(lower_sourcegraph_structural_body(query_text, body)?),
             )),
-            StructuralLeafVerdict::LowerRegexBody(body) => Ok(LqExpr::Leaf(
-                LqLeaf::StructuralBlock(lower_sourcegraph_structural_regex_body(body)?),
-            )),
+            StructuralLeafVerdict::LowerRegexBody(body) => {
+                let _inserted = sourcegraph_regexes.insert(body.to_owned());
+                Ok(LqExpr::Leaf(LqLeaf::StructuralBlock(
+                    sourcegraph_structural_regex_block(body),
+                )))
+            }
             StructuralLeafVerdict::TypedFail => Err(structural_route_typed_fail()),
         },
         LqExpr::Not(inner) => Ok(LqExpr::Not(Box::new(rewrite_sourcegraph_structural_expr(
-            query_text, inner,
+            query_text,
+            inner,
+            sourcegraph_regexes,
         )?))),
         LqExpr::All(children) => {
-            rewrite_sourcegraph_structural_children(query_text, children, true)
+            rewrite_sourcegraph_structural_children(query_text, children, true, sourcegraph_regexes)
         }
-        LqExpr::Any(children) => {
-            rewrite_sourcegraph_structural_children(query_text, children, false)
-        }
+        LqExpr::Any(children) => rewrite_sourcegraph_structural_children(
+            query_text,
+            children,
+            false,
+            sourcegraph_regexes,
+        ),
     }
 }
 
@@ -363,10 +450,15 @@ fn rewrite_sourcegraph_structural_children(
     query_text: &str,
     children: &[LqExpr],
     all: bool,
+    sourcegraph_regexes: &mut BTreeSet<String>,
 ) -> Result<LqExpr, CoreError> {
     let mut lowered = Vec::with_capacity(children.len());
     for child in children {
-        lowered.push(rewrite_sourcegraph_structural_expr(query_text, child)?);
+        lowered.push(rewrite_sourcegraph_structural_expr(
+            query_text,
+            child,
+            sourcegraph_regexes,
+        )?);
     }
     Ok(if all {
         LqExpr::All(lowered)
@@ -391,9 +483,7 @@ fn lower_sourcegraph_structural_body(
     Ok(block)
 }
 
-fn lower_sourcegraph_structural_regex_body(
-    regex_body: &str,
-) -> Result<LqStructuralBlock, CoreError> {
+fn validate_sourcegraph_structural_regex_body(regex_body: &str) -> Result<(), CoreError> {
     let _validated_regex = RegexExecutor::compile(regex_body).map_err(|err| CoreError::Typed {
         code: if err.code == RegexErrorCode::PlanLimitExceeded {
             quanta_index_contract::SearchPlaneErrorCodeV2::LexRegexPlanLimitExceeded
@@ -402,9 +492,13 @@ fn lower_sourcegraph_structural_regex_body(
         },
         message: format!("bridge: invalid Sourcegraph structural regex body: {err}"),
     })?;
+    Ok(())
+}
+
+fn sourcegraph_structural_regex_block(regex_body: &str) -> LqStructuralBlock {
     let capture = structural_regex_capture_name(regex_body);
     let capture_metavar = LqMetaVar::new(capture);
-    Ok(LqStructuralBlock {
+    LqStructuralBlock {
         lang: None,
         nodes: vec![LqStructuralNode::Hole {
             name: Some(capture_metavar.clone()),
@@ -423,7 +517,7 @@ fn lower_sourcegraph_structural_regex_body(
                 right: LqStructuralConstraintOperand::Regex(regex_body.to_string()),
             }]),
         ],
-    })
+    }
 }
 
 fn structural_regex_capture_name(regex_body: &str) -> String {
@@ -483,8 +577,7 @@ fn map_bridge_error(err: &BridgeError) -> CoreError {
 mod tests {
     use super::{
         StructuralLeafVerdict, lower_lq_query_text, lower_sourcegraph_query_text,
-        lower_sourcegraph_structural_query_text, lower_sourcegraph_structural_regex_body,
-        structural_leaf_verdict,
+        lower_sourcegraph_structural_query_text, structural_leaf_verdict,
     };
     use quanta_index_contract::{
         LQ_VERSION_TAG, LqCase, LqCountBound, LqExpr, LqFileScope, LqFilter, LqLeaf, LqPatternType,
@@ -845,9 +938,63 @@ mod tests {
     }
 
     #[test]
+    fn sourcegraph_structural_route_refuses_ninth_regex_before_compiling() -> TestResult {
+        let mut bodies = vec!["/(/".to_owned()];
+        bodies.extend((0..8).map(|index| format!("/^value{index}$/")));
+        let query = format!("patterntype:structural {}", bodies.join(" OR "));
+        let err = match lower_sourcegraph_structural_query_text(&query) {
+            Ok(lowered) => return Err(format!("expected request limit, got {lowered:?}").into()),
+            Err(err) => err,
+        };
+        let (code, message) = typed_error(err)?;
+        let expected = quanta_index_contract::SearchPlaneErrorCodeV2::LexRegexPlanLimitExceeded;
+        if code != expected.to_string()
+            || !message.contains("structural where regex engine count exceeds 8")
+        {
+            return Err(
+                format!("expected pre-compilation request limit, got {code}: {message}").into(),
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn sourcegraph_structural_route_counts_distinct_regexes_across_phrase_and_slash_leaves()
+    -> TestResult {
+        let mut bodies = (0..8)
+            .map(|index| format!("/^value{index}$/"))
+            .collect::<Vec<_>>();
+        bodies.push(r#"":[name] where :[name] == /^ninth$/""#.to_owned());
+        let query = format!("patterntype:structural {}", bodies.join(" OR "));
+        let err = match lower_sourcegraph_structural_query_text(&query) {
+            Ok(lowered) => return Err(format!("expected request limit, got {lowered:?}").into()),
+            Err(err) => err,
+        };
+        let (code, message) = typed_error(err)?;
+        let expected = quanta_index_contract::SearchPlaneErrorCodeV2::LexRegexPlanLimitExceeded;
+        if code != expected.to_string()
+            || !message.contains("structural where regex engine count exceeds 8")
+        {
+            return Err(format!("expected mixed-leaf request limit, got {code}: {message}").into());
+        }
+
+        let repeated = format!(
+            "patterntype:structural {}",
+            vec!["/^same$/"; 9].join(" OR ")
+        );
+        let _lowered = lower_sourcegraph_structural_query_text(&repeated).map_err(
+            |err| -> Box<dyn std::error::Error> {
+                format!("repeated pattern must share one request identity: {err:?}").into()
+            },
+        )?;
+        Ok(())
+    }
+
+    #[test]
     fn sourcegraph_structural_regex_resource_refusal_stays_typed() -> TestResult {
-        let Err(err) = lower_sourcegraph_structural_regex_body(r"[\x{80}-\x{10FFFF}]{20000}")
-        else {
+        let Err(err) = lower_sourcegraph_structural_query_text(
+            r"patterntype:structural /[\x{80}-\x{10FFFF}]{20000}/",
+        ) else {
             return Err("oversized compiled regex must be refused".into());
         };
         let (code, _message) = typed_error(err)?;

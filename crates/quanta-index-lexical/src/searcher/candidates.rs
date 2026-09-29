@@ -76,6 +76,28 @@ fn source_offset(doc: &TantivyDocument, field: Field) -> Result<Option<u64>, Cor
         .transpose()
 }
 
+/// A selected source chunk must retain its integrity requirement even when
+/// optional preview preparation refuses to render it.
+fn unavailable_selected_preview(
+    kind: PreviewKind,
+    reason: PreviewUnavailableReason,
+    raw: &str,
+    digest: Option<[u8; 32]>,
+    request: &RequestBudgetV1,
+) -> Result<PreviewMetadata, CoreError> {
+    match (kind, digest) {
+        (PreviewKind::SourceChunk, Some(expected)) => {
+            verify_raw_digest(raw, expected, request)?;
+        }
+        (PreviewKind::SourceChunk, None) => {
+            return Err(integrity("immutable raw digest missing"));
+        }
+        _ => {}
+    }
+    request.checkpoint("lexical:preview-unavailable")?;
+    Ok(PreviewMetadata::unavailable(kind, reason, None))
+}
+
 impl SelectedPreviewContext<'_> {
     /// Empty selections and unrenderable rows need no executor or output slot.
     fn prepare_for_render(&mut self) -> Result<(), CoreError> {
@@ -347,20 +369,24 @@ impl TantivySearcher {
         };
         let limits = SnippetLimits::default();
         if raw.len() > limits.source_bytes || indexed.len() > limits.transformed_bytes {
-            if let Some(expected) = digest {
-                verify_raw_digest(raw, expected, context.request)?;
-            }
-            context.request.checkpoint("lexical:preview-unavailable")?;
-            candidate.preview = Some(PreviewMetadata::unavailable(
+            candidate.preview = Some(unavailable_selected_preview(
                 kind,
                 PreviewUnavailableReason::WorkBudget,
-                None,
-            ));
+                raw,
+                digest,
+                context.request,
+            )?);
             return Ok(candidate);
         }
         context.prepare_for_render()?;
         if let Some(reason) = context.unavailable {
-            candidate.preview = Some(PreviewMetadata::unavailable(kind, reason, None));
+            candidate.preview = Some(unavailable_selected_preview(
+                kind,
+                reason,
+                raw,
+                digest,
+                context.request,
+            )?);
             return Ok(candidate);
         }
         let rendered = render_selected(
@@ -539,7 +565,51 @@ impl TantivySearcher {
 )]
 mod l4_source_decode_regressions {
     use super::*;
+    use quanta_index_contract::SearchPlaneErrorCodeV2;
+    use sha2::{Digest, Sha256};
     use tantivy::schema::{STORED, STRING, Schema};
+
+    #[test]
+    fn optional_refusal_cannot_hide_a_selected_source_chunk_digest_mismatch()
+    -> Result<(), CoreError> {
+        let request = RequestBudgetV1::unbounded();
+        let raw = "needle";
+        let expected: [u8; 32] = Sha256::digest(raw.as_bytes()).into();
+        for reason in [
+            PreviewUnavailableReason::WorkBudget,
+            PreviewUnavailableReason::UnsupportedRange,
+        ] {
+            assert!(matches!(
+                unavailable_selected_preview(
+                    PreviewKind::SourceChunk,
+                    reason,
+                    raw,
+                    Some([0; 32]),
+                    &request,
+                ),
+                Err(CoreError::Typed {
+                    code: SearchPlaneErrorCodeV2::SearchPreviewIntegrity,
+                    ..
+                })
+            ));
+            assert!(matches!(
+                unavailable_selected_preview(PreviewKind::SourceChunk, reason, raw, None, &request),
+                Err(CoreError::Typed {
+                    code: SearchPlaneErrorCodeV2::SearchPreviewIntegrity,
+                    ..
+                })
+            ));
+            let preview = unavailable_selected_preview(
+                PreviewKind::SourceChunk,
+                reason,
+                raw,
+                Some(expected),
+                &request,
+            )?;
+            assert_eq!(preview.unavailable_reason, Some(reason));
+        }
+        Ok(())
+    }
 
     #[test]
     fn malformed_and_duplicate_authority_fields_are_not_defaulted() -> Result<(), CoreError> {
