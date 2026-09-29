@@ -7481,6 +7481,43 @@ def test_qualified_gold_receipts_require_source_bound_task_reviews(tmp_path):
     assert "task coverage mismatch" in verdict["state_evidence"]["QUALITY_DELTA"]["reason"]
 
 
+def test_qualified_gold_receipt_rejects_explicit_unreviewed_suite_claim(tmp_path):
+    st = _pair_stage(tmp_path, blinding="isolated", scope="qualified", claims={"quality": True})
+    suite = json.loads(json.dumps(st["suite"]))
+    suite["diagnostic_policy"] = ev.OBSERVED_PREFIX_DIAGNOSTIC_POLICY
+    suite["tasks"][0]["label_review"] = {"assessment": "unreviewed"}
+    ev.validate_suite(st["repo"], suite)
+    receipt_path = st["stage"] / "admission" / "annotation-1-receipt.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    suite_sha = ev.digest(ev.canonical(suite))
+    receipt["suite_sha256"] = suite_sha
+    with pytest.raises(pairrun.RunError, match="explicitly unreviewed"):
+        pairrun._validate_gold_review_receipt(
+            receipt,
+            role="annotation 1",
+            reviewer_id="gold-owner-a",
+            suite_sha256=suite_sha,
+            suite=suite,
+            repo=st["repo"],
+        )
+    suite["tasks"][0]["label_review"] = {
+        "assessment": "reviewed_ambiguous",
+        "reviewer_id": "independent-reviewer",
+        "evidence_sha256": ev.digest(b"reviewed ambiguous fixture"),
+    }
+    ev.validate_suite(st["repo"], suite)
+    suite_sha = ev.digest(ev.canonical(suite))
+    receipt["suite_sha256"] = suite_sha
+    pairrun._validate_gold_review_receipt(
+        receipt,
+        role="annotation 1",
+        reviewer_id="gold-owner-a",
+        suite_sha256=suite_sha,
+        suite=suite,
+        repo=st["repo"],
+    )
+
+
 def test_qualified_custody_refuses_rebound_wrong_source_and_shared_gold_file(tmp_path):
     for label in ("wrong-source", "shared-gold-file"):
         st = _pair_stage(
