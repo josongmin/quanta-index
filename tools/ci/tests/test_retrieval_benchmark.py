@@ -27,6 +27,7 @@ from tools.benchmark.retrieval import conditional_proof as cp
 from tools.benchmark.retrieval import evaluator as ev
 from tools.benchmark.retrieval import parity_reference, portable_proof
 from tools.benchmark.retrieval import query_plan as qp
+from tools.benchmark.retrieval import query_pool_guard as pool_guard
 from tools.benchmark.retrieval import query_timing_overhead as overhead
 from tools.benchmark.retrieval import run as pairrun
 from tools.benchmark.retrieval import semble as semble_adapter
@@ -11028,6 +11029,95 @@ def test_v3_query_near_duplicates_refused(tmp_path):
     mutated["tasks"][-1]["query_sha256"] = ev.digest(mutated["tasks"][-1]["query"].encode())
     with pytest.raises(ev.EvidenceError, match="near-duplicate"):
         ev.validate_suite(repo, mutated)
+
+
+def test_query_pool_guard_reports_all_cross_pool_conflicts():
+    references = [
+        ("suite/S071", "TestMappingCustomArrayUnmarshalTextForm"),
+        ("suite/S073", "TestBindingFormFilesMultipart"),
+    ]
+    candidates = [
+        ("candidate/H071", "TestMappingCustomArrayUnmarshalTextUri"),
+        ("candidate/H069", "TestBindingFormFilesMultipartFail"),
+        ("candidate/H090", "NovelSymbolIdentity"),
+    ]
+    report = pool_guard.scan(references, candidates)
+    assert report["status"] == "fail"
+    assert {(row["candidate_id"], row["reference_id"]) for row in report["conflicts"]} == {
+        ("candidate/H071", "suite/S071"),
+        ("candidate/H069", "suite/S073"),
+    }
+    assert (
+        pool_guard.scan(references, [("candidate/F001", "NovelSymbolIdentity")])["status"] == "pass"
+    )
+    duplicate = pool_guard.scan(references, [("candidate/H001", "TESTBINDINGFORMFILESMULTIPART")])
+    assert duplicate["conflicts"][0]["kind"] == "normalized_duplicate"
+
+
+def test_query_pool_guard_cli_fails_closed_before_review(tmp_path):
+    repo, suite, _run, suite_path, _rp, _files = fixture_v3(tmp_path)
+    suite_path.write_text(json.dumps(suite), encoding="utf-8")
+
+    def proposal(path, task_id, query):
+        path.write_text(
+            json.dumps(
+                {
+                    "proposal_id": task_id,
+                    "query": query,
+                    "stratum": "test_unique",
+                    "status": "unreviewed_query_proposal",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+    candidate = tmp_path / "candidate.jsonl"
+    report_path = tmp_path / "guard.json"
+    proposal(candidate, "H001", "find alpha two and beta one ok")
+    args = [
+        "--repo",
+        str(repo),
+        "--reference-suite",
+        str(suite_path),
+        "--candidate-proposals",
+        str(candidate),
+        "--output",
+        str(report_path),
+    ]
+    assert pool_guard.main(args) == 2
+    assert json.loads(report_path.read_text())["status"] == "fail"
+    proposal(candidate, "F001", "NovelSymbolIdentity")
+    assert pool_guard.main(args) == 2  # Existing output is never overwritten.
+    assert json.loads(report_path.read_text())["status"] == "fail"
+    fresh = tmp_path / "guard-pass.json"
+    assert pool_guard.main([*args[:-1], str(fresh)]) == 0
+    assert json.loads(fresh.read_text())["status"] == "pass"
+    second_suite = tmp_path / "second-suite.json"
+    second_suite.write_text(json.dumps(suite), encoding="utf-8")
+    multi_suite = tmp_path / "multi-suite.json"
+    assert (
+        pool_guard.main(
+            [
+                *args[:-1],
+                str(multi_suite),
+                "--reference-suite",
+                str(second_suite),
+            ]
+        )
+        == 0
+    )
+    assert json.loads(multi_suite.read_text())["reference_count"] == 4
+    candidate.write_text('{"proposal_id":"bad"}\n', encoding="utf-8")
+    assert pool_guard.main([*args[:-1], str(tmp_path / "malformed.json")]) == 2
+    candidate.write_text(
+        '{"proposal_id":"H1","proposal_id":"H2","query":"novel",'
+        '"stratum":"test","status":"unreviewed"}\n',
+        encoding="utf-8",
+    )
+    assert pool_guard.main([*args[:-1], str(tmp_path / "duplicate-key.json")]) == 2
+    proposal(candidate, "H003", "검색")
+    assert pool_guard.main([*args[:-1], str(tmp_path / "empty-normalized.json")]) == 2
 
 
 def test_v3_leakage_allowlist(tmp_path):

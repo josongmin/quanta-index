@@ -111,6 +111,26 @@ historical `unjudged_zero_v1` policy remains available for exploratory reports
 and retains its original behavior. Neither policy turns a post-result review
 into a pre-result qualified holdout.
 
+Before review or search, check a new query proposal pool against every
+previously searched suite and proposal pool:
+
+```sh
+uv run --frozen --extra dev python -m tools.benchmark.retrieval.query_pool_guard \
+  --repo /absolute/clean/corpus \
+  --reference-suite /absolute/previous-suite.json \
+  --reference-proposals /absolute/previous-proposals.jsonl \
+  --candidate-proposals /absolute/new-proposals.jsonl \
+  --output /absolute/new-pool-check.json
+```
+
+The guard validates the reference suite against source, binds input SHA-256s,
+and reports every normalized or shingle near-duplicate at the evaluator's
+threshold (up to 10,000 conflict rows). Repeat `--reference-suite` and
+`--reference-proposals` for additional searched inputs. It exits 2 on a
+conflict or malformed input and never overwrites an existing report. This
+early check does not replace frozen experiment custody or independent gold
+review.
+
 The five-product bare-symbol diagnostic records the native top-10 rank unit
 per product: Quanta and Semble return chunks, while Sourcegraph, OpenGrok and
 cs return distinct files. Its common evidence uses separate metric names for
