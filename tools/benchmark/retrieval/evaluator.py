@@ -91,6 +91,7 @@ QUERY_INTENTS = ("bare_symbol", "semantic_intent")
 LABEL_REVIEW_ASSESSMENTS = ("unreviewed", "reviewed_unambiguous", "reviewed_ambiguous")
 OBSERVED_PREFIX_DIAGNOSTIC_POLICY = "observed_prefix_v1"
 UNJUDGED_POLICY = "unjudged_zero_v1"
+COMPLETE_JUDGMENT_POLICY = "complete_ranked_pool_v1"
 CAPTURE_SYSTEMS = ("quanta", "semble")
 NOT_APPLICABLE = "not_applicable"
 MIN_CI_SAMPLE = 20
@@ -574,8 +575,9 @@ def validate_judgments(
         require("judgment_policy" not in task, f"orphan judgment_policy: {task_id}")
         return
     require(
-        task.get("judgment_policy") == UNJUDGED_POLICY,
-        f"judgments require explicit {UNJUDGED_POLICY} policy: {task_id}",
+        task.get("judgment_policy") in (UNJUDGED_POLICY, COMPLETE_JUDGMENT_POLICY),
+        f"judgments require explicit {UNJUDGED_POLICY} or "
+        f"{COMPLETE_JUDGMENT_POLICY} policy: {task_id}",
     )
     review = task.get("label_review")
     require(
@@ -876,6 +878,10 @@ def validate_suite(
             require(
                 all(kind in task for task in eval_tasks),
                 f"partial {kind} coverage in eval split",
+            )
+            require(
+                len({task["judgment_policy"] for task in eval_tasks}) == 1,
+                f"mixed judgment_policy for {kind} in eval split",
             )
     for family, splits in sorted(families.items()):
         require(
@@ -1749,7 +1755,14 @@ def judgment_diagnostics(
         "independent judgment diagnostics require top_k >= 10",
     )
     answerable_ids = sorted(task_id for task_id, task in tasks.items() if task["answerable"])
-    output: dict[str, Any] = {"unjudged_policy": UNJUDGED_POLICY}
+    policies = {task["judgment_policy"] for task in tasks.values() if "judgment_policy" in task}
+    if len(policies) == 1:
+        policy = next(iter(policies))
+    else:
+        policy = "mixed" if policies else UNJUDGED_POLICY
+    output: dict[str, Any] = {
+        "unjudged_policy": policy,
+    }
     for kind in kinds:
         if kind == "file_judgments":
             expected_unit = "distinct_file"
@@ -1798,6 +1811,27 @@ def judgment_diagnostics(
                     status in ("success", "abstained") and system == "quanta"
                 ):
                     reason = "insufficient_depth_without_exhaustion"
+                elif tasks[task_id].get("judgment_policy") == COMPLETE_JUDGMENT_POLICY:
+                    judgments = tasks[task_id][kind]
+                    if kind == "file_judgments":
+                        judged_files = {item["path"] for item in judgments}
+                        if any(item["path"] not in judged_files for item in ranked[:NDCG_K]):
+                            reason = "unjudged_ranked_file"
+                    else:
+                        judged_declarations = {
+                            (item["path"], item["start_byte"], item["end_byte"])
+                            for item in judgments
+                        }
+                        if any(
+                            (
+                                item["path"],
+                                item["span_accounting"]["indexed_start_byte"],
+                                item["span_accounting"]["indexed_end_byte"],
+                            )
+                            not in judged_declarations
+                            for item in ranked[:NDCG_K]
+                        ):
+                            reason = "unjudged_ranked_declaration"
                 if reason is not None:
                     excluded.append({"task_id": task_id, "reason": reason})
                     per_query.append(

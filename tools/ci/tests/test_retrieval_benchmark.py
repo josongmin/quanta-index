@@ -10534,6 +10534,11 @@ def test_independent_judgments_are_source_bound_reviewed_and_blinded(tmp_path):
     assert "file_judgments" not in ev.canonical(pack).decode()
     assert "declaration_judgments" not in ev.canonical(pack).decode()
     assert "fixture-reviewer" not in ev.canonical(pack).decode()
+    complete_suite = copy.deepcopy(suite)
+    for task in complete_suite["tasks"]:
+        task["judgment_policy"] = ev.COMPLETE_JUDGMENT_POLICY
+    jsonschema.validate(complete_suite, _load_schema("suite.schema.json"))
+    ev.validate_suite(repo, complete_suite)
 
     mutations = (
         (
@@ -10555,6 +10560,10 @@ def test_independent_judgments_are_source_bound_reviewed_and_blinded(tmp_path):
                 copy.deepcopy(s["tasks"][0]["file_judgments"][0])
             ),
             "duplicate file_judgments",
+        ),
+        (
+            lambda s: s["tasks"][0].update(judgment_policy=ev.COMPLETE_JUDGMENT_POLICY),
+            "mixed judgment_policy",
         ),
     )
     for mutate, error in mutations:
@@ -10615,6 +10624,97 @@ def test_train_eval_split_blocks_independent_file_judgment_leakage(tmp_path):
         ]
     with pytest.raises(ev.EvidenceError, match="independent judgment file leakage"):
         ev.validate_suite(repo, suite)
+
+
+def test_complete_ranked_pool_excludes_unjudged_file_and_declaration_results():
+    file_suite = {"comparison_contract": {"top_k": 10}, "routes": ["lexical"]}
+    file_run = {
+        "route_provenance": {"lexical": {"capture_id": "q0"}},
+        "captures": {"q0": {"system": "quanta"}},
+    }
+    file_task = {
+        "answerable": True,
+        "judgment_policy": ev.COMPLETE_JUDGMENT_POLICY,
+        "file_judgments": [{"path": "answer.go", "grade": 3}],
+    }
+    file_result = {
+        ("F", "lexical"): {
+            "status": "success",
+            "rank_unit": "distinct_file",
+            "candidates": [
+                {"path": "answer.go", "rank": 1},
+                {"path": "unknown.go", "rank": 2},
+            ],
+        }
+    }
+    file_report = ev.judgment_diagnostics(
+        file_suite, file_run, file_result, {"F": file_task}, "lexical", None
+    )
+    assert file_report["unjudged_policy"] == ev.COMPLETE_JUDGMENT_POLICY
+    assert file_report["file_judgments"]["routes"]["lexical"]["excluded"] == [
+        {"task_id": "F", "reason": "unjudged_ranked_file"}
+    ]
+    file_task["file_judgments"].append({"path": "unknown.go", "grade": 0})
+    file_report = ev.judgment_diagnostics(
+        file_suite, file_run, file_result, {"F": file_task}, "lexical", None
+    )
+    assert file_report["file_judgments"]["routes"]["lexical"]["eligible_task_ids"] == ["F"]
+    file_task["file_judgments"].pop()
+    file_task["judgment_policy"] = ev.UNJUDGED_POLICY
+    legacy = ev.judgment_diagnostics(
+        file_suite, file_run, file_result, {"F": file_task}, "lexical", None
+    )
+    assert legacy["file_judgments"]["routes"]["lexical"]["eligible_task_ids"] == ["F"]
+
+    symbol_suite = {"comparison_contract": {"top_k": 10}, "routes": ["symbol"]}
+    symbol_run = {
+        "span_accounting_version": 1,
+        "route_provenance": {"symbol": {"capture_id": "q0"}},
+        "captures": {"q0": {"system": "quanta"}},
+    }
+    symbol_task = {
+        "answerable": True,
+        "judgment_policy": ev.COMPLETE_JUDGMENT_POLICY,
+        "declaration_judgments": [
+            {"path": "answer.go", "start_byte": 10, "end_byte": 20, "grade": 3}
+        ],
+    }
+
+    def symbol_candidate(path, start, end, unit_id):
+        return {
+            "path": path,
+            "rank": 1 if unit_id == "answer" else 2,
+            "span_accounting": {
+                "unit_kind": "symbol",
+                "unit_id": unit_id,
+                "indexed_start_byte": start,
+                "indexed_end_byte": end,
+            },
+        }
+
+    symbol_result = {
+        ("D", "symbol"): {
+            "status": "success",
+            "rank_unit": "symbol",
+            "candidates": [
+                symbol_candidate("answer.go", 10, 20, "answer"),
+                symbol_candidate("other.go", 30, 40, "other"),
+            ],
+        }
+    }
+    symbol_report = ev.judgment_diagnostics(
+        symbol_suite, symbol_run, symbol_result, {"D": symbol_task}, "symbol", None
+    )
+    assert symbol_report["declaration_judgments"]["routes"]["symbol"]["excluded"] == [
+        {"task_id": "D", "reason": "unjudged_ranked_declaration"}
+    ]
+    symbol_task["declaration_judgments"].append(
+        {"path": "other.go", "start_byte": 30, "end_byte": 40, "grade": 0}
+    )
+    symbol_report = ev.judgment_diagnostics(
+        symbol_suite, symbol_run, symbol_result, {"D": symbol_task}, "symbol", None
+    )
+    assert symbol_report["declaration_judgments"]["routes"]["symbol"]["eligible_task_ids"] == ["D"]
 
 
 def test_independent_file_quality_uses_common_eligible_cohort():

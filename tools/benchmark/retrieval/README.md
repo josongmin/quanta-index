@@ -102,6 +102,14 @@ uv run --frozen --extra dev python tools/benchmark/retrieval/evaluator.py evalua
 This report exposes eligible task IDs, exclusions, coverage, operational and
 conditional means. It is `diagnostic_unqualified`; it does not enter the
 paired `QUALITY_DELTA` gate or alter the original 300-query scores.
+Use `judgment_policy: complete_ranked_pool_v1` for newly reviewed file or
+declaration diagnostics. Each returned top-10 file or published declaration
+must have an explicit source-bound grade, including grade 0 for irrelevant
+results. A missing judgment excludes that task with `unjudged_ranked_file` or
+`unjudged_ranked_declaration`; it is not silently scored as irrelevant. The
+historical `unjudged_zero_v1` policy remains available for exploratory reports
+and retains its original behavior. Neither policy turns a post-result review
+into a pre-result qualified holdout.
 
 The five-product bare-symbol diagnostic records the native top-10 rank unit
 per product: Quanta and Semble return chunks, while Sourcegraph, OpenGrok and

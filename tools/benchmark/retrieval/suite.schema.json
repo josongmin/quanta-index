@@ -139,7 +139,7 @@
           "description": "Suite-author declaration. This is omitted from the blinded runner pack."
         },
         "label_review": {"$ref": "#/$defs/label_review"},
-        "judgment_policy": {"const": "unjudged_zero_v1"},
+        "judgment_policy": {"enum": ["unjudged_zero_v1", "complete_ranked_pool_v1"]},
         "file_judgments": {"type": "array", "items": {"$ref": "#/$defs/file_judgment"}},
         "declaration_judgments": {"type": "array", "items": {"$ref": "#/$defs/declaration_judgment"}},
         "gold": {"type": "array", "items": {"$ref": "#/$defs/block"}}

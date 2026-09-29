@@ -36,6 +36,7 @@
     "tools.ci.tests.test_retrieval_benchmark.test_benchmark_prep_does_not_repeat_retrieval_contracts",
     "tools.ci.tests.test_retrieval_benchmark.test_bootstrap_is_order_independent_and_rejects_invalid_pairs",
     "tools.ci.tests.test_retrieval_benchmark.test_check_semble_env_refuses_missing_installed_proof",
+    "tools.ci.tests.test_retrieval_benchmark.test_complete_ranked_pool_excludes_unjudged_file_and_declaration_results",
     "tools.ci.tests.test_retrieval_benchmark.test_conditional_incremental_replay_compares_payload_membership_and_empty_state",
     "tools.ci.tests.test_retrieval_benchmark.test_conditional_vector_replay_checks_full_vector_and_batch_permutation",
     "tools.ci.tests.test_retrieval_benchmark.test_context_density_rubric_independent_oracles",
