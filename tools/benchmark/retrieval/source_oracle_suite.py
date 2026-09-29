@@ -30,9 +30,15 @@ OWNED_TASK_FIELDS = frozenset(
     {"source_oracle", "file_judgments", "declaration_judgments", "judgment_policy", "label_review"}
 )
 TOOL_FILES = (
+    "pyproject.toml",
+    "uv.lock",
+    "tools/benchmark/evidence.py",
     "tools/benchmark/retrieval/source_oracle_suite.py",
     "tools/benchmark/retrieval/source_oracle.py",
     "tools/benchmark/retrieval/evaluator.py",
+    "tools/benchmark/retrieval/query_plan.py",
+    "tools/benchmark/retrieval/retrieval_contract.py",
+    "tools/benchmark/retrieval/finite_json.py",
     "tools/benchmark/retrieval/suite.schema.json",
 )
 

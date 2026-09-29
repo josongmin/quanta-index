@@ -106,7 +106,7 @@ def test_source_oracle_builder_emits_single_route_blind_suites_and_bound_manifes
     assert manifest["qualification"] == "diagnostic_unqualified"
     assert manifest["repository_commit"] == commit
     assert manifest["input_suite_sha256"] == ev.digest(baseline_path.read_bytes())
-    assert len(manifest["artifacts"]) == 10
+    assert len(manifest["artifacts"]) == 16
     for artifact in manifest["artifacts"]:
         assert ev.digest((output / artifact["path"]).read_bytes()) == artifact["sha256"]
     for mode, route in (
