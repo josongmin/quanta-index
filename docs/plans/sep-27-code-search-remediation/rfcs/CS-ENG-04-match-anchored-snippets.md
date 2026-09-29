@@ -226,14 +226,31 @@ The unmodified pinned public APIs fail the primary design's first gate:
   DFA expansion, after those allocations begin; the adapter cannot impose a
   hard pre-allocation ceiling through `Regex::new`.
 - The searchd supervisor's children are threads, not request-exclusive
-  processes. A Linux cgroup fallback would need a new process/read-view/IPC
-  boundary, not a configuration flag on that supervisor.
+  processes. The current composition root also takes an exclusive
+  `StateRootLease` before opening its adapters. A Linux cgroup fallback cannot
+  simply spawn a second daemon over the same state root: it needs a read-only
+  generation opener that does not acquire the writer lease, a parent-owned
+  request/response and cancellation channel, an exact pinned read view, and
+  typed worker-death handling. That is a new process/read-view/IPC boundary,
+  not a configuration flag on the supervisor.
 
 No ledger-only patch or post-build measurement closes this. The next code
 milestone is a controlled dependency-allocation slice or a separately
 specified process-isolation contract. This checkpoint is static source
 analysis; no dependency fork, worker, runtime allocation proof or physical
 ceiling was implemented by it.
+
+The common executor now compiles its capture-erased execution HIR directly
+with pinned `regex-automata 0.4.14`, using the same bytes-mode, leftmost-first,
+NFA-size and hybrid-cache settings as `regex 1.12.4`. It keeps the original
+validated HIR for literal extraction and no longer renders and reparses a
+second pattern. The executor's 91 unit tests, including an independent
+`regex::bytes` oracle on non-UTF-8 inputs, and the affected lexical (219),
+structural (48) and search-plane (487) library tests passed locally. This is
+only the shared-engine preparation slice. `regex-automata` still allocates
+internally during compilation and search, `regex-syntax` parsing and the
+distinct `tantivy-fst` compiler are unchanged, and no physical regex
+allocation admission or request-wide ceiling is implemented.
 
 Subsequent code work threads `RequestBudgetV1` through structural Boolean
 evaluation, `StructuralService`, and the live searchd producer. It preserves

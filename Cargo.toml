@@ -149,6 +149,7 @@ nix = { version = "0.31.3", default-features = false, features = ["socket", "use
 proptest = "1.6.0"
 regex = "1"
 regex-syntax = "0.8"
+regex-automata = "=0.4.14"
 # Blocking HTTP for the OpenAI embedding provider. rustls (no openssl, per
 # deny.toml bans) + webpki roots; reuses the reqwest 0.12 / rustls 0.23 already
 # in-tree via lancedb, so no new TLS stack or duplicate version is introduced.

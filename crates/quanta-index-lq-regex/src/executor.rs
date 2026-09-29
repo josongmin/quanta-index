@@ -12,13 +12,13 @@
 //! 2. translate that AST into HIR without parsing it again;
 //! 3. run [`crate::dialect::dialect_filter`] over the HIR;
 //! 4. compute the structural planning charge via [`crate::estimate_nfa_states`];
-//! 5. remove unobserved explicit captures from that AST, then compile with
-//!    `regex::bytes::RegexBuilder`, wrapping `regex::Error`
-//!    size refusals into [`RegexErrorCode::PlanLimitExceeded`] and other
-//!    engine failures into [`RegexErrorCode::ExecutionInternal`].
+//! 5. remove unobserved explicit captures from that AST, translate the
+//!    execution HIR, then compile it directly with `regex-automata::meta`.
+//!    This avoids reparsing a rendered pattern. Engine size refusals map to
+//!    [`RegexErrorCode::PlanLimitExceeded`].
 //!
-//! Verify path: [`RegexExecutor::verify`] calls
-//! `regex::bytes::Regex::is_match` against a single document's bytes.
+//! Verify path: [`RegexExecutor::verify`] calls the pinned meta matcher
+//! against a single document's bytes.
 //!
 //! Cooperative cancel: [`RegexExecutor::execute_with_budget`] iterates
 //! a candidate list, polling elapsed wall time after each candidate;
@@ -28,10 +28,10 @@
 //! [`RegexErrorCode::Interrupted`] when it answers `true`.
 
 use core::time::Duration;
-use std::borrow::Cow;
 use std::time::Instant;
 
 use quanta_index_lq_trigram::{DocId, DocResolver};
+use regex_automata::{MatchKind, meta};
 use regex_syntax::hir::Hir;
 
 use crate::dialect::{classify_ast_error, classify_construct_from_slice, dialect_filter};
@@ -53,7 +53,7 @@ const MAX_REGEX_PATTERN_BYTES: usize = 64 * (1 << 10);
 pub struct RegexExecutor {
     pattern: Box<str>,
     hir: Hir,
-    compiled: regex::bytes::Regex,
+    compiled: meta::Regex,
 }
 
 /// Validated regex input before the engine allocates its automata.
@@ -63,7 +63,7 @@ pub struct RegexExecutor {
 pub struct RegexCompilationPlan {
     pattern: Box<str>,
     hir: Hir,
-    execution_pattern: Box<str>,
+    execution_hir: Option<Hir>,
     estimated_states: u64,
 }
 
@@ -159,11 +159,25 @@ impl RegexExecutor {
         // Backreferences are forbidden, so explicit capture storage cannot
         // affect either result. Keeping it grows the engine's per-state cache
         // with every capture, even when the actual source focus is tiny.
-        let execution_pattern = without_explicit_captures(pattern, &hir, &mut ast);
+        let execution_hir = if hir.properties().explicit_captures_len() == 0 {
+            None
+        } else {
+            erase_capture_storage(&mut ast);
+            Some(
+                regex_syntax::hir::translate::Translator::new()
+                    .translate(pattern, &ast)
+                    .map_err(|error| {
+                        RegexError::new(
+                            RegexErrorCode::ExecutionInternal,
+                            format!("capture-erased regex failed HIR translation: {error}"),
+                        )
+                    })?,
+            )
+        };
         Ok(RegexCompilationPlan {
             pattern: pattern.into(),
             hir,
-            execution_pattern: execution_pattern.into_owned().into_boxed_str(),
+            execution_hir,
             estimated_states,
         })
     }
@@ -185,22 +199,32 @@ impl RegexExecutor {
 
     /// Compile an already validated plan without repeating dialect parsing.
     pub fn compile_prepared(plan: RegexCompilationPlan) -> Result<Self, RegexError> {
-        let compiled = regex::bytes::RegexBuilder::new(&plan.execution_pattern)
-            .size_limit(ENGINE_NFA_SIZE_LIMIT_BYTES)
-            .dfa_size_limit(ENGINE_DFA_CACHE_LIMIT_BYTES)
-            .build()
+        // Mirror regex 1.12.4's bytes builder configuration. Build from the
+        // already-validated HIR to avoid a second AST parse and translation.
+        let compiled = meta::Regex::builder()
+            .configure(
+                meta::Regex::config()
+                    .match_kind(MatchKind::LeftmostFirst)
+                    .utf8_empty(false)
+                    .nfa_size_limit(Some(ENGINE_NFA_SIZE_LIMIT_BYTES))
+                    .hybrid_cache_capacity(ENGINE_DFA_CACHE_LIMIT_BYTES),
+            )
+            .build_from_hir(plan.execution_hir.as_ref().unwrap_or(&plan.hir))
             .map_err(|e| {
-                if let regex::Error::CompiledTooBig(limit) = e {
-                    RegexError::plan_limit(
-                        LimitDimension::CompiledBytes,
-                        format!("compiled regex exceeds engine byte ceiling {limit}"),
-                    )
-                } else {
-                    RegexError::new(
-                        RegexErrorCode::ExecutionInternal,
-                        format!("validated regex failed engine construction: {e}"),
-                    )
-                }
+                e.size_limit().map_or_else(
+                    || {
+                        RegexError::new(
+                            RegexErrorCode::ExecutionInternal,
+                            format!("validated regex failed engine construction: {e}"),
+                        )
+                    },
+                    |limit| {
+                        RegexError::plan_limit(
+                            LimitDimension::CompiledBytes,
+                            format!("compiled regex exceeds engine byte ceiling {limit}"),
+                        )
+                    },
+                )
             })?;
         Ok(Self {
             pattern: plan.pattern,
@@ -420,19 +444,6 @@ impl RegexExecutor {
     }
 }
 
-/// Drop capture storage that is unobservable through truth and whole-match APIs.
-fn without_explicit_captures<'a>(
-    pattern: &'a str,
-    hir: &Hir,
-    ast: &mut regex_syntax::ast::Ast,
-) -> Cow<'a, str> {
-    if hir.properties().explicit_captures_len() == 0 {
-        return Cow::Borrowed(pattern);
-    }
-    erase_capture_storage(ast);
-    Cow::Owned(ast.to_string())
-}
-
 fn erase_capture_storage(ast: &mut regex_syntax::ast::Ast) {
     use regex_syntax::ast::{Ast, Flags, GroupKind};
     match ast {
@@ -533,7 +544,10 @@ fn span_slice<'a>(pattern: &'a str, span: &regex_syntax::ast::Span) -> &'a str {
     reason = "Result-returning range regressions propagate setup errors and assert byte-exact fixture oracles"
 )]
 mod tests {
-    use super::{MAX_REGEX_PATTERN_BYTES, RegexExecutor};
+    use super::{
+        ENGINE_DFA_CACHE_LIMIT_BYTES, ENGINE_NFA_SIZE_LIMIT_BYTES, MAX_REGEX_PATTERN_BYTES,
+        RegexExecutor,
+    };
     use crate::errors::{ForbiddenKind, LimitDimension, RegexErrorCode};
     use quanta_index_lq_trigram::{DocId, DocResolver};
     use std::collections::BTreeMap;
@@ -618,6 +632,34 @@ mod tests {
                     reference.is_match(source.as_bytes()),
                     "{pattern:?} on {source:?}"
                 );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn hir_compilation_preserves_bytes_engine_ranges_on_non_utf8_input()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let sources: [&[u8]; 6] = [
+            b"",
+            b"a\xffb",
+            b"\xff\xfe",
+            b"a\0b",
+            b"\xc3\xa9\xffa",
+            b"\xf0\x9f\x92\xa9",
+        ];
+        for pattern in ["a", "a.b", "(a)(.?)", "(?i)(a|b)+", r"\b(a)\b", ""] {
+            let reference = regex::bytes::RegexBuilder::new(pattern)
+                .size_limit(ENGINE_NFA_SIZE_LIMIT_BYTES)
+                .dfa_size_limit(ENGINE_DFA_CACHE_LIMIT_BYTES)
+                .build()?;
+            let executor = RegexExecutor::compile(pattern)?;
+            for source in sources {
+                let expected: Vec<_> = reference.find_iter(source).map(|m| m.range()).collect();
+                let actual = executor.find_ranges_bounded(source, source.len(), 32, &|| false)?;
+                assert!(actual.exhausted);
+                assert_eq!(actual.ranges, expected, "{pattern:?} on {source:?}");
+                assert_eq!(executor.verify(source), reference.is_match(source));
             }
         }
         Ok(())
