@@ -11,7 +11,7 @@
     reason = "integration-test fixture setup and direct oracle assertions intentionally fail on absence"
 )]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -20,6 +20,7 @@ use quanta_index_retrieval_bench::batch::{
     BatchIdentity, activation_digest, assemble_batch, receipt_digest,
 };
 use quanta_index_retrieval_bench::chunking::chunk_corpus;
+use quanta_index_retrieval_bench::chunking::fixed_window::StrictWindowChunker;
 use quanta_index_retrieval_bench::chunking::whole_file::WholeFileChunker;
 use quanta_index_retrieval_bench::corpus::{CorpusLimits, load_corpus, load_manifest};
 use quanta_index_retrieval_bench::query_plan::{
@@ -38,6 +39,255 @@ use quanta_index_retrieval_bench::{BenchError, sha256_hex};
 use quanta_index_search_plane::{HybridFetchFloorPolicy, QueryStageObservationPolicy};
 
 const EMBEDDER: &str = "hash-dev";
+
+/// Only the owned child receives budget overrides; concurrently running SDK
+/// tests keep their process environment unchanged. The guard also reaps on panic.
+struct BudgetFixtureDaemon {
+    client: quanta_index_sdk::QuantaIndex,
+    _child: BudgetFixtureChild,
+}
+
+struct BudgetFixtureChild(std::process::Child);
+
+impl Drop for BudgetFixtureChild {
+    fn drop(&mut self) {
+        if !self.0.try_wait().is_ok_and(|status| status.is_some()) {
+            drop(self.0.kill());
+        }
+        drop(self.0.wait());
+    }
+}
+
+fn boot_budget_fixture(
+    state: &Path,
+    identity: &BatchIdentity,
+    examined: Option<usize>,
+    response_bytes: Option<u64>,
+) -> BudgetFixtureDaemon {
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::net::UnixStream;
+
+    std::fs::create_dir(state).expect("fresh budget state");
+    std::fs::set_permissions(state, std::fs::Permissions::from_mode(0o700))
+        .expect("secure budget state");
+    let log = state.with_extension("stderr.log");
+    let mut command = Command::new(resolve_searchd_binary(None).expect("pinned daemon"));
+    let _configured = command
+        .arg("serve")
+        .arg("--state-root")
+        .arg(state)
+        .env("QUANTA_INDEX_EMBEDDER", EMBEDDER)
+        .env("QUANTA_INDEX_QUERY_STAGE_OBSERVATION", "disabled")
+        .env("QUANTA_INDEX_EXPERIMENTAL_HYBRID_FETCH_FLOOR", "100")
+        .env("QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_GENERATIONS", "8")
+        .env("QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_BYTES", "1073741824")
+        .env(
+            "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_REVISION_PAIRS",
+            "128",
+        )
+        .env(
+            "QUANTA_INDEX_SEARCH_CORPUS_HISTORY_MAX_TOTAL_BYTES",
+            "4294967296",
+        )
+        .env_remove("QUANTA_INDEX_LEXICAL_MAX_EXAMINED_CANDIDATES")
+        .env_remove("QUANTA_INDEX_QUERY_RESPONSE_MAX_BYTES")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::fs::File::create_new(&log).expect("external daemon log"));
+    if let Some(limit) = examined {
+        let _configured = command.env(
+            "QUANTA_INDEX_LEXICAL_MAX_EXAMINED_CANDIDATES",
+            limit.to_string(),
+        );
+    }
+    if let Some(limit) = response_bytes {
+        let _configured = command.env("QUANTA_INDEX_QUERY_RESPONSE_MAX_BYTES", limit.to_string());
+    }
+    let mut child = BudgetFixtureChild(command.spawn().expect("budget daemon spawn"));
+    // Construct the guard immediately, before any readiness assertion can panic.
+    let deadline = std::time::Instant::now()
+        .checked_add(Duration::from_secs(60))
+        .expect("readiness deadline");
+    loop {
+        let ready = ["query.sock", "control.sock", "ingest.sock"]
+            .iter()
+            .all(|name| UnixStream::connect(state.join("search-plane").join(name)).is_ok());
+        if ready {
+            break;
+        }
+        assert!(
+            child.0.try_wait().expect("owned child status").is_none()
+                && std::time::Instant::now() < deadline,
+            "budget daemon readiness failed: {}",
+            std::fs::read_to_string(&log).expect("daemon stderr")
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let client = quanta_index_sdk::QuantaIndex::connect(
+        quanta_index_sdk::ConnectOptions::from_state_root(state)
+            .with_request_io_timeout(Duration::from_secs(30)),
+    )
+    .expect("budget SDK transports");
+    let daemon = BudgetFixtureDaemon {
+        client,
+        _child: child,
+    };
+    let status = daemon
+        .client
+        .generations()
+        .status(identity.repo_id.clone(), identity.revision_id.clone())
+        .expect("fresh budget daemon status");
+    assert_eq!(status.repo_id, identity.repo_id);
+    assert_eq!(status.revision_id, identity.revision_id);
+    assert!(status.tracks.is_empty() && status.semantic_content.is_none());
+    daemon
+}
+
+#[test]
+fn literal_file_public_route_enforces_execution_and_response_budgets() {
+    use quanta_index_contract::SearchPlaneErrorCodeV2;
+    use quanta_index_sdk::SdkError;
+
+    let fixture = tempfile::tempdir().expect("budget fixture");
+    let repo = fixture.path().join("repo");
+    let text = format!("package fixture\n// needle {}\n", "evidence ".repeat(180));
+    let sources: Vec<_> = (0..10)
+        .map(|index| (format!("budget/file{index:02}.go"), text.clone()))
+        .collect();
+    let references: Vec<_> = sources
+        .iter()
+        .map(|(path, text)| (path.as_str(), text.as_str()))
+        .collect();
+    write_repo(&repo, &references);
+    let manifest = load_manifest(&repo.join("manifest.json")).expect("budget manifest");
+    let files = load_corpus(&repo, &manifest, &CorpusLimits::default()).expect("budget corpus");
+    let (chunks, _) = chunk_corpus(&WholeFileChunker, &files).expect("budget chunks");
+    let identity = BatchIdentity::new("bench-repo", "bench-rev", 35, "manifest:budget".to_string())
+        .expect("budget identity");
+    let (batch, _) = assemble_fixture_batch(&identity, &chunks, &files).expect("budget batch");
+    let plan = plan_query(
+        QueryInputPolicy::LiteralFile,
+        "needle",
+        &NlPlanConfig::default(),
+    )
+    .expect("budget file plan");
+    let expected: Vec<_> = sources.iter().map(|(path, _)| path.clone()).collect();
+    let publish = |daemon: &BudgetFixtureDaemon| {
+        daemon
+            .client
+            .search_corpus()
+            .publish_and_activate(&batch, None)
+            .expect("budget publish")
+    };
+    let query = |daemon: &BudgetFixtureDaemon, top_k| {
+        daemon
+            .client
+            .lexical()
+            .query()
+            .native(&plan.lexical_request)
+            .active(identity.repo_id.clone(), identity.revision_id.clone())
+            .top_k(top_k)
+            .execute()
+    };
+
+    let baseline = boot_budget_fixture(&fixture.path().join("baseline"), &identity, None, None);
+    let _published = publish(&baseline);
+    let full = query(&baseline, 10).expect("unrestricted positive control");
+    assert_eq!(
+        full.results
+            .iter()
+            .map(|row| row.repo_relative_path.as_str().to_string())
+            .collect::<Vec<_>>(),
+        expected
+    );
+    assert!(full.window.outcome().is_exhausted());
+    let one = query(&baseline, 1).expect("one-row positive control");
+    assert_eq!(one.results.len(), 1);
+    assert!(one.next_cursor.is_some());
+    let one_bytes = quanta_index_ipc::cbor_payload_len(&one).expect("one-row encoding");
+    let full_bytes = quanta_index_ipc::cbor_payload_len(&full).expect("full encoding");
+    let lower = one_bytes.checked_add(1_024).expect("cap arithmetic");
+    assert!(
+        lower < full_bytes,
+        "fixture requires a nonempty byte-cut interval: one={one_bytes}, full={full_bytes}"
+    );
+    let cap = lower.midpoint(full_bytes);
+    drop(baseline);
+
+    let limited = boot_budget_fixture(&fixture.path().join("examined"), &identity, Some(1), None);
+    let _published = publish(&limited);
+    let refused = query(&limited, 10).expect_err("ten matching files exceed execution budget one");
+    assert!(
+        matches!(
+            refused,
+            SdkError::Remote {
+                code: SearchPlaneErrorCodeV2::LexicalExaminedBudgetExceeded
+                    | SearchPlaneErrorCodeV2::LexicalCollectionBudgetExceeded,
+                ..
+            }
+        ),
+        "expected typed lexical budget refusal: {refused:?}"
+    );
+    drop(limited);
+
+    let cut = boot_budget_fixture(&fixture.path().join("cut"), &identity, None, Some(cap));
+    let _published = publish(&cut);
+    let mut page = query(&cut, 10).expect("byte-cut file page");
+    assert!(!page.results.is_empty() && page.results.len() < 10);
+    assert_eq!(page.window.has_more(), Some(true));
+    let pinned = page.generation.clone();
+    let mut walked = Vec::new();
+    let mut pages = 0;
+    loop {
+        pages += 1;
+        assert!(pages <= 10, "nonempty pages must finish within ten files");
+        assert!(quanta_index_ipc::cbor_payload_len(&page).expect("page encoding") <= cap);
+        assert_eq!(
+            usize::try_from(page.window.returned()).expect("returned count"),
+            page.results.len()
+        );
+        assert!(!page.results.is_empty());
+        walked.extend(
+            page.results
+                .iter()
+                .map(|row| row.repo_relative_path.as_str().to_string()),
+        );
+        let Some(cursor) = page.next_cursor else {
+            assert!(page.window.outcome().is_exhausted());
+            break;
+        };
+        assert_eq!(page.window.has_more(), Some(true));
+        page = cut
+            .client
+            .lexical()
+            .query()
+            .native(&plan.lexical_request)
+            .pinned(pinned.clone())
+            .top_k(10)
+            .after(cursor)
+            .execute()
+            .expect("continued byte-cut file page");
+    }
+    assert!(pages >= 2);
+    assert_eq!(
+        walked, expected,
+        "byte cuts preserve every unique file and rank order"
+    );
+    drop(cut);
+
+    let tiny = boot_budget_fixture(&fixture.path().join("tiny"), &identity, None, Some(1));
+    let _published = publish(&tiny);
+    let refused = query(&tiny, 10).expect_err("one byte cannot hold a ranked row");
+    assert!(
+        matches!(
+            refused,
+            SdkError::Remote {
+                code: SearchPlaneErrorCodeV2::ResultTooLarge,
+                ..
+            }
+        ),
+        "expected typed response-size refusal: {refused:?}"
+    );
+}
 
 fn symbols_for(
     files: &[quanta_index_retrieval_bench::corpus::SourceFile],
@@ -204,6 +454,171 @@ fn sdk_frontdoor_static_guard() {
             );
         }
     }
+}
+
+#[test]
+fn literal_file_public_route_groups_before_top_k_and_records_distinct_files() {
+    let repo = tempfile::tempdir().expect("repo");
+    let repeated = format!(
+        "package fixture\n{}",
+        "// needle evidence in the repeated file padding to span windows\n".repeat(40)
+    );
+    let mut sources = vec![("src/repeated.go".to_string(), repeated)];
+    for index in 0..9 {
+        sources.push((
+            format!("src/unique{index:02}.go"),
+            format!("package fixture\n// needle evidence in unique file {index}\n"),
+        ));
+    }
+    let references: Vec<(&str, &str)> = sources
+        .iter()
+        .map(|(path, text)| (path.as_str(), text.as_str()))
+        .collect();
+    write_repo(repo.path(), &references);
+    let manifest = load_manifest(&repo.path().join("manifest.json")).expect("manifest");
+    let files = load_corpus(repo.path(), &manifest, &CorpusLimits::default()).expect("corpus");
+    let (chunks, _) = chunk_corpus(&StrictWindowChunker::new(128, 16), &files).expect("chunks");
+    assert!(
+        chunks["src/repeated.go"]
+            .iter()
+            .filter(|chunk| chunk.text.contains("needle"))
+            .count()
+            >= 15,
+        "fixture must publish at least 15 matching chunks from one file"
+    );
+    let identity = BatchIdentity::new("bench-repo", "bench-rev", 13, "manifest:file".to_string())
+        .expect("identity");
+    let (batch, _) = assemble_fixture_batch(&identity, &chunks, &files).expect("batch");
+    let files_by_path: BTreeMap<_, _> = files
+        .iter()
+        .map(|file| (file.path.clone(), file.clone()))
+        .collect();
+    let registry =
+        quanta_index_retrieval_bench::published_units::PublishedUnitRegistry::from_chunks_and_symbols(
+            &chunks,
+            &symbols_for(&files),
+            &files_by_path,
+        )
+        .expect("published units");
+    let state = tempfile::tempdir().expect("state");
+    let session = boot_session(state.path(), &identity);
+    let _published = publish_and_activate(&session, &batch, &identity, None).expect("publish");
+    let plan = plan_query(
+        QueryInputPolicy::LiteralFile,
+        "needle",
+        &NlPlanConfig::default(),
+    )
+    .expect("file plan");
+    let outcome = query_route(&RouteQuery {
+        client: session.client(),
+        route: "lexical",
+        lexical_request: &plan.lexical_request,
+        semantic_text: &plan.semantic_text,
+        repo_id: &identity.repo_id,
+        revision_id: &identity.revision_id,
+        generation: identity.generation,
+        top_k: 10,
+    });
+    let repeated_outcome = query_route(&RouteQuery {
+        client: session.client(),
+        route: "lexical",
+        lexical_request: &plan.lexical_request,
+        semantic_text: &plan.semantic_text,
+        repo_id: &identity.repo_id,
+        revision_id: &identity.revision_id,
+        generation: identity.generation,
+        top_k: 10,
+    });
+    let mut paged_paths = Vec::new();
+    let mut page = session
+        .client()
+        .lexical()
+        .query()
+        .native(&plan.lexical_request)
+        .active(identity.repo_id.clone(), identity.revision_id)
+        .top_k(3)
+        .execute()
+        .expect("first file page");
+    let pinned_generation = page.generation.clone();
+    let mut pages = 0;
+    loop {
+        pages += 1;
+        assert!(pages <= 4, "file pagination must terminate after ten rows");
+        assert_eq!(
+            usize::try_from(page.window.returned()).expect("u32 count fits usize"),
+            page.results.len()
+        );
+        paged_paths.extend(
+            page.results
+                .iter()
+                .map(|candidate| candidate.repo_relative_path.as_str().to_string()),
+        );
+        let Some(cursor) = page.next_cursor else {
+            assert!(page.window.outcome().is_exhausted());
+            break;
+        };
+        assert_eq!(page.window.returned(), 3, "nonfinal file page fills cap");
+        page = session
+            .client()
+            .lexical()
+            .query()
+            .native(&plan.lexical_request)
+            .pinned(pinned_generation.clone())
+            .top_k(3)
+            .after(cursor)
+            .execute()
+            .expect("continued file page");
+    }
+    session.stop().expect("shutdown");
+    let QueryOutcome::ReturnedWindow { ref hits, .. } = outcome else {
+        panic!("literal file query failed: {outcome:?}");
+    };
+    let paths: BTreeSet<_> = hits.iter().map(|hit| hit.path.as_str()).collect();
+    assert_eq!(hits.len(), 10, "top_k must count distinct files");
+    assert_eq!(paths.len(), 10, "file projection must group before top_k");
+    assert_eq!(
+        paths,
+        sources
+            .iter()
+            .map(|(path, _)| path.as_str())
+            .collect::<BTreeSet<_>>()
+    );
+    let QueryOutcome::ReturnedWindow {
+        hits: repeated_hits,
+        window,
+        ..
+    } = repeated_outcome
+    else {
+        panic!("repeated literal file query failed: {repeated_outcome:?}");
+    };
+    assert_eq!(window.returned(), 10);
+    assert_eq!(
+        hits.iter()
+            .map(|hit| (&hit.path, &hit.candidate_id, hit.score))
+            .collect::<Vec<_>>(),
+        repeated_hits
+            .iter()
+            .map(|hit| (&hit.path, &hit.candidate_id, hit.score))
+            .collect::<Vec<_>>(),
+        "repeat must preserve order, representative, and score"
+    );
+    assert_eq!(
+        paged_paths,
+        hits.iter().map(|hit| hit.path.clone()).collect::<Vec<_>>(),
+        "public continuation must preserve complete file ranking"
+    );
+    let recorded = result_value(
+        "T1",
+        "lexical",
+        &outcome,
+        &plan,
+        10,
+        &files_by_path,
+        &registry,
+    )
+    .expect("source-proven result");
+    assert_eq!(recorded["rank_unit"], "distinct_file");
+    assert_eq!(recorded["candidates"].as_array().expect("rows").len(), 10);
 }
 
 #[test]
@@ -1761,6 +2176,154 @@ fn determinism_probe_repeats_identical_publish() {
         left.batch_digest().expect("digest"),
         right.batch_digest().expect("digest")
     );
+}
+
+#[test]
+fn exact_symbol_name_public_route_preserves_case_homonyms_and_source_spans() {
+    use quanta_index_retrieval_bench::published_units::{PublishedUnitKind, PublishedUnitRegistry};
+
+    let repo = tempfile::tempdir().expect("repo root");
+    write_repo(
+        repo.path(),
+        &[
+            (
+                "lower/a.go",
+                "package fixture\n\nfunc writeContentType() {}\n",
+            ),
+            (
+                "lower/b.go",
+                "package fixture\n\nfunc writeContentType() {}\n",
+            ),
+            (
+                "upper/c.go",
+                "package fixture\n\nfunc WriteContentType() {}\n",
+            ),
+        ],
+    );
+    let manifest = load_manifest(&repo.path().join("manifest.json")).expect("manifest");
+    let files = load_corpus(repo.path(), &manifest, &CorpusLimits::default()).expect("corpus");
+    let (chunks, _) = chunk_corpus(&WholeFileChunker, &files).expect("chunks");
+    let symbols = symbols_for(&files);
+    let files_by_path: BTreeMap<_, _> = files
+        .iter()
+        .map(|file| (file.path.clone(), file.clone()))
+        .collect();
+    let units = PublishedUnitRegistry::from_chunks_and_symbols(&chunks, &symbols, &files_by_path)
+        .expect("published units");
+    let identity = BatchIdentity::new(
+        "bench-repo",
+        "bench-rev",
+        24,
+        "manifest:exact-case".to_string(),
+    )
+    .expect("identity");
+    let (batch, _) = assemble_fixture_batch(&identity, &chunks, &files).expect("batch");
+    let state = tempfile::tempdir().expect("state root");
+    let session = boot_session(&state.path().join("daemon"), &identity);
+    let (_receipt, _ack, _observation) =
+        publish_and_activate(&session, &batch, &identity, None).expect("publish+activate");
+
+    for (name, expected_paths) in [
+        ("writeContentType", vec!["lower/a.go", "lower/b.go"]),
+        ("WriteContentType", vec!["upper/c.go"]),
+        ("WRITECONTENTTYPE", Vec::new()),
+        ("missingSymbol", Vec::new()),
+    ] {
+        let expected_ids: BTreeMap<_, _> = symbols
+            .values()
+            .flatten()
+            .filter(|symbol| symbol.local_name.as_ref() == name)
+            .map(|symbol| {
+                (
+                    symbol.repo_relative_path.as_str().to_string(),
+                    symbol.symbol_id.as_str().to_string(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            expected_ids.keys().map(String::as_str).collect::<Vec<_>>(),
+            expected_paths,
+            "publication must contain precisely the independent fixture definitions"
+        );
+        let plan = plan_query(
+            QueryInputPolicy::ExactSymbolName,
+            name,
+            &NlPlanConfig::default(),
+        )
+        .expect("exact symbol plan");
+        assert_eq!(
+            plan.lexical_request,
+            format!("symbol.local_name.exact({name}) case:yes")
+        );
+        let outcome = query_route(&RouteQuery {
+            client: session.client(),
+            route: "symbol",
+            lexical_request: &plan.lexical_request,
+            semantic_text: &plan.semantic_text,
+            repo_id: &identity.repo_id,
+            revision_id: &identity.revision_id,
+            generation: identity.generation,
+            top_k: 10,
+        });
+        let hits = match &outcome {
+            QueryOutcome::ReturnedWindow { hits, .. } => hits,
+            other @ (QueryOutcome::RejectedResponse { .. } | QueryOutcome::SdkFailure { .. }) => {
+                panic!("exact symbol query {name} failed: {other:?}")
+            }
+        };
+        let actual_ids: BTreeMap<_, _> = hits
+            .iter()
+            .map(|hit| (hit.path.clone(), hit.candidate_id.clone()))
+            .collect();
+        assert_eq!(
+            hits.len(),
+            expected_paths.len(),
+            "exact hit count for {name}"
+        );
+        assert_eq!(
+            actual_ids, expected_ids,
+            "exact paths and published IDs for {name}"
+        );
+        for hit in hits {
+            let unit = units.get(&hit.candidate_id).expect("published symbol hit");
+            assert_eq!(unit.kind, PublishedUnitKind::Symbol);
+            // Independent fixture oracle: each definition is bytes [17,43), line 3.
+            assert_eq!((unit.byte_start, unit.byte_end), (17, 43));
+            assert_eq!((hit.start_line, hit.end_line), (3, 3));
+        }
+        let record = result_value(
+            "T-exact",
+            "symbol",
+            &outcome,
+            &plan,
+            10,
+            &files_by_path,
+            &units,
+        )
+        .expect("exact symbol result record");
+        assert_eq!(
+            record["status"],
+            if expected_paths.is_empty() {
+                "abstained"
+            } else {
+                "success"
+            }
+        );
+        assert_eq!(record["rank_unit"], "symbol");
+        let candidates = record["candidates"].as_array().expect("candidates");
+        assert_eq!(candidates.len(), expected_paths.len());
+        for candidate in candidates {
+            assert_eq!(candidate["span_accounting"]["unit_kind"], "symbol");
+            assert_eq!(candidate["span_accounting"]["indexed_start_byte"], 17);
+            assert_eq!(candidate["span_accounting"]["indexed_end_byte"], 43);
+            assert_eq!(candidate["start_byte"], 17);
+            assert_eq!(candidate["end_byte"], 44);
+            let path = candidate["path"].as_str().expect("path");
+            assert_eq!(candidate["span_accounting"]["unit_id"], expected_ids[path]);
+            assert_eq!(candidate["file_sha256"], files_by_path[path].sha256);
+        }
+    }
+    session.stop().expect("bounded shutdown");
 }
 
 #[test]

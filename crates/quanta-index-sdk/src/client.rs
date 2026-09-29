@@ -173,6 +173,7 @@ impl QuantaIndex {
             | SearchPlaneQueryIpcResponse::Text(_)
             | SearchPlaneQueryIpcResponse::Symbol(_)
             | SearchPlaneQueryIpcResponse::Semantic(_)
+            | SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_)
             | SearchPlaneQueryIpcResponse::Hybrid(_)
             | SearchPlaneQueryIpcResponse::HybridSeed(_)
             | SearchPlaneQueryIpcResponse::History(_)
@@ -283,6 +284,14 @@ impl QuantaIndex {
                         &mut scope.generation_selector,
                         SearchPlaneTrackKind::Lexical,
                     )?;
+                }
+                Ok(())
+            }
+            SearchPlaneQueryIpcRequest::SemanticWorkBoundedV1(query) => {
+                if query.query.generation.is_none() || query.query.generation_selector.is_some() {
+                    return Err(SdkError::Protocol(
+                        "work-bounded semantic query requires an exact generation".to_string(),
+                    ));
                 }
                 Ok(())
             }
@@ -463,6 +472,7 @@ impl QuantaIndex {
             SearchPlaneQueryIpcResponse::Text(_) => "text",
             SearchPlaneQueryIpcResponse::Symbol(_) => "symbol",
             SearchPlaneQueryIpcResponse::Semantic(_) => "semantic",
+            SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_) => "semantic_work_bounded_v1",
             SearchPlaneQueryIpcResponse::Hybrid(_) => "hybrid",
             SearchPlaneQueryIpcResponse::HybridSeed(_) => "hybrid_seed",
             SearchPlaneQueryIpcResponse::History(_) => "history",

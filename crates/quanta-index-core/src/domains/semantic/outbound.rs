@@ -234,8 +234,9 @@ pub struct DenseIndexEffortV1 {
 /// Whether a dense lane's contract was sealed and verified.
 ///
 /// Every served generation carries a seal (a generation without one is
-/// refused at open, never served on what its dataset happens to report),
-/// so the only question left is which library version built the index.
+/// refused at open, never served on what its dataset happens to report).
+/// A request may instead explicitly bypass the sealed approximate index and
+/// scan those verified rows; this must not attest an exact index at seal.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DenseLaneAttestationV1 {
     /// The seal recorded the contract, the open verified the index against
@@ -244,6 +245,9 @@ pub enum DenseLaneAttestationV1 {
     /// As `Sealed`, but a different version of the library built the index
     /// than serves it: the metadata agrees, the recall was measured elsewhere.
     SealedByAnotherLibraryVersion,
+    /// A request bypassed the sealed approximate index and scanned its verified
+    /// rows exactly. The seal did not declare an exact index.
+    ExactScanOfSealedRows,
 }
 
 impl DenseLaneContractV1 {
@@ -255,6 +259,7 @@ impl DenseLaneContractV1 {
             DenseLaneAttestationV1::SealedByAnotherLibraryVersion => {
                 "sealed_by_another_library_version"
             }
+            DenseLaneAttestationV1::ExactScanOfSealedRows => "exact_scan_of_sealed_rows",
         };
         match &self.index {
             DenseIndexV1::Exact => format!("dense.index=exact; dense.attestation={attestation}"),
@@ -374,6 +379,20 @@ pub trait SemanticSearcher: Send + Sync {
                 "semantic searcher does not provide native query-constraint pushdown".to_string(),
             ))
         }
+    }
+
+    /// Exact-generation work-bounded search. Only adapters that can charge
+    /// their native scan before execution may implement this capability.
+    fn search_work_bounded_v1(
+        &self,
+        _query_vector: &[f32],
+        _constraints: &QueryConstraintSetV1,
+        _top_k: u32,
+        _budget: &RequestBudgetV1,
+    ) -> Result<Vec<LexicalCandidate>, CoreError> {
+        Err(CoreError::InvalidContract(
+            "semantic searcher has no bounded native work authority".into(),
+        ))
     }
 
     /// Search globally and preserve stable record/owner identity for seed

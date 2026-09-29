@@ -63,6 +63,44 @@ intent from bare lexical content search. Mechanically generated declaration
 labels still need independent review before quality qualification; this
 standalone profile is not a five-product file-rank comparison.
 
+New exact-symbol records explicitly bind `rank_unit: symbol` and retain distinct
+published IDs and indexed declaration spans even when two declarations share
+one returned context span. Their diagnostic projection uses `symbol-unit-v1`;
+ordinary content captures retain `first-source-span-v1`. Replay validates each
+projection against its bound record. Historical exact-symbol records may omit
+the explicit rank field and continue to use their original span contract.
+Native symbol keyword captures retain the original first-source-span context
+projection; distinct declaration ranking requires the exact-symbol profile.
+
+For a **file-ranked lexical** diagnostic, keep the bare source queries in a
+separate suite with `routes: ["lexical"]` and run with `--routes lexical
+--query-input-policy literal_file`. The runner emits a safely escaped native
+`select:file` request and binds the effective request hash to the original
+query. Its returned ranking unit is a distinct repository-relative file, even
+though each file's source evidence remains the representative published chunk.
+The evaluator requires the recorded `rank_unit: distinct_file` and rejects
+repeated file paths for this policy. Source-reviewed file judgments and their
+metrics are opt-in; the original 300-query native capture stays on its frozen
+policy and report contract.
+
+The benchmark runner refuses native `select:` and `type:path`/`type:repo`
+projections that change the ranked result unit. Use `literal_file` for a
+file-ranked benchmark. A quoted `"select:file"` remains ordinary content text
+under `native`.
+
+After freezing the reviewed suite and recording its single-route run, score
+independent file or declaration judgments with:
+
+```sh
+uv run --frozen --extra dev python tools/benchmark/retrieval/evaluator.py evaluate-diagnostic \
+  --repo /absolute/corpus --suite /absolute/suite.json \
+  --runner /absolute/record.json --output /absolute/diagnostic.json
+```
+
+This report exposes eligible task IDs, exclusions, coverage, operational and
+conditional means. It is `diagnostic_unqualified`; it does not enter the
+paired `QUALITY_DELTA` gate or alter the original 300-query scores.
+
 The five-product bare-symbol diagnostic records the native top-10 rank unit
 per product: Quanta and Semble return chunks, while Sourcegraph, OpenGrok and
 cs return distinct files. Its common evidence uses separate metric names for

@@ -230,10 +230,10 @@ pub fn diagnostic_value(
                             task.task_id, route
                         )));
                     }
-                    // The runner record scores one candidate per proven source
-                    // span. Several distinct SDK units may project to that
-                    // span, while the typed window still counts every hit.
-                    // Validate all native hits, including those not scored.
+                    // Legacy records keep the first unit per proven source
+                    // span; bound symbol ranks preserve each identity. The
+                    // typed window counts every native hit. Validate all
+                    // native units, including those not separately scored.
                     let mut hit_positions = BTreeMap::new();
                     let mut hit_lanes = Vec::with_capacity(hits.len());
                     for (position, hit) in hits.iter().enumerate() {
@@ -344,7 +344,67 @@ pub fn diagnostic_value(
                         "window": window,
                         "explanation": explanation_value(explanation.as_ref()),
                     });
-                    if record_candidates.len() != hits.len() {
+                    if record_row.get("rank_unit").and_then(Value::as_str) == Some("symbol") {
+                        if *route != "symbol" || record_candidates.len() != hits.len() {
+                            return Err(BenchError::Protocol(
+                                "symbol rank requires one scored row per native unit".into(),
+                            ));
+                        }
+                        let spans = native_spans.get(&key).ok_or_else(|| {
+                            BenchError::Protocol("symbol diagnostic lacks source proofs".into())
+                        })?;
+                        if spans.len() != hits.len() {
+                            return Err(BenchError::Protocol(
+                                "symbol source proof count differs from hits".into(),
+                            ));
+                        }
+                        let mut projected = Vec::with_capacity(spans.len());
+                        for (position, ((proof, hit), scored)) in
+                            spans.iter().zip(hits).zip(record_candidates).enumerate()
+                        {
+                            let rank = position.checked_add(1).ok_or_else(|| {
+                                BenchError::Protocol("symbol projection rank overflow".into())
+                            })?;
+                            if proof.unit_kind != crate::published_units::PublishedUnitKind::Symbol
+                                || proof.unit_id != hit.candidate_id
+                                || proof.span.0 != hit.path
+                                || scored
+                                    .pointer("/span_accounting/unit_kind")
+                                    .and_then(Value::as_str)
+                                    != Some("symbol")
+                                || scored
+                                    .pointer("/span_accounting/unit_id")
+                                    .and_then(Value::as_str)
+                                    != Some(proof.unit_id.as_str())
+                                || scored.get("path").and_then(Value::as_str)
+                                    != Some(proof.span.0.as_str())
+                                || scored.get("start_byte").and_then(Value::as_u64)
+                                    != Some(proof.span.1)
+                                || scored.get("end_byte").and_then(Value::as_u64)
+                                    != Some(proof.span.2)
+                                || scored
+                                    .pointer("/span_accounting/indexed_start_byte")
+                                    .and_then(Value::as_u64)
+                                    != Some(u64::from(proof.indexed_span.0))
+                                || scored
+                                    .pointer("/span_accounting/indexed_end_byte")
+                                    .and_then(Value::as_u64)
+                                    != Some(u64::from(proof.indexed_span.1))
+                            {
+                                return Err(BenchError::Protocol("symbol record differs from native published identity and source span".into()));
+                            }
+                            projected.push(json!({"candidate_id": proof.unit_id, "path": proof.span.0, "start_byte": proof.span.1, "end_byte": proof.span.2, "scored_rank": rank}));
+                        }
+                        let _previous = response
+                            .as_object_mut()
+                            .ok_or_else(|| {
+                                BenchError::Protocol("diagnostic response is not an object".into())
+                            })?
+                            .insert(
+                                "native_projection".to_string(),
+                                json!({"policy": "symbol-unit-v1", "hits": projected}),
+                            );
+                    } else if record_candidates.len() != hits.len() {
                         let spans = native_spans.get(&key).ok_or_else(|| {
                             BenchError::Protocol("collapsed diagnostic lacks source proofs".into())
                         })?;
@@ -658,13 +718,162 @@ mod tests {
                 crate::record::NativeSpanProof {
                     unit_id: "chunk-1".to_string(),
                     span: ("src/lib.rs".to_string(), 0, 10),
+                    unit_kind: crate::published_units::PublishedUnitKind::Chunk,
+                    indexed_span: (0, 10),
                 },
                 crate::record::NativeSpanProof {
                     unit_id: "chunk-2".to_string(),
                     span: ("src/lib.rs".to_string(), 0, 10),
+                    unit_kind: crate::published_units::PublishedUnitKind::Chunk,
+                    indexed_span: (0, 10),
                 },
             ],
         )])
+    }
+
+    #[test]
+    fn symbol_unit_projection_preserves_same_line_identities_and_refuses_tampering() {
+        let mut pack = pack();
+        pack.routes = vec!["symbol".to_string()];
+        let ids = ["symbol-a", "symbol-b"];
+        let hits: Vec<_> = ids
+            .iter()
+            .map(|id| RankedHit {
+                candidate_id: (*id).to_string(),
+                path: "src/lib.rs".to_string(),
+                start_line: 1,
+                end_line: 1,
+                snippet: "same-line symbol".to_string(),
+                score: 1.0,
+                contributions: Vec::new(),
+            })
+            .collect();
+        let key = ("T1".to_string(), "symbol".to_string());
+        let outcomes = BTreeMap::from([(
+            key.clone(),
+            QueryOutcome::ReturnedWindow {
+                hits,
+                window: QueryResultWindowV2::exact_probe(2),
+                explanation: None,
+                latency: Duration::from_millis(1),
+            },
+        )]);
+        let proofs = BTreeMap::from([(
+            key,
+            vec![
+                NativeSpanProof {
+                    unit_id: "symbol-a".to_string(),
+                    span: ("src/lib.rs".to_string(), 0, 30),
+                    unit_kind: crate::published_units::PublishedUnitKind::Symbol,
+                    indexed_span: (0, 10),
+                },
+                NativeSpanProof {
+                    unit_id: "symbol-b".to_string(),
+                    span: ("src/lib.rs".to_string(), 0, 30),
+                    unit_kind: crate::published_units::PublishedUnitKind::Symbol,
+                    indexed_span: (12, 25),
+                },
+            ],
+        )]);
+        let record = json!({"results": [{
+            "task_id": "T1", "route": "symbol", "status": "success", "rank_unit": "symbol",
+            "candidates": [
+                {"rank": 1, "path": "src/lib.rs", "start_line": 1, "end_line": 1,
+                 "start_byte": 0, "end_byte": 30,
+                 "span_accounting": {"unit_id": "symbol-a", "unit_kind": "symbol", "indexed_start_byte": 0, "indexed_end_byte": 10}},
+                {"rank": 2, "path": "src/lib.rs", "start_line": 1, "end_line": 1,
+                 "start_byte": 0, "end_byte": 30,
+                 "span_accounting": {"unit_id": "symbol-b", "unit_kind": "symbol", "indexed_start_byte": 12, "indexed_end_byte": 25}},
+            ]
+        }]});
+        let diagnose = |record: &Value| {
+            diagnostic_value(
+                &"e".repeat(64),
+                record,
+                &pack,
+                &["symbol"],
+                &outcomes,
+                QueryStageObservationPolicy::Disabled,
+                HybridFetchFloorPolicy::default(),
+                &proofs,
+            )
+        };
+        let diagnostic = diagnose(&record).expect("same line has two independent symbol ranks");
+        assert_eq!(
+            diagnostic.pointer("/results/0/response/native_projection/policy"),
+            Some(&json!("symbol-unit-v1"))
+        );
+        let projected = diagnostic
+            .pointer("/results/0/response/native_projection/hits")
+            .and_then(Value::as_array)
+            .expect("projected symbols");
+        assert_eq!(
+            projected.as_slice(),
+            &[
+                json!({"candidate_id": "symbol-a", "path": "src/lib.rs", "start_byte": 0, "end_byte": 30, "scored_rank": 1}),
+                json!({"candidate_id": "symbol-b", "path": "src/lib.rs", "start_byte": 0, "end_byte": 30, "scored_rank": 2}),
+            ]
+        );
+        for (pointer, forged) in [
+            (
+                "/results/0/candidates/1/span_accounting/unit_id",
+                json!("symbol-a"),
+            ),
+            ("/results/0/candidates/1/rank", json!(1)),
+            (
+                "/results/0/candidates/1/span_accounting/indexed_start_byte",
+                json!(13),
+            ),
+        ] {
+            let mut changed = record.clone();
+            *changed.pointer_mut(pointer).expect("fixture field") = forged;
+            assert!(diagnose(&changed).is_err(), "tamper must refuse: {pointer}");
+        }
+        let mut legacy = record.clone();
+        let _removed_unit = legacy
+            .pointer_mut("/results/0")
+            .expect("record row")
+            .as_object_mut()
+            .expect("record row")
+            .remove("rank_unit");
+        let _removed_candidate = legacy
+            .pointer_mut("/results/0/candidates")
+            .expect("candidates")
+            .as_array_mut()
+            .expect("candidates")
+            .pop()
+            .expect("second scored candidate");
+        let legacy_diagnostic =
+            diagnose(&legacy).expect("Native symbol context scoring stays valid");
+        assert_eq!(
+            legacy_diagnostic.pointer("/results/0/response/native_projection"),
+            Some(&json!({"policy": "first-source-span-v1", "hits": [
+                {"candidate_id": "symbol-a", "path": "src/lib.rs", "start_byte": 0, "end_byte": 30, "scored_rank": 1},
+                {"candidate_id": "symbol-b", "path": "src/lib.rs", "start_byte": 0, "end_byte": 30, "scored_rank": 1}
+            ]}))
+        );
+        assert_eq!(
+            legacy_diagnostic.pointer("/results/0/response/window/returned"),
+            Some(&json!(2))
+        );
+        assert_eq!(
+            legacy_diagnostic
+                .pointer("/results/0/candidates")
+                .and_then(Value::as_array)
+                .expect("scored rows")
+                .len(),
+            1
+        );
+        let mut dropped = record;
+        let _removed = dropped
+            .pointer_mut("/results/0/candidates")
+            .and_then(Value::as_array_mut)
+            .expect("candidates")
+            .pop();
+        assert!(
+            diagnose(&dropped).is_err(),
+            "symbol units cannot collapse by context"
+        );
     }
 
     #[test]

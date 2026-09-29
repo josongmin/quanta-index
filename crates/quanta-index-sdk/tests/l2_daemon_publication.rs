@@ -587,7 +587,8 @@ fn recover_delta_after_crash(binary: &Path, state: &Path, point: &str) -> TestRe
     let (_, first_active) = initial
         .client
         .search_corpus()
-        .publish_and_activate(&first, None)?;
+        .publish_and_activate(&first, None)
+        .map_err(|error| format!("{point}: initial generation one publication: {error}"))?;
     let second = corpus(
         2,
         Some(1),
@@ -599,7 +600,8 @@ fn recover_delta_after_crash(binary: &Path, state: &Path, point: &str) -> TestRe
     let (_, second_active) = initial
         .client
         .search_corpus()
-        .publish_and_activate(&second, Some(first_active.active.clone()))?;
+        .publish_and_activate(&second, Some(first_active.active.clone()))
+        .map_err(|error| format!("{point}: initial generation two publication: {error}"))?;
     // Source lineage remains event-two, while visible generation one is pinned.
     // Retention of target three may now retire its inactive physical base two.
     let rollback = initial.client.generations().rollback(
@@ -680,7 +682,8 @@ fn recover_delta_after_crash(binary: &Path, state: &Path, point: &str) -> TestRe
     let (publication, active) = recovered
         .client
         .search_corpus()
-        .publish_and_activate_observed(&third, Some(current))?;
+        .publish_and_activate_observed(&third, Some(current))
+        .map_err(|error| format!("{point}: recovered generation three publication: {error}"))?;
     assert!(publication.receipt.applied);
     assert_eq!(
         publication.publication.target.manifest_generation,

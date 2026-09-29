@@ -25,8 +25,8 @@ use quanta_index_contract::{
     SearchPlaneControlIpcRequestEnvelope, SearchPlaneExplainQueryRequest,
     SearchPlaneIngestIpcRequest, SearchPlaneIngestIpcRequestEnvelope, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcRequestEnvelope, SearchPlaneRollbackSearchCorpusGenerationCasRequest,
-    SemanticIngestBatch, SemanticQueryRequest, StructuralIngestBatch, StructuralQueryRequest,
-    SymbolQueryRequest, TextQueryRequest,
+    SemanticIngestBatch, SemanticQueryRequest, SemanticWorkBoundedQueryRequestV1,
+    StructuralIngestBatch, StructuralQueryRequest, SymbolQueryRequest, TextQueryRequest,
 };
 use quanta_index_ipc::decode_request;
 
@@ -39,6 +39,7 @@ fuzz_target!(|data: &[u8]| {
     let _ = ciborium::de::from_reader::<TextQueryRequest, _>(data);
     let _ = ciborium::de::from_reader::<SymbolQueryRequest, _>(data);
     let _ = ciborium::de::from_reader::<SemanticQueryRequest, _>(data);
+    let _ = ciborium::de::from_reader::<SemanticWorkBoundedQueryRequestV1, _>(data);
     let _ = ciborium::de::from_reader::<HybridQueryRequest, _>(data);
     let _ = ciborium::de::from_reader::<HybridSeedQueryRequest, _>(data);
     let _ = ciborium::de::from_reader::<HistoryQueryRequest, _>(data);

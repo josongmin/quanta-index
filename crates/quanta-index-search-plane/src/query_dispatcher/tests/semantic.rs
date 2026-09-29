@@ -774,6 +774,7 @@ fn semantic_dispatch_embeds_query_text() -> TestResult {
         | SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_)
         | SearchPlaneQueryIpcResponse::Text(_)
         | SearchPlaneQueryIpcResponse::Symbol(_)
+        | SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_)
         | SearchPlaneQueryIpcResponse::Hybrid(_)
         | SearchPlaneQueryIpcResponse::HybridSeed(_)
         | SearchPlaneQueryIpcResponse::History(_)
@@ -802,6 +803,43 @@ fn semantic_dispatch_embeds_query_text() -> TestResult {
     }
     if !scoped_vectors.is_empty() {
         return Err(format!("unexpected scoped vectors: {scoped_vectors:?}").into());
+    }
+    Ok(())
+}
+
+#[test]
+fn bounded_semantic_route_rejects_searcher_without_native_work_authority() -> TestResult {
+    let state = Arc::new(Mutex::new(RecordingSemanticState::default()));
+    let dispatcher = SearchPlaneDispatcher::new(
+        Arc::new(RejectLexicalOpener),
+        Arc::new(RecordingSemanticOpener {
+            state: Arc::clone(&state),
+        }),
+        Arc::new(StubRepoMapSnapshotPort::default()),
+        Arc::new(FailClosedStructuralProducer),
+        ready_ledger(),
+        test_activation_catalog()?,
+    );
+    let response = dispatcher.dispatch(
+        SearchPlaneQueryIpcRequest::SemanticWorkBoundedV1(
+            quanta_index_contract::SemanticWorkBoundedQueryRequestV1 {
+                query: semantic_focus_request(),
+                max_work_units: 1_000_000,
+            },
+        ),
+        &RequestBudgetV1::unbounded(),
+    );
+    let (_, message) = ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
+    if !message.contains("semantic searcher has no bounded native work authority") {
+        return Err(format!("wrong bounded semantic refusal: {message}").into());
+    }
+    if !state
+        .lock()
+        .map_err(|error| format!("poisoned recording semantic state: {error}"))?
+        .search_top_ks
+        .is_empty()
+    {
+        return Err("bounded semantic refusal reached the native searcher".into());
     }
     Ok(())
 }

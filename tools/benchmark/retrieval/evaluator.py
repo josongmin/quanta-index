@@ -90,6 +90,7 @@ CHUNK_STRATEGIES = (
 QUERY_INTENTS = ("bare_symbol", "semantic_intent")
 LABEL_REVIEW_ASSESSMENTS = ("unreviewed", "reviewed_unambiguous", "reviewed_ambiguous")
 OBSERVED_PREFIX_DIAGNOSTIC_POLICY = "observed_prefix_v1"
+UNJUDGED_POLICY = "unjudged_zero_v1"
 CAPTURE_SYSTEMS = ("quanta", "semble")
 NOT_APPLICABLE = "not_applicable"
 MIN_CI_SAMPLE = 20
@@ -145,6 +146,11 @@ def positive_int(value: Any, where: str) -> int:
 
 def grade_value(value: Any, where: str) -> int:
     require(type(value) is int and 1 <= value <= 3, f"{where} gold grade must be an integer 1-3")
+    return value
+
+
+def judgment_grade(value: Any, where: str) -> int:
+    require(type(value) is int and 0 <= value <= 3, f"{where} grade must be an integer 0-3")
     return value
 
 
@@ -555,6 +561,70 @@ def validate_file_universe(
     return entries, ordered
 
 
+def validate_judgments(
+    source: SourceSnapshot,
+    task: dict[str, Any],
+    universe: set[str],
+    task_id: str,
+) -> None:
+    """Bind optional independent file and declaration judgments to source bytes."""
+    kinds = ("file_judgments", "declaration_judgments")
+    present = [kind for kind in kinds if kind in task]
+    if not present:
+        require("judgment_policy" not in task, f"orphan judgment_policy: {task_id}")
+        return
+    require(
+        task.get("judgment_policy") == UNJUDGED_POLICY,
+        f"judgments require explicit {UNJUDGED_POLICY} policy: {task_id}",
+    )
+    review = task.get("label_review")
+    require(
+        isinstance(review, dict) and review.get("assessment") in LABEL_REVIEW_ASSESSMENTS[1:],
+        f"independent judgments require reviewed label evidence: {task_id}",
+    )
+    for kind in present:
+        judgments = task[kind]
+        require(isinstance(judgments, list), f"{kind} must be a list: {task_id}")
+        seen: set[tuple[Any, ...]] = set()
+        for value in judgments:
+            where = f"{kind} for {task_id}"
+            fields = ["path", "file_sha256", "grade"]
+            if kind == "declaration_judgments":
+                fields.extend(["start_byte", "end_byte"])
+            item = object_keys(value, fields, where)
+            path = string(item["path"], where + ".path")
+            require(path in universe, f"{where} file excluded from file universe: {path}")
+            raw, _lines, file_digest = source.file(path)
+            require(
+                sha(item["file_sha256"], where + ".file_sha256") == file_digest,
+                f"{where} file hash mismatch: {path}",
+            )
+            judgment_grade(item["grade"], where)
+            key: tuple[Any, ...] = (path,)
+            if kind == "declaration_judgments":
+                start = nonnegative_int(item["start_byte"], where + ".start_byte")
+                end = positive_int(item["end_byte"], where + ".end_byte")
+                require(start < end <= len(raw), f"{where} has invalid source byte span")
+                try:
+                    selected = raw[start:end].decode("utf-8")
+                except UnicodeDecodeError as exc:
+                    raise EvidenceError(f"{where} cuts a UTF-8 boundary") from exc
+                require(bool(TOKEN_RE.search(selected)), f"{where} has no retrievable token")
+                key = (path, start, end)
+            require(key not in seen, f"duplicate {kind}: {task_id} {key}")
+            seen.add(key)
+        if task["answerable"]:
+            require(
+                any(row["grade"] > 0 for row in judgments),
+                f"{kind} lacks a positive judgment: {task_id}",
+            )
+        else:
+            require(
+                not any(row["grade"] > 0 for row in judgments),
+                f"{kind} answerability mismatch: {task_id}",
+            )
+
+
 def validate_leakage_allowlist(
     source: SourceSnapshot, value: Any
 ) -> frozenset[tuple[str, int, int]]:
@@ -692,6 +762,8 @@ def validate_suite(
     families: dict[str, set[str]] = {}
     queries: list[tuple[str, str]] = []
     labels_by_split: dict[str, set[tuple[str, int, int]]] = {"train": set(), "eval": set()}
+    scored_files_by_split: dict[str, set[str]] = {"train": set(), "eval": set()}
+    judged_files_by_split: dict[str, set[str]] = {"train": set(), "eval": set()}
     task_required = [
         "task_id",
         "split",
@@ -705,14 +777,30 @@ def validate_suite(
         task = object_keys_optional(
             raw,
             task_required,
-            ["category", "query_intent", "label_review"],
+            [
+                "category",
+                "query_intent",
+                "label_review",
+                "judgment_policy",
+                "file_judgments",
+                "declaration_judgments",
+            ],
             "task",
         )
         task_id = string(task["task_id"], "task_id")
         require(task_id not in seen_ids, "duplicate task_id: " + task_id)
         seen_ids.add(task_id)
         require(
-            not ("query_intent" in task or "label_review" in task)
+            not any(
+                field in task
+                for field in (
+                    "query_intent",
+                    "label_review",
+                    "judgment_policy",
+                    "file_judgments",
+                    "declaration_judgments",
+                )
+            )
             or suite.get("diagnostic_policy") == OBSERVED_PREFIX_DIAGNOSTIC_POLICY,
             "task annotations require observed-prefix diagnostic_policy: " + task_id,
         )
@@ -755,6 +843,12 @@ def validate_suite(
         family = string(task["query_family_id"], "query_family_id for " + task_id)
         families.setdefault(family, set()).add(task["split"])
         require(type(task["answerable"]) is bool, "answerable must be boolean: " + task_id)
+        validate_judgments(source, task, universe, task_id)
+        for kind in ("file_judgments", "declaration_judgments"):
+            for judgment in task.get(kind, []):
+                if judgment["grade"] > 0:
+                    judged_files_by_split[task["split"]].add(judgment["path"])
+                    scored_files_by_split[task["split"]].add(judgment["path"])
         labels = task["gold"]
         require(isinstance(labels, list), "gold must be a list: " + task_id)
         require(task["answerable"] == bool(labels), "answerable/gold mismatch: " + task_id)
@@ -772,15 +866,30 @@ def validate_suite(
             require(key not in seen_labels, "duplicate gold label: " + task_id)
             seen_labels.add(key)
             labels_by_split[task["split"]].add(key)
+            scored_files_by_split[task["split"]].add(label["path"])
         if task["split"] == "eval":
             eval_count += 1
     require(eval_count > 0, "eval split requires at least one task")
+    eval_tasks = [task for task in tasks if task["split"] == "eval"]
+    for kind in ("file_judgments", "declaration_judgments"):
+        if any(kind in task for task in eval_tasks):
+            require(
+                all(kind in task for task in eval_tasks),
+                f"partial {kind} coverage in eval split",
+            )
     for family, splits in sorted(families.items()):
         require(
             len(splits) == 1,
             f"query family spans train and eval: {family}",
         )
     check_query_near_duplicates(queries)
+    require(
+        not (
+            judged_files_by_split["train"] & scored_files_by_split["eval"]
+            or judged_files_by_split["eval"] & scored_files_by_split["train"]
+        ),
+        "independent judgment file leakage across train/eval split",
+    )
     _check_split_leakage(labels_by_split, allowlist)
     blinded = {
         "schema_version": SCHEMA_VERSION,
@@ -844,8 +953,8 @@ def validate_experiment_custody(
         and bool(COMMIT_RE.fullmatch(record["repository_commit"])),
         "experiment repository_commit must be a full Git SHA",
     )
-    dev_suite, _dev_pack, _dev_source = validate_suite(repo, development)
-    holdout_suite, _holdout_pack, _holdout_source = validate_suite(repo, holdout)
+    dev_suite, _dev_pack, dev_source = validate_suite(repo, development)
+    holdout_suite, _holdout_pack, holdout_source = validate_suite(repo, holdout)
     require(
         dev_suite["suite_id"] != holdout_suite["suite_id"],
         "development and holdout suite IDs coincide",
@@ -867,8 +976,21 @@ def validate_experiment_custody(
             == digest(canonical(suite)),
             f"{label} suite differs from frozen experiment custody",
         )
-    dev_files = {gold["path"] for task in dev_suite["tasks"] for gold in task["gold"]}
-    holdout_files = {gold["path"] for task in holdout_suite["tasks"] for gold in task["gold"]}
+
+    def scored_files(suite: dict[str, Any]) -> set[str]:
+        return {
+            row["path"]
+            for task in suite["tasks"]
+            for row in (
+                *task["gold"],
+                *task.get("file_judgments", []),
+                *task.get("declaration_judgments", []),
+            )
+            if row.get("grade", 1) > 0
+        }
+
+    dev_files = scored_files(dev_suite)
+    holdout_files = scored_files(holdout_suite)
     require(
         not (dev_files & holdout_files),
         f"cross-suite file leakage: {sorted(dev_files & holdout_files)}",
@@ -879,10 +1001,21 @@ def validate_experiment_custody(
         not (dev_families & holdout_families),
         f"cross-suite query family leakage: {sorted(dev_families & holdout_families)}",
     )
-    dev_blocks = {gold["block_sha256"] for task in dev_suite["tasks"] for gold in task["gold"]}
-    holdout_blocks = {
-        gold["block_sha256"] for task in holdout_suite["tasks"] for gold in task["gold"]
-    }
+
+    def scored_content(suite: dict[str, Any], source: SourceSnapshot) -> set[str]:
+        fingerprints = {gold["block_sha256"] for task in suite["tasks"] for gold in task["gold"]}
+        for task in suite["tasks"]:
+            fingerprints.update(
+                row["file_sha256"] for row in task.get("file_judgments", []) if row["grade"] > 0
+            )
+            for row in task.get("declaration_judgments", []):
+                if row["grade"] > 0:
+                    raw, _lines, _sha = source.file(row["path"])
+                    fingerprints.add(digest(raw[row["start_byte"] : row["end_byte"]]))
+        return fingerprints
+
+    dev_blocks = scored_content(dev_suite, dev_source)
+    holdout_blocks = scored_content(holdout_suite, holdout_source)
     require(
         not (dev_blocks & holdout_blocks),
         "cross-suite gold definition content leakage",
@@ -1038,10 +1171,48 @@ def _validate_run(
     pack_queries = {task["task_id"]: task for task in pack["tasks"]}
     found = set()
     for raw in results:
-        result = object_keys(raw, result_keys, "result")
+        result = (
+            object_keys_optional(raw, result_keys, ["rank_unit"], "result")
+            if version == RUNNER_SCHEMA_VERSION
+            else object_keys(raw, result_keys, "result")
+        )
         key = (string(result["task_id"], "result.task_id"), string(result["route"], "result.route"))
         require(key in expected and key not in found, f"unexpected/duplicate task route: {key}")
         found.add(key)
+        capture = captures[provenance[key[1]]["capture_id"]]
+        profile_policy = (
+            capture["execution_profile"]["policy"]
+            if version == RUNNER_SCHEMA_VERSION and capture["system"] == "quanta"
+            else None
+        )
+        rank_unit = result.get("rank_unit")
+        if rank_unit is not None:
+            require(
+                rank_unit in ("distinct_file", "symbol"),
+                f"unknown result rank_unit for {key}",
+            )
+        if profile_policy == "literal_file":
+            require(
+                key[1] == "lexical" and rank_unit == "distinct_file",
+                f"literal_file profile requires lexical distinct_file result: {key}",
+            )
+        elif profile_policy == "exact_symbol_name":
+            require(
+                key[1] == "symbol" and rank_unit in (None, "symbol"),
+                f"exact_symbol_name profile requires symbol rank_unit when explicit: {key}",
+            )
+            if rank_unit == "symbol":
+                require(
+                    span_protocol == 1,
+                    f"symbol rank_unit requires published-unit span protocol: {key}",
+                )
+        elif capture["system"] == "quanta":
+            require(rank_unit is None, f"Quanta chunk profile has incompatible rank_unit: {key}")
+        else:
+            require(
+                rank_unit is None,
+                f"Semble capture has no verified distinct_file rank authority: {key}",
+            )
         if version in (4, 5):
             pack_task = pack_queries.get(key[0])
             require(
@@ -1102,6 +1273,10 @@ def _validate_run(
         require(status in RESULT_STATUSES, f"unknown result status for {key}: {status!r}")
         candidates = result["candidates"]
         require(isinstance(candidates, list), f"candidates must be a list: {key}")
+        require(
+            len(candidates) <= suite["comparison_contract"]["top_k"],
+            f"candidates exceed declared top_k: {key}",
+        )
         timings = object_keys(result["timings"], ["query_latency_ms"], f"timings for {key}")
         measured = nullable_timing(timings["query_latency_ms"], f"timings for {key}")
         if status == "timeout":
@@ -1121,10 +1296,12 @@ def _validate_run(
                 item = object_keys(error, ["code", "message"], f"error for {key}")
                 string(item["code"], f"error.code for {key}")
                 string(item["message"], f"error.message for {key}")
-        seen_spans = set()
+        # The exact-symbol contract can retain distinct indexed units sharing
+        # one scored line. Native and content profiles keep context collapse.
+        seen_spans: dict[tuple[str, int, int], set[tuple[int, int]] | None] = {}
         seen_unit_ids: set[str] = set()
+        seen_files: set[str] = set()
         for index, candidate in enumerate(candidates, start=1):
-            capture = captures[provenance[key[1]]["capture_id"]]
             block(
                 source,
                 candidate,
@@ -1136,6 +1313,11 @@ def _validate_run(
             if "span_accounting" in candidate:
                 require(span_protocol == 1, f"span evidence lacks record protocol: {key}")
                 accounting = candidate["span_accounting"]
+                if rank_unit == "symbol":
+                    require(
+                        accounting["unit_kind"] == "symbol",
+                        f"symbol rank_unit requires published symbol unit: {key}",
+                    )
                 expected_producer = (
                     "source-bound-symbols-v2"
                     if accounting["unit_kind"] == "symbol"
@@ -1156,13 +1338,39 @@ def _validate_run(
                 candidate["rank"] == index,
                 f"duplicate/non-sequential candidate rank for {key}: expected {index}",
             )
+            if rank_unit == "distinct_file":
+                require(
+                    candidate["path"] not in seen_files,
+                    f"duplicate file in distinct_file result: {key}",
+                )
+                seen_files.add(candidate["path"])
             span = (
                 candidate["path"],
                 candidate["start_byte"],
                 candidate["end_byte"],
             )
-            require(span not in seen_spans, f"duplicate candidate byte span: {key}")
-            seen_spans.add(span)
+            accounting = candidate.get("span_accounting")
+            symbol_span = (
+                (accounting["indexed_start_byte"], accounting["indexed_end_byte"])
+                if accounting is not None
+                and accounting["unit_kind"] == "symbol"
+                and profile_policy == "exact_symbol_name"
+                and key[1] == "symbol"
+                and span_protocol == 1
+                else None
+            )
+            if span in seen_spans:
+                require(
+                    symbol_span is not None and seen_spans[span] is not None,
+                    f"duplicate candidate byte span: {key}",
+                )
+                require(
+                    symbol_span not in seen_spans[span],
+                    f"duplicate published symbol indexed span: {key}",
+                )
+                seen_spans[span].add(symbol_span)
+            else:
+                seen_spans[span] = {symbol_span} if symbol_span is not None else None
     require(found == expected, f"missing task route evidence: {sorted(expected - found)}")
     return run
 
@@ -1464,6 +1672,211 @@ def file_recall_at_k(
     gold_files = {label["path"] for label in labels}
     hit_files = gold_files.intersection({item["path"] for item in candidates[:k]})
     return len(hit_files) / len(gold_files)
+
+
+def file_ndcg_at_k(
+    candidates: list[dict[str, Any]], judgments: list[dict[str, Any]], k: int
+) -> float:
+    """Rank files against independent source-bound grades, without span-density gain."""
+    grades = {row["path"]: row["grade"] for row in judgments}
+    ideal = sorted((grade for grade in grades.values() if grade > 0), reverse=True)[:k]
+    idcg = sum((2**grade - 1) / math.log2(rank + 1) for rank, grade in enumerate(ideal, 1))
+    if idcg == 0:
+        return 0.0
+    seen: set[str] = set()
+    dcg = 0.0
+    for rank, item in enumerate(candidates[:k], 1):
+        path = item["path"]
+        if path in seen:
+            continue
+        seen.add(path)
+        dcg += (2 ** grades.get(path, 0) - 1) / math.log2(rank + 1)
+    return dcg / idcg
+
+
+def _declaration_match(candidate: dict[str, Any], judgment: dict[str, Any]) -> bool:
+    span = candidate.get("span_accounting")
+    return (
+        isinstance(span, dict)
+        and span.get("unit_kind") == "symbol"
+        and isinstance(span.get("unit_id"), str)
+        and bool(span["unit_id"].strip())
+        and candidate["path"] == judgment["path"]
+        and span["indexed_start_byte"] == judgment["start_byte"]
+        and span["indexed_end_byte"] == judgment["end_byte"]
+    )
+
+
+def declaration_recall_at_k(
+    candidates: list[dict[str, Any]], judgments: list[dict[str, Any]], k: int
+) -> float:
+    positive = [row for row in judgments if row["grade"] > 0]
+    if not positive:
+        return 0.0
+    return sum(
+        any(_declaration_match(item, label) for item in candidates[:k]) for label in positive
+    ) / len(positive)
+
+
+def declaration_mrr_at_k(
+    candidates: list[dict[str, Any]], judgments: list[dict[str, Any]], k: int
+) -> float:
+    positive = [row for row in judgments if row["grade"] > 0]
+    for rank, item in enumerate(candidates[:k], 1):
+        if any(_declaration_match(item, label) for label in positive):
+            return 1.0 / rank
+    return 0.0
+
+
+def judgment_diagnostics(
+    suite: dict[str, Any],
+    run: dict[str, Any],
+    results: dict[tuple[str, str], dict[str, Any]],
+    tasks: dict[str, dict[str, Any]],
+    baseline: str,
+    candidate: str | None,
+) -> dict[str, Any] | None:
+    """Opt-in operational and common-cohort quality views for reviewed judgments."""
+    kinds = [
+        kind
+        for kind in ("file_judgments", "declaration_judgments")
+        if any(kind in task for task in tasks.values())
+    ]
+    if not kinds:
+        return None
+    require(
+        suite["comparison_contract"]["top_k"] >= NDCG_K,
+        "independent judgment diagnostics require top_k >= 10",
+    )
+    answerable_ids = sorted(task_id for task_id, task in tasks.items() if task["answerable"])
+    output: dict[str, Any] = {"unjudged_policy": UNJUDGED_POLICY}
+    for kind in kinds:
+        if kind == "file_judgments":
+            expected_unit = "distinct_file"
+            metrics = {"ndcg_at_10": file_ndcg_at_k}
+        else:
+            expected_unit = "symbol"
+            metrics = {
+                "recall_at_10": declaration_recall_at_k,
+                "mrr_at_10": declaration_mrr_at_k,
+            }
+        by_route: dict[str, Any] = {}
+        eligible_scores: dict[str, dict[str, dict[str, float]]] = {}
+        per_query: list[dict[str, Any]] = []
+        for route in suite["routes"]:
+            score_by_task: dict[str, dict[str, float]] = {}
+            excluded: list[dict[str, str]] = []
+            status_counts: dict[str, int] = {}
+            operational = {metric: 0.0 for metric in metrics}
+            conditional = {metric: 0.0 for metric in metrics}
+            for task_id in answerable_ids:
+                result = results[(task_id, route)]
+                status = _result_status(result)
+                status_counts[status] = status_counts.get(status, 0) + 1
+                ranked = _ordered_candidates(result)
+                rank_unit = result.get("rank_unit")
+                capture_id = run["route_provenance"][route]["capture_id"]
+                capture = run["captures"][capture_id]
+                system = capture["system"]
+                if (
+                    kind == "declaration_judgments"
+                    and rank_unit is None
+                    and system == "quanta"
+                    and capture.get("execution_profile", {}).get("policy") == "exact_symbol_name"
+                    and route == "symbol"
+                ):
+                    rank_unit = "symbol"
+                reason = None
+                if rank_unit != expected_unit:
+                    reason = "rank_unit_mismatch"
+                elif status not in SCORED_STATUSES and not (
+                    status == "abstained" and system == "quanta"
+                ):
+                    reason = "execution_status_" + status
+                elif kind == "declaration_judgments" and (
+                    run.get("span_accounting_version") != 1
+                    or system != "quanta"
+                    or any(
+                        item.get("span_accounting", {}).get("unit_kind") != "symbol"
+                        for item in ranked
+                    )
+                ):
+                    reason = "missing_published_symbol_authority"
+                elif len(ranked) < NDCG_K and not (
+                    status in ("success", "abstained") and system == "quanta"
+                ):
+                    reason = "insufficient_depth_without_exhaustion"
+                if reason is not None:
+                    excluded.append({"task_id": task_id, "reason": reason})
+                    per_query.append(
+                        {"task_id": task_id, "route": route, "eligible": False, "reason": reason}
+                    )
+                    continue
+                values = {
+                    metric: scorer(ranked, tasks[task_id][kind], NDCG_K)
+                    for metric, scorer in metrics.items()
+                }
+                score_by_task[task_id] = values
+                for metric, value in values.items():
+                    operational[metric] += value
+                    conditional[metric] += value
+                per_query.append(
+                    {"task_id": task_id, "route": route, "eligible": True, "scores": values}
+                )
+            eligible_scores[route] = score_by_task
+            by_route[route] = {
+                "rank_unit": expected_unit,
+                "selected_answerable_tasks": len(answerable_ids),
+                "eligible_task_ids": sorted(score_by_task),
+                "eligible_count": len(score_by_task),
+                "coverage": len(score_by_task) / len(answerable_ids) if answerable_ids else 0.0,
+                "excluded": excluded,
+                "status_counts": status_counts,
+                "operational_mean": {
+                    metric: value / len(answerable_ids) if answerable_ids else NOT_APPLICABLE
+                    for metric, value in operational.items()
+                },
+                "conditional_mean": {
+                    metric: value / len(score_by_task) if score_by_task else NOT_APPLICABLE
+                    for metric, value in conditional.items()
+                },
+            }
+        if candidate is None:
+            comparison: dict[str, Any] | str = NOT_APPLICABLE
+        else:
+            common = sorted(set(eligible_scores[baseline]) & set(eligible_scores[candidate]))
+            comparison = {
+                "baseline": baseline,
+                "candidate": candidate,
+                "qualification": "diagnostic_only_no_coverage_floor",
+                "eligible_task_ids": common,
+                "sample_count": len(common),
+                "coverage": len(common) / len(answerable_ids) if answerable_ids else 0.0,
+                "delta": {},
+                "ci_95": {},
+            }
+            for metric in metrics:
+                deltas = [
+                    eligible_scores[candidate][task_id][metric]
+                    - eligible_scores[baseline][task_id][metric]
+                    for task_id in common
+                ]
+                comparison["delta"][metric] = (
+                    sum(deltas) / len(deltas) if deltas else NOT_APPLICABLE
+                )
+                comparison["ci_95"][metric] = mean_ci(
+                    deltas,
+                    [
+                        (task_id, str(tasks[task_id].get("category", "uncategorized")))
+                        for task_id in common
+                    ],
+                )
+        output[kind] = {
+            "routes": by_route,
+            "comparison": comparison,
+            "per_query": sorted(per_query, key=lambda row: (row["task_id"], row["route"])),
+        }
+    return output
 
 
 def mean_ci(
@@ -2073,6 +2486,9 @@ def evaluate(
     span_accounting = indexed_span_diagnostics(run, results, eval_tasks)
     if span_accounting is not None:
         output["span_accounting"] = span_accounting
+    independent = judgment_diagnostics(suite, run, results, eval_tasks, baseline, candidate)
+    if independent is not None:
+        output["judgment_metrics"] = independent
     # Per-query rows in deterministic task/route order.
     rows = []
     for task_id in task_ids:
@@ -2157,10 +2573,66 @@ def evaluate(
     return output
 
 
+def evaluate_diagnostic(
+    suite: dict[str, Any], pack: dict[str, Any], run: dict[str, Any]
+) -> dict[str, Any]:
+    """Score one recorded route without inventing a paired quality comparison."""
+    routes = suite["routes"]
+    require(len(routes) == 1, "single-route diagnostic requires exactly one route")
+    eval_tasks = {task["task_id"]: task for task in suite["tasks"] if task["split"] == "eval"}
+    require(
+        any(
+            "file_judgments" in task or "declaration_judgments" in task
+            for task in eval_tasks.values()
+        ),
+        "single-route diagnostic requires independent judgments",
+    )
+    results = {(row["task_id"], row["route"]): row for row in run["results"]}
+    independent = judgment_diagnostics(suite, run, results, eval_tasks, routes[0], None)
+    require(independent is not None, "independent judgment diagnostics unavailable")
+    no_answer_ids = sorted(
+        task_id for task_id, task in eval_tasks.items() if not task["answerable"]
+    )
+    no_answer_statuses: dict[str, int] = {}
+    for task_id in no_answer_ids:
+        status = _result_status(results[(task_id, routes[0])])
+        no_answer_statuses[status] = no_answer_statuses.get(status, 0) + 1
+    abstained = no_answer_statuses.get("abstained", 0)
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "report_scope": "single_route_independent_judgment_diagnostic_v1",
+        "status": "diagnostic_unqualified",
+        "qualification": NOT_APPLICABLE,
+        "suite_id": suite["suite_id"],
+        "suite_commitment_sha256": digest(canonical(suite)),
+        "query_pack_sha256": digest(canonical(pack)),
+        "runner_record_sha256": digest(canonical(run)),
+        "repository_commit": suite["repository_commit"],
+        "comparison_contract": run["comparison_contract"],
+        "route": routes[0],
+        "route_provenance": run["route_provenance"],
+        "captures": run["captures"],
+        "runner": run["runner"],
+        "selected_eval_tasks": len(eval_tasks),
+        "no_answer": {
+            "task_ids": no_answer_ids,
+            "sample_count": len(no_answer_ids),
+            "abstained": abstained,
+            "abstention_rate": (
+                abstained / len(no_answer_ids) if no_answer_ids else NOT_APPLICABLE
+            ),
+            "status_counts": no_answer_statuses,
+        },
+        "paired_comparison": NOT_APPLICABLE,
+        "quality_delta_gate": NOT_APPLICABLE,
+        "judgment_metrics": independent,
+    }
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
-    for command in ("freeze", "evaluate"):
+    for command in ("freeze", "evaluate", "evaluate-diagnostic"):
         child = sub.add_parser(command)
         child.add_argument("--repo", type=Path, required=True)
         child.add_argument("--suite", type=Path, required=True)
@@ -2169,15 +2641,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             child.add_argument("--runner", type=Path, required=True)
             child.add_argument("--baseline-route", required=True)
             child.add_argument("--candidate-route", required=True)
+        if command == "evaluate-diagnostic":
+            child.add_argument("--runner", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
         if args.command == "freeze":
             _, value, _ = validate_suite(args.repo.resolve(), read_json(args.suite))
-        else:
+        elif args.command == "evaluate":
             suite, pack, run = load_evidence(args.repo.resolve(), args.suite, args.runner)
             value = evaluate(
                 suite, pack, run, args.baseline_route, args.candidate_route, strict_k=True
             )
+        else:
+            suite, pack, run = load_evidence(args.repo.resolve(), args.suite, args.runner)
+            value = evaluate_diagnostic(suite, pack, run)
         rendered = (
             json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False, allow_nan=False) + "\n"
         )

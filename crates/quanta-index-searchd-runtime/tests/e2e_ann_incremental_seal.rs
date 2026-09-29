@@ -239,6 +239,45 @@ fn a_delta_seal_appends_to_the_inherited_ann_index_and_the_trace_says_so() -> Te
         .into());
     }
 
+    // An explicit bounded exact scan must not claim that this ANN generation
+    // sealed an exact index, or mutate the next ordinary query's lane.
+    let bounded = rt.query_once(|pin| {
+        quanta_index_contract::SearchPlaneQueryIpcRequest::SemanticWorkBoundedV1(
+            quanta_index_contract::SemanticWorkBoundedQueryRequestV1 {
+                query: quanta_index_contract::SemanticQueryRequest {
+                    query_text: file_content(2, probe),
+                    constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+                    generation: pin,
+                    generation_selector: None,
+                    lexical_scope: None,
+                    top_k: TOP_K,
+                },
+                max_work_units: 1_000_000,
+            },
+        )
+    })?;
+    let quanta_index_contract::SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(bounded) =
+        bounded
+    else {
+        return Err(format!("bounded ANN query failed: {bounded:?}").into());
+    };
+    if !bounded.query.explanation.planner_trace.iter().any(|entry| {
+        entry.detail == "dense.index=exact; dense.attestation=exact_scan_of_sealed_rows"
+    }) || bounded.query.results.first().map(|row| &row.candidate_id) != Some(probe_id)
+    {
+        return Err(
+            format!("exact bypass misreported its sealed ANN authority: {bounded:?}").into(),
+        );
+    }
+    let ordinary_after = rt.query_semantic(&file_content(2, probe), TOP_K, None);
+    served(
+        &ordinary_after,
+        "ordinary semantic query after bounded exact scan",
+    )?;
+    if dense_lane_trace(&ordinary_after).as_deref() != Some(delta_trace.as_str()) {
+        return Err("bounded exact scan changed the next ordinary ANN contract".into());
+    }
+
     // Cost oracle: the delta shares every base index file by inode and
     // its own new index bytes are a fraction of the base's.
     let delta_index_bytes = index_bytes_by_inode(&semantic_generation_dir(&rt, delta)?)?;

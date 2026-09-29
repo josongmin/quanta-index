@@ -206,7 +206,8 @@ fn result_count_of(response: &SearchPlaneQueryIpcResponse) -> Option<u64> {
         SearchPlaneQueryIpcResponse::Symbol(page) => page.results.len(),
         SearchPlaneQueryIpcResponse::Semantic(page) => page.results.len(),
         SearchPlaneQueryIpcResponse::Hybrid(page) => page.results.len(),
-        SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+        SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_)
+        | SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
         | SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_)
         | SearchPlaneQueryIpcResponse::HybridSeed(_)
         | SearchPlaneQueryIpcResponse::History(_)
@@ -260,6 +261,11 @@ fn classify_response(
         SearchPlaneQueryIpcResponse::Text(page) => &page.generation,
         SearchPlaneQueryIpcResponse::Symbol(page) => &page.generation,
         SearchPlaneQueryIpcResponse::Semantic(page) => &page.generation,
+        SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_) => {
+            return Err(anyhow::anyhow!(
+                "concurrency: unexpected bounded semantic response"
+            ));
+        }
         SearchPlaneQueryIpcResponse::Hybrid(page) => &page.generation,
         SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
         | SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_)

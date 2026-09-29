@@ -117,6 +117,7 @@ SEMBLE_ROUTE_BY_MODE = {
 }
 QUANTA_SYMBOL_PRODUCER_IDENTITY = "source-bound-symbols-v2"
 QUANTA_SYMBOL_GRAMMARS = symbol_coverage.grammar_identity()
+PAIR_QUANTA_POLICIES = frozenset(qp.V4_SUPPORTED_POLICIES)
 
 
 def _validate_semble_profile(value: object, where: str) -> dict:
@@ -2730,6 +2731,11 @@ def load_spec(path: Path) -> dict:
         raise RunError("spec.execution_profiles.quanta is invalid")
     if quanta_profile != qp.execution_profile(quanta_profile["policy"]):
         raise RunError("spec.execution_profiles.quanta differs from the frozen profile")
+    if quanta_profile["policy"] not in PAIR_QUANTA_POLICIES:
+        raise RunError(
+            "spec.execution_profiles.quanta uses a diagnostic rank profile; "
+            "run it as a standalone Quanta capture"
+        )
     if "semble" in profiles:
         _validate_semble_profile(profiles["semble"], "spec.execution_profiles.semble")
     _spec_int(spec, "top_k", 1)
@@ -3425,11 +3431,19 @@ def _validate_explanation(
 
 
 def _validate_native_span_projection(
-    payload: object, candidates: list, scored: list, returned: int, where: str
+    payload: object,
+    candidates: list,
+    scored: list,
+    returned: int,
+    where: str,
+    *,
+    rank_unit: str | None = None,
 ) -> None:
     projection = _exact_keys(payload, {"policy", "hits"}, f"{where}.native_projection")
+    symbol_units = rank_unit == "symbol"
+    expected_policy = "symbol-unit-v1" if symbol_units else "first-source-span-v1"
     if (
-        projection["policy"] != "first-source-span-v1"
+        projection["policy"] != expected_policy
         or not isinstance(projection["hits"], list)
         or len(projection["hits"]) != returned
         or len(candidates) != len(scored)
@@ -3441,15 +3455,22 @@ def _validate_native_span_projection(
         if not isinstance(candidate, dict):
             raise RunError(f"{where} scored source span is malformed")
         span = (candidate.get("path"), candidate.get("start_byte"), candidate.get("end_byte"))
+        accounting = candidate.get("span_accounting")
+        unit = accounting.get("unit_id") if isinstance(accounting, dict) else None
+        if symbol_units and (
+            not isinstance(unit, str) or not unit or accounting.get("unit_kind") != "symbol"
+        ):
+            raise RunError(f"{where} native projection lacks a bound symbol unit")
+        identity = (unit, *span) if symbol_units else span
         if (
             not isinstance(span[0], str)
             or type(span[1]) is not int
             or type(span[2]) is not int
             or not 0 <= span[1] < span[2]
-            or span in spans
+            or identity in spans
         ):
             raise RunError(f"{where} scored source span is invalid or duplicated")
-        spans[span] = rank
+        spans[identity] = rank
     seen_units = set()
     first_spans = set()
     for value in projection["hits"]:
@@ -3463,17 +3484,18 @@ def _validate_native_span_projection(
             raise RunError(f"{where} native projection unit is invalid or duplicated")
         seen_units.add(unit)
         span = (hit["path"], hit["start_byte"], hit["end_byte"])
+        identity = (unit, *span) if symbol_units else span
         if (
             not isinstance(span[0], str)
             or type(span[1]) is not int
             or type(span[2]) is not int
             or not 0 <= span[1] < span[2]
             or type(hit["scored_rank"]) is not int
-            or spans.get(span) != hit["scored_rank"]
+            or spans.get(identity) != hit["scored_rank"]
         ):
             raise RunError(f"{where} native projection omitted or substituted a source span")
         rank = hit["scored_rank"]
-        if span not in first_spans:
+        if identity not in first_spans:
             accounting = scored[rank - 1].get("span_accounting")
             if (
                 rank != len(first_spans) + 1
@@ -3482,7 +3504,7 @@ def _validate_native_span_projection(
                 or candidates[rank - 1].get("candidate_id") != unit
             ):
                 raise RunError(f"{where} native projection changed first-hit order or identity")
-            first_spans.add(span)
+            first_spans.add(identity)
     if len(first_spans) != len(scored):
         raise RunError(f"{where} native projection lacks a scored source span")
 
@@ -3528,12 +3550,16 @@ def _validate_diagnostic_response_v3(
         if projected:
             if reference is None:
                 raise RunError(f"{where} native projection lacks its bound record")
+            rank_unit = reference.get("rank_unit")
+            if rank_unit == "symbol" and key[1] != "symbol":
+                raise RunError(f"{where} symbol projection requires the symbol route")
             _validate_native_span_projection(
                 detail["native_projection"],
                 row["candidates"],
                 reference["candidates"],
                 returned,
                 where,
+                rank_unit=rank_unit,
             )
         elif returned != len(row["candidates"]):
             raise RunError(f"{where} returned count differs from candidates")
@@ -7621,6 +7647,12 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             isolation_error = str(exc)
     if not claims["quality"]:
         set_state("QUALITY_DELTA", "not_applicable", "no_quality_claim", None)
+    elif (
+        protocol_payload.get("execution_profiles", {}).get("quanta", {}).get("policy")
+        not in PAIR_QUANTA_POLICIES
+    ):
+        set_state("QUALITY_DELTA", "fail", "diagnostic_rank_profile", None)
+        classes.append("scoring")
     elif not matched:
         set_state("QUALITY_DELTA", "not_run", "reports_unmatched", None)
     elif manifest["scope"] != "qualified":

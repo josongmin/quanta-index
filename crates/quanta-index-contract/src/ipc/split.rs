@@ -34,6 +34,7 @@ const SEARCH_PLANE_QUERY_IPC_REQUEST_VARIANTS: &[&str] = &[
     "Text",
     "Symbol",
     "Semantic",
+    "SemanticWorkBoundedV1",
     "Hybrid",
     "HybridSeed",
     "History",
@@ -49,6 +50,7 @@ const SEARCH_PLANE_QUERY_IPC_RESPONSE_VARIANTS: &[&str] = &[
     "Text",
     "Symbol",
     "Semantic",
+    "SemanticWorkBoundedV1",
     "Hybrid",
     "HybridSeed",
     "History",
@@ -95,6 +97,143 @@ pub struct SearchPlaneQueryIpcRequestEnvelope {
     pub payload: SearchPlaneQueryIpcRequest,
 }
 
+/// Dedicated work-bounded semantic request.
+///
+/// A V1 semantic request remains
+/// unchanged; this variant requires an exact generation and a finite work
+/// allowance, and never falls back to the ordinary semantic route. Units cover
+/// query input bytes, the sealed exact-scan vector-component upper bound, and
+/// result rows. They do not represent all embedding-provider or Arrow CPU.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SemanticWorkBoundedQueryRequestV1 {
+    pub query: SemanticQueryRequest,
+    pub max_work_units: u64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SemanticWorkBoundedQueryResponseV1 {
+    pub query: SemanticQueryResponse,
+    pub charged_work_units: u64,
+}
+
+const SEMANTIC_WORK_REQUEST_FIELDS: &[&str] = &["query", "max_work_units"];
+const SEMANTIC_WORK_RESPONSE_FIELDS: &[&str] = &["query", "charged_work_units"];
+
+fn deserialize_semantic_work<'de, A, Query>(
+    mut map: A,
+    work_field: &'static str,
+    fields: &'static [&'static str],
+) -> Result<(Query, u64), A::Error>
+where
+    A: MapAccess<'de>,
+    Query: Deserialize<'de>,
+{
+    let mut query = None;
+    let mut work_units = None;
+    while let Some(key) = map.next_key::<String>()? {
+        if key == "query" {
+            if query.is_some() {
+                return Err(de::Error::duplicate_field("query"));
+            }
+            query = Some(map.next_value()?);
+        } else if key == work_field {
+            if work_units.is_some() {
+                return Err(de::Error::duplicate_field(work_field));
+            }
+            work_units = Some(map.next_value()?);
+        } else {
+            return Err(de::Error::unknown_field(&key, fields));
+        }
+    }
+    Ok((
+        query.ok_or_else(|| de::Error::missing_field("query"))?,
+        work_units.ok_or_else(|| de::Error::missing_field(work_field))?,
+    ))
+}
+
+impl Serialize for SemanticWorkBoundedQueryRequestV1 {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut state = serializer.serialize_struct("SemanticWorkBoundedQueryRequestV1", 2)?;
+        state.serialize_field("query", &self.query)?;
+        state.serialize_field("max_work_units", &self.max_work_units)?;
+        state.end()
+    }
+}
+
+struct SemanticWorkBoundedQueryRequestVisitorV1;
+
+impl<'de> Visitor<'de> for SemanticWorkBoundedQueryRequestVisitorV1 {
+    type Value = SemanticWorkBoundedQueryRequestV1;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a SemanticWorkBoundedQueryRequestV1 map")
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
+        let (query, max_work_units) =
+            deserialize_semantic_work(map, "max_work_units", SEMANTIC_WORK_REQUEST_FIELDS)?;
+        Ok(SemanticWorkBoundedQueryRequestV1 {
+            query,
+            max_work_units,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for SemanticWorkBoundedQueryRequestV1 {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_struct(
+            "SemanticWorkBoundedQueryRequestV1",
+            SEMANTIC_WORK_REQUEST_FIELDS,
+            SemanticWorkBoundedQueryRequestVisitorV1,
+        )
+    }
+}
+
+impl Serialize for SemanticWorkBoundedQueryResponseV1 {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut state = serializer.serialize_struct("SemanticWorkBoundedQueryResponseV1", 2)?;
+        state.serialize_field("query", &self.query)?;
+        state.serialize_field("charged_work_units", &self.charged_work_units)?;
+        state.end()
+    }
+}
+
+struct SemanticWorkBoundedQueryResponseVisitorV1;
+
+impl<'de> Visitor<'de> for SemanticWorkBoundedQueryResponseVisitorV1 {
+    type Value = SemanticWorkBoundedQueryResponseV1;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a SemanticWorkBoundedQueryResponseV1 map")
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
+        let (query, charged_work_units) =
+            deserialize_semantic_work(map, "charged_work_units", SEMANTIC_WORK_RESPONSE_FIELDS)?;
+        Ok(SemanticWorkBoundedQueryResponseV1 {
+            query,
+            charged_work_units,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for SemanticWorkBoundedQueryResponseV1 {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_struct(
+            "SemanticWorkBoundedQueryResponseV1",
+            SEMANTIC_WORK_RESPONSE_FIELDS,
+            SemanticWorkBoundedQueryResponseVisitorV1,
+        )
+    }
+}
+
+/// Service admission cap for deterministic semantic query work units.
+pub const SEMANTIC_WORK_OPERATIONAL_CAP_V1: u64 = 10_000_000;
+
+/// Maximum uncompressed IPC body, including semantic query responses.
+/// Clients reserve their response materialization before opening this frame.
+pub const MAX_IPC_FRAME_BODY_BYTES_V1: usize = 16 * 1024 * 1024;
+
 #[derive(Clone, Debug, PartialEq)]
 #[expect(
     clippy::large_enum_variant,
@@ -106,6 +245,7 @@ pub enum SearchPlaneQueryIpcRequest {
     Text(TextQueryRequest),
     Symbol(SymbolQueryRequest),
     Semantic(SemanticQueryRequest),
+    SemanticWorkBoundedV1(SemanticWorkBoundedQueryRequestV1),
     Hybrid(HybridQueryRequest),
     HybridSeed(HybridSeedQueryRequest),
     History(HistoryQueryRequest),
@@ -129,6 +269,7 @@ pub enum SearchPlaneQueryIpcResponse {
     Text(TextQueryResponse),
     Symbol(SymbolQueryResponse),
     Semantic(SemanticQueryResponse),
+    SemanticWorkBoundedV1(SemanticWorkBoundedQueryResponseV1),
     Hybrid(HybridQueryResponse),
     HybridSeed(HybridSeedQueryResponse),
     History(SearchPlaneHistoryQueryResponse),
@@ -142,13 +283,16 @@ pub enum SearchPlaneQueryIpcResponse {
 
 impl SearchPlaneQueryIpcResponse {
     /// Stamp the transport request id onto the carried explanation (S21-10),
-    /// so a typed payload correlates without its envelope. Only the four
-    /// explanation-carrying variants (`Semantic`, `Hybrid`, `HybridSeed`,
-    /// `Explain`) change; every other variant has no explanation to stamp
+    /// so a typed payload correlates without its envelope. Only the five
+    /// explanation-carrying variants (`Semantic`, `SemanticWorkBoundedV1`,
+    /// `Hybrid`, `HybridSeed`, `Explain`) change; every other variant has no explanation to stamp
     /// and is left untouched.
     pub fn stamp_request_id(&mut self, request_id: u64) {
         let explanation = match self {
             SearchPlaneQueryIpcResponse::Semantic(response) => Some(&mut response.explanation),
+            SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(response) => {
+                Some(&mut response.query.explanation)
+            }
             SearchPlaneQueryIpcResponse::Hybrid(response) => Some(&mut response.explanation),
             SearchPlaneQueryIpcResponse::HybridSeed(response) => Some(&mut response.explanation),
             SearchPlaneQueryIpcResponse::Explain(response) => Some(&mut response.explanation),
@@ -388,6 +532,12 @@ impl Serialize for SearchPlaneQueryIpcRequest {
                 payload,
                 serializer,
             ),
+            Self::SemanticWorkBoundedV1(payload) => serialize_adjacent_tagged(
+                "SearchPlaneQueryIpcRequest",
+                "SemanticWorkBoundedV1",
+                payload,
+                serializer,
+            ),
             Self::Hybrid(payload) => serialize_adjacent_tagged(
                 "SearchPlaneQueryIpcRequest",
                 "Hybrid",
@@ -480,6 +630,9 @@ impl<'de> Visitor<'de> for SearchPlaneQueryIpcRequestVisitor {
                         "Text" => SearchPlaneQueryIpcRequest::Text(map.next_value()?),
                         "Symbol" => SearchPlaneQueryIpcRequest::Symbol(map.next_value()?),
                         "Semantic" => SearchPlaneQueryIpcRequest::Semantic(map.next_value()?),
+                        "SemanticWorkBoundedV1" => {
+                            SearchPlaneQueryIpcRequest::SemanticWorkBoundedV1(map.next_value()?)
+                        }
                         "Hybrid" => SearchPlaneQueryIpcRequest::Hybrid(map.next_value()?),
                         "HybridSeed" => SearchPlaneQueryIpcRequest::HybridSeed(map.next_value()?),
                         "History" => SearchPlaneQueryIpcRequest::History(map.next_value()?),
@@ -619,6 +772,12 @@ impl Serialize for SearchPlaneQueryIpcResponse {
                 payload,
                 serializer,
             ),
+            Self::SemanticWorkBoundedV1(payload) => serialize_adjacent_tagged(
+                "SearchPlaneQueryIpcResponse",
+                "SemanticWorkBoundedV1",
+                payload,
+                serializer,
+            ),
             Self::Hybrid(payload) => serialize_adjacent_tagged(
                 "SearchPlaneQueryIpcResponse",
                 "Hybrid",
@@ -719,6 +878,9 @@ impl<'de> Visitor<'de> for SearchPlaneQueryIpcResponseVisitor {
                         "Text" => SearchPlaneQueryIpcResponse::Text(map.next_value()?),
                         "Symbol" => SearchPlaneQueryIpcResponse::Symbol(map.next_value()?),
                         "Semantic" => SearchPlaneQueryIpcResponse::Semantic(map.next_value()?),
+                        "SemanticWorkBoundedV1" => {
+                            SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(map.next_value()?)
+                        }
                         "Hybrid" => SearchPlaneQueryIpcResponse::Hybrid(map.next_value()?),
                         "HybridSeed" => SearchPlaneQueryIpcResponse::HybridSeed(map.next_value()?),
                         "History" => SearchPlaneQueryIpcResponse::History(map.next_value()?),
@@ -1302,6 +1464,127 @@ mod tests {
 
     fn fixture_revision() -> RevisionId {
         RevisionId::new("rev").expect("static fixture ID satisfies canonical policy")
+    }
+
+    #[test]
+    fn work_bounded_semantic_has_distinct_wire_kind_and_settlement() {
+        let pin = crate::GenerationPin::new(
+            fixture_repo(),
+            fixture_revision(),
+            ManifestGeneration::new(1),
+        );
+        let request =
+            SearchPlaneQueryIpcRequest::SemanticWorkBoundedV1(SemanticWorkBoundedQueryRequestV1 {
+                query: SemanticQueryRequest {
+                    query_text: "auth".into(),
+                    constraints: crate::QueryConstraintSetV1::unconstrained(),
+                    generation: Some(pin.clone()),
+                    generation_selector: None,
+                    lexical_scope: None,
+                    top_k: 2,
+                },
+                max_work_units: 4_096,
+            });
+        assert_eq!(
+            serde_json::to_value(&request)
+                .expect("JSON")
+                .get("kind")
+                .cloned(),
+            Some(serde_json::json!("SemanticWorkBoundedV1"))
+        );
+        assert_eq!(
+            serde_json::from_value::<SearchPlaneQueryIpcRequest>(
+                serde_json::to_value(&request).expect("request JSON")
+            )
+            .expect("request JSON decode"),
+            request
+        );
+        assert_eq!(
+            decode::<SearchPlaneQueryIpcRequest>(&encode(&request).expect("CBOR")).expect("decode"),
+            request
+        );
+        let mut response = SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(
+            SemanticWorkBoundedQueryResponseV1 {
+                query: SemanticQueryResponse {
+                    generation: pin,
+                    results: Vec::new(),
+                    window: crate::QueryResultWindowV2::exact_probe(0),
+                    explanation: crate::SearchExplanation::empty(),
+                },
+                charged_work_units: 5,
+            },
+        );
+        response.stamp_request_id(19);
+        assert_eq!(
+            serde_json::to_value(&response)
+                .expect("JSON")
+                .get("kind")
+                .cloned(),
+            Some(serde_json::json!("SemanticWorkBoundedV1"))
+        );
+        assert_eq!(
+            decode::<SearchPlaneQueryIpcResponse>(&encode(&response).expect("CBOR"))
+                .expect("decode"),
+            response
+        );
+        let SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(settled) = response else {
+            panic!("dedicated response variant");
+        };
+        assert_eq!(settled.query.explanation.request_id, 19);
+        assert_eq!(settled.charged_work_units, 5);
+    }
+
+    #[test]
+    fn work_bounded_semantic_wire_refuses_ambiguous_or_incomplete_fields() {
+        let pin = crate::GenerationPin::new(
+            fixture_repo(),
+            fixture_revision(),
+            ManifestGeneration::new(1),
+        );
+        let request_query = SemanticQueryRequest {
+            query_text: "auth".into(),
+            constraints: crate::QueryConstraintSetV1::unconstrained(),
+            generation: Some(pin.clone()),
+            generation_selector: None,
+            lexical_scope: None,
+            top_k: 2,
+        };
+        let query = serde_json::to_string(&request_query).expect("request query JSON");
+        for malformed in [
+            format!("{{\"query\":{query},\"max_work_units\":1,\"max_work_units\":2}}"),
+            format!("{{\"query\":{query},\"query\":{query},\"max_work_units\":1}}"),
+            format!("{{\"query\":{query}}}"),
+            "{\"max_work_units\":1}".into(),
+            format!("{{\"query\":{query},\"max_work_units\":1,\"extra\":0}}"),
+            format!("{{\"query\":{query},\"max_work_units\":-1}}"),
+            format!("{{\"query\":{query},\"max_work_units\":1.5}}"),
+        ] {
+            assert!(
+                serde_json::from_str::<SemanticWorkBoundedQueryRequestV1>(&malformed).is_err(),
+                "accepted ambiguous request: {malformed}"
+            );
+        }
+        let response_query = SemanticQueryResponse {
+            generation: pin,
+            results: Vec::new(),
+            window: crate::QueryResultWindowV2::exact_probe(0),
+            explanation: crate::SearchExplanation::empty(),
+        };
+        let query = serde_json::to_string(&response_query).expect("response query JSON");
+        for malformed in [
+            format!("{{\"query\":{query},\"charged_work_units\":1,\"charged_work_units\":2}}"),
+            format!("{{\"query\":{query},\"query\":{query},\"charged_work_units\":1}}"),
+            format!("{{\"query\":{query}}}"),
+            "{\"charged_work_units\":1}".into(),
+            format!("{{\"query\":{query},\"charged_work_units\":1,\"extra\":0}}"),
+            format!("{{\"query\":{query},\"charged_work_units\":-1}}"),
+            format!("{{\"query\":{query},\"charged_work_units\":1.5}}"),
+        ] {
+            assert!(
+                serde_json::from_str::<SemanticWorkBoundedQueryResponseV1>(&malformed).is_err(),
+                "accepted ambiguous response: {malformed}"
+            );
+        }
     }
 
     #[test]
@@ -2161,6 +2444,9 @@ mod tests {
             }
             let stamped = match response {
                 SearchPlaneQueryIpcResponse::Semantic(r) => Some(r.explanation.request_id),
+                SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(r) => {
+                    Some(r.query.explanation.request_id)
+                }
                 SearchPlaneQueryIpcResponse::Hybrid(r) => Some(r.explanation.request_id),
                 SearchPlaneQueryIpcResponse::HybridSeed(r) => Some(r.explanation.request_id),
                 SearchPlaneQueryIpcResponse::Explain(r) => Some(r.explanation.request_id),

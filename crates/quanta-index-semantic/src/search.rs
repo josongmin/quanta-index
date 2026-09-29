@@ -103,6 +103,7 @@ pub(crate) struct LoadedGeneration {
     revision_id: RevisionId,
     generation: ManifestGeneration,
     dimension: usize,
+    sealed_row_count: u64,
     /// The normalization the generation was sealed under: what every query
     /// vector is held to, as every ingested row was (QI-BB-031).
     normalization: EmbeddingNormalization,
@@ -366,6 +367,7 @@ pub(crate) async fn open_generation(
         revision_id: revision.clone(),
         generation,
         dimension,
+        sealed_row_count: manifest.row_count,
         normalization,
         model_id: manifest.model_id.clone(),
         model_version: manifest.model_version.clone(),
@@ -1258,6 +1260,54 @@ impl SemanticSearcher for PersistedSemanticSearcher {
                 None,
                 constraints,
                 self.watch(budget),
+            ),
+        )
+        .map(LoadedGeneration::map_hits_to_candidates)
+    }
+
+    fn search_work_bounded_v1(
+        &self,
+        query_vector: &[f32],
+        constraints: &QueryConstraintSetV1,
+        top_k: u32,
+        budget: &RequestBudgetV1,
+    ) -> Result<Vec<LexicalCandidate>, CoreError> {
+        if budget.semantic_work_consumed_v1()?.is_none() {
+            return Err(CoreError::InvalidContract(
+                "bounded semantic search requires a work ledger".into(),
+            ));
+        }
+        SemanticPolicy::validate_fetch_size(top_k)?;
+        let limit = top_k_limit(top_k)?;
+        // The sealed physical row count is checked when the generation opens.
+        // Admit every possible vector component score before the exact lane.
+        self.loaded.validate_query_vector(query_vector)?;
+        let dimensions = u64::try_from(self.loaded.dimension).map_err(|error| {
+            CoreError::InvalidContract(format!("semantic dimension overflow: {error}"))
+        })?;
+        let work = self
+            .loaded
+            .sealed_row_count
+            .checked_mul(dimensions)
+            .ok_or_else(|| CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::SemanticWorkBudgetExceeded,
+                message: "sealed semantic generation exceeds work representation".into(),
+            })?;
+        budget.consume_semantic_work_v1(work)?;
+        crate::run_blocking(
+            &self.runtime,
+            self.loaded.run_lane(
+                query_vector,
+                limit,
+                LoadedGeneration::combine_filters(
+                    LoadedGeneration::language_any_of_filter(constraints)
+                        .into_iter()
+                        .chain(LoadedGeneration::exact_repo_relative_path_filter(
+                            constraints,
+                        )),
+                ),
+                self.watch(budget),
+                DenseLaneKindV1::Exact,
             ),
         )
         .map(LoadedGeneration::map_hits_to_candidates)

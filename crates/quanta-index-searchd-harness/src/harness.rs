@@ -2146,6 +2146,9 @@ impl E2eRuntime {
             SearchPlaneQueryIpcResponse::Text(_) => unexpected_history_response("Text"),
             SearchPlaneQueryIpcResponse::Symbol(_) => unexpected_history_response("Symbol"),
             SearchPlaneQueryIpcResponse::Semantic(_) => unexpected_history_response("Semantic"),
+            SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_) => {
+                unexpected_history_response("SemanticWorkBoundedV1")
+            }
             SearchPlaneQueryIpcResponse::Hybrid(_) => unexpected_history_response("Hybrid"),
             SearchPlaneQueryIpcResponse::HybridSeed(_) => unexpected_history_response("HybridSeed"),
             SearchPlaneQueryIpcResponse::Structural(_) => unexpected_history_response("Structural"),
@@ -2222,6 +2225,7 @@ impl E2eRuntime {
                 | SearchPlaneQueryIpcResponse::Text(_)
                 | SearchPlaneQueryIpcResponse::Symbol(_)
                 | SearchPlaneQueryIpcResponse::Semantic(_)
+                | SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_)
                 | SearchPlaneQueryIpcResponse::Hybrid(_)
                 | SearchPlaneQueryIpcResponse::HybridSeed(_)
                 | SearchPlaneQueryIpcResponse::History(_)
@@ -2260,6 +2264,7 @@ impl E2eRuntime {
                 | SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_)
                 | SearchPlaneQueryIpcResponse::Symbol(_)
                 | SearchPlaneQueryIpcResponse::Semantic(_)
+                | SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_)
                 | SearchPlaneQueryIpcResponse::Hybrid(_)
                 | SearchPlaneQueryIpcResponse::HybridSeed(_)
                 | SearchPlaneQueryIpcResponse::History(_)
@@ -2317,6 +2322,7 @@ impl E2eRuntime {
                 | SearchPlaneQueryIpcResponse::Text(_)
                 | SearchPlaneQueryIpcResponse::Symbol(_)
                 | SearchPlaneQueryIpcResponse::Semantic(_)
+                | SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_)
                 | SearchPlaneQueryIpcResponse::Hybrid(_)
                 | SearchPlaneQueryIpcResponse::HybridSeed(_)
                 | SearchPlaneQueryIpcResponse::History(_)
@@ -2367,6 +2373,7 @@ impl E2eRuntime {
             | SearchPlaneQueryIpcResponse::Text(_)
             | SearchPlaneQueryIpcResponse::Symbol(_)
             | SearchPlaneQueryIpcResponse::Semantic(_)
+            | SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_)
             | SearchPlaneQueryIpcResponse::Hybrid(_)
             | SearchPlaneQueryIpcResponse::HybridSeed(_)
             | SearchPlaneQueryIpcResponse::History(_)
@@ -2473,6 +2480,9 @@ impl E2eRuntime {
             }
             SearchPlaneQueryIpcResponse::Symbol(_) => unexpected_response("Symbol"),
             SearchPlaneQueryIpcResponse::Semantic(_) => unexpected_response("Semantic"),
+            SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_) => {
+                unexpected_response("SemanticWorkBoundedV1")
+            }
             SearchPlaneQueryIpcResponse::Hybrid(_) => unexpected_response("Hybrid"),
             SearchPlaneQueryIpcResponse::HybridSeed(_) => unexpected_response("HybridSeed"),
             SearchPlaneQueryIpcResponse::History(_) => unexpected_response("History"),
@@ -2630,6 +2640,9 @@ impl E2eRuntime {
             }
             SearchPlaneQueryIpcResponse::Text(_) => unexpected_response("Text"),
             SearchPlaneQueryIpcResponse::Symbol(_) => unexpected_response("Symbol"),
+            SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_) => {
+                unexpected_response("SemanticWorkBoundedV1")
+            }
             SearchPlaneQueryIpcResponse::Hybrid(_) => unexpected_response("Hybrid"),
             SearchPlaneQueryIpcResponse::HybridSeed(_) => unexpected_response("HybridSeed"),
             SearchPlaneQueryIpcResponse::History(_) => unexpected_response("History"),
@@ -2737,6 +2750,9 @@ impl E2eRuntime {
             SearchPlaneQueryIpcResponse::Text(_) => unexpected_response("Text"),
             SearchPlaneQueryIpcResponse::Symbol(_) => unexpected_response("Symbol"),
             SearchPlaneQueryIpcResponse::Semantic(_) => unexpected_response("Semantic"),
+            SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_) => {
+                unexpected_response("SemanticWorkBoundedV1")
+            }
             SearchPlaneQueryIpcResponse::History(_) => unexpected_response("History"),
             SearchPlaneQueryIpcResponse::HybridSeed(_) => unexpected_response("HybridSeed"),
             SearchPlaneQueryIpcResponse::Structural(_) => unexpected_response("Structural"),
@@ -2972,6 +2988,9 @@ impl E2eRuntime {
             SearchPlaneQueryIpcResponse::Text(_) => unexpected_explain_response("Text"),
             SearchPlaneQueryIpcResponse::Symbol(_) => unexpected_explain_response("Symbol"),
             SearchPlaneQueryIpcResponse::Semantic(_) => unexpected_explain_response("Semantic"),
+            SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_) => {
+                unexpected_explain_response("SemanticWorkBoundedV1")
+            }
             SearchPlaneQueryIpcResponse::Hybrid(_) => unexpected_explain_response("Hybrid"),
             SearchPlaneQueryIpcResponse::HybridSeed(_) => unexpected_explain_response("HybridSeed"),
             SearchPlaneQueryIpcResponse::History(_) => unexpected_explain_response("History"),
@@ -3272,6 +3291,7 @@ fn query_response_ready(response: &SearchPlaneQueryIpcResponseEnvelope) -> bool 
         | SearchPlaneQueryIpcResponse::Text(_)
         | SearchPlaneQueryIpcResponse::Symbol(_)
         | SearchPlaneQueryIpcResponse::Semantic(_)
+        | SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_)
         | SearchPlaneQueryIpcResponse::Hybrid(_)
         | SearchPlaneQueryIpcResponse::HybridSeed(_)
         | SearchPlaneQueryIpcResponse::History(_)
@@ -3296,6 +3316,7 @@ fn query_response_ready_allow_structural_not_ready(
         | SearchPlaneQueryIpcResponse::Text(_)
         | SearchPlaneQueryIpcResponse::Symbol(_)
         | SearchPlaneQueryIpcResponse::Semantic(_)
+        | SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_)
         | SearchPlaneQueryIpcResponse::Hybrid(_)
         | SearchPlaneQueryIpcResponse::HybridSeed(_)
         | SearchPlaneQueryIpcResponse::History(_)
@@ -3321,6 +3342,9 @@ fn describe_query_response_payload(payload: &SearchPlaneQueryIpcResponse) -> Str
         SearchPlaneQueryIpcResponse::Text(_) => "Text".to_string(),
         SearchPlaneQueryIpcResponse::Symbol(_) => "Symbol".to_string(),
         SearchPlaneQueryIpcResponse::Semantic(_) => "Semantic".to_string(),
+        SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_) => {
+            "SemanticWorkBoundedV1".to_string()
+        }
         SearchPlaneQueryIpcResponse::Hybrid(_) => "Hybrid".to_string(),
         SearchPlaneQueryIpcResponse::HybridSeed(_) => "HybridSeed".to_string(),
         SearchPlaneQueryIpcResponse::History(_) => "History".to_string(),
@@ -3558,6 +3582,11 @@ fn route_window_probe_from_response(
         SearchPlaneQueryIpcResponse::Semantic(semantic) => {
             (semantic.results.len(), Some(semantic.window))
         }
+        SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_) => {
+            return Err(anyhow::anyhow!(
+                "e2e-harness: unexpected work-bounded semantic response"
+            ));
+        }
         SearchPlaneQueryIpcResponse::Hybrid(hybrid) => (hybrid.results.len(), Some(hybrid.window)),
         SearchPlaneQueryIpcResponse::HybridSeed(seed) => {
             (seed.seed_candidates.len(), Some(seed.window))
@@ -3598,6 +3627,7 @@ fn query_response_kind(payload: &SearchPlaneQueryIpcResponse) -> &'static str {
         SearchPlaneQueryIpcResponse::Text(_) => "Text",
         SearchPlaneQueryIpcResponse::Symbol(_) => "Symbol",
         SearchPlaneQueryIpcResponse::Semantic(_) => "Semantic",
+        SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_) => "SemanticWorkBoundedV1",
         SearchPlaneQueryIpcResponse::Hybrid(_) => "Hybrid",
         SearchPlaneQueryIpcResponse::HybridSeed(_) => "HybridSeed",
         SearchPlaneQueryIpcResponse::History(_) => "History",

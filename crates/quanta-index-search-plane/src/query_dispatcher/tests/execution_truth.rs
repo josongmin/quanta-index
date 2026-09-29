@@ -266,6 +266,9 @@ fn lane_flags(
         SearchPlaneQueryIpcResponse::Semantic(response) => {
             Ok(flags(response.window.coverage().lanes()))
         }
+        SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(response) => {
+            Ok(flags(response.query.window.coverage().lanes()))
+        }
         SearchPlaneQueryIpcResponse::Hybrid(response) => {
             Ok(flags(response.window.coverage().lanes()))
         }
@@ -1269,6 +1272,9 @@ fn one_correlation_reaches_every_route_explanation() -> TestResult {
     fn explanation_id(response: &SearchPlaneQueryIpcResponse) -> Result<u64, BoxError> {
         match response {
             SearchPlaneQueryIpcResponse::Semantic(r) => Ok(r.explanation.request_id),
+            SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(r) => {
+                Ok(r.query.explanation.request_id)
+            }
             SearchPlaneQueryIpcResponse::Hybrid(r) => Ok(r.explanation.request_id),
             SearchPlaneQueryIpcResponse::HybridSeed(r) => Ok(r.explanation.request_id),
             SearchPlaneQueryIpcResponse::Explain(r) => Ok(r.explanation.request_id),

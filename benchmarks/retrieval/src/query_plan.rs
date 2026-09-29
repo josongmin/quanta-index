@@ -14,6 +14,8 @@
 //!   over-limit plans are typed refusals; there is no match-all fallback.
 //! * `exact_symbol_name` — one bare ASCII identifier becomes a case-sensitive
 //!   exact local-name predicate for the symbol route. Other text refuses.
+//! * `literal_file` — one raw query becomes a safely escaped lexical phrase
+//!   projected to distinct files before top-k truncation.
 //!
 //! Every plan carries the four identity digests of the canonical profile
 //! contract (`docs/adr/SEP-26-001-retrieval-query-publication-and-result-proof.md`
@@ -23,6 +25,7 @@
 //! measurement phases.
 
 use crate::sha256_hex;
+use quanta_index_lq_norm::ast::{LqFilter, LqNormalizedQuery, LqSelect, LqType};
 use quanta_index_lq_norm::{parser::parse as parse_lq, tokenizer::tokenize as tokenize_lq};
 use quanta_index_lq_text_normalizer::{
     CaseMode, TEXT_NORMALIZER_VERSION, TextQueryError, is_token_char, nfc, query_tokens,
@@ -43,6 +46,7 @@ pub const fn execution_profile_id(policy: QueryInputPolicy) -> &'static str {
     match policy {
         QueryInputPolicy::Native => "quanta-native-v1",
         QueryInputPolicy::Literal => "quanta-literal-v1",
+        QueryInputPolicy::LiteralFile => "quanta-literal-file-v1",
         QueryInputPolicy::NaturalLanguage => "quanta-natural-language-ucd17-v2",
         QueryInputPolicy::ExactSymbolName => "quanta-exact-symbol-name-v1",
     }
@@ -55,6 +59,8 @@ pub enum QueryInputPolicy {
     Native,
     /// Escape the whole raw query into a single phrase literal.
     Literal,
+    /// Escape the raw query as a phrase and request file projection.
+    LiteralFile,
     /// Keep the raw query for the semantic lane and derive a deterministic
     /// token-OR lexical plan from it.
     NaturalLanguage,
@@ -73,6 +79,7 @@ impl QueryInputPolicy {
         match raw {
             "native" => Ok(Self::Native),
             "literal" => Ok(Self::Literal),
+            "literal_file" => Ok(Self::LiteralFile),
             "natural_language" => Ok(Self::NaturalLanguage),
             "exact_symbol_name" => Ok(Self::ExactSymbolName),
             other => Err(QueryPlanError::UnsupportedPolicy(other.to_string())),
@@ -85,6 +92,7 @@ impl QueryInputPolicy {
         match self {
             Self::Native => "native",
             Self::Literal => "literal",
+            Self::LiteralFile => "literal_file",
             Self::NaturalLanguage => "natural_language",
             Self::ExactSymbolName => "exact_symbol_name",
         }
@@ -167,6 +175,8 @@ pub enum QueryPlanError {
         /// Parser diagnostic detail.
         detail: String,
     },
+    /// Native DSL selected a rank projection without an explicit bench profile.
+    NativeProjectionRequiresPolicy { projection: String },
 }
 
 impl QueryPlanError {
@@ -181,6 +191,7 @@ impl QueryPlanError {
             Self::TokenCharacterLimitExceeded { .. } => "RBR_QUERY_TOKEN_CHAR_LIMIT_EXCEEDED",
             Self::IndexTokenTooLong { .. } => "RBR_QUERY_TOKEN_TOO_LONG",
             Self::InvalidLexicalRequest { .. } => "RBR_QUERY_LEXICAL_INVALID",
+            Self::NativeProjectionRequiresPolicy { .. } => "RBR_QUERY_PROJECTION_REQUIRES_POLICY",
         }
     }
 }
@@ -220,6 +231,10 @@ impl std::fmt::Display for QueryPlanError {
             } => write!(
                 f,
                 "effective lexical request is invalid ({parser_code}): {detail}"
+            ),
+            Self::NativeProjectionRequiresPolicy { projection } => write!(
+                f,
+                "native projection {projection} requires an explicit benchmark rank profile"
             ),
         }
     }
@@ -265,6 +280,9 @@ pub fn policy_config_canonical(policy: QueryInputPolicy, config: &NlPlanConfig) 
         QueryInputPolicy::Literal => {
             "{\"escaping\":\"lq-norm-phrase-v1\",\"policy\":\"literal\"}".to_string()
         }
+        QueryInputPolicy::LiteralFile => {
+            "{\"escaping\":\"lq-norm-phrase-v1\",\"policy\":\"literal_file\",\"projection\":\"file\"}".to_string()
+        }
         QueryInputPolicy::NaturalLanguage => format!(
             "{{\"escaping\":\"lq-norm-phrase-v1\",\"policy\":\"natural_language\",{}}}",
             config.canonical_fields()
@@ -289,6 +307,7 @@ pub fn execution_profile_canonical(policy: QueryInputPolicy, config: &NlPlanConf
         ),
         QueryInputPolicy::Native
         | QueryInputPolicy::Literal
+        | QueryInputPolicy::LiteralFile
         | QueryInputPolicy::ExactSymbolName => format!(
             "{{\"config\":{{}},\"planning_cost_in_latency\":false,\"policy\":\"{}\",\
              \"profile_id\":\"{}\"}}",
@@ -311,6 +330,7 @@ pub fn execution_profile_value(
         }),
         QueryInputPolicy::Native
         | QueryInputPolicy::Literal
+        | QueryInputPolicy::LiteralFile
         | QueryInputPolicy::ExactSymbolName => serde_json::json!({}),
     };
     serde_json::json!({
@@ -405,6 +425,10 @@ pub fn plan_query(
             validate_indexable_text(raw)?;
             literalize(raw)
         }
+        QueryInputPolicy::LiteralFile => {
+            validate_indexable_text(raw)?;
+            format!("select:file {}", literalize(raw))
+        }
         QueryInputPolicy::NaturalLanguage => {
             let mut distinct: Vec<String> = Vec::new();
             for token in tokenize_nl(raw) {
@@ -448,7 +472,25 @@ pub fn plan_query(
                 .join(" OR ")
         }
     };
-    validate_lexical_request(&lexical_request)?;
+    let parsed = validate_lexical_request(&lexical_request)?;
+    if policy == QueryInputPolicy::Native {
+        for filter in &parsed.filters {
+            if let LqFilter::Select { dim } = filter
+                && !matches!(dim, LqSelect::Content | LqSelect::ContentMatch)
+            {
+                return Err(QueryPlanError::NativeProjectionRequiresPolicy {
+                    projection: format!("select:{}", dim.as_str()),
+                });
+            }
+            if let LqFilter::Type { kind } = filter
+                && matches!(kind, LqType::Repo | LqType::Path)
+            {
+                return Err(QueryPlanError::NativeProjectionRequiresPolicy {
+                    projection: format!("type:{}", kind.as_str()),
+                });
+            }
+        }
+    }
     let effective_lexical_request_sha256 = sha256_hex(lexical_request.as_bytes());
     Ok(QueryPlan {
         policy,
@@ -476,22 +518,23 @@ fn validate_indexable_text(raw: &str) -> Result<(), QueryPlanError> {
     }
 }
 
-fn validate_lexical_request(request: &str) -> Result<(), QueryPlanError> {
+fn validate_lexical_request(request: &str) -> Result<LqNormalizedQuery, QueryPlanError> {
     let tokens = tokenize_lq(request).map_err(|error| QueryPlanError::InvalidLexicalRequest {
         parser_code: error.code.as_code_str().to_string(),
         detail: error.to_string(),
     })?;
-    let _parsed =
+    let parsed =
         parse_lq(&tokens, request).map_err(|error| QueryPlanError::InvalidLexicalRequest {
             parser_code: error.code.as_code_str().to_string(),
             detail: error.to_string(),
         })?;
-    Ok(())
+    Ok(parsed)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use quanta_index_lq_norm::ast::{LqExpr, LqFilter, LqLeaf, LqSelect};
     use quanta_index_lq_norm::tokenizer::{LqTokenKind, tokenize};
     use sha2::{Digest, Sha256};
 
@@ -540,6 +583,28 @@ mod tests {
     }
 
     #[test]
+    fn native_projection_requires_an_explicit_rank_profile() {
+        let config = NlPlanConfig::default();
+        for projection in ["file", "path", "file.owners", "repo", "symbol"] {
+            let raw = format!("select:{projection} needle");
+            let error = plan_query(QueryInputPolicy::Native, &raw, &config)
+                .expect_err("native non-content projection has no rank authority");
+            assert_eq!(error.code(), "RBR_QUERY_PROJECTION_REQUIRES_POLICY");
+        }
+        for projection in ["type:path needle", "type:repo needle"] {
+            let error = plan_query(QueryInputPolicy::Native, projection, &config)
+                .expect_err("type projection groups result rows");
+            assert_eq!(error.code(), "RBR_QUERY_PROJECTION_REQUIRES_POLICY");
+        }
+        let quoted = plan_query(QueryInputPolicy::Native, "\"select:file\"", &config)
+            .expect("quoted projection text is content");
+        assert_eq!(quoted.lexical_request, "\"select:file\"");
+        let bare = plan_query(QueryInputPolicy::Native, "Next", &config)
+            .expect("legacy bare query remains valid");
+        assert_eq!(bare.lexical_request, "Next");
+    }
+
+    #[test]
     fn literal_policy_emits_single_phrase_request() {
         let plan = plan_query(
             QueryInputPolicy::Literal,
@@ -549,6 +614,48 @@ mod tests {
         .expect("literal planning is total");
         assert_eq!(plan.lexical_request, "\"find AND fix: the `parse` bug\"");
         phrase_round_trip("find AND fix: the `parse` bug");
+    }
+
+    #[test]
+    fn literal_file_policy_projects_a_bare_query_and_binds_the_request() {
+        let config = NlPlanConfig::default();
+        let plan = plan_query(QueryInputPolicy::LiteralFile, "writeContentType", &config)
+            .expect("bare file query plans");
+        assert_eq!(plan.lexical_request, "select:file \"writeContentType\"");
+        let tokens = tokenize_lq(&plan.lexical_request).expect("effective DSL tokens");
+        let parsed = parse_lq(&tokens, &plan.lexical_request).expect("effective DSL parses");
+        assert_eq!(
+            parsed.filters,
+            vec![LqFilter::Select {
+                dim: LqSelect::File
+            }]
+        );
+        assert_eq!(
+            parsed.expr,
+            LqExpr::Leaf(LqLeaf::Phrase("writeContentType".to_string()))
+        );
+        assert_eq!(plan.original, "writeContentType");
+        assert_eq!(plan.semantic_text, "writeContentType");
+        assert_eq!(
+            plan.effective_lexical_request_sha256,
+            sha256_hex(b"select:file \"writeContentType\"")
+        );
+        assert_eq!(
+            policy_config_canonical(QueryInputPolicy::LiteralFile, &config),
+            "{\"escaping\":\"lq-norm-phrase-v1\",\"policy\":\"literal_file\",\"projection\":\"file\"}"
+        );
+        assert_eq!(
+            execution_profile_id(QueryInputPolicy::LiteralFile),
+            "quanta-literal-file-v1"
+        );
+        assert_eq!(
+            QueryInputPolicy::parse("literal_file"),
+            Ok(QueryInputPolicy::LiteralFile)
+        );
+        assert_eq!(
+            plan_query(QueryInputPolicy::LiteralFile, "---", &config).unwrap_err(),
+            QueryPlanError::EmptyTokenPlan
+        );
     }
 
     #[test]

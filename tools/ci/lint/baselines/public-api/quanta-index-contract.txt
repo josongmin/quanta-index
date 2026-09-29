@@ -1507,6 +1507,7 @@ pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::SemanticRowRootMismatch
 pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::SemanticStreamOwnerScopeOverWindow
 pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::SemanticStreamWindowExceeded
 pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::SemanticStreamWindowStillResident
+pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::SemanticWorkBudgetExceeded
 pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::SequenceExhausted
 pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::ServerOverloaded
 pub quanta_index_contract::ipc::SearchPlaneErrorCodeV2::SnapshotUnknown
@@ -1629,6 +1630,7 @@ pub quanta_index_contract::ipc::SearchPlaneQueryIpcRequest::ResolveActiveGenerat
 pub quanta_index_contract::ipc::SearchPlaneQueryIpcRequest::ResolveLexicalGeneration(quanta_index_contract_base::query::requests::TextQueryRequest)
 pub quanta_index_contract::ipc::SearchPlaneQueryIpcRequest::RuntimeMetadata(quanta_index_contract::RuntimeMetadataQueryRequest)
 pub quanta_index_contract::ipc::SearchPlaneQueryIpcRequest::Semantic(quanta_index_contract::SemanticQueryRequest)
+pub quanta_index_contract::ipc::SearchPlaneQueryIpcRequest::SemanticWorkBoundedV1(quanta_index_contract::SemanticWorkBoundedQueryRequestV1)
 pub quanta_index_contract::ipc::SearchPlaneQueryIpcRequest::Structural(quanta_index_contract::StructuralQueryRequest)
 pub quanta_index_contract::ipc::SearchPlaneQueryIpcRequest::Symbol(quanta_index_contract::SymbolQueryRequest)
 pub quanta_index_contract::ipc::SearchPlaneQueryIpcRequest::Text(quanta_index_contract_base::query::requests::TextQueryRequest)
@@ -1662,6 +1664,7 @@ pub quanta_index_contract::ipc::SearchPlaneQueryIpcResponse::RepoMapQuery(quanta
 pub quanta_index_contract::ipc::SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(quanta_index_contract_base::query::pin::GenerationPin)
 pub quanta_index_contract::ipc::SearchPlaneQueryIpcResponse::RuntimeMetadata(quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse)
 pub quanta_index_contract::ipc::SearchPlaneQueryIpcResponse::Semantic(quanta_index_contract::SemanticQueryResponse)
+pub quanta_index_contract::ipc::SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(quanta_index_contract::SemanticWorkBoundedQueryResponseV1)
 pub quanta_index_contract::ipc::SearchPlaneQueryIpcResponse::Structural(quanta_index_contract::SearchPlaneStructuralQueryResponse)
 pub quanta_index_contract::ipc::SearchPlaneQueryIpcResponse::Symbol(quanta_index_contract::SymbolQueryResponse)
 pub quanta_index_contract::ipc::SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse)
@@ -3860,6 +3863,48 @@ impl core::marker::Unpin for quanta_index_contract::SemanticTombstoneScope
 impl core::marker::UnsafeUnpin for quanta_index_contract::SemanticTombstoneScope
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SemanticTombstoneScope
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SemanticTombstoneScope
+pub struct quanta_index_contract::ipc::SemanticWorkBoundedQueryRequestV1
+pub quanta_index_contract::ipc::SemanticWorkBoundedQueryRequestV1::max_work_units: u64
+pub quanta_index_contract::ipc::SemanticWorkBoundedQueryRequestV1::query: quanta_index_contract::SemanticQueryRequest
+impl core::clone::Clone for quanta_index_contract::SemanticWorkBoundedQueryRequestV1
+pub fn quanta_index_contract::SemanticWorkBoundedQueryRequestV1::clone(&self) -> quanta_index_contract::SemanticWorkBoundedQueryRequestV1
+impl core::cmp::PartialEq for quanta_index_contract::SemanticWorkBoundedQueryRequestV1
+pub fn quanta_index_contract::SemanticWorkBoundedQueryRequestV1::eq(&self, other: &quanta_index_contract::SemanticWorkBoundedQueryRequestV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::SemanticWorkBoundedQueryRequestV1
+pub fn quanta_index_contract::SemanticWorkBoundedQueryRequestV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::SemanticWorkBoundedQueryRequestV1
+impl serde_core::ser::Serialize for quanta_index_contract::SemanticWorkBoundedQueryRequestV1
+pub fn quanta_index_contract::SemanticWorkBoundedQueryRequestV1::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::SemanticWorkBoundedQueryRequestV1
+pub fn quanta_index_contract::SemanticWorkBoundedQueryRequestV1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+impl core::marker::Freeze for quanta_index_contract::SemanticWorkBoundedQueryRequestV1
+impl core::marker::Send for quanta_index_contract::SemanticWorkBoundedQueryRequestV1
+impl core::marker::Sync for quanta_index_contract::SemanticWorkBoundedQueryRequestV1
+impl core::marker::Unpin for quanta_index_contract::SemanticWorkBoundedQueryRequestV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::SemanticWorkBoundedQueryRequestV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SemanticWorkBoundedQueryRequestV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SemanticWorkBoundedQueryRequestV1
+pub struct quanta_index_contract::ipc::SemanticWorkBoundedQueryResponseV1
+pub quanta_index_contract::ipc::SemanticWorkBoundedQueryResponseV1::charged_work_units: u64
+pub quanta_index_contract::ipc::SemanticWorkBoundedQueryResponseV1::query: quanta_index_contract::SemanticQueryResponse
+impl core::clone::Clone for quanta_index_contract::SemanticWorkBoundedQueryResponseV1
+pub fn quanta_index_contract::SemanticWorkBoundedQueryResponseV1::clone(&self) -> quanta_index_contract::SemanticWorkBoundedQueryResponseV1
+impl core::cmp::PartialEq for quanta_index_contract::SemanticWorkBoundedQueryResponseV1
+pub fn quanta_index_contract::SemanticWorkBoundedQueryResponseV1::eq(&self, other: &quanta_index_contract::SemanticWorkBoundedQueryResponseV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::SemanticWorkBoundedQueryResponseV1
+pub fn quanta_index_contract::SemanticWorkBoundedQueryResponseV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::SemanticWorkBoundedQueryResponseV1
+impl serde_core::ser::Serialize for quanta_index_contract::SemanticWorkBoundedQueryResponseV1
+pub fn quanta_index_contract::SemanticWorkBoundedQueryResponseV1::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::SemanticWorkBoundedQueryResponseV1
+pub fn quanta_index_contract::SemanticWorkBoundedQueryResponseV1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+impl core::marker::Freeze for quanta_index_contract::SemanticWorkBoundedQueryResponseV1
+impl core::marker::Send for quanta_index_contract::SemanticWorkBoundedQueryResponseV1
+impl core::marker::Sync for quanta_index_contract::SemanticWorkBoundedQueryResponseV1
+impl core::marker::Unpin for quanta_index_contract::SemanticWorkBoundedQueryResponseV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::SemanticWorkBoundedQueryResponseV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SemanticWorkBoundedQueryResponseV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SemanticWorkBoundedQueryResponseV1
 pub struct quanta_index_contract::ipc::SourcePublicationBinding
 pub quanta_index_contract::ipc::SourcePublicationBinding::batch_digest: alloc::string::String
 pub quanta_index_contract::ipc::SourcePublicationBinding::event: quanta_index_contract::SourcePublicationEvent
@@ -4012,8 +4057,10 @@ pub const quanta_index_contract::ipc::ERR_RESULT_TOO_LARGE: quanta_index_contrac
 pub const quanta_index_contract::ipc::ERR_SERVER_OVERLOADED: quanta_index_contract::SearchPlaneErrorCodeV2
 pub const quanta_index_contract::ipc::INGEST_BATCH_DIGEST_DOMAIN_V1: &[u8]
 pub const quanta_index_contract::ipc::INGEST_BATCH_DIGEST_FIELD_SEPARATOR_V1: &[u8]
+pub const quanta_index_contract::ipc::MAX_IPC_FRAME_BODY_BYTES_V1: usize
 pub const quanta_index_contract::ipc::MAX_PROCESS_REQUEST_EVENTS_V1: u16
 pub const quanta_index_contract::ipc::MAX_PROCESS_REQUEST_EVENTS_WIRE_BYTES_V1: usize
+pub const quanta_index_contract::ipc::SEMANTIC_WORK_OPERATIONAL_CAP_V1: u64
 pub fn quanta_index_contract::ipc::batch_digest_token_v1(digest: &[u8; 32]) -> alloc::string::String
 pub fn quanta_index_contract::ipc::cluster_membership_content_digest_v1(members: &[quanta_index_contract::SymbolId]) -> alloc::string::String
 pub fn quanta_index_contract::ipc::is_canonical_batch_digest_token_v1(value: &str) -> bool
@@ -10459,6 +10506,7 @@ pub quanta_index_contract::SearchPlaneErrorCodeV2::SemanticRowRootMismatch
 pub quanta_index_contract::SearchPlaneErrorCodeV2::SemanticStreamOwnerScopeOverWindow
 pub quanta_index_contract::SearchPlaneErrorCodeV2::SemanticStreamWindowExceeded
 pub quanta_index_contract::SearchPlaneErrorCodeV2::SemanticStreamWindowStillResident
+pub quanta_index_contract::SearchPlaneErrorCodeV2::SemanticWorkBudgetExceeded
 pub quanta_index_contract::SearchPlaneErrorCodeV2::SequenceExhausted
 pub quanta_index_contract::SearchPlaneErrorCodeV2::ServerOverloaded
 pub quanta_index_contract::SearchPlaneErrorCodeV2::SnapshotUnknown
@@ -10581,6 +10629,7 @@ pub quanta_index_contract::SearchPlaneQueryIpcRequest::ResolveActiveGeneration(q
 pub quanta_index_contract::SearchPlaneQueryIpcRequest::ResolveLexicalGeneration(quanta_index_contract_base::query::requests::TextQueryRequest)
 pub quanta_index_contract::SearchPlaneQueryIpcRequest::RuntimeMetadata(quanta_index_contract::RuntimeMetadataQueryRequest)
 pub quanta_index_contract::SearchPlaneQueryIpcRequest::Semantic(quanta_index_contract::SemanticQueryRequest)
+pub quanta_index_contract::SearchPlaneQueryIpcRequest::SemanticWorkBoundedV1(quanta_index_contract::SemanticWorkBoundedQueryRequestV1)
 pub quanta_index_contract::SearchPlaneQueryIpcRequest::Structural(quanta_index_contract::StructuralQueryRequest)
 pub quanta_index_contract::SearchPlaneQueryIpcRequest::Symbol(quanta_index_contract::SymbolQueryRequest)
 pub quanta_index_contract::SearchPlaneQueryIpcRequest::Text(quanta_index_contract_base::query::requests::TextQueryRequest)
@@ -10614,6 +10663,7 @@ pub quanta_index_contract::SearchPlaneQueryIpcResponse::RepoMapQuery(quanta_inde
 pub quanta_index_contract::SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(quanta_index_contract_base::query::pin::GenerationPin)
 pub quanta_index_contract::SearchPlaneQueryIpcResponse::RuntimeMetadata(quanta_index_contract::SearchPlaneRuntimeMetadataQueryResponse)
 pub quanta_index_contract::SearchPlaneQueryIpcResponse::Semantic(quanta_index_contract::SemanticQueryResponse)
+pub quanta_index_contract::SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(quanta_index_contract::SemanticWorkBoundedQueryResponseV1)
 pub quanta_index_contract::SearchPlaneQueryIpcResponse::Structural(quanta_index_contract::SearchPlaneStructuralQueryResponse)
 pub quanta_index_contract::SearchPlaneQueryIpcResponse::Symbol(quanta_index_contract::SymbolQueryResponse)
 pub quanta_index_contract::SearchPlaneQueryIpcResponse::Text(quanta_index_contract::TextQueryResponse)
@@ -15272,6 +15322,48 @@ impl core::marker::Unpin for quanta_index_contract::SemanticTombstoneScope
 impl core::marker::UnsafeUnpin for quanta_index_contract::SemanticTombstoneScope
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SemanticTombstoneScope
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SemanticTombstoneScope
+pub struct quanta_index_contract::SemanticWorkBoundedQueryRequestV1
+pub quanta_index_contract::SemanticWorkBoundedQueryRequestV1::max_work_units: u64
+pub quanta_index_contract::SemanticWorkBoundedQueryRequestV1::query: quanta_index_contract::SemanticQueryRequest
+impl core::clone::Clone for quanta_index_contract::SemanticWorkBoundedQueryRequestV1
+pub fn quanta_index_contract::SemanticWorkBoundedQueryRequestV1::clone(&self) -> quanta_index_contract::SemanticWorkBoundedQueryRequestV1
+impl core::cmp::PartialEq for quanta_index_contract::SemanticWorkBoundedQueryRequestV1
+pub fn quanta_index_contract::SemanticWorkBoundedQueryRequestV1::eq(&self, other: &quanta_index_contract::SemanticWorkBoundedQueryRequestV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::SemanticWorkBoundedQueryRequestV1
+pub fn quanta_index_contract::SemanticWorkBoundedQueryRequestV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::SemanticWorkBoundedQueryRequestV1
+impl serde_core::ser::Serialize for quanta_index_contract::SemanticWorkBoundedQueryRequestV1
+pub fn quanta_index_contract::SemanticWorkBoundedQueryRequestV1::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::SemanticWorkBoundedQueryRequestV1
+pub fn quanta_index_contract::SemanticWorkBoundedQueryRequestV1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+impl core::marker::Freeze for quanta_index_contract::SemanticWorkBoundedQueryRequestV1
+impl core::marker::Send for quanta_index_contract::SemanticWorkBoundedQueryRequestV1
+impl core::marker::Sync for quanta_index_contract::SemanticWorkBoundedQueryRequestV1
+impl core::marker::Unpin for quanta_index_contract::SemanticWorkBoundedQueryRequestV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::SemanticWorkBoundedQueryRequestV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SemanticWorkBoundedQueryRequestV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SemanticWorkBoundedQueryRequestV1
+pub struct quanta_index_contract::SemanticWorkBoundedQueryResponseV1
+pub quanta_index_contract::SemanticWorkBoundedQueryResponseV1::charged_work_units: u64
+pub quanta_index_contract::SemanticWorkBoundedQueryResponseV1::query: quanta_index_contract::SemanticQueryResponse
+impl core::clone::Clone for quanta_index_contract::SemanticWorkBoundedQueryResponseV1
+pub fn quanta_index_contract::SemanticWorkBoundedQueryResponseV1::clone(&self) -> quanta_index_contract::SemanticWorkBoundedQueryResponseV1
+impl core::cmp::PartialEq for quanta_index_contract::SemanticWorkBoundedQueryResponseV1
+pub fn quanta_index_contract::SemanticWorkBoundedQueryResponseV1::eq(&self, other: &quanta_index_contract::SemanticWorkBoundedQueryResponseV1) -> bool
+impl core::fmt::Debug for quanta_index_contract::SemanticWorkBoundedQueryResponseV1
+pub fn quanta_index_contract::SemanticWorkBoundedQueryResponseV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_contract::SemanticWorkBoundedQueryResponseV1
+impl serde_core::ser::Serialize for quanta_index_contract::SemanticWorkBoundedQueryResponseV1
+pub fn quanta_index_contract::SemanticWorkBoundedQueryResponseV1::serialize<S: serde_core::ser::Serializer>(&self, serializer: S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error>
+impl<'de> serde_core::de::Deserialize<'de> for quanta_index_contract::SemanticWorkBoundedQueryResponseV1
+pub fn quanta_index_contract::SemanticWorkBoundedQueryResponseV1::deserialize<D: serde_core::de::Deserializer<'de>>(deserializer: D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error>
+impl core::marker::Freeze for quanta_index_contract::SemanticWorkBoundedQueryResponseV1
+impl core::marker::Send for quanta_index_contract::SemanticWorkBoundedQueryResponseV1
+impl core::marker::Sync for quanta_index_contract::SemanticWorkBoundedQueryResponseV1
+impl core::marker::Unpin for quanta_index_contract::SemanticWorkBoundedQueryResponseV1
+impl core::marker::UnsafeUnpin for quanta_index_contract::SemanticWorkBoundedQueryResponseV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SemanticWorkBoundedQueryResponseV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SemanticWorkBoundedQueryResponseV1
 pub struct quanta_index_contract::SourceFileCoverage
 pub quanta_index_contract::SourceFileCoverage::language: quanta_index_contract_base::query::constraints::LanguageCode
 pub quanta_index_contract::SourceFileCoverage::producer_policy_sha256: [u8; 32]
@@ -15847,9 +15939,11 @@ pub const quanta_index_contract::INGEST_BATCH_DIGEST_DOMAIN_V1: &[u8]
 pub const quanta_index_contract::INGEST_BATCH_DIGEST_FIELD_SEPARATOR_V1: &[u8]
 pub const quanta_index_contract::MAX_CLUSTER_MEMBERSHIP_BATCH_ITEMS_V1: usize
 pub const quanta_index_contract::MAX_CLUSTER_MEMBERSHIP_READ_V1: u32
+pub const quanta_index_contract::MAX_IPC_FRAME_BODY_BYTES_V1: usize
 pub const quanta_index_contract::MAX_PROCESS_REQUEST_EVENTS_V1: u16
 pub const quanta_index_contract::MAX_PROCESS_REQUEST_EVENTS_WIRE_BYTES_V1: usize
 pub const quanta_index_contract::REPOMAP_TERMINAL_RECEIPT_FORMAT_VERSION: u32
+pub const quanta_index_contract::SEMANTIC_WORK_OPERATIONAL_CAP_V1: u64
 pub fn quanta_index_contract::batch_digest_token_v1(digest: &[u8; 32]) -> alloc::string::String
 pub fn quanta_index_contract::canonical_repo_map_source_bundle_digest_v2(bundle: &quanta_index_contract::RepoMapSourceBundle) -> core::result::Result<alloc::string::String, quanta_index_contract::RepoMapSourceBundleDigestErrorV2>
 pub fn quanta_index_contract::cluster_membership_content_digest_v1(members: &[quanta_index_contract::SymbolId]) -> alloc::string::String

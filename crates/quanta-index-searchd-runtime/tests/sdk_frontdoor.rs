@@ -4427,6 +4427,91 @@ fn sdk_binary_process_dsl_roundtrip() -> TestResult {
     result.and(stop)
 }
 
+fn assert_binary_semantic_work_settlement(client: &QuantaIndex) -> TestResult {
+    let mut request = quanta_index_contract::SemanticWorkBoundedQueryRequestV1 {
+        query: SemanticQueryRequest {
+            query_text: "quartz".to_string(),
+            constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+            generation: Some(pin()),
+            generation_selector: None,
+            lexical_scope: None,
+            top_k: 2,
+        },
+        max_work_units: 1_000_000,
+    };
+    let response = client.semantic().query_work_bounded_v1(request.clone())?;
+    if response.query.generation != pin()
+        || response.query.results.is_empty()
+        || response.charged_work_units < 2
+        || response.charged_work_units > request.max_work_units
+    {
+        return Err(format!("invalid bounded semantic settlement: {response:?}").into());
+    }
+    for allowance in [
+        0,
+        quanta_index_contract::SEMANTIC_WORK_OPERATIONAL_CAP_V1 + 1,
+    ] {
+        request.max_work_units = allowance;
+        let refused = client.semantic().query_work_bounded_v1(request.clone());
+        if !matches!(
+            refused,
+            Err(SdkError::Remote {
+                code: SearchPlaneErrorCodeV2::InvalidRequest,
+                ..
+            })
+        ) {
+            return Err(
+                format!("invalid allowance {allowance} failed to refuse: {refused:?}").into(),
+            );
+        }
+    }
+    request.max_work_units = response.charged_work_units;
+    let exact = client.semantic().query_work_bounded_v1(request.clone())?;
+    if exact.charged_work_units != response.charged_work_units
+        || exact.query.results != response.query.results
+    {
+        return Err("exact work allowance changed semantic results or settlement".into());
+    }
+    for allowance in [
+        1,
+        response
+            .charged_work_units
+            .checked_sub(1)
+            .expect("successful bounded query charged work"),
+    ] {
+        request.max_work_units = allowance;
+        let refused = client.semantic().query_work_bounded_v1(request.clone());
+        if !matches!(
+            refused,
+            Err(SdkError::Remote {
+                code: SearchPlaneErrorCodeV2::SemanticWorkBudgetExceeded,
+                ..
+            })
+        ) {
+            return Err(format!("allowance {allowance} failed to refuse: {refused:?}").into());
+        }
+    }
+    request.max_work_units = response.charged_work_units;
+    let retried = client.semantic().query_work_bounded_v1(request)?;
+    if retried.query.results != response.query.results {
+        return Err("a refused request changed the next semantic result".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn sdk_binary_semantic_work_settlement_survives_refusal_and_restart() -> TestResult {
+    let dir = quanta_index_searchd_harness::private_tempdir()?;
+    let runtime = SearchdBinaryProcess::start(dir.path())?;
+    let client = runtime.connect()?;
+    let _active = publish_and_activate_sdk_search_corpus(&client, &lexical_batch()?)?;
+    assert_binary_semantic_work_settlement(&client)?;
+    runtime.stop()?;
+    let restarted = SearchdBinaryProcess::start(dir.path())?;
+    assert_binary_semantic_work_settlement(&restarted.connect()?)?;
+    restarted.stop()
+}
+
 // ---------------------------------------------------------------------------
 // TH-1 adapter proofs (TOPT-06): the SDK wait adapters classify by wire
 // code and fail closed. Scripted closures and a virtual clock exercise

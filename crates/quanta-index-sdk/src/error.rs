@@ -84,6 +84,8 @@ pub enum ResponseBindingAxis {
     Order,
     /// The returned row count exceeds the request cap.
     Cardinality,
+    /// The response reports invalid work or exceeds the admitted allowance.
+    WorkSettlement,
     /// A receipt digest or generation differs from the published batch.
     BatchCommitment,
     /// An ACK's target identity differs from the requested target.
@@ -112,6 +114,7 @@ impl ResponseBindingAxis {
             Self::Window => "window",
             Self::Order => "order",
             Self::Cardinality => "cardinality",
+            Self::WorkSettlement => "work_settlement",
             Self::BatchCommitment => "batch_commitment",
             Self::TargetIdentity => "target_identity",
             Self::CasExpectation => "cas_expectation",

@@ -11,7 +11,8 @@ use quanta_index_contract::{
     HybridSeedQueryRequest, RepoMapQueryRequest, RuntimeMetadataQueryRequest,
     SearchCorpusActiveHeadV1, SearchPlaneExplainQueryRequest, SearchPlaneQueryIpcRequest,
     SearchPlaneQueryIpcResponse, SearchPlaneTrackKind, SemanticQueryRequest,
-    StructuralQueryRequest, SymbolQueryRequest, TextQueryRequest,
+    SemanticWorkBoundedQueryRequestV1, SemanticWorkBoundedQueryResponseV1, StructuralQueryRequest,
+    SymbolQueryRequest, TextQueryRequest,
 };
 use quanta_index_core::domains::structural::StructuralProducerPort;
 use quanta_index_core::{
@@ -223,6 +224,9 @@ impl SearchPlaneDispatcher {
             SearchPlaneQueryIpcRequest::Text(req) => self.dispatch_text(&req, budget),
             SearchPlaneQueryIpcRequest::Symbol(req) => self.dispatch_symbol(req, budget),
             SearchPlaneQueryIpcRequest::Semantic(req) => self.dispatch_semantic(req, budget),
+            SearchPlaneQueryIpcRequest::SemanticWorkBoundedV1(req) => {
+                self.dispatch_semantic_work_bounded_v1(req, budget)
+            }
             SearchPlaneQueryIpcRequest::Hybrid(req) => self.dispatch_hybrid(req, budget),
             SearchPlaneQueryIpcRequest::HybridSeed(req) => self.dispatch_hybrid_seed(&req, budget),
             SearchPlaneQueryIpcRequest::History(req) => self.dispatch_history(&req, budget),
@@ -468,6 +472,71 @@ impl SearchPlaneDispatcher {
             Err(err) => {
                 self.emit_error_metric(requested_pin.as_ref(), &err);
                 SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(err))
+            }
+        })
+    }
+
+    fn dispatch_semantic_work_bounded_v1(
+        &self,
+        request: SemanticWorkBoundedQueryRequestV1,
+        budget: &RequestBudgetV1,
+    ) -> SearchPlaneQueryIpcResponse {
+        let requested_pin = request.query.generation.clone();
+        self.observed_route(QueryRoute::Semantic, requested_pin.as_ref(), || {
+            let execute = || -> Result<SemanticWorkBoundedQueryResponseV1, CoreError> {
+                if request.max_work_units == 0 || request.max_work_units > quanta_index_contract::SEMANTIC_WORK_OPERATIONAL_CAP_V1 {
+                    return Err(CoreError::InvalidContract(format!(
+                        "bounded semantic work allowance must be within 1..={} units",
+                        quanta_index_contract::SEMANTIC_WORK_OPERATIONAL_CAP_V1
+                    )));
+                }
+                if request.query.generation.is_none()
+                    || request.query.generation_selector.is_some()
+                    || request.query.lexical_scope.is_some()
+                    || !request.query.constraints.is_unconstrained()
+                {
+                    return Err(CoreError::InvalidContract(
+                        "bounded semantic query requires an exact generation and no lexical scope or constraints".into(),
+                    ));
+                }
+                let bounded_budget = budget
+                    .clone()
+                    .with_semantic_work_limit_v1(request.max_work_units)?;
+                let response = self.semantic_query(request.query, &bounded_budget)?;
+                let charged_work_units = bounded_budget
+                    .semantic_work_consumed_v1()?
+                    .ok_or_else(|| CoreError::InvalidContract(
+                        "bounded semantic work ledger was lost".into(),
+                    ))?;
+                if charged_work_units == 0 || charged_work_units > request.max_work_units {
+                    return Err(CoreError::InvalidContract(
+                        "bounded semantic work settlement is invalid".into(),
+                    ));
+                }
+                Ok(SemanticWorkBoundedQueryResponseV1 {
+                    query: response,
+                    charged_work_units,
+                })
+            };
+            match execute() {
+                Ok(response) => {
+                    self.emit_planner_metric(&response.query.generation);
+                    self.emit_engine_activity_metrics(
+                        &response.query.generation,
+                        response.query.explanation.engines_executed.len(),
+                        response.query.explanation.engines_touched.len(),
+                    );
+                    self.emit_examined_candidates_metric(
+                        QueryRoute::Semantic,
+                        &response.query.generation,
+                        &response.query.window,
+                    );
+                    SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(response)
+                }
+                Err(error) => {
+                    self.emit_error_metric(requested_pin.as_ref(), &error);
+                    SearchPlaneQueryIpcResponse::Error(core_error_to_ipc(error))
+                }
             }
         })
     }

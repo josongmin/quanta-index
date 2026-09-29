@@ -32,14 +32,18 @@ DEFAULT_NL_CONFIG = {"max_token_chars": 96, "max_tokens": 32, "min_token_chars":
 
 #: Current policies and the immutable v4 policy inventory (RBR-02).
 V4_SUPPORTED_POLICIES = ("native", "literal", "natural_language")
-SUPPORTED_POLICIES = (*V4_SUPPORTED_POLICIES, "exact_symbol_name")
+SUPPORTED_POLICIES = (*V4_SUPPORTED_POLICIES, "exact_symbol_name", "literal_file")
 PROFILE_IDS = {
     "native": "quanta-native-v1",
     "literal": "quanta-literal-v1",
     "natural_language": "quanta-natural-language-ucd17-v2",
     "exact_symbol_name": "quanta-exact-symbol-name-v1",
+    "literal_file": "quanta-literal-file-v1",
 }
 _BARE_SYMBOL_NAME = re.compile(r"[A-Za-z_][A-Za-z_0-9]*\Z")
+_NATIVE_NON_CONTENT_PROJECTION = re.compile(
+    r"(?<![A-Za-z_0-9.])(?:select:(?:repo|file|file\.owners|path|symbol)|type:(?:repo|path))(?=$|[\s()])"
+)
 MAX_EXACT_SYMBOL_NAME_BYTES = 4096
 
 _JOINING = "-_./"
@@ -63,6 +67,8 @@ def policy_config_canonical(policy: str, config: dict[str, int] | None = None) -
         return '{"case":"sensitive","field":"symbol.local_name.exact","policy":"exact_symbol_name"}'
     if policy == "literal":
         return '{"escaping":"lq-norm-phrase-v1","policy":"literal"}'
+    if policy == "literal_file":
+        return '{"escaping":"lq-norm-phrase-v1","policy":"literal_file","projection":"file"}'
     if policy == "natural_language":
         resolved = dict(DEFAULT_NL_CONFIG) if config is None else config
         return (
@@ -121,6 +127,36 @@ def literalize(raw: str) -> str:
             out.append(ch)
     out.append('"')
     return "".join(out)
+
+
+def _refuse_native_rank_projection(raw: str) -> None:
+    """Reject unquoted native projections whose result unit is not a chunk.
+
+    This intentionally over-refuses ambiguous native syntax. A projected file
+    diagnostic must use the named ``literal_file`` profile so its rank unit and
+    request bytes are both bound by the runner record.
+    """
+    visible = list(raw)
+    cursor = 0
+    while cursor < len(raw):
+        marker = raw[cursor]
+        if marker not in ('"', "'"):
+            cursor += 1
+            continue
+        start = cursor
+        cursor += 1
+        while cursor < len(raw):
+            if marker == '"' and raw[cursor] == "\\":
+                cursor += 2
+            elif raw[cursor] == marker:
+                cursor += 1
+                break
+            else:
+                cursor += 1
+        for offset in range(start, min(cursor, len(raw))):
+            visible[offset] = " "
+    if _NATIVE_NON_CONTENT_PROJECTION.search("".join(visible)):
+        raise QueryPlanError("native non-content projection requires an explicit rank profile")
 
 
 def tokenize_nl(raw: str) -> list[str]:
@@ -182,6 +218,7 @@ def plan_lexical_request(policy: str, raw: str, config: dict[str, int] | None = 
         request = raw
         if len(request.encode()) > MAX_INPUT_BYTES:
             raise QueryPlanError("lexical request exceeds 16384 bytes")
+        _refuse_native_rank_projection(request)
         return request
     if policy == "exact_symbol_name":
         if (
@@ -192,10 +229,12 @@ def plan_lexical_request(policy: str, raw: str, config: dict[str, int] | None = 
                 "exact-symbol policy requires one bare ASCII symbol name of at most 4096 bytes"
             )
         return f"symbol.local_name.exact({raw}) case:yes"
-    if policy == "literal":
+    if policy in ("literal", "literal_file"):
         if not _validate_indexable_text(raw):
             raise QueryPlanError("natural-language plan produced no tokens")
         request = literalize(raw)
+        if policy == "literal_file":
+            request = "select:file " + request
         if len(request.encode()) > MAX_INPUT_BYTES:
             raise QueryPlanError("lexical request exceeds 16384 bytes")
         return request

@@ -23,6 +23,7 @@ use crate::corpus::SourceFile;
 use crate::published_units::{PublishedUnitKind, PublishedUnitRegistry};
 use crate::query_plan::{
     NlPlanConfig, QueryInputPolicy, QueryPlan, execution_profile_sha256, execution_profile_value,
+    plan_query,
 };
 use crate::sdk::{QueryOutcome, RankedHit};
 use crate::{BenchError, BenchResult, sha256_hex};
@@ -647,6 +648,8 @@ fn duration_ms(latency: Duration) -> BenchResult<f64> {
 struct ProvenHit {
     candidate: Value,
     scored_span: (String, u64, u64),
+    indexed_span: (u32, u32),
+    unit_kind: PublishedUnitKind,
 }
 
 /// Source bytes proved for every native hit, before scored-span collapse.
@@ -655,6 +658,9 @@ pub struct NativeSpanProof {
     pub unit_id: String,
     /// Canonical source file and half-open byte range used for scoring.
     pub span: (String, u64, u64),
+    /// Typed published identity and definition bytes, independent of context.
+    pub unit_kind: PublishedUnitKind,
+    pub indexed_span: (u32, u32),
 }
 
 /// Reuse the recorder's source proof for diagnostic projection witnesses.
@@ -675,6 +681,8 @@ pub fn native_span_proofs(
                 spans.push(NativeSpanProof {
                     unit_id: hit.candidate_id.clone(),
                     span: proven.scored_span,
+                    unit_kind: proven.unit_kind,
+                    indexed_span: proven.indexed_span,
                 });
             }
             let _previous = proofs.insert(key.clone(), spans);
@@ -832,6 +840,8 @@ fn prove_hit(
     Ok(ProvenHit {
         candidate,
         scored_span: (hit.path.clone(), start_byte, end_byte),
+        indexed_span: (unit.byte_start, unit.byte_end),
+        unit_kind: unit.kind,
     })
 }
 
@@ -847,6 +857,23 @@ fn timings_value(latency: Duration) -> BenchResult<Value> {
     Ok(serde_json::json!({"query_latency_ms": number}))
 }
 
+fn bind_rank_unit(mut result: Value, policy: QueryInputPolicy) -> BenchResult<Value> {
+    let rank_unit = match policy {
+        QueryInputPolicy::LiteralFile => Some("distinct_file"),
+        QueryInputPolicy::ExactSymbolName => Some("symbol"),
+        QueryInputPolicy::Native
+        | QueryInputPolicy::Literal
+        | QueryInputPolicy::NaturalLanguage => None,
+    };
+    if let Some(rank_unit) = rank_unit {
+        let _previous = result
+            .as_object_mut()
+            .ok_or_else(|| BenchError::Protocol("result object is malformed".to_string()))?
+            .insert("rank_unit".to_string(), Value::from(rank_unit));
+    }
+    Ok(result)
+}
+
 /// Map one query outcome to a v3 result object. `top_k` is the declared cap;
 /// more hits than the cap is a protocol violation, never a truncation.
 pub fn result_value(
@@ -858,6 +885,16 @@ pub fn result_value(
     files: &BTreeMap<String, SourceFile>,
     units: &PublishedUnitRegistry,
 ) -> BenchResult<Value> {
+    if plan.policy == QueryInputPolicy::LiteralFile && route != "lexical" {
+        return Err(BenchError::Protocol(format!(
+            "literal_file result requires lexical route, got {route}"
+        )));
+    }
+    if plan.policy == QueryInputPolicy::ExactSymbolName && route != "symbol" {
+        return Err(BenchError::Protocol(format!(
+            "exact_symbol_name result requires symbol route, got {route}"
+        )));
+    }
     let query_identity = serde_json::json!({
         "original_query_sha256": plan.original_query_sha256,
         "effective_lexical_request_sha256": plan.effective_lexical_request_sha256,
@@ -892,56 +929,93 @@ pub fn result_value(
                                 .unwrap_or("missing error message"),
                         )
                     });
-                return Ok(serde_json::json!({
-                    "task_id": task_id,
-                    "route": route,
-                    "status": classification.status,
-                    "candidates": [],
-                    "query_identity": query_identity,
-                    "timings": timings_value(*latency)?,
-                    "error": error,
-                }));
+                return bind_rank_unit(
+                    serde_json::json!({
+                        "task_id": task_id,
+                        "route": route,
+                        "status": classification.status,
+                        "candidates": [],
+                        "query_identity": query_identity,
+                        "timings": timings_value(*latency)?,
+                        "error": error,
+                    }),
+                    plan.policy,
+                );
             }
             let mut candidates = Vec::with_capacity(hits.len());
-            let mut seen_spans = BTreeSet::new();
+            let mut seen_files = BTreeSet::new();
             let mut seen_unit_ids = BTreeSet::new();
+            let mut seen_spans = BTreeSet::new();
+            let mut seen_symbol_spans = BTreeSet::new();
             for hit in hits {
-                // Every SDK hit must prove its published unit, even when its
-                // scored line projection duplicates an earlier candidate.
+                // Prove every raw hit before the legacy source-span collapse.
+                // Only the bound exact-symbol policy preserves independent
+                // symbol ranks when two definitions share a context line.
                 let proven = prove_hit(hit, candidates.len().saturating_add(1), files, units)?;
+                if plan.policy == QueryInputPolicy::ExactSymbolName
+                    && proven.unit_kind != PublishedUnitKind::Symbol
+                {
+                    return Err(BenchError::Protocol(
+                        "symbol rank requires published symbol units".to_string(),
+                    ));
+                }
+                if plan.policy == QueryInputPolicy::LiteralFile
+                    && !seen_files.insert(hit.path.as_str())
+                {
+                    return Err(BenchError::Protocol(format!(
+                        "literal_file returned duplicate file path: {}",
+                        hit.path
+                    )));
+                }
                 if !seen_unit_ids.insert(&hit.candidate_id) {
                     return Err(BenchError::Protocol(format!(
                         "SDK returned a duplicate published unit ID: {}",
                         hit.candidate_id
                     )));
                 }
-                if seen_spans.insert(proven.scored_span) {
-                    candidates.push(proven.candidate);
+                if plan.policy != QueryInputPolicy::ExactSymbolName {
+                    if seen_spans.insert(proven.scored_span) {
+                        candidates.push(proven.candidate);
+                    }
+                    continue;
                 }
+                if !seen_symbol_spans.insert((proven.scored_span, proven.indexed_span)) {
+                    return Err(BenchError::Protocol(format!(
+                        "SDK returned a duplicate published symbol indexed span: {}",
+                        hit.path
+                    )));
+                }
+                candidates.push(proven.candidate);
             }
-            Ok(serde_json::json!({
+            bind_rank_unit(
+                serde_json::json!({
+                    "task_id": task_id,
+                    "route": route,
+                    "status": classification.status,
+                    "candidates": candidates,
+                    "query_identity": query_identity,
+                    "timings": timings_value(*latency)?,
+                    "error": null,
+                }),
+                plan.policy,
+            )
+        }
+        QueryOutcome::RejectedResponse { latency, .. }
+        | QueryOutcome::SdkFailure { latency, .. } => bind_rank_unit(
+            serde_json::json!({
                 "task_id": task_id,
                 "route": route,
                 "status": classification.status,
-                "candidates": candidates,
+                "candidates": [],
                 "query_identity": query_identity,
                 "timings": timings_value(*latency)?,
-                "error": null,
-            }))
-        }
-        QueryOutcome::RejectedResponse { latency, .. }
-        | QueryOutcome::SdkFailure { latency, .. } => Ok(serde_json::json!({
-            "task_id": task_id,
-            "route": route,
-            "status": classification.status,
-            "candidates": [],
-            "query_identity": query_identity,
-            "timings": timings_value(*latency)?,
-            "error": error_value(
-                classification.error_code.as_deref().unwrap_or("missing_error_code"),
-                classification.error_message.as_deref().unwrap_or("missing error message"),
-            ),
-        })),
+                "error": error_value(
+                    classification.error_code.as_deref().unwrap_or("missing_error_code"),
+                    classification.error_message.as_deref().unwrap_or("missing error message"),
+                ),
+            }),
+            plan.policy,
+        ),
     }
 }
 
@@ -996,6 +1070,18 @@ pub fn runner_record(input: &RunnerRecordInput<'_>) -> BenchResult<Value> {
         if sha256_hex(plan.original.as_bytes()) != task.query_sha256 {
             return Err(BenchError::Protocol(format!(
                 "query plan for task {} does not bind the pack query digest",
+                task.task_id
+            )));
+        }
+        let derived_plan = plan_query(plan.policy, &task.query, nl_config).map_err(|error| {
+            BenchError::Protocol(format!(
+                "query plan for task {} cannot be re-derived: {error}",
+                task.task_id
+            ))
+        })?;
+        if *plan != derived_plan {
+            return Err(BenchError::Protocol(format!(
+                "query plan for task {} differs from canonical request identity",
                 task.task_id
             )));
         }
@@ -1126,7 +1212,6 @@ pub fn runner_record(input: &RunnerRecordInput<'_>) -> BenchResult<Value> {
 mod tests {
     use super::*;
     use crate::chunking::Chunk;
-    use crate::query_plan::plan_query;
     use crate::sdk::RouteExplanation;
     use quanta_index_contract::QueryResultWindowV2;
 
@@ -1265,6 +1350,91 @@ mod tests {
         anchored.path = path.to_string();
         anchored.end_line = 2;
         assert!(prove_hit(&anchored, 1, &files, &units).is_err());
+    }
+
+    #[test]
+    fn same_line_symbols_keep_distinct_published_units() {
+        use quanta_index_contract::QueryResultWindowV2;
+
+        let path = "src/symbols.go";
+        let text = "package fixture; type A struct{}; type B struct{}; func (A) writeContentType() {}; func (B) writeContentType() {}\n";
+        let file = SourceFile {
+            path: path.to_string(),
+            bytes: text.as_bytes().to_vec(),
+            text: text.to_string(),
+            line_starts: vec![0],
+            sha256: sha256_hex(text.as_bytes()),
+        };
+        let files = BTreeMap::from([(path.to_string(), file)]);
+        let extraction = crate::symbols::extract_corpus_symbols(&files).expect("symbol extraction");
+        let symbols = extraction.symbols.get(path).expect("file symbols");
+        let symbols: Vec<_> = symbols
+            .iter()
+            .filter(|symbol| symbol.local_name.as_ref() == "writeContentType")
+            .collect();
+        assert_eq!(symbols.len(), 2, "two independent receiver declarations");
+        let units = PublishedUnitRegistry::from_chunks_and_symbols(
+            &BTreeMap::new(),
+            &extraction.symbols,
+            &files,
+        )
+        .expect("published symbols");
+        let hits = symbols
+            .iter()
+            .map(|symbol| RankedHit {
+                candidate_id: symbol.symbol_id.as_str().to_string(),
+                path: path.to_string(),
+                start_line: symbol.definition_span.line_start,
+                end_line: symbol.definition_span.line_end,
+                snippet: symbol.local_name.to_string(),
+                score: 1.0,
+                contributions: Vec::new(),
+            })
+            .collect();
+        let outcome = QueryOutcome::ReturnedWindow {
+            hits,
+            window: QueryResultWindowV2::exact_probe(2),
+            explanation: Some(RouteExplanation::default()),
+            latency: Duration::from_millis(1),
+        };
+        let plan = plan_query(
+            QueryInputPolicy::ExactSymbolName,
+            "writeContentType",
+            &NlPlanConfig::default(),
+        )
+        .expect("exact symbol plan");
+        let result = result_value("T1", "symbol", &outcome, &plan, 10, &files, &units)
+            .expect("same-line symbol result");
+        let candidates = result["candidates"].as_array().expect("candidates");
+        assert_eq!(result["rank_unit"], "symbol");
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[0]["start_byte"], candidates[1]["start_byte"]);
+        assert_eq!(candidates[0]["end_byte"], candidates[1]["end_byte"]);
+        assert_ne!(
+            candidates[0]["span_accounting"]["unit_id"],
+            candidates[1]["span_accounting"]["unit_id"]
+        );
+        assert_ne!(
+            candidates[0]["span_accounting"]["indexed_start_byte"],
+            candidates[1]["span_accounting"]["indexed_start_byte"]
+        );
+        assert_eq!(candidates[0]["rank"], 1);
+        assert_eq!(candidates[1]["rank"], 2);
+        let legacy_plan = plan_query(
+            QueryInputPolicy::Native,
+            "writeContentType",
+            &NlPlanConfig::default(),
+        )
+        .expect("native symbol plan");
+        let legacy = result_value("T1", "symbol", &outcome, &legacy_plan, 10, &files, &units)
+            .expect("legacy context scoring remains valid");
+        let legacy_candidates = legacy["candidates"].as_array().expect("legacy candidates");
+        assert_eq!(legacy_candidates.len(), 1);
+        assert!(legacy.get("rank_unit").is_none());
+        assert_eq!(
+            legacy_candidates[0]["span_accounting"]["unit_id"],
+            candidates[0]["span_accounting"]["unit_id"]
+        );
     }
 
     #[test]
@@ -1483,6 +1653,73 @@ mod tests {
         assert_eq!(capped["candidates"].as_array().expect("hits").len(), 1);
     }
 
+    #[test]
+    fn literal_file_result_records_rank_unit_and_refuses_duplicate_paths() {
+        use quanta_index_contract::QueryResultWindowV2;
+
+        let (files, units, hit) = status_fixture();
+        let plan = plan_query(
+            QueryInputPolicy::LiteralFile,
+            "main",
+            &NlPlanConfig::default(),
+        )
+        .expect("literal file plan");
+        let single = result_value(
+            "T1",
+            "lexical",
+            &QueryOutcome::ReturnedWindow {
+                hits: vec![hit.clone()],
+                window: QueryResultWindowV2::exact_probe(1),
+                explanation: Some(RouteExplanation::default()),
+                latency: Duration::from_millis(1),
+            },
+            &plan,
+            10,
+            &files,
+            &units,
+        )
+        .expect("one file result");
+        assert_eq!(single["rank_unit"], "distinct_file");
+        assert_eq!(
+            single["candidates"][0]["span_accounting"]["unit_kind"],
+            "chunk"
+        );
+
+        let empty = result_value(
+            "T1",
+            "lexical",
+            &QueryOutcome::ReturnedWindow {
+                hits: Vec::new(),
+                window: QueryResultWindowV2::exact_probe(0),
+                explanation: Some(RouteExplanation::default()),
+                latency: Duration::from_millis(1),
+            },
+            &plan,
+            10,
+            &files,
+            &units,
+        )
+        .expect("file abstention");
+        assert_eq!(empty["rank_unit"], "distinct_file");
+        assert_eq!(empty["status"], "abstained");
+
+        let duplicate = result_value(
+            "T1",
+            "lexical",
+            &QueryOutcome::ReturnedWindow {
+                hits: vec![hit.clone(), hit],
+                window: QueryResultWindowV2::exact_probe(2),
+                explanation: Some(RouteExplanation::default()),
+                latency: Duration::from_millis(1),
+            },
+            &plan,
+            10,
+            &files,
+            &units,
+        );
+        assert!(duplicate.is_err_and(|error| error.to_string().contains("duplicate file path")));
+    }
+
     fn v3_capture_fixture() -> CaptureProvenance {
         CaptureProvenance {
             chunk_strategy: "whole_file".to_string(),
@@ -1626,6 +1863,27 @@ mod tests {
         assert_eq!(candidate["span_accounting"]["indexed_end_byte"], text.len());
         assert_eq!(candidate["span_accounting"]["extra_context_bytes"], 0);
         assert_eq!(record["results"][0]["status"], serde_json::json!("success"));
+        assert!(record["results"][0].get("rank_unit").is_none());
+        let mut tampered_plans = plans;
+        tampered_plans
+            .get_mut("T1")
+            .expect("plan")
+            .effective_lexical_request_sha256 = "0".repeat(64);
+        let tampered = runner_record(&RunnerRecordInput {
+            pack: &pack,
+            identity: &identity,
+            provenance: &provenance,
+            captures: &captures,
+            outcomes: &outcomes,
+            plans: &tampered_plans,
+            nl_config: &nl_config,
+            top_k: 10,
+            files: &files,
+            units: &units,
+        });
+        assert!(
+            tampered.is_err_and(|error| error.to_string().contains("canonical request identity"))
+        );
     }
 
     #[test]

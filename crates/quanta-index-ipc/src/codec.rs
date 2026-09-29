@@ -17,7 +17,7 @@ pub enum IpcIoOperation {
 }
 
 /// Maximum IPC frame body size accepted on the wire.
-pub const MAX_FRAME_BODY_BYTES: usize = 16 * 1024 * 1024;
+pub const MAX_FRAME_BODY_BYTES: usize = quanta_index_contract::MAX_IPC_FRAME_BODY_BYTES_V1;
 
 /// Maximum decoded body after bounded IPC request compression.
 const MAX_DECOMPRESSED_FRAME_BODY_BYTES: usize = 64 * 1024 * 1024;

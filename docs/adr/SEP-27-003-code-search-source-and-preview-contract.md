@@ -153,6 +153,31 @@ qualification belong in the [active code-search ledger](../plans/sep-27-code-sea
   Retention of the former private repository is an archive decision, not a
   runtime dependency. Remaining combined-source integration proof stays open.
 
+### Explicit semantic work settlement
+
+- `SemanticWorkBoundedV1` is a distinct wire route and SDK operation. It requires
+  an exact generation pin, no generation selector, no lexical scope and no query
+  constraints. Admission requires `1..=10_000_000` work units; there is no fallback
+  to the ordinary semantic route or an adapter without native work authority.
+- One request ledger is shared by budget clones. It charges query UTF-8 bytes
+  plus one, the sealed physical row count multiplied by vector dimension before
+  the exact dense scan, and the returned probe rows before final projection.
+  An overrun refuses with `SemanticWorkBudgetExceeded` and does not spend the
+  failed charge. Successful settlement must be positive and within the allowance;
+  SDK binding rejects a different response route or invalid settlement.
+- The row count is verified when the sealed generation opens. This is a
+  conservative deterministic work contract, not measured CPU, embedding-provider
+  work, Arrow execution cost or physical heap admission. Ordinary semantic
+  requests keep their existing execution contract.
+- When the bounded route bypasses a sealed ANN index, its trace reports
+  `exact_scan_of_sealed_rows`; it cannot claim that the seal declared an exact
+  index. A generation already sealed as exact retains its seal attestation.
+  The next ordinary semantic query retains the original ANN contract.
+- The route participates in wire inventory, public API baselines and request/
+  response decode fuzzing. Source tests and a real daemon restart test cover
+  exact allowance, refusal and retry; executing these tests is distinct from
+  external producer qualification or a release/performance claim.
+
 ### Canonical match witnesses and original bytes
 
 - Rank/group immutable candidate identities first; render only selected rows.

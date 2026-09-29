@@ -2201,6 +2201,9 @@ fn render_pretty(
             Some(&payload.explanation),
             rendered,
         ),
+        SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_) => Err(CliError::protocol(
+            "CLI does not issue work-bounded semantic queries".to_string(),
+        )),
         SearchPlaneQueryIpcResponse::Hybrid(payload) => render_hybrid_payload(payload, rendered),
         SearchPlaneQueryIpcResponse::HybridSeed(payload) => {
             render_hybrid_seed_payload(payload, rendered)
@@ -2765,6 +2768,7 @@ fn response_kind_name(response: &SearchPlaneQueryIpcResponse) -> &'static str {
         SearchPlaneQueryIpcResponse::Text(_) => "Text",
         SearchPlaneQueryIpcResponse::Symbol(_) => "Symbol",
         SearchPlaneQueryIpcResponse::Semantic(_) => "Semantic",
+        SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_) => "SemanticWorkBoundedV1",
         SearchPlaneQueryIpcResponse::Hybrid(_) => "Hybrid",
         SearchPlaneQueryIpcResponse::HybridSeed(_) => "HybridSeed",
         SearchPlaneQueryIpcResponse::History(_) => "History",

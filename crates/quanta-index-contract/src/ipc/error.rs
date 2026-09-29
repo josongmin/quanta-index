@@ -162,6 +162,7 @@ define_search_plane_error_codes! {
         LexFilterVisibilityUnavailable => "LEX_FILTER_VISIBILITY_UNAVAILABLE",
         LexicalExaminedBudgetExceeded => "LEXICAL_EXAMINED_BUDGET_EXCEEDED",
         LexicalCollectionBudgetExceeded => "LEXICAL_COLLECTION_BUDGET_EXCEEDED",
+        SemanticWorkBudgetExceeded => "SEMANTIC_WORK_BUDGET_EXCEEDED",
         SearchPreviewIntegrity => "SEARCH_PREVIEW_INTEGRITY",
         SymbolCoverageIncomplete => "SYMBOL_COVERAGE_INCOMPLETE",
         SymbolCoverageUnavailable => "SYMBOL_COVERAGE_UNAVAILABLE",

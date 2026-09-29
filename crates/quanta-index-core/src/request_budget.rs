@@ -204,6 +204,13 @@ pub struct RequestBudgetV1 {
     correlation: Option<RequestCorrelationV1>,
     diagnostics: Option<Arc<dyn RequestStageDiagnosticPortV1>>,
     lexical_preview: Arc<std::sync::Mutex<Option<LexicalPreviewRetention>>>,
+    semantic_work: Option<Arc<std::sync::Mutex<SemanticWorkLedgerV1>>>,
+}
+
+#[derive(Debug)]
+struct SemanticWorkLedgerV1 {
+    limit: u64,
+    consumed: u64,
 }
 
 impl RequestBudgetV1 {
@@ -219,7 +226,62 @@ impl RequestBudgetV1 {
             correlation: None,
             diagnostics: None,
             lexical_preview: Arc::new(std::sync::Mutex::new(None)),
+            semantic_work: None,
         }
+    }
+
+    /// Bind a dedicated semantic query to a finite work allowance. Clones
+    /// share the same counter so embedding, dense search and projection cannot
+    /// each spend the full allowance independently.
+    pub fn with_semantic_work_limit_v1(mut self, limit: u64) -> Result<Self, CoreError> {
+        if limit == 0 || self.semantic_work.is_some() {
+            return Err(CoreError::InvalidContract(
+                "semantic work allowance must be positive and set once".into(),
+            ));
+        }
+        self.semantic_work = Some(Arc::new(std::sync::Mutex::new(SemanticWorkLedgerV1 {
+            limit,
+            consumed: 0,
+        })));
+        Ok(self)
+    }
+
+    /// Charge deterministic semantic work before performing it. Ordinary query
+    /// routes have no semantic work ledger and cannot use this authority.
+    pub fn consume_semantic_work_v1(&self, units: u64) -> Result<(), CoreError> {
+        let work = self.semantic_work.as_ref().ok_or_else(|| {
+            CoreError::InvalidContract("semantic work allowance is absent".into())
+        })?;
+        let mut work = work.lock().map_err(|error| {
+            CoreError::Storage(format!("semantic work ledger poisoned: {error}"))
+        })?;
+        let next = work
+            .consumed
+            .checked_add(units)
+            .ok_or_else(|| CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::SemanticWorkBudgetExceeded,
+                message: "semantic work allowance overflowed".into(),
+            })?;
+        if next > work.limit {
+            return Err(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::SemanticWorkBudgetExceeded,
+                message: "semantic work allowance exhausted".into(),
+            });
+        }
+        work.consumed = next;
+        drop(work);
+        Ok(())
+    }
+
+    pub fn semantic_work_consumed_v1(&self) -> Result<Option<u64>, CoreError> {
+        self.semantic_work
+            .as_ref()
+            .map(|work| {
+                work.lock().map(|work| work.consumed).map_err(|error| {
+                    CoreError::Storage(format!("semantic work ledger poisoned: {error}"))
+                })
+            })
+            .transpose()
     }
 
     /// Attach the admitted transport identity. The IPC server calls this
@@ -694,5 +756,32 @@ mod tests {
         assert!(!fired.load(Ordering::SeqCst));
         drop(waiter);
         assert_eq!(budget.live_waiters(), 0);
+    }
+
+    #[test]
+    fn semantic_work_allowance_is_shared_and_rejects_overrun_without_spending_it() {
+        let budget = RequestBudgetV1::for_duration(Duration::from_secs(60))
+            .with_semantic_work_limit_v1(10)
+            .expect("finite semantic work budget");
+        let sibling = budget.clone();
+        budget.consume_semantic_work_v1(6).expect("first charge");
+        assert!(matches!(
+            sibling.consume_semantic_work_v1(5),
+            Err(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::SemanticWorkBudgetExceeded,
+                ..
+            })
+        ));
+        assert_eq!(
+            budget.semantic_work_consumed_v1().expect("healthy ledger"),
+            Some(6)
+        );
+        sibling
+            .consume_semantic_work_v1(4)
+            .expect("exact remaining charge");
+        assert_eq!(
+            budget.semantic_work_consumed_v1().expect("healthy ledger"),
+            Some(10)
+        );
     }
 }

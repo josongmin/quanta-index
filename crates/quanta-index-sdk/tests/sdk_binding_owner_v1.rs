@@ -250,6 +250,70 @@ fn wrong_variant_fails_closed() {
 }
 
 #[test]
+fn bounded_semantic_binds_work_settlement_and_refuses_ordinary_fallback() {
+    let request = quanta_index_contract::SemanticWorkBoundedQueryRequestV1 {
+        query: quanta_index_contract::SemanticQueryRequest {
+            query_text: "needle".into(),
+            constraints: QueryConstraintSetV1::unconstrained(),
+            generation: Some(pin(repo_id())),
+            generation_selector: None,
+            lexical_scope: None,
+            top_k: 10,
+        },
+        max_work_units: 100,
+    };
+    let query = quanta_index_contract::SemanticQueryResponse {
+        generation: pin(repo_id()),
+        results: Vec::new(),
+        window: quanta_index_contract::QueryResultWindowV2::exact_probe(0),
+        explanation: quanta_index_contract::SearchExplanation::empty(),
+    };
+    for (tag, script, accepted) in [
+        ("settled", 10, true),
+        ("zero", 0, false),
+        ("overrun", 101, false),
+    ] {
+        let dir = temp_dir(tag);
+        let response = SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(
+            quanta_index_contract::SemanticWorkBoundedQueryResponseV1 {
+                query: query.clone(),
+                charged_work_units: script,
+            },
+        );
+        let (socket, _rx) = scripted_query_server(dir.path(), vec![response]);
+        let client = client_on(dir.path(), socket);
+        let result = client.semantic().query_work_bounded_v1(request.clone());
+        if accepted {
+            assert_eq!(
+                result.expect("valid bounded response").charged_work_units,
+                10
+            );
+        } else {
+            assert!(matches!(
+                result,
+                Err(Binding {
+                    axis: ResponseBindingAxis::WorkSettlement,
+                    ..
+                })
+            ));
+        }
+    }
+    let dir = temp_dir("ordinary-semantic-fallback");
+    let (socket, _rx) = scripted_query_server(
+        dir.path(),
+        vec![SearchPlaneQueryIpcResponse::Semantic(query)],
+    );
+    let client = client_on(dir.path(), socket);
+    assert!(matches!(
+        client.semantic().query_work_bounded_v1(request),
+        Err(Binding {
+            axis: ResponseBindingAxis::Variant,
+            ..
+        })
+    ));
+}
+
+#[test]
 fn wrong_repo_pin_fails_closed() {
     let dir = temp_dir("pin");
     let error = run_scripted(
@@ -631,6 +695,7 @@ fn coverage_table_exact_matches_sdk_surface() {
         "text",
         "symbol",
         "semantic",
+        "semantic_work_bounded_v1",
         "hybrid",
         "hybrid_seed",
         "history",

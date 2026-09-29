@@ -47,6 +47,7 @@ pub enum ExpectedQueryResponseV1 {
     Text,
     Symbol,
     Semantic,
+    SemanticWorkBoundedV1,
     Hybrid,
     HybridSeed,
     History,
@@ -68,6 +69,7 @@ impl ExpectedQueryResponseV1 {
             Self::Text => "text",
             Self::Symbol => "symbol",
             Self::Semantic => "semantic",
+            Self::SemanticWorkBoundedV1 => "semantic_work_bounded_v1",
             Self::Hybrid => "hybrid",
             Self::HybridSeed => "hybrid_seed",
             Self::History => "history",
@@ -209,6 +211,7 @@ pub(crate) struct QueryCallBinding {
     /// The request's text query carries `rev:at.time(...)`: the plane's
     /// timeref authority may rebind the read to an ancestor revision.
     rev_at_time: bool,
+    max_work_units: Option<u64>,
 }
 
 impl QueryCallBinding {
@@ -225,6 +228,7 @@ impl QueryCallBinding {
                 top_k: None,
                 history_order: None,
                 rev_at_time: false,
+                max_work_units: None,
             },
             SearchPlaneQueryIpcRequest::ResolveLexicalGeneration(request) => {
                 let (pin, active_domain) = identity_from(
@@ -289,6 +293,21 @@ impl QueryCallBinding {
                     false,
                 )
             }
+            SearchPlaneQueryIpcRequest::SemanticWorkBoundedV1(request) => {
+                let (pin, active_domain) = identity_from(
+                    request.query.generation.clone(),
+                    request.query.generation_selector.clone(),
+                );
+                let mut binding = Self::ranked(
+                    ExpectedQueryResponseV1::SemanticWorkBoundedV1,
+                    pin,
+                    active_domain,
+                    request.query.top_k,
+                    false,
+                );
+                binding.max_work_units = Some(request.max_work_units);
+                binding
+            }
             SearchPlaneQueryIpcRequest::Hybrid(HybridQueryRequest {
                 generation,
                 generation_selector,
@@ -336,6 +355,7 @@ impl QueryCallBinding {
                     top_k: Some(text_query.top_k),
                     history_order: Some(*order),
                     rev_at_time: false,
+                    max_work_units: None,
                 }
             }
             SearchPlaneQueryIpcRequest::RuntimeMetadata(RuntimeMetadataQueryRequest {
@@ -386,6 +406,7 @@ impl QueryCallBinding {
                 top_k: None,
                 history_order: None,
                 rev_at_time: false,
+                max_work_units: None,
             },
             SearchPlaneQueryIpcRequest::Explain(SearchPlaneExplainQueryRequest {
                 generation,
@@ -398,6 +419,7 @@ impl QueryCallBinding {
                 top_k: None,
                 history_order: None,
                 rev_at_time: false,
+                max_work_units: None,
             },
             SearchPlaneQueryIpcRequest::ClusterMembershipRead(
                 ClusterMembershipBatchReadRequestV1 { generation, .. },
@@ -409,6 +431,7 @@ impl QueryCallBinding {
                 top_k: None,
                 history_order: None,
                 rev_at_time: false,
+                max_work_units: None,
             },
         }
     }
@@ -435,6 +458,7 @@ impl QueryCallBinding {
             top_k: Some(top_k),
             history_order: None,
             rev_at_time,
+            max_work_units: None,
         }
     }
 }
@@ -746,6 +770,35 @@ pub(crate) fn bind_query_response(
                 binding.top_k.unwrap_or(u32::MAX),
                 payload.results.len(),
             )
+        }
+        SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(payload) => {
+            check_variant(binding, ExpectedQueryResponseV1::SemanticWorkBoundedV1)?;
+            check_pin(binding, &payload.query.generation)?;
+            check_candidates(
+                binding,
+                &payload.query.generation,
+                payload.query.results.iter().map(CandidateIdentityRef::from),
+            )?;
+            check_window(
+                "semantic_work_bounded_v1",
+                payload.query.window.returned(),
+                payload.query.results.len(),
+            )?;
+            check_cap(
+                "semantic_work_bounded_v1",
+                binding.top_k.unwrap_or(u32::MAX),
+                payload.query.results.len(),
+            )?;
+            if !matches!(binding.max_work_units, Some(limit) if payload.charged_work_units > 0 && payload.charged_work_units <= limit)
+            {
+                return Err(binding_error(
+                    "semantic_work_bounded_v1",
+                    ResponseBindingAxis::WorkSettlement,
+                    "positive charged work within the admitted allowance",
+                    "missing, zero, or excessive charged work",
+                ));
+            }
+            Ok(())
         }
         SearchPlaneQueryIpcResponse::Hybrid(payload) => {
             check_variant(binding, ExpectedQueryResponseV1::Hybrid)?;
@@ -1564,6 +1617,20 @@ pub const SDK_WIRE_ROUTES_V1: &[SdkWireRouteV1] = &[
             "candidate_identity",
             "window",
             "cardinality",
+        ],
+    },
+    SdkWireRouteV1 {
+        route: "semantic_work_bounded_v1",
+        plane: "query",
+        expected_kind: "semantic_work_bounded_v1",
+        bound_axes: &[
+            "variant",
+            "read_identity",
+            "selector_domain",
+            "candidate_identity",
+            "window",
+            "cardinality",
+            "work_settlement",
         ],
     },
     SdkWireRouteV1 {

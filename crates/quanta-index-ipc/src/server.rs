@@ -324,6 +324,10 @@ impl RequestEnvelope<quanta_index_contract::SearchPlaneQueryIpcRequest>
                 semantic.generation.as_ref(),
                 semantic.generation_selector.as_ref(),
             ),
+            Request::SemanticWorkBoundedV1(bounded) => pinned_repo_scope(
+                bounded.query.generation.as_ref(),
+                bounded.query.generation_selector.as_ref(),
+            ),
             Request::Hybrid(hybrid) => pinned_repo_scope(
                 hybrid
                     .generation

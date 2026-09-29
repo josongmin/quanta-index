@@ -335,6 +335,14 @@ fn dense_lane_trace_names_index_attestation_effort_lineage_and_segment_builds() 
         exact.trace_detail(),
         "dense.index=exact; dense.attestation=sealed"
     );
+    let exact_bypass = DenseLaneContractV1 {
+        index: DenseIndexV1::Exact,
+        attestation: DenseLaneAttestationV1::ExactScanOfSealedRows,
+    };
+    assert_eq!(
+        exact_bypass.trace_detail(),
+        "dense.index=exact; dense.attestation=exact_scan_of_sealed_rows"
+    );
     let trained = DenseLaneContractV1 {
         index: DenseIndexV1::Approximate {
             effort: effort(),

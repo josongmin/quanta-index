@@ -39,7 +39,9 @@
     },
     {
       "if": {"properties": {"tasks": {"contains": {"anyOf": [
-        {"required": ["query_intent"]}, {"required": ["label_review"]}
+        {"required": ["query_intent"]}, {"required": ["label_review"]},
+        {"required": ["file_judgments"]}, {"required": ["declaration_judgments"]},
+        {"required": ["judgment_policy"]}
       ]}}}},
       "then": {"required": ["diagnostic_policy"]}
     }
@@ -82,6 +84,26 @@
         "file_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
       }
     },
+    "file_judgment": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "file_sha256", "grade"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "file_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "grade": {"type": "integer", "minimum": 0, "maximum": 3}
+      }
+    },
+    "declaration_judgment": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "file_sha256", "start_byte", "end_byte", "grade"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "file_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "start_byte": {"type": "integer", "minimum": 0},
+        "end_byte": {"type": "integer", "minimum": 1},
+        "grade": {"type": "integer", "minimum": 0, "maximum": 3}
+      }
+    },
     "block": {
       "type": "object",
       "additionalProperties": false,
@@ -117,11 +139,16 @@
           "description": "Suite-author declaration. This is omitted from the blinded runner pack."
         },
         "label_review": {"$ref": "#/$defs/label_review"},
+        "judgment_policy": {"const": "unjudged_zero_v1"},
+        "file_judgments": {"type": "array", "items": {"$ref": "#/$defs/file_judgment"}},
+        "declaration_judgments": {"type": "array", "items": {"$ref": "#/$defs/declaration_judgment"}},
         "gold": {"type": "array", "items": {"$ref": "#/$defs/block"}}
       },
       "allOf": [
         {"if": {"properties": {"answerable": {"const": true}}}, "then": {"properties": {"gold": {"minItems": 1}}}},
-        {"if": {"properties": {"answerable": {"const": false}}}, "then": {"properties": {"gold": {"maxItems": 0}}}}
+        {"if": {"properties": {"answerable": {"const": false}}}, "then": {"properties": {"gold": {"maxItems": 0}}}},
+        {"if": {"anyOf": [{"required": ["file_judgments"]}, {"required": ["declaration_judgments"]}]},
+         "then": {"required": ["judgment_policy", "label_review"]}}
       ]
     },
     "label_review": {

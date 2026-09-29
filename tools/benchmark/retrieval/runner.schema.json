@@ -198,6 +198,16 @@
           "type": "object", "additionalProperties": false,
           "required": ["profile_id", "policy", "config", "planning_cost_in_latency"],
           "properties": {
+            "profile_id": {"const": "quanta-literal-file-v1"},
+            "policy": {"const": "literal_file"},
+            "config": {"type": "object", "additionalProperties": false, "maxProperties": 0},
+            "planning_cost_in_latency": {"const": false}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["profile_id", "policy", "config", "planning_cost_in_latency"],
+          "properties": {
             "profile_id": {"const": "quanta-exact-symbol-name-v1"},
             "policy": {"const": "exact_symbol_name"},
             "config": {"type": "object", "additionalProperties": false, "maxProperties": 0},
@@ -297,6 +307,7 @@
       "properties": {
         "task_id": {"type": "string", "minLength": 1},
         "route": {"type": "string", "minLength": 1},
+        "rank_unit": {"description": "Optional effective rank unit. symbol is valid only for Quanta exact_symbol_name on the symbol route; distinct_file only for literal_file lexical. Historical symbol records may omit it.", "enum": ["distinct_file", "symbol"]},
         "status": {"enum": ["success", "abstained", "capped", "error", "timeout", "unavailable"]},
         "candidates": {"type": "array", "items": {"$ref": "#/$defs/candidate"}},
         "query_identity": {"$ref": "#/$defs/query_identity"},

@@ -1505,6 +1505,7 @@ def test_current_hand_calculated_rank_metrics(tmp_path):
     assert report["rank_metric_version"] == "rb-rank-context-density-first-coverage"
     assert report["graded"] is True
     assert report["primary_metric"] == "ndcg_at_10"
+    assert "judgment_metrics" not in report  # Historical suite v3 reports stay unchanged.
     routes = report["rank_metrics"]["routes"]
     # Lexical T1: [miss a:3 (same file, wrong lines), hit b:1]; hybrid T1: [hit a:2, miss, hit b:1].
     lex_chunk = routes["lexical"]["chunk"]
@@ -9110,7 +9111,7 @@ def test_v5_capture_schema_rejects_zero_generation_and_cross_system_profiles(tmp
             "frozen Quanta profile",
         ),
         (lambda s, r, f: r["captures"]["q0"].pop("execution_profile"), "missing/unknown fields"),
-        (lambda s, r, f: r["results"][0].pop("query_identity"), "missing/unknown fields"),
+        (lambda s, r, f: r["results"][0].pop("query_identity"), "missing fields"),
         (
             lambda s, r, f: r["results"][0]["query_identity"].update(
                 effective_lexical_request_sha256="0" * 64
@@ -10131,6 +10132,521 @@ def test_v3_partial_bytes_earn_no_credit(tmp_path):
     assert rows[("T1", "lexical")]["chunk_recall_at_10"] == 1.0
 
 
+def test_independent_file_ndcg_uses_file_grades_once_per_file():
+    judgments = [
+        {"path": "a.go", "grade": 3},
+        {"path": "b.go", "grade": 1},
+        {"path": "c.go", "grade": 0},
+    ]
+    ranked = [{"path": path} for path in ("a.go", "a.go", "b.go")]
+    ideal = 7 + 1 / math.log2(3)
+    assert ev.file_ndcg_at_k(ranked, judgments, 10) == pytest.approx((7 + 1 / math.log2(4)) / ideal)
+    assert ev.file_ndcg_at_k([{"path": "a.go"}, {"path": "b.go"}], judgments, 10) == 1.0
+    assert ev.file_ndcg_at_k([{"path": "b.go"}, {"path": "a.go"}], judgments, 10) == pytest.approx(
+        (1 + 7 / math.log2(3)) / ideal
+    )
+    assert ev.file_ndcg_at_k([{"path": "c.go"}, {"path": "a.go"}], judgments, 10) < 1.0
+
+
+def test_declaration_judgment_requires_published_symbol_span_not_returned_context():
+    source = b"func A() {} ; func B() {}\n"  # Both declarations share the returned line.
+    first = source.index(b"A()")
+    second = source.index(b"B()")
+    gold = [{"path": "a.go", "start_byte": first, "end_byte": first + 1, "grade": 3}]
+    item = {
+        "path": "a.go",
+        "start_byte": 0,
+        "end_byte": len(source),
+        "span_accounting": {
+            "unit_kind": "symbol",
+            "unit_id": "other-declaration",
+            "indexed_start_byte": second,
+            "indexed_end_byte": second + 1,
+        },
+    }
+    assert ev.declaration_recall_at_k([item], gold, 10) == 0.0
+    assert ev.declaration_mrr_at_k([item], gold, 10) == 0.0
+    own = copy.deepcopy(item)
+    own["span_accounting"].update(
+        unit_id="gold-declaration", indexed_start_byte=first, indexed_end_byte=first + 1
+    )
+    assert ev.declaration_recall_at_k([item, own, own], gold, 10) == 1.0
+    assert ev.declaration_mrr_at_k([item, own], gold, 10) == 0.5
+    chunk = copy.deepcopy(own)
+    chunk["span_accounting"]["unit_kind"] = "chunk"
+    assert ev.declaration_recall_at_k([chunk], gold, 10) == 0.0
+    unidentified = copy.deepcopy(own)
+    unidentified["span_accounting"]["unit_id"] = ""
+    assert ev.declaration_recall_at_k([unidentified], gold, 10) == 0.0
+
+    own["rank"] = 1
+    suite = {"comparison_contract": {"top_k": 10}, "routes": ["symbol"]}
+    run = {
+        "span_accounting_version": 1,
+        "route_provenance": {"symbol": {"capture_id": "q0"}},
+        "captures": {
+            "q0": {
+                "system": "quanta",
+                "execution_profile": {"policy": "exact_symbol_name"},
+            }
+        },
+    }
+    tasks = {"T": {"answerable": True, "declaration_judgments": gold}}
+    results = {("T", "symbol"): {"status": "success", "candidates": [own]}}
+    diagnostic = ev.judgment_diagnostics(suite, run, results, tasks, "symbol", None)
+    assert diagnostic is not None
+    assert diagnostic["declaration_judgments"]["routes"]["symbol"]["eligible_task_ids"] == ["T"]
+    assert diagnostic["declaration_judgments"]["routes"]["symbol"]["operational_mean"] == {
+        "recall_at_10": 1.0,
+        "mrr_at_10": 1.0,
+    }
+    results[("T", "symbol")] = {"status": "abstained", "candidates": []}
+    exhausted = ev.judgment_diagnostics(suite, run, results, tasks, "symbol", None)
+    route = exhausted["declaration_judgments"]["routes"]["symbol"]
+    assert route["eligible_task_ids"] == ["T"]
+    assert route["conditional_mean"] == {"recall_at_10": 0.0, "mrr_at_10": 0.0}
+
+
+def test_literal_file_policy_binds_projection_and_raw_identity():
+    raw = "writeContentType"
+    request = 'select:file "writeContentType"'
+    assert qp.plan_lexical_request("literal_file", raw) == request
+    assert qp.policy_config_canonical("literal_file") == (
+        '{"escaping":"lq-norm-phrase-v1","policy":"literal_file","projection":"file"}'
+    )
+    assert qp.execution_profile("literal_file") == {
+        "profile_id": "quanta-literal-file-v1",
+        "policy": "literal_file",
+        "config": {},
+        "planning_cost_in_latency": False,
+    }
+    assert qp.derive_query_identity("literal_file", raw) == {
+        "original_query_sha256": hashlib.sha256(raw.encode()).hexdigest(),
+        "effective_lexical_request_sha256": hashlib.sha256(request.encode()).hexdigest(),
+        "semantic_text_sha256": hashlib.sha256(raw.encode()).hexdigest(),
+    }
+    assert qp.plan_lexical_request("literal", raw) == '"writeContentType"'
+
+
+def test_literal_file_policy_refuses_unindexable_input_and_v4_replay():
+    with pytest.raises(qp.QueryPlanError, match="no tokens"):
+        qp.plan_lexical_request("literal_file", "---")
+    with pytest.raises(qp.QueryPlanError, match="unsupported v4"):
+        qp.derive_query_identity_v4("literal_file", "writeContentType")
+
+
+def test_pair_spec_refuses_diagnostic_rank_profiles_before_quality_gate(tmp_path):
+    spec_path = tmp_path / "pair-spec.json"
+    for policy in ("literal_file", "exact_symbol_name"):
+        spec = _g0_spec()
+        spec["execution_profiles"]["quanta"] = qp.execution_profile(policy)
+        spec_path.write_text(json.dumps(spec), encoding="utf-8")
+        with pytest.raises(pairrun.RunError, match="diagnostic rank profile"):
+            pairrun.load_spec(spec_path)
+
+
+def test_verdict_quality_refuses_diagnostic_rank_profile(tmp_path, monkeypatch):
+    st = _pair_stage(tmp_path, claims={"quality": True})
+    monkeypatch.setattr(pairrun, "PAIR_QUANTA_POLICIES", frozenset())
+    verdict = _stage_verdict(st)
+    assert verdict["states"]["QUALITY_DELTA"] == "fail"
+    assert verdict["state_evidence"]["QUALITY_DELTA"]["reason"] == "diagnostic_rank_profile"
+    assert verdict["failure_class"] == "scoring"
+
+
+def test_current_native_refuses_unbound_file_projection_but_v4_replays():
+    with pytest.raises(qp.QueryPlanError, match="requires an explicit rank profile"):
+        qp.plan_lexical_request("native", "select:file Next")
+    with pytest.raises(qp.QueryPlanError, match="requires an explicit rank profile"):
+        qp.plan_lexical_request("native", "case:yes select:path Next")
+    with pytest.raises(qp.QueryPlanError, match="requires an explicit rank profile"):
+        qp.plan_lexical_request("native", "file:src/lib.rs select:file needle")
+    for query in ("type:path needle", "type:repo needle"):
+        with pytest.raises(qp.QueryPlanError, match="requires an explicit rank profile"):
+            qp.plan_lexical_request("native", query)
+    assert qp.plan_lexical_request("native", '"select:file Next"') == '"select:file Next"'
+    assert qp.plan_lexical_request("native", "Next") == "Next"
+    legacy = qp.derive_query_identity_v4("native", "select:file Next")
+    assert legacy["effective_lexical_request_sha256"] == ev.digest(b"select:file Next")
+
+
+def test_runner_schema_admits_only_the_named_file_profile():
+    profile_schema = _load_schema("runner.schema.json")["$defs"]["execution_profile"]
+    profile = qp.execution_profile("literal_file")
+    jsonschema.validate(profile, profile_schema)
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate({**profile, "profile_id": "quanta-literal-v1"}, profile_schema)
+
+
+def test_independent_judgments_are_source_bound_reviewed_and_blinded(tmp_path):
+    repo, suite, _run, _sp, _rp, files = fixture_v3(tmp_path, answerable_only=True)
+    suite["diagnostic_policy"] = ev.OBSERVED_PREFIX_DIAGNOSTIC_POLICY
+    for task in suite["tasks"]:
+        task["label_review"] = {
+            "assessment": "reviewed_ambiguous",
+            "reviewer_id": "fixture-reviewer",
+            "evidence_sha256": ev.digest(b"independent judgment review"),
+        }
+        task["judgment_policy"] = ev.UNJUDGED_POLICY
+        task["file_judgments"] = [
+            {"path": "a.txt", "file_sha256": ev.digest(files["a.txt"]), "grade": 3},
+            {"path": "b.txt", "file_sha256": ev.digest(files["b.txt"]), "grade": 0},
+        ]
+        start, end = _byte_span(files["a.txt"], 2, 2)
+        task["declaration_judgments"] = [
+            {
+                "path": "a.txt",
+                "start_byte": start,
+                "end_byte": end,
+                "file_sha256": ev.digest(files["a.txt"]),
+                "grade": 3,
+            }
+        ]
+    jsonschema.validate(suite, _load_schema("suite.schema.json"))
+    _loaded, pack, _source = ev.validate_suite(repo, suite)
+    assert "file_judgments" not in ev.canonical(pack).decode()
+    assert "declaration_judgments" not in ev.canonical(pack).decode()
+    assert "fixture-reviewer" not in ev.canonical(pack).decode()
+
+    mutations = (
+        (
+            lambda s: s["tasks"][0]["file_judgments"][0].update(file_sha256="0" * 64),
+            "file hash mismatch",
+        ),
+        (lambda s: s["tasks"][0]["file_judgments"][0].update(path="excluded.txt"), "file excluded"),
+        (
+            lambda s: s["tasks"][0]["declaration_judgments"][0].update(end_byte=999),
+            "invalid source byte span",
+        ),
+        (lambda s: s["tasks"][0].pop("judgment_policy"), "explicit unjudged_zero_v1"),
+        (
+            lambda s: s["tasks"][0]["label_review"].update(assessment="unreviewed"),
+            "reviewed label requires",
+        ),
+        (
+            lambda s: s["tasks"][0]["file_judgments"].append(
+                copy.deepcopy(s["tasks"][0]["file_judgments"][0])
+            ),
+            "duplicate file_judgments",
+        ),
+    )
+    for mutate, error in mutations:
+        bad = copy.deepcopy(suite)
+        mutate(bad)
+        with pytest.raises(ev.EvidenceError, match=error):
+            ev.validate_suite(repo, bad)
+
+
+def test_cross_suite_custody_counts_positive_independent_file_judgments(tmp_path):
+    repo, suite, _run, _sp, _rp, files = fixture_v3(tmp_path, answerable_only=True)
+    development = copy.deepcopy(suite)
+    holdout = copy.deepcopy(suite)
+    development["suite_id"] = "development-reviewed-file"
+    holdout["suite_id"] = "holdout-reviewed-file"
+    development["tasks"] = [development["tasks"][0]]
+    development["tasks"][0]["gold"] = [development["tasks"][0]["gold"][0]]
+    holdout["tasks"] = [holdout["tasks"][1]]
+    holdout["tasks"][0]["gold"] = [_v3_block(files, "b.txt", 1, 1, grade=2)]
+    for candidate in (development, holdout):
+        candidate["diagnostic_policy"] = ev.OBSERVED_PREFIX_DIAGNOSTIC_POLICY
+        task = candidate["tasks"][0]
+        task["label_review"] = {
+            "assessment": "reviewed_unambiguous",
+            "reviewer_id": "fixture-reviewer",
+            "evidence_sha256": ev.digest(b"independent review"),
+        }
+        task["judgment_policy"] = ev.UNJUDGED_POLICY
+        task["file_judgments"] = [
+            {"path": "b.txt", "file_sha256": ev.digest(files["b.txt"]), "grade": 3}
+        ]
+    manifest = {
+        "schema_version": 1,
+        "source_revision": "a" * 40,
+        "repository_commit": suite["repository_commit"],
+        "development_suite_sha256": ev.digest(ev.canonical(development)),
+        "holdout_suite_sha256": ev.digest(ev.canonical(holdout)),
+    }
+    with pytest.raises(ev.EvidenceError, match="cross-suite file leakage"):
+        ev.validate_experiment_custody(repo, manifest, development, holdout)
+
+
+def test_train_eval_split_blocks_independent_file_judgment_leakage(tmp_path):
+    repo, suite, _run, _sp, _rp, files = fixture_v3(tmp_path, answerable_only=True)
+    suite["diagnostic_policy"] = ev.OBSERVED_PREFIX_DIAGNOSTIC_POLICY
+    suite["tasks"][0]["gold"] = [suite["tasks"][0]["gold"][0]]  # eval gold a.txt
+    suite["tasks"][1]["split"] = "train"
+    suite["tasks"][1]["gold"] = [_v3_block(files, "b.txt", 1, 1, grade=2)]
+    for task in suite["tasks"]:
+        task["label_review"] = {
+            "assessment": "reviewed_unambiguous",
+            "reviewer_id": "fixture-reviewer",
+            "evidence_sha256": ev.digest(b"reviewed fixture"),
+        }
+        task["judgment_policy"] = ev.UNJUDGED_POLICY
+        task["file_judgments"] = [
+            {"path": "b.txt", "file_sha256": ev.digest(files["b.txt"]), "grade": 3}
+        ]
+    with pytest.raises(ev.EvidenceError, match="independent judgment file leakage"):
+        ev.validate_suite(repo, suite)
+
+
+def test_independent_file_quality_uses_common_eligible_cohort():
+    tasks = {
+        "easy": {
+            "answerable": True,
+            "category": "easy",
+            "file_judgments": [{"path": "gold-easy.go", "grade": 3}],
+        },
+        "hard": {
+            "answerable": True,
+            "category": "hard",
+            "file_judgments": [{"path": "gold-hard.go", "grade": 3}],
+        },
+    }
+    suite = {"comparison_contract": {"top_k": 10}, "routes": ["q", "s"]}
+    run = {
+        "route_provenance": {"q": {"capture_id": "q0"}, "s": {"capture_id": "s0"}},
+        "captures": {"q0": {"system": "quanta"}, "s0": {"system": "semble"}},
+    }
+
+    def row(task_id, route, status, paths):
+        return {
+            "task_id": task_id,
+            "route": route,
+            "status": status,
+            "rank_unit": "distinct_file",
+            "candidates": [{"path": path, "rank": rank} for rank, path in enumerate(paths, 1)],
+        }
+
+    filler = [f"filler-{index}.go" for index in range(9)]
+    results = {
+        ("easy", "q"): row("easy", "q", "capped", ["gold-easy.go", *filler]),
+        ("easy", "s"): row("easy", "s", "success", ["gold-easy.go", *filler]),
+        ("hard", "q"): row("hard", "q", "capped", ["gold-hard.go", *filler[:1]]),
+        ("hard", "s"): row("hard", "s", "success", [*filler, "gold-hard.go"]),
+    }
+    results[("easy", "s")].pop("rank_unit")
+    results[("hard", "s")].pop("rank_unit")
+    report = ev.judgment_diagnostics(suite, run, results, tasks, "q", "s")
+    assert report is not None
+    file_view = report["file_judgments"]
+    q = file_view["routes"]["q"]
+    assert q["eligible_task_ids"] == ["easy"]
+    assert q["excluded"] == [{"task_id": "hard", "reason": "insufficient_depth_without_exhaustion"}]
+    assert q["coverage"] == 0.5
+    assert q["operational_mean"]["ndcg_at_10"] == 0.5
+    assert q["conditional_mean"]["ndcg_at_10"] == 1.0
+    comparison = file_view["comparison"]
+    assert file_view["routes"]["s"]["excluded"] == [
+        {"task_id": "easy", "reason": "rank_unit_mismatch"},
+        {"task_id": "hard", "reason": "rank_unit_mismatch"},
+    ]
+    assert comparison["eligible_task_ids"] == []
+    assert comparison["sample_count"] == 0
+    assert comparison["coverage"] == 0.0
+    assert comparison["delta"]["ndcg_at_10"] == ev.NOT_APPLICABLE
+    results[("hard", "q")]["status"] = "success"  # Quanta source binds success to exhaustion.
+    full = ev.judgment_diagnostics(suite, run, results, tasks, "q", "s")
+    assert full is not None
+    assert full["file_judgments"]["routes"]["q"]["eligible_task_ids"] == ["easy", "hard"]
+    assert full["file_judgments"]["comparison"]["eligible_task_ids"] == []
+
+
+def test_literal_file_record_binds_rank_unit_and_independent_score(tmp_path):
+    repo, suite, run, suite_path, runner_path, files = fixture_v3(tmp_path, answerable_only=True)
+    suite["routes"] = ["lexical", "reference"]
+    suite["diagnostic_policy"] = ev.OBSERVED_PREFIX_DIAGNOSTIC_POLICY
+    for task in suite["tasks"]:
+        task["label_review"] = {
+            "assessment": "reviewed_unambiguous",
+            "reviewer_id": "fixture-reviewer",
+            "evidence_sha256": ev.digest(b"reviewed fixture"),
+        }
+        task["judgment_policy"] = ev.UNJUDGED_POLICY
+        task["file_judgments"] = [
+            {"path": "a.txt", "file_sha256": ev.digest(files["a.txt"]), "grade": 3},
+            {"path": "b.txt", "file_sha256": ev.digest(files["b.txt"]), "grade": 1},
+        ]
+    profile = qp.execution_profile("literal_file")
+    run["captures"]["q0"]["execution_profile"] = profile
+    run["captures"]["q0"]["execution_profile_sha256"] = ev.digest(ev.canonical(profile))
+    run["captures"]["s0"] = _v3_capture("semble", current=True)
+    run["route_provenance"] = {
+        "lexical": {"capture_id": "q0"},
+        "reference": {"capture_id": "s0"},
+    }
+    results = []
+    for row in run["results"]:
+        row = copy.deepcopy(row)
+        task = next(task for task in suite["tasks"] if task["task_id"] == row["task_id"])
+        if row["route"] == "lexical":
+            row["rank_unit"] = "distinct_file"
+            row["query_identity"] = qp.derive_query_identity("literal_file", task["query"])
+        else:
+            row["route"] = "reference"
+            row["candidates"] = [item for item in row["candidates"] if item["path"] == "a.txt"][:1]
+            digest = ev.digest(task["query"].encode())
+            row["query_identity"] = {
+                "original_query_sha256": digest,
+                "submitted_query_sha256": digest,
+            }
+        results.append(row)
+    run["results"] = results
+    _pack, run = _repack(repo, suite, run)
+    loaded_suite, pack, loaded_run = record_v3(repo, suite, run, suite_path, runner_path)
+    report = ev.evaluate(loaded_suite, pack, loaded_run, "lexical", "reference", strict_k=True)
+    independent = report["judgment_metrics"]["file_judgments"]
+    assert independent["routes"]["lexical"]["eligible_task_ids"] == ["T1", "T2"]
+    assert independent["routes"]["lexical"]["operational_mean"]["ndcg_at_10"] > 0
+    assert independent["routes"]["reference"]["eligible_task_ids"] == []
+
+    single_suite = copy.deepcopy(suite)
+    single_suite["routes"] = ["lexical"]
+    single_run = copy.deepcopy(run)
+    single_run["route_provenance"] = {"lexical": {"capture_id": "q0"}}
+    single_run["results"] = [row for row in single_run["results"] if row["route"] == "lexical"]
+    _single_pack, single_run = _repack(repo, single_suite, single_run)
+    single_suite_path = tmp_path / "single-suite.json"
+    single_run_path = tmp_path / "single-run.json"
+    record_v3(repo, single_suite, single_run, single_suite_path, single_run_path)
+    diagnostic_path = tmp_path / "single-diagnostic.json"
+    assert (
+        ev.main(
+            [
+                "evaluate-diagnostic",
+                "--repo",
+                str(repo),
+                "--suite",
+                str(single_suite_path),
+                "--runner",
+                str(single_run_path),
+                "--output",
+                str(diagnostic_path),
+            ]
+        )
+        == 0
+    )
+    diagnostic = json.loads(diagnostic_path.read_text())
+    assert diagnostic["report_scope"] == "single_route_independent_judgment_diagnostic_v1"
+    assert diagnostic["status"] == "diagnostic_unqualified"
+    assert diagnostic["qualification"] == ev.NOT_APPLICABLE
+    assert diagnostic["paired_comparison"] == ev.NOT_APPLICABLE
+    assert diagnostic["quality_delta_gate"] == ev.NOT_APPLICABLE
+    assert diagnostic["judgment_metrics"]["file_judgments"]["comparison"] == ev.NOT_APPLICABLE
+    assert (
+        diagnostic["judgment_metrics"]["file_judgments"]["routes"]["lexical"]["eligible_count"] == 2
+    )
+    assert diagnostic["no_answer"]["sample_count"] == 0
+    assert diagnostic["runner_record_sha256"] == ev.digest(ev.canonical(single_run))
+
+    duplicate = copy.deepcopy(run)
+    repeated = copy.deepcopy(duplicate["results"][0]["candidates"][0])
+    repeated["rank"] = 3
+    repeated.update(_v3_block(files, "a.txt", 4, 4, tokens=True, rank=3))
+    duplicate["results"][0]["candidates"].append(repeated)
+    with pytest.raises(ev.EvidenceError, match="duplicate file in distinct_file result"):
+        record_v3(repo, suite, duplicate, suite_path, runner_path)
+    missing_unit = copy.deepcopy(run)
+    missing_unit["results"][0].pop("rank_unit")
+    with pytest.raises(ev.EvidenceError, match="requires lexical distinct_file"):
+        record_v3(repo, suite, missing_unit, suite_path, runner_path)
+    forged_reference = copy.deepcopy(run)
+    forged_reference["results"][1]["rank_unit"] = "distinct_file"
+    with pytest.raises(ev.EvidenceError, match="Semble capture has no verified distinct_file"):
+        record_v3(repo, suite, forged_reference, suite_path, runner_path)
+
+
+@pytest.mark.parametrize("status", ["abstained", "error", "timeout", "capped"])
+def test_exhausted_empty_answerable_query_stays_in_quality_denominator(tmp_path, status):
+    repo, suite, run, suite_path, runner_path, files = fixture_v3(tmp_path, answerable_only=True)
+    suite["routes"] = ["lexical"]
+    suite["diagnostic_policy"] = ev.OBSERVED_PREFIX_DIAGNOSTIC_POLICY
+    for task in suite["tasks"]:
+        task["label_review"] = {
+            "assessment": "reviewed_unambiguous",
+            "reviewer_id": "fixture-reviewer",
+            "evidence_sha256": ev.digest(b"independent fixed file judgment"),
+        }
+        task["judgment_policy"] = ev.UNJUDGED_POLICY
+        task["file_judgments"] = [
+            {"path": "a.txt", "file_sha256": ev.digest(files["a.txt"]), "grade": 3},
+            {"path": "b.txt", "file_sha256": ev.digest(files["b.txt"]), "grade": 0},
+        ]
+    profile = qp.execution_profile("literal_file")
+    run["captures"]["q0"]["execution_profile"] = profile
+    run["captures"]["q0"]["execution_profile_sha256"] = ev.digest(ev.canonical(profile))
+    run["route_provenance"] = {"lexical": {"capture_id": "q0"}}
+    run["results"] = [row for row in run["results"] if row["route"] == "lexical"]
+    for task, row in zip(suite["tasks"], run["results"], strict=True):
+        row["rank_unit"] = "distinct_file"
+        row["query_identity"] = qp.derive_query_identity("literal_file", task["query"])
+    missing = run["results"][1]
+    missing["status"] = status
+    missing["candidates"] = (
+        [_v3_block(files, "b.txt", 1, 1, tokens=True, rank=1)] if status == "capped" else []
+    )
+    missing["error"] = (
+        {"code": status, "message": "execution failed"} if status in ("error", "timeout") else None
+    )
+    _pack, run = _repack(repo, suite, run)
+    loaded_suite, pack, loaded_run = record_v3(repo, suite, run, suite_path, runner_path)
+    report = ev.evaluate_diagnostic(loaded_suite, pack, loaded_run)
+    route = report["judgment_metrics"]["file_judgments"]["routes"]["lexical"]
+    assert route["operational_mean"]["ndcg_at_10"] == 0.5
+    assert route["eligible_task_ids"] == (["T1", "T2"] if status == "abstained" else ["T1"])
+    assert route["conditional_mean"]["ndcg_at_10"] == (0.5 if status == "abstained" else 1.0)
+
+
+def test_single_route_diagnostic_keeps_no_answer_status_distinct():
+    suite = {
+        "schema_version": 3,
+        "suite_id": "synthetic-single",
+        "repository_commit": "a" * 40,
+        "comparison_contract": {"top_k": 10},
+        "routes": ["lexical"],
+        "tasks": [
+            {
+                "task_id": "A",
+                "split": "eval",
+                "answerable": True,
+                "file_judgments": [{"path": "a.go", "grade": 3}],
+            },
+            {"task_id": "N", "split": "eval", "answerable": False, "file_judgments": []},
+        ],
+    }
+    run = {
+        "comparison_contract": {"top_k": 10},
+        "route_provenance": {"lexical": {"capture_id": "q0"}},
+        "captures": {"q0": {"system": "quanta"}},
+        "runner": {},
+        "results": [
+            {
+                "task_id": "A",
+                "route": "lexical",
+                "status": "success",
+                "rank_unit": "distinct_file",
+                "candidates": [{"path": "a.go", "rank": 1}],
+            },
+            {
+                "task_id": "N",
+                "route": "lexical",
+                "status": "timeout",
+                "candidates": [],
+            },
+        ],
+    }
+    diagnostic = ev.evaluate_diagnostic(suite, {}, run)
+    assert diagnostic["no_answer"] == {
+        "task_ids": ["N"],
+        "sample_count": 1,
+        "abstained": 0,
+        "abstention_rate": 0.0,
+        "status_counts": {"timeout": 1},
+    }
+    run["results"][1]["status"] = "abstained"
+    assert ev.evaluate_diagnostic(suite, {}, run)["no_answer"]["abstention_rate"] == 1.0
+
+
 def test_v3_universe_binding(tmp_path):
     repo, suite, _run, _sp, _rp, _files = fixture_v3(tmp_path)
     mutated = json.loads(json.dumps(suite))
@@ -10248,6 +10764,174 @@ def test_v3_duplicate_candidate_byte_span_refused(tmp_path):
     runner_path.write_text(json.dumps(mutated), encoding="utf-8")
     with pytest.raises(ev.EvidenceError, match="duplicate candidate byte span"):
         ev.load_evidence(repo, suite_path, runner_path)
+
+
+@pytest.mark.parametrize("version", [3, 4, 5])
+def test_record_candidates_above_declared_top_k_are_refused(tmp_path, version):
+    repo, suite, run, suite_path, runner_path, files = fixture_v3(tmp_path, answerable_only=True)
+    spans = [("a.txt", start, end) for start in range(1, 5) for end in range(start, 5)]
+    spans.append(("b.txt", 1, 1))
+    run["results"][0]["candidates"] = [
+        _v3_block(files, path, start, end, tokens=True, rank=index)
+        for index, (path, start, end) in enumerate(spans, 1)
+    ]
+    run["schema_version"] = version
+    if version < 5:
+        for capture in run["captures"].values():
+            capture.pop("execution_profile")
+            capture.pop("execution_profile_sha256")
+    if version == 3:
+        for row in run["results"]:
+            row.pop("query_identity")
+    elif version == 4:
+        run["runner"]["query_input_policy"] = {
+            "policy": "native",
+            "config": {},
+            "policy_config_sha256": ev.digest(qp.policy_config_canonical_v4("native").encode()),
+            "planning_cost_in_latency": False,
+        }
+    with pytest.raises(ev.EvidenceError, match="candidates exceed declared top_k"):
+        record_v3(repo, suite, run, suite_path, runner_path)
+
+
+def _exact_symbol_record_fixture(tmp_path):
+    repo, suite, run, suite_path, runner_path, files = fixture_v3(tmp_path, answerable_only=True)
+    suite["routes"] = ["symbol"]
+    for task, name in zip(suite["tasks"], ("AlphaOne", "BetaTwo"), strict=True):
+        task["query"] = name
+        task["query_sha256"] = ev.digest(name.encode())
+    _, pack, _ = ev.validate_suite(repo, suite)
+    run["query_pack_sha256"] = ev.digest(ev.canonical(pack))
+    profile = qp.execution_profile("exact_symbol_name")
+    run["captures"]["q0"]["execution_profile"] = profile
+    run["captures"]["q0"]["execution_profile_sha256"] = ev.digest(ev.canonical(profile))
+    run["route_provenance"] = {"symbol": {"capture_id": "q0"}}
+    run["results"] = [row for row in run["results"] if row["route"] == "lexical"]
+    run["span_accounting_version"] = 1
+    queries = {task["task_id"]: task["query"] for task in pack["tasks"]}
+    for row in run["results"]:
+        row["route"] = "symbol"
+        row["query_identity"] = qp.derive_query_identity(
+            "exact_symbol_name", queries[row["task_id"]]
+        )
+        for candidate in row["candidates"]:
+            candidate["span_accounting"] = {
+                "unit_kind": "symbol",
+                "unit_id": f"{row['task_id']}:{candidate['rank']}",
+                "producer_identity": "source-bound-symbols-v2",
+                "indexed_start_byte": candidate["start_byte"],
+                "indexed_end_byte": candidate["end_byte"],
+                "sdk_start_line": candidate["start_line"],
+                "sdk_end_line": candidate["end_line"],
+                "extra_context_bytes": 0,
+            }
+    return repo, suite, run, suite_path, runner_path, files
+
+
+@pytest.mark.parametrize("rank_unit", [None, "symbol"])
+def test_exact_symbol_result_rank_unit_preserves_legacy_and_binds_new_records(tmp_path, rank_unit):
+    repo, suite, run, suite_path, runner_path, _ = _exact_symbol_record_fixture(tmp_path)
+    if rank_unit is not None:
+        for row in run["results"]:
+            row["rank_unit"] = rank_unit
+    jsonschema.validate(run, _load_schema("runner.schema.json"))
+    _, _, loaded = record_v3(repo, suite, run, suite_path, runner_path)
+    assert len(loaded["results"]) == 2
+    assert all(row.get("rank_unit") == rank_unit for row in loaded["results"])
+
+
+@pytest.mark.parametrize(
+    "profile,rank_unit",
+    [
+        ("exact_symbol_name", "distinct_file"),
+        ("native", "symbol"),
+        ("native", "distinct_file"),
+        ("semble", "symbol"),
+    ],
+)
+def test_result_rank_unit_cannot_promote_incompatible_capture(tmp_path, profile, rank_unit):
+    fixture = _exact_symbol_record_fixture if profile == "exact_symbol_name" else fixture_v3
+    repo, suite, run, suite_path, runner_path, _ = fixture(tmp_path)
+    if profile == "semble":
+        run["captures"]["q0"] = _v3_capture("semble", current=True)
+        for row in run["results"]:
+            query = next(t["query"] for t in suite["tasks"] if t["task_id"] == row["task_id"])
+            raw_sha = ev.digest(query.encode())
+            row["query_identity"] = {
+                "original_query_sha256": raw_sha,
+                "submitted_query_sha256": raw_sha,
+            }
+    run["results"][0]["rank_unit"] = rank_unit
+    with pytest.raises(ev.EvidenceError, match="rank_unit|rank authority"):
+        record_v3(repo, suite, run, suite_path, runner_path)
+
+
+@pytest.mark.parametrize("fault", ["missing_protocol", "missing_unit", "chunk_unit"])
+def test_explicit_symbol_rank_requires_published_symbol_authority(tmp_path, fault):
+    repo, suite, run, suite_path, runner_path, _ = _exact_symbol_record_fixture(tmp_path)
+    for row in run["results"]:
+        row["rank_unit"] = "symbol"
+    first = run["results"][0]["candidates"][0]
+    if fault == "missing_protocol":
+        run.pop("span_accounting_version")
+    elif fault == "missing_unit":
+        first.pop("span_accounting")
+    else:
+        first["span_accounting"].update(unit_kind="chunk", producer_identity="whole_file")
+    with pytest.raises(
+        ev.EvidenceError, match="span protocol|missing published-unit|published symbol unit"
+    ):
+        record_v3(repo, suite, run, suite_path, runner_path)
+
+
+def test_v5_same_line_distinct_symbol_units_survive_record_validation(tmp_path):
+    repo, suite, run, suite_path, runner_path, _files = _exact_symbol_record_fixture(tmp_path)
+    for result in run["results"]:
+        result["rank_unit"] = "symbol"
+    row = run["results"][0]
+    first = row["candidates"][0]
+    second = copy.deepcopy(first)
+    second["rank"] = 2
+    for candidate, name, offset in ((first, "alpha", 0), (second, "three", 6)):
+        candidate["span_accounting"] = {
+            "unit_kind": "symbol",
+            "unit_id": name,
+            "producer_identity": "source-bound-symbols-v2",
+            "indexed_start_byte": candidate["start_byte"] + offset,
+            "indexed_end_byte": candidate["start_byte"] + offset + len(name),
+            "sdk_start_line": candidate["start_line"],
+            "sdk_end_line": candidate["end_line"],
+            "extra_context_bytes": candidate["end_byte"] - candidate["start_byte"] - len(name),
+        }
+    row["candidates"] = [first, second]
+    loaded_suite, loaded_pack, loaded_run = record_v3(repo, suite, run, suite_path, runner_path)
+    assert len(loaded_run["results"][0]["candidates"]) == 2
+    assert loaded_run["results"][0]["rank_unit"] == "symbol"
+
+    legacy = copy.deepcopy(run)
+    for result in legacy["results"]:
+        result.pop("rank_unit")
+    _, _, legacy_run = record_v3(repo, suite, legacy, suite_path, runner_path)
+    assert len(legacy_run["results"][0]["candidates"]) == 2
+
+    native = copy.deepcopy(legacy)
+    profile = qp.execution_profile("native")
+    native["captures"]["q0"]["execution_profile"] = profile
+    native["captures"]["q0"]["execution_profile_sha256"] = ev.digest(ev.canonical(profile))
+    queries = {task["task_id"]: task["query"] for task in suite["tasks"]}
+    for result in native["results"]:
+        result["query_identity"] = qp.derive_query_identity("native", queries[result["task_id"]])
+    with pytest.raises(ev.EvidenceError, match="duplicate candidate byte span"):
+        record_v3(repo, suite, native, suite_path, runner_path)
+
+    duplicate = copy.deepcopy(run)
+    duplicate_row = duplicate["results"][0]
+    duplicate_row["candidates"][1]["span_accounting"].update(
+        indexed_start_byte=first["span_accounting"]["indexed_start_byte"],
+        indexed_end_byte=first["span_accounting"]["indexed_end_byte"],
+    )
+    with pytest.raises(ev.EvidenceError, match="duplicate published symbol indexed span"):
+        record_v3(repo, suite, duplicate, suite_path, runner_path)
 
 
 # --- Cross-language fixtures (strict §1 independent oracles) ---

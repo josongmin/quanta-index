@@ -1,5 +1,6 @@
 use quanta_index_contract::{
-    GenerationSelector, RepoId, RevisionId, SemanticQueryRequest, SemanticQueryResponse,
+    GenerationSelector, RepoId, RevisionId, SearchPlaneQueryIpcResponse, SemanticQueryRequest,
+    SemanticQueryResponse, SemanticWorkBoundedQueryRequestV1, SemanticWorkBoundedQueryResponseV1,
 };
 
 use crate::{QuantaIndex, SdkError, TextQuerySyntax, text_query_builder::VectorQueryBuilderState};
@@ -28,6 +29,40 @@ impl<'a> SemanticNamespace<'a> {
         request: SemanticQueryRequest,
     ) -> Result<SemanticQueryResponse, SdkError> {
         dispatch_semantic_query_request_v1(self.client, request)
+    }
+
+    /// Execute under the search owner's bounded exact dense lane. The response
+    /// carries the work settled by that owner; a regular semantic response is
+    /// never accepted as a substitute.
+    pub fn query_work_bounded_v1(
+        &self,
+        request: SemanticWorkBoundedQueryRequestV1,
+    ) -> Result<SemanticWorkBoundedQueryResponseV1, SdkError> {
+        let response = self.client.dispatch_query(
+            quanta_index_contract::SearchPlaneQueryIpcRequest::SemanticWorkBoundedV1(request),
+        )?;
+        match response {
+            quanta_index_contract::SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(result) => {
+                Ok(result)
+            }
+            other @ (SearchPlaneQueryIpcResponse::ActiveGenerationSnapshot(_)
+            | SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(_)
+            | SearchPlaneQueryIpcResponse::Text(_)
+            | SearchPlaneQueryIpcResponse::Symbol(_)
+            | SearchPlaneQueryIpcResponse::Semantic(_)
+            | SearchPlaneQueryIpcResponse::Hybrid(_)
+            | SearchPlaneQueryIpcResponse::HybridSeed(_)
+            | SearchPlaneQueryIpcResponse::History(_)
+            | SearchPlaneQueryIpcResponse::RuntimeMetadata(_)
+            | SearchPlaneQueryIpcResponse::Structural(_)
+            | SearchPlaneQueryIpcResponse::RepoMapQuery(_)
+            | SearchPlaneQueryIpcResponse::Explain(_)
+            | SearchPlaneQueryIpcResponse::ClusterMembershipRead(_)
+            | SearchPlaneQueryIpcResponse::Error(_)) => Err(SdkError::Protocol(format!(
+                "expected work-bounded semantic response, got {}",
+                QuantaIndex::query_response_kind(&other)
+            ))),
+        }
     }
 }
 
@@ -225,6 +260,7 @@ fn dispatch_semantic_query_request_v1(
             _,
         )
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Text(_)
+        | quanta_index_contract::SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Symbol(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::Hybrid(_)
         | quanta_index_contract::SearchPlaneQueryIpcResponse::HybridSeed(_)

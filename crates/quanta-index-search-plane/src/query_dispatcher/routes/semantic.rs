@@ -7,8 +7,8 @@ use quanta_index_contract::{
     SemanticQueryResponse,
 };
 use quanta_index_core::{
-    CoreError, LexicalPageSpec, QueryRouteV1, RequestBudgetV1, SemanticPolicy, SemanticQueryPort,
-    SemanticSearcher, validate_query_top_k,
+    CoreError, DenseIndexV1, DenseLaneAttestationV1, LexicalPageSpec, QueryRouteV1,
+    RequestBudgetV1, SemanticPolicy, SemanticQueryPort, SemanticSearcher, validate_query_top_k,
 };
 
 use crate::lower_lexical_text_query;
@@ -68,6 +68,14 @@ impl SearchPlaneDispatcher {
     ) -> Result<SemanticQueryResponse, CoreError> {
         budget.checkpoint("semantic:entry")?;
         SemanticPolicy::validate_top_k(request.top_k)?;
+        if budget.semantic_work_consumed_v1()?.is_some() {
+            let query_bytes = u64::try_from(request.query_text.len()).map_err(|error| {
+                CoreError::InvalidContract(format!("semantic query text length overflow: {error}"))
+            })?;
+            budget.consume_semantic_work_v1(query_bytes.checked_add(1).ok_or_else(|| {
+                CoreError::InvalidContract("semantic query text work overflow".into())
+            })?)?;
+        }
         let selection =
             resolve_semantic_request_selection(self.activation_catalog.as_ref(), request)?;
         let pin = selection.pin.clone();
@@ -190,7 +198,19 @@ impl SearchPlaneDispatcher {
         budget.checkpoint("semantic:search")?;
         let search_started = self.query_stage_observation.start();
         execution.record_semantic_invocation();
-        let mut results = if let Some(scope_ids) = scope_candidate_ids {
+        let mut results = if budget.semantic_work_consumed_v1()?.is_some() {
+            if scope_candidate_ids.is_some() {
+                return Err(CoreError::InvalidContract(
+                    "bounded semantic search does not admit lexical scope".into(),
+                ));
+            }
+            searcher.search_work_bounded_v1(
+                &query_vector,
+                &effective_constraints,
+                probe_top_k,
+                budget,
+            )?
+        } else if let Some(scope_ids) = scope_candidate_ids {
             searcher.search_scoped_constrained(
                 &query_vector,
                 scope_ids,
@@ -222,6 +242,11 @@ impl SearchPlaneDispatcher {
             1,
             Some(results.len()),
         );
+        if budget.semantic_work_consumed_v1()?.is_some() {
+            budget.consume_semantic_work_v1(u64::try_from(results.len()).map_err(|error| {
+                CoreError::InvalidContract(format!("semantic result count overflow: {error}"))
+            })?)?;
+        }
         budget.checkpoint("semantic:project")?;
         let project_started = self.query_stage_observation.start();
         let observed = results.len();
@@ -236,11 +261,21 @@ impl SearchPlaneDispatcher {
             execution.record_semantic_contribution();
         }
         let summary = execution.summary();
+        let dense_lane = if budget.semantic_work_consumed_v1()?.is_some() {
+            let mut lane = searcher.dense_lane();
+            if !matches!(lane.index, DenseIndexV1::Exact) {
+                lane.attestation = DenseLaneAttestationV1::ExactScanOfSealedRows;
+            }
+            lane.index = DenseIndexV1::Exact;
+            lane
+        } else {
+            searcher.dense_lane()
+        };
         let window_v2 = semantic_window_v2(
             request.top_k,
             observed,
             scope_candidate_ids.map(BTreeSet::len),
-            &searcher.dense_lane(),
+            &dense_lane,
             &summary,
         )?;
         let early_stop_reason = scope_candidate_ids.and_then(|scope_ids| {
@@ -255,7 +290,7 @@ impl SearchPlaneDispatcher {
             scope.as_ref(),
             results.len(),
             early_stop_reason,
-            &searcher.dense_lane(),
+            &dense_lane,
             &summary,
             budget.response_request_id(),
         );

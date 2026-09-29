@@ -130,6 +130,7 @@ pub quanta_index_sdk::binding::ExpectedQueryResponseV1::RepoMapQuery
 pub quanta_index_sdk::binding::ExpectedQueryResponseV1::ResolvedLexicalGeneration
 pub quanta_index_sdk::binding::ExpectedQueryResponseV1::RuntimeMetadata
 pub quanta_index_sdk::binding::ExpectedQueryResponseV1::Semantic
+pub quanta_index_sdk::binding::ExpectedQueryResponseV1::SemanticWorkBoundedV1
 pub quanta_index_sdk::binding::ExpectedQueryResponseV1::Structural
 pub quanta_index_sdk::binding::ExpectedQueryResponseV1::Symbol
 pub quanta_index_sdk::binding::ExpectedQueryResponseV1::Text
@@ -240,6 +241,7 @@ pub quanta_index_sdk::ExpectedQueryResponseV1::RepoMapQuery
 pub quanta_index_sdk::ExpectedQueryResponseV1::ResolvedLexicalGeneration
 pub quanta_index_sdk::ExpectedQueryResponseV1::RuntimeMetadata
 pub quanta_index_sdk::ExpectedQueryResponseV1::Semantic
+pub quanta_index_sdk::ExpectedQueryResponseV1::SemanticWorkBoundedV1
 pub quanta_index_sdk::ExpectedQueryResponseV1::Structural
 pub quanta_index_sdk::ExpectedQueryResponseV1::Symbol
 pub quanta_index_sdk::ExpectedQueryResponseV1::Text
@@ -296,6 +298,7 @@ pub quanta_index_sdk::ResponseBindingAxis::Sequence
 pub quanta_index_sdk::ResponseBindingAxis::TargetIdentity
 pub quanta_index_sdk::ResponseBindingAxis::Variant
 pub quanta_index_sdk::ResponseBindingAxis::Window
+pub quanta_index_sdk::ResponseBindingAxis::WorkSettlement
 impl quanta_index_sdk::ResponseBindingAxis
 pub const fn quanta_index_sdk::ResponseBindingAxis::as_str(self) -> &'static str
 impl core::clone::Clone for quanta_index_sdk::ResponseBindingAxis
@@ -1075,6 +1078,7 @@ pub struct quanta_index_sdk::SemanticNamespace<'a>
 impl<'a> quanta_index_sdk::SemanticNamespace<'a>
 pub fn quanta_index_sdk::SemanticNamespace<'a>::query(&self) -> quanta_index_sdk::SemanticQueryBuilder<'a>
 pub fn quanta_index_sdk::SemanticNamespace<'a>::query_request(&self, request: quanta_index_contract::query::requests::SemanticQueryRequest) -> core::result::Result<quanta_index_contract::results::query_responses::SemanticQueryResponse, quanta_index_sdk::SdkError>
+pub fn quanta_index_sdk::SemanticNamespace<'a>::query_work_bounded_v1(&self, request: quanta_index_contract::ipc::split::SemanticWorkBoundedQueryRequestV1) -> core::result::Result<quanta_index_contract::ipc::split::SemanticWorkBoundedQueryResponseV1, quanta_index_sdk::SdkError>
 impl<'a> core::marker::Freeze for quanta_index_sdk::SemanticNamespace<'a>
 impl<'a> core::marker::Send for quanta_index_sdk::SemanticNamespace<'a>
 impl<'a> core::marker::Sync for quanta_index_sdk::SemanticNamespace<'a>

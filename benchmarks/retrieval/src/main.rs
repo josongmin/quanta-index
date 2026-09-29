@@ -71,7 +71,7 @@ fn print_help() -> BenchResult<()> {
          fixed_window_*: --window-bytes N (default 4000) --overlap-bytes N (default 400)\n\
          brace_heuristic: --max-item-bytes N (default 32768)\n\
          run adds: --query-pack PATH --routes a,b --top-k N --state-root PATH\n\
-         [--query-protocol PATH] [--query-input-policy native|literal|natural_language|exact_symbol_name]\n\
+         [--query-protocol PATH] [--query-input-policy native|literal|literal_file|natural_language|exact_symbol_name]\n\
          [--query-stage-observation enabled|disabled] (default enabled; server query stages only)\n\
          [--experimental-hybrid-fetch-floor 25|50|100] (default 100; explicit experimental startup policy)\n\
          --repo-id ID --revision-id ID --generation N\n\
@@ -328,6 +328,9 @@ fn query_plan_error_details(error: &QueryPlanError) -> serde_json::Value {
             parser_code,
             detail,
         } => serde_json::json!({"parser_code": parser_code, "detail": detail}),
+        QueryPlanError::NativeProjectionRequiresPolicy { projection } => {
+            serde_json::json!({"projection": projection})
+        }
     }
 }
 
@@ -406,6 +409,11 @@ fn validate_policy_routes(policy: QueryInputPolicy, routes: &BTreeSet<&str>) -> 
     if policy == QueryInputPolicy::ExactSymbolName && routes != &BTreeSet::from(["symbol"]) {
         return Err(BenchError::Config(
             "exact_symbol_name requires only the symbol route".to_string(),
+        ));
+    }
+    if policy == QueryInputPolicy::LiteralFile && routes != &BTreeSet::from(["lexical"]) {
+        return Err(BenchError::Config(
+            "literal_file requires only the lexical route".to_string(),
         ));
     }
     Ok(())
@@ -1711,5 +1719,9 @@ mod tests {
             );
         }
         assert!(validate_policy_routes(QueryInputPolicy::Native, &lexical).is_ok());
+        assert!(validate_policy_routes(QueryInputPolicy::LiteralFile, &lexical).is_ok());
+        for routes in [&symbol, &mixed] {
+            assert!(validate_policy_routes(QueryInputPolicy::LiteralFile, routes).is_err());
+        }
     }
 }

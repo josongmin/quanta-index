@@ -39,6 +39,9 @@ impl PlaneDispatch<SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse>
             SearchPlaneQueryIpcRequest::Text(_) => "query.text",
             SearchPlaneQueryIpcRequest::Symbol(_) => "query.symbol",
             SearchPlaneQueryIpcRequest::Semantic(_) => "query.semantic",
+            SearchPlaneQueryIpcRequest::SemanticWorkBoundedV1(_) => {
+                "query.semantic_work_bounded_v1"
+            }
             SearchPlaneQueryIpcRequest::Hybrid(_) => "query.hybrid",
             SearchPlaneQueryIpcRequest::HybridSeed(_) => "query.hybrid_seed",
             SearchPlaneQueryIpcRequest::History(_) => "query.history",
@@ -58,6 +61,7 @@ impl PlaneDispatch<SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse>
             | SearchPlaneQueryIpcResponse::Text(_)
             | SearchPlaneQueryIpcResponse::Symbol(_)
             | SearchPlaneQueryIpcResponse::Semantic(_)
+            | SearchPlaneQueryIpcResponse::SemanticWorkBoundedV1(_)
             | SearchPlaneQueryIpcResponse::Hybrid(_)
             | SearchPlaneQueryIpcResponse::HybridSeed(_)
             | SearchPlaneQueryIpcResponse::History(_)
