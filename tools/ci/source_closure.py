@@ -61,6 +61,7 @@ PROFILES = {
             "tools/ci/tests/test_proof_command_timings.py",
             "tools/ci/tests/test_lexical_file_comparison.py",
             "tools/ci/tests/test_retrieval_benchmark.py",
+            "tools/ci/tests/test_source_oracle_suite.py",
             "tools/ci/tests/test_retrieval_contract_proof.py",
             "tools/ci/tests/test_retrieval_sdk_proof.py",
             "tools/ci/tests/test_nextest_ignored_inventory.py",
