@@ -2553,6 +2553,8 @@ def validate_admission_manifest(payload: object) -> dict:
         raise RunError("qualification annotation authorities and receipts must be distinct")
     if not isinstance(gold["adjudicator_id"], str) or not gold["adjudicator_id"]:
         raise RunError("qualification adjudicator id must be nonempty")
+    if gold["adjudicator_id"] in identities:
+        raise RunError("qualification adjudicator must be distinct from annotators")
     if not _is_hex(gold["adjudication_receipt_sha256"], 64):
         raise RunError("qualification adjudication receipt digest is malformed")
 
@@ -2576,6 +2578,83 @@ def validate_admission_manifest(payload: object) -> dict:
         if not _is_hex(value, 64):
             raise RunError(f"qualification admission verification.{key} is malformed")
     return admission
+
+
+GOLD_REVIEW_LABEL_KEYS = frozenset(
+    {
+        "answerable",
+        "gold",
+        "query_intent",
+        "judgment_policy",
+        "file_judgments",
+        "declaration_judgments",
+    }
+)
+
+
+def _gold_review_labels(task: dict) -> dict:
+    return {key: task[key] for key in task if key in GOLD_REVIEW_LABEL_KEYS}
+
+
+def _validate_gold_review_receipt(
+    payload: object,
+    *,
+    role: str,
+    reviewer_id: str,
+    suite_sha256: str,
+    suite: dict,
+    repo: Path,
+    annotation_digests: list[str] | None = None,
+) -> None:
+    """Require complete, source-valid task decisions in each frozen review receipt."""
+    keys = {"schema_version", "reviewer_id", "suite_sha256", "reviews"}
+    if annotation_digests is not None:
+        keys.add("annotation_receipt_sha256")
+    receipt = _exact_keys(payload, keys, f"qualification {role} receipt")
+    if type(receipt["schema_version"]) is not int or receipt["schema_version"] != 1:
+        raise RunError(f"qualification {role} receipt schema version mismatch")
+    if receipt["reviewer_id"] != reviewer_id:
+        raise RunError(f"qualification {role} receipt identity mismatch")
+    if receipt["suite_sha256"] != suite_sha256:
+        raise RunError(f"qualification {role} receipt suite mismatch")
+    if (
+        annotation_digests is not None
+        and receipt["annotation_receipt_sha256"] != annotation_digests
+    ):
+        raise RunError("qualification adjudication receipt annotation binding mismatch")
+    tasks = suite["tasks"]
+    reviews = receipt["reviews"]
+    if not isinstance(reviews, list) or len(reviews) != len(tasks):
+        raise RunError(f"qualification {role} receipt task coverage mismatch")
+    reviewed_tasks = []
+    for index, (task, raw_review) in enumerate(zip(tasks, reviews, strict=True)):
+        review = _exact_keys(
+            raw_review,
+            {"task_id", "query_sha256", "labels", "rationale"},
+            f"qualification {role} reviews[{index}]",
+        )
+        if (review["task_id"], review["query_sha256"]) != (
+            task["task_id"],
+            task["query_sha256"],
+        ):
+            raise RunError(f"qualification {role} receipt task identity mismatch: {index}")
+        if not isinstance(review["rationale"], str) or not review["rationale"].strip():
+            raise RunError(f"qualification {role} receipt rationale missing: {index}")
+        expected_keys = set(_gold_review_labels(task))
+        labels = _exact_keys(
+            review["labels"], expected_keys, f"qualification {role} reviews[{index}].labels"
+        )
+        if annotation_digests is not None and labels != _gold_review_labels(task):
+            raise RunError(f"qualification adjudication differs from suite gold: {index}")
+        reviewed_task = dict(task)
+        reviewed_task.update(labels)
+        reviewed_tasks.append(reviewed_task)
+    reviewed_suite = dict(suite)
+    reviewed_suite["tasks"] = reviewed_tasks
+    try:
+        validate_suite(repo, reviewed_suite)
+    except (ValueError, TypeError, KeyError) as exc:
+        raise RunError(f"qualification {role} receipt source validation failed: {exc}") from exc
 
 
 def verify_admission_bundle(
@@ -2652,6 +2731,24 @@ def verify_admission_bundle(
         raise RunError("qualification admission annotation receipt mismatch")
     if admission["gold"]["adjudication_receipt_sha256"] != sha_file(adjudication_path):
         raise RunError("qualification admission adjudication receipt mismatch")
+    for index, path in enumerate(annotation_paths):
+        _validate_gold_review_receipt(
+            read_json(path),
+            role=f"annotation {index + 1}",
+            reviewer_id=admission["gold"]["annotators"][index]["annotator_id"],
+            suite_sha256=admission["suite_sha256"],
+            suite=suite_payload,
+            repo=repo,
+        )
+    _validate_gold_review_receipt(
+        read_json(adjudication_path),
+        role="adjudication",
+        reviewer_id=admission["gold"]["adjudicator_id"],
+        suite_sha256=admission["suite_sha256"],
+        suite=suite_payload,
+        repo=repo,
+        annotation_digests=observed_annotations,
+    )
     required_receipts = {
         "contract_python_receipt": "contract_python_receipt_sha256",
         "contract_rust_receipt": "contract_rust_receipt_sha256",

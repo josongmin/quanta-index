@@ -5642,9 +5642,44 @@ def _pair_stage(
         license_path.write_text(
             '{"decision":"approved","reviewer":"license-owner"}', encoding="utf-8"
         )
-        annotation_paths[0].write_text('{"annotator":"gold-owner-a"}', encoding="utf-8")
-        annotation_paths[1].write_text('{"annotator":"gold-owner-b"}', encoding="utf-8")
-        adjudication_path.write_text('{"adjudicator":"gold-adjudicator"}', encoding="utf-8")
+        suite_sha = pairrun.sha_file(suite_path)
+        reviews = [
+            {
+                "task_id": task["task_id"],
+                "query_sha256": task["query_sha256"],
+                "labels": {"answerable": task["answerable"], "gold": task["gold"]},
+                "rationale": "Source span checked against the fixture file.",
+            }
+            for task in suite["tasks"]
+        ]
+        for path, reviewer_id in zip(
+            annotation_paths, ("gold-owner-a", "gold-owner-b"), strict=True
+        ):
+            path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "reviewer_id": reviewer_id,
+                        "suite_sha256": suite_sha,
+                        "reviews": reviews,
+                    }
+                ),
+                encoding="utf-8",
+            )
+        adjudication_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "reviewer_id": "gold-adjudicator",
+                    "suite_sha256": suite_sha,
+                    "annotation_receipt_sha256": [
+                        pairrun.sha_file(path) for path in annotation_paths
+                    ],
+                    "reviews": reviews,
+                }
+            ),
+            encoding="utf-8",
+        )
         development_suite = json.loads(json.dumps(suite))
         development_suite["suite_id"] = "fixture-development"
         development_suite["file_universe"] = [
@@ -7302,6 +7337,101 @@ def test_qualified_admission_is_reverified_after_capture(tmp_path):
     assert verdict["states"]["QUALITY_DELTA"] == "fail"
     assert verdict["state_evidence"]["QUALITY_DELTA"]["reason"].startswith("admission_unverified:")
     assert verdict["failure_class"] == "admission"
+
+
+def test_qualified_gold_receipts_require_source_bound_task_reviews(tmp_path):
+    st = _pair_stage(tmp_path, blinding="isolated", scope="qualified", claims={"quality": True})
+    evidence = st["stage"] / "admission"
+    annotation_paths = [
+        evidence / "annotation-1-receipt.json",
+        evidence / "annotation-2-receipt.json",
+    ]
+    first = json.loads(annotation_paths[0].read_text(encoding="utf-8"))
+    second_digest = pairrun.sha_file(annotation_paths[1])
+    adjudication = json.loads((evidence / "adjudication-receipt.json").read_text())
+    admission = json.loads((evidence / "admission.json").read_text())
+    same_reviewer = json.loads(json.dumps(admission))
+    same_reviewer["gold"]["adjudicator_id"] = "gold-owner-a"
+    with pytest.raises(pairrun.RunError, match="distinct from annotators"):
+        pairrun.validate_admission_manifest(same_reviewer)
+    common = {
+        "suite_sha256": pairrun.sha_file(st["suite_path"]),
+        "suite": st["suite"],
+        "repo": st["repo"],
+    }
+
+    pairrun._validate_gold_review_receipt(
+        first, role="annotation 1", reviewer_id="gold-owner-a", **common
+    )
+    pairrun._validate_gold_review_receipt(
+        adjudication,
+        role="adjudication",
+        reviewer_id="gold-adjudicator",
+        annotation_digests=[pairrun.sha_file(annotation_paths[0]), second_digest],
+        **common,
+    )
+
+    for mutate, reason in (
+        (lambda row: row.update(schema_version=True), "schema version mismatch"),
+        (lambda row: row.update(reviews=[]), "task coverage mismatch"),
+        (
+            lambda row: row["reviews"][0].update(query_sha256="0" * 64),
+            "task identity mismatch",
+        ),
+        (
+            lambda row: row["reviews"][0]["labels"]["gold"][0].update(file_sha256="0" * 64),
+            "source validation failed",
+        ),
+    ):
+        bad = json.loads(json.dumps(first))
+        mutate(bad)
+        with pytest.raises(pairrun.RunError, match=reason):
+            pairrun._validate_gold_review_receipt(
+                bad, role="annotation 1", reviewer_id="gold-owner-a", **common
+            )
+
+    bad_adjudication = json.loads(json.dumps(adjudication))
+    bad_adjudication["reviews"][0]["labels"] = {"answerable": False, "gold": []}
+    with pytest.raises(pairrun.RunError, match="differs from suite gold"):
+        pairrun._validate_gold_review_receipt(
+            bad_adjudication,
+            role="adjudication",
+            reviewer_id="gold-adjudicator",
+            annotation_digests=[pairrun.sha_file(annotation_paths[0]), second_digest],
+            **common,
+        )
+    bad_adjudication = json.loads(json.dumps(adjudication))
+    bad_adjudication["annotation_receipt_sha256"].reverse()
+    with pytest.raises(pairrun.RunError, match="annotation binding mismatch"):
+        pairrun._validate_gold_review_receipt(
+            bad_adjudication,
+            role="adjudication",
+            reviewer_id="gold-adjudicator",
+            annotation_digests=[pairrun.sha_file(annotation_paths[0]), second_digest],
+            **common,
+        )
+
+    # Rebind every digest a forged admission controls. The verdict must reject
+    # the empty decision set on content, not merely on a stale file hash.
+    first["reviews"] = []
+    annotation_paths[0].write_text(json.dumps(first), encoding="utf-8")
+    adjudication["annotation_receipt_sha256"][0] = pairrun.sha_file(annotation_paths[0])
+    adjudication_path = evidence / "adjudication-receipt.json"
+    adjudication_path.write_text(json.dumps(adjudication), encoding="utf-8")
+    admission_path = evidence / "admission.json"
+    admission = json.loads(admission_path.read_text(encoding="utf-8"))
+    admission["gold"]["annotators"][0]["receipt_sha256"] = pairrun.sha_file(annotation_paths[0])
+    admission["gold"]["adjudication_receipt_sha256"] = pairrun.sha_file(adjudication_path)
+    admission_path.write_text(json.dumps(admission), encoding="utf-8")
+    _rewrite_manifest(
+        st,
+        lambda manifest: manifest["provenance"]["admission"].update(
+            manifest_digest=pairrun.sha_file(admission_path)
+        ),
+    )
+    verdict = _stage_verdict(st)
+    assert verdict["states"]["QUALITY_DELTA"] == "fail"
+    assert "task coverage mismatch" in verdict["state_evidence"]["QUALITY_DELTA"]["reason"]
 
 
 def test_qualified_custody_refuses_rebound_wrong_source_and_shared_gold_file(tmp_path):

@@ -174,6 +174,20 @@ The JSON schema is the complete field authority; frequently used options:
 | `receipts` | omitted | paths to contract/SDK summaries, receipts, raw JUnit/nextest JSONL, actual-runner record and Python/Rust/SDK collection inventories; all bytes are frozen and raw evidence is reparsed by the verdict |
 | `timeout_secs` | `1800` | per-capture timeout |
 
+For `qualified`, each annotation receipt must be JSON with exactly
+`schema_version: 1`, `reviewer_id`, `suite_sha256`, and `reviews`. `reviews`
+must contain one row per suite task in suite order. Each row has exactly
+`task_id`, `query_sha256`, `labels`, and a nonempty `rationale`. `labels`
+contains `answerable` and `gold`, plus the same optional scoring-label keys
+present on that suite task: `query_intent`, `judgment_policy`, `file_judgments`,
+and `declaration_judgments`. The adjudication receipt has the same shape plus
+`annotation_receipt_sha256`, the ordered hashes of both annotation receipts;
+its labels must equal the final suite labels. Each annotation's proposed labels
+are independently validated against the pinned source. The manifest must name
+three distinct reviewer IDs. Hashes and IDs establish content and claimed
+custody, but cannot establish that three humans actually reviewed independently;
+that remains an external qualification check.
+
 Use a short native output path: Unix socket path limits are 103 bytes on macOS
 and 107 on Linux. The composed code-search workflow reserves a short runtime
 path automatically and retains the native tree in its permanent capture.
