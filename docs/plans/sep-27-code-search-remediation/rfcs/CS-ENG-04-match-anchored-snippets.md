@@ -209,6 +209,32 @@ assert that no partial match set, narrowed hit list or wrong preview metadata
 escapes. The required whole-request ceiling remains `OPEN` until every live
 route and dependency allocation in the declared scope meets that contract.
 
+### Dependency feasibility checkpoint
+
+The unmodified pinned public APIs fail the primary design's first gate:
+
+- `regex-syntax 0.8.11` constructs AST nodes with infallible `Box::new` and
+  grows parser/translator containers without a caller-supplied allocator.
+  The 64 KiB input cap limits the source string, not the Unicode-expanded HIR
+  or a typed allocation-failure path.
+- `regex-automata 0.4.14` builds an opaque meta engine and an internal cache
+  pool; `build_from_hir`, explicit caches and `memory_usage()` do not make
+  those constructions fallible under a request ledger. `verify() -> bool` in
+  the local wrapper also cannot propagate later search-cache refusal.
+- `tantivy-fst 0.5.0` creates parser HIR, NFA instructions, DFA states and
+  temporary `HashMap`/`HashSet` storage. Its 1,000-state check runs during
+  DFA expansion, after those allocations begin; the adapter cannot impose a
+  hard pre-allocation ceiling through `Regex::new`.
+- The searchd supervisor's children are threads, not request-exclusive
+  processes. A Linux cgroup fallback would need a new process/read-view/IPC
+  boundary, not a configuration flag on that supervisor.
+
+No ledger-only patch or post-build measurement closes this. The next code
+milestone is a controlled dependency-allocation slice or a separately
+specified process-isolation contract. This checkpoint is static source
+analysis; no dependency fork, worker, runtime allocation proof or physical
+ceiling was implemented by it.
+
 ## Required coordinated change
 
 - First prove an API feasibility slice covering parse → compile → first search
