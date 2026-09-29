@@ -11,6 +11,7 @@ workspace = true
 [dependencies]
 ciborium = { workspace = true }
 regex = { workspace = true }
+regex-automata = { workspace = true }
 regex-syntax = { workspace = true }
 serde = { workspace = true }
 quanta-index-lq-trigram = { version = "0.1.0", path = "../quanta-index-lq-trigram" }

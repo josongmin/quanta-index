@@ -129,7 +129,11 @@ threshold (up to 10,000 conflict rows). Repeat `--reference-suite` and
 `--reference-proposals` for additional searched inputs. It exits 2 on a
 conflict or malformed input and never overwrites an existing report. This
 early check does not replace frozen experiment custody or independent gold
-review.
+review. Candidate JSONL rows must have `proposal_id`, `query`, `stratum`, and
+`status: "unreviewed_query_proposal"`; the guard refuses candidates explicitly
+marked reviewed or searched. This status is an authored claim, not proof that
+review or search has not already occurred. Preserve a separately controlled
+proposal freeze and reviewer custody record for that ordering claim.
 
 The five-product bare-symbol diagnostic records the native top-10 rank unit
 per product: Quanta and Semble return chunks, while Sourcegraph, OpenGrok and

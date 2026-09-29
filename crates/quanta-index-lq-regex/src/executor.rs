@@ -12,13 +12,13 @@
 //! 2. translate that AST into HIR without parsing it again;
 //! 3. run [`crate::dialect::dialect_filter`] over the HIR;
 //! 4. compute the structural planning charge via [`crate::estimate_nfa_states`];
-//! 5. remove unobserved explicit captures from that AST, then compile with
-//!    `regex::bytes::RegexBuilder`, wrapping `regex::Error`
-//!    size refusals into [`RegexErrorCode::PlanLimitExceeded`] and other
-//!    engine failures into [`RegexErrorCode::ExecutionInternal`].
+//! 5. remove unobserved explicit captures from that AST, translate the
+//!    execution HIR, then compile it directly with `regex-automata::meta`.
+//!    This avoids reparsing a rendered pattern. Engine size refusals map to
+//!    [`RegexErrorCode::PlanLimitExceeded`].
 //!
-//! Verify path: [`RegexExecutor::verify`] calls
-//! `regex::bytes::Regex::is_match` against a single document's bytes.
+//! Verify path: [`RegexExecutor::verify`] calls the pinned meta matcher
+//! against a single document's bytes.
 //!
 //! Cooperative cancel: [`RegexExecutor::execute_with_budget`] iterates
 //! a candidate list, polling elapsed wall time after each candidate;
@@ -28,10 +28,11 @@
 //! [`RegexErrorCode::Interrupted`] when it answers `true`.
 
 use core::time::Duration;
-use std::borrow::Cow;
+use std::sync::Mutex;
 use std::time::Instant;
 
 use quanta_index_lq_trigram::{DocId, DocResolver};
+use regex_automata::{Input, MatchKind, meta, util::iter::Searcher};
 use regex_syntax::hir::Hir;
 
 use crate::dialect::{classify_ast_error, classify_construct_from_slice, dialect_filter};
@@ -53,7 +54,8 @@ const MAX_REGEX_PATTERN_BYTES: usize = 64 * (1 << 10);
 pub struct RegexExecutor {
     pattern: Box<str>,
     hir: Hir,
-    compiled: regex::bytes::Regex,
+    compiled: meta::Regex,
+    cache: Mutex<meta::Cache>,
 }
 
 /// Validated regex input before the engine allocates its automata.
@@ -63,7 +65,7 @@ pub struct RegexExecutor {
 pub struct RegexCompilationPlan {
     pattern: Box<str>,
     hir: Hir,
-    execution_pattern: Box<str>,
+    execution_hir: Option<Hir>,
     estimated_states: u64,
 }
 
@@ -97,6 +99,7 @@ pub enum RegexRangeError {
     SourceByteLimit,
     AllocationRefused,
     Interrupted,
+    CacheUnavailable,
 }
 
 impl core::fmt::Display for RegexRangeError {
@@ -105,6 +108,7 @@ impl core::fmt::Display for RegexRangeError {
             Self::SourceByteLimit => "regex preview source-byte limit exceeded",
             Self::AllocationRefused => "regex preview range allocation refused",
             Self::Interrupted => "regex preview interrupted",
+            Self::CacheUnavailable => "regex search cache unavailable",
         })
     }
 }
@@ -159,11 +163,25 @@ impl RegexExecutor {
         // Backreferences are forbidden, so explicit capture storage cannot
         // affect either result. Keeping it grows the engine's per-state cache
         // with every capture, even when the actual source focus is tiny.
-        let execution_pattern = without_explicit_captures(pattern, &hir, &mut ast);
+        let execution_hir = if hir.properties().explicit_captures_len() == 0 {
+            None
+        } else {
+            erase_capture_storage(&mut ast);
+            Some(
+                regex_syntax::hir::translate::Translator::new()
+                    .translate(pattern, &ast)
+                    .map_err(|error| {
+                        RegexError::new(
+                            RegexErrorCode::ExecutionInternal,
+                            format!("capture-erased regex failed HIR translation: {error}"),
+                        )
+                    })?,
+            )
+        };
         Ok(RegexCompilationPlan {
             pattern: pattern.into(),
             hir,
-            execution_pattern: execution_pattern.into_owned().into_boxed_str(),
+            execution_hir,
             estimated_states,
         })
     }
@@ -185,27 +203,42 @@ impl RegexExecutor {
 
     /// Compile an already validated plan without repeating dialect parsing.
     pub fn compile_prepared(plan: RegexCompilationPlan) -> Result<Self, RegexError> {
-        let compiled = regex::bytes::RegexBuilder::new(&plan.execution_pattern)
-            .size_limit(ENGINE_NFA_SIZE_LIMIT_BYTES)
-            .dfa_size_limit(ENGINE_DFA_CACHE_LIMIT_BYTES)
-            .build()
+        // Mirror regex 1.12.4's bytes builder configuration. Build from the
+        // already-validated HIR to avoid a second AST parse and translation.
+        let compiled = meta::Regex::builder()
+            .configure(
+                meta::Regex::config()
+                    .match_kind(MatchKind::LeftmostFirst)
+                    .utf8_empty(false)
+                    .nfa_size_limit(Some(ENGINE_NFA_SIZE_LIMIT_BYTES))
+                    .hybrid_cache_capacity(ENGINE_DFA_CACHE_LIMIT_BYTES),
+            )
+            .build_from_hir(plan.execution_hir.as_ref().unwrap_or(&plan.hir))
             .map_err(|e| {
-                if let regex::Error::CompiledTooBig(limit) = e {
-                    RegexError::plan_limit(
-                        LimitDimension::CompiledBytes,
-                        format!("compiled regex exceeds engine byte ceiling {limit}"),
-                    )
-                } else {
-                    RegexError::new(
-                        RegexErrorCode::ExecutionInternal,
-                        format!("validated regex failed engine construction: {e}"),
-                    )
-                }
+                e.size_limit().map_or_else(
+                    || {
+                        RegexError::new(
+                            RegexErrorCode::ExecutionInternal,
+                            format!("validated regex failed engine construction: {e}"),
+                        )
+                    },
+                    |limit| {
+                        RegexError::plan_limit(
+                            LimitDimension::CompiledBytes,
+                            format!("compiled regex exceeds engine byte ceiling {limit}"),
+                        )
+                    },
+                )
             })?;
+        // Keep the mutable search scratch with its request-owned engine.
+        // All searches below pass it explicitly, bypassing the meta engine's
+        // internal cache pool and preventing an implicit cross-request cache.
+        let cache = Mutex::new(compiled.create_cache());
         Ok(Self {
             pattern: plan.pattern,
             hir: plan.hir,
             compiled,
+            cache,
         })
     }
 
@@ -231,9 +264,19 @@ impl RegexExecutor {
     }
 
     /// Verify a single document's bytes against the compiled regex.
-    #[must_use]
-    pub fn verify(&self, doc_text: &[u8]) -> bool {
-        self.compiled.is_match(doc_text)
+    /// A poisoned cache fails closed instead of treating a resource or
+    /// engine failure as a negative match.
+    pub fn verify(&self, doc_text: &[u8]) -> Result<bool, RegexError> {
+        let mut cache = self.cache.lock().map_err(|_error| {
+            RegexError::new(
+                RegexErrorCode::ExecutionInternal,
+                "regex search cache was poisoned",
+            )
+        })?;
+        Ok(self
+            .compiled
+            .search_with(&mut cache, &Input::new(doc_text))
+            .is_some())
     }
 
     /// Reconstruct ranges with the exact compiled matcher used by [`Self::verify`].
@@ -279,12 +322,18 @@ impl RegexExecutor {
             return Err(RegexRangeError::SourceByteLimit);
         }
         let mut ranges = Vec::new();
-        let mut matches = self.compiled.find_iter(doc_text);
+        let mut matches = Searcher::new(Input::new(doc_text));
         while ranges.len() < max_ranges {
             if interrupted() {
                 return Err(RegexRangeError::Interrupted);
             }
-            let next = matches.next();
+            let next = {
+                let mut cache = self
+                    .cache
+                    .lock()
+                    .map_err(|_error| RegexRangeError::CacheUnavailable)?;
+                matches.advance(|input| Ok(self.compiled.search_with(&mut cache, input)))
+            };
             if interrupted() {
                 return Err(RegexRangeError::Interrupted);
             }
@@ -386,7 +435,7 @@ impl RegexExecutor {
                     format!("resolver missing doc {cand}"),
                 )
             })?;
-            if self.verify(bytes) {
+            if self.verify(bytes)? {
                 reserve(&mut out)?;
                 out.push(*cand);
             }
@@ -418,19 +467,6 @@ impl RegexExecutor {
         }
         Ok(out)
     }
-}
-
-/// Drop capture storage that is unobservable through truth and whole-match APIs.
-fn without_explicit_captures<'a>(
-    pattern: &'a str,
-    hir: &Hir,
-    ast: &mut regex_syntax::ast::Ast,
-) -> Cow<'a, str> {
-    if hir.properties().explicit_captures_len() == 0 {
-        return Cow::Borrowed(pattern);
-    }
-    erase_capture_storage(ast);
-    Cow::Owned(ast.to_string())
 }
 
 fn erase_capture_storage(ast: &mut regex_syntax::ast::Ast) {
@@ -533,7 +569,10 @@ fn span_slice<'a>(pattern: &'a str, span: &regex_syntax::ast::Span) -> &'a str {
     reason = "Result-returning range regressions propagate setup errors and assert byte-exact fixture oracles"
 )]
 mod tests {
-    use super::{MAX_REGEX_PATTERN_BYTES, RegexExecutor};
+    use super::{
+        ENGINE_DFA_CACHE_LIMIT_BYTES, ENGINE_NFA_SIZE_LIMIT_BYTES, MAX_REGEX_PATTERN_BYTES,
+        RegexExecutor,
+    };
     use crate::errors::{ForbiddenKind, LimitDimension, RegexErrorCode};
     use quanta_index_lq_trigram::{DocId, DocResolver};
     use std::collections::BTreeMap;
@@ -548,7 +587,7 @@ mod tests {
         let executor = RegexExecutor::compile(&pattern)?;
         assert_eq!(executor.pattern(), pattern);
         assert_eq!(executor.compiled.captures_len(), 1);
-        assert!(executor.verify(b"needle"));
+        assert!(executor.verify(b"needle")?);
         assert_eq!(
             executor
                 .find_ranges_bounded(b"needle", 6, 2, &|| false)?
@@ -614,12 +653,91 @@ mod tests {
                 assert!(actual.exhausted);
                 assert_eq!(actual.ranges, expected, "{pattern:?} on {source:?}");
                 assert_eq!(
-                    executor.verify(source.as_bytes()),
+                    executor.verify(source.as_bytes())?,
                     reference.is_match(source.as_bytes()),
                     "{pattern:?} on {source:?}"
                 );
             }
         }
+        Ok(())
+    }
+
+    #[test]
+    fn hir_compilation_preserves_bytes_engine_ranges_on_non_utf8_input()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let sources: [&[u8]; 6] = [
+            b"",
+            b"a\xffb",
+            b"\xff\xfe",
+            b"a\0b",
+            b"\xc3\xa9\xffa",
+            b"\xf0\x9f\x92\xa9",
+        ];
+        for pattern in ["a", "a.b", "(a)(.?)", "(?i)(a|b)+", r"\b(a)\b", ""] {
+            let reference = regex::bytes::RegexBuilder::new(pattern)
+                .size_limit(ENGINE_NFA_SIZE_LIMIT_BYTES)
+                .dfa_size_limit(ENGINE_DFA_CACHE_LIMIT_BYTES)
+                .build()?;
+            let executor = RegexExecutor::compile(pattern)?;
+            for source in sources {
+                let expected: Vec<_> = reference.find_iter(source).map(|m| m.range()).collect();
+                let actual = executor.find_ranges_bounded(source, source.len(), 32, &|| false)?;
+                assert!(actual.exhausted);
+                assert_eq!(actual.ranges, expected, "{pattern:?} on {source:?}");
+                assert_eq!(executor.verify(source)?, reference.is_match(source));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn poisoned_search_cache_fails_closed_for_truth_and_ranges()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let executor = RegexExecutor::compile("needle")?;
+        let panicked = std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let _cache = executor.cache.lock().expect("new cache is not poisoned");
+                    panic!("poison the cache");
+                })
+                .join()
+                .is_err()
+        });
+        assert!(panicked);
+        assert_eq!(
+            executor.verify(b"needle").err().map(|error| error.code),
+            Some(RegexErrorCode::ExecutionInternal)
+        );
+        assert_eq!(
+            executor.find_ranges_bounded(b"needle", 6, 1, &|| false),
+            Err(super::RegexRangeError::CacheUnavailable)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_cache_serializes_concurrent_truth_and_range_searches()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let executor = RegexExecutor::compile(r"(?i)(needle)+")?;
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..8)
+                .map(|_| {
+                    scope.spawn(|| {
+                        for _ in 0..32 {
+                            assert_eq!(executor.verify(b"NEEDLE needle"), Ok(true));
+                            let ranges = executor
+                                .find_ranges_bounded(b"NEEDLE needle", 13, 4, &|| false)
+                                .expect("cache remains usable");
+                            assert_eq!(ranges.ranges, vec![0..6, 7..13]);
+                            assert!(ranges.exhausted);
+                        }
+                    })
+                })
+                .collect();
+            for handle in handles {
+                handle.join().expect("search thread completed");
+            }
+        });
         Ok(())
     }
 
@@ -654,7 +772,7 @@ mod tests {
                     assert!(actual.exhausted, "{pattern:?} on {source:?}");
                     assert_eq!(actual.ranges, expected, "{pattern:?} on {source:?}");
                     assert_eq!(
-                        executor.verify(source.as_bytes()),
+                        executor.verify(source.as_bytes())?,
                         reference.is_match(source.as_bytes()),
                         "{pattern:?} on {source:?}"
                     );
@@ -669,10 +787,10 @@ mod tests {
         let executor = RegexExecutor::compile("(?i)needle[0-9]+")?;
         let source = "é NEEDLE42 needle7";
         let found = executor.find_ranges_bounded(source.as_bytes(), 64, 3, &|| false)?;
-        assert!(executor.verify(source.as_bytes()));
+        assert!(executor.verify(source.as_bytes())?);
         assert_eq!(found.ranges, vec![3..11, 12..19]);
         assert!(found.exhausted);
-        assert!(!executor.verify(b"needle"));
+        assert!(!executor.verify(b"needle")?);
         assert!(
             executor
                 .find_ranges_bounded(b"needle", 64, 3, &|| false)?
@@ -696,7 +814,7 @@ mod tests {
                 executor.find_ranges_bounded("café CAFÉ".as_bytes(), 11, 3, &|| false)?;
             assert_eq!(actual.ranges, expected, "{pattern}");
             assert!(actual.exhausted);
-            assert!(executor.verify("CAFÉ".as_bytes()));
+            assert!(executor.verify("CAFÉ".as_bytes())?);
         }
         for pattern in ["(?i)(?m)", "(?i)foo(?m)bar", "((?i)foo)"] {
             let Some(error) = RegexExecutor::compile(pattern).err() else {
@@ -725,7 +843,7 @@ mod tests {
             let actual = executor.find_ranges_bounded(source.as_bytes(), 25, 5, &|| false)?;
             assert_eq!(actual.ranges, expected, "{pattern}");
             assert!(actual.exhausted);
-            assert!(!executor.verify(b"unrelated"));
+            assert!(!executor.verify(b"unrelated")?);
         }
         for pattern in ["(?i)|NEEDLE", "(?i)(?m)|NEEDLE"] {
             let executor = RegexExecutor::compile(pattern)?;
@@ -973,18 +1091,13 @@ mod tests {
     }
 
     #[test]
-    fn verify_matches_handler_pattern() {
-        let exec = match RegexExecutor::compile(r"fn\s+handle_\w+") {
-            Ok(x) => x,
-            Err(e) => {
-                assert!(false, "{e}");
-                return;
-            }
-        };
-        assert!(exec.verify(b"fn handle_request() {}"));
-        assert!(exec.verify(b"fn handle_response() {}"));
-        assert!(!exec.verify(b"fn other() {}"));
-        assert!(!exec.verify(b"struct Handler {}"));
+    fn verify_matches_handler_pattern() -> Result<(), Box<dyn std::error::Error>> {
+        let exec = RegexExecutor::compile(r"fn\s+handle_\w+")?;
+        assert!(exec.verify(b"fn handle_request() {}")?);
+        assert!(exec.verify(b"fn handle_response() {}")?);
+        assert!(!exec.verify(b"fn other() {}")?);
+        assert!(!exec.verify(b"struct Handler {}")?);
+        Ok(())
     }
 
     #[test]

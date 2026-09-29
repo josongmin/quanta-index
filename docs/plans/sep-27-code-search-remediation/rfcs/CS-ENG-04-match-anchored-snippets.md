@@ -226,14 +226,42 @@ The unmodified pinned public APIs fail the primary design's first gate:
   DFA expansion, after those allocations begin; the adapter cannot impose a
   hard pre-allocation ceiling through `Regex::new`.
 - The searchd supervisor's children are threads, not request-exclusive
-  processes. A Linux cgroup fallback would need a new process/read-view/IPC
-  boundary, not a configuration flag on that supervisor.
+  processes. The current composition root also takes an exclusive
+  `StateRootLease` before opening its adapters. A Linux cgroup fallback cannot
+  simply spawn a second daemon over the same state root: it needs a read-only
+  generation opener that does not acquire the writer lease, a parent-owned
+  request/response and cancellation channel, an exact pinned read view, and
+  typed worker-death handling. That is a new process/read-view/IPC boundary,
+  not a configuration flag on the supervisor.
 
 No ledger-only patch or post-build measurement closes this. The next code
 milestone is a controlled dependency-allocation slice or a separately
 specified process-isolation contract. This checkpoint is static source
 analysis; no dependency fork, worker, runtime allocation proof or physical
 ceiling was implemented by it.
+
+The common executor now compiles its capture-erased execution HIR directly
+with pinned `regex-automata 0.4.14`, using the same bytes-mode, leftmost-first,
+NFA-size and hybrid-cache settings as `regex 1.12.4`. It keeps the original
+validated HIR for literal extraction and no longer renders and reparses a
+second pattern. The executor's 93 unit tests, including an independent
+`regex::bytes` oracle on non-UTF-8 inputs, and the affected lexical (219),
+structural (48) and search-plane (487) library tests passed locally. This is
+only the shared-engine preparation slice. `regex-automata` still allocates
+internally during compilation and search, `regex-syntax` parsing and the
+distinct `tantivy-fst` compiler are unchanged, and no physical regex
+allocation admission or request-wide ceiling is implemented.
+
+The executor now owns an explicit `regex-automata::meta::Cache` alongside its
+compiled engine and uses `search_with` for truth and bounded ranges, bypassing
+the meta engine's implicit cache pool on these paths. `verify` returns a typed
+result; lexical metadata/manual/coverage paths, structural universe and live
+producer propagate a failed search instead of treating it as a false match.
+Optional preview maps a poisoned cache to a mandatory internal failure. The
+cache-poison regression and affected owner tests cover this error seam. Cache
+creation and lazy growth remain infallible inside the pinned dependency, so
+this is explicit ownership and failure propagation, **not** physical
+allocation admission or completion of the ENG-04 ceiling.
 
 Subsequent code work threads `RequestBudgetV1` through structural Boolean
 evaluation, `StructuralService`, and the live searchd producer. It preserves
@@ -269,9 +297,11 @@ platform-scoped containment contract and is not silently selected here.
    retain it through response encoding. Count requested `Layout` bytes and
    peak overlap on growth, not logical states or post-build capacity.
 3. Replace `RegexExecutor::prepare/compile_prepared/verify/find_ranges_bounded`
-   with owner-required, fallible operations. The existing builder reparses the
-   capture-erased pattern; an HIR-based replacement must compile that erased
-   execution HIR while retaining the original HIR for literal extraction.
+   with owner-required, fallible allocation operations. The current executor
+   already compiles the capture-erased execution HIR, retains the original HIR
+   for literal extraction, owns an explicit cache and propagates verification
+   failure. It still needs fallible dependency allocation before parse,
+   compile, cache creation and search growth.
    Build a separate owner-aware FST constructor for indexed scope filters;
    charge its parser, instructions, DFA states and temporary maps/sets.
 4. Migrate and statically gate all production construction paths: lexical

@@ -837,7 +837,10 @@ fn structural_regex_matches(
     text: &str,
     regexes: &PreparedStructuralRegexes,
 ) -> Result<bool, StructuralError> {
-    Ok(regexes.get(pattern)?.verify(text.as_bytes()))
+    regexes
+        .get(pattern)?
+        .verify(text.as_bytes())
+        .map_err(|error| map_structural_regex_error(&error))
 }
 
 fn extract_source_text(source: &str, span: ByteSpan) -> Result<&str, StructuralError> {
