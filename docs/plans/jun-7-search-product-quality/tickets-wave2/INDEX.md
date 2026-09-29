@@ -37,4 +37,5 @@ code-present; fresh consumer/runtime results and qualification remain separate.
 These are acceptance scopes, not a claim that the current implementation is
 missing. Retire each after its own terminal/oracle result; do not recreate
 implemented commands or DTOs. The active code-search and MISC ledgers own
-cross-source, corpus/gold, physical regex and complete producer acceptance.
+cross-source, corpus/gold and complete producer acceptance. The exact regex
+allocation cap is deferred under the code-search ENG-04 decision.

@@ -208,7 +208,7 @@ impl ManualScanCache {
                 ),
             })
         })?;
-        crate::query_errors::verify_regex(executor, haystack.as_bytes())
+        Ok(executor.verify(haystack.as_bytes()))
     }
 }
 
@@ -446,19 +446,16 @@ impl TantivySearcher {
                         ),
                     })
                 })?;
-                for identity in contributors {
-                    if let Some(name) = identity.name.as_deref()
-                        && crate::query_errors::verify_regex(executor, name.as_bytes())?
-                    {
-                        return Ok(true);
-                    }
-                    if let Some(email) = identity.email.as_deref()
-                        && crate::query_errors::verify_regex(executor, email.as_bytes())?
-                    {
-                        return Ok(true);
-                    }
-                }
-                Ok(false)
+                Ok(contributors.iter().any(|identity| {
+                    identity
+                        .name
+                        .as_deref()
+                        .is_some_and(|name| executor.verify(name.as_bytes()))
+                        || identity
+                            .email
+                            .as_deref()
+                            .is_some_and(|email| executor.verify(email.as_bytes()))
+                }))
             }
         }
     }
@@ -472,7 +469,11 @@ impl TantivySearcher {
     ) -> Result<bool, CoreError> {
         let executor =
             regex_cache.get_or_compile(pattern, || Self::manual_filter_regex(pattern, "file"))?;
-        Self::file_filter_scope_matches(executor, scope, repo_relative_path)
+        Ok(Self::file_filter_scope_matches(
+            executor,
+            scope,
+            repo_relative_path,
+        ))
     }
 
     /// Shared path/name scope semantics for document and coverage admission.
@@ -480,20 +481,17 @@ impl TantivySearcher {
         executor: &RegexExecutor,
         scope: LqFileScope,
         repo_relative_path: &str,
-    ) -> Result<bool, CoreError> {
-        let path_match =
-            crate::query_errors::verify_regex(executor, repo_relative_path.as_bytes())?;
+    ) -> bool {
+        let path_match = executor.verify(repo_relative_path.as_bytes());
         match scope {
-            LqFileScope::PathOnly => Ok(path_match),
+            LqFileScope::PathOnly => path_match,
             LqFileScope::NameOnly => file_name_for_path(repo_relative_path)
-                .map_or(Ok(false), |name| {
-                    crate::query_errors::verify_regex(executor, name.as_bytes())
-                }),
-            LqFileScope::NameAndPath if path_match => Ok(true),
-            LqFileScope::NameAndPath => file_name_for_path(repo_relative_path)
-                .map_or(Ok(false), |name| {
-                    crate::query_errors::verify_regex(executor, name.as_bytes())
-                }),
+                .is_some_and(|name| executor.verify(name.as_bytes())),
+            LqFileScope::NameAndPath => {
+                path_match
+                    || file_name_for_path(repo_relative_path)
+                        .is_some_and(|name| executor.verify(name.as_bytes()))
+            }
         }
     }
 
@@ -788,7 +786,7 @@ impl TantivySearcher {
                 }
                 let executor = regex_cache
                     .get_or_compile(pattern, || Self::manual_filter_regex(pattern, "repo"))?;
-                crate::query_errors::verify_regex(executor, source_repo_id.as_bytes())
+                Ok(executor.verify(source_repo_id.as_bytes()))
             }
             LqFilter::File { pattern, scope } => {
                 self.manual_file_filter_matches(pattern, *scope, repo_relative_path, regex_cache)
@@ -1322,14 +1320,14 @@ mod stored_authority_tests {
                 compilations.set(compilations.get() + 1);
                 TantivySearcher::manual_filter_regex("a+", "file")
             })?;
-            assert!(crate::query_errors::verify_regex(executor, b"aaa")?);
+            assert!(executor.verify(b"aaa"));
         }
         assert_eq!(compilations.get(), 1);
         let insensitive = cache.get_or_compile("(?i)a+", || {
             compilations.set(compilations.get() + 1);
             TantivySearcher::manual_filter_regex("(?i)a+", "file")
         })?;
-        assert!(crate::query_errors::verify_regex(insensitive, b"AAA")?);
+        assert!(insensitive.verify(b"AAA"));
         assert_eq!(compilations.get(), 2);
         assert!(
             cache

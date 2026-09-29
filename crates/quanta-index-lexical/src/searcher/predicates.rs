@@ -287,15 +287,11 @@ impl TantivySearcher {
         pattern: &MetaPattern,
         executor: Option<&RegexExecutor>,
         candidate: &str,
-    ) -> Result<bool, CoreError> {
+    ) -> bool {
         match (pattern, executor) {
-            (MetaPattern::Exact(expected), _) => Ok(candidate == expected),
-            (MetaPattern::Regex(_), Some(executor)) => {
-                crate::query_errors::verify_regex(executor, candidate.as_bytes())
-            }
-            (MetaPattern::Regex(_), None) => Err(CoreError::Storage(
-                "lexical: repo meta regex executor missing for a compiled pattern".into(),
-            )),
+            (MetaPattern::Exact(expected), _) => candidate == expected,
+            (MetaPattern::Regex(_), Some(executor)) => executor.verify(candidate.as_bytes()),
+            (MetaPattern::Regex(_), None) => false,
         }
     }
 
@@ -311,22 +307,19 @@ impl TantivySearcher {
             .map(|pattern| self.compile_repo_meta_pattern("value", pattern))
             .transpose()?
             .flatten();
-        let mut out = BTreeSet::new();
-        for (repo_id, by_key) in &authority.meta_by_repo_id {
-            for (key, value) in by_key {
-                if !self.repo_meta_pattern_matches(&arg.key, key_executor.as_ref(), key)? {
-                    continue;
-                }
-                if let Some(pattern) = arg.value.as_ref()
-                    && !self.repo_meta_pattern_matches(pattern, value_executor.as_ref(), value)?
-                {
-                    continue;
-                }
-                let _inserted = out.insert(repo_id.clone());
-                break;
-            }
-        }
-        Ok(out)
+        Ok(authority
+            .meta_by_repo_id
+            .iter()
+            .filter(|(_, by_key)| {
+                by_key.iter().any(|(key, value)| {
+                    self.repo_meta_pattern_matches(&arg.key, key_executor.as_ref(), key)
+                        && arg.value.as_ref().is_none_or(|pattern| {
+                            self.repo_meta_pattern_matches(pattern, value_executor.as_ref(), value)
+                        })
+                })
+            })
+            .map(|(repo_id, _)| repo_id.clone())
+            .collect())
     }
 
     pub(crate) fn repo_topic_constraint(
@@ -409,13 +402,12 @@ impl TantivySearcher {
                 arg.pattern
             ),
         })?;
-        let mut out = BTreeSet::new();
-        for (repo_id, description) in &authority.descriptions_by_repo_id {
-            if crate::query_errors::verify_regex(&executor, description.as_bytes())? {
-                let _inserted = out.insert(repo_id.clone());
-            }
-        }
-        Ok(out)
+        Ok(authority
+            .descriptions_by_repo_id
+            .iter()
+            .filter(|(_, description)| executor.verify(description.as_bytes()))
+            .map(|(repo_id, _)| repo_id.clone())
+            .collect())
     }
 
     pub(crate) fn file_owner_constraint(
@@ -594,22 +586,16 @@ impl TantivySearcher {
                                 .to_string(),
                         ));
                     };
-                    let mut matched = false;
-                    for identity in contributors {
-                        if let Some(name) = identity.name.as_deref()
-                            && crate::query_errors::verify_regex(executor, name.as_bytes())?
-                        {
-                            matched = true;
-                            break;
-                        }
-                        if let Some(email) = identity.email.as_deref()
-                            && crate::query_errors::verify_regex(executor, email.as_bytes())?
-                        {
-                            matched = true;
-                            break;
-                        }
-                    }
-                    matched
+                    contributors.iter().any(|identity| {
+                        identity
+                            .name
+                            .as_deref()
+                            .is_some_and(|name| executor.verify(name.as_bytes()))
+                            || identity
+                                .email
+                                .as_deref()
+                                .is_some_and(|email| executor.verify(email.as_bytes()))
+                    })
                 }
             };
             if matches {

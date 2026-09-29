@@ -13,7 +13,6 @@ execution and acceptance ledger. Historical counts are not required inventories.
 | BENCH-02 | Local cs/Sourcegraph/OpenGrok fixed-native path/hit refusal is implemented. Audit every admitted acquisition/scoring/replay entrypoint and remaining format; complete the native negative matrix and qualify actual captures. The [native ticket](../../sep-27-code-search-remediation/rfcs/CS-BENCH-02-native-response-validation.md) owns remaining semantics; the bare normalized scorer is diagnostic. |
 | BENCH-03 | Current qualified verdict resamples whole query families and refuses insufficient independent families/categories; task-level intervals are descriptive. Admit independent multi-repository gold/holdout, frozen effects/budgets and repository-level inference before broader quality claims. [Statistics ticket](../../sep-27-code-search-remediation/rfcs/CS-BENCH-03-tracks-metrics-and-statistics.md) owns the remaining acceptance. |
 | BENCH-04 | OpenGrok can opt into exact indexed-file inventory and served-byte probes bracketing search queries; this remains diagnostic without posting freshness and current admitted external corpus. Sourcegraph/cs index scope, product mutation/restart and equal-work timing are unrun. [Comparator ticket](../../sep-27-code-search-remediation/rfcs/CS-BENCH-04-comparators-performance-and-incremental.md) owns execution. |
-| MISC-05 / ENG-04 | Complete physical regex planning/compiler/retained-engine/cache admission with correct lifetimes and differential truth/ranges. NFA/cache defaults are pinned; optional-preview hit stability is covered; structural file filters now compile once per request with typed resource refusal. [Regex ticket](../../sep-27-code-search-remediation/rfcs/CS-ENG-04-match-anchored-snippets.md) owns the remaining aggregate-allocation gap; no current runtime overrun is established. |
 | MISC-05 / ENG-02 | Qualify total coverage pipeline work/physical heap/bytes, including remaining preflight/build/open full scans and every sidecar. Same-build seal no longer decodes coverage twice, but re-hashes every effective page. [Coverage ticket](../../sep-27-code-search-remediation/rfcs/CS-ENG-02-capability-publication-and-freshness.md) owns the cost issue; no stale-result defect is implied. |
 | MISC-04 / actual producers and consumers | After owner changes, execute required Python/Rust contracts, actual native/Criterion/SDK/contract production, fresh promoted-path validation and relocated Python/Rust consumers/replay. Preserve process/monitor/capture failure controls and live test identities. Local selected passes do not establish hosted/product qualification. |
 | MISC-03 / IO-5 | Complete adapter-specific large successful/failed output, many-entry metadata/archive and interruption/corruption acceptance through prepare/execute/publish/load/replay. Declare retained-metadata limits separately; use independent bytes/digests and fresh-process RSS for actual resource claims. Generic streaming/probe success is not every adapter's acceptance. |
@@ -32,18 +31,20 @@ records the merged regex input gate, measured triple coverage walk and tamper
 tests, source-derived mechanical gold capsule, fail-closed declared matrix
 verifier, streaming external-row/file hashing and archive alias refusal. These
 are implemented local mitigations, not terminal closure of the open rows above.
-The remaining physical regex admission requires dependency allocation hooks;
-coverage scan reuse requires authenticated immutable base ownership across the
-port; independent labels, real native products, installed producer/daemon and
+The exact regex allocation cap is [deferred](../../sep-27-code-search-remediation/rfcs/CS-ENG-04-match-anchored-snippets.md)
+pending a numerical requirement or measured breach. Coverage scan reuse
+requires authenticated immutable base ownership across the port; independent
+labels, real native products, installed producer/daemon and
 supported hosted/Linux measurement still require execution on frozen inputs.
 
 Sep-29 current-source correction: the live searchd and pure-negative structural
 paths now precompile all repo/file filters before early empty results and reuse
 the common bounded regex executor; ENG-04's aggregate physical allocation
-boundary remains open. The declared code-search matrix binds Quanta's native
-query policy, and the five-product lexical scorer distinguishes answerable
-recall from judged no-answer empty-result rate. Raw archive extraction rejects
-noncanonical ZIP metadata before writing output. These changes close the
+boundary remains unimplemented and deferred. The declared code-search matrix
+binds Quanta's native query policy, and the five-product lexical scorer
+distinguishes answerable recall from judged no-answer empty-result rate. Raw
+archive extraction rejects noncanonical ZIP metadata before writing output.
+These changes close the
 identified local code paths, not the independent gold, actual native captures,
 installed producer/daemon, IO-5 resource or hosted qualification rows above.
 
@@ -52,8 +53,9 @@ capture verifier no longer treats a valid result file larger than 16 MiB as a
 control document; it replays bounded lines and validates complete bytes. A
 Sourcegraph native match span past its supplied line now refuses. Focused adapter
 tests passed. The regex executor's repeated AST parses and coverage decoder's
-per-row exact reserve were removed; their owner tests passed, but the aggregate
-regex allocation boundary and three authenticated coverage base scans remain.
+per-row exact reserve were removed; their owner tests passed. The aggregate
+regex allocation boundary remains unimplemented but is now deferred; three
+authenticated coverage base scans remain active.
 A clean-owner local daemon/public-SDK crash matrix passed four cases on the
 shared overlay. This is not installed-release, actual external issuer/product,
 full-source or platform qualification; MISC-03/05 and BENCH-02 remain active.
@@ -62,7 +64,7 @@ full-source or platform qualification; MISC-03/05 and BENCH-02 remain active.
 
 Use the source-first [CS-INT-01 execution plan](../../sep-27-code-search-remediation/rfcs/CS-INT-01-integration-and-qualification.md#current-source-audit-and-decision-order)
 and its [disjoint parallel lanes](../../sep-27-code-search-remediation/rfcs/CS-INT-01-integration-and-qualification.md#parallel-execution-lanes):
-regex allocation feasibility/admission and measured coverage cost → one serial
+measured coverage cost → one serial
 combined-source integration with IO-5/actual-producer acceptance → admitted
 MISC-06/07 measurements. Independent benchmark inputs can be prepared in
 parallel, but captures bind the final source. Do not launch competing heavy

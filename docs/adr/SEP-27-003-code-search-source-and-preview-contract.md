@@ -199,8 +199,8 @@ qualification belong in the [active code-search ledger](../plans/sep-27-code-sea
 - Regex capture removal only erases unobserved explicit captures through the
   canonical AST; original HIR/dialect/estimator and truth/ranges remain authoritative.
   Preserve differential tests against the admitted matcher. The base/state policy
-  charge is not aggregate allocator admission; the [open regex ticket](../plans/sep-27-code-search-remediation/rfcs/CS-ENG-04-match-anchored-snippets.md)
-  owns that remaining boundary.
+  charge is not aggregate allocator admission; the [deferred regex ticket](../plans/sep-27-code-search-remediation/rfcs/CS-ENG-04-match-anchored-snippets.md)
+  records that unselected boundary.
 - The canonical executor pins a 10 MiB compiled NFA limit and 2 MiB lazy-DFA
   cache limit per engine and maps engine-size refusal to a typed resource error.
   The validated structural state estimate is bounded before literal extraction;
@@ -217,6 +217,15 @@ qualification belong in the [active code-search ledger](../plans/sep-27-code-sea
   most 64 distinct canonical sets under a separate logical byte account; each
   set is materialized before that charge. None of these limits admits parser or
   compiler temporaries, cumulative collection work, or aggregate request heap.
+
+The exact request-wide `Layout`-byte regex cap is deferred, with no measured
+overrun or numerical acceptance threshold. Pinned regex and FST dependencies
+have no caller-controlled fallible allocation path across parse, compile and
+cache growth. An experimental explicit-cache/fallible-search API migration was
+reverted because it did not admit those allocations. Process isolation is a
+different whole-worker contract and was not selected. Reopen the cap only for
+an explicit external requirement or a measured supported-host resource breach;
+the current guards are not proof of a physical heap ceiling.
 
 ### Producer syntax and ownership
 
@@ -244,8 +253,9 @@ tests on several historical sources; their counts are not one current qualificat
 Ranked storage and collection import all five column names from the existing
 schema owner; schema construction uses those same constants. This removes the
 collector/storage module cycle without changing names or field layout.
-Outstanding work is physical regex admission, total coverage pipeline cost/heap,
-final combined-source/platform/external-producer qualification and separately
-admitted benchmark/default policy. This ADR does not qualify those claims.
+Outstanding selected work is total coverage pipeline cost/heap, final
+combined-source/platform/external-producer qualification and separately
+admitted benchmark/default policy. Exact regex allocation admission is deferred
+under the decision above. This ADR does not qualify any physical heap claim.
 Historical bodies are recoverable from `1419f3087f4f09a6ecab4ef39c30a2bf32544d5d`;
 see [the plan archive](../plans/ARCHIVE-INDEX.md).

@@ -28,11 +28,10 @@
 //! [`RegexErrorCode::Interrupted`] when it answers `true`.
 
 use core::time::Duration;
-use std::sync::Mutex;
 use std::time::Instant;
 
 use quanta_index_lq_trigram::{DocId, DocResolver};
-use regex_automata::{Input, MatchKind, meta, util::iter::Searcher};
+use regex_automata::{MatchKind, meta};
 use regex_syntax::hir::Hir;
 
 use crate::dialect::{classify_ast_error, classify_construct_from_slice, dialect_filter};
@@ -55,7 +54,6 @@ pub struct RegexExecutor {
     pattern: Box<str>,
     hir: Hir,
     compiled: meta::Regex,
-    cache: Mutex<meta::Cache>,
 }
 
 /// Validated regex input before the engine allocates its automata.
@@ -99,7 +97,6 @@ pub enum RegexRangeError {
     SourceByteLimit,
     AllocationRefused,
     Interrupted,
-    CacheUnavailable,
 }
 
 impl core::fmt::Display for RegexRangeError {
@@ -108,7 +105,6 @@ impl core::fmt::Display for RegexRangeError {
             Self::SourceByteLimit => "regex preview source-byte limit exceeded",
             Self::AllocationRefused => "regex preview range allocation refused",
             Self::Interrupted => "regex preview interrupted",
-            Self::CacheUnavailable => "regex search cache unavailable",
         })
     }
 }
@@ -230,15 +226,10 @@ impl RegexExecutor {
                     },
                 )
             })?;
-        // Keep the mutable search scratch with its request-owned engine.
-        // All searches below pass it explicitly, bypassing the meta engine's
-        // internal cache pool and preventing an implicit cross-request cache.
-        let cache = Mutex::new(compiled.create_cache());
         Ok(Self {
             pattern: plan.pattern,
             hir: plan.hir,
             compiled,
-            cache,
         })
     }
 
@@ -264,19 +255,9 @@ impl RegexExecutor {
     }
 
     /// Verify a single document's bytes against the compiled regex.
-    /// A poisoned cache fails closed instead of treating a resource or
-    /// engine failure as a negative match.
-    pub fn verify(&self, doc_text: &[u8]) -> Result<bool, RegexError> {
-        let mut cache = self.cache.lock().map_err(|_error| {
-            RegexError::new(
-                RegexErrorCode::ExecutionInternal,
-                "regex search cache was poisoned",
-            )
-        })?;
-        Ok(self
-            .compiled
-            .search_with(&mut cache, &Input::new(doc_text))
-            .is_some())
+    #[must_use]
+    pub fn verify(&self, doc_text: &[u8]) -> bool {
+        self.compiled.is_match(doc_text)
     }
 
     /// Reconstruct ranges with the exact compiled matcher used by [`Self::verify`].
@@ -322,18 +303,12 @@ impl RegexExecutor {
             return Err(RegexRangeError::SourceByteLimit);
         }
         let mut ranges = Vec::new();
-        let mut matches = Searcher::new(Input::new(doc_text));
+        let mut matches = self.compiled.find_iter(doc_text);
         while ranges.len() < max_ranges {
             if interrupted() {
                 return Err(RegexRangeError::Interrupted);
             }
-            let next = {
-                let mut cache = self
-                    .cache
-                    .lock()
-                    .map_err(|_error| RegexRangeError::CacheUnavailable)?;
-                matches.advance(|input| Ok(self.compiled.search_with(&mut cache, input)))
-            };
+            let next = matches.next();
             if interrupted() {
                 return Err(RegexRangeError::Interrupted);
             }
@@ -435,7 +410,7 @@ impl RegexExecutor {
                     format!("resolver missing doc {cand}"),
                 )
             })?;
-            if self.verify(bytes)? {
+            if self.verify(bytes) {
                 reserve(&mut out)?;
                 out.push(*cand);
             }
@@ -587,7 +562,7 @@ mod tests {
         let executor = RegexExecutor::compile(&pattern)?;
         assert_eq!(executor.pattern(), pattern);
         assert_eq!(executor.compiled.captures_len(), 1);
-        assert!(executor.verify(b"needle")?);
+        assert!(executor.verify(b"needle"));
         assert_eq!(
             executor
                 .find_ranges_bounded(b"needle", 6, 2, &|| false)?
@@ -653,7 +628,7 @@ mod tests {
                 assert!(actual.exhausted);
                 assert_eq!(actual.ranges, expected, "{pattern:?} on {source:?}");
                 assert_eq!(
-                    executor.verify(source.as_bytes())?,
+                    executor.verify(source.as_bytes()),
                     reference.is_match(source.as_bytes()),
                     "{pattern:?} on {source:?}"
                 );
@@ -684,60 +659,9 @@ mod tests {
                 let actual = executor.find_ranges_bounded(source, source.len(), 32, &|| false)?;
                 assert!(actual.exhausted);
                 assert_eq!(actual.ranges, expected, "{pattern:?} on {source:?}");
-                assert_eq!(executor.verify(source)?, reference.is_match(source));
+                assert_eq!(executor.verify(source), reference.is_match(source));
             }
         }
-        Ok(())
-    }
-
-    #[test]
-    fn poisoned_search_cache_fails_closed_for_truth_and_ranges()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let executor = RegexExecutor::compile("needle")?;
-        let panicked = std::thread::scope(|scope| {
-            scope
-                .spawn(|| {
-                    let _cache = executor.cache.lock().expect("new cache is not poisoned");
-                    panic!("poison the cache");
-                })
-                .join()
-                .is_err()
-        });
-        assert!(panicked);
-        assert_eq!(
-            executor.verify(b"needle").err().map(|error| error.code),
-            Some(RegexErrorCode::ExecutionInternal)
-        );
-        assert_eq!(
-            executor.find_ranges_bounded(b"needle", 6, 1, &|| false),
-            Err(super::RegexRangeError::CacheUnavailable)
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn explicit_cache_serializes_concurrent_truth_and_range_searches()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let executor = RegexExecutor::compile(r"(?i)(needle)+")?;
-        std::thread::scope(|scope| {
-            let handles: Vec<_> = (0..8)
-                .map(|_| {
-                    scope.spawn(|| {
-                        for _ in 0..32 {
-                            assert_eq!(executor.verify(b"NEEDLE needle"), Ok(true));
-                            let ranges = executor
-                                .find_ranges_bounded(b"NEEDLE needle", 13, 4, &|| false)
-                                .expect("cache remains usable");
-                            assert_eq!(ranges.ranges, vec![0..6, 7..13]);
-                            assert!(ranges.exhausted);
-                        }
-                    })
-                })
-                .collect();
-            for handle in handles {
-                handle.join().expect("search thread completed");
-            }
-        });
         Ok(())
     }
 
@@ -772,7 +696,7 @@ mod tests {
                     assert!(actual.exhausted, "{pattern:?} on {source:?}");
                     assert_eq!(actual.ranges, expected, "{pattern:?} on {source:?}");
                     assert_eq!(
-                        executor.verify(source.as_bytes())?,
+                        executor.verify(source.as_bytes()),
                         reference.is_match(source.as_bytes()),
                         "{pattern:?} on {source:?}"
                     );
@@ -787,10 +711,10 @@ mod tests {
         let executor = RegexExecutor::compile("(?i)needle[0-9]+")?;
         let source = "é NEEDLE42 needle7";
         let found = executor.find_ranges_bounded(source.as_bytes(), 64, 3, &|| false)?;
-        assert!(executor.verify(source.as_bytes())?);
+        assert!(executor.verify(source.as_bytes()));
         assert_eq!(found.ranges, vec![3..11, 12..19]);
         assert!(found.exhausted);
-        assert!(!executor.verify(b"needle")?);
+        assert!(!executor.verify(b"needle"));
         assert!(
             executor
                 .find_ranges_bounded(b"needle", 64, 3, &|| false)?
@@ -814,7 +738,7 @@ mod tests {
                 executor.find_ranges_bounded("café CAFÉ".as_bytes(), 11, 3, &|| false)?;
             assert_eq!(actual.ranges, expected, "{pattern}");
             assert!(actual.exhausted);
-            assert!(executor.verify("CAFÉ".as_bytes())?);
+            assert!(executor.verify("CAFÉ".as_bytes()));
         }
         for pattern in ["(?i)(?m)", "(?i)foo(?m)bar", "((?i)foo)"] {
             let Some(error) = RegexExecutor::compile(pattern).err() else {
@@ -843,7 +767,7 @@ mod tests {
             let actual = executor.find_ranges_bounded(source.as_bytes(), 25, 5, &|| false)?;
             assert_eq!(actual.ranges, expected, "{pattern}");
             assert!(actual.exhausted);
-            assert!(!executor.verify(b"unrelated")?);
+            assert!(!executor.verify(b"unrelated"));
         }
         for pattern in ["(?i)|NEEDLE", "(?i)(?m)|NEEDLE"] {
             let executor = RegexExecutor::compile(pattern)?;
@@ -1091,13 +1015,18 @@ mod tests {
     }
 
     #[test]
-    fn verify_matches_handler_pattern() -> Result<(), Box<dyn std::error::Error>> {
-        let exec = RegexExecutor::compile(r"fn\s+handle_\w+")?;
-        assert!(exec.verify(b"fn handle_request() {}")?);
-        assert!(exec.verify(b"fn handle_response() {}")?);
-        assert!(!exec.verify(b"fn other() {}")?);
-        assert!(!exec.verify(b"struct Handler {}")?);
-        Ok(())
+    fn verify_matches_handler_pattern() {
+        let exec = match RegexExecutor::compile(r"fn\s+handle_\w+") {
+            Ok(x) => x,
+            Err(e) => {
+                assert!(false, "{e}");
+                return;
+            }
+        };
+        assert!(exec.verify(b"fn handle_request() {}"));
+        assert!(exec.verify(b"fn handle_response() {}"));
+        assert!(!exec.verify(b"fn other() {}"));
+        assert!(!exec.verify(b"struct Handler {}"));
     }
 
     #[test]

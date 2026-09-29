@@ -3,7 +3,7 @@
 use quanta_index_contract::{ChunkRecord, GenerationPin, LqFileScope, SearchPlaneErrorCodeV2};
 use quanta_index_core::domains::structural::StructuralExecutableFilter;
 use quanta_index_core::{CoreError, StructuralMatchCandidate};
-use quanta_index_lq_regex::{RegexError, RegexErrorCode, RegexExecutor};
+use quanta_index_lq_regex::{RegexErrorCode, RegexExecutor};
 
 use crate::query_dispatcher::errors::structural_invalid_request;
 use crate::query_dispatcher::routes::structural::buckets::{
@@ -16,59 +16,32 @@ pub(super) fn compile_structural_filter_regex(
     pattern: &str,
 ) -> Result<RegexExecutor, CoreError> {
     RegexExecutor::compile(pattern).map_err(|err| {
-        map_structural_filter_regex_error(
-            &format!("{filter_name} filter pattern failed to compile as regex"),
-            &err,
-        )
-    })
-}
-
-fn map_structural_filter_regex_error(context: &str, err: &RegexError) -> CoreError {
-    let detail = format!("{context}: {err}");
-    match err.code {
-        RegexErrorCode::ParseFail | RegexErrorCode::ForbiddenSyntax => {
-            structural_invalid_request(detail)
-        }
-        RegexErrorCode::PlanLimitExceeded => CoreError::Typed {
-            code: SearchPlaneErrorCodeV2::LexRegexPlanLimitExceeded,
-            message: format!("structural: {detail}"),
-        },
-        RegexErrorCode::RegexPrefilterUnusable => CoreError::Typed {
-            code: SearchPlaneErrorCodeV2::LexRegexRegexPrefilterUnusable,
-            message: format!("structural: {detail}"),
-        },
-        RegexErrorCode::QueryTimeout => CoreError::Typed {
-            code: SearchPlaneErrorCodeV2::LexRegexQueryTimeout,
-            message: format!("structural: {detail}"),
-        },
-        RegexErrorCode::Interrupted => CoreError::Typed {
-            code: SearchPlaneErrorCodeV2::LexRegexInterrupted,
-            message: format!("structural: {detail}"),
-        },
-        RegexErrorCode::ExecutionInternal => CoreError::Typed {
-            code: SearchPlaneErrorCodeV2::LexRegexExecutionInternal,
-            message: format!("structural: {detail}"),
-        },
-    }
-}
-
-fn verify_structural_filter_regex(
-    executor: &RegexExecutor,
-    bytes: &[u8],
-) -> Result<bool, CoreError> {
-    executor.verify(bytes).map_err(|err| CoreError::Typed {
-        code: match err.code {
-            RegexErrorCode::PlanLimitExceeded => SearchPlaneErrorCodeV2::LexRegexPlanLimitExceeded,
-            RegexErrorCode::QueryTimeout => SearchPlaneErrorCodeV2::LexRegexQueryTimeout,
-            RegexErrorCode::Interrupted => SearchPlaneErrorCodeV2::LexRegexInterrupted,
-            RegexErrorCode::ParseFail
-            | RegexErrorCode::ForbiddenSyntax
-            | RegexErrorCode::RegexPrefilterUnusable
-            | RegexErrorCode::ExecutionInternal => {
-                SearchPlaneErrorCodeV2::LexRegexExecutionInternal
+        let detail = format!("{filter_name} filter pattern failed to compile as regex: {err}");
+        match err.code {
+            RegexErrorCode::ParseFail | RegexErrorCode::ForbiddenSyntax => {
+                structural_invalid_request(detail)
             }
-        },
-        message: format!("structural filter verification failed: {err}"),
+            RegexErrorCode::PlanLimitExceeded => CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::LexRegexPlanLimitExceeded,
+                message: format!("structural: {detail}"),
+            },
+            RegexErrorCode::RegexPrefilterUnusable => CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::LexRegexRegexPrefilterUnusable,
+                message: format!("structural: {detail}"),
+            },
+            RegexErrorCode::QueryTimeout => CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::LexRegexQueryTimeout,
+                message: format!("structural: {detail}"),
+            },
+            RegexErrorCode::Interrupted => CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::LexRegexInterrupted,
+                message: format!("structural: {detail}"),
+            },
+            RegexErrorCode::ExecutionInternal => CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::LexRegexExecutionInternal,
+                message: format!("structural: {detail}"),
+            },
+        }
     })
 }
 
@@ -108,30 +81,29 @@ fn compile_repo_filters(
         .collect()
 }
 
-fn chunk_matches_structural_filters(
-    chunk: &ChunkRecord,
-    filters: &[CompiledFileFilter],
-) -> Result<bool, CoreError> {
+fn chunk_matches_structural_filters(chunk: &ChunkRecord, filters: &[CompiledFileFilter]) -> bool {
     for filter in filters {
         let path = chunk.repo_relative_path.as_str();
-        let path_match = verify_structural_filter_regex(&filter.executor, path.as_bytes())?;
+        let path_match = filter.executor.verify(path.as_bytes());
         let matched = match filter.scope {
             LqFileScope::PathOnly => path_match,
-            LqFileScope::NameOnly => path.rsplit('/').next().map_or(Ok(false), |name| {
-                verify_structural_filter_regex(&filter.executor, name.as_bytes())
-            })?,
+            LqFileScope::NameOnly => path
+                .rsplit('/')
+                .next()
+                .is_some_and(|name| filter.executor.verify(name.as_bytes())),
             LqFileScope::NameAndPath => {
                 path_match
-                    || path.rsplit('/').next().map_or(Ok(false), |name| {
-                        verify_structural_filter_regex(&filter.executor, name.as_bytes())
-                    })?
+                    || path
+                        .rsplit('/')
+                        .next()
+                        .is_some_and(|name| filter.executor.verify(name.as_bytes()))
             }
         };
         if !matched {
-            return Ok(false);
+            return false;
         }
     }
-    Ok(true)
+    true
 }
 
 pub(super) fn build_pinned_structural_universe(
@@ -144,10 +116,11 @@ pub(super) fn build_pinned_structural_universe(
     // short circuit and turn an invalid request into a successful empty result.
     let repo_filters = compile_repo_filters(filters)?;
     let file_filters = compile_file_filters(filters)?;
-    for executor in &repo_filters {
-        if !verify_structural_filter_regex(executor, pin.repo_id.as_str().as_bytes())? {
-            return Ok(StructuralCandidateBuckets::new());
-        }
+    if !repo_filters
+        .iter()
+        .all(|executor| executor.verify(pin.repo_id.as_str().as_bytes()))
+    {
+        return Ok(StructuralCandidateBuckets::new());
     }
     // Every eligible chunk verifies against the same executor and its byte-match semantics.
     let mut buckets = StructuralCandidateBuckets::new();
@@ -157,7 +130,7 @@ pub(super) fn build_pinned_structural_universe(
         {
             continue;
         }
-        if !chunk_matches_structural_filters(chunk, &file_filters)? {
+        if !chunk_matches_structural_filters(chunk, &file_filters) {
             continue;
         }
         let candidate_id = chunk_id.as_str().to_string();

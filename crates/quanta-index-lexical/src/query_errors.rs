@@ -61,23 +61,6 @@ pub(crate) const fn regex_wire_code(code: RegexErrorCode) -> Code {
     }
 }
 
-/// Preserve matcher failures as query errors; a failed search is never a
-/// negative match that may narrow a result set.
-pub(crate) fn verify_regex(executor: &RegexExecutor, bytes: &[u8]) -> Result<bool, CoreError> {
-    executor.verify(bytes).map_err(|err| CoreError::Typed {
-        code: match err.code {
-            RegexErrorCode::PlanLimitExceeded
-            | RegexErrorCode::QueryTimeout
-            | RegexErrorCode::Interrupted
-            | RegexErrorCode::ExecutionInternal => regex_wire_code(err.code),
-            RegexErrorCode::ParseFail
-            | RegexErrorCode::ForbiddenSyntax
-            | RegexErrorCode::RegexPrefilterUnusable => Code::LexRegexExecutionInternal,
-        },
-        message: format!("lexical: regex verification failed: {err}"),
-    })
-}
-
 /// Tantivy scope regexes use a different grammar from LQ content regexes,
 /// but must hit the same input-byte gate before Tantivy starts compiling.
 pub(crate) fn admit_scope_regex_pattern_size(pattern: &str) -> Result<(), CoreError> {

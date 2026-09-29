@@ -12,7 +12,6 @@ exact bodies remain recoverable through the [plan archive](../ARCHIVE-INDEX.md).
 | Active owner | Remaining scope |
 | --- | --- |
 | [CS-ENG-02](rfcs/CS-ENG-02-capability-publication-and-freshness.md) | Total coverage pipeline cost, uncached large-root decode, full verification scans and physical heap qualification |
-| [CS-ENG-04](rfcs/CS-ENG-04-match-anchored-snippets.md) | Physical regex compilation/cache admission and its lifetime proof |
 | [CS-BENCH-01](rfcs/CS-BENCH-01-corpus-gold-and-holdout.md) | Independent source/gold releases and sealed holdout |
 | [CS-BENCH-02](rfcs/CS-BENCH-02-native-response-validation.md) | Remaining native entrypoint/format refusal coverage and real captures; local cs/Sourcegraph/OpenGrok path/hit refusal is implemented |
 | [CS-BENCH-03](rfcs/CS-BENCH-03-tracks-metrics-and-statistics.md) | Task/metric/statistical admission, ranking/context experiments |
@@ -30,6 +29,11 @@ exact lookup/federated grouping, semantic preview/provenance and parser fixes.
 Reopen a completed code change only for a current reproduced failure. Resolve
 structural gaps and enrollment before one serial integration boundary; admit
 independent inputs and a supported host before qualified measurements.
+
+[CS-ENG-04](rfcs/CS-ENG-04-match-anchored-snippets.md) is deferred: current
+regex guards remain, but no exact request-wide allocation cap or worker
+containment contract is selected. It is not an active implementation or release
+blocker without a numerical requirement or measured regex-driven breach.
 
 [Research references](references.md) are non-normative inputs to the open
 benchmark design. Accepted product/qualification contracts remain in the ADRs.
