@@ -104,6 +104,93 @@ Owners: canonical regex executor/prepared holder, lexical preview preparation,
 request resource/lifetime owner and dependency configuration. Preserve one
 matcher for truth and ranges and the current query recall/case/NFC semantics.
 
+## Implementation decision (Sep-29)
+
+**Claim to implement:** a request-scoped ceiling on the sum of live,
+regex-owned heap allocation requests, including peak overlap during growth.
+The unit is allocated `Layout` bytes, not estimated NFA states, retained
+capacity reported after construction, allocator metadata, physical pages or
+process RSS. Define an independent process-memory claim if one is needed.
+Choose the numerical ceiling only after the allocation inventory and workload
+distribution are measured; the existing 64 MiB lexical collection allowance
+is a different resource policy and cannot silently serve as this ceiling.
+
+The pinned `regex-automata` meta engine documents approximate `memory_usage()`
+and no high-level limit for that aggregate; explicit caches make ownership
+visible but do not authorize parser/compiler allocation. RE2's `max_mem` is
+also an approximate compiled-program/DFA budget, split among engines, not an
+exact whole-request allocation bound. A `GlobalAlloc` or post-allocation RSS
+counter cannot provide typed pre-allocation refusal: standard Rust allocation
+failure can abort the process. Linux cgroup v2 `memory.max` can contain an
+isolated worker's process memory, but it can temporarily overshoot, may kill
+the worker, includes non-regex memory and does not supply the portable,
+regex-owned typed admission claimed here.
+
+Primary design, subject to the feasibility gate below:
+
+1. Introduce one small allocation-authority layer below `quanta-index-core`
+   and `quanta-index-lq-regex`. A request creates a finite, shared ledger in
+   `RequestBudgetV1`; every clone shares it. A non-cloneable RAII allocation
+   lease reserves checked `Layout` bytes before allocation, keeps the charge
+   while the allocation lives, and releases on drop/error/cancellation. Growth
+   must reserve the new allocation while the old one is still live, then
+   release the old lease after transfer. Never infer physical bytes from the
+   existing logical collection/work budget.
+2. Use controlled, pinned, fallible allocation hooks in the regex parser and
+   engine dependencies for AST/HIR, capture erasure, literal extraction,
+   compile temporaries, retained forward/reverse automata, first-search
+   scratch and mutable caches. An allocator-aware wrapper around the current
+   opaque `regex::bytes::Regex` is insufficient. If moving to
+   `regex-automata::meta` with `build_from_hir` and explicit caches reduces
+   duplicate parsing or hidden pool allocation, preserve its current bytes
+   configuration and prove equivalent truth and whole-match ranges. No engine
+   or cache may outlive its request lease or be reused by another request
+   without a separately bounded global-cache policy.
+3. Give the distinct `tantivy-fst` scope compiler the same fallible authority
+   (or replace it with a proven equivalent, allocator-aware FST compiler).
+   Include its parse/compile/state allocations and the lifetime of the
+   `Arc`-shared path/name automaton. The existing 64 KiB pattern gate and
+   per-engine state limits remain useful secondary guards.
+4. Thread the authority through primitive admission, indexed and manual
+   execution, predicate matching, selected preview, Boolean structural
+   preflight, structural universe, and searchd's live structural producer.
+   In particular, extend `StructuralProducerPort::execute` to receive the
+   request resource context: its current signature has only the query and
+   cannot charge the producer's `PreparedStructuralRegexes` or filters to the
+   caller. Remove or confine unmetered production constructors so a new call
+   site cannot bypass the authority.
+5. Map budget exhaustion to the existing typed regex plan-limit family on
+   required query paths. Keep syntax/dialect and integrity failures distinct.
+   Optional preview reports `WorkBudget` while retaining selected hit IDs,
+   scores, order and truthful window metadata. A missing production authority,
+   arithmetic overflow or dependency path that cannot be charged fails closed;
+   no empty-result or generic producer-error fallback.
+
+**Go/no-go before rollout:** make one vertical slice, using the pinned
+dependency sources, for parse → compile → first search → cache growth → drop
+under a deliberately tiny finite budget. Inventory every allocation and
+demonstrate typed refusal *before* every charged allocation, correct peak
+accounting, and release after each failure. Include Tantivy FST in the
+inventory. If any required allocation cannot be made fallible without an
+unmaintainable dependency fork, stop the in-process hard-cap claim. The
+alternative is a request-exclusive worker with an OS-enforced process envelope
+on supported platforms, parent-owned timeout/cancellation/IPC/restart and
+typed worker-death mapping; describe that as a whole-worker containment
+contract, not regex-owned admission or an exact cross-platform RSS cap.
+
+**Proof sequence after implementation:** allocation-site fault injection and
+boundary values; concurrent requests and lease lifetime; independent
+old/new truth-and-range oracles on capture-heavy, Unicode, zero-width,
+case/NFC, repetition, Boolean and 32/33 focus-edge inputs; then actual
+SDK/daemon/restart routes. Record regex allocation peak and process RSS as
+separate observations. A source-only review or focused compile does not close
+this acceptance. No runtime verification was run for this planning update.
+
+Primary references: [pinned regex-automata aggregate-memory contract](https://docs.rs/regex-automata/0.4.14/regex_automata/meta/struct.Regex.html#method.memory_usage),
+[RE2 memory policy](https://github.com/google/re2/blob/main/re2/re2.h),
+[Rust allocation-failure behavior](https://doc.rust-lang.org/stable/std/alloc/fn.handle_alloc_error.html),
+[Linux cgroup v2 memory limit](https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html).
+
 ## Required coordinated change
 
 - First prove an API feasibility slice covering parse → compile → first search
