@@ -191,6 +191,24 @@ Primary references: [pinned regex-automata aggregate-memory contract](https://do
 [Rust allocation-failure behavior](https://doc.rust-lang.org/stable/std/alloc/fn.handle_alloc_error.html),
 [Linux cgroup v2 memory limit](https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html).
 
+### Current-source wiring audit
+
+| Owner | Files and necessary change |
+| --- | --- |
+| Admission root | `crates/quanta-index-core/src/request_budget.rs` owns the shared finite regex allocation ledger; `crates/quanta-index-ipc/src/server.rs` creates the served budget. Keep even `RequestBudgetV1::unbounded()` finite for regex memory. Put the allocation primitive in a lower-level crate so core, the executor and the FST adapter can depend on it without a cycle. |
+| Shared engine | `crates/quanta-index-lq-regex/src/executor.rs` and `literal_extract.rs`: make planning, extraction, compilation and first-search/cache growth fallible under that ledger. `verify(&self) -> bool` must become a fallible operation or use fully admitted scratch; a hidden cache allocation cannot be mapped to typed refusal through `bool`. The original HIR remains the literal oracle; an engine built from HIR must use the **capture-erased** execution HIR, not the original capture-bearing HIR. |
+| Pinned dependencies | Workspace `Cargo.toml`, `Cargo.lock`, and the relevant crate manifests: a controlled `regex-syntax` / `regex-automata` / `tantivy-fst` allocation path is a feasibility prerequisite, not merely a version bump. The pinned FST constructor allocates parser HIR, instructions, DFA states and temporary `HashMap` / `HashSet` before returning. |
+| Lexical routes | `crates/quanta-index-lexical/src/regex.rs`, `query_admission.rs`, `query_errors.rs`, `searcher/{restrictions,match_sets,manual_scan,predicates,prepare,candidates,snippets}.rs`: pass the same owner to preflight, indexed FST filters, manual scans, metadata predicates and optional preview. Replace Boolean `verify` uses (`all`, `is_some_and`, `filter`) with error-propagating loops; never turn resource refusal into a false match. Preflight compilation and execution compilation must both be charged, even if the first is dropped. |
+| Structural routes | `crates/quanta-index-search-plane/src/{lowering.rs,query_dispatcher/routes/structural/{lowering,route,universe,eval}.rs}`, `crates/quanta-index-core/src/domains/structural/{service,outbound}.rs`, `crates/quanta-index-lq-structural/src/matcher.rs`, and `crates/quanta-index-searchd/src/app/runtime.rs`: thread the owner through Sourcegraph lowering, skipped-leaf validation, universe filters and the producer port; make the direct authority matcher path take an owner too. Surface search-time refusal as the existing structural regex resource code. |
+| Cache boundary | `crates/quanta-index-lexical/src/searcher/match_sets.rs` and `regex_match_cache.rs`: the shared cache holds result bitmaps, not compiled engines. Its current retained-byte estimate is a separate global-cache policy; request allocation cannot be released while its result storage is still owned by the request, or be transferred to that cache without an explicit ownership/accounting handoff. Define whether bitmap construction is inside the claimed regex allocation domain before claiming request-wide bytes. |
+
+Do not make the old unmetered `RegexExecutor::compile/prepare` a production
+escape hatch after migration. Use explicit test fixtures for standalone owner
+tests. Verification must force refusal during **search**, not only compile, and
+assert that no partial match set, narrowed hit list or wrong preview metadata
+escapes. The required whole-request ceiling remains `OPEN` until every live
+route and dependency allocation in the declared scope meets that contract.
+
 ## Required coordinated change
 
 - First prove an API feasibility slice covering parse → compile → first search
