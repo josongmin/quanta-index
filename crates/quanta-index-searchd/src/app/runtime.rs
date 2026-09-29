@@ -835,7 +835,7 @@ impl StructuralProducerPort for LedgerStructuralProducer {
         )?;
         let regexes = PreparedStructuralRegexes::from_block(&request.pattern)
             .map_err(map_live_authority_error)?;
-        if !filters.repo_matches(&pin) {
+        if !filters.repo_matches(&pin)? {
             return Ok(Vec::new());
         }
         let requested_lang = request
@@ -915,7 +915,7 @@ impl StructuralProducerPort for LedgerStructuralProducer {
                 .chunks()
                 .get(chunk_id)
                 .ok_or(StructuralError::ShardUnavailable)?;
-            if !filters.chunk_matches(chunk) {
+            if !filters.chunk_matches(chunk)? {
                 continue;
             }
             let authority_candidates = self
@@ -999,31 +999,36 @@ impl CompiledStructuralFilters {
         Ok(compiled)
     }
 
-    fn repo_matches(&self, pin: &GenerationPin) -> bool {
-        self.repo
-            .iter()
-            .all(|executor| executor.verify(pin.repo_id.as_str().as_bytes()))
+    fn repo_matches(&self, pin: &GenerationPin) -> Result<bool, StructuralError> {
+        for executor in &self.repo {
+            if !verify_structural_filter_regex(executor, pin.repo_id.as_str().as_bytes())? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
-    fn chunk_matches(&self, chunk: &ChunkRecord) -> bool {
+    fn chunk_matches(&self, chunk: &ChunkRecord) -> Result<bool, StructuralError> {
         let path = chunk.repo_relative_path.as_str();
-        self.file.iter().all(|(scope, executor)| {
-            let path_match = executor.verify(path.as_bytes());
-            match scope {
+        for (scope, executor) in &self.file {
+            let path_match = verify_structural_filter_regex(executor, path.as_bytes())?;
+            let matched = match scope {
                 LqFileScope::PathOnly => path_match,
-                LqFileScope::NameOnly => path
-                    .rsplit('/')
-                    .next()
-                    .is_some_and(|name| executor.verify(name.as_bytes())),
+                LqFileScope::NameOnly => path.rsplit('/').next().map_or(Ok(false), |name| {
+                    verify_structural_filter_regex(executor, name.as_bytes())
+                })?,
                 LqFileScope::NameAndPath => {
                     path_match
-                        || path
-                            .rsplit('/')
-                            .next()
-                            .is_some_and(|name| executor.verify(name.as_bytes()))
+                        || path.rsplit('/').next().map_or(Ok(false), |name| {
+                            verify_structural_filter_regex(executor, name.as_bytes())
+                        })?
                 }
+            };
+            if !matched {
+                return Ok(false);
             }
-        })
+        }
+        Ok(true)
     }
 }
 
@@ -1039,6 +1044,24 @@ fn compile_structural_filter_regex(
             }
             RegexErrorCode::PlanLimitExceeded => StructuralError::RegexPlanLimitExceeded(detail),
             RegexErrorCode::RegexPrefilterUnusable
+            | RegexErrorCode::QueryTimeout
+            | RegexErrorCode::Interrupted
+            | RegexErrorCode::ExecutionInternal => StructuralError::ProducerExecution(detail),
+        }
+    })
+}
+
+fn verify_structural_filter_regex(
+    executor: &RegexExecutor,
+    bytes: &[u8],
+) -> Result<bool, StructuralError> {
+    executor.verify(bytes).map_err(|err| {
+        let detail = format!("structural filter verification failed: {err}");
+        match err.code {
+            RegexErrorCode::PlanLimitExceeded => StructuralError::RegexPlanLimitExceeded(detail),
+            RegexErrorCode::ParseFail
+            | RegexErrorCode::ForbiddenSyntax
+            | RegexErrorCode::RegexPrefilterUnusable
             | RegexErrorCode::QueryTimeout
             | RegexErrorCode::Interrupted
             | RegexErrorCode::ExecutionInternal => StructuralError::ProducerExecution(detail),
@@ -2104,7 +2127,8 @@ mod tests {
     }
 
     #[test]
-    fn structural_filters_reuse_compiled_semantics_across_chunks_and_scopes() {
+    fn structural_filters_reuse_compiled_semantics_across_chunks_and_scopes()
+    -> Result<(), StructuralError> {
         let repo = pinned_request();
         let GenerationSelector::Pinned(pin) = repo.generation else {
             panic!("fixture must pin generation");
@@ -2122,10 +2146,10 @@ mod tests {
             &RequestBudgetV1::unbounded(),
         )
         .expect("valid filters compile");
-        assert!(filters.repo_matches(&pin));
-        assert!(filters.chunk_matches(&filter_chunk("src/Foo.rs")));
-        assert!(filters.chunk_matches(&filter_chunk("tests/foo.rs")));
-        assert!(!filters.chunk_matches(&filter_chunk("tests/foo.ts")));
+        assert!(filters.repo_matches(&pin)?);
+        assert!(filters.chunk_matches(&filter_chunk("src/Foo.rs"))?);
+        assert!(filters.chunk_matches(&filter_chunk("tests/foo.rs"))?);
+        assert!(!filters.chunk_matches(&filter_chunk("tests/foo.ts"))?);
 
         let path_only = CompiledStructuralFilters::compile(
             &[StructuralExecutableFilter::FileRegex {
@@ -2135,8 +2159,8 @@ mod tests {
             &RequestBudgetV1::unbounded(),
         )
         .expect("valid path filter compiles");
-        assert!(path_only.chunk_matches(&filter_chunk("src/Foo.rs")));
-        assert!(!path_only.chunk_matches(&filter_chunk("tests/foo.rs")));
+        assert!(path_only.chunk_matches(&filter_chunk("src/Foo.rs"))?);
+        assert!(!path_only.chunk_matches(&filter_chunk("tests/foo.rs"))?);
 
         let either = CompiledStructuralFilters::compile(
             &[StructuralExecutableFilter::FileRegex {
@@ -2146,9 +2170,10 @@ mod tests {
             &RequestBudgetV1::unbounded(),
         )
         .expect("valid name and path filter compiles");
-        assert!(either.chunk_matches(&filter_chunk("src/bar.rs")));
-        assert!(either.chunk_matches(&filter_chunk("tests/foo.rs")));
-        assert!(!either.chunk_matches(&filter_chunk("tests/bar.rs")));
+        assert!(either.chunk_matches(&filter_chunk("src/bar.rs"))?);
+        assert!(either.chunk_matches(&filter_chunk("tests/foo.rs"))?);
+        assert!(!either.chunk_matches(&filter_chunk("tests/bar.rs"))?);
+        Ok(())
     }
 
     #[test]

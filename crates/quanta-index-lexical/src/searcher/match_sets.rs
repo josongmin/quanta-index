@@ -537,6 +537,12 @@ impl WitnessMatcher<'_, '_, '_> {
                             .interrupted_at("lexical:preview-regex")
                             .unwrap_or_else(|| integrity("unobserved regex interruption")),
                     ),
+                    RegexRangeError::CacheUnavailable => {
+                        PreviewStop::Mandatory(CoreError::Typed {
+                            code: quanta_index_contract::SearchPlaneErrorCodeV2::LexRegexExecutionInternal,
+                            message: "lexical: regex preview search cache was poisoned".into(),
+                        })
+                    }
                 })?;
             return self
                 .gather(self.nfc, found.ranges.into_iter(), out)

@@ -85,11 +85,12 @@ impl TantivySearcher {
                 }
                 for filter in &scope_filters {
                     let matches = match filter {
-                        CoverageScopeFilter::Repo(executor) => {
-                            executor.verify(entry.source.file.source_repo_id.as_str().as_bytes())
-                        }
+                        CoverageScopeFilter::Repo(executor) => crate::query_errors::verify_regex(
+                            executor,
+                            entry.source.file.source_repo_id.as_str().as_bytes(),
+                        )?,
                         CoverageScopeFilter::File(executor, scope) => {
-                            Self::file_filter_scope_matches(executor, *scope, path)
+                            Self::file_filter_scope_matches(executor, *scope, path)?
                         }
                         CoverageScopeFilter::Language(language) => {
                             entry.language.as_str() == language
