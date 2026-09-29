@@ -111,6 +111,20 @@ historical `unjudged_zero_v1` policy remains available for exploratory reports
 and retains its original behavior. Neither policy turns a post-result review
 into a pre-result qualified holdout.
 
+For objective lexical checks, a task may instead declare `source_oracle` with
+`contract: go_exact_local_name_v1` and `unit: symbol` or `distinct_file`, or
+`contract: ascii_identifier_word_v1` and `unit: distinct_file`. Set
+`query_intent: bare_symbol`, `judgment_policy: source_oracle_complete_v1`, and
+provide exactly the matching judgment kind. The evaluator reparses every Go
+file or scans ASCII identifier words across the frozen file universe, then
+requires an exact match with all submitted positive grade-3 judgments. An
+absent judgment is therefore an exhaustive source-oracle negative, not a
+human relevance decision. The declaration contract covers Go functions,
+methods, and type specs by exact case-sensitive local name; the word contract
+counts identifier words anywhere in file bytes, including comments and tests.
+`label_review` is forbidden on these tasks, and qualified annotation receipts
+reject them. Reports remain `diagnostic_unqualified`.
+
 Before review or search, check a new query proposal pool against every
 previously searched suite and proposal pool:
 

@@ -2665,6 +2665,10 @@ def _validate_gold_review_receipt(
             task["query_sha256"],
         ):
             raise RunError(f"qualification {role} receipt task identity mismatch: {index}")
+        if "source_oracle" in task:
+            raise RunError(
+                f"qualification {role} suite uses mechanical source-oracle labels: {index}"
+            )
         label_review = task.get("label_review")
         if isinstance(label_review, dict) and label_review.get("assessment") == "unreviewed":
             raise RunError(f"qualification {role} suite label explicitly unreviewed: {index}")

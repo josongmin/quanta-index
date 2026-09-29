@@ -10574,6 +10574,181 @@ def test_independent_judgments_are_source_bound_reviewed_and_blinded(tmp_path):
             ev.validate_suite(repo, bad)
 
 
+def test_source_oracle_recomputes_exhaustive_go_and_identifier_judgments(tmp_path):
+    files = {
+        "a.go": b"package demo\ntype Param struct{}\nfunc (p *Param) Next() {}\n",
+        "b.go": b"package demo\n// Param is a use site.\nfunc Next() {}\n",
+        "c.go": b"package demo\n// ParamExtra and param are different names.\n",
+    }
+    repo, commit = _write_repo(tmp_path, files)
+    universe = [
+        {"path": path, "file_sha256": ev.digest(raw)} for path, raw in sorted(files.items())
+    ]
+    suite = {
+        "schema_version": 3,
+        "suite_id": "source-oracle-contract",
+        "repository_commit": commit,
+        "comparison_contract": _v3_contract(),
+        "routes": ["lexical"],
+        "file_universe": universe,
+        "file_universe_digest": ev.universe_digest(universe),
+        "diagnostic_policy": ev.OBSERVED_PREFIX_DIAGNOSTIC_POLICY,
+        "tasks": [],
+    }
+
+    def task(query, contract, unit, judgments, gold_path="a.go", gold_line=2):
+        return {
+            "task_id": "T1",
+            "split": "eval",
+            "query": query,
+            "query_sha256": ev.digest(query.encode()),
+            "query_family_id": "oracle-family",
+            "query_intent": "bare_symbol",
+            "answerable": bool(judgments),
+            "gold": [_v3_block(files, gold_path, gold_line, gold_line)] if judgments else [],
+            "judgment_policy": ev.SOURCE_ORACLE_JUDGMENT_POLICY,
+            "source_oracle": {"contract": contract, "unit": unit},
+            "declaration_judgments" if unit == "symbol" else "file_judgments": judgments,
+        }
+
+    def file_row(path):
+        return {"path": path, "file_sha256": ev.digest(files[path]), "grade": 3}
+
+    def declaration_row(path, name):
+        start = files[path].index(name)
+        return {**file_row(path), "start_byte": start, "end_byte": start + len(name)}
+
+    cases = [
+        task("Param", "go_exact_local_name_v1", "distinct_file", [file_row("a.go")]),
+        task(
+            "Param",
+            "ascii_identifier_word_v1",
+            "distinct_file",
+            [file_row("a.go"), file_row("b.go")],
+        ),
+        task(
+            "Next",
+            "go_exact_local_name_v1",
+            "symbol",
+            [declaration_row("a.go", b"Next"), declaration_row("b.go", b"Next")],
+            gold_line=3,
+        ),
+        task("NoSuchName", "go_exact_local_name_v1", "symbol", []),
+    ]
+    for candidate in cases:
+        suite["tasks"] = [candidate]
+        jsonschema.validate(suite, _load_schema("suite.schema.json"))
+        _loaded, pack, _source = ev.validate_suite(repo, suite)
+        assert "source_oracle" not in ev.canonical(pack).decode()
+        assert "judgments" not in ev.canonical(pack).decode()
+
+    index = ev.source_oracle.SourceOracleIndex(
+        {path: (raw, ev.digest(raw)) for path, raw in files.items()}, {"Param", "param"}
+    )
+    assert [
+        row["path"]
+        for row in index.expected_rows("ascii_identifier_word_v1", "Param", "distinct_file")
+    ] == ["a.go", "b.go"]
+    assert [
+        row["path"]
+        for row in index.expected_rows("ascii_identifier_word_v1", "param", "distinct_file")
+    ] == ["c.go"]
+    assert index.expected_rows("go_exact_local_name_v1", "param", "symbol") == []
+    invalid_go = b"package demo\nfunc Next(\n"
+    invalid_index = ev.source_oracle.SourceOracleIndex(
+        {"invalid.go": (invalid_go, ev.digest(invalid_go))}, {"Next"}
+    )
+    with pytest.raises(ev.source_oracle.SourceOracleError, match="parse error"):
+        invalid_index.expected_rows("go_exact_local_name_v1", "Next", "symbol")
+
+    suite["tasks"] = [cases[2]]
+    bad_declaration = copy.deepcopy(suite)
+    bad_declaration["tasks"][0]["declaration_judgments"].pop()
+    with pytest.raises(ev.EvidenceError, match="differ from frozen source"):
+        ev.validate_suite(repo, bad_declaration)
+
+    suite["tasks"] = [cases[1]]
+    diagnostic = ev.judgment_diagnostics(
+        suite,
+        {
+            "route_provenance": {"lexical": {"capture_id": "q0"}},
+            "captures": {"q0": {"system": "quanta"}},
+        },
+        {
+            ("T1", "lexical"): {
+                "status": "success",
+                "rank_unit": "distinct_file",
+                "candidates": [
+                    {"path": path, "rank": rank}
+                    for rank, path in enumerate(("c.go", "a.go", "b.go"), 1)
+                ],
+            }
+        },
+        {"T1": cases[1]},
+        "lexical",
+        None,
+    )
+    assert diagnostic["unjudged_policy"] == ev.SOURCE_ORACLE_JUDGMENT_POLICY
+    route = diagnostic["file_judgments"]["routes"]["lexical"]
+    assert route["eligible_task_ids"] == ["T1"]
+    assert route["operational_mean"]["ndcg_at_10"] == pytest.approx(
+        (7 / math.log2(3) + 7 / math.log2(4)) / (7 + 7 / math.log2(3))
+    )
+
+    mutations = (
+        (lambda row: row["file_judgments"].pop(), "differ from frozen source"),
+        (lambda row: row["file_judgments"].append(file_row("c.go")), "differ from frozen source"),
+        (lambda row: row["file_judgments"][0].update(grade=2), "differ from frozen source"),
+        (
+            lambda row: row.update(label_review={"assessment": "unreviewed"}),
+            "cannot claim human review",
+        ),
+        (
+            lambda row: row.update(judgment_policy=ev.UNJUDGED_POLICY),
+            "requires source_oracle_complete_v1",
+        ),
+        (lambda row: row.update(query_intent="semantic_intent"), "requires bare_symbol"),
+        (lambda row: row.update(gold=[_v3_block(files, "c.go", 2, 2)]), "gold path contradicts"),
+        (lambda row: row.update(gold=[_v3_block(files, "a.go", 1, 1)]), "gold span contradicts"),
+    )
+    for mutate, error in mutations:
+        bad = copy.deepcopy(suite)
+        mutate(bad["tasks"][0])
+        with pytest.raises(ev.EvidenceError, match=error):
+            ev.validate_suite(repo, bad)
+
+    bad = copy.deepcopy(suite)
+    bad["tasks"][0]["source_oracle"]["unit"] = "symbol"
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(bad, _load_schema("suite.schema.json"))
+    with pytest.raises(ev.EvidenceError, match="judgment unit mismatch"):
+        ev.validate_suite(repo, bad)
+
+    reviewed = suite["tasks"][0]
+    review_receipt = {
+        "schema_version": 1,
+        "reviewer_id": "fixture-reviewer",
+        "suite_sha256": ev.digest(ev.canonical(suite)),
+        "reviews": [
+            {
+                "task_id": reviewed["task_id"],
+                "query_sha256": reviewed["query_sha256"],
+                "labels": pairrun._gold_review_labels(reviewed),
+                "rationale": "fixture review",
+            }
+        ],
+    }
+    with pytest.raises(pairrun.RunError, match="mechanical source-oracle labels"):
+        pairrun._validate_gold_review_receipt(
+            review_receipt,
+            role="annotation 1",
+            reviewer_id="fixture-reviewer",
+            suite_sha256=review_receipt["suite_sha256"],
+            suite=suite,
+            repo=repo,
+        )
+
+
 def test_cross_suite_custody_counts_positive_independent_file_judgments(tmp_path):
     repo, suite, _run, _sp, _rp, files = fixture_v3(tmp_path, answerable_only=True)
     development = copy.deepcopy(suite)

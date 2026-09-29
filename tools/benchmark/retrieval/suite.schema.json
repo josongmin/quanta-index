@@ -41,7 +41,7 @@
       "if": {"properties": {"tasks": {"contains": {"anyOf": [
         {"required": ["query_intent"]}, {"required": ["label_review"]},
         {"required": ["file_judgments"]}, {"required": ["declaration_judgments"]},
-        {"required": ["judgment_policy"]}
+        {"required": ["judgment_policy"]}, {"required": ["source_oracle"]}
       ]}}}},
       "then": {"required": ["diagnostic_policy"]}
     }
@@ -139,7 +139,8 @@
           "description": "Suite-author declaration. This is omitted from the blinded runner pack."
         },
         "label_review": {"$ref": "#/$defs/label_review"},
-        "judgment_policy": {"enum": ["unjudged_zero_v1", "complete_ranked_pool_v1"]},
+        "judgment_policy": {"enum": ["unjudged_zero_v1", "complete_ranked_pool_v1", "source_oracle_complete_v1"]},
+        "source_oracle": {"$ref": "#/$defs/source_oracle"},
         "file_judgments": {"type": "array", "items": {"$ref": "#/$defs/file_judgment"}},
         "declaration_judgments": {"type": "array", "items": {"$ref": "#/$defs/declaration_judgment"}},
         "gold": {"type": "array", "items": {"$ref": "#/$defs/block"}}
@@ -148,8 +149,38 @@
         {"if": {"properties": {"answerable": {"const": true}}}, "then": {"properties": {"gold": {"minItems": 1}}}},
         {"if": {"properties": {"answerable": {"const": false}}}, "then": {"properties": {"gold": {"maxItems": 0}}}},
         {"if": {"anyOf": [{"required": ["file_judgments"]}, {"required": ["declaration_judgments"]}]},
-         "then": {"required": ["judgment_policy", "label_review"]}}
+         "then": {"required": ["judgment_policy"], "anyOf": [{"required": ["label_review"]}, {"required": ["source_oracle"]}]}},
+        {"if": {"required": ["source_oracle"]},
+         "then": {
+           "required": ["query_intent", "judgment_policy"],
+           "properties": {
+             "query_intent": {"const": "bare_symbol"},
+             "judgment_policy": {"const": "source_oracle_complete_v1"}
+           },
+           "not": {"required": ["label_review"]},
+           "allOf": [
+             {"if": {"properties": {"source_oracle": {"properties": {"unit": {"const": "symbol"}}}}},
+              "then": {"required": ["declaration_judgments"], "not": {"required": ["file_judgments"]}}},
+             {"if": {"properties": {"source_oracle": {"properties": {"unit": {"const": "distinct_file"}}}}},
+              "then": {"required": ["file_judgments"], "not": {"required": ["declaration_judgments"]}}}
+           ]
+         }},
+        {"if": {"required": ["judgment_policy"], "properties": {"judgment_policy": {"const": "source_oracle_complete_v1"}}},
+         "then": {"required": ["source_oracle"]}}
       ]
+    },
+    "source_oracle": {
+      "type": "object", "additionalProperties": false,
+      "required": ["contract", "unit"],
+      "properties": {
+        "contract": {"enum": ["go_exact_local_name_v1", "ascii_identifier_word_v1"]},
+        "unit": {"enum": ["symbol", "distinct_file"]}
+      },
+      "allOf": [
+        {"if": {"properties": {"contract": {"const": "ascii_identifier_word_v1"}}},
+         "then": {"properties": {"unit": {"const": "distinct_file"}}}}
+      ],
+      "description": "Exhaustive source-derived labels rechecked against the frozen file universe; this is not a human review claim."
     },
     "label_review": {
       "type": "object", "additionalProperties": false,

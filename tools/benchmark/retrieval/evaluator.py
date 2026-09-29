@@ -49,12 +49,12 @@ from typing import Any
 
 try:
     from tools.benchmark.retrieval import query_plan as query_plan_contract
-    from tools.benchmark.retrieval import retrieval_contract
+    from tools.benchmark.retrieval import retrieval_contract, source_oracle
     from tools.benchmark.retrieval.finite_json import is_finite_json_number
 except ModuleNotFoundError:  # direct script invocation
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
     from tools.benchmark.retrieval import query_plan as query_plan_contract
-    from tools.benchmark.retrieval import retrieval_contract
+    from tools.benchmark.retrieval import retrieval_contract, source_oracle
     from tools.benchmark.retrieval.finite_json import is_finite_json_number
 
 SCHEMA_VERSION = 3
@@ -92,6 +92,7 @@ LABEL_REVIEW_ASSESSMENTS = ("unreviewed", "reviewed_unambiguous", "reviewed_ambi
 OBSERVED_PREFIX_DIAGNOSTIC_POLICY = "observed_prefix_v1"
 UNJUDGED_POLICY = "unjudged_zero_v1"
 COMPLETE_JUDGMENT_POLICY = "complete_ranked_pool_v1"
+SOURCE_ORACLE_JUDGMENT_POLICY = "source_oracle_complete_v1"
 CAPTURE_SYSTEMS = ("quanta", "semble")
 NOT_APPLICABLE = "not_applicable"
 MIN_CI_SAMPLE = 20
@@ -573,17 +574,25 @@ def validate_judgments(
     present = [kind for kind in kinds if kind in task]
     if not present:
         require("judgment_policy" not in task, f"orphan judgment_policy: {task_id}")
+        require("source_oracle" not in task, f"source oracle lacks judgments: {task_id}")
         return
-    require(
-        task.get("judgment_policy") in (UNJUDGED_POLICY, COMPLETE_JUDGMENT_POLICY),
-        f"judgments require explicit {UNJUDGED_POLICY} or "
-        f"{COMPLETE_JUDGMENT_POLICY} policy: {task_id}",
-    )
-    review = task.get("label_review")
-    require(
-        isinstance(review, dict) and review.get("assessment") in LABEL_REVIEW_ASSESSMENTS[1:],
-        f"independent judgments require reviewed label evidence: {task_id}",
-    )
+    if "source_oracle" in task:
+        require(
+            task.get("judgment_policy") == SOURCE_ORACLE_JUDGMENT_POLICY,
+            f"source oracle requires {SOURCE_ORACLE_JUDGMENT_POLICY}: {task_id}",
+        )
+        require("label_review" not in task, f"source oracle cannot claim human review: {task_id}")
+    else:
+        require(
+            task.get("judgment_policy") in (UNJUDGED_POLICY, COMPLETE_JUDGMENT_POLICY),
+            f"judgments require explicit {UNJUDGED_POLICY} or "
+            f"{COMPLETE_JUDGMENT_POLICY} policy: {task_id}",
+        )
+        review = task.get("label_review")
+        require(
+            isinstance(review, dict) and review.get("assessment") in LABEL_REVIEW_ASSESSMENTS[1:],
+            f"independent judgments require reviewed label evidence: {task_id}",
+        )
     for kind in present:
         judgments = task[kind]
         require(isinstance(judgments, list), f"{kind} must be a list: {task_id}")
@@ -748,6 +757,7 @@ def validate_suite(
     require(len(set(routes)) == len(routes), "duplicate route")
     entries, ordered_universe = validate_file_universe(source, suite["file_universe"])
     universe = set(entries)
+    oracle_index: source_oracle.SourceOracleIndex | None = None
     require(
         sha(suite["file_universe_digest"], "file_universe_digest")
         == universe_digest(ordered_universe),
@@ -758,6 +768,11 @@ def validate_suite(
         allowlist = validate_leakage_allowlist(source, suite["leakage_allowlist"])
     tasks = suite["tasks"]
     require(isinstance(tasks, list) and bool(tasks), "suite requires tasks")
+    oracle_names = {
+        raw["query"]
+        for raw in tasks
+        if isinstance(raw, dict) and "source_oracle" in raw and isinstance(raw.get("query"), str)
+    }
     seen_ids = set()
     seen_queries = set()
     eval_count = 0
@@ -786,6 +801,7 @@ def validate_suite(
                 "judgment_policy",
                 "file_judgments",
                 "declaration_judgments",
+                "source_oracle",
             ],
             "task",
         )
@@ -801,6 +817,7 @@ def validate_suite(
                     "judgment_policy",
                     "file_judgments",
                     "declaration_judgments",
+                    "source_oracle",
                 )
             )
             or suite.get("diagnostic_policy") == OBSERVED_PREFIX_DIAGNOSTIC_POLICY,
@@ -813,6 +830,21 @@ def validate_suite(
             require(
                 task["query_intent"] in QUERY_INTENTS,
                 "invalid query_intent for " + task_id,
+            )
+        if "source_oracle" in task:
+            oracle = object_keys(task["source_oracle"], ["contract", "unit"], "source_oracle")
+            require(
+                task.get("query_intent") == "bare_symbol",
+                f"source oracle requires bare_symbol intent: {task_id}",
+            )
+            expected_kind = (
+                "declaration_judgments" if oracle["unit"] == "symbol" else "file_judgments"
+            )
+            require(
+                oracle["unit"] in ("symbol", "distinct_file")
+                and set(task).intersection(("file_judgments", "declaration_judgments"))
+                == {expected_kind},
+                f"source oracle judgment unit mismatch: {task_id}",
             )
         if "label_review" in task:
             review = object_keys_optional(
@@ -846,6 +878,34 @@ def validate_suite(
         families.setdefault(family, set()).add(task["split"])
         require(type(task["answerable"]) is bool, "answerable must be boolean: " + task_id)
         validate_judgments(source, task, universe, task_id)
+        if "source_oracle" in task:
+            try:
+                if oracle_index is None:
+                    oracle_index = source_oracle.SourceOracleIndex(
+                        {path: (source.file(path)[0], entries[path]) for path in sorted(universe)},
+                        oracle_names,
+                    )
+                expected = oracle_index.expected_rows(
+                    task["source_oracle"]["contract"], query, task["source_oracle"]["unit"]
+                )
+            except source_oracle.SourceOracleError as exc:
+                raise EvidenceError(
+                    f"source oracle derivation failed for {task_id}: {exc}"
+                ) from exc
+            kind = (
+                "declaration_judgments"
+                if task["source_oracle"]["unit"] == "symbol"
+                else "file_judgments"
+            )
+            require(
+                sorted(task[kind], key=lambda row: (row["path"], row.get("start_byte", -1)))
+                == expected,
+                f"source oracle judgments differ from frozen source: {task_id}",
+            )
+            require(
+                task["answerable"] == bool(expected),
+                f"source oracle answerability mismatch: {task_id}",
+            )
         for kind in ("file_judgments", "declaration_judgments"):
             for judgment in task.get(kind, []):
                 if judgment["grade"] > 0:
@@ -854,6 +914,16 @@ def validate_suite(
         labels = task["gold"]
         require(isinstance(labels, list), "gold must be a list: " + task_id)
         require(task["answerable"] == bool(labels), "answerable/gold mismatch: " + task_id)
+        if "source_oracle" in task:
+            require(
+                all(label["path"] in {row["path"] for row in expected} for label in labels),
+                f"gold path contradicts source oracle: {task_id}",
+            )
+            oracle_spans = (
+                oracle_index.expected_rows(source_oracle.GO_EXACT_LOCAL_NAME, query, "symbol")
+                if task["source_oracle"]["contract"] == source_oracle.GO_EXACT_LOCAL_NAME
+                else []
+            )
         seen_labels = set()
         for label in labels:
             block(
@@ -864,6 +934,22 @@ def validate_suite(
                 universe=universe,
                 allow_grade=True,
             )
+            if "source_oracle" in task:
+                if oracle_spans:
+                    matched = any(
+                        row["path"] == label["path"]
+                        and label["start_byte"] <= row["start_byte"]
+                        and row["end_byte"] <= label["end_byte"]
+                        for row in oracle_spans
+                    )
+                else:
+                    raw = source.file(label["path"])[0]
+                    selected = raw[label["start_byte"] : label["end_byte"]]
+                    matched = any(
+                        match.group() == query.encode("ascii")
+                        for match in source_oracle.WORDS.finditer(selected)
+                    )
+                require(matched, f"gold span contradicts source oracle: {task_id}")
             key = (label["path"], label["start_line"], label["end_line"])
             require(key not in seen_labels, "duplicate gold label: " + task_id)
             seen_labels.add(key)
@@ -1742,7 +1828,7 @@ def judgment_diagnostics(
     baseline: str,
     candidate: str | None,
 ) -> dict[str, Any] | None:
-    """Opt-in operational and common-cohort quality views for reviewed judgments."""
+    """Opt-in operational and common-cohort quality views for source-bound judgments."""
     kinds = [
         kind
         for kind in ("file_judgments", "declaration_judgments")
@@ -2587,6 +2673,8 @@ def evaluate(
                 )
                 row["query_intent_claim"] = task.get("query_intent", "not_declared")
                 row["label_review_claim"] = task.get("label_review", {"assessment": "not_declared"})
+                if "source_oracle" in task:
+                    row["source_oracle_claim"] = task["source_oracle"]
                 row["observed_prefix"] = observed_prefix_diagnostics(
                     candidates,
                     labels,
