@@ -30,10 +30,10 @@ Reopen a completed code change only for a current reproduced failure. Resolve
 structural gaps and enrollment before one serial integration boundary; admit
 independent inputs and a supported host before qualified measurements.
 
-[CS-ENG-04](rfcs/CS-ENG-04-match-anchored-snippets.md) is deferred: current
-regex guards remain, but no exact request-wide allocation cap or worker
-containment contract is selected. It is not an active implementation or release
-blocker without a numerical requirement or measured regex-driven breach.
+[CS-ENG-04](rfcs/CS-ENG-04-match-anchored-snippets.md) is conditional P3 and
+deferred: current regex guards remain, but no exact request-wide allocation cap
+or worker containment contract is selected. It is not an active implementation
+or release blocker without a numerical requirement or measured regex-driven breach.
 
 [Research references](references.md) are non-normative inputs to the open
 benchmark design. Accepted product/qualification contracts remain in the ADRs.

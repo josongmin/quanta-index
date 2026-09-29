@@ -31,7 +31,7 @@ records the merged regex input gate, measured triple coverage walk and tamper
 tests, source-derived mechanical gold capsule, fail-closed declared matrix
 verifier, streaming external-row/file hashing and archive alias refusal. These
 are implemented local mitigations, not terminal closure of the open rows above.
-The exact regex allocation cap is [deferred](../../sep-27-code-search-remediation/rfcs/CS-ENG-04-match-anchored-snippets.md)
+The exact regex allocation cap is [conditional P3 and deferred](../../sep-27-code-search-remediation/rfcs/CS-ENG-04-match-anchored-snippets.md)
 pending a numerical requirement or measured breach. Coverage scan reuse
 requires authenticated immutable base ownership across the port; independent
 labels, real native products, installed producer/daemon and

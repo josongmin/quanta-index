@@ -1,5 +1,6 @@
 # CS-ENG-04 — Regex memory policy
 
+Priority: `P3` (conditional; no scheduled implementation).
 Status: `DEFERRED` for an exact request-wide allocation ceiling. No measured
 regex memory overrun, numerical ceiling, or external requirement for exact
 `Layout`-byte accounting is recorded. This status does not claim that the

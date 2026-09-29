@@ -218,10 +218,10 @@ qualification belong in the [active code-search ledger](../plans/sep-27-code-sea
   set is materialized before that charge. None of these limits admits parser or
   compiler temporaries, cumulative collection work, or aggregate request heap.
 
-The exact request-wide `Layout`-byte regex cap is deferred, with no measured
-overrun or numerical acceptance threshold. Pinned regex and FST dependencies
-have no caller-controlled fallible allocation path across parse, compile and
-cache growth. An experimental explicit-cache/fallible-search API migration was
+The exact request-wide `Layout`-byte regex cap is conditional P3 and deferred,
+with no measured overrun or numerical acceptance threshold. Pinned regex and
+FST dependencies have no caller-controlled fallible allocation path across
+parse, compile and cache growth. An experimental explicit-cache/fallible-search API migration was
 reverted because it did not admit those allocations. Process isolation is a
 different whole-worker contract and was not selected. Reopen the cap only for
 an explicit external requirement or a measured supported-host resource breach;

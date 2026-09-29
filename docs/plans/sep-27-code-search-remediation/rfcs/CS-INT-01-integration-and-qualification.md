@@ -8,8 +8,9 @@ This ledger owns cross-owner code-search acceptance. [MISC](../../sep-27-misc/ti
 owns common execution, CI enrollment, producer/consumer replay and supported
 platform qualification. A historical local test total is not current-source proof.
 The [ENG-04 exact regex allocation cap](CS-ENG-04-match-anchored-snippets.md)
-is deferred, not a selected release gate. Historical ENG-04 plans and status
-rows below record prior audits; they do not override this decision.
+is conditional P3 and deferred, not a selected release gate. Historical
+ENG-04 plans and status rows below record prior audits; they do not override
+this decision.
 
 ## Open integration boundary
 
