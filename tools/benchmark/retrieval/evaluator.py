@@ -1778,14 +1778,6 @@ def judgment_diagnostics(
                 capture_id = run["route_provenance"][route]["capture_id"]
                 capture = run["captures"][capture_id]
                 system = capture["system"]
-                if (
-                    kind == "declaration_judgments"
-                    and rank_unit is None
-                    and system == "quanta"
-                    and capture.get("execution_profile", {}).get("policy") == "exact_symbol_name"
-                    and route == "symbol"
-                ):
-                    rank_unit = "symbol"
                 reason = None
                 if rank_unit != expected_unit:
                     reason = "rank_unit_mismatch"

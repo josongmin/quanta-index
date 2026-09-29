@@ -68,7 +68,9 @@ published IDs and indexed declaration spans even when two declarations share
 one returned context span. Their diagnostic projection uses `symbol-unit-v1`;
 ordinary content captures retain `first-source-span-v1`. Replay validates each
 projection against its bound record. Historical exact-symbol records may omit
-the explicit rank field and continue to use their original span contract.
+the explicit rank field and continue to use their original span contract, but
+they are ineligible for declaration-rank judgment metrics: policy alone does
+not prove that same-line declarations retained independent ranks.
 Native symbol keyword captures retain the original first-source-span context
 projection; distinct declaration ranking requires the exact-symbol profile.
 

@@ -10192,7 +10192,7 @@ def test_declaration_judgment_requires_published_symbol_span_not_returned_contex
         },
     }
     tasks = {"T": {"answerable": True, "declaration_judgments": gold}}
-    results = {("T", "symbol"): {"status": "success", "candidates": [own]}}
+    results = {("T", "symbol"): {"status": "success", "rank_unit": "symbol", "candidates": [own]}}
     diagnostic = ev.judgment_diagnostics(suite, run, results, tasks, "symbol", None)
     assert diagnostic is not None
     assert diagnostic["declaration_judgments"]["routes"]["symbol"]["eligible_task_ids"] == ["T"]
@@ -10200,7 +10200,20 @@ def test_declaration_judgment_requires_published_symbol_span_not_returned_contex
         "recall_at_10": 1.0,
         "mrr_at_10": 1.0,
     }
-    results[("T", "symbol")] = {"status": "abstained", "candidates": []}
+    # Older records may collapse same-line declarations; policy is not proof
+    # that the scored ranks are independent published symbol units.
+    legacy_results = copy.deepcopy(results)
+    del legacy_results[("T", "symbol")]["rank_unit"]
+    legacy = ev.judgment_diagnostics(suite, run, legacy_results, tasks, "symbol", None)
+    legacy_route = legacy["declaration_judgments"]["routes"]["symbol"]
+    assert legacy_route["eligible_task_ids"] == []
+    assert legacy_route["excluded"] == [{"task_id": "T", "reason": "rank_unit_mismatch"}]
+
+    results[("T", "symbol")] = {
+        "status": "abstained",
+        "rank_unit": "symbol",
+        "candidates": [],
+    }
     exhausted = ev.judgment_diagnostics(suite, run, results, tasks, "symbol", None)
     route = exhausted["declaration_judgments"]["routes"]["symbol"]
     assert route["eligible_task_ids"] == ["T"]
