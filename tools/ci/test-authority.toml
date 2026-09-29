@@ -1317,6 +1317,13 @@ target = "runtime_extended_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
+id = "searchd-runtime-e2e-coverage-pipeline-cost"
+path = "crates/quanta-index-searchd-runtime/tests/e2e_coverage_pipeline_cost.rs"
+owner = "quanta-index-searchd-runtime"
+target = "runtime_extended_suite"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
 id = "searchd-runtime-e2e-ingest-preflight"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_ingest_preflight.rs"
 owner = "quanta-index-searchd-runtime"

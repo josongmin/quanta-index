@@ -13,6 +13,8 @@ mod composite_generation_authority_restart;
 mod e2e_ann_incremental_seal;
 #[path = "e2e_auxiliary_catalog.rs"]
 mod e2e_auxiliary_catalog;
+#[path = "e2e_coverage_pipeline_cost.rs"]
+mod e2e_coverage_pipeline_cost;
 #[path = "e2e_crash_matrix.rs"]
 mod e2e_crash_matrix;
 #[path = "e2e_history_order.rs"]
