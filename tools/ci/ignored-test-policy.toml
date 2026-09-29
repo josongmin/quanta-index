@@ -216,3 +216,19 @@ reason = "manual full-daemon cost probe; run one case per fresh process"
 owner = "quanta-index-searchd-runtime"
 cadence = "quarterly"
 review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-searchd-runtime/tests/e2e_coverage_pipeline_cost.rs"
+test = "delete_delta_over_128_files"
+reason = "manual full-daemon cost probe; run one case per fresh process"
+owner = "quanta-index-searchd-runtime"
+cadence = "quarterly"
+review_by = "2026-12-31"
+
+[[exceptions]]
+path = "crates/quanta-index-searchd-runtime/tests/e2e_coverage_pipeline_cost.rs"
+test = "delete_delta_over_2048_files"
+reason = "manual full-daemon cost probe; run one case per fresh process"
+owner = "quanta-index-searchd-runtime"
+cadence = "quarterly"
+review_by = "2026-12-31"

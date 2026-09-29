@@ -88,11 +88,11 @@ behavior tests are pending execution under the requested static-only phase.
 
 Sep-29 full-daemon diagnostic on the mixed-case test source: the ignored
 `runtime_extended_suite::e2e_coverage_pipeline_cost` cases publish and
-activate a 128/512/2,048-file base, then publish one-file replacement or
-mixed replacement/deletion deltas through the ingest socket and query the
-activated generation. Every case checks removed and retained markers. All five
-cases passed in separate test processes. Run one case at a time, replacing
-the shape and file-count suffix as needed:
+activate a 128/512/2,048-file base, then publish one-file replacement,
+deletion-only or mixed replacement/deletion deltas through the ingest socket
+and query the activated generation. Every case checks removed and retained
+markers. All seven cases passed in separate test processes. Run each case
+alone, substituting the shape and file-count suffix as needed:
 
 ```sh
 ./scripts/cargow test --locked -p quanta-index-searchd-runtime --test runtime_extended_suite e2e_coverage_pipeline_cost::one_file_delta_over_2048_files -- --ignored --nocapture --test-threads=1
@@ -100,12 +100,13 @@ the shape and file-count suffix as needed:
 
 The one-file 128/512/2,048 runs read 282/654/768 coverage pages and
 153,384/611,496/2,436,975 encoded page bytes during delta publication.
-The mixed 128/2,048 runs read 282/768 pages and
-153,384/2,436,975 encoded page bytes. Both 2,048-file runs decoded 6,144
+The deletion-only and mixed 128/2,048 runs also read 282/768 pages and
+153,384/2,436,975 encoded page bytes. All 2,048-file runs decoded 6,144
 rows because the root exceeds the bounded decode cache and all three
-authenticated scans decode the base. On a shared host, the observed one-file
-delta times were 1,247/1,396/2,740 ms; mixed delta times were 1,016/5,420 ms.
-These are diagnostic observations, not a quiet-host latency claim. The probe's
+authenticated scans decode the base. In the final-source rerun on a shared
+host, the 2,048-file one-file, deletion-only and mixed deltas took
+1,945/4,578/4,408 ms respectively. These are diagnostic observations, not a
+quiet-host latency claim. The probe's
 macOS `ru_maxrss` is a whole-process peak since test start, including base
 construction. It cannot establish delta-only peak heap; retained unique-inode
 file totals are not bytes written or total I/O. The daemon counters cover

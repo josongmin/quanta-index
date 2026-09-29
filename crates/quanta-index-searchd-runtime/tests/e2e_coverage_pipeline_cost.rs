@@ -50,6 +50,7 @@ fn regular_file_bytes(rt: &E2eRuntime) -> Result<u64, Box<dyn Error>> {
 #[derive(Clone, Copy)]
 enum DeltaShape {
     OneFile,
+    Delete,
     Mixed,
 }
 
@@ -57,6 +58,7 @@ impl DeltaShape {
     const fn name(self) -> &'static str {
         match self {
             Self::OneFile => "one_file",
+            Self::Delete => "delete",
             Self::Mixed => "mixed_replace_delete",
         }
     }
@@ -78,6 +80,19 @@ fn measure_delta(files: usize, shape: DeltaShape) -> TestResult {
         "src/file_00000.rs",
         "fn base_00000() { old_only_marker(); }",
     )?;
+    let initial_file = base
+        .replace_scopes
+        .first()
+        .ok_or("missing initial coverage")?
+        .coverage
+        .source
+        .file
+        .clone();
+    let initial_semantic_scopes = base
+        .semantic_replace_scopes
+        .iter()
+        .map(|scope| scope.scope.clone())
+        .collect::<Vec<_>>();
     let mut deleted_file = None;
     let mut deleted_semantic_scopes = Vec::new();
     for index in 1..files {
@@ -116,6 +131,16 @@ fn measure_delta(files: usize, shape: DeltaShape) -> TestResult {
 
     let mut delta =
         rt.text_search_corpus_batch("src/file_00000.rs", "fn base_00000() { changed_needle(); }")?;
+    if matches!(shape, DeltaShape::Delete) {
+        delta.replace_scopes.clear();
+        delta.semantic_replace_scopes.clear();
+        delta
+            .tombstone_scopes
+            .push(SearchCorpusTombstoneScope { file: initial_file });
+        delta
+            .semantic_tombstone_scopes
+            .extend(initial_semantic_scopes);
+    }
     if matches!(shape, DeltaShape::Mixed) {
         let second = rt.text_search_corpus_batch(
             "src/file_00002.rs",
@@ -149,15 +174,16 @@ fn measure_delta(files: usize, shape: DeltaShape) -> TestResult {
     if let Some(error) = result.typed_error {
         return Err(format!("delta query failed: {error}").into());
     }
-    if result.candidate_ids.len() != 1 {
+    let expected_changed = usize::from(!matches!(shape, DeltaShape::Delete));
+    if result.candidate_ids.len() != expected_changed {
         return Err(format!(
-            "expected one changed chunk, got {} candidates",
+            "expected {expected_changed} changed chunks, got {} candidates",
             result.candidate_ids.len()
         )
         .into());
     }
-    let expected_file_1 = usize::from(matches!(shape, DeltaShape::OneFile));
-    let expected_file_2 = usize::from(matches!(shape, DeltaShape::OneFile));
+    let expected_file_1 = usize::from(!matches!(shape, DeltaShape::Mixed));
+    let expected_file_2 = usize::from(!matches!(shape, DeltaShape::Mixed));
     for (query, expected) in [
         ("old_only_marker", 0),
         ("base_00001", expected_file_1),
@@ -225,4 +251,16 @@ fn mixed_delta_over_128_files() -> TestResult {
 #[ignore = "manual full-daemon cost probe; run one case per fresh process"]
 fn mixed_delta_over_2048_files() -> TestResult {
     measure_delta(2048, DeltaShape::Mixed)
+}
+
+#[test]
+#[ignore = "manual full-daemon cost probe; run one case per fresh process"]
+fn delete_delta_over_128_files() -> TestResult {
+    measure_delta(128, DeltaShape::Delete)
+}
+
+#[test]
+#[ignore = "manual full-daemon cost probe; run one case per fresh process"]
+fn delete_delta_over_2048_files() -> TestResult {
+    measure_delta(2048, DeltaShape::Delete)
 }
