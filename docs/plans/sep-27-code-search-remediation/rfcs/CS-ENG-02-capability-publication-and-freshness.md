@@ -101,12 +101,16 @@ alone, substituting the shape and file-count suffix as needed:
 The one-file 128/512/2,048 runs read 282/654/768 coverage pages and
 153,384/611,496/2,436,975 encoded page bytes during delta publication.
 The deletion-only and mixed 128/2,048 runs also read 282/768 pages and
-153,384/2,436,975 encoded page bytes. All 2,048-file runs decoded 6,144
-rows because the root exceeds the bounded decode cache and all three
-authenticated scans decode the base. In the final-source rerun on a shared
-host, the 2,048-file one-file, deletion-only and mixed deltas took
-1,945/4,578/4,408 ms respectively. These are diagnostic observations, not a
-quiet-host latency claim. The probe's
+153,384/2,436,975 encoded page bytes. Phase-attributed counters account for
+every reported coverage read: at 2,048 files, pre-intent, lock-held and build
+each read 256 pages, 812,325 page bytes and decoded 2,048 rows. At 128 files,
+each reads 94 pages and 51,128 page bytes, while the bounded decode cache
+reduces lock-held and build to zero decoded rows. The measured publication
+interval ends before activation, so its open-phase delta is zero; a later open
+is separately attributed. In the post-instrumentation rerun on a shared host,
+the 2,048-file one-file, deletion-only and mixed deltas took 2,313/1,516/2,212
+ms respectively. These are diagnostic observations, not a quiet-host latency
+claim. The probe's
 macOS `ru_maxrss` is a whole-process peak since test start, including base
 construction. It cannot establish delta-only peak heap; retained unique-inode
 file totals are not bytes written or total I/O. The daemon counters cover

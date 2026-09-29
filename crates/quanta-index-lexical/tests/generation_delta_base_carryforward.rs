@@ -37,7 +37,7 @@ use quanta_index_contract::{
 };
 use quanta_index_core::{
     LexicalIndexOpenPort, RepoCommitRecencyIngestPort, RequestBudgetV1, SearchCorpusBatchBuildPort,
-    TextAuthorityUpdateStats,
+    SearchCorpusPreflightPhaseV1, TextAuthorityUpdateStats,
 };
 use quanta_index_lexical::{LexicalAdapter, LexicalCoverageReadStats};
 
@@ -598,13 +598,13 @@ fn measure_total_delta_pipeline(filler_scopes: usize, mixed: bool) -> TestResult
 
     let before_preflight = adapter.coverage_read_stats()?;
     let start = Instant::now();
-    adapter.preflight_batch(&delta)?;
+    adapter.preflight_batch(&delta, SearchCorpusPreflightPhaseV1::BeforeIntent)?;
     let first_preflight_ms = start.elapsed().as_millis();
     let after_first_preflight = adapter.coverage_read_stats()?;
     let first_preflight_read = coverage_read_delta(before_preflight, after_first_preflight)?;
     // SearchCorpus runs this again after acquiring the publication lock.
     let start = Instant::now();
-    adapter.preflight_batch(&delta)?;
+    adapter.preflight_batch(&delta, SearchCorpusPreflightPhaseV1::UnderOperationLock)?;
     let second_preflight_ms = start.elapsed().as_millis();
     let after_second_preflight = adapter.coverage_read_stats()?;
     let second_preflight_read = coverage_read_delta(after_first_preflight, after_second_preflight)?;

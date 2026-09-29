@@ -53,6 +53,38 @@ impl LexicalCoverageReadStats {
     }
 }
 
+/// Authenticated coverage work attributed to the caller's publication phase.
+/// These are logical reads; seal hashing and non-coverage I/O are separate.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct LexicalCoverageReadByPhaseStats {
+    pub total: LexicalCoverageReadStats,
+    pub before_intent: LexicalCoverageReadStats,
+    pub under_operation_lock: LexicalCoverageReadStats,
+    pub build: LexicalCoverageReadStats,
+    pub open: LexicalCoverageReadStats,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum CoverageReadPhase {
+    BeforeIntent,
+    UnderOperationLock,
+    Build,
+    Open,
+}
+
+impl LexicalCoverageReadByPhaseStats {
+    pub(crate) fn absorb(&mut self, phase: CoverageReadPhase, read: LexicalCoverageReadStats) {
+        self.total.absorb(read);
+        match phase {
+            CoverageReadPhase::BeforeIntent => &mut self.before_intent,
+            CoverageReadPhase::UnderOperationLock => &mut self.under_operation_lock,
+            CoverageReadPhase::Build => &mut self.build,
+            CoverageReadPhase::Open => &mut self.open,
+        }
+        .absorb(read);
+    }
+}
+
 /// Both values are proved by one manifest commitment and one generation open.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CoverageArtifact {

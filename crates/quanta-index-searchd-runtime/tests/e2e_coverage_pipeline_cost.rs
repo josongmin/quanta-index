@@ -64,6 +64,14 @@ impl DeltaShape {
     }
 }
 
+#[derive(Debug)]
+struct PhaseRead {
+    pages: u64,
+    rows: u64,
+    root_bytes: u64,
+    page_bytes: u64,
+}
+
 #[expect(
     clippy::print_stdout,
     reason = "the manual QI-BB-006-EVIDENCE line must reach the diagnostic run log"
@@ -215,8 +223,51 @@ fn measure_delta(files: usize, shape: DeltaShape) -> TestResult {
     if pages == 0 || rows == 0 || page_bytes == 0 || seal_bytes == 0 {
         return Err("full delta did not exercise coverage reads and seal".into());
     }
+    let mut phase_reads = Vec::new();
+    for phase in ["before_intent", "under_lock", "build", "open"] {
+        phase_reads.push(PhaseRead {
+            pages: counter_delta(
+                &before,
+                &after,
+                &format!("lexical_coverage_{phase}_pages_read_total"),
+            )?,
+            rows: counter_delta(
+                &before,
+                &after,
+                &format!("lexical_coverage_{phase}_rows_decoded_total"),
+            )?,
+            root_bytes: counter_delta(
+                &before,
+                &after,
+                &format!("lexical_coverage_{phase}_root_bytes_read_total"),
+            )?,
+            page_bytes: counter_delta(
+                &before,
+                &after,
+                &format!("lexical_coverage_{phase}_page_bytes_read_total"),
+            )?,
+        });
+    }
+    if phase_reads.iter().map(|phase| phase.pages).sum::<u64>() != pages
+        || phase_reads.iter().map(|phase| phase.rows).sum::<u64>() != rows
+        || phase_reads
+            .iter()
+            .map(|phase| phase.root_bytes)
+            .sum::<u64>()
+            != root_bytes
+        || phase_reads
+            .iter()
+            .map(|phase| phase.page_bytes)
+            .sum::<u64>()
+            != page_bytes
+    {
+        return Err(format!(
+            "coverage phase accounting differs from total: phase_reads={phase_reads:?} total_pages={pages} total_rows={rows} total_root_bytes={root_bytes} total_page_bytes={page_bytes}"
+        )
+        .into());
+    }
     println!(
-        "QI-BB-006-EVIDENCE kind=daemon_total_pipeline shape={} files={files} base_ms={base_ms} delta_ms={delta_ms} coverage_pages_read={pages} coverage_rows_decoded={rows} coverage_root_bytes_read={root_bytes} coverage_page_bytes_read={page_bytes} lexical_seal_bytes_hashed={seal_bytes} base_disk_bytes={base_disk_bytes} delta_disk_bytes={delta_disk_bytes} base_process_rss_bytes={base_process_rss} delta_process_rss_bytes={delta_process_rss} rss_semantics={}",
+        "QI-BB-006-EVIDENCE kind=daemon_total_pipeline shape={} files={files} base_ms={base_ms} delta_ms={delta_ms} coverage_pages_read={pages} coverage_rows_decoded={rows} coverage_root_bytes_read={root_bytes} coverage_page_bytes_read={page_bytes} coverage_phase_order=before_intent,under_lock,build,open coverage_phase_reads={phase_reads:?} lexical_seal_bytes_hashed={seal_bytes} base_disk_bytes={base_disk_bytes} delta_disk_bytes={delta_disk_bytes} base_process_rss_bytes={base_process_rss} delta_process_rss_bytes={delta_process_rss} rss_semantics={}",
         shape.name(),
         KernelResidentMemoryProbe::semantics(),
     );

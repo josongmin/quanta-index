@@ -23,6 +23,7 @@ use quanta_index_contract::{
 };
 use quanta_index_core::{
     LexicalIndexBuildPort, LexicalIndexOpenPort, RequestBudgetV1, SearchCorpusBatchBuildPort,
+    SearchCorpusPreflightPhaseV1,
 };
 use quanta_index_lexical::LexicalAdapter;
 
@@ -146,7 +147,7 @@ fn delta_cannot_claim_newer_source_lineage_while_inheriting_an_older_snapshot() 
     request.validate_v1()?;
     request.validate_surface_mutations_v1()?;
     for result in [
-        adapter.preflight_batch(&request),
+        adapter.preflight_batch(&request, SearchCorpusPreflightPhaseV1::BeforeIntent),
         adapter.build_batch(&request),
     ] {
         assert!(
@@ -180,7 +181,7 @@ fn delta_cannot_claim_newer_source_lineage_while_inheriting_an_older_snapshot() 
         mutate(&mut invalid);
         invalid.validate_v1()?;
         for result in [
-            adapter.preflight_batch(&invalid),
+            adapter.preflight_batch(&invalid, SearchCorpusPreflightPhaseV1::BeforeIntent),
             adapter.build_batch(&invalid),
         ] {
             assert!(matches!(
@@ -193,7 +194,7 @@ fn delta_cannot_claim_newer_source_lineage_while_inheriting_an_older_snapshot() 
         }
         assert!(!target.exists());
     }
-    adapter.preflight_batch(&request)?;
+    adapter.preflight_batch(&request, SearchCorpusPreflightPhaseV1::BeforeIntent)?;
     adapter.build_batch(&request)?;
     assert_units(&adapter, &request, "oldmarker", &[], &[])?;
     assert_units(
@@ -434,7 +435,7 @@ fn malformed_bundle_is_refused_before_source_publication_or_generation_preparati
     request.validate_v1()?;
     request.validate_surface_mutations_v1()?;
     for result in [
-        adapter.preflight_batch(&request),
+        adapter.preflight_batch(&request, SearchCorpusPreflightPhaseV1::BeforeIntent),
         adapter.build_batch(&request),
     ] {
         assert!(
@@ -675,7 +676,11 @@ fn inherited_candidate_collision_refuses_before_target_creation() -> TestResult 
     replacement.coverage.unit_set_sha256 =
         source_file_unit_set_sha256(&replacement.chunks, &replacement.symbols)?;
     let delta = batch(2, Some(1), vec![replacement])?;
-    assert!(adapter.preflight_batch(&delta).is_err());
+    assert!(
+        adapter
+            .preflight_batch(&delta, SearchCorpusPreflightPhaseV1::BeforeIntent)
+            .is_err()
+    );
     assert!(adapter.build_batch(&delta).is_err());
     let target = quanta_index_core::domains::generation::GenerationStorageKeyV1::for_repo_revision(
         &delta.repo_id,
@@ -709,7 +714,11 @@ fn full_rebuild_preflight_reaches_repair_without_admitting_corrupt_content() -> 
     adapter.build_batch(&request)?;
     let mut other_event = request.clone();
     other_event.source_event.event_id = "different-event".into();
-    assert!(adapter.preflight_batch(&other_event).is_err());
+    assert!(
+        adapter
+            .preflight_batch(&other_event, SearchCorpusPreflightPhaseV1::BeforeIntent)
+            .is_err()
+    );
 
     let identity = quanta_index_contract::GenerationSnapshot {
         repo_id: request.repo_id.clone(),
@@ -728,7 +737,7 @@ fn full_rebuild_preflight_reaches_repair_without_admitting_corrupt_content() -> 
     *corrupt.last_mut().ok_or("empty coverage fixture")? ^= 1;
     std::fs::write(&coverage_path, &corrupt)?;
     assert!(adapter.validate_generation_identity(&identity).is_err());
-    adapter.preflight_batch(&request)?;
+    adapter.preflight_batch(&request, SearchCorpusPreflightPhaseV1::BeforeIntent)?;
     assert_eq!(std::fs::read(&coverage_path)?, corrupt);
     assert!(adapter.build_batch(&request).is_err());
     assert!(
@@ -740,7 +749,7 @@ fn full_rebuild_preflight_reaches_repair_without_admitting_corrupt_content() -> 
     let mut wrong_identity = request.clone();
     wrong_identity.manifest_digest = "different-manifest".into();
     assert!(matches!(
-        adapter.preflight_batch(&wrong_identity),
+        adapter.preflight_batch(&wrong_identity, SearchCorpusPreflightPhaseV1::BeforeIntent),
         Err(quanta_index_core::CoreError::Typed {
             code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityDigestMismatch,
             ..
@@ -752,7 +761,7 @@ fn full_rebuild_preflight_reaches_repair_without_admitting_corrupt_content() -> 
     delta.source_event.payload_sha256 = source_event_payload_sha256(&delta)?;
     delta.validate_v1()?;
     assert!(matches!(
-        adapter.preflight_batch(&delta),
+        adapter.preflight_batch(&delta, SearchCorpusPreflightPhaseV1::BeforeIntent),
         Err(quanta_index_core::CoreError::Typed {
             code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
             ..
@@ -846,10 +855,10 @@ fn changed_base_page_between_phases_is_refused(after_second_preflight: bool) -> 
     let original = std::fs::read(&page)?;
     let pinned_old_reader = adapter.open(&base.repo_id, &base.revision_id, base.generation)?;
 
-    // The outer and lock-held calls currently have the same lexical port.
-    adapter.preflight_batch(&delta)?;
+    // Both stages use the same verifier; the phase records where work occurred.
+    adapter.preflight_batch(&delta, SearchCorpusPreflightPhaseV1::BeforeIntent)?;
     if after_second_preflight {
-        adapter.preflight_batch(&delta)?;
+        adapter.preflight_batch(&delta, SearchCorpusPreflightPhaseV1::UnderOperationLock)?;
     }
     let mut changed = original.clone();
     *changed.last_mut().ok_or("empty base coverage page")? ^= 1;
@@ -857,7 +866,7 @@ fn changed_base_page_between_phases_is_refused(after_second_preflight: bool) -> 
     let refused = if after_second_preflight {
         adapter.build_batch(&delta)
     } else {
-        adapter.preflight_batch(&delta)
+        adapter.preflight_batch(&delta, SearchCorpusPreflightPhaseV1::UnderOperationLock)
     };
     assert!(
         matches!(
@@ -879,7 +888,7 @@ fn changed_base_page_between_phases_is_refused(after_second_preflight: bool) -> 
     );
 
     std::fs::write(page, original)?;
-    adapter.preflight_batch(&delta)?;
+    adapter.preflight_batch(&delta, SearchCorpusPreflightPhaseV1::BeforeIntent)?;
     adapter.build_batch(&delta)?;
     assert_units(
         &adapter,
@@ -907,11 +916,12 @@ fn repeated_delta_admission_reuses_decode_but_rehashes_all_coverage_pages() -> T
     adapter.build_batch(&batch(1, None, vec![file_scope("a.rs", "oldmarker")?])?)?;
     let delta = batch(2, Some(1), vec![file_scope("a.rs", "newmarker")?])?;
     let before = adapter.coverage_read_stats()?;
-    adapter.preflight_batch(&delta)?;
+    let before_phases = adapter.coverage_read_by_phase_stats()?;
+    adapter.preflight_batch(&delta, SearchCorpusPreflightPhaseV1::BeforeIntent)?;
     let first = adapter.coverage_read_stats()?;
     assert_eq!(first.decodes, before.decodes + 1);
     assert_eq!(first.rows, before.rows + 1);
-    adapter.preflight_batch(&delta)?;
+    adapter.preflight_batch(&delta, SearchCorpusPreflightPhaseV1::UnderOperationLock)?;
     let second = adapter.coverage_read_stats()?;
     assert_eq!(second.decodes, first.decodes);
     assert_eq!(second.rows, first.rows);
@@ -928,13 +938,31 @@ fn repeated_delta_admission_reuses_decode_but_rehashes_all_coverage_pages() -> T
         built.page_bytes - second.page_bytes,
         first.page_bytes - before.page_bytes
     );
+    let phases = adapter.coverage_read_by_phase_stats()?;
+    assert_eq!(phases.total, built);
+    assert_eq!(
+        phases.before_intent.page_bytes - before_phases.before_intent.page_bytes,
+        first.page_bytes - before.page_bytes
+    );
+    assert_eq!(
+        phases.under_operation_lock.page_bytes - before_phases.under_operation_lock.page_bytes,
+        second.page_bytes - first.page_bytes
+    );
+    assert_eq!(
+        phases.build.page_bytes - before_phases.build.page_bytes,
+        built.page_bytes - second.page_bytes
+    );
     assert_units(
         &adapter,
         &delta,
         "newmarker",
         &["chunk-newmarker"],
         &["symbol-newmarker"],
-    )
+    )?;
+    let opened = adapter.coverage_read_by_phase_stats()?;
+    assert!(opened.open.page_bytes > phases.open.page_bytes);
+    assert_eq!(opened.total, adapter.coverage_read_stats()?);
+    Ok(())
 }
 
 #[test]

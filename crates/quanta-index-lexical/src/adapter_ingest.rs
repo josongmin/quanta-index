@@ -11,8 +11,8 @@ use crate::overlay_codec::{
     encode_repo_topic_batch,
 };
 use crate::sealed_generation::coverage::{
-    CoveragePlan, CoverageWriteBase, SOURCE_FILE_COVERAGE_FILE_NAME, plan_file_coverage,
-    read_staged_coverage, write_staged_coverage,
+    CoveragePlan, CoverageReadPhase, CoverageWriteBase, SOURCE_FILE_COVERAGE_FILE_NAME,
+    plan_file_coverage, read_staged_coverage, write_staged_coverage,
 };
 use crate::sealed_generation::{DiscardingVisitor, seal_generation, walk_sealed_generation};
 use crate::{GenKey, LexicalAdapter, op_mutates_index, op_writes_generation};
@@ -28,7 +28,7 @@ use quanta_index_core::{
     CoreError, FileContributorIngestPort, FileOwnershipIngestPort, GenerationIdentityValidatePort,
     LexicalIndexBuildPort, MetricPointV1, MetricSourcePort, RepoCommitRecencyIngestPort,
     RepoDescriptionIngestPort, RepoMetaIngestPort, RepoTopicIngestPort, SearchCorpusBatchBuildPort,
-    TrackDiskUsagePort, WriterIdleSweepPort, count_from_usize,
+    SearchCorpusPreflightPhaseV1, TrackDiskUsagePort, WriterIdleSweepPort, count_from_usize,
 };
 
 /// The writer envelope and the regex match cache as scrape points,
@@ -69,6 +69,7 @@ impl MetricSourcePort for LexicalAdapter {
         let text_authority = self.text_authority_update_stats()?;
         let seals = self.seal_commitment_stats()?;
         let coverage = self.coverage_read_stats()?;
+        let phase = self.coverage_read_by_phase_stats()?;
         Ok(vec![
             MetricPointV1::counter("lexical_seals_total", seals.seals),
             MetricPointV1::counter("lexical_seal_files_hashed_total", seals.files_hashed),
@@ -86,6 +87,61 @@ impl MetricSourcePort for LexicalAdapter {
                 coverage.page_bytes,
             ),
             MetricPointV1::counter("lexical_coverage_rows_decoded_total", coverage.rows),
+            MetricPointV1::counter(
+                "lexical_coverage_before_intent_root_bytes_read_total",
+                phase.before_intent.root_bytes,
+            ),
+            MetricPointV1::counter(
+                "lexical_coverage_before_intent_pages_read_total",
+                phase.before_intent.pages,
+            ),
+            MetricPointV1::counter(
+                "lexical_coverage_before_intent_page_bytes_read_total",
+                phase.before_intent.page_bytes,
+            ),
+            MetricPointV1::counter(
+                "lexical_coverage_before_intent_rows_decoded_total",
+                phase.before_intent.rows,
+            ),
+            MetricPointV1::counter(
+                "lexical_coverage_under_lock_root_bytes_read_total",
+                phase.under_operation_lock.root_bytes,
+            ),
+            MetricPointV1::counter(
+                "lexical_coverage_under_lock_pages_read_total",
+                phase.under_operation_lock.pages,
+            ),
+            MetricPointV1::counter(
+                "lexical_coverage_under_lock_page_bytes_read_total",
+                phase.under_operation_lock.page_bytes,
+            ),
+            MetricPointV1::counter(
+                "lexical_coverage_under_lock_rows_decoded_total",
+                phase.under_operation_lock.rows,
+            ),
+            MetricPointV1::counter(
+                "lexical_coverage_build_root_bytes_read_total",
+                phase.build.root_bytes,
+            ),
+            MetricPointV1::counter("lexical_coverage_build_pages_read_total", phase.build.pages),
+            MetricPointV1::counter(
+                "lexical_coverage_build_page_bytes_read_total",
+                phase.build.page_bytes,
+            ),
+            MetricPointV1::counter(
+                "lexical_coverage_build_rows_decoded_total",
+                phase.build.rows,
+            ),
+            MetricPointV1::counter(
+                "lexical_coverage_open_root_bytes_read_total",
+                phase.open.root_bytes,
+            ),
+            MetricPointV1::counter("lexical_coverage_open_pages_read_total", phase.open.pages),
+            MetricPointV1::counter(
+                "lexical_coverage_open_page_bytes_read_total",
+                phase.open.page_bytes,
+            ),
+            MetricPointV1::counter("lexical_coverage_open_rows_decoded_total", phase.open.rows),
             MetricPointV1::gauge_count(
                 "lexical_coverage_max_decode_heap_admission_bytes",
                 coverage.max_decode_heap_admission_bytes,
@@ -159,7 +215,17 @@ impl MetricSourcePort for LexicalAdapter {
 }
 
 impl SearchCorpusBatchBuildPort for LexicalAdapter {
-    fn preflight_batch(&self, batch: &SearchCorpusIngestBatch) -> Result<(), CoreError> {
+    fn preflight_batch(
+        &self,
+        batch: &SearchCorpusIngestBatch,
+        phase: SearchCorpusPreflightPhaseV1,
+    ) -> Result<(), CoreError> {
+        let read_phase = match phase {
+            SearchCorpusPreflightPhaseV1::BeforeIntent => CoverageReadPhase::BeforeIntent,
+            SearchCorpusPreflightPhaseV1::UnderOperationLock => {
+                CoverageReadPhase::UnderOperationLock
+            }
+        };
         batch
             .validate_v1()
             .map_err(|error| CoreError::InvalidContract(error.to_string()))?;
@@ -198,7 +264,7 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
                 }) if batch.mode == BatchIngestMode::ReplaceGeneration => return Ok(()),
                 Err(error) => return Err(error),
             };
-            self.record_coverage_read(proved.coverage_read_stats)?;
+            self.record_coverage_read(read_phase, proved.coverage_read_stats)?;
             if proved.source_publication.as_ref() != Some(&batch.source_event) {
                 return Err(CoreError::InvalidContract(
                     "lexical: sealed target belongs to another source event".into(),
@@ -206,7 +272,7 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
             }
             return Ok(());
         }
-        let _planned = self.plan_batch_coverage(batch, &identity, &directory)?;
+        let _planned = self.plan_batch_coverage(batch, &identity, &directory, read_phase)?;
         Ok(())
     }
 
@@ -247,7 +313,7 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
             self.validate_generation_identity(&candidate)?;
             let verified =
                 walk_sealed_generation(&generation_dir, &candidate, &mut DiscardingVisitor)?;
-            self.record_coverage_read(verified.coverage_read_stats)?;
+            self.record_coverage_read(CoverageReadPhase::Build, verified.coverage_read_stats)?;
             if verified.source_publication.as_ref() != Some(&batch.source_event) {
                 return Err(CoreError::InvalidContract(
                     "lexical: sealed generation belongs to a different source event".into(),
@@ -256,7 +322,8 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
             return Ok(());
         }
         let ops = legacy_ops_for_batch(batch, batch.seal)?;
-        let coverage = self.plan_batch_coverage(batch, &candidate, &generation_dir)?;
+        let coverage =
+            self.plan_batch_coverage(batch, &candidate, &generation_dir, CoverageReadPhase::Build)?;
         // The prepared coverage marks this target as bound before any index
         // mutation. It is query-invisible until the index and artifact seal.
         let coverage_root =
@@ -454,6 +521,7 @@ impl LexicalAdapter {
         batch: &SearchCorpusIngestBatch,
         candidate: &GenerationSnapshot,
         generation_dir: &std::path::Path,
+        read_phase: CoverageReadPhase,
     ) -> Result<CoveragePlan, CoreError> {
         // Derive the complete next admitted universe from a proved base before
         // any target writes. A missing base capability cannot become empty.
@@ -497,7 +565,7 @@ impl LexicalAdapter {
                 *self.coverage_decode_cache.lock().map_err(|error| {
                     CoreError::Storage(format!("lexical: coverage decode cache poisoned: {error}"))
                 })? = decoded;
-                self.record_coverage_read(verified.coverage_read_stats)?;
+                self.record_coverage_read(read_phase, verified.coverage_read_stats)?;
                 // A current source high-water alone cannot authorize cloning an
                 // older physical snapshot: unchanged files would be resurrected
                 // while the new event claims to extend the current lineage.
@@ -535,7 +603,7 @@ impl LexicalAdapter {
         )?;
         let staged = read_staged_coverage(generation_dir, candidate)?;
         if let Some(staged) = staged.as_ref() {
-            self.record_coverage_read(staged.read_stats)?;
+            self.record_coverage_read(read_phase, staged.read_stats)?;
         }
         match staged {
             Some(staged)

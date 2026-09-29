@@ -1607,7 +1607,11 @@ pub(super) struct FakeSearchCorpusBuilder {
 }
 
 impl quanta_index_core::SearchCorpusBatchBuildPort for FakeSearchCorpusBuilder {
-    fn preflight_batch(&self, batch: &SearchCorpusIngestBatch) -> Result<(), CoreError> {
+    fn preflight_batch(
+        &self,
+        batch: &SearchCorpusIngestBatch,
+        _phase: quanta_index_core::SearchCorpusPreflightPhaseV1,
+    ) -> Result<(), CoreError> {
         batch
             .validate_v1()
             .map_err(|error| CoreError::InvalidContract(error.to_string()))?;

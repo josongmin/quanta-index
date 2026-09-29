@@ -14,8 +14,9 @@ use quanta_index_core::{
     GenerationIdentityValidatePort, IdempotencyCatalogPort, IncompleteGenerationDiscardPort,
     IngestBatchFootprint, IngestResourcePolicy, MetricPointV1, MetricSourcePort,
     SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort, SearchCorpusBatchBuildPort,
-    SearchCorpusIngestPort, SemanticContentRootsPort, SemanticEgressPolicyV1, SemanticIngestPort,
-    SemanticScopeSource as _, SemanticStreamWindowPolicy, TextEmbeddingProvider, count_from_usize,
+    SearchCorpusIngestPort, SearchCorpusPreflightPhaseV1, SemanticContentRootsPort,
+    SemanticEgressPolicyV1, SemanticIngestPort, SemanticScopeSource as _,
+    SemanticStreamWindowPolicy, TextEmbeddingProvider, count_from_usize,
 };
 
 use crate::auxiliary_authority::{structural_chunks_delta_rows, structural_chunks_transition};
@@ -467,7 +468,8 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
         // The cross-track sealed-base check owns the missing-base refusal.
         // Do not let a track-local coverage read turn it into an incomplete
         // identity error before the paired base has been admitted.
-        self.builder.preflight_batch(batch)?;
+        self.builder
+            .preflight_batch(batch, SearchCorpusPreflightPhaseV1::BeforeIntent)?;
         Ok(())
     }
 
@@ -512,7 +514,8 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
         {
             self.preflight_delta_base_v1(batch, base_generation)?;
         }
-        self.builder.preflight_batch(batch)?;
+        self.builder
+            .preflight_batch(batch, SearchCorpusPreflightPhaseV1::UnderOperationLock)?;
         if !batch.seal {
             let (lexical, semantic) = generation_pair_from_batch_v1(batch);
             ensure_generation_is_mutable_v1(

@@ -236,7 +236,10 @@ impl LexicalAdapter {
     ) -> Result<Box<dyn LexicalSearcher>, CoreError> {
         let mut loaded = LoadedGeneration::default();
         let verified = walk_sealed_generation(path, identity, &mut loaded)?;
-        self.record_coverage_read(verified.coverage_read_stats)?;
+        self.record_coverage_read(
+            crate::sealed_generation::coverage::CoverageReadPhase::Open,
+            verified.coverage_read_stats,
+        )?;
         let reader: IndexReader = verified
             .index
             .reader_builder()

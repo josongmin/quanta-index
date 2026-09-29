@@ -36,6 +36,16 @@ pub trait LexicalIndexBuildPort: Send + Sync {
     ) -> Result<(), CoreError>;
 }
 
+/// The mutation-admission boundary that requested a lexical preflight.
+/// Both phases run the same verification; the phase only attributes its work.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SearchCorpusPreflightPhaseV1 {
+    /// Refusal before the ingest dispatcher records durable intent.
+    BeforeIntent,
+    /// Refusal while the materializer holds its operation lock.
+    UnderOperationLock,
+}
+
 /// Build / replay a typed search-corpus ingest batch into a lexical index for a
 /// given generation.
 ///
@@ -45,7 +55,11 @@ pub trait LexicalIndexBuildPort: Send + Sync {
 pub trait SearchCorpusBatchBuildPort: Send + Sync {
     /// Refuse invalid or colliding file mutations against the pinned base
     /// before embedding, target creation, or any index/sidecar mutation.
-    fn preflight_batch(&self, batch: &SearchCorpusIngestBatch) -> Result<(), CoreError>;
+    fn preflight_batch(
+        &self,
+        batch: &SearchCorpusIngestBatch,
+        phase: SearchCorpusPreflightPhaseV1,
+    ) -> Result<(), CoreError>;
 
     fn build_batch(&self, batch: &SearchCorpusIngestBatch) -> Result<(), CoreError>;
 }
