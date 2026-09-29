@@ -66,6 +66,16 @@ file diagnostics passed. The 2,048-file mixed delta still reads 256 pages and
 separate verified open. This removes avoidable decoder reallocations, not the
 authenticated base scans or the unmeasured total-pipeline physical heap.
 
+Current-main RCA rechecked the three call sites and both mutation boundaries.
+The 128-file mixed-delta owner probe read the same 100 base pages and 54,479
+page bytes in each of outer preflight, lock-held preflight and build; cached
+decode reduced the latter two to zero decoded rows. The two owner mutation
+tests still refuse changed base pages between those phases and accept a retry
+after repair. Since base pages remain externally mutable under the process
+lock, removing either later authenticated read without a pinned immutable
+base capability would regress that refusal contract. These page-byte counts
+exclude other pipeline I/O and do not qualify physical peak heap.
+
 ## Remaining acceptance
 
 - [ ] Measure one-file replacement/delete and mixed batches over increasing file

@@ -76,14 +76,22 @@ explicit IPC, failure mapping and worker lifecycle design.
 Sep-29 structural-route correction: live `where` regexes are compiled once
 per request before repo/candidate short circuits and reused across chunks.
 The search-plane Boolean evaluator also validates nested `where` regexes when
-an empty lexical seed skips the producer, retaining one engine per distinct
-pattern for that request instead of silently returning an empty result. It
+an empty lexical seed skips the producer, memoizing validated pattern identities
+for that request instead of silently returning an empty result. The temporary
+compiled engine is released after validation because no candidate consumes it. It
 checks later Boolean siblings before returning an empty intersection, without
 calling the structural producer or reading a generation.
 The producer refuses a ninth distinct `where` engine within one structural
 block; the skipped-path evaluator independently limits its retained preflight
 set to eight. Repeated identical patterns share one slot. These are local
 cardinality guards, not a request-wide physical heap bound.
+The subsequent current-main audit found that the per-block limit still let a
+Boolean query spread distinct regexes across multiple leaves. Boolean dispatch
+now counts distinct `where` patterns across the complete expression tree and
+refuses a ninth before universe construction or producer work. The producer's
+single-block gate remains for direct callers. This bounds an input/work
+dimension across structural leaves; it does not admit compiler temporaries,
+cache allocations or aggregate physical heap.
 The shared executor's pre-parser byte gate now runs before a retained cache
 key is allocated. Invalid syntax, resource refusal and engine failure preserve
 distinct structural/searchd errors (`StrInvalidRequest`,

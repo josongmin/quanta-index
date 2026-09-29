@@ -257,3 +257,17 @@ structural selection (6 tests), binary-SDK structural E2E (1 test), fmt and
 affected-crate Clippy passed locally before commit `19e9add9`. This is a
 scoped source fix; it does not qualify ENG-04's aggregate physical heap or
 ENG-02's repeated coverage scans.
+
+The next current-source RCA found that the eight-distinct-`where` limit above
+was applied per block and to skipped leaves, but a Boolean request could spread
+nine patterns across nine executed leaves. Structural dispatch now counts
+distinct patterns across the complete expression before universe or producer
+work; direct producer callers retain the per-block gate. Skipped leaves keep
+only validated pattern identities and release temporary compiled engines.
+The structural selection passed 59/59 tests, the SDK structural E2E passed
+1/1, affected-crate Clippy and fmt passed, and the contract public-API
+baseline was brought into sync with the already exported limit constant.
+ENG-02's current 128-file mixed-delta probe still read 100 base pages and
+54,479 page bytes in each of three phases; both between-phase mutation tests
+passed. These source-local results do not close ENG-02's repeated scans or
+ENG-04's physical aggregate allocation boundary.

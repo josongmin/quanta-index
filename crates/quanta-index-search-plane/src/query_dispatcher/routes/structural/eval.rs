@@ -1,6 +1,6 @@
 //! Structural boolean-tree evaluation with per-leaf memoization.
 
-use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 
 use quanta_index_contract::{
     GenerationSelector, LqExpr, LqLeaf, LqOptions, LqStructuralBlock,
@@ -9,7 +9,6 @@ use quanta_index_contract::{
 use quanta_index_core::domains::structural::StructuralExecutableFilter;
 use quanta_index_core::domains::structural::StructuralQueryRequest as DomainStructuralQueryRequest;
 use quanta_index_core::{CoreError, StructuralService};
-use quanta_index_lq_regex::RegexExecutor;
 
 use crate::query_dispatcher::errors::structural_invalid_request;
 use crate::query_dispatcher::routes::structural::buckets::{
@@ -39,7 +38,23 @@ type StructuralLeafCache =
 #[derive(Default)]
 pub(super) struct StructuralEvalContext {
     leaf_cache: StructuralLeafCache,
-    short_circuit_regexes: BTreeMap<String, RegexExecutor>,
+    short_circuit_regexes: BTreeSet<String>,
+}
+
+/// Enforce the distinct `where`-engine limit over the complete Boolean
+/// request. The producer's per-block limit alone can be bypassed by placing
+/// one regex in each of many structural leaves.
+pub(super) fn admit_structural_where_regex_cardinality(expr: &LqExpr) -> Result<(), CoreError> {
+    let mut distinct = BTreeSet::new();
+    visit_expr_where_regexes(expr, &mut |pattern| {
+        if !distinct.contains(pattern) {
+            if distinct.len() >= MAX_STRUCTURAL_WHERE_REGEX_ENGINES_V1 {
+                return Err(structural_where_regex_count_error());
+            }
+            let _inserted = distinct.insert(pattern.to_owned());
+        }
+        Ok(())
+    })
 }
 
 pub(super) fn structural_expr_has_structural_leaf(expr: &LqExpr) -> bool {
@@ -351,7 +366,25 @@ fn execute_structural_block(
 /// its regex admission without acquiring a generation or scanning chunks.
 fn admit_short_circuited_where_regexes(
     block: &LqStructuralBlock,
-    admitted: &mut BTreeMap<String, RegexExecutor>,
+    admitted: &mut BTreeSet<String>,
+) -> Result<(), CoreError> {
+    visit_block_where_regexes(block, &mut |pattern| {
+        admit_one_short_circuited_where_regex(pattern, admitted)
+    })
+}
+
+fn structural_where_regex_count_error() -> CoreError {
+    CoreError::Typed {
+        code: quanta_index_contract::SearchPlaneErrorCodeV2::LexRegexPlanLimitExceeded,
+        message: format!(
+            "structural where regex engine count exceeds {MAX_STRUCTURAL_WHERE_REGEX_ENGINES_V1}"
+        ),
+    }
+}
+
+fn visit_block_where_regexes(
+    block: &LqStructuralBlock,
+    visit: &mut impl FnMut(&str) -> Result<(), CoreError>,
 ) -> Result<(), CoreError> {
     let mut pending = vec![block];
     while let Some(block) = pending.pop() {
@@ -359,19 +392,8 @@ fn admit_short_circuited_where_regexes(
             match expr {
                 LqStructuralExpr::Where(constraints) => {
                     for constraint in constraints {
-                        if let LqStructuralConstraintOperand::Regex(pattern) = &constraint.right
-                            && !admitted.contains_key(pattern.as_str())
-                        {
-                            if admitted.len() >= MAX_STRUCTURAL_WHERE_REGEX_ENGINES_V1 {
-                                return Err(CoreError::Typed {
-                                    code: quanta_index_contract::SearchPlaneErrorCodeV2::LexRegexPlanLimitExceeded,
-                                    message: format!(
-                                        "structural where regex engine count exceeds {MAX_STRUCTURAL_WHERE_REGEX_ENGINES_V1}"
-                                    ),
-                                });
-                            }
-                            let executor = compile_structural_filter_regex("where", pattern)?;
-                            drop(admitted.insert(pattern.clone(), executor));
+                        if let LqStructuralConstraintOperand::Regex(pattern) = &constraint.right {
+                            visit(pattern)?;
                         }
                     }
                 }
@@ -387,13 +409,39 @@ fn admit_short_circuited_where_regexes(
 
 fn admit_skipped_structural_regexes(
     expr: &LqExpr,
-    admitted: &mut BTreeMap<String, RegexExecutor>,
+    admitted: &mut BTreeSet<String>,
+) -> Result<(), CoreError> {
+    visit_expr_where_regexes(expr, &mut |pattern| {
+        admit_one_short_circuited_where_regex(pattern, admitted)
+    })
+}
+
+fn admit_one_short_circuited_where_regex(
+    pattern: &str,
+    admitted: &mut BTreeSet<String>,
+) -> Result<(), CoreError> {
+    if admitted.contains(pattern) {
+        return Ok(());
+    }
+    if admitted.len() >= MAX_STRUCTURAL_WHERE_REGEX_ENGINES_V1 {
+        return Err(structural_where_regex_count_error());
+    }
+    // No candidate consumes this engine: validate once, then release it
+    // instead of retaining up to eight compiled engines until request end.
+    drop(compile_structural_filter_regex("where", pattern)?);
+    let _inserted = admitted.insert(pattern.to_owned());
+    Ok(())
+}
+
+fn visit_expr_where_regexes(
+    expr: &LqExpr,
+    visit: &mut impl FnMut(&str) -> Result<(), CoreError>,
 ) -> Result<(), CoreError> {
     let mut pending = vec![expr];
     while let Some(expr) = pending.pop() {
         match expr {
             LqExpr::Leaf(LqLeaf::StructuralBlock(block)) => {
-                admit_short_circuited_where_regexes(block, admitted)?;
+                visit_block_where_regexes(block, visit)?;
             }
             LqExpr::Not(inner) => pending.push(inner),
             LqExpr::All(children) | LqExpr::Any(children) => {
@@ -416,14 +464,14 @@ fn map_structural_error(
 
 #[cfg(test)]
 mod tests {
-    use super::admit_short_circuited_where_regexes;
+    use super::{admit_short_circuited_where_regexes, admit_structural_where_regex_cardinality};
     use quanta_index_contract::{
-        LqMetaVar, LqStructuralBlock, LqStructuralConstraint, LqStructuralConstraintOperand,
-        LqStructuralExpr, LqStructuralHoleMultiplicity, LqStructuralHoleRef,
-        MAX_STRUCTURAL_WHERE_REGEX_ENGINES_V1, SearchPlaneErrorCodeV2,
+        LqExpr, LqLeaf, LqMetaVar, LqStructuralBlock, LqStructuralConstraint,
+        LqStructuralConstraintOperand, LqStructuralExpr, LqStructuralHoleMultiplicity,
+        LqStructuralHoleRef, MAX_STRUCTURAL_WHERE_REGEX_ENGINES_V1, SearchPlaneErrorCodeV2,
     };
     use quanta_index_core::CoreError;
-    use std::collections::BTreeMap;
+    use std::collections::BTreeSet;
 
     fn nested_where(pattern: String) -> LqStructuralBlock {
         let name = LqMetaVar::new("name".to_owned());
@@ -454,17 +502,21 @@ mod tests {
             ),
         ] {
             assert!(matches!(
-                admit_short_circuited_where_regexes(&nested_where(pattern), &mut BTreeMap::new()),
+                admit_short_circuited_where_regexes(&nested_where(pattern), &mut BTreeSet::new()),
                 Err(CoreError::Typed { code, .. }) if code == expected
             ));
         }
-        let mut admitted = BTreeMap::new();
+        let mut admitted = BTreeSet::new();
         let valid = nested_where("^main$".to_owned());
         assert!(admit_short_circuited_where_regexes(&valid, &mut admitted).is_ok());
         assert!(admit_short_circuited_where_regexes(&valid, &mut admitted).is_ok());
-        assert_eq!(admitted.len(), 1, "repeated empty leaves share one engine");
+        assert_eq!(
+            admitted.len(),
+            1,
+            "repeated empty leaves share one validated pattern identity"
+        );
 
-        let mut admitted = BTreeMap::new();
+        let mut admitted = BTreeSet::new();
         for index in 0..MAX_STRUCTURAL_WHERE_REGEX_ENGINES_V1 {
             assert!(
                 admit_short_circuited_where_regexes(
@@ -479,6 +531,33 @@ mod tests {
                 &nested_where("^one_more$".to_owned()),
                 &mut admitted,
             ),
+            Err(CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::LexRegexPlanLimitExceeded,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn distinct_where_regex_limit_spans_boolean_leaves() {
+        let leaves = |extra: Option<&str>| {
+            let mut patterns = (0..MAX_STRUCTURAL_WHERE_REGEX_ENGINES_V1)
+                .map(|index| format!("^value{index}$"))
+                .collect::<Vec<_>>();
+            if let Some(extra) = extra {
+                patterns.push(extra.to_owned());
+            }
+            LqExpr::All(
+                patterns
+                    .into_iter()
+                    .map(|pattern| LqExpr::Leaf(LqLeaf::StructuralBlock(nested_where(pattern))))
+                    .collect(),
+            )
+        };
+        assert!(admit_structural_where_regex_cardinality(&leaves(None)).is_ok());
+        assert!(admit_structural_where_regex_cardinality(&leaves(Some("^value0$"))).is_ok());
+        assert!(matches!(
+            admit_structural_where_regex_cardinality(&leaves(Some("^ninth$"))),
             Err(CoreError::Typed {
                 code: SearchPlaneErrorCodeV2::LexRegexPlanLimitExceeded,
                 ..

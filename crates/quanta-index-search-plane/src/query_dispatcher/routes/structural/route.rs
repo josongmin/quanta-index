@@ -35,9 +35,9 @@ use crate::query_dispatcher::keyset_page::{KeysetPageCollector, StreamEnd};
 use crate::query_dispatcher::read_view::{AuxEpochPinsV1, QueryReadViewV2, ReadViewRequestV1};
 use crate::query_dispatcher::routes::structural::buckets::StructuralCandidateBuckets;
 use crate::query_dispatcher::routes::structural::eval::{
-    StructuralEvalContext, evaluate_structural_expr, extract_structural_requested_lang,
-    structural_expr_has_non_structural_leaf, structural_expr_has_structural_leaf,
-    structural_expr_is_pure_negative_root,
+    StructuralEvalContext, admit_structural_where_regex_cardinality, evaluate_structural_expr,
+    extract_structural_requested_lang, structural_expr_has_non_structural_leaf,
+    structural_expr_has_structural_leaf, structural_expr_is_pure_negative_root,
 };
 use crate::query_dispatcher::routes::structural::lexical_leaves::LexicalSubexprEvaluator;
 use crate::query_dispatcher::routes::structural::lowering::{
@@ -176,6 +176,7 @@ impl SearchPlaneDispatcher {
                 "query must include at least one structural `match { ... }` leaf",
             ));
         }
+        admit_structural_where_regex_cardinality(&lowered.expr)?;
         let has_lexical = structural_expr_has_non_structural_leaf(&lowered.expr);
         let requested_lang = extract_structural_requested_lang(&lowered.expr, has_lexical)?;
         let (requested_lang, executable_filters) =

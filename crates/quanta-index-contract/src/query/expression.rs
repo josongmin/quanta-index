@@ -7,8 +7,10 @@ pub use quanta_index_lq_norm::{
     LqStructuralHoleMultiplicity, LqStructuralHoleRef, LqStructuralNode,
 };
 
-/// Maximum distinct `where` regex engines retained by one structural block
-/// request. This is a cardinality guard, not a physical heap-byte ceiling.
+/// Maximum distinct `where` regexes admitted by one structural request.
+///
+/// Boolean dispatch enforces this across leaves; a direct producer request
+/// enforces it within its single block. This is not a physical heap ceiling.
 pub const MAX_STRUCTURAL_WHERE_REGEX_ENGINES_V1: usize = 8;
 
 pub type TextQueryAst = quanta_index_lq_norm::LqNormalizedQuery;

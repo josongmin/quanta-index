@@ -5973,6 +5973,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_contract::SymbolQu
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_contract::SymbolQueryRequest
 pub const quanta_index_contract::query::MAX_CLUSTER_MEMBERSHIP_BATCH_ITEMS_V1: usize
 pub const quanta_index_contract::query::MAX_CLUSTER_MEMBERSHIP_READ_V1: u32
+pub const quanta_index_contract::query::MAX_STRUCTURAL_WHERE_REGEX_ENGINES_V1: usize
 pub type quanta_index_contract::query::LqQuery = quanta_index_contract::TextQueryAst
 pub type quanta_index_contract::query::TextQueryAst = quanta_index_lq_norm::ast::LqNormalizedQuery
 pub mod quanta_index_contract::repomap
@@ -15942,6 +15943,7 @@ pub const quanta_index_contract::MAX_CLUSTER_MEMBERSHIP_READ_V1: u32
 pub const quanta_index_contract::MAX_IPC_FRAME_BODY_BYTES_V1: usize
 pub const quanta_index_contract::MAX_PROCESS_REQUEST_EVENTS_V1: u16
 pub const quanta_index_contract::MAX_PROCESS_REQUEST_EVENTS_WIRE_BYTES_V1: usize
+pub const quanta_index_contract::MAX_STRUCTURAL_WHERE_REGEX_ENGINES_V1: usize
 pub const quanta_index_contract::REPOMAP_TERMINAL_RECEIPT_FORMAT_VERSION: u32
 pub const quanta_index_contract::SEMANTIC_WORK_OPERATIONAL_CAP_V1: u64
 pub fn quanta_index_contract::batch_digest_token_v1(digest: &[u8; 32]) -> alloc::string::String

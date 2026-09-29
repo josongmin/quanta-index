@@ -866,6 +866,44 @@ fn structural_dispatch_memoizes_identical_leaf_execution() -> TestResult {
 }
 
 #[test]
+fn structural_dispatch_refuses_ninth_distinct_where_regex_across_leaves() -> TestResult {
+    let producer = Arc::new(PatternRoutingStructuralProducer::new());
+    let dispatcher = structural_dispatcher_with_producer(Arc::clone(&producer))?;
+    let query_text = (0..9)
+        .map(|index| format!("match {{ :[name] where :[name] == /^value{index}$/ }}"))
+        .collect::<Vec<_>>()
+        .join(" OR ");
+    let response = dispatcher.dispatch(
+        SearchPlaneQueryIpcRequest::Structural(quanta_index_contract::StructuralQueryRequest {
+            text_query: TextQueryRequest {
+                syntax: TextQuerySyntax::Native,
+                query_text,
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+                generation: Some(ready_pin()),
+                generation_selector: None,
+                top_k: 10,
+                cursor: None,
+            },
+            cursor: None,
+        }),
+        &RequestBudgetV1::unbounded(),
+    );
+    let (code, message) = ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
+    if code != quanta_index_contract::SearchPlaneErrorCodeV2::LexRegexPlanLimitExceeded {
+        return Err(format!("ninth where regex must refuse with a plan limit, got {code}").into());
+    }
+    if !message.contains("structural where regex engine count exceeds 8") {
+        return Err(format!("wrong request-wide where regex refusal: {message}").into());
+    }
+    if producer.readiness_calls.load(Ordering::SeqCst) != 0
+        || producer.execute_calls.load(Ordering::SeqCst) != 0
+    {
+        return Err("request-wide regex limit must refuse before producer work".into());
+    }
+    Ok(())
+}
+
+#[test]
 fn structural_dispatch_executes_mixed_lexical_and_structural_and() -> TestResult {
     let producer = Arc::new(PatternRoutingStructuralProducer::new());
     let lex_opener = Arc::new(RecordingLexicalOpener {
