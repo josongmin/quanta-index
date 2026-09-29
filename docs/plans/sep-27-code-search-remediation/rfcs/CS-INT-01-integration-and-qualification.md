@@ -245,3 +245,15 @@ qualification. The focused semantic-adapter test and the selected
 `runtime_extended_suite` ANN and `runtime_fast_suite` binary-SDK tests each
 passed 1/1 locally on this source. ENG-02 and ENG-04 remain open on their
 stated mechanisms.
+
+The subsequent structural `where` audit found a reachable refusal gap:
+searchd compiled regexes only while traversing candidates, and the Boolean
+dispatcher could skip invalid regexes after an empty lexical intersection.
+Current main precompiles and reuses each structural block's distinct regexes,
+preserves invalid-input versus resource versus engine-failure codes, and
+validates skipped Boolean leaves without invoking the producer. The structural
+owner suite (82 tests), structural dispatcher selection (57 tests), searchd
+structural selection (6 tests), binary-SDK structural E2E (1 test), fmt and
+affected-crate Clippy passed locally before commit `19e9add9`. This is a
+scoped source fix; it does not qualify ENG-04's aggregate physical heap or
+ENG-02's repeated coverage scans.
