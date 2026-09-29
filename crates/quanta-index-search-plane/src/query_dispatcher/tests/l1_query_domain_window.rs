@@ -7,8 +7,9 @@ use std::sync::{Arc, Mutex};
 
 use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
-    QueryConstraintSetV1, SearchPlaneErrorCodeV2, SearchPlaneQueryIpcRequest,
-    SearchPlaneQueryIpcResponse, SymbolQueryRequest, TextQueryRequest, TextQuerySyntax,
+    ExactRepoRelativePathV1, LqCase, QueryConstraintSetV1, SearchPlaneErrorCodeV2,
+    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcResponse, SymbolQueryRequest, TextQueryRequest,
+    TextQuerySyntax,
 };
 use quanta_index_core::RequestBudgetV1;
 
@@ -37,6 +38,49 @@ fn symbol_request(text: &str, language: Option<&str>) -> Result<SymbolQueryReque
         top_k: 3,
         cursor: None,
     })
+}
+
+#[test]
+fn native_exact_symbol_case_and_typed_file_reach_one_search_plan() -> TestResult {
+    let state = Arc::new(Mutex::new(RecordingLexicalState::default()));
+    let dispatcher = dispatcher_with_obs(
+        Arc::new(RecordingLexicalOpener {
+            state: Arc::clone(&state),
+            results: Vec::new(),
+        }),
+        Arc::new(RejectSemanticOpener),
+        Arc::new(NoopQueryObsSink),
+    )?;
+    let mut request = symbol_request("symbol.local_name.exact(writeContentType) case:yes", None)?;
+    request.constraints = QueryConstraintSetV1::from_exact_repo_relative_path(
+        ExactRepoRelativePathV1::new("render/render.go").map_err(str::to_string)?,
+    );
+    let (_page, _execution) =
+        dispatcher.symbol_with_execution(request, &RequestBudgetV1::unbounded())?;
+    let calls = state.lock().map_err(|error| error.to_string())?;
+    if calls.primitive_queries.len() != 1
+        || calls.primitive_queries[0].options.case != Some(LqCase::Sensitive)
+        || calls.symbol_top_ks != [4]
+        || calls.symbol_constraints.len() != 1
+        || calls.symbol_constraints[0]
+            .repo_relative_path_exact
+            .as_ref()
+            .map(ExactRepoRelativePathV1::as_str)
+            != Some("render/render.go")
+    {
+        return Err(format!(
+            "Native exact-case/file dispatch: primitive_cases={:?} symbol_top_ks={:?} symbol_constraints={:?}",
+            calls
+                .primitive_queries
+                .iter()
+                .map(|query| query.options.case)
+                .collect::<Vec<_>>(),
+            calls.symbol_top_ks,
+            calls.symbol_constraints,
+        )
+        .into());
+    }
+    Ok(())
 }
 
 #[test]
