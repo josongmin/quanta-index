@@ -526,21 +526,11 @@ impl LexicalAdapter {
                 )
             }
         };
-        let replacements: Vec<_> = batch
-            .replace_scopes
-            .iter()
-            .map(|scope| scope.coverage.clone())
-            .collect();
-        let tombstones: Vec<_> = batch
-            .tombstone_scopes
-            .iter()
-            .map(|scope| scope.file.clone())
-            .collect();
         let coverage = plan_file_coverage(
             &base_coverage,
             base,
-            &replacements,
-            &tombstones,
+            batch.replace_scopes.iter().map(|scope| &scope.coverage),
+            batch.tombstone_scopes.iter().map(|scope| &scope.file),
             &batch.clear_surfaces,
         )?;
         let staged = read_staged_coverage(generation_dir, candidate)?;

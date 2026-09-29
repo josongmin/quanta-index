@@ -97,17 +97,42 @@ impl FileCoverageSnapshot {
         key: SourceFileKey,
         value: SourceFileCoverage,
     ) -> Option<SourceFileCoverage> {
+        self.insert_shared(key, value)
+            .map(|previous| (*previous).clone())
+    }
+
+    /// Replace a row when the caller does not need the previous value.
+    ///
+    /// A delta shares the base snapshot's rows. Returning an owned previous
+    /// value would clone that row even when the caller immediately drops it.
+    pub fn insert_without_previous(&mut self, key: SourceFileKey, value: SourceFileCoverage) {
+        drop(self.insert_shared(key, value));
+    }
+
+    fn insert_shared(
+        &mut self,
+        key: SourceFileKey,
+        value: SourceFileCoverage,
+    ) -> Option<Arc<SourceFileCoverage>> {
         let partition = Self::partition_for(&key);
         let row = Arc::new(value);
         let mut page = self.partitions.get(&partition).cloned().unwrap_or_default();
         let _previous = page.insert(key.clone(), Arc::clone(&row));
         let _previous = self.partitions.insert(partition, page);
-        self.rows
-            .insert(key, row)
-            .map(|previous| (*previous).clone())
+        self.rows.insert(key, row)
     }
 
     pub fn remove(&mut self, key: &SourceFileKey) -> Option<SourceFileCoverage> {
+        self.remove_shared(key).map(|previous| (*previous).clone())
+    }
+
+    /// Remove a row without cloning a shared previous value for a discarded
+    /// return value.
+    pub fn remove_without_previous(&mut self, key: &SourceFileKey) {
+        drop(self.remove_shared(key));
+    }
+
+    fn remove_shared(&mut self, key: &SourceFileKey) -> Option<Arc<SourceFileCoverage>> {
         let previous = self.rows.remove(key)?;
         let partition = Self::partition_for(key);
         if let Some(mut page) = self.partitions.get(&partition).cloned() {
@@ -118,7 +143,7 @@ impl FileCoverageSnapshot {
                 let _previous = self.partitions.insert(partition, page);
             }
         }
-        Some((*previous).clone())
+        Some(previous)
     }
 }
 
@@ -156,7 +181,7 @@ impl FromIterator<(SourceFileKey, SourceFileCoverage)> for FileCoverageSnapshot 
     fn from_iter<T: IntoIterator<Item = (SourceFileKey, SourceFileCoverage)>>(iter: T) -> Self {
         let mut result = Self::new();
         for (key, row) in iter {
-            let _previous = result.insert(key, row);
+            result.insert_without_previous(key, row);
         }
         result
     }

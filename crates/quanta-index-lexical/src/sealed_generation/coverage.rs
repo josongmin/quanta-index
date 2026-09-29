@@ -196,18 +196,18 @@ pub(crate) fn write_staged_coverage(
     )
 }
 
-pub(crate) fn plan_file_coverage(
+pub(crate) fn plan_file_coverage<'a>(
     base: &CoverageSnapshot,
     write_base: Option<CoverageWriteBase>,
-    replacements: &[SourceFileCoverage],
-    tombstones: &[SourceFileKey],
+    replacements: impl Clone + IntoIterator<Item = &'a SourceFileCoverage>,
+    tombstones: impl Clone + IntoIterator<Item = &'a SourceFileKey>,
     clears: &[SearchScopeSurface],
 ) -> Result<CoveragePlan, CoreError> {
-    let coverage = apply_file_coverage(base, replacements, tombstones, clears)?;
+    let coverage = apply_file_coverage(base, replacements.clone(), tombstones.clone(), clears)?;
     let touched = replacements
-        .iter()
+        .into_iter()
         .map(|row| &row.source.file)
-        .chain(tombstones.iter())
+        .chain(tombstones)
         .map(CoverageSnapshot::partition_for)
         .collect();
     Ok(CoveragePlan {
@@ -222,10 +222,10 @@ pub(crate) fn plan_file_coverage(
 /// Empty
 /// replacements remain members of the admitted file universe. A delta retains
 /// every unchanged entry, including failed or unrequested symbol extraction.
-pub(crate) fn apply_file_coverage(
+pub(crate) fn apply_file_coverage<'a>(
     base: &CoverageSnapshot,
-    replacements: &[SourceFileCoverage],
-    tombstones: &[SourceFileKey],
+    replacements: impl Clone + IntoIterator<Item = &'a SourceFileCoverage>,
+    tombstones: impl Clone + IntoIterator<Item = &'a SourceFileKey>,
     clears: &[SearchScopeSurface],
 ) -> Result<CoverageSnapshot, CoreError> {
     if clears.iter().any(|surface| {
@@ -239,7 +239,7 @@ pub(crate) fn apply_file_coverage(
         ));
     }
     let mut owners = BTreeSet::new();
-    for entry in replacements {
+    for entry in replacements.clone() {
         entry
             .validate()
             .map_err(|error| CoreError::InvalidContract(error.to_string()))?;
@@ -249,7 +249,7 @@ pub(crate) fn apply_file_coverage(
             ));
         }
     }
-    for key in tombstones {
+    for key in tombstones.clone() {
         key.validate()
             .map_err(|error| CoreError::InvalidContract(error.into()))?;
         if !owners.insert(key) {
@@ -260,10 +260,10 @@ pub(crate) fn apply_file_coverage(
     }
     let mut result = base.clone();
     for entry in replacements {
-        let _previous = result.insert(entry.source.file.clone(), entry.clone());
+        result.insert_without_previous(entry.source.file.clone(), entry.clone());
     }
     for key in tombstones {
-        let _previous = result.remove(key);
+        result.remove_without_previous(key);
     }
     Ok(result)
 }
@@ -435,6 +435,38 @@ mod tests {
         assert_eq!(removed.len(), 2);
         assert!(!removed.contains_key(&failed.source.file));
         assert_eq!(base.len(), 2, "immutable base must not change");
+        Ok(())
+    }
+
+    #[test]
+    fn borrowed_delta_inputs_replace_and_delete_without_mutating_the_base() -> TestResult {
+        let original = file("replace.rs", SymbolCoverage::NotRequested)?;
+        let deleted = file("delete.rs", SymbolCoverage::ParseFailed)?;
+        let base = CoverageSnapshot::from([
+            (original.source.file.clone(), original.clone()),
+            (deleted.source.file.clone(), deleted.clone()),
+        ]);
+        let mut replacement = original.clone();
+        replacement.symbols = SymbolCoverage::Complete { symbol_count: 0 };
+        let replacements = [replacement];
+        let tombstones = [deleted.source.file.clone()];
+        let plan =
+            super::plan_file_coverage(&base, None, replacements.iter(), tombstones.iter(), &[])?;
+        assert_eq!(plan.snapshot().len(), 1);
+        assert_eq!(
+            plan.snapshot().get(&original.source.file),
+            Some(&replacements[0])
+        );
+        assert!(!plan.snapshot().contains_key(&deleted.source.file));
+        assert_eq!(base.get(&original.source.file), Some(&original));
+        assert_eq!(base.get(&deleted.source.file), Some(&deleted));
+        assert_eq!(
+            plan.touched,
+            BTreeSet::from([
+                CoverageSnapshot::partition_for(&original.source.file),
+                CoverageSnapshot::partition_for(&deleted.source.file),
+            ])
+        );
         Ok(())
     }
 

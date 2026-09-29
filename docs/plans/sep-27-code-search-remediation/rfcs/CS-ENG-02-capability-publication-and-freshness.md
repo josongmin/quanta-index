@@ -76,6 +76,16 @@ lock, removing either later authenticated read without a pinned immutable
 base capability would regress that refusal contract. These page-byte counts
 exclude other pipeline I/O and do not qualify physical peak heap.
 
+Sep-29 static hot-path correction: delta planning previously copied every
+replacement row and tombstone into temporary vectors, then cloned each
+replacement again into the candidate. Snapshot replacement/removal also cloned
+the displaced shared row solely to return a value the planner discarded. The
+planner now consumes borrowed batch rows and the snapshot has explicit
+discard-result mutation methods; only the candidate's owned new row is cloned.
+This removes avoidable row copies without changing the authenticated base
+walks, publication identity, output format or physical-heap claim. Owner
+behavior tests are pending execution under the requested static-only phase.
+
 ## Remaining acceptance
 
 - [ ] Measure one-file replacement/delete and mixed batches over increasing file
