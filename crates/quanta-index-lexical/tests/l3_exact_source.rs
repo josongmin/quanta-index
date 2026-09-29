@@ -321,6 +321,58 @@ fn l3_exact_symbol_case_distinguishes_definition_from_folded_names() -> TestResu
     clippy::panic_in_result_fn,
     reason = "fixed oracle assertions in a fallible fixture"
 )]
+fn l3_exact_symbol_case_and_file_anchor_compose_before_top_k() -> TestResult {
+    use quanta_index_contract::ExactRepoRelativePathV1;
+    let (_dir, searcher) = fixture_with_scopes(vec![
+        scope(
+            "source-a",
+            "render/render.go",
+            &[("target", "writeContentType", "writeContentType", None)],
+        )?,
+        scope(
+            "source-a",
+            "alternate/helper.go",
+            &[("same-name", "writeContentType", "writeContentType", None)],
+        )?,
+        scope(
+            "source-a",
+            "render/case.go",
+            &[("wrong-case", "WriteContentType", "WriteContentType", None)],
+        )?,
+    ])?;
+    for manual in [false, true] {
+        for (path, expected) in [
+            ("render/render.go", Some("target")),
+            ("alternate/helper.go", Some("same-name")),
+            ("render/case.go", None),
+        ] {
+            let constraints = QueryConstraintSetV1::from_exact_repo_relative_path(
+                ExactRepoRelativePathV1::new(path).map_err(str::to_string)?,
+            );
+            let page = searcher.search_symbols_constrained(
+                &query("symbol.local_name.exact", "writeContentType", manual, true),
+                &constraints,
+                &LexicalPageSpec::first(1),
+                &RequestBudgetV1::unbounded(),
+            )?;
+            assert_eq!(
+                page.candidates
+                    .iter()
+                    .map(|row| row.candidate_id.as_str())
+                    .collect::<Vec<_>>(),
+                expected.into_iter().collect::<Vec<_>>(),
+                "manual={manual} path={path}"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "fixed oracle assertions in a fallible fixture"
+)]
 fn l3_boolean_exact_names_use_symbol_fields_on_indexed_and_manual_routes() -> TestResult {
     let (_dir, searcher) = fixture()?;
     let local = query("symbol.local_name.exact", "Café", false, false).expr;
