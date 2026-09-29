@@ -214,6 +214,7 @@ impl SearchPlaneDispatcher {
             &executable_filters,
             &lowered.options,
             seed.as_ref(),
+            budget,
             lexical_eval.as_ref(),
         )?;
         select_structural_page(candidates, read.epoch, top_k, cursor)

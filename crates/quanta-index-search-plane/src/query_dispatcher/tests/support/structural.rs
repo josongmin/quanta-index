@@ -13,7 +13,9 @@ use quanta_index_core::domains::structural::StructuralQueryRequest as DomainStru
 use quanta_index_core::domains::structural::{
     StructuralError, StructuralProducerPort, StructuralQueryRequest, StructuralReadiness,
 };
-use quanta_index_core::{LexicalIndexOpenPort, StructuralMatchBinding, StructuralMatchCandidate};
+use quanta_index_core::{
+    LexicalIndexOpenPort, RequestBudgetV1, StructuralMatchBinding, StructuralMatchCandidate,
+};
 
 use crate::Ledger;
 use crate::query_dispatcher::dispatcher::SearchPlaneDispatcher;
@@ -43,6 +45,7 @@ impl StructuralProducerPort for FailClosedStructuralProducer {
     fn execute(
         &self,
         _request: &DomainStructuralQueryRequest,
+        _budget: &RequestBudgetV1,
     ) -> Result<
         Vec<quanta_index_core::StructuralMatchCandidate>,
         quanta_index_core::domains::structural::StructuralError,
@@ -110,6 +113,7 @@ impl StructuralProducerPort for RecordingStructuralProducer {
     fn execute(
         &self,
         request: &StructuralQueryRequest,
+        _budget: &RequestBudgetV1,
     ) -> Result<Vec<StructuralMatchCandidate>, StructuralError> {
         let _prev: usize = self.execute_calls.fetch_add(1, Ordering::SeqCst);
         self.executed_epochs
@@ -134,6 +138,12 @@ impl StructuralProducerPort for RecordingStructuralProducer {
                 }
                 StructuralError::RegexPlanLimitExceeded(message) => {
                     StructuralError::RegexPlanLimitExceeded(message.clone())
+                }
+                StructuralError::RequestCancelled(message) => {
+                    StructuralError::RequestCancelled(message.clone())
+                }
+                StructuralError::RequestDeadlineExceeded(message) => {
+                    StructuralError::RequestDeadlineExceeded(message.clone())
                 }
                 StructuralError::ProducerExecution(message) => {
                     StructuralError::ProducerExecution(message.clone())
@@ -185,6 +195,7 @@ impl StructuralProducerPort for PatternRoutingStructuralProducer {
     fn execute(
         &self,
         request: &StructuralQueryRequest,
+        _budget: &RequestBudgetV1,
     ) -> Result<Vec<StructuralMatchCandidate>, StructuralError> {
         let _prev: usize = self.execute_calls.fetch_add(1, Ordering::SeqCst);
         {

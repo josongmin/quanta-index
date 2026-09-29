@@ -235,6 +235,19 @@ specified process-isolation contract. This checkpoint is static source
 analysis; no dependency fork, worker, runtime allocation proof or physical
 ceiling was implemented by it.
 
+Subsequent code work threads `RequestBudgetV1` through structural Boolean
+evaluation, `StructuralService`, and the live searchd producer. It preserves
+request cancellation/deadline codes at the domain boundary and checks between
+filter compilation, skipped-leaf validation and producer chunk traversal.
+These are cooperative interruption checks and a necessary transport seam for
+future regex allocation ownership. They do **not** charge regex allocations,
+bound dependency internals or satisfy the request-wide physical ceiling.
+Owner-local `./scripts/cargow test --locked` structural scopes passed in
+`quanta-index-core` (12), `quanta-index-search-plane` (3 eval and 23 route),
+and `quanta-index-searchd` (7 producer tests); affected-package all-target
+Clippy with `-D warnings` passed. This is functional proof of the transport
+and interruption seam, not allocation or daemon proof.
+
 ## Required coordinated change
 
 - First prove an API feasibility slice covering parse → compile → first search

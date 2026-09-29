@@ -819,11 +819,20 @@ impl StructuralProducerPort for LedgerStructuralProducer {
     fn execute(
         &self,
         request: &DomainStructuralQueryRequest,
+        budget: &RequestBudgetV1,
     ) -> Result<Vec<StructuralMatchCandidate>, StructuralError> {
+        quanta_index_core::domains::structural::structural_checkpoint(
+            budget,
+            "structural:compile",
+        )?;
         let pin = resolve_structural_pin(request)?;
         // Compile every filter before any short circuit or candidate traversal.
         // This also rejects malformed filters for an empty candidate universe.
-        let filters = CompiledStructuralFilters::compile(&request.filters)?;
+        let filters = CompiledStructuralFilters::compile(&request.filters, budget)?;
+        quanta_index_core::domains::structural::structural_checkpoint(
+            budget,
+            "structural:where-regex",
+        )?;
         let regexes = PreparedStructuralRegexes::from_block(&request.pattern)
             .map_err(map_live_authority_error)?;
         if !filters.repo_matches(&pin) {
@@ -866,6 +875,10 @@ impl StructuralProducerPort for LedgerStructuralProducer {
             .as_ref()
             .map(|ids| ids.iter().map(String::as_str).collect::<BTreeSet<_>>());
         for (chunk_id, tree) in state.parse_trees() {
+            quanta_index_core::domains::structural::structural_checkpoint(
+                budget,
+                "structural:chunk",
+            )?;
             if candidate_scope
                 .as_ref()
                 .is_some_and(|scope| !scope.contains(chunk_id.as_str()))
@@ -913,6 +926,10 @@ impl StructuralProducerPort for LedgerStructuralProducer {
                     &regexes,
                 )
                 .map_err(map_live_authority_error)?;
+            quanta_index_core::domains::structural::structural_checkpoint(
+                budget,
+                "structural:matched-chunk",
+            )?;
             results.extend(project_structural_candidates(
                 chunk_id,
                 chunk,
@@ -957,12 +974,19 @@ struct CompiledStructuralFilters {
 }
 
 impl CompiledStructuralFilters {
-    fn compile(filters: &[StructuralExecutableFilter]) -> Result<Self, StructuralError> {
+    fn compile(
+        filters: &[StructuralExecutableFilter],
+        budget: &RequestBudgetV1,
+    ) -> Result<Self, StructuralError> {
         let mut compiled = Self {
             repo: Vec::new(),
             file: Vec::new(),
         };
         for filter in filters {
+            quanta_index_core::domains::structural::structural_checkpoint(
+                budget,
+                "structural:filter-regex",
+            )?;
             match filter {
                 StructuralExecutableFilter::RepoRegexNoRev { pattern } => compiled
                     .repo
@@ -1969,7 +1993,7 @@ mod tests {
             let mut request = pinned_request();
             request.filters.push(filter);
             assert!(matches!(
-                producer.execute(&request),
+                producer.execute(&request, &RequestBudgetV1::unbounded()),
                 Err(StructuralError::InvalidRequest(_))
             ));
         }
@@ -1984,9 +2008,25 @@ mod tests {
             },
         ];
         assert!(matches!(
-            producer.execute(&request),
+            producer.execute(&request, &RequestBudgetV1::unbounded()),
             Err(StructuralError::InvalidRequest(_))
         ));
+    }
+
+    #[test]
+    fn structural_producer_refuses_cancelled_budget_before_regex_compilation() {
+        let producer = LedgerStructuralProducer::new(Arc::new(RwLock::new(Ledger::new())));
+        let mut request = pinned_request();
+        request.filters.push(StructuralExecutableFilter::FileRegex {
+            pattern: "[".to_owned(),
+            scope: LqFileScope::PathOnly,
+        });
+        let budget = RequestBudgetV1::unbounded();
+        budget.cancel_handle().cancel();
+        let error = producer
+            .execute(&request, &budget)
+            .expect_err("cancelled budget must refuse before compilation");
+        assert_eq!(error.code(), quanta_index_core::REQUEST_CANCELLED_CODE);
     }
 
     #[test]
@@ -2013,7 +2053,7 @@ mod tests {
                 let mut request = pinned_request();
                 request.filters.push(filter(pattern));
                 let error = producer
-                    .execute(&request)
+                    .execute(&request, &RequestBudgetV1::unbounded())
                     .expect_err("filter must be refused");
                 assert_eq!(error.code(), expected);
             }
@@ -2054,9 +2094,11 @@ mod tests {
                     right: LqStructuralConstraintOperand::Regex(pattern),
                 }]),
             ];
-            let error = producer.execute(&request).expect_err(
-                "where regex must be admitted before an absent generation can short-circuit",
-            );
+            let error = producer
+                .execute(&request, &RequestBudgetV1::unbounded())
+                .expect_err(
+                    "where regex must be admitted before an absent generation can short-circuit",
+                );
             assert_eq!(error.code(), expected);
         }
     }
@@ -2067,34 +2109,42 @@ mod tests {
         let GenerationSelector::Pinned(pin) = repo.generation else {
             panic!("fixture must pin generation");
         };
-        let filters = CompiledStructuralFilters::compile(&[
-            StructuralExecutableFilter::RepoRegexNoRev {
-                pattern: "^repo$".to_owned(),
-            },
-            StructuralExecutableFilter::FileRegex {
-                pattern: r"(?i)^foo\.rs$".to_owned(),
-                scope: LqFileScope::NameOnly,
-            },
-        ])
+        let filters = CompiledStructuralFilters::compile(
+            &[
+                StructuralExecutableFilter::RepoRegexNoRev {
+                    pattern: "^repo$".to_owned(),
+                },
+                StructuralExecutableFilter::FileRegex {
+                    pattern: r"(?i)^foo\.rs$".to_owned(),
+                    scope: LqFileScope::NameOnly,
+                },
+            ],
+            &RequestBudgetV1::unbounded(),
+        )
         .expect("valid filters compile");
         assert!(filters.repo_matches(&pin));
         assert!(filters.chunk_matches(&filter_chunk("src/Foo.rs")));
         assert!(filters.chunk_matches(&filter_chunk("tests/foo.rs")));
         assert!(!filters.chunk_matches(&filter_chunk("tests/foo.ts")));
 
-        let path_only =
-            CompiledStructuralFilters::compile(&[StructuralExecutableFilter::FileRegex {
+        let path_only = CompiledStructuralFilters::compile(
+            &[StructuralExecutableFilter::FileRegex {
                 pattern: "^src/".to_owned(),
                 scope: LqFileScope::PathOnly,
-            }])
-            .expect("valid path filter compiles");
+            }],
+            &RequestBudgetV1::unbounded(),
+        )
+        .expect("valid path filter compiles");
         assert!(path_only.chunk_matches(&filter_chunk("src/Foo.rs")));
         assert!(!path_only.chunk_matches(&filter_chunk("tests/foo.rs")));
 
-        let either = CompiledStructuralFilters::compile(&[StructuralExecutableFilter::FileRegex {
-            pattern: "^src/|^foo\\.rs$".to_owned(),
-            scope: LqFileScope::NameAndPath,
-        }])
+        let either = CompiledStructuralFilters::compile(
+            &[StructuralExecutableFilter::FileRegex {
+                pattern: "^src/|^foo\\.rs$".to_owned(),
+                scope: LqFileScope::NameAndPath,
+            }],
+            &RequestBudgetV1::unbounded(),
+        )
         .expect("valid name and path filter compiles");
         assert!(either.chunk_matches(&filter_chunk("src/bar.rs")));
         assert!(either.chunk_matches(&filter_chunk("tests/foo.rs")));

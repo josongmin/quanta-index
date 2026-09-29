@@ -4,6 +4,7 @@
 //! plus typed readiness and domain error shapes. No vendor tokens
 //! (tree-sitter, etc.) appear here; adapters keep those private.
 
+use crate::{REQUEST_CANCELLED_CODE, REQUEST_DEADLINE_EXCEEDED_CODE, RequestBudgetV1};
 use thiserror::Error;
 
 use super::inbound::StructuralQueryRequest;
@@ -60,6 +61,10 @@ pub enum StructuralError {
     /// A structural regex filter exceeded the shared regex executor's resource budget.
     #[error("structural: regex plan limit exceeded: {0}")]
     RegexPlanLimitExceeded(String),
+    #[error("structural: request cancelled: {0}")]
+    RequestCancelled(String),
+    #[error("structural: request deadline exceeded: {0}")]
+    RequestDeadlineExceeded(String),
     #[error("structural: producer execution failed: {0}")]
     ProducerExecution(String),
     /// The request pinned a structural authority epoch the producer no
@@ -94,6 +99,8 @@ impl StructuralError {
             }
             Self::InvalidRequest(_) => SearchPlaneErrorCodeV2::StrInvalidRequest,
             Self::RegexPlanLimitExceeded(_) => SearchPlaneErrorCodeV2::LexRegexPlanLimitExceeded,
+            Self::RequestCancelled(_) => REQUEST_CANCELLED_CODE,
+            Self::RequestDeadlineExceeded(_) => REQUEST_DEADLINE_EXCEEDED_CODE,
             Self::ProducerExecution(_) => SearchPlaneErrorCodeV2::StrProducerExecutionFailed,
             Self::AuxEpochExpired(_) => crate::domains::auxiliary::AUX_EPOCH_EXPIRED_CODE,
             Self::AuxEpochUnknown(_) => crate::domains::auxiliary::AUX_EPOCH_UNKNOWN_CODE,
@@ -125,5 +132,6 @@ pub trait StructuralProducerPort: Send + Sync {
     fn execute(
         &self,
         request: &StructuralQueryRequest,
+        budget: &RequestBudgetV1,
     ) -> Result<Vec<StructuralMatchCandidate>, StructuralError>;
 }

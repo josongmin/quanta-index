@@ -9,6 +9,7 @@ use std::sync::Arc;
 use super::inbound::{StructuralQueryRequest, StructuralQueryResponse};
 use super::outbound::{StructuralError, StructuralProducerPort, StructuralReadiness};
 use super::policy::StructuralPolicy;
+use crate::{CoreError, REQUEST_CANCELLED_CODE, REQUEST_DEADLINE_EXCEEDED_CODE, RequestBudgetV1};
 
 /// Service that gates parse-tree-backed structural execution behind a
 /// readiness check.
@@ -50,9 +51,13 @@ impl StructuralService {
     pub fn query(
         &self,
         request: &StructuralQueryRequest,
+        budget: &RequestBudgetV1,
     ) -> Result<StructuralQueryResponse, StructuralError> {
+        structural_checkpoint(budget, "structural:readiness")?;
         if self.policy.default_readiness_check {
-            match self.producer.readiness(request) {
+            let readiness = self.producer.readiness(request);
+            structural_checkpoint(budget, "structural:readiness-return")?;
+            match readiness {
                 StructuralReadiness::Ready => {}
                 StructuralReadiness::ParseTreeProducerUnavailable => {
                     return Err(StructuralError::ParseTreeProducerUnavailable);
@@ -71,9 +76,35 @@ impl StructuralService {
                 }
             }
         }
-        let candidates = self.producer.execute(request)?;
+        structural_checkpoint(budget, "structural:producer")?;
+        let result = self.producer.execute(request, budget);
+        structural_checkpoint(budget, "structural:producer-return")?;
+        let candidates = result?;
         Ok(StructuralQueryResponse { candidates })
     }
+}
+
+/// Preserve the request's wire interruption code across the domain port.
+pub fn structural_checkpoint(
+    budget: &RequestBudgetV1,
+    stage: &'static str,
+) -> Result<(), StructuralError> {
+    budget.checkpoint(stage).map_err(|err| match err {
+        CoreError::Typed { code, message } if code == REQUEST_CANCELLED_CODE => {
+            StructuralError::RequestCancelled(message)
+        }
+        CoreError::Typed { code, message } if code == REQUEST_DEADLINE_EXCEEDED_CODE => {
+            StructuralError::RequestDeadlineExceeded(message)
+        }
+        other @ (CoreError::InvalidContract(_)
+        | CoreError::Typed { .. }
+        | CoreError::NotReady(_)
+        | CoreError::NotImplemented(_)
+        | CoreError::NotFound(_)
+        | CoreError::Storage(_)) => {
+            StructuralError::ProducerExecution(format!("unexpected budget error: {other}"))
+        }
+    })
 }
 
 #[cfg(test)]
@@ -82,6 +113,7 @@ mod tests {
         Arc, StructuralError, StructuralProducerPort, StructuralQueryRequest,
         StructuralQueryResponse, StructuralReadiness, StructuralService,
     };
+    use crate::RequestBudgetV1;
     use crate::domains::structural::{StructuralMatchBinding, StructuralMatchCandidate};
     use quanta_index_contract::{
         GenerationSelector, LqOptions, LqStructuralBlock, RepoId, RevisionId,
@@ -116,6 +148,7 @@ mod tests {
         fn execute(
             &self,
             _request: &StructuralQueryRequest,
+            _budget: &RequestBudgetV1,
         ) -> Result<Vec<StructuralMatchCandidate>, StructuralError> {
             Ok(self.candidates.clone())
         }
@@ -156,7 +189,7 @@ mod tests {
         ));
         let service = StructuralService::new(producer);
         let request = dummy_request();
-        let result = service.query(&request);
+        let result = service.query(&request, &RequestBudgetV1::unbounded());
         assert!(matches!(
             result,
             Err(StructuralError::ParseTreeProducerUnavailable)
@@ -174,7 +207,7 @@ mod tests {
         ));
         let service = StructuralService::new(producer);
         let request = dummy_request();
-        let result = service.query(&request);
+        let result = service.query(&request, &RequestBudgetV1::unbounded());
         assert!(matches!(result, Err(StructuralError::GenerationNotReady)));
         assert_eq!(code_or_debug(&result), "STR_GENERATION_NOT_READY");
     }
@@ -186,7 +219,7 @@ mod tests {
         ));
         let service = StructuralService::new(producer);
         let request = dummy_request();
-        let result = service.query(&request);
+        let result = service.query(&request, &RequestBudgetV1::unbounded());
         assert!(matches!(result, Err(StructuralError::ShardUnavailable)));
         assert_eq!(code_or_debug(&result), "STR_SHARD_UNAVAILABLE");
     }
@@ -200,7 +233,7 @@ mod tests {
         ));
         let service = StructuralService::new(producer);
         let request = dummy_request();
-        let result = service.query(&request);
+        let result = service.query(&request, &RequestBudgetV1::unbounded());
         assert!(matches!(
             result,
             Err(StructuralError::InvalidRequest(ref message))
@@ -218,7 +251,7 @@ mod tests {
         ));
         let service = StructuralService::new(producer);
         let request = dummy_request();
-        let result = service.query(&request);
+        let result = service.query(&request, &RequestBudgetV1::unbounded());
         assert!(matches!(
             result,
             Err(StructuralError::ProducerExecution(ref message))
@@ -261,7 +294,7 @@ mod tests {
         let producer = Arc::new(FakeProducer::ready_with(expected.clone()));
         let service = StructuralService::new(producer);
         let request = dummy_request();
-        let response = service.query(&request);
+        let response = service.query(&request, &RequestBudgetV1::unbounded());
         assert!(
             response.is_ok(),
             "expected ready structural response, got {response:?}"
@@ -283,6 +316,7 @@ mod tests {
             fn execute(
                 &self,
                 _request: &StructuralQueryRequest,
+                _budget: &RequestBudgetV1,
             ) -> Result<Vec<StructuralMatchCandidate>, StructuralError> {
                 Err(StructuralError::LangNotSupported("java".to_string()))
             }
@@ -290,10 +324,86 @@ mod tests {
 
         let service = StructuralService::new(Arc::new(ErrorProducer));
         let request = dummy_request();
-        let result = service.query(&request);
+        let result = service.query(&request, &RequestBudgetV1::unbounded());
         assert!(matches!(
             result,
             Err(StructuralError::LangNotSupported(lang)) if lang == "java"
         ));
+    }
+
+    #[test]
+    fn cancelled_request_is_refused_before_producer_execution() {
+        let service = StructuralService::new(Arc::new(FakeProducer::ready_with(Vec::new())));
+        let budget = RequestBudgetV1::unbounded();
+        budget.cancel_handle().cancel();
+        let error = service
+            .query(&dummy_request(), &budget)
+            .expect_err("cancelled request");
+        assert_eq!(error.code(), crate::REQUEST_CANCELLED_CODE);
+    }
+
+    #[test]
+    fn cancellation_during_producer_execution_is_not_an_empty_success() {
+        struct CancellingProducer;
+        impl StructuralProducerPort for CancellingProducer {
+            fn readiness(&self, _request: &StructuralQueryRequest) -> StructuralReadiness {
+                StructuralReadiness::Ready
+            }
+
+            fn execute(
+                &self,
+                _request: &StructuralQueryRequest,
+                budget: &RequestBudgetV1,
+            ) -> Result<Vec<StructuralMatchCandidate>, StructuralError> {
+                budget.cancel_handle().cancel();
+                Ok(Vec::new())
+            }
+        }
+
+        let service = StructuralService::new(Arc::new(CancellingProducer));
+        let error = service
+            .query(&dummy_request(), &RequestBudgetV1::unbounded())
+            .expect_err("cancellation during producer execution must be returned");
+        assert_eq!(error.code(), crate::REQUEST_CANCELLED_CODE);
+    }
+
+    #[test]
+    fn cancellation_during_readiness_keeps_request_code() {
+        struct CancellingReadinessProducer(crate::CancelHandleV1);
+        impl StructuralProducerPort for CancellingReadinessProducer {
+            fn readiness(&self, _request: &StructuralQueryRequest) -> StructuralReadiness {
+                self.0.cancel();
+                StructuralReadiness::GenerationNotReady
+            }
+
+            fn execute(
+                &self,
+                _request: &StructuralQueryRequest,
+                _budget: &RequestBudgetV1,
+            ) -> Result<Vec<StructuralMatchCandidate>, StructuralError> {
+                Err(StructuralError::ProducerExecution(
+                    "cancelled request must not execute".to_owned(),
+                ))
+            }
+        }
+
+        let budget = RequestBudgetV1::unbounded();
+        let service = StructuralService::new(Arc::new(CancellingReadinessProducer(
+            budget.cancel_handle(),
+        )));
+        let error = service
+            .query(&dummy_request(), &budget)
+            .expect_err("cancelled readiness");
+        assert_eq!(error.code(), crate::REQUEST_CANCELLED_CODE);
+    }
+
+    #[test]
+    fn expired_request_preserves_deadline_code() {
+        let service = StructuralService::new(Arc::new(FakeProducer::ready_with(Vec::new())));
+        let budget = RequestBudgetV1::until(std::time::Instant::now());
+        let error = service
+            .query(&dummy_request(), &budget)
+            .expect_err("expired request");
+        assert_eq!(error.code(), crate::REQUEST_DEADLINE_EXCEEDED_CODE);
     }
 }

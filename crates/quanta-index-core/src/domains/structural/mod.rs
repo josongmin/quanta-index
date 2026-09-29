@@ -11,5 +11,5 @@ mod types;
 pub use inbound::{StructuralQueryRequest, StructuralQueryResponse};
 pub use outbound::{StructuralError, StructuralProducerPort, StructuralReadiness};
 pub use policy::StructuralPolicy;
-pub use service::StructuralService;
+pub use service::{StructuralService, structural_checkpoint};
 pub use types::{StructuralExecutableFilter, StructuralMatchBinding, StructuralMatchCandidate};

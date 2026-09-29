@@ -8,7 +8,7 @@ use quanta_index_contract::{
 };
 use quanta_index_core::domains::structural::StructuralExecutableFilter;
 use quanta_index_core::domains::structural::StructuralQueryRequest as DomainStructuralQueryRequest;
-use quanta_index_core::{CoreError, StructuralService};
+use quanta_index_core::{CoreError, RequestBudgetV1, StructuralService};
 
 use crate::lowering::{
     structural_where_regex_count_error, visit_block_where_regexes, visit_expr_where_regexes,
@@ -151,8 +151,10 @@ pub(super) fn evaluate_structural_expr(
     filters: &[StructuralExecutableFilter],
     options: &LqOptions,
     seed: Option<&StructuralCandidateBuckets>,
+    budget: &RequestBudgetV1,
     lexical_eval: Option<&LexicalSubexprEvaluator<'_>>,
 ) -> Result<StructuralCandidateBuckets, CoreError> {
+    budget.checkpoint("structural:evaluate")?;
     match expr {
         LqExpr::Empty => Err(structural_invalid_request(
             "query must include at least one structural `match { ... }` leaf",
@@ -166,6 +168,7 @@ pub(super) fn evaluate_structural_expr(
             filters,
             options,
             seed,
+            budget,
         ),
         LqExpr::Leaf(_) => {
             let Some(evaluator) = lexical_eval else {
@@ -190,6 +193,7 @@ pub(super) fn evaluate_structural_expr(
                 filters,
                 options,
                 Some(seed),
+                budget,
                 lexical_eval,
             )?;
             Ok(subtract_structural_buckets(seed, &blocked))
@@ -213,6 +217,7 @@ pub(super) fn evaluate_structural_expr(
                     filters,
                     options,
                     seed,
+                    budget,
                     lexical_eval,
                 )?;
                 for child in positives.by_ref() {
@@ -225,6 +230,7 @@ pub(super) fn evaluate_structural_expr(
                         filters,
                         options,
                         Some(&current),
+                        budget,
                         lexical_eval,
                     )?;
                     current = intersect_structural_buckets(&current, &next);
@@ -233,6 +239,7 @@ pub(super) fn evaluate_structural_expr(
                             admit_skipped_structural_regexes(
                                 remaining,
                                 &mut ctx.short_circuit_regexes,
+                                budget,
                             )?;
                         }
                         for negative in children
@@ -242,6 +249,7 @@ pub(super) fn evaluate_structural_expr(
                             admit_skipped_structural_regexes(
                                 negative,
                                 &mut ctx.short_circuit_regexes,
+                                budget,
                             )?;
                         }
                         return Ok(current);
@@ -268,6 +276,7 @@ pub(super) fn evaluate_structural_expr(
                     filters,
                     options,
                     Some(&current),
+                    budget,
                     lexical_eval,
                 )?;
                 if current.is_empty() {
@@ -275,6 +284,7 @@ pub(super) fn evaluate_structural_expr(
                         admit_skipped_structural_regexes(
                             remaining,
                             &mut ctx.short_circuit_regexes,
+                            budget,
                         )?;
                     }
                     return Ok(current);
@@ -299,6 +309,7 @@ pub(super) fn evaluate_structural_expr(
                     filters,
                     options,
                     seed,
+                    budget,
                     lexical_eval,
                 )?;
                 union = union_structural_buckets(union, child_matches);
@@ -308,6 +319,10 @@ pub(super) fn evaluate_structural_expr(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "structural leaf execution carries the shared request budget with its query context"
+)]
 fn execute_structural_block(
     ctx: &mut StructuralEvalContext,
     service: &StructuralService,
@@ -317,10 +332,11 @@ fn execute_structural_block(
     filters: &[StructuralExecutableFilter],
     options: &LqOptions,
     seed: Option<&StructuralCandidateBuckets>,
+    budget: &RequestBudgetV1,
 ) -> Result<StructuralCandidateBuckets, CoreError> {
     let candidate_scope = seed.map(structural_candidate_scope_ids);
     if candidate_scope.as_ref().is_some_and(Vec::is_empty) {
-        admit_short_circuited_where_regexes(block, &mut ctx.short_circuit_regexes)?;
+        admit_short_circuited_where_regexes(block, &mut ctx.short_circuit_regexes, budget)?;
         return Ok(StructuralCandidateBuckets::new());
     }
     let cache_key = StructuralLeafExecutionKey {
@@ -334,15 +350,18 @@ fn execute_structural_block(
         return Ok(cached.clone());
     }
     let response = service
-        .query(&DomainStructuralQueryRequest {
-            pattern: block.clone(),
-            requested_lang: requested_lang.map(str::to_string),
-            filters: filters.to_vec(),
-            candidate_scope,
-            options: options.clone(),
-            generation: GenerationSelector::Pinned(read.pin.clone()),
-            aux_epoch: read.epoch,
-        })
+        .query(
+            &DomainStructuralQueryRequest {
+                pattern: block.clone(),
+                requested_lang: requested_lang.map(str::to_string),
+                filters: filters.to_vec(),
+                candidate_scope,
+                options: options.clone(),
+                generation: GenerationSelector::Pinned(read.pin.clone()),
+                aux_epoch: read.epoch,
+            },
+            budget,
+        )
         .map_err(|err| map_structural_error(&err))?;
     let buckets = bucket_structural_matches(response.candidates);
     let _prior = ctx.leaf_cache.insert(cache_key, buckets.clone());
@@ -354,25 +373,29 @@ fn execute_structural_block(
 fn admit_short_circuited_where_regexes(
     block: &LqStructuralBlock,
     admitted: &mut BTreeSet<String>,
+    budget: &RequestBudgetV1,
 ) -> Result<(), CoreError> {
     visit_block_where_regexes(block, &mut |pattern| {
-        admit_one_short_circuited_where_regex(pattern, admitted)
+        admit_one_short_circuited_where_regex(pattern, admitted, budget)
     })
 }
 
 fn admit_skipped_structural_regexes(
     expr: &LqExpr,
     admitted: &mut BTreeSet<String>,
+    budget: &RequestBudgetV1,
 ) -> Result<(), CoreError> {
     visit_expr_where_regexes(expr, &mut |pattern| {
-        admit_one_short_circuited_where_regex(pattern, admitted)
+        admit_one_short_circuited_where_regex(pattern, admitted, budget)
     })
 }
 
 fn admit_one_short_circuited_where_regex(
     pattern: &str,
     admitted: &mut BTreeSet<String>,
+    budget: &RequestBudgetV1,
 ) -> Result<(), CoreError> {
+    budget.checkpoint("structural:skipped-regex")?;
     if admitted.contains(pattern) {
         return Ok(());
     }
@@ -404,7 +427,7 @@ mod tests {
         LqStructuralConstraintOperand, LqStructuralExpr, LqStructuralHoleMultiplicity,
         LqStructuralHoleRef, MAX_STRUCTURAL_WHERE_REGEX_ENGINES_V1, SearchPlaneErrorCodeV2,
     };
-    use quanta_index_core::CoreError;
+    use quanta_index_core::{CoreError, RequestBudgetV1};
     use std::collections::BTreeSet;
 
     fn nested_where(pattern: String) -> LqStructuralBlock {
@@ -436,14 +459,28 @@ mod tests {
             ),
         ] {
             assert!(matches!(
-                admit_short_circuited_where_regexes(&nested_where(pattern), &mut BTreeSet::new()),
+                admit_short_circuited_where_regexes(&nested_where(pattern), &mut BTreeSet::new(), &RequestBudgetV1::unbounded()),
                 Err(CoreError::Typed { code, .. }) if code == expected
             ));
         }
         let mut admitted = BTreeSet::new();
         let valid = nested_where("^main$".to_owned());
-        assert!(admit_short_circuited_where_regexes(&valid, &mut admitted).is_ok());
-        assert!(admit_short_circuited_where_regexes(&valid, &mut admitted).is_ok());
+        assert!(
+            admit_short_circuited_where_regexes(
+                &valid,
+                &mut admitted,
+                &RequestBudgetV1::unbounded()
+            )
+            .is_ok()
+        );
+        assert!(
+            admit_short_circuited_where_regexes(
+                &valid,
+                &mut admitted,
+                &RequestBudgetV1::unbounded()
+            )
+            .is_ok()
+        );
         assert_eq!(
             admitted.len(),
             1,
@@ -456,6 +493,7 @@ mod tests {
                 admit_short_circuited_where_regexes(
                     &nested_where(format!("^value{index}$")),
                     &mut admitted,
+                    &RequestBudgetV1::unbounded(),
                 )
                 .is_ok()
             );
@@ -464,11 +502,28 @@ mod tests {
             admit_short_circuited_where_regexes(
                 &nested_where("^one_more$".to_owned()),
                 &mut admitted,
+                &RequestBudgetV1::unbounded(),
             ),
             Err(CoreError::Typed {
                 code: SearchPlaneErrorCodeV2::LexRegexPlanLimitExceeded,
                 ..
             })
+        ));
+    }
+
+    #[test]
+    fn skipped_regex_admission_preserves_request_cancellation() {
+        let budget = RequestBudgetV1::unbounded();
+        budget.cancel_handle().cancel();
+        let error = admit_short_circuited_where_regexes(
+            &nested_where("^main$".to_owned()),
+            &mut BTreeSet::new(),
+            &budget,
+        )
+        .expect_err("cancelled request must not compile a skipped regex");
+        assert!(matches!(
+            error,
+            CoreError::Typed { code, .. } if code == quanta_index_core::REQUEST_CANCELLED_CODE
         ));
     }
 
