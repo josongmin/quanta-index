@@ -231,3 +231,17 @@ and unqualified total heap. BENCH-01–04 still require independent reviewed
 inputs, complete native captures and indexed-universe evidence, and qualified
 product measurement. The new rank-unit and semantic request contracts do not
 by themselves close those acceptance boundaries.
+
+The current tree also has real binary-SDK bounded-semantic settlement and
+ANN-generation exact-bypass tests (`sdk_frontdoor` and
+`e2e_ann_incremental_seal`); the earlier concern that this route had only
+wire and unsupported-adapter tests was stale. A persisted semantic-adapter
+regression now pins the native boundary separately: on a sealed ANN
+generation, insufficient work refuses before any dense query, exact allowance
+serves an independent exhaustive cosine oracle through the exact lane, and a
+second charge against that allowance refuses without another query. This is
+owner-local functional proof, not physical resource or installed-product
+qualification. The focused semantic-adapter test and the selected
+`runtime_extended_suite` ANN and `runtime_fast_suite` binary-SDK tests each
+passed 1/1 locally on this source. ENG-02 and ENG-04 remain open on their
+stated mechanisms.

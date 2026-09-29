@@ -32,10 +32,12 @@ use std::collections::BTreeSet;
 use std::error::Error;
 
 use quanta_index_contract::{
-    EmbeddingRecord, LexicalCandidate, ManifestGeneration, RepoId, RevisionId,
+    EmbeddingRecord, LexicalCandidate, ManifestGeneration, QueryConstraintSetV1, RepoId,
+    RevisionId, SearchPlaneErrorCodeV2,
 };
 use quanta_index_core::{
-    DenseIndexV1, MetricSourcePort, MetricValueV1, RequestBudgetV1, SemanticIndexOpenPort,
+    CoreError, DenseIndexV1, MetricSourcePort, MetricValueV1, RequestBudgetV1,
+    SemanticIndexOpenPort,
 };
 use quanta_index_semantic::{
     SemanticAdapter, build_resident_batch_v1, legacy_chunk_embedding_record_v1,
@@ -221,6 +223,61 @@ fn lane_counters(adapter: &SemanticAdapter) -> Result<(u64, u64, u64), Box<dyn E
         counter(adapter, "semantic_dense_queries_ann_total")?,
         counter(adapter, "semantic_dense_exact_completions_total")?,
     ))
+}
+
+/// A work-bounded query must admit the complete sealed scan before native I/O,
+/// then bypass the ANN index even when the generation has one.
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "the test asserts persisted bounded-search behavior and independent ranking"
+)]
+fn work_bounded_search_admits_exact_scan_once_on_an_ann_generation() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf())?;
+    let generation = ManifestGeneration::new(1);
+    seal_generation(&adapter, generation, ANN_ROWS)?;
+    let searcher = open_generation(&adapter, generation)?;
+    assert!(matches!(
+        searcher.dense_lane().index,
+        DenseIndexV1::Approximate { .. }
+    ));
+
+    let query = unit_vector(QUERY_SEED_BASE);
+    let constraints = QueryConstraintSetV1::default();
+    let work = ANN_ROWS * u64::try_from(DIMENSION)?;
+    let too_small = RequestBudgetV1::unbounded().with_semantic_work_limit_v1(work - 1)?;
+    let before = lane_counters(&adapter)?;
+    assert!(matches!(
+        searcher.search_work_bounded_v1(&query, &constraints, TOP_K, &too_small),
+        Err(CoreError::Typed {
+            code: SearchPlaneErrorCodeV2::SemanticWorkBudgetExceeded,
+            ..
+        })
+    ));
+    assert_eq!(too_small.semantic_work_consumed_v1()?, Some(0));
+    assert_eq!(lane_counters(&adapter)?, before, "refusal must precede I/O");
+
+    let budget = RequestBudgetV1::unbounded().with_semantic_work_limit_v1(work)?;
+    let hits = searcher.search_work_bounded_v1(&query, &constraints, TOP_K, &budget)?;
+    let expected =
+        exhaustive_cosine_oracle(&query, &rows(ANN_ROWS)?, None, usize::try_from(TOP_K)?);
+    assert_eq!(hit_ids(&hits), oracle_ids(&expected));
+    assert_eq!(budget.semantic_work_consumed_v1()?, Some(work));
+    let after = lane_counters(&adapter)?;
+    assert_eq!(after.0, before.0 + 1, "bounded path must use exact scan");
+    assert_eq!(after.1, before.1, "bounded path must not use ANN");
+
+    assert!(matches!(
+        searcher.search_work_bounded_v1(&query, &constraints, TOP_K, &budget),
+        Err(CoreError::Typed {
+            code: SearchPlaneErrorCodeV2::SemanticWorkBudgetExceeded,
+            ..
+        })
+    ));
+    assert_eq!(budget.semantic_work_consumed_v1()?, Some(work));
+    assert_eq!(lane_counters(&adapter)?, after);
+    Ok(())
 }
 
 /// Ticket item (a): the documented 255/256 row boundary.
