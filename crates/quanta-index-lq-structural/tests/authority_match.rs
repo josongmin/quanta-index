@@ -9,10 +9,11 @@ use quanta_index_contract::lex::{
 use quanta_index_contract::{
     LqMetaVar, LqStructuralBlock, LqStructuralConstraint, LqStructuralConstraintOperand,
     LqStructuralExpr, LqStructuralHoleMultiplicity, LqStructuralHoleRef, LqStructuralNode,
+    MAX_STRUCTURAL_WHERE_REGEX_ENGINES_V1,
 };
 use quanta_index_lq_structural::{
-    ByteSpan, MetaVar, StructuralAuthorityMatcher, StructuralAuthorityPatternRef,
-    StructuralAuthorityView, StructuralErrorCode, StructuralPattern,
+    ByteSpan, MetaVar, PreparedStructuralRegexes, StructuralAuthorityMatcher,
+    StructuralAuthorityPatternRef, StructuralAuthorityView, StructuralErrorCode, StructuralPattern,
     TruthfulSubsetAuthorityMatcher, compile_authoritative_pattern,
 };
 
@@ -592,16 +593,22 @@ fn authority_where_regex_constraint_filters_by_bound_source_text() {
         non_matching_end,
         non_matching_source,
     );
-    let pattern = compile_exprs(
-        vec![
-            LqStructuralExpr::Pattern(vec![metavar("name")]),
-            LqStructuralExpr::Where(vec![LqStructuralConstraint {
-                left: hole_ref("name", LqStructuralHoleMultiplicity::One),
-                right: LqStructuralConstraintOperand::Regex("^alpha$".to_string()),
-            }]),
-        ],
-        "rust",
-    );
+    let exprs = vec![
+        LqStructuralExpr::Pattern(vec![metavar("name")]),
+        LqStructuralExpr::Where(vec![LqStructuralConstraint {
+            left: hole_ref("name", LqStructuralHoleMultiplicity::One),
+            right: LqStructuralConstraintOperand::Regex("^alpha$".to_string()),
+        }]),
+    ];
+    let pattern = compile_exprs(exprs.clone(), "rust");
+    let prepared = match PreparedStructuralRegexes::from_block(&LqStructuralBlock {
+        lang: None,
+        nodes: vec![metavar("name")],
+        exprs,
+    }) {
+        Ok(prepared) => prepared,
+        Err(error) => fatal(&format!("valid regex admission failed: {error}")),
+    };
     let matcher = TruthfulSubsetAuthorityMatcher::new();
     let matching = match matcher.match_authority(
         lower(&pattern),
@@ -619,6 +626,90 @@ fn authority_where_regex_constraint_filters_by_bound_source_text() {
     };
     assert_eq!(matching.len(), 1);
     assert!(non_matching.is_empty());
+    let prepared_matching = match matcher.match_authority_prepared(
+        lower(&pattern),
+        StructuralAuthorityView::new(matching_source, &matching_tree),
+        &prepared,
+    ) {
+        Ok(candidates) => candidates,
+        Err(error) => fatal(&format!("prepared regex match failed: {error}")),
+    };
+    let prepared_non_matching = match matcher.match_authority_prepared(
+        lower(&pattern),
+        StructuralAuthorityView::new(non_matching_source, &non_matching_tree),
+        &prepared,
+    ) {
+        Ok(candidates) => candidates,
+        Err(error) => fatal(&format!("prepared regex match failed: {error}")),
+    };
+    assert_eq!(prepared_matching, matching);
+    assert_eq!(prepared_non_matching, non_matching);
+}
+
+#[test]
+fn authority_where_regex_distinguishes_input_and_resource_refusal() {
+    let source = "alpha";
+    let authority = tree("rust", "identifier", 0, 5, source);
+    let matcher = TruthfulSubsetAuthorityMatcher::new();
+    for (regex, expected) in [
+        ("[".to_string(), StructuralErrorCode::RegexInvalidPattern),
+        (
+            "x".repeat(65_537),
+            StructuralErrorCode::RegexPlanLimitExceeded,
+        ),
+        (
+            r"[\x{80}-\x{10FFFF}]{20000}".to_string(),
+            StructuralErrorCode::RegexPlanLimitExceeded,
+        ),
+    ] {
+        let pattern = compile_exprs(
+            vec![
+                LqStructuralExpr::Pattern(vec![metavar("name")]),
+                LqStructuralExpr::Where(vec![LqStructuralConstraint {
+                    left: hole_ref("name", LqStructuralHoleMultiplicity::One),
+                    right: LqStructuralConstraintOperand::Regex(regex),
+                }]),
+            ],
+            "rust",
+        );
+        let error = matcher
+            .match_authority(
+                lower(&pattern),
+                StructuralAuthorityView::new(source, &authority),
+            )
+            .expect_err("invalid regex must refuse rather than act as a non-match");
+        assert_eq!(error.code, expected);
+    }
+}
+
+#[test]
+fn structural_where_regex_engine_count_is_bounded_by_distinct_patterns() {
+    let block = |patterns: Vec<String>| LqStructuralBlock {
+        lang: None,
+        nodes: vec![metavar("name")],
+        exprs: vec![
+            LqStructuralExpr::Pattern(vec![metavar("name")]),
+            LqStructuralExpr::Where(
+                patterns
+                    .into_iter()
+                    .map(|pattern| LqStructuralConstraint {
+                        left: hole_ref("name", LqStructuralHoleMultiplicity::One),
+                        right: LqStructuralConstraintOperand::Regex(pattern),
+                    })
+                    .collect(),
+            ),
+        ],
+    };
+    let mut patterns = (0..MAX_STRUCTURAL_WHERE_REGEX_ENGINES_V1)
+        .map(|index| format!("^value{index}$"))
+        .collect::<Vec<_>>();
+    patterns.push(patterns[0].clone());
+    assert!(PreparedStructuralRegexes::from_block(&block(patterns.clone())).is_ok());
+    patterns.push("^one_more$".to_owned());
+    match PreparedStructuralRegexes::from_block(&block(patterns)) {
+        Err(error) => assert_eq!(error.code, StructuralErrorCode::RegexPlanLimitExceeded),
+        Ok(_) => fatal("ninth distinct structural regex must be refused"),
+    }
 }
 
 #[test]

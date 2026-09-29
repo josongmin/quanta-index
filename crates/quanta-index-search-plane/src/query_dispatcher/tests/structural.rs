@@ -956,6 +956,49 @@ fn structural_dispatch_executes_mixed_lexical_and_structural_and() -> TestResult
 }
 
 #[test]
+fn empty_lexical_seed_still_refuses_a_later_structural_where_regex() -> TestResult {
+    let producer = Arc::new(PatternRoutingStructuralProducer::new());
+    let lex_opener = Arc::new(RecordingLexicalOpener {
+        state: Arc::new(Mutex::new(RecordingLexicalState::default())),
+        results: Vec::new(),
+    });
+    let dispatcher = structural_dispatcher_mixed(
+        Arc::clone(&producer),
+        lex_opener,
+        ready_ledger_with_structural_boolean_chunks(),
+    )?;
+    let response = dispatcher.dispatch(
+        SearchPlaneQueryIpcRequest::Structural(quanta_index_contract::StructuralQueryRequest {
+            text_query: TextQueryRequest {
+                syntax: TextQuerySyntax::Native,
+                query_text: "needle AND match { alpha } AND match { :[name] where :[name] == /[/ }"
+                    .to_owned(),
+                constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+                generation: Some(ready_pin()),
+                generation_selector: None,
+                top_k: 10,
+                cursor: None,
+            },
+            cursor: None,
+        }),
+        &RequestBudgetV1::unbounded(),
+    );
+    let (code, message) = ipc_error_from(response).map_err(Box::<dyn std::error::Error>::from)?;
+    if code != quanta_index_contract::SearchPlaneErrorCodeV2::StrInvalidRequest {
+        return Err(format!("skipped where regex must refuse invalid input, got {code}").into());
+    }
+    if !message.contains("where filter pattern failed to compile as regex") {
+        return Err(format!("wrong skipped where regex refusal: {message}").into());
+    }
+    if producer.readiness_calls.load(Ordering::SeqCst) != 0
+        || producer.execute_calls.load(Ordering::SeqCst) != 0
+    {
+        return Err("empty lexical seed must not invoke the structural producer".into());
+    }
+    Ok(())
+}
+
+#[test]
 fn structural_dispatch_executes_pure_negative_root_from_pinned_universe() -> TestResult {
     let producer = Arc::new(PatternRoutingStructuralProducer::new());
     let dispatcher = structural_dispatcher_with_producer_and_ledger(

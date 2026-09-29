@@ -2325,6 +2325,20 @@ fn sdk_query_frontdoor_routes_history_runtime_and_structural_truth() -> TestResu
         .into());
     }
 
+    let structural_where_regex = client
+        .structural()
+        .query()
+        .native("match { identifier :[name] where :[name] == /^main$/ inside { function_item } outside { trait_item } }")
+        .pinned(pin())
+        .top_k(2)
+        .execute()?;
+    if structural_where_regex.results != structural_where_inside_outside.results {
+        return Err(format!(
+            "prepared structural regex changed the authoritative match: {structural_where_regex:?}"
+        )
+        .into());
+    }
+
     let structural_variadic = wait_for_sdk_observation(
         SOCKET_TIMEOUT,
         || {

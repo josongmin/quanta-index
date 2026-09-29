@@ -73,6 +73,25 @@ source. Dependency allocation hooks plus one cross-route request lease remain
 the implementation boundary; a separate worker process would also require
 explicit IPC, failure mapping and worker lifecycle design.
 
+Sep-29 structural-route correction: live `where` regexes are compiled once
+per request before repo/candidate short circuits and reused across chunks.
+The search-plane Boolean evaluator also validates nested `where` regexes when
+an empty lexical seed skips the producer, retaining one engine per distinct
+pattern for that request instead of silently returning an empty result. It
+checks later Boolean siblings before returning an empty intersection, without
+calling the structural producer or reading a generation.
+The producer refuses a ninth distinct `where` engine within one structural
+block; the skipped-path evaluator independently limits its retained preflight
+set to eight. Repeated identical patterns share one slot. These are local
+cardinality guards, not a request-wide physical heap bound.
+The shared executor's pre-parser byte gate now runs before a retained cache
+key is allocated. Invalid syntax, resource refusal and engine failure preserve
+distinct structural/searchd errors (`StrInvalidRequest`,
+`LexRegexPlanLimitExceeded`, `StrProducerExecutionFailed`); resource refusal
+no longer becomes `StrShardUnavailable`. This closes that reachable typed
+refusal and empty-universe gap. It does not supply aggregate physical
+allocation admission for these or other regex routes.
+
 Owners: canonical regex executor/prepared holder, lexical preview preparation,
 request resource/lifetime owner and dependency configuration. Preserve one
 matcher for truth and ranges and the current query recall/case/NFC semantics.

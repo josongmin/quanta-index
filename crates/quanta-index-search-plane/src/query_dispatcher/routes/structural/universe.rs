@@ -11,7 +11,7 @@ use crate::query_dispatcher::routes::structural::buckets::{
 };
 use crate::readiness::StructuralAuthorityState;
 
-fn compile_structural_filter_regex(
+pub(super) fn compile_structural_filter_regex(
     filter_name: &str,
     pattern: &str,
 ) -> Result<RegexExecutor, CoreError> {

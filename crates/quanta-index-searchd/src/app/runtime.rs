@@ -51,7 +51,7 @@ use quanta_index_embed::{
 use quanta_index_ipc::{IpcDispatcher, IpcServerCounters, ServerAdmissionPolicy};
 use quanta_index_lq_regex::{RegexErrorCode, RegexExecutor};
 use quanta_index_lq_structural::{
-    StructuralAuthorityCandidate as LqStructuralAuthorityCandidate, StructuralAuthorityMatcher,
+    PreparedStructuralRegexes, StructuralAuthorityCandidate as LqStructuralAuthorityCandidate,
     StructuralAuthorityPatternError, StructuralAuthorityPatternRef, StructuralAuthorityView,
     StructuralError as LqStructuralError, StructuralErrorCode as LqStructuralErrorCode,
     StructuralPattern as LqStructuralPattern, TruthfulSubsetAuthorityMatcher,
@@ -824,6 +824,8 @@ impl StructuralProducerPort for LedgerStructuralProducer {
         // Compile every filter before any short circuit or candidate traversal.
         // This also rejects malformed filters for an empty candidate universe.
         let filters = CompiledStructuralFilters::compile(&request.filters)?;
+        let regexes = PreparedStructuralRegexes::from_block(&request.pattern)
+            .map_err(map_live_authority_error)?;
         if !filters.repo_matches(&pin) {
             return Ok(Vec::new());
         }
@@ -905,9 +907,10 @@ impl StructuralProducerPort for LedgerStructuralProducer {
             }
             let authority_candidates = self
                 .matcher
-                .match_authority(
+                .match_authority_prepared(
                     authority_pattern,
                     StructuralAuthorityView::new(chunk.text.as_ref(), tree),
+                    &regexes,
                 )
                 .map_err(map_live_authority_error)?;
             results.extend(project_structural_candidates(
@@ -1045,8 +1048,15 @@ fn compile_live_structural_pattern(
         }
         LqStructuralErrorCode::StrParseFail
         | LqStructuralErrorCode::StrInvalidMetavar
-        | LqStructuralErrorCode::PlanLimitExceeded => {
+        | LqStructuralErrorCode::PlanLimitExceeded
+        | LqStructuralErrorCode::RegexInvalidPattern => {
             StructuralError::InvalidRequest(err.to_string())
+        }
+        LqStructuralErrorCode::RegexPlanLimitExceeded => {
+            StructuralError::RegexPlanLimitExceeded(err.to_string())
+        }
+        LqStructuralErrorCode::RegexExecutionInternal => {
+            StructuralError::ProducerExecution(err.to_string())
         }
     })
 }
@@ -1074,8 +1084,16 @@ fn map_live_authority_error(err: LqStructuralError) -> StructuralError {
             StructuralError::HoleKindUnsupported(err.to_string())
         }
         LqStructuralErrorCode::StrParseFail => StructuralError::ShardUnavailable,
-        LqStructuralErrorCode::StrInvalidMetavar | LqStructuralErrorCode::PlanLimitExceeded => {
+        LqStructuralErrorCode::RegexInvalidPattern => {
+            StructuralError::InvalidRequest(err.to_string())
+        }
+        LqStructuralErrorCode::StrInvalidMetavar
+        | LqStructuralErrorCode::PlanLimitExceeded
+        | LqStructuralErrorCode::RegexExecutionInternal => {
             StructuralError::ProducerExecution(err.to_string())
+        }
+        LqStructuralErrorCode::RegexPlanLimitExceeded => {
+            StructuralError::RegexPlanLimitExceeded(err.to_string())
         }
     }
 }
@@ -1999,6 +2017,47 @@ mod tests {
                     .expect_err("filter must be refused");
                 assert_eq!(error.code(), expected);
             }
+        }
+    }
+
+    #[test]
+    fn structural_where_regex_refuses_before_empty_generation_with_typed_cause() {
+        use quanta_index_contract::{
+            LqMetaVar, LqStructuralConstraint, LqStructuralConstraintOperand, LqStructuralExpr,
+            LqStructuralHoleMultiplicity, LqStructuralHoleRef, LqStructuralNode,
+        };
+
+        let producer = LedgerStructuralProducer::new(Arc::new(RwLock::new(Ledger::new())));
+        for (pattern, expected) in [
+            ("[".to_owned(), SearchPlaneErrorCodeV2::StrInvalidRequest),
+            (
+                "x".repeat(65_537),
+                SearchPlaneErrorCodeV2::LexRegexPlanLimitExceeded,
+            ),
+            (
+                r"[\x{80}-\x{10FFFF}]{20000}".to_owned(),
+                SearchPlaneErrorCodeV2::LexRegexPlanLimitExceeded,
+            ),
+        ] {
+            let mut request = pinned_request();
+            let name = LqMetaVar::new("name".to_owned());
+            request.pattern.exprs = vec![
+                LqStructuralExpr::Pattern(vec![LqStructuralNode::Hole {
+                    name: Some(name.clone()),
+                    multiplicity: LqStructuralHoleMultiplicity::One,
+                }]),
+                LqStructuralExpr::Where(vec![LqStructuralConstraint {
+                    left: LqStructuralHoleRef {
+                        name,
+                        multiplicity: LqStructuralHoleMultiplicity::One,
+                    },
+                    right: LqStructuralConstraintOperand::Regex(pattern),
+                }]),
+            ];
+            let error = producer.execute(&request).expect_err(
+                "where regex must be admitted before an absent generation can short-circuit",
+            );
+            assert_eq!(error.code(), expected);
         }
     }
 

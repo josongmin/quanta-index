@@ -27,6 +27,12 @@ pub enum StructuralErrorCode {
     /// Structural pattern exceeds the 256-node, 16-depth, or 32-metavar
     /// cap. Carries the offending [`LimitDimension`] in the error payload.
     PlanLimitExceeded,
+    /// A structural `where` regex is malformed or outside the shared dialect.
+    RegexInvalidPattern,
+    /// A structural `where` regex exceeded the shared regex executor's cap.
+    RegexPlanLimitExceeded,
+    /// The shared regex executor failed for a non-input, non-resource reason.
+    RegexExecutionInternal,
 }
 
 impl StructuralErrorCode {
@@ -39,6 +45,9 @@ impl StructuralErrorCode {
             Self::StrHoleKindUnsupported => "STR_HOLE_KIND_UNSUPPORTED",
             Self::StrLangNotSupported => "STR_LANG_NOT_SUPPORTED",
             Self::PlanLimitExceeded => "PLAN_LIMIT_EXCEEDED",
+            Self::RegexInvalidPattern => "REGEX_INVALID_PATTERN",
+            Self::RegexPlanLimitExceeded => "REGEX_PLAN_LIMIT_EXCEEDED",
+            Self::RegexExecutionInternal => "REGEX_EXECUTION_INTERNAL",
         }
     }
 
@@ -51,6 +60,9 @@ impl StructuralErrorCode {
             "STR_HOLE_KIND_UNSUPPORTED" => Self::StrHoleKindUnsupported,
             "STR_LANG_NOT_SUPPORTED" => Self::StrLangNotSupported,
             "PLAN_LIMIT_EXCEEDED" => Self::PlanLimitExceeded,
+            "REGEX_INVALID_PATTERN" => Self::RegexInvalidPattern,
+            "REGEX_PLAN_LIMIT_EXCEEDED" => Self::RegexPlanLimitExceeded,
+            "REGEX_EXECUTION_INTERNAL" => Self::RegexExecutionInternal,
             _ => return None,
         };
         Some(v)
@@ -341,6 +353,9 @@ mod tests {
         StructuralErrorCode::StrHoleKindUnsupported,
         StructuralErrorCode::StrLangNotSupported,
         StructuralErrorCode::PlanLimitExceeded,
+        StructuralErrorCode::RegexInvalidPattern,
+        StructuralErrorCode::RegexPlanLimitExceeded,
+        StructuralErrorCode::RegexExecutionInternal,
     ];
 
     const ALL_DIMENSIONS: &[LimitDimension] = &[

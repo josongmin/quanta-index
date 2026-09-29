@@ -57,9 +57,9 @@ pub mod types;
 pub use binding::{StructuralAuthorityCandidate, StructuralBinding};
 pub use errors::{LimitDimension, StructuralError, StructuralErrorCode};
 pub use matcher::{
-    StructuralAuthorityMatcher, StructuralAuthorityPatternError, StructuralAuthorityPatternKind,
-    StructuralAuthorityPatternRef, StructuralAuthorityView, TruthfulSubsetAuthorityMatcher,
-    compile_authoritative_pattern,
+    PreparedStructuralRegexes, StructuralAuthorityMatcher, StructuralAuthorityPatternError,
+    StructuralAuthorityPatternKind, StructuralAuthorityPatternRef, StructuralAuthorityView,
+    TruthfulSubsetAuthorityMatcher, compile_authoritative_pattern,
 };
 pub use pattern::{PatternNode, StructuralPattern};
 pub use types::{

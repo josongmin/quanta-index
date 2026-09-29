@@ -1,9 +1,15 @@
 //! Structural boolean-tree evaluation with per-leaf memoization.
 
-use quanta_index_contract::{GenerationSelector, LqExpr, LqLeaf, LqOptions, LqStructuralBlock};
+use std::collections::BTreeMap;
+
+use quanta_index_contract::{
+    GenerationSelector, LqExpr, LqLeaf, LqOptions, LqStructuralBlock,
+    LqStructuralConstraintOperand, LqStructuralExpr, MAX_STRUCTURAL_WHERE_REGEX_ENGINES_V1,
+};
 use quanta_index_core::domains::structural::StructuralExecutableFilter;
 use quanta_index_core::domains::structural::StructuralQueryRequest as DomainStructuralQueryRequest;
 use quanta_index_core::{CoreError, StructuralService};
+use quanta_index_lq_regex::RegexExecutor;
 
 use crate::query_dispatcher::errors::structural_invalid_request;
 use crate::query_dispatcher::routes::structural::buckets::{
@@ -12,6 +18,7 @@ use crate::query_dispatcher::routes::structural::buckets::{
 };
 use crate::query_dispatcher::routes::structural::lexical_leaves::LexicalSubexprEvaluator;
 use crate::query_dispatcher::routes::structural::read::StructuralRead;
+use crate::query_dispatcher::routes::structural::universe::compile_structural_filter_regex;
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 struct StructuralLeafExecutionKey {
@@ -32,6 +39,7 @@ type StructuralLeafCache =
 #[derive(Default)]
 pub(super) struct StructuralEvalContext {
     leaf_cache: StructuralLeafCache,
+    short_circuit_regexes: BTreeMap<String, RegexExecutor>,
 }
 
 pub(super) fn structural_expr_has_structural_leaf(expr: &LqExpr) -> bool {
@@ -205,7 +213,7 @@ pub(super) fn evaluate_structural_expr(
                     seed,
                     lexical_eval,
                 )?;
-                for child in positives {
+                for child in positives.by_ref() {
                     let next = evaluate_structural_expr(
                         ctx,
                         service,
@@ -219,6 +227,21 @@ pub(super) fn evaluate_structural_expr(
                     )?;
                     current = intersect_structural_buckets(&current, &next);
                     if current.is_empty() {
+                        for remaining in positives {
+                            admit_skipped_structural_regexes(
+                                remaining,
+                                &mut ctx.short_circuit_regexes,
+                            )?;
+                        }
+                        for negative in children
+                            .iter()
+                            .filter(|child| matches!(child, LqExpr::Not(_)))
+                        {
+                            admit_skipped_structural_regexes(
+                                negative,
+                                &mut ctx.short_circuit_regexes,
+                            )?;
+                        }
                         return Ok(current);
                     }
                 }
@@ -230,22 +253,29 @@ pub(super) fn evaluate_structural_expr(
                     "pure-negative structural boolean queries are not executable; add a positive structural leaf before `NOT`",
                 ));
             };
-            for child in children {
-                if matches!(child, LqExpr::Not(_)) {
-                    current = evaluate_structural_expr(
-                        ctx,
-                        service,
-                        read,
-                        child,
-                        requested_lang,
-                        filters,
-                        options,
-                        Some(&current),
-                        lexical_eval,
-                    )?;
-                    if current.is_empty() {
-                        return Ok(current);
+            let mut negatives = children
+                .iter()
+                .filter(|child| matches!(child, LqExpr::Not(_)));
+            for child in negatives.by_ref() {
+                current = evaluate_structural_expr(
+                    ctx,
+                    service,
+                    read,
+                    child,
+                    requested_lang,
+                    filters,
+                    options,
+                    Some(&current),
+                    lexical_eval,
+                )?;
+                if current.is_empty() {
+                    for remaining in negatives {
+                        admit_skipped_structural_regexes(
+                            remaining,
+                            &mut ctx.short_circuit_regexes,
+                        )?;
                     }
+                    return Ok(current);
                 }
             }
             Ok(current)
@@ -288,6 +318,7 @@ fn execute_structural_block(
 ) -> Result<StructuralCandidateBuckets, CoreError> {
     let candidate_scope = seed.map(structural_candidate_scope_ids);
     if candidate_scope.as_ref().is_some_and(Vec::is_empty) {
+        admit_short_circuited_where_regexes(block, &mut ctx.short_circuit_regexes)?;
         return Ok(StructuralCandidateBuckets::new());
     }
     let cache_key = StructuralLeafExecutionKey {
@@ -316,11 +347,142 @@ fn execute_structural_block(
     Ok(buckets)
 }
 
+/// The producer is intentionally skipped for an empty lexical seed. Preserve
+/// its regex admission without acquiring a generation or scanning chunks.
+fn admit_short_circuited_where_regexes(
+    block: &LqStructuralBlock,
+    admitted: &mut BTreeMap<String, RegexExecutor>,
+) -> Result<(), CoreError> {
+    let mut pending = vec![block];
+    while let Some(block) = pending.pop() {
+        for expr in &block.exprs {
+            match expr {
+                LqStructuralExpr::Where(constraints) => {
+                    for constraint in constraints {
+                        if let LqStructuralConstraintOperand::Regex(pattern) = &constraint.right
+                            && !admitted.contains_key(pattern.as_str())
+                        {
+                            if admitted.len() >= MAX_STRUCTURAL_WHERE_REGEX_ENGINES_V1 {
+                                return Err(CoreError::Typed {
+                                    code: quanta_index_contract::SearchPlaneErrorCodeV2::LexRegexPlanLimitExceeded,
+                                    message: format!(
+                                        "structural where regex engine count exceeds {MAX_STRUCTURAL_WHERE_REGEX_ENGINES_V1}"
+                                    ),
+                                });
+                            }
+                            let executor = compile_structural_filter_regex("where", pattern)?;
+                            drop(admitted.insert(pattern.clone(), executor));
+                        }
+                    }
+                }
+                LqStructuralExpr::Inside(nested) | LqStructuralExpr::Outside(nested) => {
+                    pending.push(nested);
+                }
+                LqStructuralExpr::Pattern(_) => {}
+            }
+        }
+    }
+    Ok(())
+}
+
+fn admit_skipped_structural_regexes(
+    expr: &LqExpr,
+    admitted: &mut BTreeMap<String, RegexExecutor>,
+) -> Result<(), CoreError> {
+    let mut pending = vec![expr];
+    while let Some(expr) = pending.pop() {
+        match expr {
+            LqExpr::Leaf(LqLeaf::StructuralBlock(block)) => {
+                admit_short_circuited_where_regexes(block, admitted)?;
+            }
+            LqExpr::Not(inner) => pending.push(inner),
+            LqExpr::All(children) | LqExpr::Any(children) => {
+                pending.extend(children.iter().rev());
+            }
+            LqExpr::Empty | LqExpr::Leaf(_) => {}
+        }
+    }
+    Ok(())
+}
+
 fn map_structural_error(
     err: &quanta_index_core::domains::structural::StructuralError,
 ) -> CoreError {
     CoreError::Typed {
         code: err.code(),
         message: err.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::admit_short_circuited_where_regexes;
+    use quanta_index_contract::{
+        LqMetaVar, LqStructuralBlock, LqStructuralConstraint, LqStructuralConstraintOperand,
+        LqStructuralExpr, LqStructuralHoleMultiplicity, LqStructuralHoleRef,
+        MAX_STRUCTURAL_WHERE_REGEX_ENGINES_V1, SearchPlaneErrorCodeV2,
+    };
+    use quanta_index_core::CoreError;
+    use std::collections::BTreeMap;
+
+    fn nested_where(pattern: String) -> LqStructuralBlock {
+        let name = LqMetaVar::new("name".to_owned());
+        LqStructuralBlock {
+            lang: None,
+            nodes: Vec::new(),
+            exprs: vec![LqStructuralExpr::Inside(Box::new(LqStructuralBlock {
+                lang: None,
+                nodes: Vec::new(),
+                exprs: vec![LqStructuralExpr::Where(vec![LqStructuralConstraint {
+                    left: LqStructuralHoleRef {
+                        name,
+                        multiplicity: LqStructuralHoleMultiplicity::One,
+                    },
+                    right: LqStructuralConstraintOperand::Regex(pattern),
+                }])],
+            }))],
+        }
+    }
+
+    #[test]
+    fn empty_seed_still_admits_nested_where_regex() {
+        for (pattern, expected) in [
+            ("[".to_owned(), SearchPlaneErrorCodeV2::StrInvalidRequest),
+            (
+                "x".repeat(65_537),
+                SearchPlaneErrorCodeV2::LexRegexPlanLimitExceeded,
+            ),
+        ] {
+            assert!(matches!(
+                admit_short_circuited_where_regexes(&nested_where(pattern), &mut BTreeMap::new()),
+                Err(CoreError::Typed { code, .. }) if code == expected
+            ));
+        }
+        let mut admitted = BTreeMap::new();
+        let valid = nested_where("^main$".to_owned());
+        assert!(admit_short_circuited_where_regexes(&valid, &mut admitted).is_ok());
+        assert!(admit_short_circuited_where_regexes(&valid, &mut admitted).is_ok());
+        assert_eq!(admitted.len(), 1, "repeated empty leaves share one engine");
+
+        let mut admitted = BTreeMap::new();
+        for index in 0..MAX_STRUCTURAL_WHERE_REGEX_ENGINES_V1 {
+            assert!(
+                admit_short_circuited_where_regexes(
+                    &nested_where(format!("^value{index}$")),
+                    &mut admitted,
+                )
+                .is_ok()
+            );
+        }
+        assert!(matches!(
+            admit_short_circuited_where_regexes(
+                &nested_where("^one_more$".to_owned()),
+                &mut admitted,
+            ),
+            Err(CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::LexRegexPlanLimitExceeded,
+                ..
+            })
+        ));
     }
 }
