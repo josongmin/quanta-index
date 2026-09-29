@@ -14,6 +14,7 @@
     "tools.ci.tests.test_retrieval_benchmark.TestSourcegraphComparator.test_non_content_or_outside_universe_refused",
     "tools.ci.tests.test_retrieval_benchmark.TestSourcegraphComparator.test_nonfinite_progress_refused",
     "tools.ci.tests.test_retrieval_benchmark.TestSourcegraphComparator.test_null_line_match_refused",
+    "tools.ci.tests.test_retrieval_benchmark.TestSourcegraphComparator.test_out_of_range_line_match_refused",
     "tools.ci.tests.test_retrieval_benchmark.TestSourcegraphComparator.test_preserves_raw_bytes_and_native_order_without_promotion",
     "tools.ci.tests.test_retrieval_benchmark.TestSourcegraphComparator.test_progress_boolean_match_count_refused",
     "tools.ci.tests.test_retrieval_benchmark.TestSourcegraphComparator.test_progress_missing_match_count_refused",

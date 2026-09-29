@@ -212,3 +212,21 @@ native-span test; the Sourcegraph and proof-contract selectors passed 66/66 on
 the corrected source, and repository-wide Ruff lint/format passed. The broad
 run was not repeated on an immutable final source, so it is not a full-suite
 `VERIFIED` result.
+
+## Sep-29 post-integration audit
+
+`6e79e558` is now both `main` and `origin/main`; the prior 68-path overlay is
+committed and the checkout was clean before this audit. The new retrieval
+rank-unit and semantic work-bounded paths are present in current source. The
+proof inventory missed the newly collected Sourcegraph out-of-range line test,
+so its source-controlled required-test list was corrected in this pass. The
+retrieval proof inventory then passed 35/35, the retrieval benchmark Python
+suite passed 384/384, and Python lint and format checks passed. These are
+local checks; installed/external qualification has separate status.
+
+Current implementation gaps remain ENG-04's request-wide physical regex
+allocation admission and ENG-02's repeated authenticated base coverage walks
+and unqualified total heap. BENCH-01–04 still require independent reviewed
+inputs, complete native captures and indexed-universe evidence, and qualified
+product measurement. The new rank-unit and semantic request contracts do not
+by themselves close those acceptance boundaries.
