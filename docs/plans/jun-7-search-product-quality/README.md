@@ -32,14 +32,22 @@ exact-vector search, so that run does not establish an ANN recall defect. The
 generated gold has no independent relevance review, and bare names can refer
 to other declarations or uses.
 
-The separate exact-symbol route found the mechanically identified definition
-span for 300/300 names on an older clean source. That result tests declaration
-lookup, not semantic natural-language relevance. At local `main@9c880476`,
-focused searcher and dispatcher tests cover case-sensitive exact names with a
-typed file anchor; a current-HEAD native 300-query capture has not been run.
-Path-limited inspection found no semantic encoder/search/route change since
-the earlier `cca9477f` V1/V2 control, but that inspection does not substitute
-for a latest-binary capture or a qualified default decision.
+At local `main@938251d2`, freshly built runner and searchd binaries repeated
+the original bare-symbol 300-query diagnostic on new states: V1 found the gold
+file in 266/300 top-10 responses and opt-in V2 in 268/300. Both ordered top-10
+outputs matched the earlier source-bound native controls for all 300 queries.
+All 600 responses completed with `capped` status. These are generated,
+unreviewed file labels and a contended, single-run diagnostic, not an admitted
+quality or speed result. Source, binary, input and output boundaries are in
+`/Users/songmin/Documents/code-new/qi-gin-quality-current-20260929-938251d2/RESULTS.md`.
+
+The same current binaries also found the mechanically identified exact
+definition span for 300/300 names through the distinct exact-symbol route
+(297 at rank 1, three at rank 2). That result tests declaration lookup, not
+semantic natural-language relevance. Path-limited inspection found no semantic
+encoder/search/route change since `cca9477f`; the new native captures now
+confirm the observed gin rank prefix at `938251d2`. They do not qualify a
+default V2 decision.
 
 Remaining acceptance is an independently authored and reviewed semantic-intent
 pool with a frozen holdout, source-bound file/declaration judgments, separate
