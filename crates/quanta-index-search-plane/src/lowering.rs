@@ -978,10 +978,7 @@ mod tests {
             return Err(format!("expected mixed-leaf request limit, got {code}: {message}").into());
         }
 
-        let repeated = format!(
-            "patterntype:structural {}",
-            vec!["/^same$/"; 9].join(" OR ")
-        );
+        let repeated = format!("patterntype:structural {}", ["/^same$/"; 9].join(" OR "));
         let _lowered = lower_sourcegraph_structural_query_text(&repeated).map_err(
             |err| -> Box<dyn std::error::Error> {
                 format!("repeated pattern must share one request identity: {err:?}").into()

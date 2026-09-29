@@ -565,9 +565,155 @@ impl TantivySearcher {
 )]
 mod l4_source_decode_regressions {
     use super::*;
-    use quanta_index_contract::SearchPlaneErrorCodeV2;
+    use crate::analyzer::register_analyzers;
+    use crate::documents::{add_content_fields, add_metadata_fields, add_snippet_field};
+    use crate::ranked_keys::{self, RankedKeyTables, SegmentKeys};
+    use crate::regex::RegexPolicy;
+    use crate::regex_match_cache::RegexMatchCache;
+    use crate::text_authority::{self, AddedTextDoc, ShardedTextAuthority};
+    use crate::{SchemaFields, TantivySearcher};
+    use quanta_index_contract::{
+        LQ_VERSION_TAG, LqExpr, LqLeaf, LqOptions, LqQuery, LqSpan, LqYesNoOnly,
+        ManifestGeneration, PreviewUnavailableReason, RepoId, RevisionId, SearchPlaneErrorCodeV2,
+    };
+    use quanta_index_core::{
+        LexicalArtifactIdentityV1, LexicalExecutionBudgetV1, LexicalSearcher,
+        RegexMatchCachePolicy, RepoMetadataAuthoritiesV1, TextNormalizerVersionV1,
+    };
     use sha2::{Digest, Sha256};
+    use std::sync::{Arc, Mutex};
     use tantivy::schema::{STORED, STRING, Schema};
+    use tantivy::{Index, ReloadPolicy};
+
+    #[test]
+    fn indexed_and_manual_search_refuse_corrupt_selected_row_under_optional_budget()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let state = tempfile::tempdir()?;
+        let fields = SchemaFields::build();
+        let index = Index::create_in_ram(fields.schema.clone());
+        register_analyzers(&index);
+        let raw = "needle";
+        let mut doc = TantivyDocument::new();
+        doc.add_text(fields.candidate_id, "chunk-needle.rs");
+        doc.add_text(fields.repo_id, "source-repo");
+        doc.add_text(fields.revision_id, "index-r1");
+        doc.add_text(fields.source_revision_id, "source-r1");
+        let source_digest: [u8; 32] = Sha256::digest(raw.as_bytes()).into();
+        doc.add_bytes(fields.source_sha256, source_digest);
+        doc.add_text(fields.doc_kind, crate::TEXT_DOC_KIND);
+        add_metadata_fields(&fields, &mut doc, "needle.rs", Some("rust"));
+        doc.add_u64(fields.start_line, 1);
+        doc.add_u64(fields.end_line, 1);
+        add_snippet_field(&fields, &mut doc, raw);
+        add_content_fields(&fields, &mut doc, raw);
+        doc.add_u64(fields.chunk_start_byte, 0);
+        doc.add_u64(fields.chunk_end_byte, u64::try_from(raw.len())?);
+        doc.add_bytes(fields.chunk_raw_sha256, [0; 32]);
+        doc.add_u64(fields.text_authority_doc_id, 1);
+        let mut writer = index.writer(50_000_000)?;
+        let _opstamp = writer.add_document(doc)?;
+        let _commit = writer.commit()?;
+        drop(writer);
+
+        let reader: tantivy::IndexReader = index
+            .reader_builder()
+            .reload_policy(ReloadPolicy::Manual)
+            .try_into()?;
+        reader.reload()?;
+        let segments = reader.searcher();
+        let segment_readers = segments.segment_readers();
+        let tables = segment_readers
+            .iter()
+            .map(|segment| {
+                let bytes = ranked_keys::encode(segment)?;
+                Ok(Arc::new(SegmentKeys::decode(bytes, segment)?))
+            })
+            .collect::<Result<Vec<_>, CoreError>>()?;
+        let ranked_keys = Arc::new(RankedKeyTables::bind(tables, segment_readers)?);
+
+        let generation = ManifestGeneration::new(1);
+        let _receipt = text_authority::rebuild(
+            state.path(),
+            generation,
+            vec![AddedTextDoc {
+                doc_id: 1,
+                candidate_id: "chunk-needle.rs".into(),
+                text: raw.into(),
+            }],
+            None,
+            1,
+        )?;
+        let manifest = text_authority::read_manifest(state.path())?
+            .ok_or("text authority manifest missing")?;
+        let shards = manifest
+            .shards
+            .iter()
+            .map(|entry| {
+                Ok((
+                    entry.index,
+                    text_authority::load_shard(state.path(), entry)?,
+                ))
+            })
+            .collect::<Result<Vec<_>, CoreError>>()?;
+        let text_authority = ShardedTextAuthority::from_proved_shards(shards)?;
+
+        let searcher = TantivySearcher {
+            source_coverage: None,
+            source_publication_event: None,
+            repo_id: RepoId::new("source-repo")?,
+            revision_id: RevisionId::new("index-r1")?,
+            generation,
+            fields,
+            reader,
+            ranked_keys,
+            repo_metadata: None,
+            regex_match_cache: Arc::new(Mutex::new(RegexMatchCache::new(
+                RegexMatchCachePolicy::DEFAULT,
+            ))),
+            regex_policy: RegexPolicy::defaults(),
+            execution_budget: LexicalExecutionBudgetV1::DEFAULT,
+            text_authority: Some(text_authority),
+            repo_commit_recency: None,
+            repo_meta: None,
+            repo_topic: None,
+            repo_description: None,
+            file_ownership: None,
+            file_contributor: None,
+            resident_bytes_estimate: 0,
+            artifact_identity: LexicalArtifactIdentityV1 {
+                manifest_digest: "test-generation".into(),
+                normalizer: TextNormalizerVersionV1 {
+                    major: crate::normalize::TEXT_NORMALIZER_VERSION.major,
+                    minor: crate::normalize::TEXT_NORMALIZER_VERSION.minor,
+                },
+                repo_metadata: RepoMetadataAuthoritiesV1::NONE,
+            },
+        };
+        for index_mode in [None, Some(LqYesNoOnly::No)] {
+            let query = LqQuery {
+                lq_version: LQ_VERSION_TAG,
+                expr: LqExpr::Leaf(LqLeaf::Keyword(raw.into())),
+                filters: Vec::new(),
+                options: LqOptions {
+                    index_mode,
+                    ..LqOptions::defaults()
+                },
+                directives: Vec::new(),
+                source_span: LqSpan::eof(0),
+            };
+            let request = RequestBudgetV1::unbounded();
+            let preview_budget = request.lexical_preview_budget(10_000_000, 64 * 1024 * 1024)?;
+            preview_budget.charge_work(10_000_000)?;
+            assert!(matches!(
+                searcher.search(&query, 1, &request),
+                Err(CoreError::Typed {
+                    code: SearchPlaneErrorCodeV2::SearchPreviewIntegrity,
+                    ..
+                })
+            ));
+        }
+        Ok(())
+    }
 
     #[test]
     fn optional_refusal_cannot_hide_a_selected_source_chunk_digest_mismatch()
