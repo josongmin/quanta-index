@@ -86,34 +86,31 @@ This removes avoidable row copies without changing the authenticated base
 walks, publication identity, output format or physical-heap claim. Owner
 behavior tests are pending execution under the requested static-only phase.
 
-Sep-29 subsequent full-daemon diagnostic on `ddc0375b` plus the isolated
-`codex/eng02-e2e-metric` test change: the ignored
+Sep-29 full-daemon diagnostic on the mixed-case test source: the ignored
 `runtime_extended_suite::e2e_coverage_pipeline_cost` cases publish and
-activate a 128/512/2,048-file base, then publish a one-file delta through
-the ingest socket and query its activated generation. The query observes the
-new marker, the absence of the replaced marker and an unchanged base file.
-All three cases passed.
-Run each case alone, replacing the file-count suffix as needed:
+activate a 128/512/2,048-file base, then publish one-file replacement or
+mixed replacement/deletion deltas through the ingest socket and query the
+activated generation. Every case checks removed and retained markers. All five
+cases passed in separate test processes. Run one case at a time, replacing
+the shape and file-count suffix as needed:
 
 ```sh
 ./scripts/cargow test --locked -p quanta-index-searchd-runtime --test runtime_extended_suite e2e_coverage_pipeline_cost::one_file_delta_over_2048_files -- --ignored --nocapture --test-threads=1
 ```
 
-The daemon counters measured respectively 282/654/768 coverage page reads,
-153,384/611,496/2,436,975 encoded page bytes and 128/512/6,144 decoded
-rows during delta publication. The 2,048-file root exceeds the bounded
-decode cache, so all three authenticated scans decode its rows. The observed
-delta publication times were 559/1,568/2,233 ms on a shared host; they are
-diagnostic, not quiet-host performance qualification. The macOS process
-high-water RSS observed after the base was 112,508,928/141,197,312/180,846,592
-bytes and after the delta 128,188,416/164,855,808/202,457,088 bytes. These
-are whole-process peaks since test start, including base construction; their
-difference is not delta-only peak heap. The quiescent state-root unique-inode
-file totals rose from 539,474/1,296,179/4,233,217 to
-787,234/1,811,721/5,755,684 bytes. These totals are retained disk size,
-not bytes written or total I/O. The daemon metric deltas measure coverage
-reads and lexical seal hashing, not all index, semantic or catalog reads.
-The full-pipeline temporary heap and quiet-host cost items below remain open.
+The one-file 128/512/2,048 runs read 282/654/768 coverage pages and
+153,384/611,496/2,436,975 encoded page bytes during delta publication.
+The mixed 128/2,048 runs read 282/768 pages and
+153,384/2,436,975 encoded page bytes. Both 2,048-file runs decoded 6,144
+rows because the root exceeds the bounded decode cache and all three
+authenticated scans decode the base. On a shared host, the observed one-file
+delta times were 1,247/1,396/2,740 ms; mixed delta times were 1,016/5,420 ms.
+These are diagnostic observations, not a quiet-host latency claim. The probe's
+macOS `ru_maxrss` is a whole-process peak since test start, including base
+construction. It cannot establish delta-only peak heap; retained unique-inode
+file totals are not bytes written or total I/O. The daemon counters cover
+coverage reads and lexical seal hashing, not all index, semantic or catalog
+reads. Full-pipeline I/O and temporary heap remain open.
 
 ## Remaining acceptance
 
