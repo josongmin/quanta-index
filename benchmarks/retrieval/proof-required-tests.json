@@ -218,6 +218,7 @@
     "tools.ci.tests.test_retrieval_benchmark.test_qualified_cluster_interval_refuses_correlated_task_pseudoreplication",
     "tools.ci.tests.test_retrieval_benchmark.test_qualified_contract_refuses_coordinated_receipt_closure_rebind",
     "tools.ci.tests.test_retrieval_benchmark.test_qualified_custody_refuses_rebound_wrong_source_and_shared_gold_file",
+    "tools.ci.tests.test_retrieval_benchmark.test_qualified_gold_receipts_require_source_bound_task_reviews",
     "tools.ci.tests.test_retrieval_benchmark.test_qualified_quality_requires_estimable_uncertainty",
     "tools.ci.tests.test_retrieval_benchmark.test_qualified_replay_rejects_two_task_protocol_even_with_1000_samples",
     "tools.ci.tests.test_retrieval_benchmark.test_qualified_speed_entry_rejects_disabled_order_alternation",
