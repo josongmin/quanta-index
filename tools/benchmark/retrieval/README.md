@@ -174,7 +174,13 @@ The JSON schema is the complete field authority; frequently used options:
 | `receipts` | omitted | paths to contract/SDK summaries, receipts, raw JUnit/nextest JSONL, actual-runner record and Python/Rust/SDK collection inventories; all bytes are frozen and raw evidence is reparsed by the verdict |
 | `timeout_secs` | `1800` | per-capture timeout |
 
-For `qualified`, each annotation receipt must be JSON with exactly
+For `qualified`, the license receipt must be JSON with exactly
+`schema_version: 1`, `reviewer_id`, `decision: approved`, `repository_commit`,
+`corpus_manifest_sha256`, and a nonempty `rationale`. The reviewer and corpus
+identity must match the admission manifest. This verifies the recorded decision
+and scope, not the legal correctness of the review.
+
+Each annotation receipt must be JSON with exactly
 `schema_version: 1`, `reviewer_id`, `suite_sha256`, and `reviews`. `reviews`
 must contain one row per suite task in suite order. Each row has exactly
 `task_id`, `query_sha256`, `labels`, and a nonempty `rationale`. `labels`

@@ -5640,7 +5640,17 @@ def _pair_stage(
         ]
         adjudication_path = evidence_dir / "adjudication-receipt.json"
         license_path.write_text(
-            '{"decision":"approved","reviewer":"license-owner"}', encoding="utf-8"
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "reviewer_id": "license-owner",
+                    "decision": "approved",
+                    "repository_commit": suite["repository_commit"],
+                    "corpus_manifest_sha256": pairrun.sha_file(corpus_path),
+                    "rationale": "Fixture corpus approved for benchmark use.",
+                }
+            ),
+            encoding="utf-8",
         )
         suite_sha = pairrun.sha_file(suite_path)
         reviews = [
@@ -7337,6 +7347,43 @@ def test_qualified_admission_is_reverified_after_capture(tmp_path):
     assert verdict["states"]["QUALITY_DELTA"] == "fail"
     assert verdict["state_evidence"]["QUALITY_DELTA"]["reason"].startswith("admission_unverified:")
     assert verdict["failure_class"] == "admission"
+
+
+def test_qualified_license_receipt_requires_approved_corpus_bound_decision(tmp_path):
+    st = _pair_stage(tmp_path, blinding="isolated", scope="qualified", claims={"quality": True})
+    evidence = st["stage"] / "admission"
+    license_path = evidence / "license-receipt.json"
+    admission_path = evidence / "admission.json"
+    receipt = json.loads(license_path.read_text(encoding="utf-8"))
+    admission = json.loads(admission_path.read_text(encoding="utf-8"))
+    pairrun._validate_license_receipt(receipt, admission)
+
+    for changes, reason in (
+        ({"schema_version": True}, "schema version mismatch"),
+        ({"reviewer_id": "other"}, "reviewer mismatch"),
+        ({"decision": "denied"}, "not approved"),
+        ({"repository_commit": "0" * 40}, "repository_commit mismatch"),
+        ({"corpus_manifest_sha256": "0" * 64}, "corpus_manifest_sha256 mismatch"),
+        ({"rationale": " "}, "rationale missing"),
+    ):
+        bad = {**receipt, **changes}
+        with pytest.raises(pairrun.RunError, match=reason):
+            pairrun._validate_license_receipt(bad, admission)
+
+    # A self-consistent digest chain cannot convert a denial into approval.
+    receipt["decision"] = "denied"
+    license_path.write_text(json.dumps(receipt), encoding="utf-8")
+    admission["license"]["receipt_sha256"] = pairrun.sha_file(license_path)
+    admission_path.write_text(json.dumps(admission), encoding="utf-8")
+    _rewrite_manifest(
+        st,
+        lambda manifest: manifest["provenance"]["admission"].update(
+            manifest_digest=pairrun.sha_file(admission_path)
+        ),
+    )
+    verdict = _stage_verdict(st)
+    assert verdict["states"]["QUALITY_DELTA"] == "fail"
+    assert "license receipt is not approved" in verdict["state_evidence"]["QUALITY_DELTA"]["reason"]
 
 
 def test_qualified_gold_receipts_require_source_bound_task_reviews(tmp_path):

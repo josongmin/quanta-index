@@ -2596,6 +2596,33 @@ def _gold_review_labels(task: dict) -> dict:
     return {key: task[key] for key in task if key in GOLD_REVIEW_LABEL_KEYS}
 
 
+def _validate_license_receipt(payload: object, admission: dict) -> None:
+    """Bind the legal-use decision to the admitted corpus and reviewer."""
+    receipt = _exact_keys(
+        payload,
+        {
+            "schema_version",
+            "reviewer_id",
+            "decision",
+            "repository_commit",
+            "corpus_manifest_sha256",
+            "rationale",
+        },
+        "qualification license receipt",
+    )
+    if type(receipt["schema_version"]) is not int or receipt["schema_version"] != 1:
+        raise RunError("qualification license receipt schema version mismatch")
+    if receipt["reviewer_id"] != admission["license"]["reviewer_id"]:
+        raise RunError("qualification license receipt reviewer mismatch")
+    if receipt["decision"] != "approved":
+        raise RunError("qualification license receipt is not approved")
+    for key in ("repository_commit", "corpus_manifest_sha256"):
+        if receipt[key] != admission[key]:
+            raise RunError(f"qualification license receipt {key} mismatch")
+    if not isinstance(receipt["rationale"], str) or not receipt["rationale"].strip():
+        raise RunError("qualification license receipt rationale missing")
+
+
 def _validate_gold_review_receipt(
     payload: object,
     *,
@@ -2723,6 +2750,7 @@ def verify_admission_bundle(
         raise RunError("qualification admission cache regime mismatch")
     if admission["license"]["receipt_sha256"] != sha_file(license_path):
         raise RunError("qualification admission license receipt mismatch")
+    _validate_license_receipt(read_json(license_path), admission)
     if len(annotation_paths) != 2:
         raise RunError("qualification admission requires two frozen annotation receipts")
     expected_annotations = [row["receipt_sha256"] for row in admission["gold"]["annotators"]]
