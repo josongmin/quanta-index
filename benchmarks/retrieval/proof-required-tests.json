@@ -3,6 +3,7 @@
     "tools.ci.tests.test_retrieval_benchmark.TestSourcegraphComparator.test_boolean_line_number_refused",
     "tools.ci.tests.test_retrieval_benchmark.TestSourcegraphComparator.test_capture_version_boolean_and_empty_hit_evidence_refused",
     "tools.ci.tests.test_retrieval_benchmark.TestSourcegraphComparator.test_chunk_match_refused",
+    "tools.ci.tests.test_retrieval_benchmark.TestSourcegraphComparator.test_complete_zero_result_stream_is_valid_but_unqualified",
     "tools.ci.tests.test_retrieval_benchmark.TestSourcegraphComparator.test_duplicate_json_key_refused",
     "tools.ci.tests.test_retrieval_benchmark.TestSourcegraphComparator.test_duplicate_native_hit_refused",
     "tools.ci.tests.test_retrieval_benchmark.TestSourcegraphComparator.test_extension_filter_postfilters_to_manifest_and_preserves_native_rank",

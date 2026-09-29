@@ -80,6 +80,20 @@ def inputs(raw: bytes | None = None) -> tuple[dict, bytes, dict, dict]:
 
 
 class SourcegraphCaptureTests(unittest.TestCase):
+    def test_complete_zero_result_stream_is_valid_but_unqualified(self) -> None:
+        raw = (
+            event("progress", {"done": True, "skipped": [], "matchCount": 0, "durationMs": 1})
+            + event("done", {})
+        )
+        request, raw, manifest, universe = inputs(raw)
+
+        result = validate_capture(request, raw, manifest, universe)
+
+        self.assertEqual(result["status"], "diagnostic_unqualified")
+        self.assertEqual(result["native_match_count"], 0)
+        self.assertEqual(result["raw_match_order"], [])
+        self.assertEqual(result["file_order"], [])
+
     def test_input_manifest_binding_does_not_claim_indexed_universe(self) -> None:
         request, raw, manifest, universe = inputs()
         universe["method"] = "input_manifest_only"
