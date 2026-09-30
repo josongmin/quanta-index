@@ -49,3 +49,5 @@ downloaded corpora, indexes and captures outside the checkout.
 
 `PARTIAL`: 88/88 pinned; Quanta completed 17/88 (71 refused by runner natural_language limits: >32 tokens or a >96-char token); audited, wording corrected. Producer `quanta-index@0d21914e` (clean worktree);
 results, digests and residuals: [qi-s30-bench-trust-20260930-0d21914e/RESULTS.md](/Users/songmin/Documents/code-new/qi-s30-bench-trust-20260930-0d21914e/RESULTS.md).
+
+v2 (2026-10-01): adapter arm `arb-nl-adapter-v1` completed 88/88 from clean `f318e832` (adapter-conditional, single run, no CI; `literal` policy arm not run): [b06v2/README.md](/Users/songmin/Documents/code-new/qi-s30-bench-trust-20260930-0d21914e/b06v2/README.md), [qi-s30-v2-f318e832/RESULTS.md](/Users/songmin/Documents/code-new/qi-s30-v2-f318e832/RESULTS.md). Status: official-text arm PARTIAL; adapter arm EXECUTED_DIAGNOSTIC.

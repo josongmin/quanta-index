@@ -21,12 +21,11 @@ For each lane, freeze one of two modes before capture:
   query transformation and output semantics. Semantic/hybrid vs lexical-only
   belongs here unless an exact common contract is proved.
 
-For a distinct-file exact-name comparison, invoke Quanta's existing
-`literal_file` runner policy and request ten distinct files. That policy sends a
-quoted content phrase under `select:file`; its matches are constant-score and
-return in path order, so its top 10 is an observed path-ordered prefix, not a
-relevance ranking (correction 2026-10-01). A scored file ranking needs a
-separate bare-keyword policy. Semble or any other chunk-native
+For a distinct-file exact-name comparison, use Quanta's `keyword_file` policy
+(scored, `select:file case:yes name`) for a ranked comparison. `literal_file`
+(quoted content phrase) and `substring_file` (raw substring) are constant-score
+restrictions returned in path order, so their top 10 is an observed path-ordered
+prefix, not a relevance ranking (correction 2026-10-01). Semble or any other chunk-native
 product needs an explicit bounded collect-to-ten-unique-files policy and source
 rank preservation; if unsupported, retain its ten-chunk observed-prefix result
 as a separate diagnostic. Never call a deduplicated ten-chunk prefix file top-10.
@@ -62,5 +61,7 @@ missing adapter boundary, with focused native fixtures under its current owner.
 
 ## Execution receipt (2026-09-30)
 
-`PARTIAL`: exact/symbol/robustness/gin 20 captured and replayed; exact lane repeat capture identical on 1,196/1,196 for 4 products; Semble robustness pairs refused (harness defect, fixed uncommitted); SG/OG universes unattested. Producer `quanta-index@0d21914e` clean worktree, except robustness inputs (RESULTS custody);
+`PARTIAL`: exact/symbol/robustness/gin 20 captured and replayed; exact lane repeat capture identical on 1,196/1,196 for 4 products; Semble robustness pairs refused (harness defect, fixed in `59249da8`; see v2 below); SG/OG universes unattested. Producer `quanta-index@0d21914e` clean worktree, except robustness inputs (RESULTS custody);
 results, digests and residuals: [qi-s30-bench-trust-20260930-0d21914e/RESULTS.md](/Users/songmin/Documents/code-new/qi-s30-bench-trust-20260930-0d21914e/RESULTS.md).
+
+v2 (2026-10-01, clean `f318e832`): three Quanta file policies (literal/keyword/substring) and SG/OG/cs on exact and six robustness lanes; all seven Semble lexical-only pair lanes captured and replayed (fix `59249da8`). Semble file top-10 still BLOCKED; SG/OG universes unattested. [qi-s30-v2-f318e832/RESULTS.md](/Users/songmin/Documents/code-new/qi-s30-v2-f318e832/RESULTS.md).

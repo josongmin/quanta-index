@@ -144,6 +144,18 @@ fn boot_budget_fixture(
 
 #[test]
 fn literal_file_public_route_enforces_execution_and_response_budgets() {
+    assert_file_policy_budgets(QueryInputPolicy::LiteralFile, "needle", 35);
+}
+
+#[test]
+fn keyword_and_substring_file_public_routes_enforce_execution_and_response_budgets() {
+    // Identical files score equally, so the scored keyword keeps path order here too.
+    assert_file_policy_budgets(QueryInputPolicy::KeywordFile, "needle", 36);
+    // The raw substring's candidate collection is bounded by the same typed budget.
+    assert_file_policy_budgets(QueryInputPolicy::SubstringFile, "eedl", 37);
+}
+
+fn assert_file_policy_budgets(policy: QueryInputPolicy, raw: &str, generation: u64) {
     use quanta_index_contract::SearchPlaneErrorCodeV2;
     use quanta_index_sdk::SdkError;
 
@@ -161,15 +173,15 @@ fn literal_file_public_route_enforces_execution_and_response_budgets() {
     let manifest = load_manifest(&repo.join("manifest.json")).expect("budget manifest");
     let files = load_corpus(&repo, &manifest, &CorpusLimits::default()).expect("budget corpus");
     let (chunks, _) = chunk_corpus(&WholeFileChunker, &files).expect("budget chunks");
-    let identity = BatchIdentity::new("bench-repo", "bench-rev", 35, "manifest:budget".to_string())
-        .expect("budget identity");
-    let (batch, _) = assemble_fixture_batch(&identity, &chunks, &files).expect("budget batch");
-    let plan = plan_query(
-        QueryInputPolicy::LiteralFile,
-        "needle",
-        &NlPlanConfig::default(),
+    let identity = BatchIdentity::new(
+        "bench-repo",
+        "bench-rev",
+        generation,
+        "manifest:budget".to_string(),
     )
-    .expect("budget file plan");
+    .expect("budget identity");
+    let (batch, _) = assemble_fixture_batch(&identity, &chunks, &files).expect("budget batch");
+    let plan = plan_query(policy, raw, &NlPlanConfig::default()).expect("budget file plan");
     let expected: Vec<_> = sources.iter().map(|(path, _)| path.clone()).collect();
     let publish = |daemon: &BudgetFixtureDaemon| {
         daemon
@@ -236,9 +248,9 @@ fn literal_file_public_route_enforces_execution_and_response_budgets() {
     assert_eq!(page.window.has_more(), Some(true));
     let pinned = page.generation.clone();
     let mut walked = Vec::new();
-    let mut pages = 0;
+    let mut pages: u32 = 0;
     loop {
-        pages += 1;
+        pages = pages.saturating_add(1);
         assert!(pages <= 10, "nonempty pages must finish within ten files");
         assert!(quanta_index_ipc::cbor_payload_len(&page).expect("page encoding") <= cap);
         assert_eq!(

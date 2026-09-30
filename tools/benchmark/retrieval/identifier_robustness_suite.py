@@ -32,7 +32,10 @@ LANES = {
     "no-answer": ("NOA", source_oracle.GO_EXACT_LOCAL_NAME),
 }
 # Derived from the declaration-intent no-answer lane: only probes whose bytes occur in
-# no universe file, so any returned file is a content false positive as well.
+# no universe file even under case folding, so a returned file is a content false
+# positive for case-sensitive, case-insensitive and subword matchers alike. The
+# evaluator re-derives only the empty declaration census; content absence is a
+# builder-time property recorded in the census.
 CONTENT_NO_ANSWER = ("no-answer-content", "NOC")
 TYPO_OPERATIONS = ("insertion", "deletion", "substitution", "transposition")
 LETTERS = "abcdefghijklmnopqrstuvwxyz"
@@ -173,6 +176,8 @@ def _no_answer_probes(
         }
     )
     declared = set(names)
+    # A case-only variant of a declaration is not absent for case-insensitive search.
+    declared_folded = {name.casefold() for name in names}
     pool, probes, attempt = _Pool(), [], 0
     while len(probes) < count:
         evaluator.require(attempt < count * 200, "cannot derive enough no-answer probes")
@@ -180,7 +185,12 @@ def _no_answer_probes(
         second = vocabulary[_draw(seed, "no-answer", "second", attempt) % len(vocabulary)]
         attempt += 1
         probe = first.capitalize() + second.capitalize()
-        if first == second or probe in declared or pool.conflict(probe) is not None:
+        if (
+            first == second
+            or probe in declared
+            or probe.casefold() in declared_folded
+            or pool.conflict(probe) is not None
+        ):
             continue
         if oracle.expected_rows(source_oracle.GO_EXACT_LOCAL_NAME, probe, "distinct_file"):
             continue
@@ -329,6 +339,17 @@ def derive(
                 record["declaration_infix_names"] = len(
                     oracle.matched_names(source_oracle.GO_NAME_INFIX, query)
                 )
+                # Case-insensitive or subword systems can legitimately find a
+                # case variant (`ReadJson` -> `ReadJSON`), so the content lane
+                # also excludes case-folded matches.
+                folded = query.casefold().encode("utf-8")
+                record["content_substring_files_casefold"] = sum(
+                    folded in raw.decode("utf-8", "replace").casefold().encode("utf-8")
+                    for raw, _digest in files.values()
+                )
+                record["declaration_infix_names_casefold"] = sum(
+                    query.casefold() in name.casefold() for name in declared
+                )
             records.append(record)
             rows.append(
                 {
@@ -373,7 +394,7 @@ def derive(
 def _content_no_answer(
     repo: Path, source_suite: dict, source_records: list[dict], code: str, seed: int
 ) -> tuple[tuple[dict, dict], dict]:
-    """Keep only declaration no-answer probes whose bytes are absent from every file."""
+    """Keep declaration no-answer probes absent from every file, also under case folding."""
     source_code = LANES["no-answer"][0]
     reasons: dict[str, list[str]] = {}
     for record in source_records:
@@ -383,6 +404,10 @@ def _content_no_answer(
             found.append("content_bytes_present")
         if record["declaration_infix_names"]:
             found.append("declaration_infix_present")
+        if record["content_substring_files_casefold"] and not record["content_substring_files"]:
+            found.append("content_bytes_present_casefold")
+        if record["declaration_infix_names_casefold"] and not record["declaration_infix_names"]:
+            found.append("declaration_infix_present_casefold")
         reasons[record["task_id"]] = found
     suite = copy.deepcopy(source_suite)
     suite["suite_id"] = source_suite["suite_id"].replace(
@@ -411,7 +436,12 @@ def _content_no_answer(
     return (suite, pack), {
         "contract": source_oracle.GO_EXACT_LOCAL_NAME,
         "derived_from": "no-answer",
-        "criteria": {"content_substring_files": 0, "declaration_infix_names": 0},
+        "criteria": {
+            "content_substring_files": 0,
+            "content_substring_files_casefold": 0,
+            "declaration_infix_names": 0,
+            "declaration_infix_names_casefold": 0,
+        },
         "source_admitted": len(source_records),
         "admitted": len(rows),
         "excluded": len(excluded),

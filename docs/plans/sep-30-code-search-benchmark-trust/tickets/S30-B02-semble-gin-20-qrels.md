@@ -57,3 +57,5 @@ while retaining TREC's incomplete-pool limitation.
 
 Automated assessors only (2 blind + adjudicator + blind pooled review over 5 runs from Quanta and Semble, not five products); intents written after reading upstream labels; qrels fixtures refused by the evaluator. Not human-reviewed. Producer `quanta-index@0d21914e` (clean worktree);
 results, digests and residuals: [qi-s30-bench-trust-20260930-0d21914e/RESULTS.md](/Users/songmin/Documents/code-new/qi-s30-bench-trust-20260930-0d21914e/RESULTS.md).
+
+v2 (2026-10-01): gin 20 was not re-run; its qrels remain automated-assessor only.

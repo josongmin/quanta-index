@@ -319,30 +319,42 @@ def freeze(sample_paths: list[Path], repo: str | None, out_dir: Path) -> dict[st
     if out_dir.exists():
         raise FileExistsError(f"refusing existing output directory: {out_dir}")
     rows: list[dict[str, Any]] = []
+    source_digests: list[dict[str, str]] = []
+    seen_ids: set[str] = set()
     for path in sample_paths:
-        with path.open(encoding="utf-8") as handle:
-            for line_no, line in enumerate(handle, start=1):
-                if not line.strip():
-                    continue
-                sample = json.loads(line)
-                if repo is not None and sample.get("repo") != repo:
-                    continue
-                source = {"source_file": str(path), "source_line": line_no}
-                try:
-                    row = {"status": "adapted", **adapt(sample), **source}
-                    row["plan_accepted"] = True
-                except ArbAdapterRefusal as refusal:
-                    row = {
-                        "status": "refused",
-                        "adapter": ADAPTER_VERSION,
-                        "sample_id": sample.get("id"),
-                        "task_type": sample.get("task_type"),
-                        "refusal_code": refusal.code,
-                        "refusal": str(refusal),
-                        "plan_accepted": False,
-                        **source,
-                    }
-                rows.append(row)
+        # Hash and parse the same bytes: no second read can differ.
+        raw = path.read_bytes()
+        source_digests.append({"path": str(path), "sha256": hashlib.sha256(raw).hexdigest()})
+        for line_no, line in enumerate(raw.decode("utf-8").split("\n"), start=1):
+            if not line.strip():
+                continue
+            sample = json.loads(line)
+            if not isinstance(sample, dict):
+                raise ValueError(f"{path}:{line_no}: sample row is not a JSON object")
+            if repo is not None and sample.get("repo") != repo:
+                continue
+            for key in ("id", "repo", "base_commit"):
+                if not isinstance(sample.get(key), str) or not sample[key]:
+                    raise ValueError(f"{path}:{line_no}: sample {key} must be a nonempty string")
+            if sample["id"] in seen_ids:
+                raise ValueError(f"{path}:{line_no}: duplicate sample id {sample['id']}")
+            seen_ids.add(sample["id"])
+            source = {"source_file": str(path), "source_line": line_no}
+            try:
+                row = {"status": "adapted", **adapt(sample), **source}
+                row["plan_accepted"] = True
+            except ArbAdapterRefusal as refusal:
+                row = {
+                    "status": "refused",
+                    "adapter": ADAPTER_VERSION,
+                    "sample_id": sample.get("id"),
+                    "task_type": sample.get("task_type"),
+                    "refusal_code": refusal.code,
+                    "refusal": str(refusal),
+                    "plan_accepted": False,
+                    **source,
+                }
+            rows.append(row)
     counts: dict[str, Any] = {"total": len(rows), "adapted": 0, "refused": 0, "by_task": {}}
     for row in rows:
         counts[row["status"]] += 1
@@ -357,18 +369,24 @@ def freeze(sample_paths: list[Path], repo: str | None, out_dir: Path) -> dict[st
         "query_plan_module_sha256": _sha256_file(module_dir / "query_plan.py"),
         "nl_config": dict(DEFAULT_NL_CONFIG),
         "repo_filter": repo,
-        "source_samples": [{"path": str(p), "sha256": _sha256_file(p)} for p in sample_paths],
+        "source_samples": source_digests,
         "counts": counts,
     }
-    out_dir.mkdir(parents=True)
-    with (out_dir / "adapted.jsonl").open("w", encoding="utf-8") as handle:
+    # Write into a sibling staging directory and publish it by rename, so a
+    # failed write never leaves a partial freeze behind.
+    staging = out_dir.with_name(out_dir.name + ".staging")
+    if staging.exists():
+        raise FileExistsError(f"refusing existing staging directory: {staging}")
+    staging.mkdir(parents=True)
+    with (staging / "adapted.jsonl").open("w", encoding="utf-8") as handle:
         for row in rows:
             handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
-    manifest["adapted_jsonl_sha256"] = _sha256_file(out_dir / "adapted.jsonl")
-    (out_dir / "manifest.json").write_text(
+    manifest["adapted_jsonl_sha256"] = _sha256_file(staging / "adapted.jsonl")
+    (staging / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+    staging.rename(out_dir)
     return manifest
 
 

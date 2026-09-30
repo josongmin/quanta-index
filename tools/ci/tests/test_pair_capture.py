@@ -987,7 +987,9 @@ def test_pair_typed_state_scores_empty_rankings_instead_of_refusing():
     answerable = {"status": "abstained", "answerable": True, "file_recall_at_10": 0.0}
     no_answer = {"status": "abstained", "answerable": False}
     for space, metric in bridge.METRICS.items():
-        assert bridge.typed_state(answerable, space, metric, None) == ("judged", 0.0)
+        expected = ("unsupported", None) if space == "span" else ("judged", 0.0)
+        assert bridge.typed_state(answerable, space, metric, None) == expected
+        assert bridge.typed_state(answerable, space, metric, {metric: 0.7}) == ("judged", 0.0)
         assert bridge.typed_state(no_answer, space, metric, None) == ("no_answer", 1.0)
     returned = {"status": "success", "answerable": False}
     assert bridge.typed_state(returned, "file", "file_recall_at_10", None) == ("no_answer", 0.0)
@@ -1080,10 +1082,15 @@ def test_pair_bridge_scores_abstained_rankings_through_native_verdict(tmp_path, 
     for key, payload in payloads.items():
         rows = {row["query_id"]: row for row in payload["rows"]}
         assert list(rows) == ["T1", "T2", "T3"], key
-        # An abstained answerable task is a judged miss in every space, span included.
-        assert rows["T2"]["state"] == "judged", key
-        assert rows["T2"]["value"] == 0.0, key
-        assert rows["T2"]["metric"] == bridge.METRICS[payload["metric_space"]], key
+        if payload["metric_space"] == "span":
+            # No span authority for this route: an empty ranking stays unsupported.
+            assert rows["T2"]["state"] == "unsupported", key
+            assert rows["T2"]["value"] is None, key
+        else:
+            # An abstained answerable task is a judged miss.
+            assert rows["T2"]["state"] == "judged", key
+            assert rows["T2"]["value"] == 0.0, key
+            assert rows["T2"]["metric"] == bridge.METRICS[payload["metric_space"]], key
         assert rows["T3"] == {
             "query_id": "T3",
             "metric": "no_answer_abstention",

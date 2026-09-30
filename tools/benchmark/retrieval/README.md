@@ -94,8 +94,9 @@ golden, re-derived independently by `query_plan.py`:
 - `keyword_file` (`quanta-keyword-file-v1`): one bare ASCII identifier of at
   most 256 bytes (not `AND`/`OR`/`NOT`) becomes `select:file case:yes <name>`,
   a scored, case-sensitive keyword over content **and** path tokens. Files come
-  back by descending score (`ordering: score_desc_path_tiebreak`), so its NDCG
-  and MRR are ranking numbers. A file whose path alone contains the name can
+  back by descending score (`ordering: score_desc_path_tiebreak`), so its file NDCG
+  (reported by `evaluate-diagnostic`) is a ranking number; captured records carry
+  no scores, so this order rests on the policy and the pinned runner binary. A file whose path alone contains the name can
   match; this is not the content-only phrase contract.
 - `substring_file` (`quanta-substring-file-v1`): one fragment of 3–256 bytes
   without a single quote or control character becomes
@@ -120,8 +121,8 @@ metrics are opt-in; the original 300-query native capture stays on its frozen
 policy and report contract.
 
 The benchmark runner refuses native `select:` and `type:path`/`type:repo`
-projections that change the ranked result unit. Use `literal_file` for a
-distinct-file (path-ordered) benchmark. A quoted `"select:file"` remains ordinary content text
+projections that change the ranked result unit. Use a file-projection policy (`literal_file`, `keyword_file` or
+`substring_file`) for a distinct-file benchmark. A quoted `"select:file"` remains ordinary content text
 under `native`.
 
 After freezing the reviewed suite and recording its single-route run, score

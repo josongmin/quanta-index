@@ -60,5 +60,7 @@ and their test owners. No second scoring stack.
 
 ## Execution receipt (2026-09-30)
 
-Diagnostic scorecard v2; pytrec_eval agreement on reported metrics; all numbers re-derived by a separate audit. No qualified delta or default decision. Producer `quanta-index@0d21914e` (clean worktree);
+Diagnostic scorecard (v1 root); pytrec_eval agreement on reported metrics; all numbers re-derived by a separate audit. No qualified delta or default decision. Producer `quanta-index@0d21914e` (clean worktree);
 results, digests and residuals: [qi-s30-bench-trust-20260930-0d21914e/RESULTS.md](/Users/songmin/Documents/code-new/qi-s30-bench-trust-20260930-0d21914e/RESULTS.md).
+
+Names: the v1 root's `b05/scorecard.json` (0d21914e captures). v2 root `scores/scorecard-v2.json` (`score_v2.py`, f318e832): paired exact Hit@10 vs `keyword_file` over all 1,196 tasks, distinct-file systems only; no pytrec cross-check on v2. [qi-s30-v2-f318e832/RESULTS.md](/Users/songmin/Documents/code-new/qi-s30-v2-f318e832/RESULTS.md).

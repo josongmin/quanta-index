@@ -13194,3 +13194,26 @@ def test_file_projection_policies_have_independent_python_request_goldens():
     for raw in ["ab", "", "a'b", "ab\n", "a\x00b", "é", "x" * 257]:
         with pytest.raises(qp.QueryPlanError):
             qp.plan_lexical_request("substring_file", raw)
+
+
+def test_unplannable_query_is_a_typed_refusal_not_a_traceback(tmp_path):
+    repo, suite, run, suite_path, runner_path = _file_projection_run(tmp_path, "substring_file")
+    suite["tasks"][0]["query"] = "ab"
+    suite["tasks"][0]["query_sha256"] = ev.digest(b"ab")
+    _pack, run = _repack(repo, suite, run)
+    with pytest.raises(ev.EvidenceError, match="cannot be planned under substring_file"):
+        record_v3(repo, suite, run, suite_path, runner_path)
+
+
+def test_route_ordering_refuses_a_relabeled_row_directly():
+    run = {
+        "route_provenance": {"lexical": {"capture_id": "q0"}},
+        "captures": {"q0": {"execution_profile": qp.execution_profile("keyword_file")}},
+    }
+    good = {("T1", "lexical"): {"ordering": "score_desc_path_tiebreak"}}
+    assert ev._route_ordering(run, "lexical", good, ["T1"]) == "score_desc_path_tiebreak"
+    forged = {("T1", "lexical"): {"ordering": "path_order_constant_score"}}
+    with pytest.raises(ev.EvidenceError, match="ordering differs from its policy contract"):
+        ev._route_ordering(run, "lexical", forged, ["T1"])
+    chunk = {**run, "captures": {"q0": {"execution_profile": qp.execution_profile("native")}}}
+    assert ev._route_ordering(chunk, "lexical", good, ["T1"]) == "not_a_file_projection"

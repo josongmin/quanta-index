@@ -334,3 +334,34 @@ def test_cli_freeze_records_refusal_and_exits_nonzero(tmp_path):
     assert arb_adapter.main(["freeze", "--samples", str(samples_path), "--out", str(out)]) == 3
     row = json.loads((out / "adapted.jsonl").read_text())
     assert row["status"] == "refused" and row["refusal_code"] == "ARB_ADAPTER_EMPTY"
+
+
+def test_freeze_refuses_malformed_rows_and_publishes_atomically(tmp_path):
+    from tools.benchmark.retrieval import arb_adapter
+
+    def write(name, rows):
+        path = tmp_path / name
+        path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+        return path
+
+    good = json.dumps(
+        {
+            "id": "s1",
+            "repo": "gin-gonic/gin",
+            "base_commit": "a" * 40,
+            "task_type": "trace2code",
+            "query": {"failure_excerpt": "FAIL TestContextBind  context_test.go"},
+        }
+    )
+    manifest = arb_adapter.freeze([write("ok.jsonl", [good])], "gin-gonic/gin", tmp_path / "ok")
+    assert manifest["counts"]["total"] == 1
+    assert not (tmp_path / "ok.staging").exists()
+    for name, rows, match in [
+        ("dup.jsonl", [good, good], "duplicate sample id"),
+        ("list.jsonl", ["[1, 2]"], "not a JSON object"),
+        ("noid.jsonl", [good.replace('"id": "s1"', '"id": null')], "id must be"),
+    ]:
+        with pytest.raises(ValueError, match=match):
+            arb_adapter.freeze([write(name, rows)], "gin-gonic/gin", tmp_path / (name + ".out"))
+        assert not (tmp_path / (name + ".out")).exists()
+        assert not (tmp_path / (name + ".out.staging")).exists()

@@ -283,7 +283,8 @@ def typed_state(row: dict, space: str, metric: str, span: dict | None) -> tuple[
     """Classify one scored pair row; an empty ranking is a terminal outcome.
 
     `abstained` answers a no-answer task correctly and misses an answerable one,
-    so it scores 1.0 or 0.0 rather than refusing the whole capture.
+    so it scores 1.0 or 0.0 rather than refusing the whole capture. The span
+    space stays unsupported where the route has no span authority.
     """
     status = row["status"]
     if status == "timeout":
@@ -294,6 +295,10 @@ def typed_state(row: dict, space: str, metric: str, span: dict | None) -> tuple[
         raise EvidenceError("pair row lacks an admissible terminal scored state")
     if not row["answerable"]:
         return "no_answer", float(status == "abstained")
+    if space == "span" and span is None:
+        # No published-unit span authority for this route: an empty ranking
+        # cannot make the span space measurable.
+        return "unsupported", None
     if status == "abstained":
         return "judged", 0.0
     if space == "span":

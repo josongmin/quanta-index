@@ -1451,9 +1451,14 @@ def _validate_run(
                     ],
                     f"query_identity for {key}",
                 )
-                expected_identity = query_plan_contract.derive_query_identity_v4(
-                    policy, pack_task["query"], nl_config
-                )
+                try:
+                    expected_identity = query_plan_contract.derive_query_identity_v4(
+                        policy, pack_task["query"], nl_config
+                    )
+                except query_plan_contract.QueryPlanError as exc:
+                    raise EvidenceError(
+                        f"query cannot be planned under {policy}: {key}: {exc}"
+                    ) from exc
             else:
                 capture_id = provenance[key[1]]["capture_id"]
                 capture = captures[capture_id]
@@ -1468,9 +1473,16 @@ def _validate_run(
                         ],
                         f"query_identity for {key}",
                     )
-                    expected_identity = query_plan_contract.derive_query_identity(
-                        profile["policy"], pack_task["query"], profile["config"] or None
-                    )
+                    try:
+                        expected_identity = query_plan_contract.derive_query_identity(
+                            profile["policy"], pack_task["query"], profile["config"] or None
+                        )
+                    except query_plan_contract.QueryPlanError as exc:
+                        # A query the policy cannot plan can never have produced
+                        # this record: a typed refusal, not a traceback.
+                        raise EvidenceError(
+                            f"query cannot be planned under {profile['policy']}: {key}: {exc}"
+                        ) from exc
                 else:
                     identity = object_keys(
                         result["query_identity"],

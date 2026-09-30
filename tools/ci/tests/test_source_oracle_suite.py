@@ -864,3 +864,23 @@ def test_identifier_robustness_content_no_answer_lane_excludes_present_bytes(tmp
     monkeypatch.setattr(irs, "_no_answer_probes", lambda *_args: probes[:1])
     with pytest.raises(ev.EvidenceError, match="every no-answer probe occurs in source"):
         irs.derive(repo, copy.deepcopy(baseline), seed=7, sample_size=6, no_answer=1)
+
+
+def test_identifier_robustness_content_no_answer_lane_excludes_case_variants(tmp_path, monkeypatch):
+    from tools.benchmark.retrieval import identifier_robustness_suite as irs
+
+    repo, baseline = _robustness_baseline(tmp_path)
+    # "Readjson" is not a declaration byte-for-byte, but case-folds to ReadJSON.
+    probes = [("Readjson", {}), ("QuuxZorp", {})]
+    monkeypatch.setattr(irs, "_no_answer_probes", lambda *_args: probes)
+    suites, census = irs.derive(repo, copy.deepcopy(baseline), seed=7, sample_size=6, no_answer=2)
+    assert [t["query"] for t in suites["no-answer"][0]["tasks"]] == ["Readjson", "QuuxZorp"]
+    assert [t["query"] for t in suites["no-answer-content"][0]["tasks"]] == ["QuuxZorp"]
+    lane = census["lanes"]["no-answer-content"]
+    assert lane["excluded_probes"] == [
+        {
+            "source_task_id": "NOA-001",
+            "query": "Readjson",
+            "reasons": ["content_bytes_present_casefold", "declaration_infix_present_casefold"],
+        }
+    ]

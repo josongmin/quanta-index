@@ -53,3 +53,5 @@ Create no new suite from report hits.
 
 `VERIFIED` audit boundary (corrected 2026-10-01): input/oracle cross-check incl. per-name declaration counts, real validator refusals (v1 and v3, stale pack), historical external replay. Historical Quanta/Semble pairs not replayed; admission matrix is not a complete prospective manifest. Producer `quanta-index@0d21914e` (clean worktree);
 results, digests and residuals: [qi-s30-bench-trust-20260930-0d21914e/RESULTS.md](/Users/songmin/Documents/code-new/qi-s30-bench-trust-20260930-0d21914e/RESULTS.md).
+
+v2 (2026-10-01): inputs regenerated from clean `f318e832`; v3 exact suite/pack byte-identical; [qi-s30-v2-f318e832/RESULTS.md](/Users/songmin/Documents/code-new/qi-s30-v2-f318e832/RESULTS.md).

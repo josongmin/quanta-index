@@ -1,7 +1,10 @@
 # Sep 30 benchmark trust — ticket index
 
 [Parent plan](../README.md). Rows were `PLANNED`; each ticket now carries its 2026-09-30 execution receipt
-(B01–B03, B05 diagnostic; B04, B06 partial; B07, B08 `NOT_RUN`). Results:
+(B01–B03, B05 diagnostic; B04, B06 partial; B07, B08 `NOT_RUN`). A 2026-10-01 v2
+rerun from clean `quanta-index@f318e832` added the `keyword_file`/`substring_file`
+arms, all seven Semble robustness pairs and the ARB adapter arm (88/88):
+[qi-s30-v2-f318e832/RESULTS.md](/Users/songmin/Documents/code-new/qi-s30-v2-f318e832/RESULTS.md). v1 results:
 [qi-s30-bench-trust-20260930-0d21914e/RESULTS.md](/Users/songmin/Documents/code-new/qi-s30-bench-trust-20260930-0d21914e/RESULTS.md).
 The [Sep 27 benchmark RFCs](../../sep-27-code-search-remediation/readme.md)
 retain ownership. These tickets describe the concrete data and execution work;

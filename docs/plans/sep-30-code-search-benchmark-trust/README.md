@@ -1,7 +1,8 @@
 # Sep 30 — code-search benchmark trust execution plan
 
-Status: `PLANNED`. This plan records work to execute; it does not claim new
-labels, live captures, product quality, speed, or release qualification.
+Status: `EXECUTED_DIAGNOSTIC` (partial; per-ticket receipts in [tickets/INDEX.md](tickets/INDEX.md);
+B07 and B08 `NOT_RUN`). Execution does not claim independent human labels,
+product quality, speed, or release qualification.
 Planning baseline: `quanta-index@0d21914e53b85e13b8e3c2ec644a9a0112faf5be`
 on 2026-09-30. The shared checkout had pre-existing dirty code changes outside
 this documentation path when this plan was authored; their ownership was not
