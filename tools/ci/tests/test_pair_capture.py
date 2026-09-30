@@ -20,6 +20,7 @@ import pair_capture as bridge
 from evidence import RawFile, RunStore, sample_evidence, write_raw_file
 from registry import load_registry
 
+import tools.ci.tests.test_retrieval_benchmark as retrieval_fixture
 from tools.ci.tests.test_retrieval_benchmark import _pair_stage, _stage_verdict
 
 
@@ -1002,3 +1003,124 @@ def test_pair_typed_state_scores_empty_rankings_instead_of_refusing():
     )
     with pytest.raises(bridge.EvidenceError, match="admissible terminal scored state"):
         bridge.typed_state({"status": "error", "answerable": True}, "file", "m", None)
+
+
+def _abstained_pair_stage(tmp_path, monkeypatch, mutate=None):
+    """Build the real pair stage with T2 answerable and T3 no-answer both abstained."""
+    import copy
+    import types
+
+    from tools.benchmark.retrieval import evaluator as ev
+
+    original = retrieval_fixture.fixture_v3
+
+    def with_abstentions(path, **kwargs):
+        repo, suite, run, suite_path, run_path, files = original(path, **kwargs)
+        query = "find the nonexistent adapter"
+        suite["tasks"].append(
+            {
+                "task_id": "T3",
+                "split": "eval",
+                "query": query,
+                "query_sha256": ev.digest(query.encode()),
+                "query_family_id": "fam-no-answer",
+                "answerable": False,
+                "gold": [],
+            }
+        )
+        _suite, pack, _source = ev.validate_suite(repo, suite)
+        identity = retrieval_fixture.qp.derive_query_identity("native", query)
+        for route in ("lexical", "hybrid"):
+            row = copy.deepcopy(run["results"][0])
+            row.update(task_id="T3", route=route, query_identity=identity)
+            run["results"].append(row)
+        # Three tasks must fit the fixture's fixed 3.0 ms warm window and 1.5 ms
+        # first-query boundary, so the first scheduled task keeps 1.5 ms.
+        protocol = retrieval_fixture.pairrun.build_query_protocol(["T1", "T2", "T3"], 0, 1, 1)
+        first = protocol["measurement_schedules"][0][0]
+        for row in run["results"]:
+            row["timings"] = {"query_latency_ms": 1.5 if row["task_id"] == first else 0.75}
+            if row["task_id"] in ("T2", "T3"):
+                row.update(status="abstained", candidates=[], error=None)
+        if mutate is not None:
+            mutate(run["results"])
+        run["query_pack_sha256"] = ev.digest(ev.canonical(pack))
+        return repo, suite, run, suite_path, run_path, files
+
+    # The shared fixture writes no empty provenance; an executed zero-hit window
+    # must declare it for the native diagnostic validator.
+    def dumps(value, *args, **kwargs):
+        if isinstance(value, dict) and value.get("kind") == "quanta_returned_window_diagnostic":
+            value = copy.deepcopy(value)
+            for row in value["results"]:
+                window = row["response"]["window"]
+                if window["returned"] == 0:
+                    window["empty_provenance"] = "zero_hit_executed"
+        return json.dumps(value, *args, **kwargs)
+
+    shim = types.ModuleType("json")
+    shim.__dict__.update(json.__dict__)
+    shim.dumps = dumps
+    monkeypatch.setattr(retrieval_fixture, "fixture_v3", with_abstentions)
+    monkeypatch.setattr(retrieval_fixture, "json", shim)
+    return fixture(tmp_path)
+
+
+def test_pair_bridge_scores_abstained_rankings_through_native_verdict(tmp_path, monkeypatch):
+    stage = _abstained_pair_stage(tmp_path, monkeypatch)
+    manifest, verdict = bridge.derive(stage["stage"], stage["repo"])
+    assert verdict["states"]["PAIR_VALID"] == "pass"
+    payloads = bridge.typed_payloads(stage["stage"], manifest)
+    # Quanta lexical and the Semble route, each in file/context/span spaces.
+    assert sorted(payloads) == [
+        f"whole_file.{route}.{space}"
+        for route in ("hybrid", "lexical")
+        for space in ("context", "file", "span")
+    ]
+    for key, payload in payloads.items():
+        rows = {row["query_id"]: row for row in payload["rows"]}
+        assert list(rows) == ["T1", "T2", "T3"], key
+        # An abstained answerable task is a judged miss in every space, span included.
+        assert rows["T2"]["state"] == "judged", key
+        assert rows["T2"]["value"] == 0.0, key
+        assert rows["T2"]["metric"] == bridge.METRICS[payload["metric_space"]], key
+        assert rows["T3"] == {
+            "query_id": "T3",
+            "metric": "no_answer_abstention",
+            "unit": "ratio",
+            "value": 1.0,
+            "state": "no_answer",
+        }, key
+        if payload["metric_space"] == "span":
+            assert rows["T1"]["state"] == "unsupported", key
+
+
+def _abstained_with_candidates(rows):
+    donor = next(row for row in rows if row["task_id"] == "T1" and row["route"] == "lexical")
+    target = next(row for row in rows if row["task_id"] == "T2" and row["route"] == "lexical")
+    target["candidates"] = json.loads(json.dumps(donor["candidates"][:1]))
+
+
+def _abstained_with_error(rows):
+    target = next(row for row in rows if row["task_id"] == "T2" and row["route"] == "hybrid")
+    target["error"] = {"code": "forged", "message": "abstention carrying an error"}
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (_abstained_with_candidates, "non-success result cannot contain candidates"),
+        (_abstained_with_error, "error must be null for abstained result"),
+    ],
+)
+def test_pair_bridge_refuses_abstained_rows_with_candidates_or_error(
+    tmp_path, monkeypatch, mutate, message
+):
+    from tools.benchmark.retrieval import evaluator as ev
+
+    # evaluator._validate_run owns this check; run.build_verdict, which the bridge
+    # re-executes, reaches it through the same _validate_single_record path.
+    with pytest.raises(ev.EvidenceError, match=message):
+        stage = _abstained_pair_stage(tmp_path, monkeypatch, mutate)
+        manifest, _verdict = bridge.derive(stage["stage"], stage["repo"])
+        bridge.typed_payloads(stage["stage"], manifest)

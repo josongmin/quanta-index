@@ -31,6 +31,9 @@ LANES = {
     "typo": ("TYP", source_oracle.GO_NAME_OSA1),
     "no-answer": ("NOA", source_oracle.GO_EXACT_LOCAL_NAME),
 }
+# Derived from the declaration-intent no-answer lane: only probes whose bytes occur in
+# no universe file, so any returned file is a content false positive as well.
+CONTENT_NO_ANSWER = ("no-answer-content", "NOC")
 TYPO_OPERATIONS = ("insertion", "deletion", "substitution", "transposition")
 LETTERS = "abcdefghijklmnopqrstuvwxyz"
 MAX_ATTEMPTS = 8
@@ -360,7 +363,64 @@ def derive(
             ),
             "records": records,
         }
+    lane, code = CONTENT_NO_ANSWER
+    outputs[lane], census["lanes"][lane] = _content_no_answer(
+        repo, outputs["no-answer"][0], census["lanes"]["no-answer"]["records"], code, seed
+    )
     return outputs, census
+
+
+def _content_no_answer(
+    repo: Path, source_suite: dict, source_records: list[dict], code: str, seed: int
+) -> tuple[tuple[dict, dict], dict]:
+    """Keep only declaration no-answer probes whose bytes are absent from every file."""
+    source_code = LANES["no-answer"][0]
+    reasons: dict[str, list[str]] = {}
+    for record in source_records:
+        evaluator.require(record["status"] == "admitted", "no-answer probe was not admitted")
+        found = []
+        if record["content_substring_files"]:
+            found.append("content_bytes_present")
+        if record["declaration_infix_names"]:
+            found.append("declaration_infix_present")
+        reasons[record["task_id"]] = found
+    suite = copy.deepcopy(source_suite)
+    suite["suite_id"] = source_suite["suite_id"].replace(
+        f"-robustness-no-answer-seed{seed}", f"-robustness-{CONTENT_NO_ANSWER[0]}-seed{seed}"
+    )
+    evaluator.require(suite["suite_id"] != source_suite["suite_id"], "suite ID was not derived")
+    rows, mapping = [], []
+    for task in suite["tasks"]:
+        evaluator.require(
+            task["task_id"].startswith(source_code + "-") and not task["answerable"],
+            "content no-answer lane requires declaration no-answer tasks",
+        )
+        if reasons[task["task_id"]]:
+            continue
+        task_id = code + task["task_id"][len(source_code) :]
+        mapping.append({"task_id": task_id, "source_task_id": task["task_id"]})
+        rows.append({**task, "task_id": task_id})
+    evaluator.require(bool(rows), "every no-answer probe occurs in source content")
+    suite["tasks"] = rows
+    _checked, pack, _source = evaluator.validate_suite(repo, suite)
+    excluded = [
+        {"source_task_id": task_id, "query": record["query"], "reasons": reasons[task_id]}
+        for record in source_records
+        if reasons[(task_id := record["task_id"])]
+    ]
+    return (suite, pack), {
+        "contract": source_oracle.GO_EXACT_LOCAL_NAME,
+        "derived_from": "no-answer",
+        "criteria": {"content_substring_files": 0, "declaration_infix_names": 0},
+        "source_admitted": len(source_records),
+        "admitted": len(rows),
+        "excluded": len(excluded),
+        "excluded_reasons": _tally(
+            [{"reason": reason} for row in excluded for reason in row["reasons"]], "reason"
+        ),
+        "excluded_probes": excluded,
+        "records": mapping,
+    }
 
 
 def _tally(rows: list[dict], key: str) -> dict[str, int]:

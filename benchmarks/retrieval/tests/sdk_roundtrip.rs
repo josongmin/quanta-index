@@ -622,6 +622,269 @@ fn literal_file_public_route_groups_before_top_k_and_records_distinct_files() {
 }
 
 #[test]
+fn keyword_and_substring_file_public_routes_group_order_scope_and_case() {
+    let repo = tempfile::tempdir().expect("repo");
+    let repeated = format!(
+        "package fixture\n{}",
+        "// needle evidence in the repeated file padding to span windows\n".repeat(40)
+    );
+    let mut sources = vec![("src/repeated.go".to_string(), repeated)];
+    for index in 0..9 {
+        sources.push((
+            format!("src/unique{index:02}.go"),
+            format!("package fixture\n// needle evidence in unique file {index}\n"),
+        ));
+    }
+    // Counterexamples: the name only in a path component, and only in upper case.
+    sources.push((
+        "src/needle/only_path.go".to_string(),
+        "package fixture\n// nothing to see here\n".to_string(),
+    ));
+    sources.push((
+        "src/upper.go".to_string(),
+        "package fixture\n// NEEDLE EEDL in upper case only\n".to_string(),
+    ));
+    let references: Vec<(&str, &str)> = sources
+        .iter()
+        .map(|(path, text)| (path.as_str(), text.as_str()))
+        .collect();
+    write_repo(repo.path(), &references);
+    let manifest = load_manifest(&repo.path().join("manifest.json")).expect("manifest");
+    let files = load_corpus(repo.path(), &manifest, &CorpusLimits::default()).expect("corpus");
+    let (chunks, _) = chunk_corpus(&StrictWindowChunker::new(128, 16), &files).expect("chunks");
+    assert!(
+        chunks["src/repeated.go"]
+            .iter()
+            .filter(|chunk| chunk.text.contains("needle"))
+            .count()
+            >= 15,
+        "fixture must publish at least 15 matching chunks from one file"
+    );
+    let identity = BatchIdentity::new("bench-repo", "bench-rev", 17, "manifest:file".to_string())
+        .expect("identity");
+    let (batch, _) = assemble_fixture_batch(&identity, &chunks, &files).expect("batch");
+    let files_by_path: BTreeMap<_, _> = files
+        .iter()
+        .map(|file| (file.path.clone(), file.clone()))
+        .collect();
+    let registry =
+        quanta_index_retrieval_bench::published_units::PublishedUnitRegistry::from_chunks_and_symbols(
+            &chunks,
+            &symbols_for(&files),
+            &files_by_path,
+        )
+        .expect("published units");
+    let state = tempfile::tempdir().expect("state");
+    let session = boot_session(state.path(), &identity);
+    let _published = publish_and_activate(&session, &batch, &identity, None).expect("publish");
+    let content_files: BTreeSet<&str> = sources
+        .iter()
+        .map(|(path, _)| path.as_str())
+        .filter(|path| path.starts_with("src/repeated") || path.starts_with("src/unique"))
+        .collect();
+    let run = |policy: QueryInputPolicy, raw: &str, top_k: u32| {
+        let plan = plan_query(policy, raw, &NlPlanConfig::default()).expect("file plan");
+        let outcome = query_route(&RouteQuery {
+            client: session.client(),
+            route: "lexical",
+            lexical_request: &plan.lexical_request,
+            semantic_text: &plan.semantic_text,
+            repo_id: &identity.repo_id,
+            revision_id: &identity.revision_id,
+            generation: identity.generation,
+            top_k,
+        });
+        (plan, outcome)
+    };
+    for (policy, raw, ordering) in [
+        (
+            QueryInputPolicy::KeywordFile,
+            "needle",
+            "score_desc_path_tiebreak",
+        ),
+        (
+            QueryInputPolicy::SubstringFile,
+            "eedl",
+            "path_order_constant_score",
+        ),
+    ] {
+        // Ten distinct files: the 40-chunk file keeps one representative
+        // chosen before truncation, so the nine other files still fit.
+        let (plan, outcome) = run(policy, raw, 10);
+        let (_plan, repeated) = run(policy, raw, 10);
+        let QueryOutcome::ReturnedWindow { ref hits, .. } = outcome else {
+            panic!("{} query failed: {outcome:?}", policy.as_str());
+        };
+        let QueryOutcome::ReturnedWindow {
+            hits: ref repeated_hits,
+            ..
+        } = repeated
+        else {
+            panic!("{} repeat failed: {repeated:?}", policy.as_str());
+        };
+        let paths: Vec<&str> = hits.iter().map(|hit| hit.path.as_str()).collect();
+        assert_eq!(
+            hits.len(),
+            10,
+            "{}: top_k counts distinct files",
+            policy.as_str()
+        );
+        let returned: BTreeSet<&str> = paths.iter().copied().collect();
+        assert_eq!(
+            returned.len(),
+            10,
+            "{}: files are distinct",
+            policy.as_str()
+        );
+        assert!(
+            returned.contains("src/repeated.go"),
+            "{}: the 40-chunk file keeps one representative",
+            policy.as_str()
+        );
+        if policy == QueryInputPolicy::SubstringFile {
+            assert_eq!(
+                returned, content_files,
+                "content-only matches, grouped before top_k"
+            );
+        } else {
+            // Eleven files match content or path; the scored top ten is a subset.
+            let mut candidates = content_files.clone();
+            let _inserted = candidates.insert("src/needle/only_path.go");
+            assert!(
+                returned.is_subset(&candidates),
+                "keyword files are genuine matches"
+            );
+        }
+        assert_eq!(
+            hits.iter()
+                .map(|hit| (&hit.path, &hit.candidate_id, hit.score))
+                .collect::<Vec<_>>(),
+            repeated_hits
+                .iter()
+                .map(|hit| (&hit.path, &hit.candidate_id, hit.score))
+                .collect::<Vec<_>>(),
+            "{}: repeat preserves order, representative and score",
+            policy.as_str()
+        );
+        if policy == QueryInputPolicy::SubstringFile {
+            let mut sorted = paths.clone();
+            sorted.sort_unstable();
+            assert_eq!(paths, sorted, "match-only restriction returns path order");
+            assert!(
+                hits.windows(2)
+                    .all(|pair| pair[0].score.to_bits() == pair[1].score.to_bits()),
+                "match-only restriction scores every file equally"
+            );
+        } else {
+            assert!(
+                hits.windows(2).all(|pair| pair[0].score >= pair[1].score),
+                "keyword files are ranked by descending score"
+            );
+        }
+        let recorded = result_value(
+            "T1",
+            "lexical",
+            &outcome,
+            &plan,
+            10,
+            &files_by_path,
+            &registry,
+        )
+        .expect("source-proven result");
+        assert_eq!(recorded["rank_unit"], "distinct_file");
+        assert_eq!(recorded["ordering"], ordering);
+        // Continuation pages preserve the complete file list without repeats.
+        let mut paged_paths = Vec::new();
+        let mut page = session
+            .client()
+            .lexical()
+            .query()
+            .native(&plan.lexical_request)
+            .active(identity.repo_id.clone(), identity.revision_id.clone())
+            .top_k(3)
+            .execute()
+            .expect("first file page");
+        let pinned_generation = page.generation.clone();
+        let mut pages = 0;
+        loop {
+            pages += 1;
+            assert!(pages <= 5, "file pagination must terminate");
+            paged_paths.extend(
+                page.results
+                    .iter()
+                    .map(|candidate| candidate.repo_relative_path.as_str().to_string()),
+            );
+            let Some(cursor) = page.next_cursor else {
+                break;
+            };
+            page = session
+                .client()
+                .lexical()
+                .query()
+                .native(&plan.lexical_request)
+                .pinned(pinned_generation.clone())
+                .top_k(3)
+                .after(cursor)
+                .execute()
+                .expect("continued file page");
+        }
+        // Pages continue past the top ten to every match, in the same order,
+        // without repeating or skipping a file.
+        assert_eq!(
+            paged_paths[..10],
+            paths
+                .iter()
+                .map(|path| (*path).to_string())
+                .collect::<Vec<_>>(),
+            "{}: pages preserve the top-ten order",
+            policy.as_str()
+        );
+        assert_eq!(
+            paged_paths.iter().collect::<BTreeSet<_>>().len(),
+            paged_paths.len(),
+            "{}: pages never repeat a file",
+            policy.as_str()
+        );
+        assert_eq!(
+            paged_paths.len(),
+            if policy == QueryInputPolicy::SubstringFile {
+                10
+            } else {
+                11
+            },
+            "{}: pages reach every matching file",
+            policy.as_str()
+        );
+    }
+    // Scope: a bare keyword also searches path tokens; a raw substring is content only.
+    let (_plan, keyword_wide) = run(QueryInputPolicy::KeywordFile, "needle", 20);
+    let (_plan, substring_wide) = run(QueryInputPolicy::SubstringFile, "eedl", 20);
+    session.stop().expect("shutdown");
+    let QueryOutcome::ReturnedWindow {
+        hits: keyword_hits, ..
+    } = keyword_wide
+    else {
+        panic!("wide keyword query failed");
+    };
+    let QueryOutcome::ReturnedWindow {
+        hits: substring_hits,
+        ..
+    } = substring_wide
+    else {
+        panic!("wide substring query failed");
+    };
+    let keyword_paths: BTreeSet<&str> = keyword_hits.iter().map(|hit| hit.path.as_str()).collect();
+    let substring_paths: BTreeSet<&str> =
+        substring_hits.iter().map(|hit| hit.path.as_str()).collect();
+    assert!(keyword_paths.contains("src/needle/only_path.go"));
+    assert!(!substring_paths.contains("src/needle/only_path.go"));
+    // Case: `case:yes` excludes the upper-case-only file on both policies.
+    assert!(!keyword_paths.contains("src/upper.go"));
+    assert!(!substring_paths.contains("src/upper.go"));
+    assert_eq!(substring_paths, content_files);
+}
+
+#[test]
 fn real_daemon_query_observation_off_preserves_results_and_marks_unmeasured() {
     let repo = tempfile::tempdir().expect("repo");
     write_tiny_repo(repo.path());

@@ -23,7 +23,7 @@ use crate::corpus::SourceFile;
 use crate::published_units::{PublishedUnitKind, PublishedUnitRegistry};
 use crate::query_plan::{
     NlPlanConfig, QueryInputPolicy, QueryPlan, execution_profile_sha256, execution_profile_value,
-    plan_query,
+    ordering_contract, plan_query,
 };
 use crate::sdk::{QueryOutcome, RankedHit};
 use crate::{BenchError, BenchResult, sha256_hex};
@@ -857,21 +857,39 @@ fn timings_value(latency: Duration) -> BenchResult<Value> {
     Ok(serde_json::json!({"query_latency_ms": number}))
 }
 
+/// Bind the result unit and, for file projections, how the files are ordered.
+///
+/// `rank_unit` says only what one ranked item is. `ordering` says whether the
+/// order is a scored ranking or the path order of a match-only restriction.
 fn bind_rank_unit(mut result: Value, policy: QueryInputPolicy) -> BenchResult<Value> {
     let rank_unit = match policy {
-        QueryInputPolicy::LiteralFile => Some("distinct_file"),
+        QueryInputPolicy::LiteralFile
+        | QueryInputPolicy::KeywordFile
+        | QueryInputPolicy::SubstringFile => Some("distinct_file"),
         QueryInputPolicy::ExactSymbolName => Some("symbol"),
         QueryInputPolicy::Native
         | QueryInputPolicy::Literal
         | QueryInputPolicy::NaturalLanguage => None,
     };
+    let object = result
+        .as_object_mut()
+        .ok_or_else(|| BenchError::Protocol("result object is malformed".to_string()))?;
     if let Some(rank_unit) = rank_unit {
-        let _previous = result
-            .as_object_mut()
-            .ok_or_else(|| BenchError::Protocol("result object is malformed".to_string()))?
-            .insert("rank_unit".to_string(), Value::from(rank_unit));
+        let _previous = object.insert("rank_unit".to_string(), Value::from(rank_unit));
+    }
+    if let Some(ordering) = ordering_contract(policy) {
+        let _previous = object.insert("ordering".to_string(), Value::from(ordering));
     }
     Ok(result)
+}
+
+const fn is_file_projection(policy: QueryInputPolicy) -> bool {
+    matches!(
+        policy,
+        QueryInputPolicy::LiteralFile
+            | QueryInputPolicy::KeywordFile
+            | QueryInputPolicy::SubstringFile
+    )
 }
 
 /// Map one query outcome to a v3 result object. `top_k` is the declared cap;
@@ -885,9 +903,10 @@ pub fn result_value(
     files: &BTreeMap<String, SourceFile>,
     units: &PublishedUnitRegistry,
 ) -> BenchResult<Value> {
-    if plan.policy == QueryInputPolicy::LiteralFile && route != "lexical" {
+    if is_file_projection(plan.policy) && route != "lexical" {
         return Err(BenchError::Protocol(format!(
-            "literal_file result requires lexical route, got {route}"
+            "{} result requires lexical route, got {route}",
+            plan.policy.as_str()
         )));
     }
     if plan.policy == QueryInputPolicy::ExactSymbolName && route != "symbol" {
@@ -959,11 +978,10 @@ pub fn result_value(
                         "symbol rank requires published symbol units".to_string(),
                     ));
                 }
-                if plan.policy == QueryInputPolicy::LiteralFile
-                    && !seen_files.insert(hit.path.as_str())
-                {
+                if is_file_projection(plan.policy) && !seen_files.insert(hit.path.as_str()) {
                     return Err(BenchError::Protocol(format!(
-                        "literal_file returned duplicate file path: {}",
+                        "{} returned duplicate file path: {}",
+                        plan.policy.as_str(),
                         hit.path
                     )));
                 }

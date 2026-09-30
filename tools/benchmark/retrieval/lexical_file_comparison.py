@@ -654,6 +654,16 @@ def evaluate_capture(paths: dict[str, Path]) -> dict:
             "backend_indexed_universe_attestation",
         ],
     }
+    # Ten native chunks projected to files and ten distinct files are different
+    # result units: each group has its own denominator and is never ranked
+    # against the other.
+    groups: dict[str, list[str]] = {}
+    for name, row in result["products"].items():
+        groups.setdefault(row["rank_unit"], []).append(name)
+    for route, row in result["pair"]["routes"].items():
+        groups.setdefault(row["rank_unit"], []).append("pair:" + route)
+    result["comparison_groups"] = {unit: sorted(names) for unit, names in sorted(groups.items())}
+    result["cross_unit_comparison"] = "not_permitted"
     return result
 
 

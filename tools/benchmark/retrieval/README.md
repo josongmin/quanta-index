@@ -86,6 +86,34 @@ observed, path-ordered prefix of the matching set, and a `capped` result is
 truncated alphabetically. Hit@10 on it is an observed-prefix measure, not a
 scored ranking quality. A bare keyword `select:file name` is a different,
 scored request over content and path tokens and is not this policy.
+
+Two further file-projection policies measure the other request shapes
+explicitly; each has its own profile, policy-config identity and request
+golden, re-derived independently by `query_plan.py`:
+
+- `keyword_file` (`quanta-keyword-file-v1`): one bare ASCII identifier of at
+  most 256 bytes (not `AND`/`OR`/`NOT`) becomes `select:file case:yes <name>`,
+  a scored, case-sensitive keyword over content **and** path tokens. Files come
+  back by descending score (`ordering: score_desc_path_tiebreak`), so its NDCG
+  and MRR are ranking numbers. A file whose path alone contains the name can
+  match; this is not the content-only phrase contract.
+- `substring_file` (`quanta-substring-file-v1`): one fragment of 3–256 bytes
+  without a single quote or control character becomes
+  `select:file case:yes '<fragment>'`, a case-sensitive raw-substring
+  restriction (trigram candidates, byte verification) over content. It is
+  match-only, so files return in path order (`ordering:
+  path_order_constant_score`), like `literal_file`.
+
+Every file-projection result records `rank_unit: distinct_file` (the unit) and
+`ordering` (how the units are ordered, derived from the policy). The evaluator
+refuses a relabeled ordering, a path-ordered result that is not in path order,
+an ordering on a chunk result, and a missing ordering on the two new policies;
+historical `literal_file` records without the field keep their derived path
+order. `evaluate-diagnostic` reports file `hit_at_10` and `recall_at_10` next
+to `ndcg_at_10`, with `rank_metric_interpretation` `scored_ranking` or
+`observed_path_order_prefix`. A plan refusal (for example a digit-leading
+fragment under `keyword_file`) refuses the whole run, so run such tasks in a
+subset suite and report them as unsupported query forms.
 The evaluator requires the recorded `rank_unit: distinct_file` and rejects
 repeated file paths for this policy. Source-reviewed file judgments and their
 metrics are opt-in; the original 300-query native capture stays on its frozen

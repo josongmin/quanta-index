@@ -15,7 +15,17 @@
 //! * `exact_symbol_name` — one bare ASCII identifier becomes a case-sensitive
 //!   exact local-name predicate for the symbol route. Other text refuses.
 //! * `literal_file` — one raw query becomes a safely escaped lexical phrase
-//!   projected to distinct files before top-k truncation.
+//!   projected to distinct files before top-k truncation. A phrase is a
+//!   match-only (constant-score) restriction, so files come back in path
+//!   order: the top k is an observed path-ordered prefix, not a ranking.
+//! * `keyword_file` — one bare ASCII identifier becomes a case-sensitive,
+//!   scored keyword over content and path tokens, projected to distinct files.
+//! * `substring_file` — one raw fragment (at least three bytes) becomes a
+//!   case-sensitive raw-substring restriction (trigram candidates, byte
+//!   verification), projected to distinct files in path order.
+//!
+//! [`ordering_contract`] names how each file-projection policy orders its
+//! files; the record binds it next to the result unit.
 //!
 //! Every plan carries the four identity digests of the canonical profile
 //! contract (`docs/adr/SEP-26-001-retrieval-query-publication-and-result-proof.md`
@@ -25,7 +35,9 @@
 //! measurement phases.
 
 use crate::sha256_hex;
-use quanta_index_lq_norm::ast::{LqFilter, LqNormalizedQuery, LqSelect, LqType};
+use quanta_index_lq_norm::ast::{
+    LqCase, LqExpr, LqFilter, LqLeaf, LqNormalizedQuery, LqOptions, LqSelect, LqType,
+};
 use quanta_index_lq_norm::{parser::parse as parse_lq, tokenizer::tokenize as tokenize_lq};
 use quanta_index_lq_text_normalizer::{
     CaseMode, TEXT_NORMALIZER_VERSION, TextQueryError, is_token_char, nfc, query_tokens,
@@ -40,6 +52,32 @@ pub const NL_PLAN_PROFILE: &str = "nl-token-or-v2";
 /// measured windows never contain it.
 pub const PLANNING_COST_IN_LATENCY: bool = false;
 const MAX_EXACT_SYMBOL_NAME_BYTES: usize = 4096;
+/// Keyword file search: one identifier within the lexical index term cap.
+pub const MAX_KEYWORD_FILE_BYTES: usize = 256;
+/// Raw substring file search: the trigram index needs at least three bytes.
+pub const MIN_SUBSTRING_FILE_BYTES: usize = 3;
+/// Upper bound on a raw substring fragment.
+pub const MAX_SUBSTRING_FILE_BYTES: usize = 256;
+/// Files ordered by descending engine score, ties by repository/path/span.
+pub const ORDERING_SCORE_DESC: &str = "score_desc_path_tiebreak";
+/// Match-only (constant-score) restriction: files come back in path order.
+pub const ORDERING_PATH_ORDER: &str = "path_order_constant_score";
+
+/// How a file-projection policy orders its distinct files. `None` for
+/// policies whose results are not file projections.
+#[must_use]
+pub const fn ordering_contract(policy: QueryInputPolicy) -> Option<&'static str> {
+    match policy {
+        QueryInputPolicy::KeywordFile => Some(ORDERING_SCORE_DESC),
+        QueryInputPolicy::LiteralFile | QueryInputPolicy::SubstringFile => {
+            Some(ORDERING_PATH_ORDER)
+        }
+        QueryInputPolicy::Native
+        | QueryInputPolicy::Literal
+        | QueryInputPolicy::NaturalLanguage
+        | QueryInputPolicy::ExactSymbolName => None,
+    }
+}
 
 #[must_use]
 pub const fn execution_profile_id(policy: QueryInputPolicy) -> &'static str {
@@ -47,6 +85,8 @@ pub const fn execution_profile_id(policy: QueryInputPolicy) -> &'static str {
         QueryInputPolicy::Native => "quanta-native-v1",
         QueryInputPolicy::Literal => "quanta-literal-v1",
         QueryInputPolicy::LiteralFile => "quanta-literal-file-v1",
+        QueryInputPolicy::KeywordFile => "quanta-keyword-file-v1",
+        QueryInputPolicy::SubstringFile => "quanta-substring-file-v1",
         QueryInputPolicy::NaturalLanguage => "quanta-natural-language-ucd17-v2",
         QueryInputPolicy::ExactSymbolName => "quanta-exact-symbol-name-v1",
     }
@@ -61,6 +101,10 @@ pub enum QueryInputPolicy {
     Literal,
     /// Escape the raw query as a phrase and request file projection.
     LiteralFile,
+    /// One bare identifier as a scored keyword with file projection.
+    KeywordFile,
+    /// One raw fragment as a raw-substring restriction with file projection.
+    SubstringFile,
     /// Keep the raw query for the semantic lane and derive a deterministic
     /// token-OR lexical plan from it.
     NaturalLanguage,
@@ -80,6 +124,8 @@ impl QueryInputPolicy {
             "native" => Ok(Self::Native),
             "literal" => Ok(Self::Literal),
             "literal_file" => Ok(Self::LiteralFile),
+            "keyword_file" => Ok(Self::KeywordFile),
+            "substring_file" => Ok(Self::SubstringFile),
             "natural_language" => Ok(Self::NaturalLanguage),
             "exact_symbol_name" => Ok(Self::ExactSymbolName),
             other => Err(QueryPlanError::UnsupportedPolicy(other.to_string())),
@@ -93,6 +139,8 @@ impl QueryInputPolicy {
             Self::Native => "native",
             Self::Literal => "literal",
             Self::LiteralFile => "literal_file",
+            Self::KeywordFile => "keyword_file",
+            Self::SubstringFile => "substring_file",
             Self::NaturalLanguage => "natural_language",
             Self::ExactSymbolName => "exact_symbol_name",
         }
@@ -177,6 +225,13 @@ pub enum QueryPlanError {
     },
     /// Native DSL selected a rank projection without an explicit bench profile.
     NativeProjectionRequiresPolicy { projection: String },
+    /// Keyword file search requires one bare ASCII identifier that parses
+    /// back as exactly one keyword leaf.
+    InvalidKeyword,
+    /// Substring file search requires a fragment of at least the minimum
+    /// bytes, without a single quote or control character, that parses
+    /// back as exactly one raw-string leaf.
+    InvalidSubstring { reason: &'static str },
 }
 
 impl QueryPlanError {
@@ -192,6 +247,8 @@ impl QueryPlanError {
             Self::IndexTokenTooLong { .. } => "RBR_QUERY_TOKEN_TOO_LONG",
             Self::InvalidLexicalRequest { .. } => "RBR_QUERY_LEXICAL_INVALID",
             Self::NativeProjectionRequiresPolicy { .. } => "RBR_QUERY_PROJECTION_REQUIRES_POLICY",
+            Self::InvalidKeyword => "RBR_QUERY_KEYWORD_INVALID",
+            Self::InvalidSubstring { .. } => "RBR_QUERY_SUBSTRING_INVALID",
         }
     }
 }
@@ -236,6 +293,14 @@ impl std::fmt::Display for QueryPlanError {
                 f,
                 "native projection {projection} requires an explicit benchmark rank profile"
             ),
+            Self::InvalidKeyword => write!(
+                f,
+                "keyword-file policy requires one bare ASCII identifier of at most 256 bytes \
+                 that parses as a single keyword"
+            ),
+            Self::InvalidSubstring { reason } => {
+                write!(f, "substring-file policy refused the fragment: {reason}")
+            }
         }
     }
 }
@@ -283,6 +348,16 @@ pub fn policy_config_canonical(policy: QueryInputPolicy, config: &NlPlanConfig) 
         QueryInputPolicy::LiteralFile => {
             "{\"escaping\":\"lq-norm-phrase-v1\",\"policy\":\"literal_file\",\"projection\":\"file\"}".to_string()
         }
+        QueryInputPolicy::KeywordFile => format!(
+            "{{\"case\":\"sensitive\",\"match\":\"bare_keyword\",\"max_bytes\":{MAX_KEYWORD_FILE_BYTES},\
+             \"ordering\":\"{ORDERING_SCORE_DESC}\",\"policy\":\"keyword_file\",\
+             \"projection\":\"file\",\"scope\":\"content_and_path\"}}"
+        ),
+        QueryInputPolicy::SubstringFile => format!(
+            "{{\"case\":\"sensitive\",\"match\":\"raw_substring\",\"max_bytes\":{MAX_SUBSTRING_FILE_BYTES},\
+             \"min_bytes\":{MIN_SUBSTRING_FILE_BYTES},\"ordering\":\"{ORDERING_PATH_ORDER}\",\
+             \"policy\":\"substring_file\",\"projection\":\"file\",\"scope\":\"content\"}}"
+        ),
         QueryInputPolicy::NaturalLanguage => format!(
             "{{\"escaping\":\"lq-norm-phrase-v1\",\"policy\":\"natural_language\",{}}}",
             config.canonical_fields()
@@ -308,6 +383,8 @@ pub fn execution_profile_canonical(policy: QueryInputPolicy, config: &NlPlanConf
         QueryInputPolicy::Native
         | QueryInputPolicy::Literal
         | QueryInputPolicy::LiteralFile
+        | QueryInputPolicy::KeywordFile
+        | QueryInputPolicy::SubstringFile
         | QueryInputPolicy::ExactSymbolName => format!(
             "{{\"config\":{{}},\"planning_cost_in_latency\":false,\"policy\":\"{}\",\
              \"profile_id\":\"{}\"}}",
@@ -331,6 +408,8 @@ pub fn execution_profile_value(
         QueryInputPolicy::Native
         | QueryInputPolicy::Literal
         | QueryInputPolicy::LiteralFile
+        | QueryInputPolicy::KeywordFile
+        | QueryInputPolicy::SubstringFile
         | QueryInputPolicy::ExactSymbolName => serde_json::json!({}),
     };
     serde_json::json!({
@@ -429,6 +508,41 @@ pub fn plan_query(
             validate_indexable_text(raw)?;
             format!("select:file {}", literalize(raw))
         }
+        QueryInputPolicy::KeywordFile => {
+            let mut bytes = raw.bytes();
+            if raw.len() > MAX_KEYWORD_FILE_BYTES
+                || !bytes
+                    .next()
+                    .is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_')
+                || !bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+            {
+                return Err(QueryPlanError::InvalidKeyword);
+            }
+            format!("select:file case:yes {raw}")
+        }
+        QueryInputPolicy::SubstringFile => {
+            if raw.len() < MIN_SUBSTRING_FILE_BYTES {
+                return Err(QueryPlanError::InvalidSubstring {
+                    reason: "fragment is shorter than three bytes",
+                });
+            }
+            if raw.len() > MAX_SUBSTRING_FILE_BYTES {
+                return Err(QueryPlanError::InvalidSubstring {
+                    reason: "fragment is longer than 256 bytes",
+                });
+            }
+            if raw.contains('\'') {
+                return Err(QueryPlanError::InvalidSubstring {
+                    reason: "a single quote cannot be carried by a raw string",
+                });
+            }
+            if raw.chars().any(char::is_control) {
+                return Err(QueryPlanError::InvalidSubstring {
+                    reason: "control characters are not searchable fragment text",
+                });
+            }
+            format!("select:file case:yes '{raw}'")
+        }
         QueryInputPolicy::NaturalLanguage => {
             let mut distinct: Vec<String> = Vec::new();
             for token in tokenize_nl(raw) {
@@ -473,6 +587,31 @@ pub fn plan_query(
         }
     };
     let parsed = validate_lexical_request(&lexical_request)?;
+    // The request must parse back to exactly the one leaf the policy built:
+    // no operator, filter or option can be smuggled in through the raw text.
+    match policy {
+        QueryInputPolicy::KeywordFile
+            if !matches!(&parsed.expr, LqExpr::Leaf(LqLeaf::Keyword(text)) if text == raw)
+                || !is_case_sensitive_file_projection(&parsed) =>
+        {
+            return Err(QueryPlanError::InvalidKeyword);
+        }
+        QueryInputPolicy::SubstringFile
+            if !matches!(&parsed.expr, LqExpr::Leaf(LqLeaf::RawString(text)) if text == raw)
+                || !is_case_sensitive_file_projection(&parsed) =>
+        {
+            return Err(QueryPlanError::InvalidSubstring {
+                reason: "fragment does not parse back as one raw string",
+            });
+        }
+        QueryInputPolicy::Native
+        | QueryInputPolicy::Literal
+        | QueryInputPolicy::LiteralFile
+        | QueryInputPolicy::KeywordFile
+        | QueryInputPolicy::SubstringFile
+        | QueryInputPolicy::NaturalLanguage
+        | QueryInputPolicy::ExactSymbolName => {}
+    }
     if policy == QueryInputPolicy::Native {
         for filter in &parsed.filters {
             if let LqFilter::Select { dim } = filter
@@ -503,6 +642,21 @@ pub fn plan_query(
         semantic_text_sha256: sha256_hex(raw.as_bytes()),
         planning_cost_in_latency: PLANNING_COST_IN_LATENCY,
     })
+}
+
+/// Exactly `select:file` plus `case:yes`, and nothing else around the leaf.
+fn is_case_sensitive_file_projection(parsed: &LqNormalizedQuery) -> bool {
+    matches!(
+        parsed.filters.as_slice(),
+        [LqFilter::Select {
+            dim: LqSelect::File
+        }]
+    ) && parsed.directives.is_empty()
+        && parsed.options
+            == LqOptions {
+                case: Some(LqCase::Sensitive),
+                ..LqOptions::defaults()
+            }
 }
 
 fn validate_indexable_text(raw: &str) -> Result<(), QueryPlanError> {
@@ -655,6 +809,175 @@ mod tests {
         assert_eq!(
             plan_query(QueryInputPolicy::LiteralFile, "---", &config).unwrap_err(),
             QueryPlanError::EmptyTokenPlan
+        );
+        assert_eq!(
+            ordering_contract(QueryInputPolicy::LiteralFile),
+            Some(ORDERING_PATH_ORDER)
+        );
+    }
+
+    #[test]
+    fn keyword_file_policy_is_a_scored_case_sensitive_single_keyword() {
+        let config = NlPlanConfig::default();
+        let plan = plan_query(QueryInputPolicy::KeywordFile, "writeContentType", &config)
+            .expect("identifier plans");
+        assert_eq!(
+            plan.lexical_request,
+            "select:file case:yes writeContentType"
+        );
+        assert_eq!(
+            plan.effective_lexical_request_sha256,
+            "1421ce83f43daf81860f7f329193f69d42335935efae90108231edfa2a6dc170"
+        );
+        assert_eq!(
+            policy_config_canonical(QueryInputPolicy::KeywordFile, &config),
+            "{\"case\":\"sensitive\",\"match\":\"bare_keyword\",\"max_bytes\":256,\
+             \"ordering\":\"score_desc_path_tiebreak\",\"policy\":\"keyword_file\",\
+             \"projection\":\"file\",\"scope\":\"content_and_path\"}"
+        );
+        assert_eq!(
+            plan.policy_config_sha256,
+            "595ce53233c77d2b3e31493f5c5baf82bf973a050e28a248e1bddf4279233724"
+        );
+        assert_eq!(
+            execution_profile_sha256(QueryInputPolicy::KeywordFile, &config),
+            "bc30cff5252dbfd1f0eb09d2825da6a77b3c4bb9a7431c9f60e661aaf8325c13"
+        );
+        assert_eq!(
+            ordering_contract(QueryInputPolicy::KeywordFile),
+            Some(ORDERING_SCORE_DESC)
+        );
+        assert_eq!(
+            QueryInputPolicy::parse("keyword_file"),
+            Ok(QueryInputPolicy::KeywordFile)
+        );
+        assert_eq!(QueryInputPolicy::KeywordFile.as_str(), "keyword_file");
+        let tokens = tokenize_lq(&plan.lexical_request).expect("tokens");
+        let parsed = parse_lq(&tokens, &plan.lexical_request).expect("parses");
+        assert_eq!(
+            parsed.expr,
+            LqExpr::Leaf(LqLeaf::Keyword("writeContentType".to_string()))
+        );
+        assert_eq!(parsed.options.case_mode(), CaseMode::Sensitive);
+        // Anything but one bare identifier refuses: no operator, filter,
+        // option or phrase can be smuggled through the raw text.
+        for raw in [
+            "",
+            "1abc",
+            "a b",
+            "a-b",
+            "a.b",
+            "a:b",
+            "select:repo",
+            "\"x\"",
+            "'x'",
+            "x)",
+            "Café",
+            "a\tb",
+            "AND",
+            "OR",
+            "NOT",
+        ] {
+            assert!(
+                plan_query(QueryInputPolicy::KeywordFile, raw, &config).is_err(),
+                "keyword_file accepted {raw:?}"
+            );
+        }
+        let long = "a".repeat(MAX_KEYWORD_FILE_BYTES + 1);
+        assert_eq!(
+            plan_query(QueryInputPolicy::KeywordFile, &long, &config).unwrap_err(),
+            QueryPlanError::InvalidKeyword
+        );
+        assert!(
+            plan_query(
+                QueryInputPolicy::KeywordFile,
+                &"a".repeat(MAX_KEYWORD_FILE_BYTES),
+                &config
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn substring_file_policy_is_a_case_sensitive_raw_string_projection() {
+        let config = NlPlanConfig::default();
+        let plan = plan_query(QueryInputPolicy::SubstringFile, "ContentTy", &config)
+            .expect("fragment plans");
+        assert_eq!(plan.lexical_request, "select:file case:yes 'ContentTy'");
+        assert_eq!(
+            plan.effective_lexical_request_sha256,
+            "4493640ee71af3d81d82d313e9a2a8d7afacb3b0612159c0c697c088bcb0c20e"
+        );
+        assert_eq!(
+            policy_config_canonical(QueryInputPolicy::SubstringFile, &config),
+            "{\"case\":\"sensitive\",\"match\":\"raw_substring\",\"max_bytes\":256,\
+             \"min_bytes\":3,\"ordering\":\"path_order_constant_score\",\
+             \"policy\":\"substring_file\",\"projection\":\"file\",\"scope\":\"content\"}"
+        );
+        assert_eq!(
+            plan.policy_config_sha256,
+            "d4b7b04281539571608ca48787e034cc9f035c1264bc4ac8b82729a7b2103ea5"
+        );
+        assert_eq!(
+            execution_profile_sha256(QueryInputPolicy::SubstringFile, &config),
+            "0bdb593c7b7cb321882500dc1401ae84d893841cb6f1b3ddf4f34e3f0d47ffa5"
+        );
+        assert_eq!(
+            ordering_contract(QueryInputPolicy::SubstringFile),
+            Some(ORDERING_PATH_ORDER)
+        );
+        // DSL-looking text stays one raw string: it is searched as bytes.
+        for raw in [
+            "abc",
+            "a b",
+            "x) OR (y",
+            "select:repo",
+            "\"q\"",
+            "a\\b",
+            "Café",
+            "64Sl",
+        ] {
+            let plan = match plan_query(QueryInputPolicy::SubstringFile, raw, &config) {
+                Ok(plan) => plan,
+                Err(error) => panic!("{raw:?} refused: {error}"),
+            };
+            let tokens = tokenize_lq(&plan.lexical_request).expect("tokens");
+            let parsed = parse_lq(&tokens, &plan.lexical_request).expect("parses");
+            assert_eq!(
+                parsed.expr,
+                LqExpr::Leaf(LqLeaf::RawString(raw.to_string()))
+            );
+            assert_eq!(
+                parsed.filters,
+                vec![LqFilter::Select {
+                    dim: LqSelect::File
+                }]
+            );
+        }
+        for (raw, code) in [
+            ("ab", "RBR_QUERY_SUBSTRING_INVALID"),
+            ("", "RBR_QUERY_SUBSTRING_INVALID"),
+            ("a'b", "RBR_QUERY_SUBSTRING_INVALID"),
+            ("ab\n", "RBR_QUERY_SUBSTRING_INVALID"),
+            ("a\u{0}b", "RBR_QUERY_SUBSTRING_INVALID"),
+        ] {
+            assert_eq!(
+                plan_query(QueryInputPolicy::SubstringFile, raw, &config)
+                    .unwrap_err()
+                    .code(),
+                code,
+                "{raw:?}"
+            );
+        }
+        // Three bytes, not three characters: one two-byte scalar is too short.
+        assert!(plan_query(QueryInputPolicy::SubstringFile, "é", &config).is_err());
+        assert!(
+            plan_query(
+                QueryInputPolicy::SubstringFile,
+                &"x".repeat(MAX_SUBSTRING_FILE_BYTES + 1),
+                &config
+            )
+            .is_err()
         );
     }
 

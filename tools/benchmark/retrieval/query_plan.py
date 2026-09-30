@@ -32,13 +32,36 @@ DEFAULT_NL_CONFIG = {"max_token_chars": 96, "max_tokens": 32, "min_token_chars":
 
 #: Current policies and the immutable v4 policy inventory (RBR-02).
 V4_SUPPORTED_POLICIES = ("native", "literal", "natural_language")
-SUPPORTED_POLICIES = (*V4_SUPPORTED_POLICIES, "exact_symbol_name", "literal_file")
+SUPPORTED_POLICIES = (
+    *V4_SUPPORTED_POLICIES,
+    "exact_symbol_name",
+    "literal_file",
+    "keyword_file",
+    "substring_file",
+)
+#: File-projection policies and how each orders its distinct files. A phrase or
+#: raw substring is a match-only restriction (constant score, path order); a
+#: bare keyword is scored.
+ORDERING_SCORE_DESC = "score_desc_path_tiebreak"
+ORDERING_PATH_ORDER = "path_order_constant_score"
+FILE_PROJECTION_ORDERING = {
+    "literal_file": ORDERING_PATH_ORDER,
+    "keyword_file": ORDERING_SCORE_DESC,
+    "substring_file": ORDERING_PATH_ORDER,
+}
+MAX_KEYWORD_FILE_BYTES = 256
+MIN_SUBSTRING_FILE_BYTES = 3
+MAX_SUBSTRING_FILE_BYTES = 256
+#: Bare words the LQ tokenizer reads as boolean operators (case-sensitive).
+_LQ_OPERATOR_WORDS = frozenset({"AND", "OR", "NOT"})
 PROFILE_IDS = {
     "native": "quanta-native-v1",
     "literal": "quanta-literal-v1",
     "natural_language": "quanta-natural-language-ucd17-v2",
     "exact_symbol_name": "quanta-exact-symbol-name-v1",
     "literal_file": "quanta-literal-file-v1",
+    "keyword_file": "quanta-keyword-file-v1",
+    "substring_file": "quanta-substring-file-v1",
 }
 _BARE_SYMBOL_NAME = re.compile(r"[A-Za-z_][A-Za-z_0-9]*\Z")
 _NATIVE_NON_CONTENT_PROJECTION = re.compile(
@@ -69,6 +92,19 @@ def policy_config_canonical(policy: str, config: dict[str, int] | None = None) -
         return '{"escaping":"lq-norm-phrase-v1","policy":"literal"}'
     if policy == "literal_file":
         return '{"escaping":"lq-norm-phrase-v1","policy":"literal_file","projection":"file"}'
+    if policy == "keyword_file":
+        return (
+            '{"case":"sensitive","match":"bare_keyword",'
+            f'"max_bytes":{MAX_KEYWORD_FILE_BYTES},"ordering":"{ORDERING_SCORE_DESC}",'
+            '"policy":"keyword_file","projection":"file","scope":"content_and_path"}'
+        )
+    if policy == "substring_file":
+        return (
+            '{"case":"sensitive","match":"raw_substring",'
+            f'"max_bytes":{MAX_SUBSTRING_FILE_BYTES},"min_bytes":{MIN_SUBSTRING_FILE_BYTES},'
+            f'"ordering":"{ORDERING_PATH_ORDER}","policy":"substring_file",'
+            '"projection":"file","scope":"content"}'
+        )
     if policy == "natural_language":
         resolved = dict(DEFAULT_NL_CONFIG) if config is None else config
         return (
@@ -238,6 +274,26 @@ def plan_lexical_request(policy: str, raw: str, config: dict[str, int] | None = 
         if len(request.encode()) > MAX_INPUT_BYTES:
             raise QueryPlanError("lexical request exceeds 16384 bytes")
         return request
+    if policy == "keyword_file":
+        if (
+            len(raw.encode()) > MAX_KEYWORD_FILE_BYTES
+            or _BARE_SYMBOL_NAME.fullmatch(raw) is None
+            or raw in _LQ_OPERATOR_WORDS
+        ):
+            raise QueryPlanError(
+                "keyword-file policy requires one bare ASCII identifier of at most 256 bytes"
+            )
+        return f"select:file case:yes {raw}"
+    if policy == "substring_file":
+        size = len(raw.encode())
+        if size < MIN_SUBSTRING_FILE_BYTES or size > MAX_SUBSTRING_FILE_BYTES:
+            raise QueryPlanError("substring-file fragment must be 3 to 256 bytes")
+        if "'" in raw:
+            raise QueryPlanError("a single quote cannot be carried by a raw string")
+        # Rust `char::is_control`: Unicode general category Cc.
+        if any(unicodedata2.category(ch) == "Cc" for ch in raw):
+            raise QueryPlanError("control characters are not searchable fragment text")
+        return f"select:file case:yes '{raw}'"
     if policy == "natural_language":
         resolved = dict(DEFAULT_NL_CONFIG) if config is None else config
         distinct: list[str] = []

@@ -700,14 +700,22 @@ def test_identifier_robustness_builder_is_deterministic_and_evaluator_bound(tmp_
     assert {lane: ev.canonical(pair) for lane, pair in first.items()} == {
         lane: ev.canonical(pair) for lane, pair in second.items()
     }
-    assert set(first) == {"prefix", "infix", "components", "typo", "no-answer"}
+    assert list(first) == [
+        "prefix",
+        "infix",
+        "components",
+        "typo",
+        "no-answer",
+        "no-answer-content",
+    ]
+    no_answer_lanes = {"no-answer", "no-answer-content"}
     for lane, (suite, pack) in first.items():
         assert suite["routes"] == ["lexical"]
         assert all(set(task) == {"task_id", "query", "query_sha256"} for task in pack["tasks"])
         for task in suite["tasks"]:
-            assert task["answerable"] is (lane != "no-answer")
+            assert task["answerable"] is (lane not in no_answer_lanes)
         for record in census["lanes"][lane]["records"]:
-            if record["status"] == "admitted" and lane != "no-answer":
+            if lane not in no_answer_lanes and record["status"] == "admitted":
                 assert record["base_name_in_gold"] is True
     assert set(census["lanes"]["components"]["ineligible"]) <= {"single_component"}
     suite, _pack = first["prefix"]
@@ -766,8 +774,10 @@ def test_identifier_robustness_builder_guards_typo_infix_and_no_answer(tmp_path,
         return original(lane, name, seed, family, attempt)
 
     monkeypatch.setattr(irs, "propose", forced)
-    monkeypatch.setattr(irs, "_no_answer_probes", lambda *_args: [("BindYAML", {})])
-    _suites, census = irs.derive(repo, copy.deepcopy(baseline), seed=7, sample_size=6, no_answer=1)
+    monkeypatch.setattr(
+        irs, "_no_answer_probes", lambda *_args: [("BindYAML", {}), ("QuuxZorp", {})]
+    )
+    _suites, census = irs.derive(repo, copy.deepcopy(baseline), seed=7, sample_size=6, no_answer=2)
     typo = {r["base_query"]: r for r in census["lanes"]["typo"]["records"]}
     assert typo["BindJSON"]["status"] == "excluded_exact_name_collision"
     assert typo["BindXML"]["status"] == "admitted"
@@ -797,3 +807,60 @@ def test_identifier_robustness_sample_depends_on_seed_only():
     first = irs.sample_families(tasks, 1, 20)
     assert first == irs.sample_families(list(reversed(tasks)), 1, 20)
     assert first != irs.sample_families(tasks, 2, 20)
+
+
+def test_identifier_robustness_content_no_answer_lane_excludes_present_bytes(tmp_path, monkeypatch):
+    from tools.benchmark.retrieval import identifier_robustness_suite as irs
+
+    repo, baseline = _robustness_baseline(tmp_path)
+    probes = [("BindYAML", {}), ("QuuxZorp", {}), ("BindJ", {}), ("WidgetPlume", {})]
+    monkeypatch.setattr(irs, "_no_answer_probes", lambda *_args: probes)
+    suites, census = irs.derive(repo, copy.deepcopy(baseline), seed=7, sample_size=6, no_answer=4)
+    again_suites, again = irs.derive(
+        repo, copy.deepcopy(baseline), seed=7, sample_size=6, no_answer=4
+    )
+    assert ev.canonical(census) == ev.canonical(again)
+    assert ev.canonical(suites) == ev.canonical(again_suites)
+    assert list(suites)[-2:] == ["no-answer", "no-answer-content"]
+    declaration, _pack = suites["no-answer"]
+    # The declaration-intent lane keeps every probe, including those present as content.
+    assert [t["task_id"] for t in declaration["tasks"]] == [
+        "NOA-001",
+        "NOA-002",
+        "NOA-003",
+        "NOA-004",
+    ]
+    content, pack = suites["no-answer-content"]
+    assert content["suite_id"].endswith("-robustness-no-answer-content-seed7")
+    assert [(t["task_id"], t["query"]) for t in content["tasks"]] == [
+        ("NOC-002", "QuuxZorp"),
+        ("NOC-004", "WidgetPlume"),
+    ]
+    assert [t["task_id"] for t in pack["tasks"]] == ["NOC-002", "NOC-004"]
+    by_query = {t["query"]: t for t in declaration["tasks"]}
+    for task in content["tasks"]:
+        source = by_query[task["query"]]
+        assert {**task, "task_id": source["task_id"]} == source
+        assert task["answerable"] is False and task["file_judgments"] == []
+        assert task["source_oracle"]["contract"] == ev.source_oracle.GO_EXACT_LOCAL_NAME
+    lane = census["lanes"]["no-answer-content"]
+    assert lane["admitted"] == 2 and lane["source_admitted"] == 4 and lane["excluded"] == 2
+    # "BindYAML" occurs only in a comment; "BindJ" is also a declaration infix.
+    assert lane["excluded_probes"] == [
+        {"source_task_id": "NOA-001", "query": "BindYAML", "reasons": ["content_bytes_present"]},
+        {
+            "source_task_id": "NOA-003",
+            "query": "BindJ",
+            "reasons": ["content_bytes_present", "declaration_infix_present"],
+        },
+    ]
+    assert lane["excluded_reasons"] == {"content_bytes_present": 2, "declaration_infix_present": 1}
+    assert lane["records"] == [
+        {"task_id": "NOC-002", "source_task_id": "NOA-002"},
+        {"task_id": "NOC-004", "source_task_id": "NOA-004"},
+    ]
+    assert set(census["lanes"]["no-answer"]["records"][0]) >= {"content_substring_files"}
+    assert "derived_from" not in census["lanes"]["no-answer"]
+    monkeypatch.setattr(irs, "_no_answer_probes", lambda *_args: probes[:1])
+    with pytest.raises(ev.EvidenceError, match="every no-answer probe occurs in source"):
+        irs.derive(repo, copy.deepcopy(baseline), seed=7, sample_size=6, no_answer=1)

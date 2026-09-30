@@ -71,7 +71,7 @@ fn print_help() -> BenchResult<()> {
          fixed_window_*: --window-bytes N (default 4000) --overlap-bytes N (default 400)\n\
          brace_heuristic: --max-item-bytes N (default 32768)\n\
          run adds: --query-pack PATH --routes a,b --top-k N --state-root PATH\n\
-         [--query-protocol PATH] [--query-input-policy native|literal|literal_file|natural_language|exact_symbol_name]\n\
+         [--query-protocol PATH] [--query-input-policy native|literal|literal_file|keyword_file|substring_file|natural_language|exact_symbol_name]\n\
          [--query-stage-observation enabled|disabled] (default enabled; server query stages only)\n\
          [--experimental-hybrid-fetch-floor 25|50|100] (default 100; explicit experimental startup policy)\n\
          --repo-id ID --revision-id ID --generation N\n\
@@ -311,9 +311,10 @@ fn write_json_bound(path: &Path, value: &serde_json::Value) -> BenchResult<Strin
 fn query_plan_error_details(error: &QueryPlanError) -> serde_json::Value {
     match error {
         QueryPlanError::UnsupportedPolicy(policy) => serde_json::json!({"policy": policy}),
-        QueryPlanError::InvalidSymbolName | QueryPlanError::EmptyTokenPlan => {
-            serde_json::json!({})
-        }
+        QueryPlanError::InvalidSymbolName
+        | QueryPlanError::EmptyTokenPlan
+        | QueryPlanError::InvalidKeyword => serde_json::json!({}),
+        QueryPlanError::InvalidSubstring { reason } => serde_json::json!({"reason": reason}),
         QueryPlanError::TokenLimitExceeded { tokens, max_tokens } => {
             serde_json::json!({"tokens": tokens, "max_tokens": max_tokens})
         }
@@ -411,10 +412,17 @@ fn validate_policy_routes(policy: QueryInputPolicy, routes: &BTreeSet<&str>) -> 
             "exact_symbol_name requires only the symbol route".to_string(),
         ));
     }
-    if policy == QueryInputPolicy::LiteralFile && routes != &BTreeSet::from(["lexical"]) {
-        return Err(BenchError::Config(
-            "literal_file requires only the lexical route".to_string(),
-        ));
+    if matches!(
+        policy,
+        QueryInputPolicy::LiteralFile
+            | QueryInputPolicy::KeywordFile
+            | QueryInputPolicy::SubstringFile
+    ) && routes != &BTreeSet::from(["lexical"])
+    {
+        return Err(BenchError::Config(format!(
+            "{} requires only the lexical route",
+            policy.as_str()
+        )));
     }
     Ok(())
 }
@@ -1719,9 +1727,17 @@ mod tests {
             );
         }
         assert!(validate_policy_routes(QueryInputPolicy::Native, &lexical).is_ok());
-        assert!(validate_policy_routes(QueryInputPolicy::LiteralFile, &lexical).is_ok());
+        for policy in [
+            QueryInputPolicy::LiteralFile,
+            QueryInputPolicy::KeywordFile,
+            QueryInputPolicy::SubstringFile,
+        ] {
+            assert!(validate_policy_routes(policy, &lexical).is_ok());
+        }
         for routes in [&symbol, &mixed] {
             assert!(validate_policy_routes(QueryInputPolicy::LiteralFile, routes).is_err());
+            assert!(validate_policy_routes(QueryInputPolicy::KeywordFile, routes).is_err());
+            assert!(validate_policy_routes(QueryInputPolicy::SubstringFile, routes).is_err());
         }
     }
 }

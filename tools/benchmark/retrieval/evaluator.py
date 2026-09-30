@@ -1382,7 +1382,7 @@ def _validate_run(
     found = set()
     for raw in results:
         result = (
-            object_keys_optional(raw, result_keys, ["rank_unit"], "result")
+            object_keys_optional(raw, result_keys, ["rank_unit", "ordering"], "result")
             if version == RUNNER_SCHEMA_VERSION
             else object_keys(raw, result_keys, "result")
         )
@@ -1401,10 +1401,20 @@ def _validate_run(
                 rank_unit in ("distinct_file", "symbol"),
                 f"unknown result rank_unit for {key}",
             )
-        if profile_policy == "literal_file":
+        ordering = result.get("ordering")
+        if profile_policy in query_plan_contract.FILE_PROJECTION_ORDERING:
             require(
                 key[1] == "lexical" and rank_unit == "distinct_file",
-                f"literal_file profile requires lexical distinct_file result: {key}",
+                f"{profile_policy} profile requires lexical distinct_file result: {key}",
+            )
+            # rank_unit names the result unit only; ordering is derived from the
+            # request policy and cannot be relabeled. Historical literal_file
+            # records predate the field and keep their derived path order.
+            expected_ordering = query_plan_contract.FILE_PROJECTION_ORDERING[profile_policy]
+            require(
+                ordering == expected_ordering
+                or (ordering is None and profile_policy == "literal_file"),
+                f"{profile_policy} result ordering must be {expected_ordering}: {key}",
             )
         elif profile_policy == "exact_symbol_name":
             require(
@@ -1423,6 +1433,8 @@ def _validate_run(
                 rank_unit is None,
                 f"Semble capture has no verified distinct_file rank authority: {key}",
             )
+        if profile_policy not in query_plan_contract.FILE_PROJECTION_ORDERING:
+            require(ordering is None, f"ordering applies only to file projections: {key}")
         if version in (4, 5):
             pack_task = pack_queries.get(key[0])
             require(
@@ -1506,6 +1518,20 @@ def _validate_run(
                 item = object_keys(error, ["code", "message"], f"error for {key}")
                 string(item["code"], f"error.code for {key}")
                 string(item["message"], f"error.message for {key}")
+        if (
+            profile_policy in query_plan_contract.FILE_PROJECTION_ORDERING
+            and query_plan_contract.FILE_PROJECTION_ORDERING[profile_policy]
+            == query_plan_contract.ORDERING_PATH_ORDER
+        ):
+            # A match-only restriction ranks every file equally; the engine
+            # breaks the tie on repository/path, so any other order is forged.
+            # Duplicates are refused below with their own, more specific error.
+            paths = [item.get("path") for item in candidates if isinstance(item, dict)]
+            require(
+                len(set(paths)) != len(paths)
+                or paths == sorted(paths, key=lambda path: str(path).encode("utf-8")),
+                f"path-ordered file projection is not in path order: {key}",
+            )
         # The exact-symbol contract can retain distinct indexed units sharing
         # one scored line. Native and content profiles keep context collapse.
         seen_spans: dict[tuple[str, int, int], set[tuple[int, int]] | None] = {}
@@ -1904,6 +1930,47 @@ def file_ndcg_at_k(
     return dcg / idcg
 
 
+def file_hit_at_k_judged(
+    candidates: list[dict[str, Any]], judgments: list[dict[str, Any]], k: int
+) -> float:
+    """1.0 when any positively graded file is among the first k returned files."""
+    positive = {row["path"] for row in judgments if row["grade"] > 0}
+    return float(any(item["path"] in positive for item in candidates[:k]))
+
+
+def file_recall_at_k_judged(
+    candidates: list[dict[str, Any]], judgments: list[dict[str, Any]], k: int
+) -> float:
+    """Share of positively graded files among the first k returned files."""
+    positive = {row["path"] for row in judgments if row["grade"] > 0}
+    if not positive:
+        return 0.0
+    return len(positive & {item["path"] for item in candidates[:k]}) / len(positive)
+
+
+#: How a route's rank metrics may be read, from its bound ordering contract.
+RANK_METRIC_INTERPRETATION = {
+    "score_desc_path_tiebreak": "scored_ranking",
+    "path_order_constant_score": "observed_path_order_prefix",
+}
+
+
+def _route_ordering(run: dict[str, Any], route: str, results: dict, task_ids: list[str]) -> str:
+    """The ordering contract of one file-projection route, or the chunk rank."""
+    capture = run["captures"][run["route_provenance"][route]["capture_id"]]
+    policy = capture.get("execution_profile", {}).get("policy")
+    derived = query_plan_contract.FILE_PROJECTION_ORDERING.get(policy)
+    if derived is None:
+        return "not_a_file_projection"
+    for task_id in task_ids:
+        recorded = results[(task_id, route)].get("ordering")
+        require(
+            recorded in (None, derived),
+            f"route {route} ordering differs from its policy contract",
+        )
+    return derived
+
+
 def _declaration_match(candidate: dict[str, Any], judgment: dict[str, Any]) -> bool:
     span = candidate.get("span_accounting")
     return (
@@ -1970,7 +2037,13 @@ def judgment_diagnostics(
     for kind in kinds:
         if kind == "file_judgments":
             expected_unit = "distinct_file"
-            metrics = {"ndcg_at_10": file_ndcg_at_k}
+            # Hit/recall read the observed top 10 under any ordering; NDCG is a
+            # ranking-quality number only on a scored ordering.
+            metrics = {
+                "ndcg_at_10": file_ndcg_at_k,
+                "hit_at_10": file_hit_at_k_judged,
+                "recall_at_10": file_recall_at_k_judged,
+            }
         else:
             expected_unit = "symbol"
             metrics = {
@@ -2054,8 +2127,17 @@ def judgment_diagnostics(
                     {"task_id": task_id, "route": route, "eligible": True, "scores": values}
                 )
             eligible_scores[route] = score_by_task
+            ordering = (
+                _route_ordering(run, route, results, answerable_ids)
+                if kind == "file_judgments"
+                else "symbol_rank"
+            )
             by_route[route] = {
                 "rank_unit": expected_unit,
+                "ordering": ordering,
+                "rank_metric_interpretation": RANK_METRIC_INTERPRETATION.get(
+                    ordering, "not_a_file_projection" if kind == "file_judgments" else "symbol_rank"
+                ),
                 "selected_answerable_tasks": len(answerable_ids),
                 "eligible_task_ids": sorted(score_by_task),
                 "eligible_count": len(score_by_task),

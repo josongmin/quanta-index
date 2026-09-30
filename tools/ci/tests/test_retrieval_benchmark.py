@@ -13023,3 +13023,174 @@ def test_native_windows_monitor_numeric_preflight_accepts_finite_positive(valid)
     result = job.monitor(timeout_secs=valid)
     assert result.root_exit_code == 0 and result.cleanup_complete
     assert closed == [True]
+
+
+def _file_projection_run(tmp_path, policy, *, reverse=False, ordering="derive", queries=None):
+    repo, suite, run, suite_path, runner_path, files = fixture_v3(tmp_path, answerable_only=True)
+    suite["routes"] = ["lexical"]
+    suite["diagnostic_policy"] = ev.OBSERVED_PREFIX_DIAGNOSTIC_POLICY
+    for index, task in enumerate(suite["tasks"]):
+        if queries is not None:
+            task["query"] = queries[index]
+            task["query_sha256"] = ev.digest(task["query"].encode())
+        task["label_review"] = {
+            "assessment": "reviewed_unambiguous",
+            "reviewer_id": "fixture-reviewer",
+            "evidence_sha256": ev.digest(b"file projection fixture"),
+        }
+        task["judgment_policy"] = ev.UNJUDGED_POLICY
+        task["file_judgments"] = [
+            {"path": "a.txt", "file_sha256": ev.digest(files["a.txt"]), "grade": 3},
+            {"path": "b.txt", "file_sha256": ev.digest(files["b.txt"]), "grade": 1},
+        ]
+    profile = qp.execution_profile(policy)
+    run["captures"]["q0"]["execution_profile"] = profile
+    run["captures"]["q0"]["execution_profile_sha256"] = ev.digest(ev.canonical(profile))
+    run["route_provenance"] = {"lexical": {"capture_id": "q0"}}
+    run["results"] = [row for row in run["results"] if row["route"] == "lexical"]
+    for task, row in zip(suite["tasks"], run["results"], strict=True):
+        row["rank_unit"] = "distinct_file"
+        if ordering == "derive":
+            row["ordering"] = qp.FILE_PROJECTION_ORDERING[policy]
+        elif ordering is not None:
+            row["ordering"] = ordering
+        row["query_identity"] = qp.derive_query_identity(policy, task["query"])
+        by_file = {}
+        for item in row["candidates"]:
+            by_file.setdefault(item["path"], item)
+        chosen = [by_file[path] for path in sorted(by_file, reverse=reverse)]
+        for rank, item in enumerate(chosen, 1):
+            item["rank"] = rank
+        row["candidates"] = chosen
+    _pack, run = _repack(repo, suite, run)
+    return repo, suite, run, suite_path, runner_path
+
+
+def test_file_projection_policies_bind_ordering_and_interpret_metrics(tmp_path):
+    keyword = ["alphaTwo", "alphaThree"]
+    repo, suite, run, suite_path, runner_path = _file_projection_run(
+        tmp_path / "kw", "keyword_file", reverse=True, queries=keyword
+    )
+    loaded_suite, pack, loaded_run = record_v3(repo, suite, run, suite_path, runner_path)
+    route = ev.evaluate_diagnostic(loaded_suite, pack, loaded_run)["judgment_metrics"][
+        "file_judgments"
+    ]["routes"]["lexical"]
+    # A scored ranking may place b.txt first; its NDCG is a ranking number.
+    assert route["ordering"] == "score_desc_path_tiebreak"
+    assert route["rank_metric_interpretation"] == "scored_ranking"
+    assert route["conditional_mean"]["hit_at_10"] == 1.0
+
+    repo, suite, run, suite_path, runner_path = _file_projection_run(
+        tmp_path / "sub", "substring_file"
+    )
+    loaded_suite, pack, loaded_run = record_v3(repo, suite, run, suite_path, runner_path)
+    route = ev.evaluate_diagnostic(loaded_suite, pack, loaded_run)["judgment_metrics"][
+        "file_judgments"
+    ]["routes"]["lexical"]
+    assert route["ordering"] == "path_order_constant_score"
+    assert route["rank_metric_interpretation"] == "observed_path_order_prefix"
+    assert route["conditional_mean"]["hit_at_10"] == 1.0
+    assert 0 < route["conditional_mean"]["recall_at_10"] <= 1.0
+
+
+@pytest.mark.parametrize(
+    ("policy", "queries", "reverse", "ordering", "match"),
+    [
+        # A path-ordered restriction returned out of path order is forged.
+        ("substring_file", None, True, "derive", "not in path order"),
+        ("literal_file", None, True, "derive", "not in path order"),
+        # The ordering is derived from the request policy and cannot be relabeled.
+        (
+            "keyword_file",
+            ["alphaTwo", "alphaThree"],
+            False,
+            "path_order_constant_score",
+            "ordering must be",
+        ),
+        ("substring_file", None, False, "score_desc_path_tiebreak", "ordering must be"),
+        ("literal_file", None, False, "score_desc_path_tiebreak", "ordering must be"),
+        # New policies must bind it; only historical literal_file records may omit it.
+        ("keyword_file", ["alphaTwo", "alphaThree"], False, None, "ordering must be"),
+        ("substring_file", None, False, None, "ordering must be"),
+        ("keyword_file", ["alphaTwo", "alphaThree"], False, "unknown_order", "ordering must be"),
+    ],
+)
+def test_file_projection_refuses_forged_or_missing_ordering(
+    tmp_path, policy, queries, reverse, ordering, match
+):
+    repo, suite, run, suite_path, runner_path = _file_projection_run(
+        tmp_path, policy, reverse=reverse, ordering=ordering, queries=queries
+    )
+    with pytest.raises(ev.EvidenceError, match=match):
+        record_v3(repo, suite, run, suite_path, runner_path)
+
+
+def test_file_projection_refuses_wrong_unit_identity_and_chunk_ordering(tmp_path):
+    keyword = ["alphaTwo", "alphaThree"]
+    repo, suite, run, suite_path, runner_path = _file_projection_run(
+        tmp_path / "unit", "keyword_file", queries=keyword
+    )
+    wrong_unit = copy.deepcopy(run)
+    wrong_unit["results"][0]["rank_unit"] = "symbol"
+    with pytest.raises(ev.EvidenceError, match="requires lexical distinct_file"):
+        record_v3(repo, suite, wrong_unit, suite_path, runner_path)
+    wrong_case = copy.deepcopy(run)
+    # A literal_file request identity under a keyword profile does not re-derive.
+    wrong_case["results"][0]["query_identity"] = qp.derive_query_identity(
+        "literal_file", suite["tasks"][0]["query"]
+    )
+    with pytest.raises(ev.EvidenceError, match="independently re-derived plan"):
+        record_v3(repo, suite, wrong_case, suite_path, runner_path)
+    duplicate = copy.deepcopy(run)
+    extra = copy.deepcopy(duplicate["results"][0]["candidates"][0])
+    extra["rank"] = len(duplicate["results"][0]["candidates"]) + 1
+    duplicate["results"][0]["candidates"].append(extra)
+    with pytest.raises(ev.EvidenceError):
+        record_v3(repo, suite, duplicate, suite_path, runner_path)
+    forged_empty = copy.deepcopy(run)
+    forged_empty["results"][0]["status"] = "abstained"
+    with pytest.raises(ev.EvidenceError, match="non-success result cannot contain candidates"):
+        record_v3(repo, suite, forged_empty, suite_path, runner_path)
+    errored_empty = copy.deepcopy(run)
+    errored_empty["results"][0].update(
+        status="abstained", candidates=[], error={"code": "x", "message": "y"}
+    )
+    with pytest.raises(ev.EvidenceError, match="error must be null for abstained"):
+        record_v3(repo, suite, errored_empty, suite_path, runner_path)
+
+    repo, suite, run, suite_path, runner_path, _files = fixture_v3(
+        tmp_path / "chunk", answerable_only=True
+    )
+    run["results"][0]["ordering"] = "score_desc_path_tiebreak"
+    _pack, run = _repack(repo, suite, run)
+    with pytest.raises(ev.EvidenceError, match="ordering applies only to file projections"):
+        record_v3(repo, suite, run, suite_path, runner_path)
+
+
+def test_file_projection_policies_have_independent_python_request_goldens():
+    assert qp.plan_lexical_request("keyword_file", "writeContentType") == (
+        "select:file case:yes writeContentType"
+    )
+    assert qp.plan_lexical_request("substring_file", "ContentTy") == (
+        "select:file case:yes 'ContentTy'"
+    )
+    assert ev.digest(qp.policy_config_canonical("keyword_file").encode()) == (
+        "595ce53233c77d2b3e31493f5c5baf82bf973a050e28a248e1bddf4279233724"
+    )
+    assert ev.digest(qp.policy_config_canonical("substring_file").encode()) == (
+        "d4b7b04281539571608ca48787e034cc9f035c1264bc4ac8b82729a7b2103ea5"
+    )
+    assert qp.execution_profile_sha256("keyword_file") == (
+        "bc30cff5252dbfd1f0eb09d2825da6a77b3c4bb9a7431c9f60e661aaf8325c13"
+    )
+    assert qp.execution_profile_sha256("substring_file") == (
+        "0bdb593c7b7cb321882500dc1401ae84d893841cb6f1b3ddf4f34e3f0d47ffa5"
+    )
+    for raw in ["", "1abc", "a b", "a-b", "a:b", "Café", "AND", "OR", "NOT", "a" * 257]:
+        with pytest.raises(qp.QueryPlanError):
+            qp.plan_lexical_request("keyword_file", raw)
+    for raw in ["x) OR (y", "select:repo", '"q"', "a\\b", "Café", "64Sl"]:
+        assert qp.plan_lexical_request("substring_file", raw) == f"select:file case:yes '{raw}'"
+    for raw in ["ab", "", "a'b", "ab\n", "a\x00b", "é", "x" * 257]:
+        with pytest.raises(qp.QueryPlanError):
+            qp.plan_lexical_request("substring_file", raw)
