@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import subprocess
 import sys
 from pathlib import Path
@@ -11,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from tools.benchmark.retrieval.evaluator import canonical, digest
+from tools.benchmark.retrieval.lexical_external_oracle import verify_capture_manifest
 from tools.benchmark.retrieval.lexical_file_comparison import (
     _file_universe,
     _tasks,
@@ -151,6 +153,117 @@ def test_product_result_rejects_wrong_query_and_duplicate(tmp_path):
     path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
     with pytest.raises(ValueError, match="missing or duplicate task"):
         product_result("sourcegraph", path, expected, universe)
+
+
+def test_external_oracle_rescore_keeps_capture_gold_and_uses_independent_multifile_gold(tmp_path):
+    expected = {"S01": ("Needle", ["src/original.go"])}
+    universe = {"src/original.go", "src/other.go", "src/irrelevant.go"}
+    row = {
+        "lane": "symbol_only",
+        "task_id": "S01",
+        "submitted_query": "Needle",
+        "gold_paths": ["src/original.go"],
+        "http_status": 200,
+        "error": None,
+        "file_paths_top_10": ["src/other.go", "src/irrelevant.go", "src/original.go"],
+        "file_hit_at_10": True,
+        "elapsed_ms": 1.0,
+    }
+    path = tmp_path / "rows.jsonl"
+    path.write_text(json.dumps(row) + "\n")
+    rescored = product_result(
+        "sourcegraph",
+        path,
+        expected,
+        universe,
+        scoring_gold={"S01": ["src/original.go", "src/other.go"]},
+    )
+    assert rescored["file_recall_at_10"] == 1.0
+    assert rescored["file_ndcg_at_10"] == pytest.approx((1 + 1 / 2) / (1 + 1 / math.log2(3)))
+    row["file_hit_at_10"] = False
+    path.write_text(json.dumps(row) + "\n")
+    with pytest.raises(ValueError, match="hit flag differs"):
+        product_result(
+            "sourcegraph",
+            path,
+            expected,
+            universe,
+            scoring_gold={"S01": ["src/original.go", "src/other.go"]},
+        )
+
+
+def test_external_oracle_rescore_rejects_partial_or_off_view_judgments(tmp_path):
+    expected = {"S01": ("Needle", ["src/original.go"])}
+    path = tmp_path / "rows.jsonl"
+    path.write_text("", encoding="utf-8")
+    for scoring_gold in ({}, {"S01": ["src/outside.go"]}, {"S01": ["src/original.go"] * 2}):
+        with pytest.raises(ValueError, match="invalid scoring gold inventory"):
+            product_result(
+                "sourcegraph",
+                path,
+                expected,
+                {"src/original.go"},
+                scoring_gold=scoring_gold,
+            )
+
+
+def test_external_oracle_manifest_binds_all_raw_files_and_rows(tmp_path):
+    _base, _original, suite, pack = fixture_inputs(tmp_path)
+    root = tmp_path / "capture"
+    root.mkdir()
+    suite_path, pack_path = tmp_path / "suite.json", tmp_path / "pack.json"
+    suite_path.write_text(json.dumps(suite))
+    pack_path.write_text(json.dumps(pack))
+    paths = {
+        "suite": suite_path,
+        "query_pack": pack_path,
+        "capture_manifest": root / "capture.json",
+    }
+    for product in ("sourcegraph", "opengrok", "cs"):
+        row_path = root / f"{product}_rows.jsonl"
+        row_path.write_text(product + "\n")
+        paths[f"{product}_rows"] = row_path
+    raw = {}
+    for task in pack["tasks"]:
+        for product, suffixes in (
+            ("sourcegraph", ("stream", "transport.json")),
+            ("opengrok", ("json", "transport.json")),
+            ("cs", ("json", "process.json", "stderr")),
+        ):
+            for suffix in suffixes:
+                name = f"{product}/{task['task_id']}.{suffix}"
+                path = root / name
+                path.parent.mkdir(exist_ok=True)
+                path.write_text(name)
+                raw[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+    manifest = {
+        "schema_version": 1,
+        "status": "diagnostic_unqualified",
+        "tasks": len(pack["tasks"]),
+        "binding": {
+            "repository_commit": suite["repository_commit"],
+            "file_universe_digest": "sha256:" + suite["file_universe_digest"],
+            "suite_digest": "sha256:" + hashlib.sha256(suite_path.read_bytes()).hexdigest(),
+            "query_pack_digest": "sha256:" + hashlib.sha256(pack_path.read_bytes()).hexdigest(),
+        },
+        "rows_sha256": {
+            product: hashlib.sha256(paths[f"{product}_rows"].read_bytes()).hexdigest()
+            for product in ("sourcegraph", "opengrok", "cs")
+        },
+        "raw_capture_sha256": raw,
+    }
+    paths["capture_manifest"].write_text(json.dumps(manifest))
+    assert (
+        verify_capture_manifest(paths, suite, pack)
+        == hashlib.sha256(paths["capture_manifest"].read_bytes()).hexdigest()
+    )
+    (root / "sourcegraph" / "S00.stream").write_text("tampered")
+    with pytest.raises(ValueError, match="raw response digest differs"):
+        verify_capture_manifest(paths, suite, pack)
+    (root / "sourcegraph" / "S00.stream").write_text("sourcegraph/S00.stream")
+    paths["cs_rows"].write_text("tampered\n")
+    with pytest.raises(ValueError, match="does not bind"):
+        verify_capture_manifest(paths, suite, pack)
 
 
 @pytest.mark.parametrize("result_path", ["../outside.go", "/outside.go", "src\\0.go", "other.go"])

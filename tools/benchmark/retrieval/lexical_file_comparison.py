@@ -225,7 +225,12 @@ def _tasks(suite: dict, pack: dict) -> dict[str, tuple[str, list[str]]]:
 
 
 def product_result(
-    product: str, path: Path, expected: dict[str, tuple[str, list[str]]], universe: set[str]
+    product: str,
+    path: Path,
+    expected: dict[str, tuple[str, list[str]]],
+    universe: set[str],
+    *,
+    scoring_gold: dict[str, list[str]] | None = None,
 ) -> dict:
     if product not in PRODUCTS:
         raise ValueError(f"unknown lexical product: {product}")
@@ -237,6 +242,16 @@ def product_result(
         for _, gold in expected.values()
     ):
         raise ValueError(f"{product}: invalid or duplicate golden file inventory")
+    if scoring_gold is not None and (
+        set(scoring_gold) != set(expected)
+        or any(
+            not isinstance(gold, list)
+            or any(not _canonical_result_path(value) or value not in universe for value in gold)
+            or len(gold) != len(set(gold))
+            for gold in scoring_gold.values()
+        )
+    ):
+        raise ValueError(f"{product}: invalid scoring gold inventory")
     raw = RawFile.capture(path)
 
     def consume(lines):
@@ -278,24 +293,39 @@ def product_result(
                 or len(paths) != len(set(paths))
             ):
                 raise ValueError(f"{product}: {task_id} malformed result paths")
-            hit = bool(set(paths) & set(gold))
-            if row.get("file_hit_at_10") is not hit:
+            if row.get("file_hit_at_10") is not bool(set(paths) & set(gold)):
                 raise ValueError(f"{product}: {task_id} hit flag differs from paths")
+            judged_gold = scoring_gold[task_id] if scoring_gold is not None else gold
+            hit = bool(set(paths) & set(judged_gold))
             hits += hit
-            if not gold:
+            if not judged_gold:
                 empty_no_gold += not paths
             elapsed.append(row.get("elapsed_ms"))
             per_query.append(
                 {
                     "task_id": task_id,
-                    "file_hit_at_10": hit if gold else "not_applicable",
+                    "file_hit_at_10": hit if judged_gold else "not_applicable",
                     "file_recall_at_10": (
-                        len(set(paths) & set(gold)) / len(gold) if gold else "not_applicable"
+                        len(set(paths) & set(judged_gold)) / len(judged_gold)
+                        if judged_gold
+                        else "not_applicable"
                     ),
-                    "no_gold_empty_at_10": not paths if not gold else "not_applicable",
+                    "no_gold_empty_at_10": not paths if not judged_gold else "not_applicable",
                     "query_latency_ms": row.get("elapsed_ms"),
                 }
             )
+            if scoring_gold is not None:
+                ideal = sum(
+                    1 / math.log2(rank + 1) for rank in range(1, min(len(judged_gold), 10) + 1)
+                )
+                observed = sum(
+                    1 / math.log2(rank + 1)
+                    for rank, value in enumerate(paths, 1)
+                    if value in judged_gold
+                )
+                per_query[-1]["file_ndcg_at_10"] = (
+                    observed / ideal if judged_gold else "not_applicable"
+                )
             metadata_bytes += len(canonical(per_query[-1]))
             if metadata_bytes > CONTROL_DOCUMENT_BYTES:
                 raise ValueError("lexical result metadata exceeds explicit control byte limit")
@@ -304,9 +334,12 @@ def product_result(
         return hits, empty_no_gold, elapsed, per_query
 
     hits, empty_no_gold, elapsed, per_query = raw.consume_lines(consume)
-    answerable = sum(bool(gold) for _, gold in expected.values())
+    answerable = sum(
+        bool(scoring_gold[task_id] if scoring_gold is not None else gold)
+        for task_id, (_, gold) in expected.items()
+    )
     no_gold = len(expected) - answerable
-    return {
+    result = {
         "hits": hits,
         "tasks": len(expected),
         "rank_unit": "distinct_file",
@@ -328,6 +361,18 @@ def product_result(
         "latency_ms": latency_summary(elapsed, len(expected), TIMING_LAYERS[product]),
         "raw_sha256": raw.sha256.removeprefix("sha256:"),
     }
+    if scoring_gold is not None:
+        result["file_ndcg_at_10"] = (
+            math.fsum(
+                row["file_ndcg_at_10"]
+                for row in per_query
+                if row["file_ndcg_at_10"] != "not_applicable"
+            )
+            / answerable
+            if answerable
+            else "not_applicable"
+        )
+    return result
 
 
 def pair_result(

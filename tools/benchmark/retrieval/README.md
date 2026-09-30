@@ -154,6 +154,31 @@ The output manifest binds the input suite, source commit, tool file bytes, and
 all outputs; exact tool sources are copied under `tool-sources/`. These are new
 diagnostic inputs; their blind-pack digests differ
 from historical captures, so historical runner records cannot be reused.
+For preserved Sourcegraph, OpenGrok, and cs file rows, rescore the original
+300-query capture against complete source-derived file judgments without
+rewriting its rows or mixing native chunk records from another execution:
+
+```sh
+uv run --frozen --extra dev python -m tools.benchmark.retrieval.lexical_external_oracle \
+  --repo /absolute/clean/corpus \
+  --suite /absolute/original-suite.json \
+  --query-pack /absolute/original-blind-pack.json \
+  --capture-manifest /absolute/native-external/capture.json \
+  --sourcegraph-rows /absolute/native-external/sourcegraph_rows.jsonl \
+  --opengrok-rows /absolute/native-external/opengrok_rows.jsonl \
+  --cs-rows /absolute/native-external/cs_rows.jsonl \
+  --out /absolute/new-output-root/result.json
+```
+
+This verifies the capture manifest's suite, pack, row, and raw response file
+digests, then revalidates all row queries, paths, statuses, and original hit
+flags. File recall and binary file NDCG use `file_judgments`, which list every
+source match. The suite's `gold` is a representative first source line and
+must not replace those complete file judgments. Both contracts remain
+mechanical diagnostics. Backend indexed-universe equivalence and human
+relevance are still unproved. Digest verification does not replay native
+response parsing at the capture's original source revision. The result is not
+a five-product quality rank.
 The previous `go_exact_local_name_v1` covered fewer Go declaration kinds.
 `go_exact_local_name_v2` covered the same declaration kinds but used local-name
 token spans as symbol judgments. Published symbols use definition spans, so v2
