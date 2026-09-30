@@ -21,8 +21,12 @@ For each lane, freeze one of two modes before capture:
   query transformation and output semantics. Semantic/hybrid vs lexical-only
   belongs here unless an exact common contract is proved.
 
-For a file-ranked exact-name comparison, invoke Quanta's existing `select:file`
-runner policy and request ten distinct files. Semble or any other chunk-native
+For a distinct-file exact-name comparison, invoke Quanta's existing
+`literal_file` runner policy and request ten distinct files. That policy sends a
+quoted content phrase under `select:file`; its matches are constant-score and
+return in path order, so its top 10 is an observed path-ordered prefix, not a
+relevance ranking (correction 2026-10-01). A scored file ranking needs a
+separate bare-keyword policy. Semble or any other chunk-native
 product needs an explicit bounded collect-to-ten-unique-files policy and source
 rank preservation; if unsupported, retain its ten-chunk observed-prefix result
 as a separate diagnostic. Never call a deduplicated ten-chunk prefix file top-10.

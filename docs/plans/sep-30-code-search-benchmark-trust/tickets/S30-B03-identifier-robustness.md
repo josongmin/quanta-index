@@ -66,5 +66,5 @@ for the substring/typo mechanism distinction. None supplies this suite's gold.
 
 ## Execution receipt (2026-09-30)
 
-Release v2 (post-audit): variant contracts, byte-identical build, 81 v3 multi-file families (ticket's 78 is v1), components 278 after an acronym-boundary guard. Built from uncommitted source in the shared checkout; pool guard fails for prefix/infix/typo. Producer: uncommitted source in the shared checkout (RESULTS custody);
+Release v2 (post-audit): variant contracts, byte-identical build, 81 v3 multi-file families (ticket's 78 is v1), components 278 after an acronym-boundary guard. Built from pre-commit source in the shared checkout (later committed as 59249da8); pool guard fails for prefix/infix/typo. Producer: pre-commit source in the shared checkout (later committed as 59249da8) (RESULTS custody);
 results, digests and residuals: [qi-s30-bench-trust-20260930-0d21914e/RESULTS.md](/Users/songmin/Documents/code-new/qi-s30-bench-trust-20260930-0d21914e/RESULTS.md).

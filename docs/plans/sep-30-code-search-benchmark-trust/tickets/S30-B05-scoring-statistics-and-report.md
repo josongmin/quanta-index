@@ -9,7 +9,7 @@ Contract owner:
 
 | Lane | Primary reported unit and metric | Separate diagnostics |
 | --- | --- | --- |
-| Exact bare-name content | Ten-distinct-file Recall/Hit@10 against declaration-derived file qrels, on a file-ranked route | Native ten-chunk observed-prefix file coverage, same-file duplication and cap |
+| Exact bare-name content | Ten-distinct-file Recall/Hit@10 against declaration-derived file qrels; state whether the route is scored or path-ordered (Quanta `literal_file` is path-ordered, correction 2026-10-01) | Native ten-chunk observed-prefix file coverage, same-file duplication and cap |
 | Typed exact symbol | Indexed declaration identity Hit/MRR@10 where a genuine symbol-ranked route exists | Same-line distinct declarations and returned-context span checks; do not fold into the five-product content score |
 | Semble gin 20 | Reviewed graded file NDCG@10 plus file Recall@10 by semantic/architecture/symbol category | Secondary-file treatment, pool coverage, judgment sensitivity; descriptive only at 11/6/3 tasks |
 | Identifier robustness | Per-family change in exact-vs-variant file/declaration success, by prefix/infix/split/typo | Ambiguity classes, no-answer false-positive/abstention, query length/case strata |

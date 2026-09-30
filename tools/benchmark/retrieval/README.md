@@ -74,12 +74,18 @@ not prove that same-line declarations retained independent ranks.
 Native symbol keyword captures retain the original first-source-span context
 projection; distinct declaration ranking requires the exact-symbol profile.
 
-For a **file-ranked lexical** diagnostic, keep the bare source queries in a
+For a **distinct-file lexical** diagnostic, keep the bare source queries in a
 separate suite with `routes: ["lexical"]` and run with `--routes lexical
---query-input-policy literal_file`. The runner emits a safely escaped native
-`select:file` request and binds the effective request hash to the original
-query. Its returned ranking unit is a distinct repository-relative file, even
+--query-input-policy literal_file`. The runner emits `select:file` over a
+quoted, escaped content phrase and binds the effective request hash to the
+original query. Its result unit is a distinct repository-relative file, even
 though each file's source evidence remains the representative published chunk.
+A quoted phrase is a match-only (constant-score) content restriction, so the
+files come back in repository-path order, not relevance order: its top 10 is an
+observed, path-ordered prefix of the matching set, and a `capped` result is
+truncated alphabetically. Hit@10 on it is an observed-prefix measure, not a
+scored ranking quality. A bare keyword `select:file name` is a different,
+scored request over content and path tokens and is not this policy.
 The evaluator requires the recorded `rank_unit: distinct_file` and rejects
 repeated file paths for this policy. Source-reviewed file judgments and their
 metrics are opt-in; the original 300-query native capture stays on its frozen
@@ -87,7 +93,7 @@ policy and report contract.
 
 The benchmark runner refuses native `select:` and `type:path`/`type:repo`
 projections that change the ranked result unit. Use `literal_file` for a
-file-ranked benchmark. A quoted `"select:file"` remains ordinary content text
+distinct-file (path-ordered) benchmark. A quoted `"select:file"` remains ordinary content text
 under `native`.
 
 After freezing the reviewed suite and recording its single-route run, score
