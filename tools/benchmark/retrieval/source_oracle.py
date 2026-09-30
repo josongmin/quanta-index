@@ -11,7 +11,7 @@ from collections import defaultdict
 from typing import Any
 
 IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
-WORDS = re.compile(rb"[A-Za-z_][A-Za-z0-9_]*")
+WORDS = re.compile(rb"(?<![A-Za-z0-9_])[A-Za-z_][A-Za-z0-9_]*")
 GO_DECLARATIONS = frozenset({"function_declaration", "method_declaration", "type_spec"})
 GO_EXACT_LOCAL_NAME = "go_exact_local_name_v1"
 ASCII_IDENTIFIER_WORD = "ascii_identifier_word_v1"
@@ -22,6 +22,18 @@ MAX_QUERIES = 2000
 
 class SourceOracleError(ValueError):
     """The declared oracle cannot be derived exhaustively."""
+
+
+def has_identifier_word_in_span(raw: bytes, token: bytes, start: int, end: int) -> bool:
+    """Match a whole source word contained in a span, including its outside boundaries."""
+    window_start = max(0, start - 1)
+    window_end = min(len(raw), end + 1)
+    for match in WORDS.finditer(raw[window_start:window_end]):
+        word_start = window_start + match.start()
+        word_end = window_start + match.end()
+        if word_start >= start and word_end <= end and match.group() == token:
+            return True
+    return False
 
 
 class SourceOracleIndex:
@@ -37,15 +49,18 @@ class SourceOracleIndex:
         self.files = files
         self.query_tokens = {name.encode("ascii") for name in query_names}
         self._words: dict[bytes, set[str]] | None = None
+        self._first_words: dict[bytes, tuple[str, int, int]] = {}
         self._go_declarations: dict[bytes, list[tuple[str, int, int]]] | None = None
 
     def _index_words(self) -> dict[bytes, set[str]]:
         if self._words is None:
             words: dict[bytes, set[str]] = defaultdict(set)
-            for path, (raw, _digest) in self.files.items():
+            for path, (raw, _digest) in sorted(self.files.items()):
                 for match in WORDS.finditer(raw):
-                    if match.group() in self.query_tokens:
-                        words[match.group()].add(path)
+                    token = match.group()
+                    if token in self.query_tokens:
+                        words[token].add(path)
+                        self._first_words.setdefault(token, (path, match.start(), match.end()))
             self._words = words
         return self._words
 
@@ -103,3 +118,16 @@ class SourceOracleIndex:
         return [
             {"path": path, "file_sha256": self.files[path][1], "grade": 3} for path in sorted(paths)
         ]
+
+    def first_match(self, contract: str, query: str) -> tuple[str, int, int] | None:
+        """Choose the first source match by path and byte offset for a diagnostic gold line."""
+        if not isinstance(query, str) or IDENTIFIER.fullmatch(query) is None:
+            raise SourceOracleError("source oracle requires an ASCII bare identifier")
+        token = query.encode("ascii")
+        if contract == ASCII_IDENTIFIER_WORD:
+            self._index_words()
+            return self._first_words.get(token)
+        if contract == GO_EXACT_LOCAL_NAME:
+            matches = self._index_go_declarations().get(token, [])
+            return min(matches) if matches else None
+        raise SourceOracleError("unsupported source oracle contract")

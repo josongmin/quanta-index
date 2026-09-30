@@ -33,6 +33,8 @@ TOOL_FILES = (
     "pyproject.toml",
     "uv.lock",
     "tools/benchmark/evidence.py",
+    "tools/ci/lint/handoff_validation.py",
+    "tools/ci/proof_json.py",
     "tools/benchmark/retrieval/source_oracle_suite.py",
     "tools/benchmark/retrieval/source_oracle.py",
     "tools/benchmark/retrieval/evaluator.py",
@@ -53,7 +55,7 @@ def _tool_digests() -> list[dict[str, str]]:
 
 def derive_suites(repo: Path, baseline: dict[str, Any]) -> dict[str, tuple[dict, dict]]:
     """Derive complete judgments, then revalidate each final suite and blind pack."""
-    _checked, _pack, source = evaluator.validate_suite(repo, baseline)
+    _checked, _pack, source = evaluator.validate_suite(repo, baseline, source_oracle_admission=True)
     for task in baseline["tasks"]:
         evaluator.require(
             not (OWNED_TASK_FIELDS & task.keys()),
@@ -80,6 +82,12 @@ def derive_suites(repo: Path, baseline: dict[str, Any]) -> dict[str, tuple[dict,
             task["source_oracle"] = {"contract": contract, "unit": unit}
             task["judgment_policy"] = evaluator.SOURCE_ORACLE_JUDGMENT_POLICY
             task[kind] = oracle.expected_rows(contract, task["query"], unit)
+            task["gold"] = evaluator.source_oracle_gold(source, oracle, contract, task["query"])
+            task["answerable"] = bool(task[kind])
+            evaluator.require(
+                bool(task["gold"]) == task["answerable"],
+                f"source oracle gold/judgment mismatch: {task['task_id']}",
+            )
         _checked, pack, _source = evaluator.validate_suite(repo, suite)
         outputs[mode] = suite, pack
     return outputs

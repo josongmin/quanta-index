@@ -38,21 +38,36 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import random
 import re
 import subprocess
 import sys
+from array import array
+from bisect import bisect_right
 from collections.abc import Sequence
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, BinaryIO
 
 try:
+    from tools.benchmark.evidence import (
+        EvidenceError as SourceReadError,
+    )
+    from tools.benchmark.evidence import (
+        _consume_regular_file,
+    )
     from tools.benchmark.retrieval import query_plan as query_plan_contract
     from tools.benchmark.retrieval import retrieval_contract, source_oracle
     from tools.benchmark.retrieval.finite_json import is_finite_json_number
 except ModuleNotFoundError:  # direct script invocation
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+    from tools.benchmark.evidence import (
+        EvidenceError as SourceReadError,
+    )
+    from tools.benchmark.evidence import (
+        _consume_regular_file,
+    )
     from tools.benchmark.retrieval import query_plan as query_plan_contract
     from tools.benchmark.retrieval import retrieval_contract, source_oracle
     from tools.benchmark.retrieval.finite_json import is_finite_json_number
@@ -387,8 +402,10 @@ def verify_repo(repo: Path, commit: str) -> Path:
 class SourceSnapshot:
     """A clean commit's tracked path inventory and lazily cached source bytes."""
 
-    def __init__(self, repo: Path, commit: str) -> None:
+    def __init__(self, repo: Path, commit: str, *, max_total_bytes: int | None = None) -> None:
         self.repo = verify_repo(repo, commit)
+        self.max_total_bytes = max_total_bytes
+        self.cached_source_bytes = 0
         try:
             listing = subprocess.run(
                 ["git", "-C", str(self.repo), "ls-files", "-z"],
@@ -399,13 +416,78 @@ class SourceSnapshot:
             raise EvidenceError(f"tracked source inventory unavailable: {exc}") from exc
         self.tracked = set(listing.rstrip("\0").split("\0"))
         self.files: dict[str, tuple[bytes, list[bytes], str]] = {}
+        self.line_starts: dict[str, array] = {}
 
     def file(self, name: str) -> tuple[bytes, list[bytes], str]:
         if name not in self.files:
             absolute = safe_path(self, name)
-            raw = absolute.read_bytes()
+            if self.max_total_bytes is None:
+                raw = absolute.read_bytes()
+            else:
+                remaining = self.max_total_bytes - self.cached_source_bytes
+
+                def read_bounded(handle: BinaryIO) -> bytes:
+                    if os.fstat(handle.fileno()).st_size > remaining:
+                        raise EvidenceError("source oracle byte limit exceeded")
+                    data = handle.read(remaining + 1)
+                    require(len(data) <= remaining, "source oracle byte limit exceeded")
+                    return data
+
+                try:
+                    raw = _consume_regular_file(absolute, read_bounded)
+                except SourceReadError as exc:
+                    raise EvidenceError(f"source oracle source unavailable: {exc}") from exc
+                self.cached_source_bytes += len(raw)
             self.files[name] = (raw, raw.splitlines(keepends=True), digest(raw))
         return self.files[name]
+
+    def source_line_at(self, name: str, byte_offset: int) -> tuple[int, int, bytes]:
+        """Resolve a byte offset against splitlines boundaries indexed once per file."""
+        raw, lines, _digest = self.file(name)
+        starts = self.line_starts.get(name)
+        if starts is None:
+            starts = array("Q")
+            offset = 0
+            for contents in lines:
+                starts.append(offset)
+                offset += len(contents)
+            self.line_starts[name] = starts
+        line_index = bisect_right(starts, byte_offset) - 1
+        require(
+            0 <= line_index < len(lines) and byte_offset < len(raw),
+            "source oracle match has no source line",
+        )
+        return line_index + 1, starts[line_index], lines[line_index]
+
+
+def source_oracle_gold(
+    source: SourceSnapshot,
+    oracle: source_oracle.SourceOracleIndex,
+    contract: str,
+    query: str,
+) -> list[dict[str, Any]]:
+    """Project the oracle's first source match onto its complete source line."""
+    match = oracle.first_match(contract, query)
+    if match is None:
+        return []
+    path, start, end = match
+    raw, _lines, file_sha256 = source.file(path)
+    require(file_sha256 == oracle.files[path][1], "source oracle file hash drift")
+    line_number, line_start, contents = source.source_line_at(path, start)
+    line_end = line_start + len(contents)
+    require(end <= line_end, "source oracle match crosses a source line")
+    return [
+        {
+            "path": path,
+            "start_byte": line_start,
+            "end_byte": line_end,
+            "start_line": line_number,
+            "end_line": line_number,
+            "file_sha256": file_sha256,
+            "block_sha256": digest(raw[line_start:line_end]),
+            "grade": 3,
+        }
+    ]
 
 
 def safe_path(source: SourceSnapshot, raw: Any) -> Path:
@@ -710,7 +792,7 @@ def _check_split_leakage(
 
 
 def validate_suite(
-    repo: Path, payload: Any
+    repo: Path, payload: Any, *, source_oracle_admission: bool = False
 ) -> tuple[dict[str, Any], dict[str, Any], SourceSnapshot]:
     version = payload.get("schema_version") if isinstance(payload, dict) else None
     require(type(version) is int and version == SCHEMA_VERSION, "unsupported suite schema")
@@ -749,7 +831,35 @@ def validate_suite(
         isinstance(commit, str) and bool(COMMIT_RE.fullmatch(commit)),
         "repository_commit must be a full lowercase Git SHA",
     )
-    source = SourceSnapshot(repo, commit)
+    tasks = suite["tasks"]
+    # The suite builder opts in before adding source_oracle annotations to its baseline.
+    annotated_oracle_tasks = (
+        [task for task in tasks if isinstance(task, dict) and "source_oracle" in task]
+        if isinstance(tasks, list)
+        else []
+    )
+    if source_oracle_admission or annotated_oracle_tasks:
+        require(
+            isinstance(suite["file_universe"], list)
+            and 0 < len(suite["file_universe"]) <= source_oracle.MAX_FILES,
+            "source oracle file limit exceeded",
+        )
+        require(
+            isinstance(tasks, list)
+            and 0
+            < (len(tasks) if source_oracle_admission else len(annotated_oracle_tasks))
+            <= source_oracle.MAX_QUERIES,
+            "source oracle query limit exceeded",
+        )
+    source = SourceSnapshot(
+        repo,
+        commit,
+        max_total_bytes=(
+            source_oracle.MAX_SOURCE_BYTES
+            if source_oracle_admission or annotated_oracle_tasks
+            else None
+        ),
+    )
     routes = suite["routes"]
     require(isinstance(routes, list) and len(routes) >= 1, "suite requires at least one route")
     for route in routes:
@@ -766,7 +876,6 @@ def validate_suite(
     allowlist: frozenset[tuple[str, int, int]] = frozenset()
     if "leakage_allowlist" in suite:
         allowlist = validate_leakage_allowlist(source, suite["leakage_allowlist"])
-    tasks = suite["tasks"]
     require(isinstance(tasks, list) and bool(tasks), "suite requires tasks")
     oracle_names = {
         raw["query"]
@@ -944,10 +1053,11 @@ def validate_suite(
                     )
                 else:
                     raw = source.file(label["path"])[0]
-                    selected = raw[label["start_byte"] : label["end_byte"]]
-                    matched = any(
-                        match.group() == query.encode("ascii")
-                        for match in source_oracle.WORDS.finditer(selected)
+                    matched = source_oracle.has_identifier_word_in_span(
+                        raw,
+                        query.encode("ascii"),
+                        label["start_byte"],
+                        label["end_byte"],
                     )
                 require(matched, f"gold span contradicts source oracle: {task_id}")
             key = (label["path"], label["start_line"], label["end_line"])
@@ -955,6 +1065,14 @@ def validate_suite(
             seen_labels.add(key)
             labels_by_split[task["split"]].add(key)
             scored_files_by_split[task["split"]].add(label["path"])
+        if "source_oracle" in task:
+            require(
+                labels
+                == source_oracle_gold(
+                    source, oracle_index, task["source_oracle"]["contract"], query
+                ),
+                f"source oracle gold differs from canonical first match: {task_id}",
+            )
         if task["split"] == "eval":
             eval_count += 1
     require(eval_count > 0, "eval split requires at least one task")

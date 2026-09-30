@@ -13,17 +13,20 @@ from tools.benchmark.retrieval import evaluator as ev
 from tools.benchmark.retrieval import source_oracle_suite
 
 
-def _source_repo(tmp_path: Path) -> tuple[Path, str, dict[str, bytes]]:
+def _source_repo(
+    tmp_path: Path, extra_files: dict[str, bytes] | None = None
+) -> tuple[Path, str, dict[str, bytes]]:
     files = {
         "a.go": b"package sample\ntype Param struct{}\n",
         "b.go": b"package sample\n// Param is mentioned here.\nfunc Next() {}\n",
+        **(extra_files or {}),
     }
     repo = tmp_path / "source"
     repo.mkdir()
     for name, data in files.items():
         (repo / name).write_bytes(data)
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
-    subprocess.run(["git", "-C", str(repo), "add", "a.go", "b.go"], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "--", *files], check=True)
     subprocess.run(
         [
             "git",
@@ -45,6 +48,31 @@ def _source_repo(tmp_path: Path) -> tuple[Path, str, dict[str, bytes]]:
         ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True
     ).strip()
     return repo, commit, files
+
+
+def test_source_oracle_gold_projects_a_late_crlf_line_from_byte_offsets(tmp_path):
+    raw = b"x\n" * 1_000 + b"Needle\r\n"
+    repo, commit, files = _source_repo(tmp_path, {"late.txt": raw})
+    source = ev.SourceSnapshot(repo, commit)
+    oracle = ev.source_oracle.SourceOracleIndex(
+        {path: (source.file(path)[0], ev.digest(contents)) for path, contents in files.items()},
+        {"Needle"},
+    )
+    for _ in range(2):
+        assert ev.source_oracle_gold(
+            source, oracle, ev.source_oracle.ASCII_IDENTIFIER_WORD, "Needle"
+        ) == [
+            {
+                "path": "late.txt",
+                "start_byte": 2_000,
+                "end_byte": 2_008,
+                "start_line": 1_001,
+                "end_line": 1_001,
+                "file_sha256": ev.digest(raw),
+                "block_sha256": ev.digest(b"Needle\r\n"),
+                "grade": 3,
+            }
+        ]
 
 
 def _baseline(commit: str, files: dict[str, bytes]) -> dict:
@@ -106,9 +134,19 @@ def test_source_oracle_builder_emits_single_route_blind_suites_and_bound_manifes
     assert manifest["qualification"] == "diagnostic_unqualified"
     assert manifest["repository_commit"] == commit
     assert manifest["input_suite_sha256"] == ev.digest(baseline_path.read_bytes())
-    assert len(manifest["artifacts"]) == 16
+    assert len(manifest["artifacts"]) == 18
     for artifact in manifest["artifacts"]:
         assert ev.digest((output / artifact["path"]).read_bytes()) == artifact["sha256"]
+    for dependency in (
+        "tools/ci/lint/handoff_validation.py",
+        "tools/ci/proof_json.py",
+    ):
+        source = Path(__file__).resolve().parents[3] / dependency
+        copied = output / "tool-sources" / dependency
+        assert copied.read_bytes() == source.read_bytes()
+        assert {"path": dependency, "sha256": ev.digest(source.read_bytes())} in manifest[
+            "tool_files"
+        ]
     for mode, route in (
         ("identifier-word-file", "lexical"),
         ("go-declaration-file", "lexical"),
@@ -181,7 +219,7 @@ def test_source_oracle_builder_emits_single_route_blind_suites_and_bound_manifes
     assert not (repo / "forbidden-output").exists()
 
 
-def test_source_oracle_builder_refuses_claims_and_source_gold_conflicts(tmp_path, monkeypatch):
+def test_source_oracle_builder_refuses_claims_and_replaces_baseline_gold(tmp_path, monkeypatch):
     repo, commit, files = _source_repo(tmp_path)
     baseline = _baseline(commit, files)
     baseline["tasks"][0]["label_review"] = {"assessment": "unreviewed"}
@@ -192,8 +230,10 @@ def test_source_oracle_builder_refuses_claims_and_source_gold_conflicts(tmp_path
     bad["tasks"][0].pop("label_review")
     bad["tasks"][0]["query"] = "ParamExtra"
     bad["tasks"][0]["query_sha256"] = ev.digest(b"ParamExtra")
-    with pytest.raises(ev.EvidenceError, match="lacks a positive judgment"):
-        source_oracle_suite.derive_suites(repo, bad)
+    for suite, _pack in source_oracle_suite.derive_suites(repo, bad).values():
+        derived = suite["tasks"][0]
+        assert derived["answerable"] is False
+        assert derived["gold"] == []
 
     baseline_path = tmp_path / "baseline.json"
     baseline_path.write_text(json.dumps(_baseline(commit, files)), encoding="utf-8")
@@ -213,3 +253,122 @@ def test_source_oracle_builder_refuses_claims_and_source_gold_conflicts(tmp_path
     with pytest.raises(ev.EvidenceError, match="tool source changed"):
         source_oracle_suite.write_suites(repo, baseline_path, output)
     assert not output.exists()
+
+
+def test_source_oracle_builder_rebinds_answerability_and_gold_per_mode(tmp_path):
+    repo, commit, files = _source_repo(tmp_path)
+    baseline = _baseline(commit, files)
+    task = baseline["tasks"][0]
+    raw = files["b.go"]
+    lines = raw.splitlines(keepends=True)
+    start = len(lines[0])
+    task["query"] = "mentioned"
+    task["query_sha256"] = ev.digest(b"mentioned")
+    task["gold"] = [
+        {
+            "path": "b.go",
+            "start_byte": start,
+            "end_byte": start + len(lines[1]),
+            "start_line": 2,
+            "end_line": 2,
+            "file_sha256": ev.digest(raw),
+            "block_sha256": ev.digest(lines[1]),
+            "grade": 1,
+        }
+    ]
+    baseline["tasks"] = [task]
+    ev.validate_suite(repo, baseline)
+    suites = source_oracle_suite.derive_suites(repo, baseline)
+    word_task = suites["identifier-word-file"][0]["tasks"][0]
+    assert word_task["answerable"] is True
+    assert word_task["gold"][0]["path"] == "b.go"
+    assert word_task["gold"][0]["start_line"] == 2
+    assert word_task["gold"][0]["grade"] == 3
+    for mode in ("go-declaration-file", "go-declaration-symbol"):
+        derived = suites[mode][0]["tasks"][0]
+        assert derived["answerable"] is False
+        assert derived["gold"] == []
+        assert derived["file_judgments" if mode.endswith("file") else "declaration_judgments"] == []
+
+
+def test_source_oracle_validator_rejects_a_later_matching_gold_line(tmp_path):
+    raw = b"package sample\ntype Param struct{}\n// Param repeated here.\n"
+    repo, commit, files = _source_repo(tmp_path, {"a.go": raw})
+    baseline = _baseline(commit, files)
+    suite = source_oracle_suite.derive_suites(repo, baseline)["identifier-word-file"][0]
+    assert suite["tasks"][0]["gold"][0]["start_line"] == 2
+
+    later_line = raw.splitlines(keepends=True)[2]
+    changed = copy.deepcopy(suite)
+    changed["tasks"][0]["gold"] = [
+        {
+            "path": "a.go",
+            "start_byte": len(raw) - len(later_line),
+            "end_byte": len(raw),
+            "start_line": 3,
+            "end_line": 3,
+            "file_sha256": ev.digest(raw),
+            "block_sha256": ev.digest(later_line),
+            "grade": 3,
+        }
+    ]
+    with pytest.raises(ev.EvidenceError, match="gold differs from canonical first match"):
+        ev.validate_suite(repo, changed)
+
+
+def test_source_oracle_builder_uses_evaluator_line_projection_for_cr_only_source(tmp_path):
+    repo, commit, files = _source_repo(tmp_path, {"c.txt": b"header\rTarget\r"})
+    baseline = _baseline(commit, files)
+    task = baseline["tasks"][0]
+    raw = files["c.txt"]
+    lines = raw.splitlines(keepends=True)
+    start = len(lines[0])
+    task["query"] = "Target"
+    task["query_sha256"] = ev.digest(b"Target")
+    task["gold"] = [
+        {
+            "path": "c.txt",
+            "start_byte": start,
+            "end_byte": start + len(lines[1]),
+            "start_line": 2,
+            "end_line": 2,
+            "file_sha256": ev.digest(raw),
+            "block_sha256": ev.digest(lines[1]),
+            "grade": 1,
+        }
+    ]
+    ev.validate_suite(repo, baseline)
+    suites = source_oracle_suite.derive_suites(repo, baseline)
+    word_task = suites["identifier-word-file"][0]["tasks"][0]
+    assert word_task["gold"] == [dict(task["gold"][0], grade=3)]
+    for mode in ("go-declaration-file", "go-declaration-symbol"):
+        assert suites[mode][0]["tasks"][0]["gold"] == []
+
+
+def test_source_oracle_rejects_oversized_source_before_unbounded_read(tmp_path, monkeypatch):
+    repo, commit, files = _source_repo(tmp_path)
+    baseline = _baseline(commit, files)
+    suite = source_oracle_suite.derive_suites(repo, baseline)["identifier-word-file"][0]
+    original_read_bytes = Path.read_bytes
+
+    def refuse_unbounded_source_read(path: Path) -> bytes:
+        if path.is_relative_to(repo):
+            raise AssertionError("source oracle used an unbounded source read")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", refuse_unbounded_source_read)
+    max_files = ev.source_oracle.MAX_FILES
+    max_queries = ev.source_oracle.MAX_QUERIES
+    monkeypatch.setattr(ev.source_oracle, "MAX_FILES", 1)
+    with pytest.raises(ev.EvidenceError, match="source oracle file limit exceeded"):
+        source_oracle_suite.derive_suites(repo, baseline)
+    monkeypatch.setattr(ev.source_oracle, "MAX_FILES", max_files)
+    monkeypatch.setattr(ev.source_oracle, "MAX_QUERIES", 1)
+    with pytest.raises(ev.EvidenceError, match="source oracle query limit exceeded"):
+        source_oracle_suite.derive_suites(repo, baseline)
+    monkeypatch.setattr(ev.source_oracle, "MAX_QUERIES", max_queries)
+    monkeypatch.setattr(ev.source_oracle, "MAX_SOURCE_BYTES", 8)
+    with pytest.raises(ev.EvidenceError, match="source oracle byte limit exceeded"):
+        source_oracle_suite.derive_suites(repo, baseline)
+    with pytest.raises(ev.EvidenceError, match="source oracle byte limit exceeded"):
+        ev.validate_suite(repo, suite)

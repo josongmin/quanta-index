@@ -138,6 +138,14 @@ uv run --frozen --extra dev python -m tools.benchmark.retrieval.source_oracle_su
 The generator writes three suites and blind packs: identifier-word/file and
 Go declaration/file use the `lexical` route; Go declaration/symbol uses the
 `symbol` route. Each suite has exactly one route for `evaluate-diagnostic`.
+Each mode recomputes `answerable` and replaces the baseline's authored gold
+with the line containing the first source match by path and byte offset.
+These mechanical gold lines are diagnostic evidence, not human relevance
+labels. A mode without a source match retains the task as unanswerable with
+empty gold. The evaluator still refuses cross-split source-label leakage.
+Source-oracle admission rejects more than 4,096 files, 2,000 queries, or
+512 MiB of source bytes before materializing an over-limit file. This is a
+corpus input limit, not a peak-RSS guarantee.
 The output manifest binds the input suite, source commit, tool file bytes, and
 all outputs; exact tool sources are copied under `tool-sources/`. These are new
 diagnostic inputs; their blind-pack digests differ

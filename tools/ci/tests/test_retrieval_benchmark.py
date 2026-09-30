@@ -9896,6 +9896,17 @@ def test_benchmark_prep_does_not_repeat_retrieval_contracts():
         )
         return completed.stdout + completed.stderr
 
+    def pytest_invocations(rendered: str) -> list[list[str]]:
+        commands = [shlex.split(line) for line in rendered.splitlines()]
+        return [
+            argv
+            for argv in commands
+            if any(
+                argv[index : index + 3] == ["python", "-m", "pytest"]
+                for index in range(len(argv) - 2)
+            )
+        ]
+
     prep = recipe("benchmark-prep-local")
     control = recipe("benchmark-control-contract-local")
     proof = recipe("retrieval-contract-proof", "/tmp/retrieval-proof")
@@ -9903,12 +9914,18 @@ def test_benchmark_prep_does_not_repeat_retrieval_contracts():
     # just's dry-run prints nested just calls without expanding their recipe.
     # Prove the actual delegation and inspect its leaf command separately.
     assert prep.count("uv run --frozen --extra dev just benchmark-control-contract-local") == 1
-    assert "uv run --frozen --extra dev python -m pytest " in control
-    assert "uv run --frozen --extra dev python -m pytest " in local
-    assert "test_retrieval_benchmark.py -q" not in prep + control
+    control_pytest = pytest_invocations(control)
+    local_pytest = pytest_invocations(local)
+    assert control_pytest
+    assert len(local_pytest) == 1
+    retrieval_test = "tools/ci/tests/test_retrieval_benchmark.py"
+    oracle_suite_test = "tools/ci/tests/test_source_oracle_suite.py"
+    for test_path in (retrieval_test, oracle_suite_test):
+        assert all(test_path not in argv for argv in pytest_invocations(prep) + control_pytest)
+        assert local_pytest[0].count(test_path) == 1
     assert "test -p quanta-index-retrieval-bench" not in prep + control
     assert "portable_proof.py run --rail contract" in proof
-    assert "test_retrieval_benchmark.py -q" in local
+    assert "-q" in local_pytest[0]
     assert "--test chunking_contract" in local
     assert "--test l5_parser_regressions" in local
     portable_source = (root / "tools/benchmark/retrieval/portable_proof.py").read_text()
@@ -10576,9 +10593,10 @@ def test_independent_judgments_are_source_bound_reviewed_and_blinded(tmp_path):
 
 def test_source_oracle_recomputes_exhaustive_go_and_identifier_judgments(tmp_path):
     files = {
-        "a.go": b"package demo\ntype Param struct{}\nfunc (p *Param) Next() {}\n",
+        "a.go": b"package demo\ntype Param struct{}\nfunc (p *Param) Next() {}\n// 1Param is not an identifier word.\n",
         "b.go": b"package demo\n// Param is a use site.\nfunc Next() {}\n",
         "c.go": b"package demo\n// ParamExtra and param are different names.\n",
+        "d.go": b"package demo\n// 1Param is not an identifier word.\n",
     }
     repo, commit = _write_repo(tmp_path, files)
     universe = [
@@ -10605,7 +10623,7 @@ def test_source_oracle_recomputes_exhaustive_go_and_identifier_judgments(tmp_pat
             "query_family_id": "oracle-family",
             "query_intent": "bare_symbol",
             "answerable": bool(judgments),
-            "gold": [_v3_block(files, gold_path, gold_line, gold_line)] if judgments else [],
+            "gold": [_v3_block(files, gold_path, gold_line, gold_line, grade=3)] if judgments else [],
             "judgment_policy": ev.SOURCE_ORACLE_JUDGMENT_POLICY,
             "source_oracle": {"contract": contract, "unit": unit},
             "declaration_judgments" if unit == "symbol" else "file_judgments": judgments,
@@ -10653,6 +10671,9 @@ def test_source_oracle_recomputes_exhaustive_go_and_identifier_judgments(tmp_pat
         row["path"]
         for row in index.expected_rows("ascii_identifier_word_v1", "param", "distinct_file")
     ] == ["c.go"]
+    assert not ev.source_oracle.has_identifier_word_in_span(b"1Param", b"Param", 1, 6)
+    assert not ev.source_oracle.has_identifier_word_in_span(b"ParamExtra", b"Param", 0, 5)
+    assert ev.source_oracle.has_identifier_word_in_span(b" Param ", b"Param", 1, 6)
     assert index.expected_rows("go_exact_local_name_v1", "param", "symbol") == []
     invalid_go = b"package demo\nfunc Next(\n"
     invalid_index = ev.source_oracle.SourceOracleIndex(
@@ -10698,6 +10719,7 @@ def test_source_oracle_recomputes_exhaustive_go_and_identifier_judgments(tmp_pat
     mutations = (
         (lambda row: row["file_judgments"].pop(), "differ from frozen source"),
         (lambda row: row["file_judgments"].append(file_row("c.go")), "differ from frozen source"),
+        (lambda row: row["file_judgments"].append(file_row("d.go")), "differ from frozen source"),
         (lambda row: row["file_judgments"][0].update(grade=2), "differ from frozen source"),
         (
             lambda row: row.update(label_review={"assessment": "unreviewed"}),
@@ -10710,6 +10732,7 @@ def test_source_oracle_recomputes_exhaustive_go_and_identifier_judgments(tmp_pat
         (lambda row: row.update(query_intent="semantic_intent"), "requires bare_symbol"),
         (lambda row: row.update(gold=[_v3_block(files, "c.go", 2, 2)]), "gold path contradicts"),
         (lambda row: row.update(gold=[_v3_block(files, "a.go", 1, 1)]), "gold span contradicts"),
+        (lambda row: row.update(gold=[_v3_block(files, "a.go", 4, 4)]), "gold span contradicts"),
     )
     for mutate, error in mutations:
         bad = copy.deepcopy(suite)
