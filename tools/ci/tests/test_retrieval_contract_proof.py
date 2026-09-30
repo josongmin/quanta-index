@@ -256,7 +256,7 @@ def test_pytest_summary_uses_junit_counts(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     assert MODULE.pytest_summary(junit) == {
-        "command": "python3 -m pytest tools/ci/tests/test_retrieval_benchmark.py -q",
+        "command": portable_proof.PYTHON_COMMAND,
         "selected": 132,
         "executed": 130,
         "passed": 130,
@@ -308,7 +308,7 @@ def test_pytest_summary_refuses_hidden_outcomes_and_cases(tmp_path: Path, placem
             {
                 "schema_version": 1,
                 "kind": "pytest",
-                "selector": "tools/ci/tests/test_retrieval_benchmark.py",
+                "selector": portable_proof.proof_inventory.PYTHON_SELECTOR,
                 "tests": ["tools.ci.tests.test_retrieval_benchmark.test_ok"],
             }
         )
@@ -444,7 +444,7 @@ def _python_inventory(tmp_path: Path, names: list[str]) -> Path:
             {
                 "schema_version": 1,
                 "kind": "pytest",
-                "selector": "tools/ci/tests/test_retrieval_benchmark.py",
+                "selector": portable_proof.proof_inventory.PYTHON_SELECTOR,
                 "tests": sorted(names),
             }
         ),

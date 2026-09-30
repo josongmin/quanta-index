@@ -124,6 +124,106 @@ def _baseline(commit: str, files: dict[str, bytes]) -> dict:
     }
 
 
+def test_go_indexed_local_name_includes_interface_methods_and_aliases(tmp_path):
+    raw = (
+        b"package sample\n"
+        b"type Reader interface {\n"
+        b"\tPush()\n"
+        b"}\n"
+        b"type Alias = Reader\n"
+        b"type Writer struct{}\n"
+        b"func (w *Writer) Push() {}\n"
+        b"type AliasInterface = interface { Flush() }\n"
+        b"var dynamic interface { Hidden() }\n"
+    )
+    repo, commit, files = _source_repo(tmp_path, {"symbols.go": raw})
+    baseline = _baseline(commit, files)
+    lines = raw.splitlines(keepends=True)
+    for task_id, query, line in (
+        ("T3", "Push", 7),
+        ("T4", "Alias", 5),
+        ("T5", "Hidden", 9),
+        ("T6", "Flush", 8),
+    ):
+        task = copy.deepcopy(baseline["tasks"][0])
+        start = sum(len(entry) for entry in lines[: line - 1])
+        task.update(
+            task_id=task_id,
+            query=query,
+            query_sha256=ev.digest(query.encode()),
+            query_family_id=task_id,
+            gold=[
+                {
+                    "path": "symbols.go",
+                    "start_byte": start,
+                    "end_byte": start + len(lines[line - 1]),
+                    "start_line": line,
+                    "end_line": line,
+                    "file_sha256": ev.digest(raw),
+                    "block_sha256": ev.digest(lines[line - 1]),
+                    "grade": 1,
+                }
+            ],
+        )
+        baseline["tasks"].append(task)
+    source = ev.SourceSnapshot(repo, commit)
+    oracle = ev.source_oracle.SourceOracleIndex(
+        {path: (source.file(path)[0], ev.digest(contents)) for path, contents in files.items()},
+        {"Push", "Alias", "Hidden", "Flush"},
+    )
+
+    def declaration(name: bytes, occurrence: int = 0) -> dict:
+        start = raw.index(name, raw.index(name) + 1) if occurrence else raw.index(name)
+        return {
+            "path": "symbols.go",
+            "file_sha256": ev.digest(raw),
+            "start_byte": start,
+            "end_byte": start + len(name),
+            "grade": 3,
+        }
+
+    assert oracle.expected_rows(ev.source_oracle.GO_EXACT_LOCAL_NAME, "Push", "symbol") == [
+        declaration(b"Push"),
+        declaration(b"Push", 1),
+    ]
+    assert oracle.expected_rows(ev.source_oracle.GO_EXACT_LOCAL_NAME, "Alias", "symbol") == [
+        declaration(b"Alias")
+    ]
+    assert oracle.expected_rows(ev.source_oracle.GO_EXACT_LOCAL_NAME, "Flush", "symbol") == [
+        declaration(b"Flush")
+    ]
+    assert oracle.expected_rows(ev.source_oracle.GO_EXACT_LOCAL_NAME, "Hidden", "symbol") == []
+
+    derived = source_oracle_suite.derive_suites(repo, baseline)
+    for mode in ("go-declaration-file", "go-declaration-symbol"):
+        suite = derived[mode][0]
+        tasks = {task["query"]: task for task in suite["tasks"]}
+        assert tasks["Push"]["source_oracle"]["contract"] == ev.source_oracle.GO_EXACT_LOCAL_NAME
+        assert tasks["Push"]["gold"][0]["start_line"] == 3
+        assert tasks["Alias"]["gold"][0]["start_line"] == 5
+        assert tasks["Flush"]["gold"][0]["start_line"] == 8
+        assert tasks["Hidden"]["answerable"] is False
+        assert tasks["Hidden"]["gold"] == []
+        if mode.endswith("symbol"):
+            assert tasks["Push"]["declaration_judgments"] == [
+                declaration(b"Push"),
+                declaration(b"Push", 1),
+            ]
+            assert tasks["Alias"]["declaration_judgments"] == [declaration(b"Alias")]
+            assert tasks["Flush"]["declaration_judgments"] == [declaration(b"Flush")]
+            assert tasks["Hidden"]["declaration_judgments"] == []
+        else:
+            assert tasks["Push"]["file_judgments"] == [
+                {"path": "symbols.go", "file_sha256": ev.digest(raw), "grade": 3}
+            ]
+        legacy = copy.deepcopy(suite)
+        next(task for task in legacy["tasks"] if task["query"] == "Push")["source_oracle"]["contract"] = (
+            "go_exact_local_name_v1"
+        )
+        with pytest.raises(ev.EvidenceError, match="unsupported source oracle contract"):
+            ev.validate_suite(repo, legacy)
+
+
 def test_source_oracle_builder_emits_single_route_blind_suites_and_bound_manifest(tmp_path):
     repo, commit, files = _source_repo(tmp_path)
     baseline = _baseline(commit, files)

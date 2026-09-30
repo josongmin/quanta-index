@@ -27,7 +27,11 @@ def _evidence_bytes(value: Path | RawFile | bytes) -> bytes:
     return read_control(value)
 
 
-PYTHON_SELECTOR = "tools/ci/tests/test_retrieval_benchmark.py"
+PYTHON_SELECTORS = (
+    "tools/ci/tests/test_retrieval_benchmark.py",
+    "tools/ci/tests/test_source_oracle_suite.py",
+)
+PYTHON_SELECTOR = " ".join(PYTHON_SELECTORS)
 DEFAULT_AUTHORITY = (
     Path(__file__).resolve().parents[3] / "benchmarks/retrieval/proof-required-tests.json"
 )
@@ -117,7 +121,7 @@ def collect_pytest() -> dict[str, object]:
     try:
         os.chdir(root)
         with contextlib.redirect_stdout(captured), contextlib.redirect_stderr(captured):
-            outcome = pytest.main([PYTHON_SELECTOR, "--collect-only", "-q"], plugins=[plugin])
+            outcome = pytest.main([*PYTHON_SELECTORS, "--collect-only", "-q"], plugins=[plugin])
     finally:
         os.chdir(original_cwd)
     if outcome != pytest.ExitCode.OK:

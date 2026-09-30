@@ -73,7 +73,7 @@ def derive_suites(repo: Path, baseline: dict[str, Any]) -> dict[str, tuple[dict,
     outputs: dict[str, tuple[dict, dict]] = {}
     for mode, (contract, unit, route) in MODES.items():
         suite = copy.deepcopy(baseline)
-        suite["suite_id"] = baseline["suite_id"] + "-" + mode + "-source-oracle-v1"
+        suite["suite_id"] = baseline["suite_id"] + "-" + mode + "-source-oracle-v2"
         suite["routes"] = [route]
         suite["diagnostic_policy"] = evaluator.OBSERVED_PREFIX_DIAGNOSTIC_POLICY
         kind = "declaration_judgments" if unit == "symbol" else "file_judgments"

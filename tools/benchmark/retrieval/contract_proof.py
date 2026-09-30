@@ -10,7 +10,10 @@ import sys
 from pathlib import Path
 
 try:
-    from tools.benchmark.retrieval.proof_inventory import verify_inventory_authority
+    from tools.benchmark.retrieval.proof_inventory import (
+        PYTHON_SELECTOR,
+        verify_inventory_authority,
+    )
     from tools.ci.junit_events import JUnitEvidenceError, parse_pytest_junit_bytes
     from tools.ci.nextest_events import (
         NextestEvidenceError,
@@ -20,7 +23,10 @@ try:
     )
 except ModuleNotFoundError:  # direct script invocation
     sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-    from tools.benchmark.retrieval.proof_inventory import verify_inventory_authority
+    from tools.benchmark.retrieval.proof_inventory import (
+        PYTHON_SELECTOR,
+        verify_inventory_authority,
+    )
     from tools.ci.junit_events import JUnitEvidenceError, parse_pytest_junit_bytes
     from tools.ci.nextest_events import (
         NextestEvidenceError,
@@ -34,9 +40,6 @@ from tools.benchmark.evidence import RawFile, read_control
 
 def _evidence_bytes(value: Path | RawFile | bytes) -> bytes:
     return read_control(value)
-
-
-PYTHON_SELECTOR = "tools/ci/tests/test_retrieval_benchmark.py"
 
 
 def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -78,7 +81,7 @@ def pytest_summary(
     except (OSError, JUnitEvidenceError) as error:
         raise SystemExit(f"invalid pytest JUnit evidence {path}: {error}") from error
     return {
-        "command": "python3 -m pytest tools/ci/tests/test_retrieval_benchmark.py -q",
+        "command": f"python3 -m pytest {PYTHON_SELECTOR} -q",
         **{key: counts[key] for key in ("selected", "executed", "passed", "failed")},
     }
 

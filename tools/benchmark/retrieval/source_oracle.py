@@ -12,8 +12,10 @@ from typing import Any
 
 IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 WORDS = re.compile(rb"(?<![A-Za-z0-9_])[A-Za-z_][A-Za-z0-9_]*")
-GO_DECLARATIONS = frozenset({"function_declaration", "method_declaration", "type_spec"})
-GO_EXACT_LOCAL_NAME = "go_exact_local_name_v1"
+GO_DECLARATIONS = frozenset(
+    {"function_declaration", "method_declaration", "type_spec", "type_alias"}
+)
+GO_EXACT_LOCAL_NAME = "go_exact_local_name_v2"
 ASCII_IDENTIFIER_WORD = "ascii_identifier_word_v1"
 MAX_FILES = 4096
 MAX_SOURCE_BYTES = 512 * 1024 * 1024
@@ -22,6 +24,24 @@ MAX_QUERIES = 2000
 
 class SourceOracleError(ValueError):
     """The declared oracle cannot be derived exhaustively."""
+
+
+def _go_indexed_definition(node: Any) -> bool:
+    """Mirror the Go symbol producer's definition query, including interface methods."""
+    if node.type in GO_DECLARATIONS:
+        return True
+    if node.type != "method_elem":
+        return False
+    interface = node.parent
+    owner = interface.parent if interface is not None else None
+    return (
+        interface is not None
+        and interface.type == "interface_type"
+        and owner is not None
+        and owner.type in ("type_spec", "type_alias")
+        and (owner_type := owner.child_by_field_name("type")) is not None
+        and owner_type.id == interface.id
+    )
 
 
 def has_identifier_word_in_span(raw: bytes, token: bytes, start: int, end: int) -> bool:
@@ -82,7 +102,7 @@ class SourceOracleIndex:
                 nodes = [root]
                 while nodes:
                     node = nodes.pop()
-                    if node.type in GO_DECLARATIONS:
+                    if _go_indexed_definition(node):
                         name = node.child_by_field_name("name")
                         if name is None:
                             raise SourceOracleError(f"Go declaration lacks name: {path}")

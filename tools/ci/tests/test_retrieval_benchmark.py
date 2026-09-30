@@ -4585,7 +4585,7 @@ def _canonical_log_zip(entries: dict[str, bytes]) -> bytes:
 
 
 def _full_receipts(commit, binary_digest, binary_dir):
-    py_cmd = "python3 -m pytest tools/ci/tests/test_retrieval_benchmark.py -q"
+    py_cmd = portable_proof.PYTHON_COMMAND
     rs_cmd = (
         "./scripts/cargow nextest run -p quanta-index-retrieval-bench "
         "--lib --test chunking_contract --test l5_parser_regressions --all-features --locked"
@@ -4608,9 +4608,9 @@ def _full_receipts(commit, binary_digest, binary_dir):
     py_bytes = json.dumps(py_results).encode()
     rs_bytes = json.dumps(rs_results).encode()
     sdk_bytes = json.dumps(sdk_results).encode()
-    classname = "tools.ci.tests.test_retrieval_benchmark"
     py_cases = "".join(
-        f'<testcase classname="{classname}" name="{html.escape(identity[len(classname) + 1 :], quote=True)}"/>'
+        f'<testcase classname="{html.escape(identity.rsplit(".", 1)[0], quote=True)}" '
+        f'name="{html.escape(identity.rsplit(".", 1)[1], quote=True)}"/>'
         for identity in authority["python"]
     )
     py_raw = (
@@ -4643,7 +4643,7 @@ def _full_receipts(commit, binary_digest, binary_dir):
         {
             "schema_version": 1,
             "kind": "pytest",
-            "selector": "tools/ci/tests/test_retrieval_benchmark.py",
+            "selector": portable_proof.proof_inventory.PYTHON_SELECTOR,
             "tests": authority["python"],
         }
     ).encode()
@@ -6265,7 +6265,7 @@ def test_required_inventory_uses_canonical_internal_temporary_path(tmp_path, mon
     payload = {
         "schema_version": 1,
         "kind": "pytest",
-        "selector": "tools/ci/tests/test_retrieval_benchmark.py",
+        "selector": portable_proof.proof_inventory.PYTHON_SELECTOR,
         "tests": authority["python"],
     }
     inventory.write_text(json.dumps(payload))
@@ -6798,7 +6798,7 @@ def test_verdict_rejects_coordinated_partial_inventory_and_receipt_rebind(tmp_pa
         encoding="utf-8",
     )
     results = _counts_results(
-        "python3 -m pytest tools/ci/tests/test_retrieval_benchmark.py -q", 1, 1, 1, 0
+        portable_proof.PYTHON_COMMAND, 1, 1, 1, 0
     )
     paths["results"].write_text(json.dumps(results), encoding="utf-8")
     receipt = json.loads(paths["receipt"].read_text())
@@ -9929,7 +9929,7 @@ def test_benchmark_prep_does_not_repeat_retrieval_contracts():
     assert "--test chunking_contract" in local
     assert "--test l5_parser_regressions" in local
     portable_source = (root / "tools/benchmark/retrieval/portable_proof.py").read_text()
-    assert "proof_inventory.PYTHON_SELECTOR" in portable_source
+    assert "proof_inventory.PYTHON_SELECTORS" in portable_source
     selectors = [
         [item.value for item in node.value.elts if isinstance(item, ast.Constant)]
         for node in ast.walk(ast.parse(portable_source))
@@ -10637,7 +10637,7 @@ def test_source_oracle_recomputes_exhaustive_go_and_identifier_judgments(tmp_pat
         return {**file_row(path), "start_byte": start, "end_byte": start + len(name)}
 
     cases = [
-        task("Param", "go_exact_local_name_v1", "distinct_file", [file_row("a.go")]),
+        task("Param", "go_exact_local_name_v2", "distinct_file", [file_row("a.go")]),
         task(
             "Param",
             "ascii_identifier_word_v1",
@@ -10646,12 +10646,12 @@ def test_source_oracle_recomputes_exhaustive_go_and_identifier_judgments(tmp_pat
         ),
         task(
             "Next",
-            "go_exact_local_name_v1",
+            "go_exact_local_name_v2",
             "symbol",
             [declaration_row("a.go", b"Next"), declaration_row("b.go", b"Next")],
             gold_line=3,
         ),
-        task("NoSuchName", "go_exact_local_name_v1", "symbol", []),
+        task("NoSuchName", "go_exact_local_name_v2", "symbol", []),
     ]
     for candidate in cases:
         suite["tasks"] = [candidate]
@@ -10674,13 +10674,13 @@ def test_source_oracle_recomputes_exhaustive_go_and_identifier_judgments(tmp_pat
     assert not ev.source_oracle.has_identifier_word_in_span(b"1Param", b"Param", 1, 6)
     assert not ev.source_oracle.has_identifier_word_in_span(b"ParamExtra", b"Param", 0, 5)
     assert ev.source_oracle.has_identifier_word_in_span(b" Param ", b"Param", 1, 6)
-    assert index.expected_rows("go_exact_local_name_v1", "param", "symbol") == []
+    assert index.expected_rows("go_exact_local_name_v2", "param", "symbol") == []
     invalid_go = b"package demo\nfunc Next(\n"
     invalid_index = ev.source_oracle.SourceOracleIndex(
         {"invalid.go": (invalid_go, ev.digest(invalid_go))}, {"Next"}
     )
     with pytest.raises(ev.source_oracle.SourceOracleError, match="parse error"):
-        invalid_index.expected_rows("go_exact_local_name_v1", "Next", "symbol")
+        invalid_index.expected_rows("go_exact_local_name_v2", "Next", "symbol")
 
     suite["tasks"] = [cases[2]]
     bad_declaration = copy.deepcopy(suite)

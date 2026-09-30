@@ -50,7 +50,7 @@ FORMAT = ["--message-format", "libtest-json-plus", "--message-format-version", "
 SOURCE_CLOSURE_SCRIPT = ROOT / "tools/ci/source_closure.py"
 RECEIPT_WRITER = ROOT / "tools/ci/write-verification-receipt.py"
 WRAPPER = ROOT / "scripts/cargow"
-PYTHON_COMMAND = "python3 -m pytest tools/ci/tests/test_retrieval_benchmark.py -q"
+PYTHON_COMMAND = f"python3 -m pytest {proof_inventory.PYTHON_SELECTOR} -q"
 RUST_COMMAND = (
     "./scripts/cargow nextest run -p quanta-index-retrieval-bench "
     "--lib --test chunking_contract --test l5_parser_regressions --all-features --locked"
@@ -767,7 +767,7 @@ def _expected_commands(
                     python,
                     "-m",
                     "pytest",
-                    proof_inventory.PYTHON_SELECTOR,
+                    *proof_inventory.PYTHON_SELECTORS,
                     "-q",
                     f"--junitxml={out / 'python-junit.xml'}",
                 ],
@@ -932,7 +932,7 @@ def _produce(rail: str, out: Path, revision: str, tools: dict[str, dict[str, str
             python,
             "-m",
             "pytest",
-            proof_inventory.PYTHON_SELECTOR,
+            *proof_inventory.PYTHON_SELECTORS,
             "-q",
             f"--junitxml={out / 'python-junit.xml'}",
         ]

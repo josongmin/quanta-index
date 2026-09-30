@@ -7303,7 +7303,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             contract_authority = {
                 "python": (
                     "retrieval-contract-python",
-                    "python3 -m pytest tools/ci/tests/test_retrieval_benchmark.py -q",
+                    portable_proof.PYTHON_COMMAND,
                     "pytest-junit",
                     pytest_summary,
                 ),
