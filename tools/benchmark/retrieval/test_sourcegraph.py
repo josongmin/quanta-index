@@ -81,10 +81,9 @@ def inputs(raw: bytes | None = None) -> tuple[dict, bytes, dict, dict]:
 
 class SourcegraphCaptureTests(unittest.TestCase):
     def test_complete_zero_result_stream_is_valid_but_unqualified(self) -> None:
-        raw = (
-            event("progress", {"done": True, "skipped": [], "matchCount": 0, "durationMs": 1})
-            + event("done", {})
-        )
+        raw = event(
+            "progress", {"done": True, "skipped": [], "matchCount": 0, "durationMs": 1}
+        ) + event("done", {})
         request, raw, manifest, universe = inputs(raw)
 
         result = validate_capture(request, raw, manifest, universe)

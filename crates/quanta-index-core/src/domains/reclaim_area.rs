@@ -91,10 +91,18 @@ struct DirectoryFrame {
     identity: (u64, u64),
 }
 
+fn checked_device_id<T>(device: T) -> io::Result<u64>
+where
+    T: TryInto<u64>,
+    T::Error: std::error::Error + Send + Sync + 'static,
+{
+    device
+        .try_into()
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+}
+
 fn inode_key(metadata: &Stat) -> io::Result<(u64, u64)> {
-    let device = u64::try_from(metadata.st_dev)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    Ok((device, metadata.st_ino))
+    Ok((checked_device_id(metadata.st_dev)?, metadata.st_ino))
 }
 
 fn open_frame_directory(parent: &File, frame: &DirectoryFrame) -> io::Result<File> {
