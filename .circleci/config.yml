@@ -104,14 +104,23 @@ jobs:
       - checkout
       - run: *install_verification_tools
       - run: *verify_tool_versions
+      - restore_cache:
+          keys:
+            - cargo-modules-v1-linux-rust1.92.0-crate0.26.0-{{ .Branch }}
       - run:
           name: Verify guarded module snapshots
           no_output_timeout: 20m
           command: |
             set -euo pipefail
             unset BASH_ENV ENV
-            cargo install cargo-modules --version 0.26.0 --locked
+            if ! cargo modules --version 2>/dev/null | grep -Fxq 'cargo-modules 0.26.0'; then
+              cargo install cargo-modules --version 0.26.0 --locked
+            fi
             python3 tools/ci/lint/check-cargo-modules-snapshot.py
+      - save_cache:
+          key: cargo-modules-v1-linux-rust1.92.0-crate0.26.0-{{ .Branch }}
+          paths:
+            - ~/.cargo/bin/cargo-modules
       - run:
           name: Python policy and tooling tests
           no_output_timeout: 20m
