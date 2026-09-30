@@ -157,8 +157,12 @@ fn quarantine_root_lock_excludes_durable_admission_until_physical_absence() -> T
         started_rx.recv_timeout(Duration::from_secs(5))?;
         let premature = result_rx.recv_timeout(Duration::from_millis(100));
         release_tx.send(())?;
-        removal.join().map_err(|_| "removal thread panicked")??;
-        admission.join().map_err(|_| "admission thread panicked")?;
+        removal
+            .join()
+            .map_err(|panic| format!("removal thread panicked: {panic:?}"))??;
+        admission
+            .join()
+            .map_err(|panic| format!("admission thread panicked: {panic:?}"))?;
         if !matches!(premature, Err(mpsc::RecvTimeoutError::Timeout)) {
             return Err(format!(
                 "admission ran before the quarantine root lock settled: {premature:?}"

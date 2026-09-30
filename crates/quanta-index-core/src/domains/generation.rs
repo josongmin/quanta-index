@@ -1042,7 +1042,6 @@ fn hash_committed_step_opened_impl<R: Read>(
         }
         let file = match open(&artifact.name) {
             Ok(file) => file,
-            Err(OpenCommittedError::Resolve(error)) => return Err(error),
             Err(OpenCommittedError::File(error))
                 if error.kind() == std::io::ErrorKind::NotFound =>
             {
@@ -1051,7 +1050,9 @@ fn hash_committed_step_opened_impl<R: Read>(
                 });
                 return Ok(step);
             }
-            Err(OpenCommittedError::File(error)) => return Err(error),
+            Err(OpenCommittedError::Resolve(error) | OpenCommittedError::File(error)) => {
+                return Err(error);
+            }
         };
         // A read failure after a successful open cannot prove the file is
         // missing, even when the filesystem reports NotFound for that read.
@@ -1320,7 +1321,10 @@ mod tree_commitment_tests {
         impl Read for GrowingRead {
             fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
                 let amount = buffer.len().min(self.remaining);
-                buffer[..amount].fill(b'x');
+                buffer
+                    .get_mut(..amount)
+                    .ok_or_else(|| io::Error::other("growing reader exceeded buffer"))?
+                    .fill(b'x');
                 self.remaining -= amount;
                 self.consumed.set(self.consumed.get() + amount);
                 Ok(amount)
@@ -1333,7 +1337,7 @@ mod tree_commitment_tests {
             bytes: 5,
             sha256: [0; 32],
         }];
-        let result = hash_committed_step_opened_v1(
+        let result = super::hash_committed_step_opened_impl(
             &|_name| {
                 Ok(GrowingRead {
                     remaining: 1_000_000,

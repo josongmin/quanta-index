@@ -1,15 +1,17 @@
 //! P09: real supervised daemon and control UDS process-readiness proof.
 
 use std::error::Error;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixListener;
 use std::time::Duration;
 
 use quanta_index_contract::{
-    GenerationPin, ProcessReadinessReasonV1, ProcessReadinessV1, ProcessRequestEventPlaneV1,
-    ProcessRequestEventStageV1, QueryConstraintSetV1, SearchPlaneControlIpcResponse,
-    SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope, SearchPlaneQueryIpcResponse,
-    SearchPlaneQueryIpcResponseEnvelope, SearchPlaneRollbackSearchCorpusGenerationCasRequest,
-    SemanticQueryRequest, TextQueryRequest, TextQuerySyntax,
+    GenerationPin, MetricsSnapshotV1, ProcessReadinessReasonV1, ProcessReadinessV1,
+    ProcessRequestEventPlaneV1, ProcessRequestEventStageV1, QueryConstraintSetV1,
+    SearchPlaneControlIpcResponse, SearchPlaneQueryIpcRequest, SearchPlaneQueryIpcRequestEnvelope,
+    SearchPlaneQueryIpcResponse, SearchPlaneQueryIpcResponseEnvelope,
+    SearchPlaneRollbackSearchCorpusGenerationCasRequest, SemanticQueryRequest, TextQueryRequest,
+    TextQuerySyntax,
 };
 use quanta_index_core::GenerationStorageKeyV1;
 use quanta_index_searchd_harness::E2eRuntime;
@@ -25,6 +27,14 @@ fn require_eq<T: std::fmt::Debug + PartialEq>(actual: &T, expected: &T, field: &
     } else {
         Err(format!("{field}: expected {expected:?}, got {actual:?}").into())
     }
+}
+
+fn counter(snapshot: &MetricsSnapshotV1, name: &str) -> Option<u64> {
+    snapshot
+        .counters
+        .iter()
+        .find(|point| point.name == name)
+        .map(|point| point.value)
 }
 
 fn wait_until_ready(rt: &mut E2eRuntime) -> Result<ProcessReadinessV1, Box<dyn Error>> {
@@ -483,6 +493,88 @@ fn binary_daemon_detects_lost_active_backend_root() -> TestResult {
         )?;
         require_eq(&restored.ready, &true, "binary restored readiness")
     })();
+    let stopped = process.stop();
+    outcome.and(stopped)
+}
+
+#[test]
+fn binary_daemon_counts_inventory_read_failure_and_reopens_after_repair() -> TestResult {
+    let parent = quanta_index_searchd_harness::private_tempdir()?;
+    let state_root = parent.path().join("state");
+    let mut prepared = E2eRuntime::boot_in(&state_root)?;
+    prepared.ingest_text("repo-binary-inventory", "src/ready.rs", "needle inventory")?;
+    let sealed = prepared.seal()?;
+    prepared.activate_last_sealed_generation()?;
+    let repo = prepared.repo();
+    let revision = prepared.revision();
+    let pin = GenerationPin::new(repo.clone(), revision.clone(), sealed);
+    prepared.stop()?;
+
+    let canonical = std::fs::canonicalize(&state_root)?;
+    let identity = GenerationStorageKeyV1::for_repo_revision(&repo, &revision)
+        .generation_dir(&canonical.join("indexes/lexical"), sealed)
+        .join("search-corpus-generation-identity.cbor");
+    let process = SearchdBinaryProcess::start(&state_root)?;
+    let outcome =
+        (|| -> TestResult {
+            let client = process.connect()?;
+            let sockets = daemon_socket_paths(&state_root);
+            let query = |request_id| -> TestResult {
+                let request = SearchPlaneQueryIpcRequestEnvelope {
+                    request_id,
+                    payload: SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
+                        syntax: TextQuerySyntax::Native,
+                        query_text: "needle".to_owned(),
+                        constraints: QueryConstraintSetV1::unconstrained(),
+                        generation: Some(pin.clone()),
+                        generation_selector: None,
+                        top_k: 5,
+                        cursor: None,
+                    }),
+                };
+                let response: SearchPlaneQueryIpcResponseEnvelope = quanta_index_ipc::send_request(
+                    &sockets[0],
+                    &request,
+                    quanta_index_ipc::ClientIoPolicy::default(),
+                )?;
+                if !matches!(response.payload, SearchPlaneQueryIpcResponse::Text(_)) {
+                    return Err(
+                        format!("binary inventory query returned {:?}", response.payload).into(),
+                    );
+                }
+                Ok(())
+            };
+            query(0x1a11)?;
+            let before = client.observability().metrics_snapshot()?;
+            let metric = "maintenance_inventory_admission_failures_total";
+            let initial = counter(&before, metric).ok_or("inventory failure metric absent")?;
+            if !before.gauges.iter().any(|point| {
+                point.name == "snapshot_registry_lexical_entries" && point.value >= 1.0
+            }) {
+                return Err("lexical query did not leave a resident handle to revalidate".into());
+            }
+
+            let permissions = std::fs::metadata(&identity)?.permissions();
+            std::fs::set_permissions(&identity, std::fs::Permissions::from_mode(0o000))?;
+            let denied = (|| -> TestResult {
+                let after = wait_for(
+                    &RealTicker::new(),
+                    Duration::from_secs(20),
+                    Duration::from_millis(50),
+                    "binary inventory read failure counter",
+                    || client.observability().metrics_snapshot(),
+                    |snapshot| counter(snapshot, metric).is_some_and(|value| value > initial),
+                    |_| true,
+                )?;
+                if counter(&after, metric).is_none_or(|value| value <= initial) {
+                    return Err("inventory read failure was not counted".into());
+                }
+                Ok(())
+            })();
+            std::fs::set_permissions(&identity, permissions)?;
+            denied?;
+            query(0x1a12)
+        })();
     let stopped = process.stop();
     outcome.and(stopped)
 }

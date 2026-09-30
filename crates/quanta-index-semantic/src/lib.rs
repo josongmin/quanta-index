@@ -79,10 +79,10 @@ use quanta_index_core::{
         IncompleteGenerationDiscardPort, InventoriedSealedGenerationV1, QuarantineDiscardOutcomeV1,
         QuarantinedGenerationDiscardPort, QuarantinedGenerationV1, SealedGenerationBytesV1,
         SealedGenerationInventoryV1, SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort,
-        unique_inode_tree_bytes,
     },
     domains::semantic::{SemanticContentRootsPort, SemanticSearcher},
-    reclaim_directory,
+    reclaim_directory, unique_inode_tree_bytes_for_roots_below_track,
+    unique_inode_tree_bytes_in_track,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -252,9 +252,17 @@ impl SemanticAdapter {
             &generation.revision_id,
             generation.manifest_generation,
         )?;
-        self.generation_mutations[stripe].lock().map_err(|error| {
-            CoreError::Storage(format!("semantic mutation lock poisoned: {error}"))
-        })
+        self.generation_mutations
+            .get(stripe)
+            .ok_or_else(|| {
+                CoreError::InvalidContract(format!(
+                    "semantic mutation stripe {stripe} is out of range"
+                ))
+            })?
+            .lock()
+            .map_err(|error| {
+                CoreError::Storage(format!("semantic mutation lock poisoned: {error}"))
+            })
     }
 
     fn generation_build_guards(
@@ -276,9 +284,17 @@ impl SemanticAdapter {
         stripes
             .into_iter()
             .map(|stripe| {
-                self.generation_mutations[stripe].lock().map_err(|error| {
-                    CoreError::Storage(format!("semantic mutation lock poisoned: {error}"))
-                })
+                self.generation_mutations
+                    .get(stripe)
+                    .ok_or_else(|| {
+                        CoreError::InvalidContract(format!(
+                            "semantic mutation stripe {stripe} is out of range"
+                        ))
+                    })?
+                    .lock()
+                    .map_err(|error| {
+                        CoreError::Storage(format!("semantic mutation lock poisoned: {error}"))
+                    })
             })
             .collect()
     }
@@ -368,14 +384,12 @@ impl TrackDiskUsagePort for SemanticAdapter {
         if !self.state_root.exists() {
             return Ok(0);
         }
-        unique_inode_tree_bytes(std::slice::from_ref(&self.state_root), &|_name| false).map_err(
-            |err| {
-                CoreError::Storage(format!(
-                    "semantic: measure state root {}: {err}",
-                    self.state_root.display()
-                ))
-            },
-        )
+        unique_inode_tree_bytes_in_track(&self.state_root, &|_name| false).map_err(|err| {
+            CoreError::Storage(format!(
+                "semantic: measure state root {}: {err}",
+                self.state_root.display()
+            ))
+        })
     }
 }
 
@@ -446,10 +460,11 @@ impl SealedGenerationIdentityProbePort for SemanticAdapter {
                 }
             }
         }
-        Ok(matches!(
-            inventory_generation_dir(&self.state_root, &dir),
-            Ok(Some(observed)) if observed.identity() == *candidate
-        ))
+        match inventory_generation_dir(&self.state_root, &dir) {
+            Ok(Some(observed)) => Ok(observed.identity() == *candidate),
+            Ok(None) | Err(InventoryGenerationError::Quarantined(_)) => Ok(false),
+            Err(InventoryGenerationError::Infrastructure(error)) => Err(error),
+        }
     }
 }
 
@@ -689,7 +704,12 @@ impl IncompleteGenerationDiscardPort for SemanticAdapter {
         }
 
         let manifest_path = layout::manifest_path(&generation_dir);
-        if manifest_path.exists() {
+        if control_file::regular_file_present(&manifest_path).map_err(|error| {
+            CoreError::Storage(format!(
+                "semantic: inspect incomplete manifest {}: {error}",
+                manifest_path.display()
+            ))
+        })? {
             let manifest = SemanticManifest::decode(
                 &control_file::read_bounded(&manifest_path, control_file::MAX_SCOPE_MANIFEST_BYTES)
                     .map_err(|error| {
@@ -708,12 +728,18 @@ impl IncompleteGenerationDiscardPort for SemanticAdapter {
                 return Err(generation_digest_mismatch(candidate, "incomplete manifest"));
             }
         }
-        std::fs::remove_dir_all(&generation_dir).map_err(|error| {
-            CoreError::Storage(format!(
-                "semantic: discard incomplete generation {}: {error}",
-                generation_dir.display()
-            ))
-        })?;
+        reclaim_directory(
+            &self.state_root,
+            &generation_dir,
+            &format!(
+                "incomplete-{}",
+                GenerationStorageKeyV1::for_repo_revision(
+                    &candidate.repo_id,
+                    &candidate.revision_id
+                )
+                .reclaim_entry_name(candidate.manifest_generation)
+            ),
+        )?;
         Ok(IncompleteGenerationDiscardOutcomeV1::Discarded)
     }
 }
@@ -794,7 +820,7 @@ impl SealedGenerationReclaimPort for SemanticAdapter {
         if manifest.manifest_digest != retired.manifest_digest {
             return Err(generation_digest_mismatch(retired, "manifest"));
         }
-        let bytes = crate::search::dataset_tree_bytes(&generation_dir)?;
+        let bytes = crate::search::dataset_tree_bytes(&self.state_root, &generation_dir)?;
         self.scrub_progress
             .lock()
             .map_err(|error| {
@@ -927,24 +953,26 @@ impl SealedGenerationReclaimPort for SemanticAdapter {
         revision_id: &RevisionId,
         generations: &BTreeSet<ManifestGeneration>,
     ) -> Result<SealedGenerationBytesV1, CoreError> {
-        let mut roots = Vec::with_capacity(generations.len());
-        let mut absent = BTreeSet::new();
-        for generation in generations {
-            let generation_dir =
-                layout::generation_dir(&self.state_root, repo_id, revision_id, *generation);
-            if generation_dir.is_dir() {
-                roots.push(generation_dir);
-            } else {
-                let _new = absent.insert(*generation);
-            }
-        }
-        let bytes = unique_inode_tree_bytes(&roots, &|_name| false).map_err(|err| {
-            CoreError::Storage(format!(
-                "semantic: measure sealed generations of repo={} revision={}: {err}",
-                repo_id.as_str(),
-                revision_id.as_str()
-            ))
-        })?;
+        let roots: Vec<_> = generations
+            .iter()
+            .map(|generation| {
+                layout::generation_dir(&self.state_root, repo_id, revision_id, *generation)
+            })
+            .collect();
+        let (bytes, present) =
+            unique_inode_tree_bytes_for_roots_below_track(&self.state_root, &roots, &|_name| false)
+                .map_err(|err| {
+                    CoreError::Storage(format!(
+                        "semantic: measure sealed generations of repo={} revision={}: {err}",
+                        repo_id.as_str(),
+                        revision_id.as_str()
+                    ))
+                })?;
+        let absent = generations
+            .iter()
+            .zip(present)
+            .filter_map(|(generation, present)| (!present).then_some(*generation))
+            .collect();
         Ok(SealedGenerationBytesV1 { bytes, absent })
     }
 }
@@ -1010,6 +1038,45 @@ impl PersistedSemanticGeneration {
 pub struct SemanticGenerationInventoryV1 {
     pub sealed: Vec<PersistedSemanticGeneration>,
     pub quarantined: Vec<QuarantinedGenerationV1>,
+}
+
+enum InventoryGenerationError {
+    Quarantined(QuarantinedGenerationV1),
+    Infrastructure(CoreError),
+}
+
+fn inventory_unreadable_io(
+    path: &Path,
+    action: &str,
+    error: &std::io::Error,
+) -> InventoryGenerationError {
+    if matches!(
+        error.kind(),
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::InvalidData
+    ) {
+        InventoryGenerationError::Quarantined(quarantine(
+            path.to_path_buf(),
+            GenerationQuarantineReasonV1::IdentityUnreadable,
+            format!("{action}: {error}"),
+        ))
+    } else {
+        InventoryGenerationError::Infrastructure(CoreError::Storage(format!(
+            "semantic: {action} {}: {error}",
+            path.display()
+        )))
+    }
+}
+
+fn inventory_unreadable_error(path: &Path, error: CoreError) -> InventoryGenerationError {
+    if matches!(error, CoreError::Storage(_)) {
+        InventoryGenerationError::Infrastructure(error)
+    } else {
+        InventoryGenerationError::Quarantined(quarantine(
+            path.to_path_buf(),
+            GenerationQuarantineReasonV1::IdentityUnreadable,
+            error.to_string(),
+        ))
+    }
 }
 
 /// Opaque proof minted only by a successful durable open.
@@ -1096,10 +1163,9 @@ impl ValidatedPersistedSemanticGenerationV2 {
 /// sealed manifest bound to the same digest. This reads three bounded control
 /// files per generation and opens no dataset: content (schema, row count, row root, membership) is proven by
 /// [`validate_persisted_generation_v2`] and by every open, not here. A
-/// directory the inventory cannot trust is quarantined with its path and
-/// reason rather than failing the whole inventory; in-progress (materialized
-/// but unsealed) generations are skipped so a crashed build never seeds
-/// false readiness. Only an unreadable directory listing is an error.
+/// invalid identity is quarantined with its path and reason; in-progress
+/// generations are skipped. I/O failures propagate rather than masquerading
+/// as proven corruption or a successful inventory.
 pub fn inventory_persisted_generations(
     semantic_root: &Path,
 ) -> Result<SemanticGenerationInventoryV1, CoreError> {
@@ -1137,20 +1203,25 @@ pub fn inventory_persisted_generations(
             match inventory_generation_dir(semantic_root, &generation_entry.path()) {
                 Ok(Some(record)) => inventory.sealed.push(record),
                 Ok(None) => {}
-                Err(quarantined) => inventory.quarantined.push(quarantined),
+                Err(InventoryGenerationError::Quarantined(quarantined)) => {
+                    inventory.quarantined.push(quarantined);
+                }
+                Err(InventoryGenerationError::Infrastructure(error)) => return Err(error),
             }
         }
     }
     Ok(inventory)
 }
 
-/// One generation directory's inventory outcome: `Ok(Some)` for a sealed
-/// manifest that owns the directory and agrees with its marker, `Ok(None)`
-/// for an in-progress build, `Err` for a quarantine.
+/// Inventory one semantic generation directory.
+///
+/// `Ok(Some)` is a sealed manifest that owns the directory and agrees with its
+/// marker; `Ok(None)` is an in-progress build. `Err` distinguishes quarantine
+/// from infrastructure failure.
 fn inventory_generation_dir(
     semantic_root: &Path,
     generation_dir: &Path,
-) -> Result<Option<PersistedSemanticGeneration>, QuarantinedGenerationV1> {
+) -> Result<Option<PersistedSemanticGeneration>, InventoryGenerationError> {
     let candidate = inventory_generation_dir_before_sealed_manifest(semantic_root, generation_dir)?;
     let Some(record) = candidate.as_ref() else {
         return Ok(None);
@@ -1172,54 +1243,57 @@ fn inventory_generation_dir(
                     quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityDigestMismatch,
                 ..
             } => GenerationQuarantineReasonV1::IdentityDigestMismatch,
+            CoreError::Storage(_) => return Err(InventoryGenerationError::Infrastructure(error)),
             CoreError::InvalidContract(_)
             | CoreError::Typed { .. }
             | CoreError::NotReady(_)
             | CoreError::NotImplemented(_)
-            | CoreError::NotFound(_)
-            | CoreError::Storage(_) => GenerationQuarantineReasonV1::IdentityUnreadable,
+            | CoreError::NotFound(_) => GenerationQuarantineReasonV1::IdentityUnreadable,
         };
-        return Err(quarantine(
+        return Err(InventoryGenerationError::Quarantined(quarantine(
             generation_dir.to_path_buf(),
             reason,
             format!("sealed manifest admission: {error}"),
-        ));
+        )));
     }
     Ok(candidate)
 }
 
-/// Recover a scrub identity only from a canonical scope manifest and sealed
-/// marker. Inventory already found the sealed manifest invalid, so that file
-/// must not be used as the source of the identity required to fence a handle.
+/// Recover a scrub identity from a canonical scope manifest and sealed marker.
+///
+/// Inventory already found the sealed manifest invalid, so that file cannot
+/// supply the identity required to fence a handle.
 pub(crate) fn scrub_candidate_from_quarantined(
     semantic_root: &Path,
     entry: &QuarantinedGenerationV1,
-) -> Option<PersistedSemanticGeneration> {
+) -> Result<Option<PersistedSemanticGeneration>, CoreError> {
     if entry.track != SearchPlaneTrackKind::Semantic {
-        return None;
+        return Ok(None);
     }
-    inventory_generation_dir_before_sealed_manifest(semantic_root, &entry.path)
-        .ok()
-        .flatten()
+    match inventory_generation_dir_before_sealed_manifest(semantic_root, &entry.path) {
+        Ok(record) => Ok(record),
+        Err(InventoryGenerationError::Quarantined(_)) => Ok(None),
+        Err(InventoryGenerationError::Infrastructure(error)) => Err(error),
+    }
 }
 
 fn inventory_generation_dir_before_sealed_manifest(
     semantic_root: &Path,
     generation_dir: &Path,
-) -> Result<Option<PersistedSemanticGeneration>, QuarantinedGenerationV1> {
+) -> Result<Option<PersistedSemanticGeneration>, InventoryGenerationError> {
     let Some(generation_name) = generation_dir.file_name().and_then(|name| name.to_str()) else {
-        return Err(quarantine(
+        return Err(InventoryGenerationError::Quarantined(quarantine(
             generation_dir.to_path_buf(),
             GenerationQuarantineReasonV1::NonCanonicalLayout,
             "generation directory name is not UTF-8".to_string(),
-        ));
+        )));
     };
     if GenerationStorageKeyV1::generation_of_dir_name(generation_name).is_none() {
-        return Err(quarantine(
+        return Err(InventoryGenerationError::Quarantined(quarantine(
             generation_dir.to_path_buf(),
             GenerationQuarantineReasonV1::NonCanonicalLayout,
             "generation directory is not `g<N>`; it needs explicit migration".to_string(),
-        ));
+        )));
     }
     let unreadable = |detail: String| {
         quarantine(
@@ -1232,61 +1306,68 @@ fn inventory_generation_dir_before_sealed_manifest(
     match control_file::regular_file_present(&marker_path) {
         Ok(true) => {}
         Ok(false) => return Ok(None),
-        Err(error) => return Err(unreadable(format!("inspect sealed marker: {error}"))),
+        Err(error) => {
+            return Err(inventory_unreadable_io(
+                generation_dir,
+                "inspect sealed marker",
+                &error,
+            ));
+        }
     }
     // A receipt the integrity scrub left (QI-BB-017): the generation's
     // bytes were proven not to match its seal, so it is set aside under
     // that proof rather than seeded and refused at every door.
     match read_quarantine_receipt(generation_dir) {
         Ok(Some(receipt)) => {
-            return Err(quarantine(
+            return Err(InventoryGenerationError::Quarantined(quarantine(
                 generation_dir.to_path_buf(),
                 GenerationQuarantineReasonV1::ContentCorrupt,
                 receipt.detail,
-            ));
+            )));
         }
         Ok(None) => {}
-        Err(err) => return Err(unreadable(format!("read quarantine receipt: {err}"))),
+        Err(error) => return Err(inventory_unreadable_error(generation_dir, error)),
     }
     let manifest_path = layout::manifest_path(generation_dir);
     let manifest_bytes =
         control_file::read_bounded(&manifest_path, control_file::MAX_SCOPE_MANIFEST_BYTES)
-            .map_err(|err| {
-                unreadable(format!("read manifest {}: {err}", manifest_path.display()))
-            })?;
+            .map_err(|error| inventory_unreadable_io(generation_dir, "read manifest", &error))?;
     let manifest = SemanticManifest::decode(&manifest_bytes).map_err(|err| {
         if let CoreError::Typed { code, message } = &err
             && *code == FORMAT_UNSUPPORTED_CODE
         {
-            quarantine(
+            InventoryGenerationError::Quarantined(quarantine(
                 generation_dir.to_path_buf(),
                 GenerationQuarantineReasonV1::FormatUnsupported,
                 message.clone(),
-            )
+            ))
         } else {
-            unreadable(format!("decode manifest: {err}"))
+            InventoryGenerationError::Quarantined(unreadable(format!("decode manifest: {err}")))
         }
     })?;
-    let repo_id = RepoId::new(manifest.repo_id.clone())
-        .map_err(|error| unreadable(format!("semantic manifest has invalid repo ID: {error}")))?;
+    let repo_id = RepoId::new(manifest.repo_id.clone()).map_err(|error| {
+        InventoryGenerationError::Quarantined(unreadable(format!(
+            "semantic manifest has invalid repo ID: {error}"
+        )))
+    })?;
     let revision_id = RevisionId::new(manifest.revision_id.clone()).map_err(|error| {
-        unreadable(format!(
+        InventoryGenerationError::Quarantined(unreadable(format!(
             "semantic manifest has invalid revision ID: {error}"
-        ))
+        )))
     })?;
     let generation = ManifestGeneration::new(manifest.generation);
     if let Err(err) = manifest.validate_scope(&repo_id, &revision_id, generation) {
-        return Err(quarantine(
+        return Err(InventoryGenerationError::Quarantined(quarantine(
             generation_dir.to_path_buf(),
             GenerationQuarantineReasonV1::ScopeMismatch,
             err.to_string(),
-        ));
+        )));
     }
     if GenerationStorageKeyV1::for_repo_revision(&repo_id, &revision_id)
         .generation_dir(semantic_root, generation)
         != generation_dir
     {
-        return Err(quarantine(
+        return Err(InventoryGenerationError::Quarantined(quarantine(
             generation_dir.to_path_buf(),
             GenerationQuarantineReasonV1::ScopeMismatch,
             format!(
@@ -1295,17 +1376,19 @@ fn inventory_generation_dir_before_sealed_manifest(
                 revision_id.as_str(),
                 generation.get()
             ),
-        ));
+        )));
     }
     let sealed_digest =
         control_file::read_string_bounded(&marker_path, control_file::MAX_SEALED_MARKER_BYTES)
-            .map_err(|err| unreadable(format!("read sealed marker: {err}")))?;
+            .map_err(|error| {
+                inventory_unreadable_io(generation_dir, "read sealed marker", &error)
+            })?;
     if sealed_digest != manifest.manifest_digest {
-        return Err(quarantine(
+        return Err(InventoryGenerationError::Quarantined(quarantine(
             generation_dir.to_path_buf(),
             GenerationQuarantineReasonV1::IdentityDigestMismatch,
             "sealed marker and manifest disagree on the manifest digest".to_string(),
-        ));
+        )));
     }
     Ok(Some(PersistedSemanticGeneration {
         repo_id,
@@ -1434,23 +1517,8 @@ fn discard_quarantined_directory(
             "the path is not a directory; the inventory quarantines directories only".to_string(),
         ));
     }
-    let bytes = crate::search::dataset_tree_bytes(&entry.path)?;
-    std::fs::remove_dir_all(&entry.path).map_err(|error| {
-        CoreError::Storage(format!(
-            "semantic: discard quarantined {}: {error}",
-            entry.path.display()
-        ))
-    })?;
-    if let Some(parent) = entry.path.parent() {
-        std::fs::File::open(parent)
-            .and_then(|directory| directory.sync_all())
-            .map_err(|error| {
-                CoreError::Storage(format!(
-                    "semantic: fsync {} after discarding quarantine: {error}",
-                    parent.display()
-                ))
-            })?;
-    }
+    let bytes = crate::search::dataset_tree_bytes(semantic_root, &entry.path)?;
+    quanta_index_core::reclaim_quarantined_directory(semantic_root, &entry.path)?;
     Ok(QuarantineDiscardOutcomeV1::Discarded { bytes })
 }
 
@@ -1672,6 +1740,32 @@ mod incomplete_generation_discard_tests {
                 if *code == quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityDigestMismatch
         ));
         assert!(generation_dir.exists());
+    }
+
+    #[test]
+    fn discard_refuses_a_dangling_incomplete_manifest_symlink() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf()).expect("adapter");
+        let candidate = candidate(11, "digest-a");
+        let generation_dir = layout::generation_dir(
+            temp.path(),
+            &candidate.repo_id,
+            &candidate.revision_id,
+            candidate.manifest_generation,
+        );
+        std::fs::create_dir_all(&generation_dir).expect("create incomplete generation");
+        let manifest = layout::manifest_path(&generation_dir);
+        std::os::unix::fs::symlink(generation_dir.join("missing-manifest"), &manifest)
+            .expect("create dangling manifest symlink");
+
+        assert!(adapter.discard_incomplete_generation(&candidate).is_err());
+        assert!(generation_dir.is_dir());
+        assert!(
+            std::fs::symlink_metadata(&manifest)
+                .expect("preserve dangling manifest")
+                .file_type()
+                .is_symlink()
+        );
     }
 
     #[test]

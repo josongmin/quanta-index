@@ -392,6 +392,57 @@ fn point_inventory_matches_full_inventory_for_digest_and_family_symlink() -> Tes
     Ok(())
 }
 
+#[test]
+fn point_inventory_reports_control_file_read_failures() -> TestResult {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().join("lexical");
+    let adapter = LexicalAdapter::with_state_root(root.clone());
+    let generation = ManifestGeneration::new(1);
+    adapter.build_batch(&sealed_batch(generation, "fn point_inventory_io() {}")?)?;
+    if !adapter.inventory_sealed_generation_identity(&identity(generation))?
+        || adapter.inventory_sealed_generations()?.sealed.len() != 1
+    {
+        return Err("healthy lexical generation was not inventoried before fault injection".into());
+    }
+    let dir = generation_dir(&root, generation);
+    for name in [IDENTITY, QUARANTINE_RECEIPT] {
+        let path = dir.join(name);
+        if name == QUARANTINE_RECEIPT {
+            std::fs::write(&path, [0xff])?;
+        }
+        let mode = std::fs::metadata(&path)?.permissions().mode();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000))?;
+        let inaccessible = std::fs::File::open(&path).is_err();
+        let point = adapter.inventory_sealed_generation_identity(&identity(generation));
+        let boot = adapter.inventory_sealed_generations();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))?;
+        if name == QUARANTINE_RECEIPT {
+            std::fs::remove_file(&path)?;
+        }
+        if !inaccessible {
+            return Err(format!(
+                "test process can read mode-000 {name}; I/O failure was not injected"
+            )
+            .into());
+        }
+        if !matches!(&point, Err(CoreError::Storage(_)))
+            || !matches!(&boot, Err(CoreError::Storage(_)))
+        {
+            return Err(
+                format!("{name} I/O failure was hidden: point={point:?}, boot={boot:?}").into(),
+            );
+        }
+    }
+    if !adapter.inventory_sealed_generation_identity(&identity(generation))?
+        || adapter.inventory_sealed_generations()?.sealed.len() != 1
+    {
+        return Err("healthy lexical generation was not inventoried after fault injection".into());
+    }
+    Ok(())
+}
+
 /// One regular file directly under a generation directory: its name and
 /// its bytes.
 type NamedFile = (String, Vec<u8>);
@@ -2219,10 +2270,11 @@ fn a_dangling_sealed_identity_is_never_discarded_as_incomplete() -> TestResult {
         "GENERATION_SIDECAR_CORRUPT",
     )?;
     let inventory = adapter.inventory_sealed_generations()?;
-    if inventory.sealed.len() != 0
-        || inventory.quarantined.len() != 1
-        || inventory.quarantined[0].path != dir
-        || inventory.quarantined[0].reason != GenerationQuarantineReasonV1::IdentityUnreadable
+    if !inventory.sealed.is_empty()
+        || !matches!(
+            inventory.quarantined.as_slice(),
+            [entry] if entry.path == dir && entry.reason == GenerationQuarantineReasonV1::IdentityUnreadable
+        )
     {
         return Err(format!("dangling identity was not quarantined: {inventory:?}").into());
     }
@@ -2260,17 +2312,21 @@ fn an_invalid_quarantine_receipt_does_not_block_sibling_inventory() -> TestResul
         [0xff],
     )?;
     let inventory = adapter.inventory_sealed_generations()?;
-    if inventory.sealed.len() != 1
-        || inventory.sealed[0].identity != identity(healthy)
-        || inventory.quarantined.len() != 1
-        || inventory.quarantined[0].reason != GenerationQuarantineReasonV1::IdentityUnreadable
-        || inventory.quarantined[0].path != generation_dir(&root, damaged)
+    if !matches!(inventory.sealed.as_slice(), [entry] if entry.identity == identity(healthy))
+        || !matches!(
+            inventory.quarantined.as_slice(),
+            [entry] if entry.reason == GenerationQuarantineReasonV1::IdentityUnreadable
+                && entry.path == generation_dir(&root, damaged)
+        )
     {
         return Err(format!("invalid receipt blocked sibling inventory: {inventory:?}").into());
     }
+    let [quarantined] = inventory.quarantined.as_slice() else {
+        return Err("expected one quarantined generation".into());
+    };
     expect_admitted(&knock(&adapter, healthy), "healthy sibling")?;
     if !matches!(
-        adapter.discard_quarantined_generation(&inventory.quarantined[0])?,
+        adapter.discard_quarantined_generation(quarantined)?,
         QuarantineDiscardOutcomeV1::Discarded { .. }
     ) || generation_dir(&root, damaged).exists()
     {
@@ -2333,8 +2389,12 @@ fn a_scrub_quarantine_does_not_stop_an_unrelated_generation_build() -> TestResul
         });
         let while_scrub_is_fenced = build_rx.recv_timeout(Duration::from_secs(60));
         release_tx.send(())?;
-        let scrubbed = scrub.join().map_err(|_| "scrub thread panicked")??;
-        build.join().map_err(|_| "build thread panicked")??;
+        let scrubbed = scrub
+            .join()
+            .map_err(|panic| format!("scrub thread panicked: {panic:?}"))??;
+        build
+            .join()
+            .map_err(|panic| format!("build thread panicked: {panic:?}"))??;
         if !matches!(scrubbed.outcome, IntegrityScrubOutcomeV1::Corrupt { .. }) {
             return Err(format!("damaged generation was not quarantined: {scrubbed:?}").into());
         }

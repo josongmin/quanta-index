@@ -53,6 +53,7 @@ type LocateFile = fn(&Path) -> Result<PathBuf, Box<dyn Error>>;
 
 const SEALED_MANIFEST: &str = "semantic-sealed-manifest.cbor";
 const SCOPE_MANIFEST: &str = "semantic-manifest.cbor";
+const QUARANTINE_RECEIPT: &str = "semantic-quarantine.cbor";
 const BUILD_CONTRACT: &str = "semantic-build-contract.cbor";
 const DATASET: &str = "dataset";
 
@@ -136,6 +137,59 @@ fn point_inventory_matches_full_inventory_for_digest_and_family_symlink() -> Tes
         || !inventory_persisted_generations(&root)?.sealed.is_empty()
     {
         return Err("point or full inventory followed a family symlink".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn point_inventory_reports_control_file_read_failures() -> TestResult {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().join("semantic");
+    let adapter = SemanticAdapter::with_state_root(root.clone())?;
+    let generation = ManifestGeneration::new(1);
+    seal(&adapter, generation)?;
+    if !adapter.inventory_sealed_generation_identity(&identity(generation))?
+        || inventory_persisted_generations(&root)?.sealed.len() != 1
+    {
+        return Err(
+            "healthy semantic generation was not inventoried before fault injection".into(),
+        );
+    }
+    let dir = generation_dir(&root, generation);
+    for name in [SCOPE_MANIFEST, SEALED_MANIFEST, QUARANTINE_RECEIPT] {
+        let path = dir.join(name);
+        if name == QUARANTINE_RECEIPT {
+            std::fs::write(&path, [0xff])?;
+        }
+        let mode = std::fs::metadata(&path)?.permissions().mode();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000))?;
+        let inaccessible = std::fs::File::open(&path).is_err();
+        let point = adapter.inventory_sealed_generation_identity(&identity(generation));
+        let boot = inventory_persisted_generations(&root);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))?;
+        if name == QUARANTINE_RECEIPT {
+            std::fs::remove_file(&path)?;
+        }
+        if !inaccessible {
+            return Err(format!(
+                "test process can read mode-000 {name}; I/O failure was not injected"
+            )
+            .into());
+        }
+        if !matches!(&point, Err(CoreError::Storage(_)))
+            || !matches!(&boot, Err(CoreError::Storage(_)))
+        {
+            return Err(
+                format!("{name} I/O failure was hidden: point={point:?}, boot={boot:?}").into(),
+            );
+        }
+    }
+    if !adapter.inventory_sealed_generation_identity(&identity(generation))?
+        || inventory_persisted_generations(&root)?.sealed.len() != 1
+    {
+        return Err("healthy semantic generation was not inventoried after fault injection".into());
     }
     Ok(())
 }
@@ -580,10 +634,10 @@ fn expect_sidecar_scrub_quarantine(
         return Err(format!("{what}: wrong quarantine: {quarantined:?}").into());
     }
     let inventory = inventory_persisted_generations(root)?;
-    if inventory.quarantined.len() != 1
-        || inventory.quarantined[0].path != dir
-        || inventory.quarantined[0].reason != GenerationQuarantineReasonV1::ContentCorrupt
-    {
+    if !matches!(
+        inventory.quarantined.as_slice(),
+        [entry] if entry.path == dir && entry.reason == GenerationQuarantineReasonV1::ContentCorrupt
+    ) {
         return Err(format!("{what}: scrub quarantine is not inventoried: {inventory:?}").into());
     }
     Ok(())
@@ -688,10 +742,10 @@ fn a_semantic_scrub_does_not_stop_an_unrelated_generation_build() -> TestResult 
         release_tx.send(())?;
         let scrubbed = scrub
             .join()
-            .map_err(|_| "semantic scrub thread panicked")??;
-        let _built = build
+            .map_err(|panic| format!("semantic scrub thread panicked: {panic:?}"))??;
+        build
             .join()
-            .map_err(|_| "semantic build thread panicked")??;
+            .map_err(|panic| format!("semantic build thread panicked: {panic:?}"))??;
         if !matches!(scrubbed.outcome, IntegrityScrubOutcomeV1::Corrupt { .. }) {
             return Err(
                 format!("damaged semantic generation was not quarantined: {scrubbed:?}").into(),

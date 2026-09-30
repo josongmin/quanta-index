@@ -686,6 +686,7 @@ impl<H: ?Sized + Send + Sync + 'static> SnapshotRegistry<H> {
         if owners.is_empty() {
             let _empty = state.retiring.remove(key);
         }
+        drop(state);
         Ok(settled)
     }
 
@@ -716,6 +717,7 @@ impl<H: ?Sized + Send + Sync + 'static> SnapshotRegistry<H> {
         if owners.is_empty() {
             let _empty = state.retiring.remove(key);
         }
+        drop(state);
         Ok(())
     }
 
@@ -784,6 +786,7 @@ impl<H: ?Sized + Send + Sync + 'static> SnapshotRegistry<H> {
             }
             !proofs.is_empty()
         });
+        drop(state);
         Ok(removed.is_some() || flight_fenced || pending)
     }
 }

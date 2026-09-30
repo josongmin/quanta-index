@@ -162,6 +162,8 @@ crate quanta_index_core
 │   │       ├── enum LexicalPredicateFamilyV1: pub
 │   │       └── enum LexicalPredicateV1: pub
 │   ├── mod reclaim_area: pub
+│   │   ├── struct DirectoryFrame: pub(self)
+│   │   └── struct RemoveFrame: pub(self)
 │   ├── mod repomap: pub
 │   │   ├── mod inbound: pub(self)
 │   │   │   ├── trait PinnedRepoMapSnapshot: pub

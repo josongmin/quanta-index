@@ -117,6 +117,20 @@ file totals are not bytes written or total I/O. The daemon counters cover
 coverage reads and lexical seal hashing, not all index, semantic or catalog
 reads. Full-pipeline I/O and temporary heap remain open.
 
+Sep-30 owner-local diagnostic on `main@0d21914e` plus the then-uncommitted
+format-9 hardening ran `total_delta_pipeline_cost_{128,512,2048}_files` with
+`QUANTA_INDEX_DIAGNOSTIC_FRESH_OPEN=1` in separate test processes. All three
+mixed replacement/deletion cases passed. At 2,048 files, each of outer
+preflight, lock-held preflight and build read 256 coverage pages and 865,340
+encoded page bytes and decoded 2,048 rows. The adapter's delta build took
+1,572 ms; the fresh child opened the committed delta in 357 ms and reported
+22,151,168 bytes of process peak RSS after open. A separate one-file 2,048-file
+case passed with the same repeated page count and 865,340 page bytes per phase.
+These are fixture- and host-specific diagnostics, not a total-daemon I/O,
+delta-only heap, quiet-host latency or release result. The fresh child's
+`ru_maxrss` includes process startup and its dependencies, so its before/after
+values cannot be attributed entirely to the sealed index reader.
+
 ## Remaining acceptance
 
 - [ ] Measure one-file replacement/delete and mixed batches over increasing file

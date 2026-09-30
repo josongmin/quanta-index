@@ -23,12 +23,12 @@ use quanta_index_contract::{
     RepoMetaIngestBatch, RepoTopicIngestBatch, RevisionId, SearchCorpusIngestBatch,
     SearchPlaneTrackKind, validate_lexical_file_mutations_v1,
 };
-use quanta_index_core::domains::generation::unique_inode_tree_bytes;
 use quanta_index_core::{
     CoreError, FileContributorIngestPort, FileOwnershipIngestPort, GenerationIdentityValidatePort,
     LexicalIndexBuildPort, MetricPointV1, MetricSourcePort, RepoCommitRecencyIngestPort,
     RepoDescriptionIngestPort, RepoMetaIngestPort, RepoTopicIngestPort, SearchCorpusBatchBuildPort,
     SearchCorpusPreflightPhaseV1, TrackDiskUsagePort, WriterIdleSweepPort, count_from_usize,
+    unique_inode_tree_bytes_in_track,
 };
 
 /// The writer envelope and the regex match cache as scrape points,
@@ -49,11 +49,7 @@ impl TrackDiskUsagePort for LexicalAdapter {
         if !self.state_root.exists() {
             return Ok(0);
         }
-        unique_inode_tree_bytes(
-            std::slice::from_ref(&self.state_root),
-            &is_writer_lock_entry,
-        )
-        .map_err(|err| {
+        unique_inode_tree_bytes_in_track(&self.state_root, &is_writer_lock_entry).map_err(|err| {
             CoreError::Storage(format!(
                 "lexical: measure state root {}: {err}",
                 self.state_root.display()

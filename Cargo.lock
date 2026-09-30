@@ -4413,6 +4413,7 @@ name = "quanta-index-core"
 version = "0.1.0"
 dependencies = [
  "quanta-index-contract",
+ "rustix 1.1.4",
  "sha2",
  "tempfile",
  "thiserror 1.0.69",

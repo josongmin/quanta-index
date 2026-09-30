@@ -588,7 +588,7 @@ mod l4_source_decode_regressions {
     #[test]
     fn indexed_and_manual_search_refuse_corrupt_selected_row_under_optional_budget()
     -> Result<(), Box<dyn std::error::Error>> {
-        let state = tempfile::tempdir()?;
+        let state = crate::test_support::generation_fixture()?;
         let fields = SchemaFields::build();
         let index = Index::create_in_ram(fields.schema.clone());
         register_analyzers(&index);

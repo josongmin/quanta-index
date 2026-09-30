@@ -19,14 +19,14 @@ use quanta_index_contract::{
 use quanta_index_core::domains::generation::{
     GenerationStorageKeyV1, IncompleteGenerationDiscardOutcomeV1, IncompleteGenerationDiscardPort,
     QuarantinedGenerationV1, SealedGenerationBytesV1, SealedGenerationInventoryV1,
-    SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort, unique_inode_tree_bytes,
+    SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort,
 };
 use quanta_index_core::{
     CoreError, DoorFindingOutcome, DoorFindingQuarantinePort, FinishedReclaims,
     GenerationIdentityValidatePort, IntegrityScrubBudgetV1, IntegrityScrubCandidateV1,
     IntegrityScrubCursorV1, IntegrityScrubPort, IntegrityScrubReportV1, QuarantineDiscardOutcomeV1,
     QuarantinedGenerationDiscardPort, SealedGenerationIdentityProbePort, SealedGenerationScanPort,
-    reclaim_directory,
+    reclaim_directory, unique_inode_tree_bytes_for_roots_below_track,
 };
 use std::collections::BTreeSet;
 
@@ -83,16 +83,20 @@ impl SealedGenerationIdentityProbePort for LexicalAdapter {
         }
         let observed = match crate::inventory::inventory_generation_dir(&self.state_root, &dir) {
             Ok(Some(observed)) => observed,
-            Ok(None) | Err(_) => return Ok(false),
+            Ok(None) | Err(crate::inventory::InventoryGenerationError::Quarantined(_)) => {
+                return Ok(false);
+            }
+            Err(crate::inventory::InventoryGenerationError::Infrastructure(error)) => {
+                return Err(error);
+            }
         };
         if observed != *candidate {
             return Ok(false);
         }
         match quarantined_by_scrub(&dir) {
             Ok(None) => Ok(true),
-            Ok(Some(_)) => Ok(false),
             Err(CoreError::Storage(error)) => Err(CoreError::Storage(error)),
-            Err(_) => Ok(false),
+            Ok(Some(_)) | Err(_) => Ok(false),
         }
     }
 }
@@ -316,12 +320,15 @@ impl IncompleteGenerationDiscardPort for LexicalAdapter {
                 })
             })
             .transpose()?;
-        std::fs::remove_dir_all(&generation_dir).map_err(|error| {
-            CoreError::Storage(format!(
-                "lexical: discard incomplete generation {}: {error}",
-                generation_dir.display()
-            ))
-        })?;
+        reclaim_directory(
+            &self.state_root,
+            &generation_dir,
+            &format!(
+                "incomplete-{}",
+                GenerationStorageKeyV1::for_repo_revision(&key.repo_id, &key.revision_id)
+                    .reclaim_entry_name(key.generation)
+            ),
+        )?;
         drop(writer_guard);
         drop(writer);
         drop(writers);
@@ -375,7 +382,7 @@ impl SealedGenerationReclaimPort for LexicalAdapter {
         }
         let observed = read_lexical_sealed_identity(&generation_dir)?;
         validate_lexical_sealed_identity(&observed, retired)?;
-        let bytes = generation_tree_bytes(&generation_dir)?;
+        let bytes = generation_tree_bytes(&self.state_root, &generation_dir)?;
         // A sealed generation has no live writer, but a stale handle from an
         // earlier attempt must not outlive the directory.
         {
@@ -480,27 +487,33 @@ impl SealedGenerationReclaimPort for LexicalAdapter {
         revision_id: &RevisionId,
         generations: &BTreeSet<ManifestGeneration>,
     ) -> Result<SealedGenerationBytesV1, CoreError> {
-        let mut roots = Vec::with_capacity(generations.len());
-        let mut absent = BTreeSet::new();
-        for generation in generations {
-            let generation_dir = self.index_path(&GenKey {
-                repo_id: repo_id.clone(),
-                revision_id: revision_id.clone(),
-                generation: *generation,
-            });
-            if generation_dir.is_dir() {
-                roots.push(generation_dir);
-            } else {
-                let _new = absent.insert(*generation);
-            }
-        }
-        let bytes = unique_inode_tree_bytes(&roots, &is_writer_lock_entry).map_err(|err| {
+        let roots: Vec<_> = generations
+            .iter()
+            .map(|generation| {
+                self.index_path(&GenKey {
+                    repo_id: repo_id.clone(),
+                    revision_id: revision_id.clone(),
+                    generation: *generation,
+                })
+            })
+            .collect();
+        let (bytes, present) = unique_inode_tree_bytes_for_roots_below_track(
+            &self.state_root,
+            &roots,
+            &is_writer_lock_entry,
+        )
+        .map_err(|err| {
             CoreError::Storage(format!(
                 "lexical: measure sealed generations of repo={} revision={}: {err}",
                 repo_id.as_str(),
                 revision_id.as_str()
             ))
         })?;
+        let absent = generations
+            .iter()
+            .zip(present)
+            .filter_map(|(generation, present)| (!present).then_some(*generation))
+            .collect();
         Ok(SealedGenerationBytesV1 { bytes, absent })
     }
 }

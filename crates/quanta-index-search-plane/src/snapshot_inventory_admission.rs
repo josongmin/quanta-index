@@ -8,8 +8,9 @@ use quanta_index_core::{CoreError, SealedGenerationIdentityProbePort};
 
 use crate::{Ledger, SnapshotRegistries, SnapshotRegistry};
 
-/// The inventory check is deliberately outside a query's hot path. When an
-/// identity disappears, the resident handle is evicted and an opening flight
+/// The inventory check runs outside a query's hot path.
+///
+/// When an identity disappears, the resident handle is evicted and an opening flight
 /// is fenced; its next acquire must pass the adapter's physical door again.
 pub struct SnapshotInventoryAdmission {
     ledger: Arc<RwLock<Ledger>>,
@@ -68,30 +69,35 @@ impl SnapshotInventoryAdmission {
             return Ok(0);
         }
 
-        let expected = self.ledger.read().map(|ledger| {
-            keys.iter()
-                .map(|key| {
-                    (
-                        key.clone(),
-                        ledger.sealed_track_identity_digest(
-                            &key.repo_id,
-                            &key.revision_id,
-                            track,
-                            key.generation,
-                        ),
-                    )
-                })
-                .collect::<BTreeMap<_, _>>()
-        });
+        let (expected, ledger_error) = match self.ledger.read() {
+            Ok(ledger) => (
+                Some(
+                    keys.iter()
+                        .map(|key| {
+                            (
+                                key.clone(),
+                                ledger.sealed_track_identity_digest(
+                                    &key.repo_id,
+                                    &key.revision_id,
+                                    track,
+                                    key.generation,
+                                ),
+                            )
+                        })
+                        .collect::<BTreeMap<_, _>>(),
+                ),
+                None,
+            ),
+            Err(error) => (None, Some(error.to_string())),
+        };
         let mut invalidated = 0_u64;
         let mut first_probe_error = None;
         for key in &keys {
             let recorded = expected
                 .as_ref()
-                .ok()
                 .and_then(|expected| expected.get(key))
                 .and_then(Option::as_deref);
-            let healthy = if let Some(digest) = recorded {
+            let healthy = recorded.is_some_and(|digest| {
                 let candidate = GenerationSnapshot {
                     repo_id: key.repo_id.clone(),
                     revision_id: key.revision_id.clone(),
@@ -108,9 +114,7 @@ impl SnapshotInventoryAdmission {
                         false
                     }
                 }
-            } else {
-                false
-            };
+            });
             if !healthy && registry.invalidate_for_revalidation(key)? {
                 invalidated = invalidated.saturating_add(1);
             }
@@ -120,7 +124,7 @@ impl SnapshotInventoryAdmission {
                 "snapshot inventory admission {track:?} point probe failed after invalidating {invalidated} keys: {error}"
             )));
         }
-        if let Err(error) = expected {
+        if let Some(error) = ledger_error {
             return Err(CoreError::Storage(format!(
                 "snapshot inventory admission {track:?} ledger unavailable after invalidating {invalidated} keys: {error}"
             )));
@@ -141,6 +145,7 @@ mod tests {
 
     struct PointProbe {
         healthy: bool,
+        fail: bool,
         calls: AtomicUsize,
     }
 
@@ -165,6 +170,11 @@ mod tests {
                 ));
             }
             let _previous = self.calls.fetch_add(1, Ordering::SeqCst);
+            if self.fail {
+                return Err(CoreError::Storage(
+                    "injected point inventory read failure".into(),
+                ));
+            }
             Ok(self.healthy)
         }
     }
@@ -193,24 +203,82 @@ mod tests {
         let _retained = snapshots.lexical.begin_promotion(&key)?.promote(&opened)?;
         let lexical = Arc::new(PointProbe {
             healthy: false,
+            fail: false,
             calls: AtomicUsize::new(0),
         });
         let semantic = Arc::new(PointProbe {
             healthy: true,
+            fail: false,
             calls: AtomicUsize::new(0),
         });
         let admission = SnapshotInventoryAdmission::new(
             Arc::new(RwLock::new(ledger)),
-            Arc::clone(&lexical) as Arc<dyn SealedGenerationIdentityProbePort>,
-            Arc::clone(&semantic) as Arc<dyn SealedGenerationIdentityProbePort>,
+            lexical.clone(),
+            semantic.clone(),
             snapshots.clone(),
         );
-        assert_eq!(admission.reconcile()?, 1);
-        assert_eq!(lexical.calls.load(Ordering::SeqCst), 1);
-        assert_eq!(semantic.calls.load(Ordering::SeqCst), 0);
-        assert_eq!(snapshots.lexical.stats()?.entries, 0);
-        assert_eq!(admission.reconcile()?, 0);
-        assert_eq!(lexical.calls.load(Ordering::SeqCst), 1);
+        if admission.reconcile()? != 1
+            || lexical.calls.load(Ordering::SeqCst) != 1
+            || semantic.calls.load(Ordering::SeqCst) != 0
+            || snapshots.lexical.stats()?.entries != 0
+            || admission.reconcile()? != 0
+            || lexical.calls.load(Ordering::SeqCst) != 1
+        {
+            return Err(CoreError::Storage(
+                "inventory admission did not evict only the missing cached key".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn point_inventory_io_failure_evicts_and_reports_error() -> Result<(), CoreError> {
+        let snapshots = SnapshotRegistries::new(SnapshotRegistryPolicy::DEFAULT);
+        let repo = quanta_index_contract::RepoId::new("repo")
+            .expect("static fixture repo satisfies canonical policy");
+        let revision = quanta_index_contract::RevisionId::new("rev")
+            .expect("static fixture revision satisfies canonical policy");
+        let generation = quanta_index_contract::ManifestGeneration::new(9);
+        let key = SnapshotKey::new(&repo, &revision, generation);
+        let mut ledger = Ledger::default();
+        ledger.record_historically_sealed_search_corpus(
+            &repo,
+            &revision,
+            generation,
+            "manifest-digest-9",
+        );
+        let handle: Arc<dyn LexicalSearcher> = Arc::new(StubLexicalSearcher::default());
+        let opened = OpenedSnapshot {
+            handle,
+            resident_bytes: 1,
+        };
+        let _retained = snapshots.lexical.begin_promotion(&key)?.promote(&opened)?;
+        let lexical = Arc::new(PointProbe {
+            healthy: false,
+            fail: true,
+            calls: AtomicUsize::new(0),
+        });
+        let semantic = Arc::new(PointProbe {
+            healthy: true,
+            fail: false,
+            calls: AtomicUsize::new(0),
+        });
+        let admission = SnapshotInventoryAdmission::new(
+            Arc::new(RwLock::new(ledger)),
+            lexical.clone(),
+            semantic.clone(),
+            snapshots.clone(),
+        );
+
+        if !matches!(admission.reconcile(), Err(CoreError::Storage(_)))
+            || lexical.calls.load(Ordering::SeqCst) != 1
+            || semantic.calls.load(Ordering::SeqCst) != 0
+            || snapshots.lexical.stats()?.entries != 0
+        {
+            return Err(CoreError::Storage(
+                "point inventory failure did not evict and report the failed key".into(),
+            ));
+        }
         Ok(())
     }
 }

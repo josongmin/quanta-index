@@ -370,7 +370,7 @@ mod tests {
 
     #[test]
     fn decoded_root_reuse_reauthenticates_pages_and_invalidates_after_refusal() -> TestResult {
-        let dir = tempfile::tempdir()?;
+        let dir = crate::test_support::generation_fixture()?;
         let generation = identity(1)?;
         let row = file("a.rs", SymbolCoverage::ParseFailed)?;
         let snapshot = CoverageSnapshot::from([(row.source.file.clone(), row)]);
@@ -618,7 +618,7 @@ mod tests {
 
     #[test]
     fn missing_unknown_and_tampered_artifacts_cannot_claim_empty_complete() -> TestResult {
-        let dir = tempfile::tempdir()?;
+        let dir = crate::test_support::generation_fixture()?;
         let identity = identity(1)?;
         assert!(read_staged_coverage(dir.path(), &identity)?.is_none());
         assert!(read_staged_coverage(&dir.path().join("uncreated"), &identity)?.is_none());
@@ -804,7 +804,7 @@ mod tests {
 
     #[test]
     fn committed_pages_refuse_semantic_forgery_even_with_recomputed_hashes() -> TestResult {
-        let dir = tempfile::tempdir()?;
+        let dir = crate::test_support::generation_fixture()?;
         let a = file("a.rs", SymbolCoverage::NotRequested)?;
         let slot = CoverageSnapshot::partition_for(&a.source.file);
         let b = (0..10000)
@@ -882,7 +882,7 @@ mod tests {
     #[test]
     fn missing_tampered_symlink_and_orphan_pages_are_typed_corruption() -> TestResult {
         use quanta_index_contract::SearchPlaneErrorCodeV2;
-        let dir = tempfile::tempdir()?;
+        let dir = crate::test_support::generation_fixture()?;
         let row = file("a.rs", SymbolCoverage::NotRequested)?;
         let snapshot = CoverageSnapshot::from([(row.source.file.clone(), row)]);
         let _root = write_staged_coverage(
@@ -966,7 +966,7 @@ mod tests {
 
     #[test]
     fn unsealed_retry_reclaims_orphans_without_weakening_sealed_verification() -> TestResult {
-        let dir = tempfile::tempdir()?;
+        let dir = crate::test_support::generation_fixture()?;
         let row = file("a.rs", SymbolCoverage::NotRequested)?;
         let snapshot = CoverageSnapshot::from([(row.source.file.clone(), row)]);
         let generation = identity(1)?;

@@ -23,10 +23,10 @@ use quanta_index_contract::{
     FileContributorIdentityEntry, GenerationSnapshot, ManifestGeneration, RepoId, RevisionId,
     SearchPlaneTrackKind,
 };
-use quanta_index_core::domains::generation::unique_inode_tree_bytes;
 use quanta_index_core::{
     CoreError, LexicalArtifactIdentityV1, LexicalIndexOpenPort, LexicalSearcher,
     RepoMetadataAuthoritiesV1, RepoMetadataAuthorityV1, TextNormalizerVersionV1,
+    unique_inode_tree_bytes_below_track,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -371,13 +371,15 @@ impl LexicalAdapter {
             verified.coverage.as_ref(),
             verified.source_publication.as_ref(),
         )?;
-        let resident_bytes_estimate =
-            resident_bytes_estimate(path, text_authority.as_ref(), &ranked_keys)?
-                .checked_add(coverage_bytes)
-                .and_then(|bytes| bytes.checked_add(overlay_bytes))
-                .ok_or_else(|| {
-                    CoreError::Storage("lexical resident byte estimate overflow".into())
-                })?;
+        let resident_bytes_estimate = resident_bytes_estimate(
+            &self.state_root,
+            path,
+            text_authority.as_ref(),
+            &ranked_keys,
+        )?
+        .checked_add(coverage_bytes)
+        .and_then(|bytes| bytes.checked_add(overlay_bytes))
+        .ok_or_else(|| CoreError::Storage("lexical resident byte estimate overflow".into()))?;
         let artifact_identity = LexicalArtifactIdentityV1 {
             manifest_digest: verified.manifest.manifest_digest.clone(),
             normalizer: TextNormalizerVersionV1 {
@@ -419,6 +421,7 @@ impl LexicalAdapter {
 /// The caller adds decoded coverage and overlay heap before reporting to the
 /// registry; their encoded files must not be counted a second time here.
 pub(crate) fn resident_bytes_estimate(
+    track_root: &Path,
     generation_dir: &Path,
     text_authority: Option<&ShardedTextAuthority>,
     ranked_keys: &crate::ranked_keys::RankedKeyTables,
@@ -432,7 +435,7 @@ pub(crate) fn resident_bytes_estimate(
             || crate::sealed_generation::coverage::is_coverage_page(name)
     };
     let mapped =
-        unique_inode_tree_bytes(&[generation_dir.to_path_buf()], &skip).map_err(|err| {
+        unique_inode_tree_bytes_below_track(track_root, generation_dir, &skip).map_err(|err| {
             CoreError::Storage(format!(
                 "lexical: measure resident bytes of {}: {err}",
                 generation_dir.display()
@@ -453,7 +456,7 @@ mod tests {
     #[test]
     fn decoded_sidecar_files_do_not_consume_mapped_file_budget()
     -> Result<(), Box<dyn std::error::Error>> {
-        let directory = tempfile::tempdir()?;
+        let directory = crate::test_support::generation_fixture()?;
         std::fs::write(directory.path().join("index.bin"), b"index")?;
         for family in OverlayFamily::ALL {
             std::fs::write(directory.path().join(family.file_name()), vec![0_u8; 4096])?;
@@ -469,7 +472,8 @@ mod tests {
             vec![0_u8; 4096],
         )?;
         let ranked_keys = crate::ranked_keys::RankedKeyTables::bind(Vec::new(), &[])?;
-        let estimate = resident_bytes_estimate(directory.path(), None, &ranked_keys)?;
+        let estimate =
+            resident_bytes_estimate(directory.track_path(), directory.path(), None, &ranked_keys)?;
         if estimate != 5 {
             return Err(format!("decoded sidecar files were charged: {estimate} bytes").into());
         }

@@ -432,13 +432,12 @@ pub(crate) fn scrub_sealed_manifest(
 ) -> Result<SealedManifestScrubV1, CoreError> {
     let manifest = match read_bound_sealed_manifest(generation_dir, manifest_digest) {
         Ok(manifest) => manifest,
-        Err(CoreError::Typed { code, message })
-            if matches!(
-                code,
+        Err(CoreError::Typed {
+            code:
                 quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityDigestMismatch
-                    | quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt
-            ) =>
-        {
+                | quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
+            message,
+        }) => {
             return Ok(SealedManifestScrubV1 {
                 files_verified: 0,
                 bytes_read: 0,

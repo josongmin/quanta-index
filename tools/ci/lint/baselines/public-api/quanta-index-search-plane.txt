@@ -329,7 +329,7 @@ pub fn quanta_index_search_plane::PairIndexBytesMeasurer::new(lexical: alloc::sy
 impl core::fmt::Debug for quanta_index_search_plane::PairIndexBytesMeasurer
 pub fn quanta_index_search_plane::PairIndexBytesMeasurer::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl quanta_index_search_plane::SearchCorpusIndexBytesPort for quanta_index_search_plane::PairIndexBytesMeasurer
-pub fn quanta_index_search_plane::PairIndexBytesMeasurer::measure_index_bytes(&self, repo_id: &quanta_index_contract_base::ids::RepoId, revision_id: &quanta_index_contract_base::ids::RevisionId, generations: &alloc::collections::btree::set::BTreeSet<quanta_index_contract_base::ids::ManifestGeneration>) -> core::result::Result<u64, quanta_index_core::error::CoreError>
+pub fn quanta_index_search_plane::PairIndexBytesMeasurer::measure_index_bytes(&self, repo_id: &quanta_index_contract_base::ids::RepoId, revision_id: &quanta_index_contract_base::ids::RevisionId, generations: &alloc::collections::btree::set::BTreeSet<quanta_index_contract_base::ids::ManifestGeneration>) -> core::result::Result<quanta_index_core::domains::generation::SealedGenerationBytesV1, quanta_index_core::error::CoreError>
 impl core::marker::Freeze for quanta_index_search_plane::PairIndexBytesMeasurer
 impl core::marker::Send for quanta_index_search_plane::PairIndexBytesMeasurer
 impl core::marker::Sync for quanta_index_search_plane::PairIndexBytesMeasurer
@@ -520,9 +520,9 @@ impl core::marker::UnsafeUnpin for quanta_index_search_plane::TrackLedger
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_search_plane::TrackLedger
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_search_plane::TrackLedger
 pub trait quanta_index_search_plane::readiness::SearchCorpusIndexBytesPort: core::fmt::Debug + core::marker::Send + core::marker::Sync
-pub fn quanta_index_search_plane::readiness::SearchCorpusIndexBytesPort::measure_index_bytes(&self, repo_id: &quanta_index_contract_base::ids::RepoId, revision_id: &quanta_index_contract_base::ids::RevisionId, generations: &alloc::collections::btree::set::BTreeSet<quanta_index_contract_base::ids::ManifestGeneration>) -> core::result::Result<u64, quanta_index_core::error::CoreError>
+pub fn quanta_index_search_plane::readiness::SearchCorpusIndexBytesPort::measure_index_bytes(&self, repo_id: &quanta_index_contract_base::ids::RepoId, revision_id: &quanta_index_contract_base::ids::RevisionId, generations: &alloc::collections::btree::set::BTreeSet<quanta_index_contract_base::ids::ManifestGeneration>) -> core::result::Result<quanta_index_core::domains::generation::SealedGenerationBytesV1, quanta_index_core::error::CoreError>
 impl quanta_index_search_plane::SearchCorpusIndexBytesPort for quanta_index_search_plane::PairIndexBytesMeasurer
-pub fn quanta_index_search_plane::PairIndexBytesMeasurer::measure_index_bytes(&self, repo_id: &quanta_index_contract_base::ids::RepoId, revision_id: &quanta_index_contract_base::ids::RevisionId, generations: &alloc::collections::btree::set::BTreeSet<quanta_index_contract_base::ids::ManifestGeneration>) -> core::result::Result<u64, quanta_index_core::error::CoreError>
+pub fn quanta_index_search_plane::PairIndexBytesMeasurer::measure_index_bytes(&self, repo_id: &quanta_index_contract_base::ids::RepoId, revision_id: &quanta_index_contract_base::ids::RevisionId, generations: &alloc::collections::btree::set::BTreeSet<quanta_index_contract_base::ids::ManifestGeneration>) -> core::result::Result<quanta_index_core::domains::generation::SealedGenerationBytesV1, quanta_index_core::error::CoreError>
 pub fn quanta_index_search_plane::readiness::restore_auxiliary_rows_into(ledger: &mut quanta_index_search_plane::Ledger, catalog: &dyn quanta_index_core::domains::auxiliary::AuxiliaryAuthorityCatalogPort) -> core::result::Result<u64, quanta_index_core::error::CoreError>
 pub enum quanta_index_search_plane::ControlAccessV1
 pub quanta_index_search_plane::ControlAccessV1::InProcessOperator
@@ -1084,7 +1084,7 @@ pub fn quanta_index_search_plane::PairIndexBytesMeasurer::new(lexical: alloc::sy
 impl core::fmt::Debug for quanta_index_search_plane::PairIndexBytesMeasurer
 pub fn quanta_index_search_plane::PairIndexBytesMeasurer::fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl quanta_index_search_plane::SearchCorpusIndexBytesPort for quanta_index_search_plane::PairIndexBytesMeasurer
-pub fn quanta_index_search_plane::PairIndexBytesMeasurer::measure_index_bytes(&self, repo_id: &quanta_index_contract_base::ids::RepoId, revision_id: &quanta_index_contract_base::ids::RevisionId, generations: &alloc::collections::btree::set::BTreeSet<quanta_index_contract_base::ids::ManifestGeneration>) -> core::result::Result<u64, quanta_index_core::error::CoreError>
+pub fn quanta_index_search_plane::PairIndexBytesMeasurer::measure_index_bytes(&self, repo_id: &quanta_index_contract_base::ids::RepoId, revision_id: &quanta_index_contract_base::ids::RevisionId, generations: &alloc::collections::btree::set::BTreeSet<quanta_index_contract_base::ids::ManifestGeneration>) -> core::result::Result<quanta_index_core::domains::generation::SealedGenerationBytesV1, quanta_index_core::error::CoreError>
 impl core::marker::Freeze for quanta_index_search_plane::PairIndexBytesMeasurer
 impl core::marker::Send for quanta_index_search_plane::PairIndexBytesMeasurer
 impl core::marker::Sync for quanta_index_search_plane::PairIndexBytesMeasurer
@@ -1411,6 +1411,17 @@ impl<H> core::marker::Unpin for quanta_index_search_plane::SnapshotAcquired<H> w
 impl<H> core::marker::UnsafeUnpin for quanta_index_search_plane::SnapshotAcquired<H> where H: ?core::marker::Sized
 impl<H> core::panic::unwind_safe::RefUnwindSafe for quanta_index_search_plane::SnapshotAcquired<H> where H: core::panic::unwind_safe::RefUnwindSafe + ?core::marker::Sized
 impl<H> core::panic::unwind_safe::UnwindSafe for quanta_index_search_plane::SnapshotAcquired<H> where H: core::panic::unwind_safe::RefUnwindSafe + ?core::marker::Sized
+pub struct quanta_index_search_plane::SnapshotInventoryAdmission
+impl quanta_index_search_plane::SnapshotInventoryAdmission
+pub fn quanta_index_search_plane::SnapshotInventoryAdmission::new(ledger: alloc::sync::Arc<std::sync::poison::rwlock::RwLock<quanta_index_search_plane::Ledger>>, lexical_probe: alloc::sync::Arc<dyn quanta_index_core::domains::generation::SealedGenerationIdentityProbePort>, semantic_probe: alloc::sync::Arc<dyn quanta_index_core::domains::generation::SealedGenerationIdentityProbePort>, snapshots: quanta_index_search_plane::SnapshotRegistries) -> Self
+pub fn quanta_index_search_plane::SnapshotInventoryAdmission::reconcile(&self) -> core::result::Result<u64, quanta_index_core::error::CoreError>
+impl core::marker::Freeze for quanta_index_search_plane::SnapshotInventoryAdmission
+impl core::marker::Send for quanta_index_search_plane::SnapshotInventoryAdmission
+impl core::marker::Sync for quanta_index_search_plane::SnapshotInventoryAdmission
+impl core::marker::Unpin for quanta_index_search_plane::SnapshotInventoryAdmission
+impl core::marker::UnsafeUnpin for quanta_index_search_plane::SnapshotInventoryAdmission
+impl !core::panic::unwind_safe::RefUnwindSafe for quanta_index_search_plane::SnapshotInventoryAdmission
+impl !core::panic::unwind_safe::UnwindSafe for quanta_index_search_plane::SnapshotInventoryAdmission
 pub struct quanta_index_search_plane::SnapshotKey
 pub quanta_index_search_plane::SnapshotKey::generation: quanta_index_contract_base::ids::ManifestGeneration
 pub quanta_index_search_plane::SnapshotKey::repo_id: quanta_index_contract_base::ids::RepoId
@@ -1441,6 +1452,7 @@ pub quanta_index_search_plane::SnapshotRegistries::lexical: alloc::sync::Arc<qua
 pub quanta_index_search_plane::SnapshotRegistries::semantic: alloc::sync::Arc<quanta_index_search_plane::SnapshotRegistry<dyn quanta_index_core::domains::semantic::outbound::SemanticSearcher>>
 impl quanta_index_search_plane::SnapshotRegistries
 pub fn quanta_index_search_plane::SnapshotRegistries::finish_retirement(&self, track: quanta_index_contract::ipc::control::SearchPlaneTrackKind, key: &quanta_index_search_plane::SnapshotKey, owner: quanta_index_search_plane::SnapshotRetirementOwner) -> core::result::Result<(), quanta_index_core::error::CoreError>
+pub fn quanta_index_search_plane::SnapshotRegistries::finish_scrub_fence_after_clean_proof(&self, track: quanta_index_contract::ipc::control::SearchPlaneTrackKind, key: &quanta_index_search_plane::SnapshotKey) -> core::result::Result<bool, quanta_index_core::error::CoreError>
 pub fn quanta_index_search_plane::SnapshotRegistries::new(policy: quanta_index_search_plane::SnapshotRegistryPolicy) -> Self
 impl core::clone::Clone for quanta_index_search_plane::SnapshotRegistries
 pub fn quanta_index_search_plane::SnapshotRegistries::clone(&self) -> quanta_index_search_plane::SnapshotRegistries
@@ -1497,6 +1509,7 @@ pub quanta_index_search_plane::SnapshotRegistryStats::entries: usize
 pub quanta_index_search_plane::SnapshotRegistryStats::evictions: u64
 pub quanta_index_search_plane::SnapshotRegistryStats::fenced_in_flight: u64
 pub quanta_index_search_plane::SnapshotRegistryStats::hits: u64
+pub quanta_index_search_plane::SnapshotRegistryStats::inventory_invalidations: u64
 pub quanta_index_search_plane::SnapshotRegistryStats::misses: u64
 pub quanta_index_search_plane::SnapshotRegistryStats::open_failures: u64
 pub quanta_index_search_plane::SnapshotRegistryStats::oversize_uncached: u64
@@ -1587,9 +1600,9 @@ pub fn quanta_index_search_plane::SearchCorpusAuthorityWritePort::record_sealed_
 impl quanta_index_search_plane::SearchCorpusAuthorityWritePort for quanta_index_search_plane::AuxiliaryAuthorityStore
 pub fn quanta_index_search_plane::AuxiliaryAuthorityStore::record_sealed_search_corpus(&self, repo_id: &quanta_index_contract_base::ids::RepoId, revision_id: &quanta_index_contract_base::ids::RevisionId, generation: quanta_index_contract_base::ids::ManifestGeneration, manifest_digest: &str) -> core::result::Result<quanta_index_search_plane::readiness::SearchCorpusHistoryRetentionReceiptV1, quanta_index_core::error::CoreError>
 pub trait quanta_index_search_plane::SearchCorpusIndexBytesPort: core::fmt::Debug + core::marker::Send + core::marker::Sync
-pub fn quanta_index_search_plane::SearchCorpusIndexBytesPort::measure_index_bytes(&self, repo_id: &quanta_index_contract_base::ids::RepoId, revision_id: &quanta_index_contract_base::ids::RevisionId, generations: &alloc::collections::btree::set::BTreeSet<quanta_index_contract_base::ids::ManifestGeneration>) -> core::result::Result<u64, quanta_index_core::error::CoreError>
+pub fn quanta_index_search_plane::SearchCorpusIndexBytesPort::measure_index_bytes(&self, repo_id: &quanta_index_contract_base::ids::RepoId, revision_id: &quanta_index_contract_base::ids::RevisionId, generations: &alloc::collections::btree::set::BTreeSet<quanta_index_contract_base::ids::ManifestGeneration>) -> core::result::Result<quanta_index_core::domains::generation::SealedGenerationBytesV1, quanta_index_core::error::CoreError>
 impl quanta_index_search_plane::SearchCorpusIndexBytesPort for quanta_index_search_plane::PairIndexBytesMeasurer
-pub fn quanta_index_search_plane::PairIndexBytesMeasurer::measure_index_bytes(&self, repo_id: &quanta_index_contract_base::ids::RepoId, revision_id: &quanta_index_contract_base::ids::RevisionId, generations: &alloc::collections::btree::set::BTreeSet<quanta_index_contract_base::ids::ManifestGeneration>) -> core::result::Result<u64, quanta_index_core::error::CoreError>
+pub fn quanta_index_search_plane::PairIndexBytesMeasurer::measure_index_bytes(&self, repo_id: &quanta_index_contract_base::ids::RepoId, revision_id: &quanta_index_contract_base::ids::RevisionId, generations: &alloc::collections::btree::set::BTreeSet<quanta_index_contract_base::ids::ManifestGeneration>) -> core::result::Result<quanta_index_core::domains::generation::SealedGenerationBytesV1, quanta_index_core::error::CoreError>
 pub trait quanta_index_search_plane::StructuralIngestPort: core::marker::Send + core::marker::Sync
 pub fn quanta_index_search_plane::StructuralIngestPort::publish_batch(&self, batch: &quanta_index_contract::ipc::ingest::StructuralIngestBatch) -> core::result::Result<quanta_index_contract::ipc::publish_receipt::BatchPublishReceipt, quanta_index_core::error::CoreError>
 impl quanta_index_search_plane::StructuralIngestPort for quanta_index_search_plane::DirectStructuralMaterializer

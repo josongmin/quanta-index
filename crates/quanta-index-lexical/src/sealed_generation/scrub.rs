@@ -336,9 +336,10 @@ pub(crate) fn quarantine_content_corrupt_at(
     )
 }
 
-/// A malformed seal or a seal bound to another identity is a persistent
-/// physical defect. Missing and unsupported formats are not content proofs:
-/// callers fence their resident handles but retain the typed refusal.
+/// Classify persistent physical defects in a seal.
+///
+/// Missing and unsupported formats are not content proofs: callers fence
+/// their resident handles but retain the typed refusal.
 pub(crate) fn seal_failure_quarantine_reason(
     error: &CoreError,
 ) -> Option<GenerationQuarantineReasonV1> {
@@ -351,7 +352,12 @@ pub(crate) fn seal_failure_quarantine_reason(
             code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityDigestMismatch,
             ..
         } => Some(GenerationQuarantineReasonV1::IdentityDigestMismatch),
-        _ => None,
+        CoreError::InvalidContract(_)
+        | CoreError::Typed { .. }
+        | CoreError::NotReady(_)
+        | CoreError::NotImplemented(_)
+        | CoreError::NotFound(_)
+        | CoreError::Storage(_) => None,
     }
 }
 

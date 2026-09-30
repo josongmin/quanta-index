@@ -634,7 +634,7 @@ mod tests {
     #[test]
     fn oversized_manifest_requires_explicit_rebuild_before_reading_body()
     -> Result<(), Box<dyn std::error::Error>> {
-        let generation = tempfile::tempdir()?;
+        let generation = crate::test_support::generation_fixture()?;
         let path = generation
             .path()
             .join(super::LEXICAL_SEALED_MANIFEST_FILE_NAME);

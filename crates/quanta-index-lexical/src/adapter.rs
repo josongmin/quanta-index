@@ -152,9 +152,17 @@ impl LexicalAdapter {
         stripes
             .into_iter()
             .map(|stripe| {
-                self.generation_mutations[stripe].lock().map_err(|error| {
-                    CoreError::Storage(format!("lexical mutation lock poisoned: {error}"))
-                })
+                self.generation_mutations
+                    .get(stripe)
+                    .ok_or_else(|| {
+                        CoreError::InvalidContract(format!(
+                            "lexical mutation stripe {stripe} is out of range"
+                        ))
+                    })?
+                    .lock()
+                    .map_err(|error| {
+                        CoreError::Storage(format!("lexical mutation lock poisoned: {error}"))
+                    })
             })
             .collect()
     }

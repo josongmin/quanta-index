@@ -271,7 +271,7 @@ mod tests {
 
     #[test]
     fn sealed_handle_keeps_its_inode_and_refuses_later_redirects() -> Result<(), Box<dyn Error>> {
-        let root = tempfile::tempdir()?;
+        let root = crate::test_support::generation_fixture()?;
         let outside = tempfile::tempdir()?;
         let file = root.path().join("segment.store");
         let target = outside.path().join("segment.store");
@@ -295,7 +295,7 @@ mod tests {
 
     #[test]
     fn metadata_lock_does_not_follow_a_redirect() -> Result<(), Box<dyn Error>> {
-        let root = tempfile::tempdir()?;
+        let root = crate::test_support::generation_fixture()?;
         let outside = tempfile::tempdir()?;
         let target = outside.path().join("lock");
         std::fs::write(&target, b"outside")?;
@@ -328,12 +328,14 @@ mod tests {
     #[test]
     fn verified_meta_bytes_are_the_bytes_the_index_will_read() -> Result<(), Box<dyn Error>> {
         let root = tempfile::tempdir()?;
+        let generation = root.path().join("family/g1");
+        std::fs::create_dir_all(&generation)?;
         let meta = Path::new(crate::TANTIVY_INDEX_META_FILE_NAME);
-        std::fs::write(root.path().join(meta), b"verified-meta")?;
-        let opened = super::super::open_generation_dir_nofollow(root.path())?;
+        std::fs::write(generation.join(meta), b"verified-meta")?;
+        let opened = super::super::open_generation_dir_nofollow(&generation)?;
         let directory =
             SealedIndexDirectory::from_opened_with_meta(opened, b"verified-meta".to_vec());
-        std::fs::write(root.path().join(meta), b"different-meta")?;
+        std::fs::write(generation.join(meta), b"different-meta")?;
         let handle = directory.get_file_handle(meta)?;
         let first = handle.read_bytes(0..13)?;
         let second = handle.read_bytes(0..13)?;

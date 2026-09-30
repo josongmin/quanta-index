@@ -15,8 +15,7 @@ use crate::{
     TANTIVY_LOCK_FILE_PREFIX, TANTIVY_MANAGED_FILE_NAME, sealed_generation,
 };
 use quanta_index_contract::ManifestGeneration;
-use quanta_index_core::{CoreError, unique_inode_tree_bytes};
-use std::fs::File;
+use quanta_index_core::{CoreError, unique_inode_tree_bytes_below_track};
 use std::path::{Path, PathBuf};
 
 /// CBOR's longest encoding of one `u64`: one initial byte and eight data bytes.
@@ -261,7 +260,7 @@ pub(crate) fn ensure_unsealed(
 
 /// Make the generation directory's entries durable before a door admits it.
 pub(crate) fn sync_generation_directory(generation_dir: &Path) -> Result<(), CoreError> {
-    File::open(generation_dir)
+    sealed_generation::open_generation_dir_nofollow(generation_dir)
         .and_then(|directory| directory.sync_all())
         .map_err(|error| {
             CoreError::Storage(format!(
@@ -276,8 +275,8 @@ pub(crate) fn sync_generation_directory(generation_dir: &Path) -> Result<(), Cor
 /// What a reclaim or a quarantine discard reports giving back. A file
 /// hard-linked into another generation counts here too; the disk frees it
 /// when its last link goes. Writer lock files and symlinks are excluded.
-pub(crate) fn generation_tree_bytes(root: &Path) -> Result<u64, CoreError> {
-    unique_inode_tree_bytes(&[root.to_path_buf()], &is_writer_lock_entry).map_err(|error| {
+pub(crate) fn generation_tree_bytes(track_root: &Path, root: &Path) -> Result<u64, CoreError> {
+    unique_inode_tree_bytes_below_track(track_root, root, &is_writer_lock_entry).map_err(|error| {
         CoreError::Storage(format!(
             "lexical: measure generation dir {}: {error}",
             root.display()
@@ -295,7 +294,7 @@ mod delta_base_marker_tests {
 
     #[test]
     fn marker_refuses_trailing_cbor_and_oversized_input() {
-        let root = tempfile::tempdir().expect("tempdir");
+        let root = crate::test_support::generation_fixture().expect("generation fixture");
         persist_lexical_delta_base(root.path(), ManifestGeneration::new(17))
             .expect("persist marker");
         assert_eq!(

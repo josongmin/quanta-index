@@ -224,6 +224,7 @@ fn lexical_read_view_refuses_an_opened_handle_with_a_different_seal() -> TestRes
     if state.opened_pins.len() != 1 || !state.search_top_ks.is_empty() {
         return Err("lexical identity refusal did not stop before search".into());
     }
+    drop(state);
     Ok(())
 }
 
@@ -241,16 +242,17 @@ fn semantic_read_view_refuses_an_opened_handle_with_a_different_seal() -> TestRe
         &pin,
         RequiredDomainsV1::of(ReadDomainV1::SemanticTrack),
     );
-    let error = match dispatcher.acquire_read_view(&request, &RequestBudgetV1::unbounded()) {
-        Ok(_) => return Err("a handle with a different physical seal was admitted".into()),
-        Err(error) => error,
+    let Err(error) = dispatcher.acquire_read_view(&request, &RequestBudgetV1::unbounded()) else {
+        return Err("a handle with a different physical seal was admitted".into());
     };
-    match error {
+    if !matches!(
+        &error,
         CoreError::Typed { code, message }
-            if code == quanta_index_contract::SearchPlaneErrorCodeV2::SemanticManifestDigestMismatch
+            if *code == quanta_index_contract::SearchPlaneErrorCodeV2::SemanticManifestDigestMismatch
                 && message.contains("expected=manifest-digest-9")
-                && message.contains("observed=different-physical-seal") => {}
-        other => return Err(format!("wrong semantic identity refusal: {other:?}").into()),
+                && message.contains("observed=different-physical-seal")
+    ) {
+        return Err(format!("wrong semantic identity refusal: {error:?}").into());
     }
     let state = semantic_state
         .lock()
@@ -258,6 +260,7 @@ fn semantic_read_view_refuses_an_opened_handle_with_a_different_seal() -> TestRe
     if state.cluster_membership_opened_pins.len() != 1 || !state.search_vectors.is_empty() {
         return Err("semantic identity refusal did not stop before search".into());
     }
+    drop(state);
     Ok(())
 }
 

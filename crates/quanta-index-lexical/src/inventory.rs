@@ -13,20 +13,36 @@ use quanta_index_core::domains::generation::{
     GenerationQuarantineReasonV1, GenerationStorageKeyV1, InventoriedSealedGenerationV1,
     QuarantinedGenerationV1, SealedGenerationInventoryV1,
 };
-use quanta_index_core::{CoreError, QuarantineDiscardOutcomeV1, RECLAIM_AREA_DIR_NAME};
-use std::fs::File;
+use quanta_index_core::{
+    CoreError, QuarantineDiscardOutcomeV1, RECLAIM_AREA_DIR_NAME, reclaim_quarantined_directory,
+};
 use std::path::{Path, PathBuf};
+
+pub(crate) enum InventoryGenerationError {
+    Quarantined(QuarantinedGenerationV1),
+    Infrastructure(CoreError),
+}
+
+fn unreadable_identity(generation_dir: &Path, error: CoreError) -> InventoryGenerationError {
+    if matches!(error, CoreError::Storage(_)) {
+        InventoryGenerationError::Infrastructure(error)
+    } else {
+        InventoryGenerationError::Quarantined(quarantine(
+            generation_dir.to_path_buf(),
+            GenerationQuarantineReasonV1::IdentityUnreadable,
+            error.to_string(),
+        ))
+    }
+}
 
 /// Inventory the sealed generations under a lexical state root (QI-BB-026).
 ///
 /// Reads each generation's sealed identity and nothing else: no sidecar is
 /// hashed and no index is opened, so the cost is one small file per sealed
 /// generation. A directory that is not a canonical family or `g<N>`, an
-/// identity that cannot be read or decoded, and an identity that does not
-/// own its directory are each reported as quarantined with the path and the
-/// reason, and boot continues without them. Generations without a sealed
-/// identity are in-progress builds and are skipped silently, as before. Only
-/// a directory listing that fails is an error.
+/// invalid identity and an identity that does not own its directory are
+/// quarantined with a reason. Generations without a sealed identity are
+/// skipped. I/O failures propagate rather than masquerading as corruption.
 pub fn inventory_sealed_generations(
     lexical_root: &Path,
 ) -> Result<SealedGenerationInventoryV1, CoreError> {
@@ -112,7 +128,10 @@ pub fn inventory_sealed_generations(
                     Err(error) => return Err(error),
                 },
                 Ok(None) => {}
-                Err(quarantined) => inventory.quarantined.push(quarantined),
+                Err(InventoryGenerationError::Quarantined(quarantined)) => {
+                    inventory.quarantined.push(quarantined);
+                }
+                Err(InventoryGenerationError::Infrastructure(error)) => return Err(error),
             }
         }
     }
@@ -175,70 +194,47 @@ pub(crate) fn discard_quarantined_directory(
             "the path is not a directory; the inventory quarantines directories only".to_string(),
         ));
     }
-    let bytes = generation_tree_bytes(&entry.path)?;
-    std::fs::remove_dir_all(&entry.path).map_err(|error| {
-        CoreError::Storage(format!(
-            "lexical: discard quarantined {}: {error}",
-            entry.path.display()
-        ))
-    })?;
-    if let Some(parent) = entry.path.parent() {
-        File::open(parent)
-            .and_then(|directory| directory.sync_all())
-            .map_err(|error| {
-                CoreError::Storage(format!(
-                    "lexical: fsync {} after discarding quarantine: {error}",
-                    parent.display()
-                ))
-            })?;
-    }
+    let bytes = generation_tree_bytes(track_root, &entry.path)?;
+    reclaim_quarantined_directory(track_root, &entry.path)?;
     Ok(QuarantineDiscardOutcomeV1::Discarded { bytes })
 }
 
-/// One generation directory's inventory outcome: `Ok(Some)` for a sealed
-/// identity that owns the directory, `Ok(None)` for an in-progress build,
-/// `Err` for a quarantine.
+/// Inventory one generation directory.
+///
+/// `Ok(Some)` is a sealed identity that owns the directory; `Ok(None)` is an
+/// in-progress build. `Err` distinguishes quarantine from infrastructure
+/// failure.
 pub(crate) fn inventory_generation_dir(
     lexical_root: &Path,
     generation_dir: &Path,
-) -> Result<Option<GenerationSnapshot>, QuarantinedGenerationV1> {
+) -> Result<Option<GenerationSnapshot>, InventoryGenerationError> {
     let Some(generation_name) = generation_dir.file_name().and_then(|name| name.to_str()) else {
-        return Err(quarantine(
+        return Err(InventoryGenerationError::Quarantined(quarantine(
             generation_dir.to_path_buf(),
             GenerationQuarantineReasonV1::NonCanonicalLayout,
             "generation directory name is not UTF-8".to_string(),
-        ));
+        )));
     };
     if GenerationStorageKeyV1::generation_of_dir_name(generation_name).is_none() {
-        return Err(quarantine(
+        return Err(InventoryGenerationError::Quarantined(quarantine(
             generation_dir.to_path_buf(),
             GenerationQuarantineReasonV1::NonCanonicalLayout,
             "generation directory is not `g<N>`; it needs explicit migration".to_string(),
-        ));
+        )));
     }
-    let identity_present = sealed_identity_entry_present(generation_dir).map_err(|error| {
-        quarantine(
-            generation_dir.to_path_buf(),
-            GenerationQuarantineReasonV1::IdentityUnreadable,
-            error.to_string(),
-        )
-    })?;
+    let identity_present = sealed_identity_entry_present(generation_dir)
+        .map_err(|error| unreadable_identity(generation_dir, error))?;
     if !identity_present {
         return Ok(None);
     }
-    let identity = read_lexical_sealed_identity(generation_dir).map_err(|error| {
-        quarantine(
-            generation_dir.to_path_buf(),
-            GenerationQuarantineReasonV1::IdentityUnreadable,
-            error.to_string(),
-        )
-    })?;
+    let identity = read_lexical_sealed_identity(generation_dir)
+        .map_err(|error| unreadable_identity(generation_dir, error))?;
     if identity.track != SearchPlaneTrackKind::Lexical
         || GenerationStorageKeyV1::for_repo_revision(&identity.repo_id, &identity.revision_id)
             .generation_dir(lexical_root, identity.manifest_generation)
             != generation_dir
     {
-        return Err(quarantine(
+        return Err(InventoryGenerationError::Quarantined(quarantine(
             generation_dir.to_path_buf(),
             GenerationQuarantineReasonV1::ScopeMismatch,
             format!(
@@ -248,7 +244,7 @@ pub(crate) fn inventory_generation_dir(
                 identity.revision_id.as_str(),
                 identity.manifest_generation.get()
             ),
-        ));
+        )));
     }
     Ok(Some(identity))
 }

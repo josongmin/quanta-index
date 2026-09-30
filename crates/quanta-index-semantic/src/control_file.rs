@@ -5,7 +5,7 @@ use std::io::{self, Read as _};
 use std::path::Path;
 
 use quanta_index_core::CoreError;
-use rustix::fs::{Mode, OFlags, open};
+use rustix::fs::{AtFlags, Mode, OFlags, open, openat, statat};
 use sha2::{Digest as _, Sha256};
 
 pub(crate) const MAX_SEALED_MARKER_BYTES: usize = 4 * 1024;
@@ -14,23 +14,70 @@ pub(crate) const MAX_SCOPE_MANIFEST_BYTES: usize = 16 * 1024 * 1024;
 pub(crate) const MAX_SEALED_MANIFEST_BYTES: usize = 16 * 1024 * 1024;
 pub(crate) const MAX_RECEIPT_BYTES: usize = 64 * 1024;
 
+/// Pin the family and generation before resolving a control-file name.
+///
+/// The configured track root may have trusted ancestors, but neither of its
+/// generation-owned children may redirect a later read through a symlink.
+fn generation_parent(path: &Path) -> io::Result<(File, &std::ffi::OsStr)> {
+    let name = path
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "control file has no name"))?;
+    let generation = path.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "control file has no generation directory",
+        )
+    })?;
+    let generation_name = generation.file_name().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "generation has no directory name",
+        )
+    })?;
+    let family = generation.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "generation has no family directory",
+        )
+    })?;
+    let directory_flags =
+        OFlags::RDONLY | OFlags::CLOEXEC | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::NONBLOCK;
+    let family = open(family, directory_flags, Mode::empty())
+        .map_err(|error| io::Error::from_raw_os_error(error.raw_os_error()))?;
+    let generation = openat(
+        &family,
+        Path::new(generation_name),
+        directory_flags,
+        Mode::empty(),
+    )
+    .map_err(|error| io::Error::from_raw_os_error(error.raw_os_error()))?;
+    Ok((File::from(generation), name))
+}
+
 /// Distinguish an absent control file from a present but unsafe filesystem
 /// object. Callers may treat only the former as an incomplete generation.
 pub(crate) fn regular_file_present(path: &Path) -> io::Result<bool> {
-    match std::fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.is_file() => Ok(true),
+    let (generation, name) = match generation_parent(path) {
+        Ok(opened) => opened,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    match statat(&generation, Path::new(name), AtFlags::SYMLINK_NOFOLLOW) {
+        Ok(metadata) if rustix::fs::FileType::from_raw_mode(metadata.st_mode).is_file() => Ok(true),
         Ok(_) => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("control file {} is not a regular file", path.display()),
         )),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(error),
+        Err(error) if error == rustix::io::Errno::NOENT => Ok(false),
+        Err(error) => Err(io::Error::from_raw_os_error(error.raw_os_error())),
     }
 }
 
 fn open_bounded(path: &Path, max_bytes: usize) -> io::Result<File> {
-    let descriptor = open(
-        path,
+    let (generation, name) = generation_parent(path)?;
+    let descriptor = openat(
+        &generation,
+        Path::new(name),
         OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
         Mode::empty(),
     )
@@ -83,7 +130,7 @@ pub(crate) fn measure_bounded(path: &Path, max_bytes: usize) -> io::Result<(u64,
     let mut file = open_bounded(path, max_bytes)?;
     let limit = u64::try_from(max_bytes).map_err(io::Error::other)?;
     let mut hasher = Sha256::new();
-    let mut buffer = [0_u8; 1 << 16];
+    let mut buffer = vec![0_u8; 1 << 16].into_boxed_slice();
     let mut length = 0_u64;
     loop {
         // Once opened, an I/O failure does not prove missing or corrupt
@@ -101,7 +148,12 @@ pub(crate) fn measure_bounded(path: &Path, max_bytes: usize) -> io::Result<(u64,
                 format!("control file exceeds {max_bytes} bytes"),
             ));
         }
-        hasher.update(&buffer[..read]);
+        hasher.update(buffer.get(..read).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "control-file read exceeded buffer",
+            )
+        })?);
     }
     Ok((length, hasher.finalize().into()))
 }
@@ -128,7 +180,9 @@ mod tests {
     fn rejects_a_sparse_oversized_file_before_allocation() -> Result<(), Box<dyn std::error::Error>>
     {
         let temp = tempfile::tempdir()?;
-        let path = temp.path().join("oversized");
+        let generation = temp.path().join("family/g1");
+        std::fs::create_dir_all(&generation)?;
+        let path = generation.join("oversized");
         let file = File::create(&path)?;
         file.set_len(
             u64::try_from(MAX_RECEIPT_BYTES)?
@@ -152,7 +206,9 @@ mod tests {
         let temp = tempfile::tempdir()?;
         let outside = temp.path().join("outside");
         std::fs::write(&outside, b"outside")?;
-        let link = temp.path().join("sealed-marker");
+        let generation = temp.path().join("family/g1");
+        std::fs::create_dir_all(&generation)?;
+        let link = generation.join("sealed-marker");
         std::os::unix::fs::symlink(&outside, &link)?;
         let error = read_bounded(&link, MAX_SEALED_MARKER_BYTES)
             .expect_err("control-file symlink must be refused");
@@ -172,11 +228,32 @@ mod tests {
     #[test]
     fn dangling_symlink_is_present_but_invalid() -> Result<(), Box<dyn std::error::Error>> {
         let temp = tempfile::tempdir()?;
-        let marker = temp.path().join("SEALED");
+        let generation = temp.path().join("family/g1");
+        std::fs::create_dir_all(&generation)?;
+        let marker = generation.join("SEALED");
         std::os::unix::fs::symlink(temp.path().join("missing"), &marker)?;
         let error = regular_file_present(&marker).expect_err("dangling marker is not absent");
         if error.kind() != io::ErrorKind::InvalidData {
             return Err(format!("dangling marker answered {error}").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn refuses_a_family_symlink_before_opening_a_control_file()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let track = temp.path().join("track");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir_all(&track)?;
+        std::fs::create_dir_all(outside.join("g1"))?;
+        std::fs::write(outside.join("g1/SEALED"), b"outside")?;
+        std::os::unix::fs::symlink(&outside, track.join("family"))?;
+        let marker = track.join("family/g1/SEALED");
+        if read_bounded(&marker, MAX_SEALED_MARKER_BYTES).is_ok()
+            || regular_file_present(&marker).is_ok()
+        {
+            return Err("semantic control read followed a family symlink".into());
         }
         Ok(())
     }

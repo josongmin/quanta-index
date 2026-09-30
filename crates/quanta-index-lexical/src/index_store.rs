@@ -385,23 +385,36 @@ pub(crate) fn read_lexical_sealed_identity_at(
         })?
         .len();
     if !matches!(usize::try_from(on_disk), Ok(bytes) if bytes <= MAX_SEALED_IDENTITY_BYTES) {
-        return Err(CoreError::Storage(format!(
-            "lexical: sealed generation identity {} exceeds {MAX_SEALED_IDENTITY_BYTES} bytes",
-            path.display()
-        )));
+        return Err(sidecar_corrupt(
+            generation_dir,
+            LEXICAL_SEALED_IDENTITY_FILE_NAME,
+            &format!("exceeds {MAX_SEALED_IDENTITY_BYTES} bytes"),
+        ));
     }
     let bytes = crate::sealed_generation::read_opened_bounded(&mut file, MAX_SEALED_IDENTITY_BYTES)
         .map_err(|error| {
-            CoreError::Storage(format!(
-                "lexical: read sealed generation identity {}: {error}",
-                path.display()
-            ))
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::InvalidData | std::io::ErrorKind::UnexpectedEof
+            ) {
+                sidecar_corrupt(
+                    generation_dir,
+                    LEXICAL_SEALED_IDENTITY_FILE_NAME,
+                    &format!("cannot read admitted bytes: {error}"),
+                )
+            } else {
+                CoreError::Storage(format!(
+                    "lexical: read sealed generation identity {}: {error}",
+                    path.display()
+                ))
+            }
         })?;
     crate::channel_payloads::decode_cbor_exact(bytes.as_slice()).map_err(|error| {
-        CoreError::Storage(format!(
-            "lexical: decode sealed generation identity {}: {error}",
-            path.display()
-        ))
+        sidecar_corrupt(
+            generation_dir,
+            LEXICAL_SEALED_IDENTITY_FILE_NAME,
+            &format!("cannot decode: {error}"),
+        )
     })
 }
 
@@ -436,18 +449,22 @@ mod sealed_identity_probe_tests {
     #[test]
     fn oversized_sealed_identity_is_refused_before_decode() {
         let temp = tempfile::tempdir().expect("fixture generation directory");
-        std::fs::write(lexical_sealed_identity_path(temp.path()), vec![b'x'; 4097])
+        let generation = temp.path().join("family/g1");
+        std::fs::create_dir_all(&generation).expect("generation directory");
+        std::fs::write(lexical_sealed_identity_path(&generation), vec![b'x'; 4097])
             .expect("oversized identity fixture");
-        let error = read_lexical_sealed_identity(temp.path())
+        let error = read_lexical_sealed_identity(&generation)
             .expect_err("oversized sidecar must be refused");
         assert!(
-            matches!(error, CoreError::Storage(message) if message.contains("exceeds 4096 bytes"))
+            matches!(error, CoreError::Typed { code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt, message } if message.contains("exceeds 4096 bytes"))
         );
     }
 
     #[test]
     fn sealed_identity_rejects_trailing_cbor() -> Result<(), Box<dyn std::error::Error>> {
         let temp = tempfile::tempdir()?;
+        let generation = temp.path().join("family/g1");
+        std::fs::create_dir_all(&generation)?;
         let identity = GenerationSnapshot {
             repo_id: RepoId::new("repo")?,
             revision_id: RevisionId::new("revision")?,
@@ -457,9 +474,12 @@ mod sealed_identity_probe_tests {
         };
         let mut bytes = crate::channel_payloads::encode_cbor(&identity, "identity test")?;
         bytes.push(0xff);
-        std::fs::write(lexical_sealed_identity_path(temp.path()), bytes)?;
-        match read_lexical_sealed_identity(temp.path()) {
-            Err(CoreError::Storage(message)) if message.contains("trailing CBOR bytes") => Ok(()),
+        std::fs::write(lexical_sealed_identity_path(&generation), bytes)?;
+        match read_lexical_sealed_identity(&generation) {
+            Err(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
+                message,
+            }) if message.contains("trailing CBOR bytes") => Ok(()),
             other => Err(format!("trailing identity bytes were admitted: {other:?}").into()),
         }
     }
@@ -505,7 +525,9 @@ mod sealed_identity_probe_tests {
         use std::time::Duration;
 
         let temp = tempfile::tempdir().expect("fixture generation directory");
-        let identity = lexical_sealed_identity_path(temp.path());
+        let generation = temp.path().join("family/g1");
+        std::fs::create_dir_all(&generation).expect("generation directory");
+        let identity = lexical_sealed_identity_path(&generation);
         assert!(
             std::process::Command::new("mkfifo")
                 .arg(&identity)
@@ -513,11 +535,11 @@ mod sealed_identity_probe_tests {
                 .expect("create FIFO identity")
                 .success()
         );
-        let generation = temp.path().to_path_buf();
         let (sender, receiver) = mpsc::channel();
+        let reader_generation = generation.clone();
         let reader = std::thread::spawn(move || {
             let refused = matches!(
-                read_lexical_sealed_identity(&generation),
+                read_lexical_sealed_identity(&reader_generation),
                 Err(CoreError::Typed {
                     code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
                     ..
@@ -542,7 +564,7 @@ mod sealed_identity_probe_tests {
         let outside = tempfile::NamedTempFile::new().expect("outside identity");
         std::os::unix::fs::symlink(outside.path(), &identity).expect("create identity symlink");
         assert!(matches!(
-            read_lexical_sealed_identity(temp.path()),
+            read_lexical_sealed_identity(&generation),
             Err(CoreError::Typed {
                 code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
                 ..

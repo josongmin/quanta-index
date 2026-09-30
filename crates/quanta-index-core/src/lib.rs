@@ -103,6 +103,8 @@ pub use domains::read_view::{
 };
 pub use domains::reclaim_area::{
     RECLAIM_AREA_DIR_NAME, finish_interrupted_reclaims, reclaim_area, reclaim_directory,
+    reclaim_quarantined_directory, unique_inode_tree_bytes_below_track,
+    unique_inode_tree_bytes_for_roots_below_track, unique_inode_tree_bytes_in_track,
 };
 pub use domains::repomap::{
     PinnedRepoMapSnapshot, QuarantinedRepoMapFileV1, RepoMapBundleIngestPort,

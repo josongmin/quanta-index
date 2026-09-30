@@ -807,14 +807,16 @@ mod tests {
     fn oversized_committed_page_is_corruption_on_both_read_paths()
     -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
-        let path = dir.path().join("committed-page");
+        let generation = dir.path().join("family/g1");
+        std::fs::create_dir_all(&generation)?;
+        let path = generation.join("committed-page");
         std::fs::File::create(&path)?.set_len(u64::try_from(MAX_COVERAGE_PAGE_BYTES)? + 1)?;
-        let opened = super::super::super::open_generation_dir_nofollow(dir.path())?;
+        let opened = super::super::super::open_generation_dir_nofollow(&generation)?;
         for result in [
             read_bounded(&path, MAX_COVERAGE_PAGE_BYTES),
             super::read_bounded_at(
                 &opened,
-                dir.path(),
+                &generation,
                 "committed-page",
                 MAX_COVERAGE_PAGE_BYTES,
             ),
@@ -920,7 +922,7 @@ mod tests {
     #[test]
     fn small_coverage_page_does_not_allocate_the_page_ceiling()
     -> Result<(), Box<dyn std::error::Error>> {
-        let dir = tempfile::tempdir()?;
+        let dir = crate::test_support::generation_fixture()?;
         let path = dir.path().join("page");
         std::fs::write(&path, [7_u8; 64])?;
         let bytes = read_bounded(&path, MAX_COVERAGE_PAGE_BYTES)?;

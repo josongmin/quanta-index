@@ -118,18 +118,31 @@ fn read_receipt<T: serde::de::DeserializeOwned>(
     what: &str,
     format_version: u32,
 ) -> Result<Option<T>, CoreError> {
-    let bytes =
-        match crate::control_file::read_bounded(path, crate::control_file::MAX_RECEIPT_BYTES) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => {
-                return Err(CoreError::Storage(format!(
-                    "semantic: read {what} {}: {error}",
-                    path.display()
-                )));
-            }
-        };
-    decode_current_format(&bytes, what, format_version).map(Some)
+    let bytes = match crate::control_file::read_bounded(
+        path,
+        crate::control_file::MAX_RECEIPT_BYTES,
+    ) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+            return Err(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationScrubReceiptInvalid,
+                message: format!("semantic: {what} {} is invalid: {error}", path.display()),
+            });
+        }
+        Err(error) => {
+            return Err(CoreError::Storage(format!(
+                "semantic: read {what} {}: {error}",
+                path.display()
+            )));
+        }
+    };
+    decode_current_format(&bytes, what, format_version)
+        .map(Some)
+        .map_err(|error| CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationScrubReceiptInvalid,
+            message: format!("semantic: {what} {} is invalid: {error}", path.display()),
+        })
 }
 
 /// The scrub receipt beside `generation_dir`, if a pass ever completed.
@@ -183,11 +196,14 @@ pub(crate) fn read_quarantine_receipt(
     if let Some(receipt) = receipt.as_ref()
         && GenerationQuarantineReasonV1::from_code_str(&receipt.reason).is_none()
     {
-        return Err(CoreError::Storage(format!(
-            "semantic: quarantine receipt under {} names an unknown reason `{}`",
-            generation_dir.display(),
-            receipt.reason
-        )));
+        return Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationScrubReceiptInvalid,
+            message: format!(
+                "semantic: quarantine receipt under {} names an unknown reason `{}`",
+                generation_dir.display(),
+                receipt.reason
+            ),
+        });
     }
     Ok(receipt)
 }
@@ -397,14 +413,15 @@ impl IntegrityScrubPort for SemanticAdapter {
         // inventory, but its independently checked scope manifest and marker
         // still identify the resident key that the scrub must fence. A
         // persistent quarantine receipt is excluded by the identity reader.
-        candidates.extend(inventory.quarantined.iter().filter_map(|entry| {
-            crate::scrub_candidate_from_quarantined(self.state_root(), entry).map(|record| {
-                IntegrityScrubCandidateV1 {
+        for entry in &inventory.quarantined {
+            if let Some(record) = crate::scrub_candidate_from_quarantined(self.state_root(), entry)?
+            {
+                candidates.push(IntegrityScrubCandidateV1 {
                     identity: record.identity(),
                     last_completed_unix: None,
-                }
-            })
-        }));
+                });
+            }
+        }
         Ok(candidates)
     }
 

@@ -111,6 +111,9 @@ mod text_authority_plan;
 mod text_docs;
 mod writer_cache;
 
+#[cfg(test)]
+mod test_support;
+
 /// The one text normalization contract (QI-BB-011), shared with the query DSL
 /// and the search plane; every text surface of this crate lowers through it.
 pub(crate) use quanta_index_lq_text_normalizer as normalize;
@@ -638,7 +641,7 @@ mod adapter_tests {
     /// indexed and a fast column — typed, before any query runs over it.
     #[test]
     fn the_door_refuses_an_index_under_another_schema() {
-        let temp = tempfile::tempdir().expect("tempdir");
+        let temp = crate::test_support::generation_fixture().expect("generation fixture");
         let mut builder = Schema::builder();
         let _candidate_id = builder.add_text_field("candidate_id", STRING | STORED);
         let _doc_id = builder.add_u64_field("text_authority_doc_id", STORED);
@@ -656,7 +659,7 @@ mod adapter_tests {
             "{refused:?}"
         );
 
-        let current = tempfile::tempdir().expect("tempdir");
+        let current = crate::test_support::generation_fixture().expect("generation fixture");
         let index =
             Index::create_in_dir(current.path(), SchemaFields::build().schema).expect("create");
         let mut writer: IndexWriter = index.writer(15_000_000).expect("writer");

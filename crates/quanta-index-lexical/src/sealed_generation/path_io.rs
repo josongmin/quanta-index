@@ -76,12 +76,34 @@ pub(crate) fn entry_names_at(root: &File, child: Option<&OsStr>) -> io::Result<V
 }
 
 pub(crate) fn open_generation_dir_nofollow(root: &Path) -> io::Result<File> {
-    use rustix::fs::{Mode, OFlags, open};
+    use rustix::fs::{Mode, OFlags, open, openat};
 
     let directory_flags =
         OFlags::RDONLY | OFlags::CLOEXEC | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::NONBLOCK;
-    let descriptor = open(root, directory_flags, Mode::empty())
+    let family = root.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "generation has no family directory",
+        )
+    })?;
+    let generation = root.file_name().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "generation has no directory name",
+        )
+    })?;
+    // Opening the generation path directly protects only its final component.
+    // Pin the family first so a swapped family symlink cannot redirect the
+    // subsequent generation open outside the track root.
+    let family = open(family, directory_flags, Mode::empty())
         .map_err(|error| io::Error::from_raw_os_error(error.raw_os_error()))?;
+    let descriptor = openat(
+        &family,
+        Path::new(generation),
+        directory_flags,
+        Mode::empty(),
+    )
+    .map_err(|error| io::Error::from_raw_os_error(error.raw_os_error()))?;
     Ok(File::from(descriptor))
 }
 
@@ -176,31 +198,47 @@ mod path_tests {
     use std::path::Path;
 
     #[test]
+    fn generation_open_refuses_a_family_symlink() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let track = temp.path().join("track");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir_all(&track)?;
+        std::fs::create_dir_all(outside.join("g1"))?;
+        std::os::unix::fs::symlink(&outside, track.join("family"))?;
+
+        if super::open_generation_dir_nofollow(&track.join("family/g1")).is_ok() {
+            return Err("generation open followed a family symlink".into());
+        }
+        Ok(())
+    }
+
+    #[test]
     fn sealed_artifact_open_is_anchored_below_generation() -> Result<(), Box<dyn std::error::Error>>
     {
         let root = tempfile::tempdir()?;
         let outside = tempfile::tempdir()?;
-        std::fs::create_dir(root.path().join("text-authority"))?;
-        std::fs::write(root.path().join("text-authority/shard"), b"inside")?;
+        let generation = root.path().join("family/g1");
+        std::fs::create_dir_all(generation.join("text-authority"))?;
+        std::fs::write(generation.join("text-authority/shard"), b"inside")?;
         std::fs::write(outside.path().join("shard"), b"outside")?;
         let mut file =
-            super::open_regular_nofollow(root.path(), Path::new("text-authority/shard"))?;
+            super::open_regular_nofollow(&generation, Path::new("text-authority/shard"))?;
         let mut bytes = Vec::new();
         let _read = file.read_to_end(&mut bytes)?;
         if bytes != b"inside" {
             return Err("anchored open read unexpected content".into());
         }
 
-        std::fs::remove_file(root.path().join("text-authority/shard"))?;
-        std::fs::remove_dir(root.path().join("text-authority"))?;
-        std::os::unix::fs::symlink(outside.path(), root.path().join("text-authority"))?;
+        std::fs::remove_file(generation.join("text-authority/shard"))?;
+        std::fs::remove_dir(generation.join("text-authority"))?;
+        std::os::unix::fs::symlink(outside.path(), generation.join("text-authority"))?;
         let outside_shard = outside.path().join("shard");
         for relative in [
             Path::new("text-authority/shard"),
             Path::new("../shard"),
             outside_shard.as_path(),
         ] {
-            if super::open_regular_nofollow(root.path(), relative).is_ok() {
+            if super::open_regular_nofollow(&generation, relative).is_ok() {
                 return Err(
                     format!("untrusted artifact path was opened: {}", relative.display()).into(),
                 );
@@ -213,9 +251,11 @@ mod path_tests {
     fn optional_entry_sees_dangling_links_by_path_and_pinned_root()
     -> Result<(), Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
-        let link = root.path().join("repo-meta.cbor");
+        let generation = root.path().join("family/g1");
+        std::fs::create_dir_all(&generation)?;
+        let link = generation.join("repo-meta.cbor");
         let name = Path::new("repo-meta.cbor");
-        let opened = super::open_generation_dir_nofollow(root.path())?;
+        let opened = super::open_generation_dir_nofollow(&generation)?;
         if super::optional_entry_metadata(&link)?.is_some()
             || super::optional_entry_at(&opened, name)?
         {

@@ -389,7 +389,7 @@ impl QuarantineService {
                 entry,
                 ports,
                 pairs.iter().next().map(|(repo, revision)| (repo, revision)),
-                keys,
+                &keys,
             )
         })
     }
@@ -402,7 +402,7 @@ impl QuarantineService {
         entry: &QuarantinedGenerationV1,
         ports: &TrackPorts,
         locked_pair: Option<(&RepoId, &RevisionId)>,
-        keys: BTreeSet<SnapshotKey>,
+        keys: &BTreeSet<SnapshotKey>,
     ) -> Result<QuarantineDiscardOutcomeV1, CoreError> {
         if keys.iter().any(|key| {
             locked_pair
@@ -415,7 +415,7 @@ impl QuarantineService {
         }
         let mut retired = BTreeSet::new();
         let mut holders = 0usize;
-        for key in &keys {
+        for key in keys {
             let outcome = self.snapshots.retire(
                 entry.track,
                 key,
@@ -1169,7 +1169,9 @@ pub(crate) mod tests {
             let track_root = match track {
                 SearchPlaneTrackKind::Lexical => "/root/lexical",
                 SearchPlaneTrackKind::Semantic => "/root/semantic",
-                SearchPlaneTrackKind::Structural => unreachable!("only stored tracks are listed"),
+                SearchPlaneTrackKind::Structural => {
+                    return Err("unexpected structural fixture track".into());
+                }
             };
             let path = GenerationStorageKeyV1::for_repo_revision(&repo(), &revision())
                 .generation_dir(Path::new(track_root), generation);
@@ -1211,7 +1213,9 @@ pub(crate) mod tests {
             let discard = match track {
                 SearchPlaneTrackKind::Lexical => &doubles.lexical_discard,
                 SearchPlaneTrackKind::Semantic => &doubles.semantic_discard,
-                SearchPlaneTrackKind::Structural => unreachable!("only stored tracks are listed"),
+                SearchPlaneTrackKind::Structural => {
+                    return Err("unexpected structural fixture track".into());
+                }
             };
             assert!(
                 discard

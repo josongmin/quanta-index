@@ -600,6 +600,7 @@ pub trait quanta_index_core::domains::generation::QuarantinedGenerationDiscardPo
 pub fn quanta_index_core::domains::generation::QuarantinedGenerationDiscardPort::discard_quarantined_generation(&self, entry: &quanta_index_core::domains::generation::QuarantinedGenerationV1) -> core::result::Result<quanta_index_core::domains::generation::QuarantineDiscardOutcomeV1, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::domains::generation::QuarantinedGenerationDiscardPort::discard_quarantined_generation_with_settlement(&self, entry: &quanta_index_core::domains::generation::QuarantinedGenerationV1, on_absent: &dyn core::ops::function::Fn() -> core::result::Result<(), quanta_index_core::error::CoreError>) -> core::result::Result<quanta_index_core::domains::generation::QuarantineDiscardOutcomeV1, quanta_index_core::error::CoreError>
 pub trait quanta_index_core::domains::generation::SealedGenerationIdentityProbePort: core::marker::Send + core::marker::Sync
+pub fn quanta_index_core::domains::generation::SealedGenerationIdentityProbePort::inventory_sealed_generation_identity(&self, candidate: &quanta_index_contract::ipc::control::GenerationSnapshot) -> core::result::Result<bool, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::domains::generation::SealedGenerationIdentityProbePort::probe_sealed_generation_identity(&self, candidate: &quanta_index_contract::ipc::control::GenerationSnapshot) -> core::result::Result<(), quanta_index_core::error::CoreError>
 pub trait quanta_index_core::domains::generation::SealedGenerationReclaimPort: core::marker::Send + core::marker::Sync
 pub fn quanta_index_core::domains::generation::SealedGenerationReclaimPort::finish_interrupted_reclaims(&self) -> core::result::Result<quanta_index_core::domains::generation::FinishedReclaims, quanta_index_core::error::CoreError>
@@ -2496,6 +2497,10 @@ pub const quanta_index_core::domains::reclaim_area::RECLAIM_AREA_DIR_NAME: &str
 pub fn quanta_index_core::domains::reclaim_area::finish_interrupted_reclaims(track_root: &std::path::Path) -> core::result::Result<quanta_index_core::domains::generation::FinishedReclaims, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::domains::reclaim_area::reclaim_area(track_root: &std::path::Path) -> std::path::PathBuf
 pub fn quanta_index_core::domains::reclaim_area::reclaim_directory(track_root: &std::path::Path, generation_dir: &std::path::Path, entry_name: &str) -> core::result::Result<(), quanta_index_core::error::CoreError>
+pub fn quanta_index_core::domains::reclaim_area::reclaim_quarantined_directory(track_root: &std::path::Path, path: &std::path::Path) -> core::result::Result<(), quanta_index_core::error::CoreError>
+pub fn quanta_index_core::domains::reclaim_area::unique_inode_tree_bytes_below_track(track_root: &std::path::Path, path: &std::path::Path, skip: &dyn core::ops::function::Fn(&str) -> bool) -> core::result::Result<u64, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::domains::reclaim_area::unique_inode_tree_bytes_for_roots_below_track(track_root: &std::path::Path, roots: &[std::path::PathBuf], skip: &dyn core::ops::function::Fn(&str) -> bool) -> core::result::Result<(u64, alloc::vec::Vec<bool>), quanta_index_core::error::CoreError>
+pub fn quanta_index_core::domains::reclaim_area::unique_inode_tree_bytes_in_track(track_root: &std::path::Path, skip: &dyn core::ops::function::Fn(&str) -> bool) -> core::result::Result<u64, quanta_index_core::error::CoreError>
 pub mod quanta_index_core::domains::repomap
 pub struct quanta_index_core::domains::repomap::QuarantinedRepoMapFileV1
 pub quanta_index_core::domains::repomap::QuarantinedRepoMapFileV1::file_name: alloc::string::String
@@ -7858,6 +7863,7 @@ pub fn quanta_index_core::RepoTopicIngestPort::publish_batch(&self, batch: &quan
 pub trait quanta_index_core::RequestStageDiagnosticPortV1: core::fmt::Debug + core::marker::Send + core::marker::Sync
 pub fn quanta_index_core::RequestStageDiagnosticPortV1::record_provider_stage_v1(&self, stage: quanta_index_core::request_budget::RequestProviderStageV1)
 pub trait quanta_index_core::SealedGenerationIdentityProbePort: core::marker::Send + core::marker::Sync
+pub fn quanta_index_core::SealedGenerationIdentityProbePort::inventory_sealed_generation_identity(&self, candidate: &quanta_index_contract::ipc::control::GenerationSnapshot) -> core::result::Result<bool, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::SealedGenerationIdentityProbePort::probe_sealed_generation_identity(&self, candidate: &quanta_index_contract::ipc::control::GenerationSnapshot) -> core::result::Result<(), quanta_index_core::error::CoreError>
 pub trait quanta_index_core::SealedGenerationReclaimPort: core::marker::Send + core::marker::Sync
 pub fn quanta_index_core::SealedGenerationReclaimPort::finish_interrupted_reclaims(&self) -> core::result::Result<quanta_index_core::domains::generation::FinishedReclaims, quanta_index_core::error::CoreError>
@@ -7959,10 +7965,14 @@ pub fn quanta_index_core::now_unix_ms() -> u64
 pub fn quanta_index_core::owner_key_v1(embedding: &quanta_index_contract::channel::records::EmbeddingRecord) -> (&'static str, &'static str, &str)
 pub fn quanta_index_core::reclaim_area(track_root: &std::path::Path) -> std::path::PathBuf
 pub fn quanta_index_core::reclaim_directory(track_root: &std::path::Path, generation_dir: &std::path::Path, entry_name: &str) -> core::result::Result<(), quanta_index_core::error::CoreError>
+pub fn quanta_index_core::reclaim_quarantined_directory(track_root: &std::path::Path, path: &std::path::Path) -> core::result::Result<(), quanta_index_core::error::CoreError>
 pub fn quanta_index_core::require_complete_symbol_coverage(snapshot: core::option::Option<&quanta_index_contract::source_coverage::snapshot::FileCoverageSnapshot>, in_scope: impl core::ops::function::FnMut(&quanta_index_contract::source_coverage::SourceFileCoverage) -> core::result::Result<bool, quanta_index_core::error::CoreError>, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<(), quanta_index_core::error::CoreError>
 pub fn quanta_index_core::scrub_tree_commitment_v1(root: &std::path::Path, prefix: &str, committed: &[quanta_index_core::domains::generation::SealedArtifactCommitmentV1], start_artifact: u64, max_bytes: u64) -> core::io::error::Result<quanta_index_core::domains::generation::TreeScrubStepV1>
 pub fn quanta_index_core::sha256_of_file(path: &std::path::Path) -> core::io::error::Result<(u64, [u8; 32])>
 pub fn quanta_index_core::unique_inode_tree_bytes(roots: &[std::path::PathBuf], skip: &dyn core::ops::function::Fn(&str) -> bool) -> core::io::error::Result<u64>
+pub fn quanta_index_core::unique_inode_tree_bytes_below_track(track_root: &std::path::Path, path: &std::path::Path, skip: &dyn core::ops::function::Fn(&str) -> bool) -> core::result::Result<u64, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::unique_inode_tree_bytes_for_roots_below_track(track_root: &std::path::Path, roots: &[std::path::PathBuf], skip: &dyn core::ops::function::Fn(&str) -> bool) -> core::result::Result<(u64, alloc::vec::Vec<bool>), quanta_index_core::error::CoreError>
+pub fn quanta_index_core::unique_inode_tree_bytes_in_track(track_root: &std::path::Path, skip: &dyn core::ops::function::Fn(&str) -> bool) -> core::result::Result<u64, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::unknown_generation_error(plane: &str, pin: &quanta_index_contract_base::query::pin::GenerationPin, track: quanta_index_contract::ipc::control::SearchPlaneTrackKind) -> quanta_index_core::error::CoreError
 pub fn quanta_index_core::validate_internal_fetch_size(fetch: u32) -> core::result::Result<u32, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::validate_pinned_generation_v1(plane: &str, pin: &quanta_index_contract_base::query::pin::GenerationPin, track: quanta_index_contract::ipc::control::SearchPlaneTrackKind, readiness: quanta_index_core::domains::generation::PinnedGenerationReadinessV1) -> core::result::Result<(), quanta_index_core::error::CoreError>
