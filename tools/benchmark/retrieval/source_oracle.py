@@ -148,6 +148,17 @@ class SourceOracleIndex:
             {"path": path, "file_sha256": self.files[path][1], "grade": 3} for path in sorted(paths)
         ]
 
+    def go_name_spans(self, query: str) -> list[tuple[str, int, int]]:
+        """Return local-name bytes for validating the separate gold line projection."""
+        if not isinstance(query, str) or IDENTIFIER.fullmatch(query) is None:
+            raise SourceOracleError("source oracle requires an ASCII bare identifier")
+        return [
+            (path, name_start, name_end)
+            for path, name_start, name_end, _definition_start, _definition_end in self._index_go_declarations().get(
+                query.encode("ascii"), []
+            )
+        ]
+
     def first_match(self, contract: str, query: str) -> tuple[str, int, int] | None:
         """Choose the first source match by path and byte offset for a diagnostic gold line."""
         if not isinstance(query, str) or IDENTIFIER.fullmatch(query) is None:

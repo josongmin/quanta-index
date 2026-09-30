@@ -1029,7 +1029,7 @@ def validate_suite(
                 f"gold path contradicts source oracle: {task_id}",
             )
             oracle_spans = (
-                oracle_index.expected_rows(source_oracle.GO_EXACT_LOCAL_NAME, query, "symbol")
+                oracle_index.go_name_spans(query)
                 if task["source_oracle"]["contract"] == source_oracle.GO_EXACT_LOCAL_NAME
                 else []
             )
@@ -1046,10 +1046,10 @@ def validate_suite(
             if "source_oracle" in task:
                 if oracle_spans:
                     matched = any(
-                        row["path"] == label["path"]
-                        and label["start_byte"] <= row["start_byte"]
-                        and row["end_byte"] <= label["end_byte"]
-                        for row in oracle_spans
+                        path == label["path"]
+                        and label["start_byte"] <= name_start
+                        and name_end <= label["end_byte"]
+                        for path, name_start, name_end in oracle_spans
                     )
                 else:
                     raw = source.file(label["path"])[0]

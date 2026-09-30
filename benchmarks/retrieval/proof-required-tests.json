@@ -394,6 +394,7 @@
     "tools.ci.tests.test_retrieval_benchmark.test_worker_template_runs_against_stub_semble",
     "tools.ci.tests.test_retrieval_benchmark.test_zero_grade_cannot_be_gold_in_suite_schema_or_evaluator",
     "tools.ci.tests.test_source_oracle_suite.test_go_indexed_local_name_includes_interface_methods_and_aliases",
+    "tools.ci.tests.test_source_oracle_suite.test_go_source_oracle_symbol_judgment_matches_definition_not_shared_context",
     "tools.ci.tests.test_source_oracle_suite.test_source_oracle_builder_emits_single_route_blind_suites_and_bound_manifest",
     "tools.ci.tests.test_source_oracle_suite.test_source_oracle_builder_rebinds_answerability_and_gold_per_mode",
     "tools.ci.tests.test_source_oracle_suite.test_source_oracle_builder_refuses_claims_and_replaces_baseline_gold",
