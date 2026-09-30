@@ -7,7 +7,7 @@
 //! thirty-two files of one chunk each, so the semantic build takes the batch
 //! as four windows instead of one. The scrape must count those windows and
 //! report a resident peak no wider than the window bound; after a seal, an
-//! activation and a process restart, every one of the thirty-two rows must
+//! activation and an in-process daemon runtime restart, every one of the thirty-two rows must
 //! come back as the first candidate for its own text.
 //!
 //! Oracles are outside the accounting under test: the expected window count
@@ -144,7 +144,7 @@ fn a_batch_streams_through_bounded_windows_and_every_row_survives_a_restart() ->
         .into());
     }
 
-    // A restart: the sealed generation is opened from durable state, and
+    // A runtime restart in this process: the sealed generation is reopened from durable state, and
     // every row streamed in is served as its own nearest neighbour.
     let mut rt = rt.reopen();
     for (index, id) in ids.iter().enumerate() {

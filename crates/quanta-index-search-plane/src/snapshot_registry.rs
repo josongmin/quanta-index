@@ -29,25 +29,27 @@
 //!   after eviction or oversize refusal, so retirement sees live handles
 //!   without retaining their bytes. GC must consult [`SnapshotRegistry::retire`]
 //!   before deleting a generation.
-//! - **Retirement fences flights.** A generation retired while an open for
-//!   it is in flight is not admitted when that open lands: `retire` marks
-//!   the flight and defers physical deletion without blocking. The landing
-//!   handle is dropped and the opener and waiters see `UNKNOWN_GENERATION`.
+//! - **Retirement fences opens and proofs.** A generation retired while a
+//!   query open or an external activation proof is in flight cannot be
+//!   admitted when it lands. New opens are refused until the physical owner
+//!   completes quarantine or removal. Retirement defers deletion until
+//!   existing proofs release their permits.
 //!
 //! A resident handle is never invalidated by ingest: a sealed generation is
 //! immutable (every publish that names one is refused `GENERATION_IMMUTABLE`
 //! before a byte is written, QI-BB-030), so it cannot go stale. The only
-//! way out of residency besides eviction is retirement, when GC reaps the
-//! generation or a repair replaces a damaged track. Activation and restart
+//! way out of residency besides eviction is retirement or an inventory
+//! contradiction that forces the next acquire through the physical door.
+//! Activation and restart
 //! promote the handles they proved into the registry
-//! ([`SnapshotRegistry::promote`]) so the first query after either is a
+//! ([`SnapshotRegistry::begin_promotion`]) so the first query after either is a
 //! hit, not a second full open.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
-use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId};
+use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId, SearchPlaneTrackKind};
 use quanta_index_core::domains::lexical::LexicalSearcher;
 use quanta_index_core::domains::semantic::SemanticSearcher;
 
@@ -92,10 +94,11 @@ pub struct SnapshotRegistryPolicy {
 }
 
 impl SnapshotRegistryPolicy {
-    /// Deployment default: sixteen handles, one `GiB` of resident estimate.
+    /// Deployment default per track: sixteen handles, 512 MiB of resident
+    /// estimate. The lexical and semantic registries together reserve 1 GiB.
     pub const DEFAULT: Self = Self {
         max_entries: 16,
-        max_resident_bytes: 1 << 30,
+        max_resident_bytes: 1 << 29,
     };
 
     /// Build a policy; zero in either position is a configuration defect,
@@ -171,9 +174,11 @@ pub struct SnapshotRegistryStats {
     /// Handles served but not retained because they exceeded the byte budget.
     pub oversize_uncached: u64,
     /// Handles removed because their generation was retired (reaped or
-    /// repaired). A sealed generation is immutable, so nothing else ever
-    /// removes a resident handle.
+    /// repaired).
     pub retirements: u64,
+    /// Resident handles discarded because the authority and adapter inventory
+    /// could not re-confirm their sealed identity.
+    pub inventory_invalidations: u64,
     /// Cold opens that returned a typed failure.
     pub open_failures: u64,
     /// Opens in flight that a retirement fenced; each landed refused and
@@ -203,6 +208,21 @@ pub enum SnapshotRetireOutcome {
     StillReferenced { holders: usize },
 }
 
+/// The lifecycle operation that owns an admission fence. Repeated attempts
+/// by the same serialized owner reuse its fence; another owner cannot finish
+/// it on that owner's behalf.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum SnapshotRetirementOwner {
+    SearchCorpusRepair,
+    SearchCorpusRetention,
+    AdapterQuarantine,
+    OrphanDiscard,
+    DoorFinding,
+    IntegrityScrub,
+    #[cfg(test)]
+    Test,
+}
+
 struct Entry<H: ?Sized> {
     handle: Arc<H>,
     resident_bytes: u64,
@@ -212,6 +232,10 @@ struct Entry<H: ?Sized> {
 struct RegistryState<H: ?Sized> {
     resident: BTreeMap<SnapshotKey, Entry<H>>,
     in_flight: BTreeMap<SnapshotKey, Arc<Flight<H>>>,
+    pending_promotions: BTreeMap<SnapshotKey, BTreeMap<u64, bool>>,
+    retiring: BTreeMap<SnapshotKey, BTreeSet<SnapshotRetirementOwner>>,
+    publishing: BTreeSet<SnapshotKey>,
+    next_promotion_id: u64,
     tracked: LiveHandleTracker<SnapshotKey, H>,
     tick: u64,
     stats: SnapshotRegistryStats,
@@ -298,7 +322,6 @@ impl<H: ?Sized> RegistryState<H> {
             .resident_bytes
             .saturating_sub(removed.resident_bytes);
         self.stats.entries = self.resident.len();
-        self.stats.retirements = self.stats.retirements.saturating_add(1);
         Some(removed.handle)
     }
 }
@@ -309,6 +332,76 @@ pub struct SnapshotRegistry<H: ?Sized> {
     state: Mutex<RegistryState<H>>,
 }
 
+/// One external proof registered before its opener runs. Retirement fences
+/// this permit even when the proof has not produced a handle yet.
+pub(crate) struct SnapshotPromotionPermit<'a, H: ?Sized> {
+    registry: &'a SnapshotRegistry<H>,
+    key: SnapshotKey,
+    id: u64,
+}
+
+/// Held from physical seal preflight through the durable authority record.
+/// A different lifecycle owner cannot remove this key while it is held.
+pub(crate) struct SnapshotPublicationPermit<'a, H: ?Sized> {
+    registry: &'a SnapshotRegistry<H>,
+    key: SnapshotKey,
+}
+
+impl<H: ?Sized> Drop for SnapshotPublicationPermit<'_, H> {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.registry.state.lock() {
+            let _held = state.publishing.remove(&self.key);
+        }
+    }
+}
+
+impl<H: ?Sized> Drop for SnapshotPromotionPermit<'_, H> {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.registry.state.lock()
+            && let Some(pending) = state.pending_promotions.get_mut(&self.key)
+        {
+            let _registered = pending.remove(&self.id);
+            if pending.is_empty() {
+                let _empty = state.pending_promotions.remove(&self.key);
+            }
+        }
+    }
+}
+
+impl<H: ?Sized + Send + Sync + 'static> SnapshotPromotionPermit<'_, H> {
+    /// Admit only the handle proved under this permit. A retirement between
+    /// proof start and this call refuses the handle instead of reviving it.
+    pub(crate) fn promote(
+        self,
+        opened: &OpenedSnapshot<H>,
+    ) -> Result<SnapshotPromoteOutcome, CoreError> {
+        let mut state = self.registry.lock()?;
+        let Some(fenced) = state
+            .pending_promotions
+            .get(&self.key)
+            .and_then(|pending| pending.get(&self.id))
+            .copied()
+        else {
+            return Err(CoreError::Storage(
+                "snapshot promotion permit was not registered".into(),
+            ));
+        };
+        if fenced {
+            return Err(retired_generation(&self.key));
+        }
+        let pending = state
+            .pending_promotions
+            .get_mut(&self.key)
+            .ok_or_else(|| CoreError::Storage("snapshot promotion permit disappeared".into()))?;
+        let _registered = pending.remove(&self.id);
+        if pending.is_empty() {
+            let _empty = state.pending_promotions.remove(&self.key);
+        }
+        state.stats.promotions = state.stats.promotions.saturating_add(1);
+        Ok(state.admit(self.registry.policy, self.key.clone(), opened))
+    }
+}
+
 impl<H: ?Sized + Send + Sync + 'static> SnapshotRegistry<H> {
     #[must_use]
     pub const fn new(policy: SnapshotRegistryPolicy) -> Self {
@@ -317,6 +410,10 @@ impl<H: ?Sized + Send + Sync + 'static> SnapshotRegistry<H> {
             state: Mutex::new(RegistryState {
                 resident: BTreeMap::new(),
                 in_flight: BTreeMap::new(),
+                pending_promotions: BTreeMap::new(),
+                retiring: BTreeMap::new(),
+                publishing: BTreeSet::new(),
+                next_promotion_id: 0,
                 tracked: LiveHandleTracker::new(),
                 tick: 0,
                 stats: SnapshotRegistryStats {
@@ -326,6 +423,7 @@ impl<H: ?Sized + Send + Sync + 'static> SnapshotRegistry<H> {
                     evictions: 0,
                     oversize_uncached: 0,
                     retirements: 0,
+                    inventory_invalidations: 0,
                     open_failures: 0,
                     fenced_in_flight: 0,
                     await_interruptions: 0,
@@ -336,6 +434,36 @@ impl<H: ?Sized + Send + Sync + 'static> SnapshotRegistry<H> {
                 },
             }),
         }
+    }
+
+    /// Claim a key before a materializer inspects or mutates its physical
+    /// generation. This is non-blocking so no pair/adapter lock can be held
+    /// while waiting on another lifecycle owner.
+    pub(crate) fn begin_publication(
+        &self,
+        key: &SnapshotKey,
+    ) -> Result<SnapshotPublicationPermit<'_, H>, CoreError> {
+        let mut state = self.lock()?;
+        if state.publishing.contains(key)
+            || state.retiring.get(key).is_some_and(|owners| {
+                owners.iter().any(|owner| {
+                    matches!(
+                        owner,
+                        SnapshotRetirementOwner::SearchCorpusRetention
+                            | SnapshotRetirementOwner::AdapterQuarantine
+                            | SnapshotRetirementOwner::OrphanDiscard
+                    )
+                })
+            })
+        {
+            return Err(publication_conflict(key));
+        }
+        let _new = state.publishing.insert(key.clone());
+        drop(state);
+        Ok(SnapshotPublicationPermit {
+            registry: self,
+            key: key.clone(),
+        })
     }
 
     #[must_use]
@@ -367,6 +495,9 @@ impl<H: ?Sized + Send + Sync + 'static> SnapshotRegistry<H> {
     ) -> Result<SnapshotAcquired<H>, CoreError> {
         let flight = {
             let mut state = self.lock()?;
+            if state.retiring.contains_key(key) {
+                return Err(retired_generation(key));
+            }
             if let Some(handle) = state.touch(key) {
                 state.stats.hits = state.stats.hits.saturating_add(1);
                 return Ok(SnapshotAcquired {
@@ -406,7 +537,7 @@ impl<H: ?Sized + Send + Sync + 'static> SnapshotRegistry<H> {
                 let _removed = state.in_flight.remove(key);
                 state.stats.cold_open_nanos = state.stats.cold_open_nanos.saturating_add(elapsed);
                 match opened {
-                    Ok(_) if flight.is_fenced() => Err(retired_in_flight(key)),
+                    Ok(_) if flight.is_fenced() => Err(retired_generation(key)),
                     Ok(opened) => {
                         let _retained = state.admit(self.policy, key.clone(), &opened);
                         Ok(opened.handle)
@@ -440,41 +571,73 @@ impl<H: ?Sized + Send + Sync + 'static> SnapshotRegistry<H> {
         Ok(())
     }
 
-    /// Retain a handle the caller proved outside the registry (activation,
-    /// restart) so the next acquire of `key` is a hit. Byte-accounted like
-    /// any admitted handle: it may evict, and an oversize handle is not
-    /// retained. A flight in progress for the key is left alone; its
-    /// landing re-admits the same generation.
-    pub fn promote(
+    /// Register an activation or restart proof before opening the generation.
+    /// The returned permit must stay alive through its promotion attempt.
+    pub(crate) fn begin_promotion(
         &self,
         key: &SnapshotKey,
-        opened: &OpenedSnapshot<H>,
-    ) -> Result<SnapshotPromoteOutcome, CoreError> {
+    ) -> Result<SnapshotPromotionPermit<'_, H>, CoreError> {
         let mut state = self.lock()?;
-        state.stats.promotions = state.stats.promotions.saturating_add(1);
-        Ok(state.admit(self.policy, key.clone(), opened))
+        if state.retiring.contains_key(key) {
+            return Err(retired_generation(key));
+        }
+        let id = state.next_promotion_id.checked_add(1).ok_or_else(|| {
+            CoreError::Storage("snapshot promotion permit sequence exhausted".into())
+        })?;
+        state.next_promotion_id = id;
+        let _prior = state
+            .pending_promotions
+            .entry(key.clone())
+            .or_default()
+            .insert(id, false);
+        drop(state);
+        Ok(SnapshotPromotionPermit {
+            registry: self,
+            key: key.clone(),
+            id,
+        })
     }
 
-    /// Drop the registry's reference to `key`, fence any open in flight for
-    /// it, and report whether anything else still holds the handle.
+    /// Drop the registry's reference to `key`, fence current and new opens,
+    /// and report whether anything else still holds the handle.
     ///
     /// A fenced flight defers deletion without waiting for its opener. When
     /// it lands its handle is refused and dropped rather than admitted.
     /// Live handles remain visible even after eviction or oversize refusal.
     /// Callers intending to delete bytes must not proceed on `StillReferenced`.
-    pub fn retire(&self, key: &SnapshotKey) -> Result<SnapshotRetireOutcome, CoreError> {
+    /// The admission fence remains until `finish_retirement` is called after
+    /// the physical owner makes this old generation unopenable.
+    pub fn retire(
+        &self,
+        key: &SnapshotKey,
+        owner: SnapshotRetirementOwner,
+    ) -> Result<SnapshotRetireOutcome, CoreError> {
         let mut state = self.lock()?;
+        if state.publishing.contains(key) && owner != SnapshotRetirementOwner::SearchCorpusRepair {
+            return Err(publication_conflict(key));
+        }
+        let _new = state.retiring.entry(key.clone()).or_default().insert(owner);
         let removed = state.remove(key);
+        if removed.is_some() {
+            state.stats.retirements = state.stats.retirements.saturating_add(1);
+        }
         let fenced = state.in_flight.get(key).cloned();
         if let Some(flight) = &fenced
             && flight.fence()
         {
             state.stats.fenced_in_flight = state.stats.fenced_in_flight.saturating_add(1);
         }
+        let pending_proofs = state.pending_promotions.get_mut(key).map_or(0, |pending| {
+            for fenced in pending.values_mut() {
+                *fenced = true;
+            }
+            pending.len()
+        });
         let holders = state
             .tracked
             .external_holders(key, removed.as_ref())
-            .saturating_add(usize::from(fenced.is_some()));
+            .saturating_add(usize::from(fenced.is_some()))
+            .saturating_add(pending_proofs);
         drop(state);
         Ok(if holders > 0 {
             SnapshotRetireOutcome::StillReferenced { holders }
@@ -485,17 +648,164 @@ impl<H: ?Sized + Send + Sync + 'static> SnapshotRegistry<H> {
         })
     }
 
+    /// Release the admission fence after the owner has durably quarantined,
+    /// deleted, or replaced the physical generation. A failed or deferred
+    /// reclaim leaves the key fenced until its retry completes.
+    pub(crate) fn finish_retirement(
+        &self,
+        key: &SnapshotKey,
+        owner: SnapshotRetirementOwner,
+    ) -> Result<(), CoreError> {
+        let mut state = self.lock()?;
+        let Some(owners) = state.retiring.get_mut(key) else {
+            return Err(CoreError::InvalidContract(
+                "snapshot retirement has no admission fence to finish".into(),
+            ));
+        };
+        if !owners.remove(&owner) {
+            return Err(CoreError::InvalidContract(format!(
+                "snapshot retirement has no {owner:?} admission fence to finish"
+            )));
+        }
+        if owners.is_empty() {
+            let _empty = state.retiring.remove(key);
+        }
+        drop(state);
+        Ok(())
+    }
+
+    /// A later complete scrub may prove that an earlier receipt-write error
+    /// did not leave a corrupt generation. Settle only that scrub's fence;
+    /// another lifecycle owner's fence must remain in force.
+    fn finish_scrub_fence_after_clean_proof(&self, key: &SnapshotKey) -> Result<bool, CoreError> {
+        let mut state = self.lock()?;
+        let Some(owners) = state.retiring.get_mut(key) else {
+            return Ok(false);
+        };
+        let settled = owners.remove(&SnapshotRetirementOwner::IntegrityScrub);
+        if owners.is_empty() {
+            let _empty = state.retiring.remove(key);
+        }
+        Ok(settled)
+    }
+
+    /// Settle the deletion owner and proof-only fences for the old physical
+    /// incarnation. A second deletion owner may still be waiting for the
+    /// adapter lock; its fence must survive until its own callback runs.
+    fn finish_removed_generation(
+        &self,
+        key: &SnapshotKey,
+        owner: SnapshotRetirementOwner,
+    ) -> Result<(), CoreError> {
+        let mut state = self.lock()?;
+        let Some(owners) = state.retiring.get_mut(key) else {
+            return Err(CoreError::InvalidContract(
+                "removed generation has no admission fence to finish".into(),
+            ));
+        };
+        if !owners.remove(&owner) {
+            return Err(CoreError::InvalidContract(format!(
+                "removed generation has no {owner:?} admission fence to finish"
+            )));
+        }
+        // These owners only quarantine an incarnation. Once the adapter
+        // confirms its namespace absent, their pending receipt cannot keep
+        // a replacement fenced or affect any other physical deletion.
+        let _scrub = owners.remove(&SnapshotRetirementOwner::IntegrityScrub);
+        let _door = owners.remove(&SnapshotRetirementOwner::DoorFinding);
+        if owners.is_empty() {
+            let _empty = state.retiring.remove(key);
+        }
+        Ok(())
+    }
+
     pub fn stats(&self) -> Result<SnapshotRegistryStats, CoreError> {
         Ok(self.lock()?.stats)
+    }
+
+    /// Keys that may still have a resident, opening, or externally held
+    /// handle, or whose physical publication is in progress. Quarantine uses
+    /// this with the ledger's retained keys before removing a directory whose
+    /// identity may no longer decode. A publisher need not have reached its
+    /// durable authority record yet.
+    pub(crate) fn known_keys(&self) -> Result<BTreeSet<SnapshotKey>, CoreError> {
+        let state = self.lock()?;
+        Ok(state
+            .resident
+            .keys()
+            .chain(state.in_flight.keys())
+            .chain(state.pending_promotions.keys())
+            .chain(state.retiring.keys())
+            .chain(state.publishing.iter())
+            .chain(state.tracked.keys())
+            .cloned()
+            .collect())
+    }
+
+    /// Keys whose next query could reuse a handle or an ongoing cold open.
+    /// Pending activation proofs have their own physical door; a generation
+    /// being retired is already fenced by its physical owner.
+    pub(crate) fn revalidation_keys(&self) -> Result<BTreeSet<SnapshotKey>, CoreError> {
+        let state = self.lock()?;
+        Ok(state
+            .resident
+            .keys()
+            .chain(state.in_flight.keys())
+            .filter(|key| !state.retiring.contains_key(*key))
+            .cloned()
+            .collect())
+    }
+
+    /// Discard cached admission after an inventory contradiction. This is
+    /// deliberately not physical retirement: the next opener must prove the
+    /// current disk identity, and a transient scan failure can recover without
+    /// leaving an owner fence behind. Existing query pins remain valid for
+    /// their request lifetime; an opening flight and pending proof are fenced.
+    pub(crate) fn invalidate_for_revalidation(&self, key: &SnapshotKey) -> Result<bool, CoreError> {
+        let mut state = self.lock()?;
+        if state.retiring.contains_key(key) {
+            return Ok(false);
+        }
+        let removed = state.remove(key);
+        if removed.is_some() {
+            state.stats.inventory_invalidations =
+                state.stats.inventory_invalidations.saturating_add(1);
+        }
+        let flight_fenced = state
+            .in_flight
+            .get(key)
+            .is_some_and(|flight| flight.fence());
+        if flight_fenced {
+            state.stats.fenced_in_flight = state.stats.fenced_in_flight.saturating_add(1);
+        }
+        let pending = state.pending_promotions.get_mut(key).is_some_and(|proofs| {
+            for fenced in proofs.values_mut() {
+                *fenced = true;
+            }
+            !proofs.is_empty()
+        });
+        Ok(removed.is_some() || flight_fenced || pending)
     }
 }
 
 /// The refusal a flight lands with when its key was retired while it ran.
-fn retired_in_flight(key: &SnapshotKey) -> CoreError {
+fn retired_generation(key: &SnapshotKey) -> CoreError {
     CoreError::Typed {
         code: quanta_index_contract::SearchPlaneErrorCodeV2::UnknownGeneration,
         message: format!(
-            "snapshot registry: generation {} of repo={} revision={} was retired while its open was in flight; the durable authority no longer retains it and nothing was admitted",
+            "snapshot registry: generation {} of repo={} revision={} is retired or was retired during its open; no handle was admitted",
+            key.generation.get(),
+            key.repo_id.as_str(),
+            key.revision_id.as_str(),
+        ),
+    }
+}
+
+fn publication_conflict(key: &SnapshotKey) -> CoreError {
+    CoreError::Typed {
+        code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusGenerationConflict,
+        message: format!(
+            "generation {} of repo={} revision={} is being published or physically retired; retry after the lifecycle owner finishes",
             key.generation.get(),
             key.repo_id.as_str(),
             key.revision_id.as_str(),
@@ -507,12 +817,19 @@ fn retired_in_flight(key: &SnapshotKey) -> CoreError {
 /// side (which acquires), its activation path (which promotes) and its GC
 /// (which retires).
 ///
-/// One policy governs both: the byte budget is a process-level resource and
-/// splitting it per track would only move the misconfiguration.
+/// The policy applies independently to each track. The process envelope must
+/// account for both bounds, even if only one track is currently resident.
 #[derive(Clone)]
 pub struct SnapshotRegistries {
     pub lexical: Arc<SnapshotRegistry<dyn LexicalSearcher>>,
     pub semantic: Arc<SnapshotRegistry<dyn SemanticSearcher>>,
+}
+
+/// Both tracks remain protected until the complete pair's authority record
+/// has been written or its failed publication has stopped.
+pub(crate) struct SnapshotPublicationPairPermit<'a> {
+    _lexical: SnapshotPublicationPermit<'a, dyn LexicalSearcher>,
+    _semantic: SnapshotPublicationPermit<'a, dyn SemanticSearcher>,
 }
 
 impl SnapshotRegistries {
@@ -521,6 +838,86 @@ impl SnapshotRegistries {
         Self {
             lexical: Arc::new(SnapshotRegistry::new(policy)),
             semantic: Arc::new(SnapshotRegistry::new(policy)),
+        }
+    }
+
+    pub(crate) fn begin_publication(
+        &self,
+        key: &SnapshotKey,
+    ) -> Result<SnapshotPublicationPairPermit<'_>, CoreError> {
+        let lexical = self.lexical.begin_publication(key)?;
+        let semantic = self.semantic.begin_publication(key)?;
+        Ok(SnapshotPublicationPairPermit {
+            _lexical: lexical,
+            _semantic: semantic,
+        })
+    }
+
+    pub(crate) fn retire(
+        &self,
+        track: SearchPlaneTrackKind,
+        key: &SnapshotKey,
+        owner: SnapshotRetirementOwner,
+    ) -> Result<SnapshotRetireOutcome, CoreError> {
+        match track {
+            SearchPlaneTrackKind::Lexical => self.lexical.retire(key, owner),
+            SearchPlaneTrackKind::Semantic => self.semantic.retire(key, owner),
+            SearchPlaneTrackKind::Structural => Err(CoreError::InvalidContract(
+                "structural generation has no snapshot registry retirement".into(),
+            )),
+        }
+    }
+
+    /// Complete the track's admission fence only after its physical owner
+    /// made the retired generation unopenable or removed it.
+    pub fn finish_retirement(
+        &self,
+        track: SearchPlaneTrackKind,
+        key: &SnapshotKey,
+        owner: SnapshotRetirementOwner,
+    ) -> Result<(), CoreError> {
+        match track {
+            SearchPlaneTrackKind::Lexical => self.lexical.finish_retirement(key, owner),
+            SearchPlaneTrackKind::Semantic => self.semantic.finish_retirement(key, owner),
+            SearchPlaneTrackKind::Structural => Err(CoreError::InvalidContract(
+                "structural generation has no snapshot registry retirement".into(),
+            )),
+        }
+    }
+
+    /// Release only an outstanding integrity-scrub fence after a complete
+    /// clean scrub. A generation without that fence needs no settlement.
+    pub fn finish_scrub_fence_after_clean_proof(
+        &self,
+        track: SearchPlaneTrackKind,
+        key: &SnapshotKey,
+    ) -> Result<bool, CoreError> {
+        match track {
+            SearchPlaneTrackKind::Lexical => self.lexical.finish_scrub_fence_after_clean_proof(key),
+            SearchPlaneTrackKind::Semantic => {
+                self.semantic.finish_scrub_fence_after_clean_proof(key)
+            }
+            SearchPlaneTrackKind::Structural => Err(CoreError::InvalidContract(
+                "structural generation has no integrity-scrub retirement".into(),
+            )),
+        }
+    }
+
+    /// Complete only the named physical deletion owner's fence in the
+    /// adapter's on-absent callback, while its lifecycle lock excludes a
+    /// replacement seal.
+    pub(crate) fn finish_removed_generation(
+        &self,
+        track: SearchPlaneTrackKind,
+        key: &SnapshotKey,
+        owner: SnapshotRetirementOwner,
+    ) -> Result<(), CoreError> {
+        match track {
+            SearchPlaneTrackKind::Lexical => self.lexical.finish_removed_generation(key, owner),
+            SearchPlaneTrackKind::Semantic => self.semantic.finish_removed_generation(key, owner),
+            SearchPlaneTrackKind::Structural => Err(CoreError::InvalidContract(
+                "structural generation has no snapshot registry retirement".into(),
+            )),
         }
     }
 }
@@ -536,6 +933,10 @@ fn registry_metric_points(track: &str, stats: &SnapshotRegistryStats) -> Vec<Met
         MetricPointV1::counter(name("evictions_total"), stats.evictions),
         MetricPointV1::counter(name("oversize_uncached_total"), stats.oversize_uncached),
         MetricPointV1::counter(name("retirements_total"), stats.retirements),
+        MetricPointV1::counter(
+            name("inventory_invalidations_total"),
+            stats.inventory_invalidations,
+        ),
         MetricPointV1::counter(name("open_failures_total"), stats.open_failures),
         MetricPointV1::counter(name("fenced_in_flight_total"), stats.fenced_in_flight),
         MetricPointV1::counter(name("await_interruptions_total"), stats.await_interruptions),
@@ -573,7 +974,7 @@ mod tests {
 
     use super::{
         OpenedSnapshot, SnapshotKey, SnapshotPromoteOutcome, SnapshotRegistry,
-        SnapshotRegistryPolicy, SnapshotRetireOutcome,
+        SnapshotRegistryPolicy, SnapshotRetireOutcome, SnapshotRetirementOwner,
     };
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -867,7 +1268,7 @@ mod tests {
         let retirer = {
             let registry = Arc::clone(&registry);
             thread::spawn(move || {
-                let outcome = registry.retire(&key(9));
+                let outcome = registry.retire(&key(9), SnapshotRetirementOwner::Test);
                 let _sent = retired_tx.send(outcome);
             })
         };
@@ -882,7 +1283,7 @@ mod tests {
         }
         let promptly_retired = retired_rx.recv_timeout(Duration::from_millis(500));
         let repeated = match &promptly_retired {
-            Ok(_) => Some(registry.retire(&key(9))?),
+            Ok(_) => Some(registry.retire(&key(9), SnapshotRetirementOwner::Test)?),
             Err(_) => None,
         };
         let _released = release.wait();
@@ -906,11 +1307,24 @@ mod tests {
         if stats.entries != 0 || stats.fenced_in_flight != 1 || opens.load(Ordering::SeqCst) != 1 {
             return Err(format!("a fenced flight must admit nothing: {stats:?}").into());
         }
-        if registry.retire(&key(9))? != SnapshotRetireOutcome::NotResident {
+        if registry.retire(&key(9), SnapshotRetirementOwner::Test)?
+            != SnapshotRetireOutcome::NotResident
+        {
             return Err("settled fenced flight did not clear its deferred retirement".into());
         }
-        // Nothing is resident and nothing is fenced any more: the next
-        // acquire opens afresh.
+        let refused = get(&registry, &key(9), || {
+            let _count = opens.fetch_add(1, Ordering::SeqCst);
+            Ok(opened(&key(9), 1))
+        });
+        if !matches!(
+            refused,
+            Err(CoreError::Typed { code, .. }) if code == UNKNOWN_GENERATION_CODE
+        ) || opens.load(Ordering::SeqCst) != 1
+        {
+            return Err("retired key started a new cold open before physical settlement".into());
+        }
+        // The owner has now removed or replaced the old physical generation.
+        registry.finish_retirement(&key(9), SnapshotRetirementOwner::Test)?;
         let reopened = get(&registry, &key(9), || {
             let _count = opens.fetch_add(1, Ordering::SeqCst);
             Ok(opened(&key(9), 1))
@@ -935,9 +1349,12 @@ mod tests {
         if panicked.is_ok() {
             return Err("the injected cold-open panic must propagate".into());
         }
-        if registry.retire(&key)? != SnapshotRetireOutcome::NotResident {
+        if registry.retire(&key, SnapshotRetirementOwner::Test)?
+            != SnapshotRetireOutcome::NotResident
+        {
             return Err("a panicked open must not leave a flight for retirement to wait on".into());
         }
+        registry.finish_retirement(&key, SnapshotRetirementOwner::Test)?;
         let acquired = registry.acquire(
             &key,
             &RequestBudgetV1::for_duration(Duration::from_millis(50)),
@@ -954,7 +1371,9 @@ mod tests {
     fn a_promoted_handle_makes_the_next_acquire_a_hit() -> TestResult {
         let registry = SnapshotRegistry::new(policy(4, 1_000));
         let promoted = opened(&key(2), 40);
-        if registry.promote(&key(2), &promoted)? != SnapshotPromoteOutcome::Retained {
+        if registry.begin_promotion(&key(2))?.promote(&promoted)?
+            != SnapshotPromoteOutcome::Retained
+        {
             return Err("a handle within budget must be retained".into());
         }
         let served = get(&registry, &key(2), || {
@@ -973,12 +1392,190 @@ mod tests {
         }
         // Promotion is byte-accounted: an oversize handle is not retained.
         let oversize = opened(&key(3), 1_001);
-        if registry.promote(&key(3), &oversize)? != SnapshotPromoteOutcome::Oversize {
+        if registry.begin_promotion(&key(3))?.promote(&oversize)?
+            != SnapshotPromoteOutcome::Oversize
+        {
             return Err("an oversize handle must not be retained".into());
         }
         if registry.stats()?.entries != 1 {
             return Err("an oversize promotion changed residency".into());
         }
+        Ok(())
+    }
+
+    #[test]
+    fn retirement_fences_an_external_proof_before_it_can_promote() -> TestResult {
+        let registry = Arc::new(SnapshotRegistry::new(policy(4, 1_000)));
+        let ready = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let proof_registry = Arc::clone(&registry);
+        let proof_ready = Arc::clone(&ready);
+        let proof_release = Arc::clone(&release);
+        let proof = thread::spawn(move || {
+            let candidate = key(11);
+            let permit = proof_registry.begin_promotion(&candidate)?;
+            let handle = opened(&candidate, 40);
+            let _ready = proof_ready.wait();
+            let _release = proof_release.wait();
+            permit.promote(&handle)
+        });
+        let _ready = ready.wait();
+        if registry.retire(&key(11), SnapshotRetirementOwner::Test)?
+            != (SnapshotRetireOutcome::StillReferenced { holders: 1 })
+        {
+            let _release = release.wait();
+            let _unexpected_promotion = proof.join().map_err(|_panic| "proof panicked")??;
+            return Err("retirement did not hold the external proof's generation".into());
+        }
+        let _release = release.wait();
+        match proof.join().map_err(|_panic| "proof panicked")? {
+            Err(CoreError::Typed { code, .. }) if code == UNKNOWN_GENERATION_CODE => {}
+            other => return Err(format!("retired proof was promoted: {other:?}").into()),
+        }
+        if registry.stats()?.entries != 0
+            || registry.retire(&key(11), SnapshotRetirementOwner::Test)?
+                != SnapshotRetireOutcome::NotResident
+        {
+            return Err("fenced proof remained resident or retained a permit".into());
+        }
+        if !matches!(
+            registry.begin_promotion(&key(11)),
+            Err(CoreError::Typed { code, .. }) if code == UNKNOWN_GENERATION_CODE
+        ) {
+            return Err("retiring key registered a new external proof".into());
+        }
+        // A later, independently proved replacement of the same key may be
+        // admitted after the physical owner has completed the retirement.
+        registry.finish_retirement(&key(11), SnapshotRetirementOwner::Test)?;
+        let replacement = opened(&key(11), 30);
+        if registry.begin_promotion(&key(11))?.promote(&replacement)?
+            != SnapshotPromoteOutcome::Retained
+        {
+            return Err("fresh proof could not promote after retirement".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn completing_one_retirement_does_not_release_another_owners_fence() -> TestResult {
+        let registry = SnapshotRegistry::new(policy(4, 1_000));
+        let candidate = key(12);
+        let _repair = registry.retire(&candidate, SnapshotRetirementOwner::SearchCorpusRepair)?;
+        let _quarantine =
+            registry.retire(&candidate, SnapshotRetirementOwner::AdapterQuarantine)?;
+        registry.finish_retirement(&candidate, SnapshotRetirementOwner::AdapterQuarantine)?;
+        if !matches!(
+            registry.begin_promotion(&candidate),
+            Err(CoreError::Typed { code, .. }) if code == UNKNOWN_GENERATION_CODE
+        ) {
+            return Err("another owner's unfinished repair fence was cleared".into());
+        }
+        registry.finish_retirement(&candidate, SnapshotRetirementOwner::SearchCorpusRepair)?;
+        let replacement = opened(&candidate, 1);
+        if registry
+            .begin_promotion(&candidate)?
+            .promote(&replacement)?
+            != SnapshotPromoteOutcome::Retained
+        {
+            return Err("the last owner did not release the admission fence".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn publication_claim_excludes_deletion_until_the_authority_boundary() -> TestResult {
+        let registry: SnapshotRegistry<Handle> = SnapshotRegistry::new(policy(4, 1_000));
+        let candidate = key(25);
+        let publication = registry.begin_publication(&candidate)?;
+        for owner in [
+            SnapshotRetirementOwner::OrphanDiscard,
+            SnapshotRetirementOwner::AdapterQuarantine,
+            SnapshotRetirementOwner::SearchCorpusRetention,
+            SnapshotRetirementOwner::IntegrityScrub,
+        ] {
+            if !matches!(
+                registry.retire(&candidate, owner),
+                Err(CoreError::Typed { code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusGenerationConflict, .. })
+            ) {
+                return Err(format!("{owner:?} retired a publishing generation").into());
+            }
+        }
+        let _repair = registry.retire(&candidate, SnapshotRetirementOwner::SearchCorpusRepair)?;
+        registry
+            .finish_removed_generation(&candidate, SnapshotRetirementOwner::SearchCorpusRepair)?;
+        if registry
+            .retire(&candidate, SnapshotRetirementOwner::OrphanDiscard)
+            .is_ok()
+        {
+            return Err("repair settlement cleared the live publication claim".into());
+        }
+        drop(publication);
+        let _orphan = registry.retire(&candidate, SnapshotRetirementOwner::OrphanDiscard)?;
+        registry.finish_removed_generation(&candidate, SnapshotRetirementOwner::OrphanDiscard)?;
+        Ok(())
+    }
+
+    #[test]
+    fn publication_waits_for_an_existing_deletion_owner() -> TestResult {
+        let registry: SnapshotRegistry<Handle> = SnapshotRegistry::new(policy(4, 1_000));
+        let candidate = key(26);
+        let _orphan = registry.retire(&candidate, SnapshotRetirementOwner::OrphanDiscard)?;
+        if registry.begin_publication(&candidate).is_ok() {
+            return Err("publication started after orphan discard acquired its fence".into());
+        }
+        registry.finish_removed_generation(&candidate, SnapshotRetirementOwner::OrphanDiscard)?;
+        let _publication = registry.begin_publication(&candidate)?;
+        Ok(())
+    }
+
+    #[test]
+    fn one_physical_deletion_does_not_settle_another_delete_owner() -> TestResult {
+        let registry: SnapshotRegistry<Handle> = SnapshotRegistry::new(policy(4, 1_000));
+        let candidate = key(27);
+        let _repair = registry.retire(&candidate, SnapshotRetirementOwner::SearchCorpusRepair)?;
+        let _orphan = registry.retire(&candidate, SnapshotRetirementOwner::OrphanDiscard)?;
+        registry
+            .finish_removed_generation(&candidate, SnapshotRetirementOwner::SearchCorpusRepair)?;
+        if registry.begin_publication(&candidate).is_ok() {
+            return Err("repair callback released an outstanding orphan deletion".into());
+        }
+        registry.finish_removed_generation(&candidate, SnapshotRetirementOwner::OrphanDiscard)?;
+        let _publication = registry.begin_publication(&candidate)?;
+        Ok(())
+    }
+
+    #[test]
+    fn clean_scrub_settlement_releases_only_the_scrub_owner() -> TestResult {
+        let snapshots = super::SnapshotRegistries::new(policy(4, 1_000));
+        let candidate = key(13);
+        let _scrub = snapshots
+            .semantic
+            .retire(&candidate, SnapshotRetirementOwner::IntegrityScrub)?;
+        let _repair = snapshots
+            .semantic
+            .retire(&candidate, SnapshotRetirementOwner::SearchCorpusRepair)?;
+        if !snapshots.finish_scrub_fence_after_clean_proof(
+            quanta_index_contract::SearchPlaneTrackKind::Semantic,
+            &candidate,
+        )? {
+            return Err("clean proof did not settle the scrub fence".into());
+        }
+        if snapshots.finish_scrub_fence_after_clean_proof(
+            quanta_index_contract::SearchPlaneTrackKind::Semantic,
+            &candidate,
+        )? {
+            return Err("a second clean proof settled a fence it did not own".into());
+        }
+        if !matches!(
+            snapshots.semantic.begin_promotion(&candidate),
+            Err(CoreError::Typed { code, .. }) if code == UNKNOWN_GENERATION_CODE
+        ) {
+            return Err("clean scrub released another owner's repair fence".into());
+        }
+        snapshots
+            .semantic
+            .finish_retirement(&candidate, SnapshotRetirementOwner::SearchCorpusRepair)?;
+        let _fresh = snapshots.semantic.begin_promotion(&candidate)?;
         Ok(())
     }
 
@@ -1000,7 +1597,9 @@ mod tests {
         if stats.entries != 3 || stats.evictions != 1 || stats.resident_bytes != 90 {
             return Err(format!("entry-limit eviction drifted: {stats:?}").into());
         }
-        if registry.retire(&key(2))? != SnapshotRetireOutcome::NotResident {
+        if registry.retire(&key(2), SnapshotRetirementOwner::Test)?
+            != SnapshotRetireOutcome::NotResident
+        {
             return Err("evicted key without a live handle was not retired".into());
         }
         // Byte limit: a 60-byte entry needs 90 + 60 <= 100 -> evicts until it fits.
@@ -1031,11 +1630,15 @@ mod tests {
     fn retirement_defers_for_uncached_oversize_handle() -> TestResult {
         let registry = SnapshotRegistry::new(policy(1, 100));
         let held = get(&registry, &key(6), || Ok(opened(&key(6), 101)))?;
-        if registry.retire(&key(6))? != (SnapshotRetireOutcome::StillReferenced { holders: 1 }) {
+        if registry.retire(&key(6), SnapshotRetirementOwner::Test)?
+            != (SnapshotRetireOutcome::StillReferenced { holders: 1 })
+        {
             return Err("retirement treated a live oversize handle as absent".into());
         }
         drop(held);
-        if registry.retire(&key(6))? != SnapshotRetireOutcome::NotResident {
+        if registry.retire(&key(6), SnapshotRetirementOwner::Test)?
+            != SnapshotRetireOutcome::NotResident
+        {
             return Err("retirement retained an already dropped oversize handle".into());
         }
         Ok(())
@@ -1048,15 +1651,21 @@ mod tests {
         let evicting = get(&registry, &key(7), || Ok(opened(&key(7), 1)))?;
         drop(evicting);
         let new = get(&registry, &key(6), || Ok(opened(&key(6), 1)))?;
-        if registry.retire(&key(6))? != (SnapshotRetireOutcome::StillReferenced { holders: 2 }) {
+        if registry.retire(&key(6), SnapshotRetirementOwner::Test)?
+            != (SnapshotRetireOutcome::StillReferenced { holders: 2 })
+        {
             return Err("retirement missed the evicted incarnation of the same key".into());
         }
         drop(old);
-        if registry.retire(&key(6))? != (SnapshotRetireOutcome::StillReferenced { holders: 1 }) {
+        if registry.retire(&key(6), SnapshotRetirementOwner::Test)?
+            != (SnapshotRetireOutcome::StillReferenced { holders: 1 })
+        {
             return Err("retirement lost the newer live incarnation".into());
         }
         drop(new);
-        if registry.retire(&key(6))? != SnapshotRetireOutcome::NotResident {
+        if registry.retire(&key(6), SnapshotRetirementOwner::Test)?
+            != SnapshotRetireOutcome::NotResident
+        {
             return Err("retirement retained dead incarnations".into());
         }
         Ok(())
@@ -1090,7 +1699,7 @@ mod tests {
         if held.key != key(1) {
             return Err("evicted handle became unusable".into());
         }
-        match registry.retire(&key(1))? {
+        match registry.retire(&key(1), SnapshotRetirementOwner::Test)? {
             SnapshotRetireOutcome::StillReferenced { holders: 1 } => {}
             reported @ (SnapshotRetireOutcome::Released
             | SnapshotRetireOutcome::NotResident
@@ -1099,13 +1708,16 @@ mod tests {
             }
         }
         drop(held);
-        if registry.retire(&key(1))? != SnapshotRetireOutcome::NotResident {
+        if registry.retire(&key(1), SnapshotRetirementOwner::Test)?
+            != SnapshotRetireOutcome::NotResident
+        {
             return Err("dropped evicted handle still blocked retirement".into());
         }
+        registry.finish_retirement(&key(1), SnapshotRetirementOwner::Test)?;
         let held_two = get(&registry, &key(2), || {
             Err(CoreError::Storage("must hit".into()))
         })?;
-        match registry.retire(&key(2))? {
+        match registry.retire(&key(2), SnapshotRetirementOwner::Test)? {
             SnapshotRetireOutcome::StillReferenced { holders: 2 } => {}
             reported @ (SnapshotRetireOutcome::NotResident
             | SnapshotRetireOutcome::Released
@@ -1115,8 +1727,9 @@ mod tests {
         }
         drop(held_two);
         drop(other_handle);
+        registry.finish_retirement(&key(2), SnapshotRetirementOwner::Test)?;
         let reopened = get(&registry, &key(2), || Ok(opened(&key(2), 1)))?;
-        match registry.retire(&key(2))? {
+        match registry.retire(&key(2), SnapshotRetirementOwner::Test)? {
             SnapshotRetireOutcome::StillReferenced { holders: 1 } => {}
             reported @ (SnapshotRetireOutcome::NotResident
             | SnapshotRetireOutcome::Released
@@ -1127,7 +1740,7 @@ mod tests {
         drop(reopened);
         let fresh = get(&registry, &key(3), || Ok(opened(&key(3), 1)))?;
         drop(fresh);
-        match registry.retire(&key(3))? {
+        match registry.retire(&key(3), SnapshotRetirementOwner::Test)? {
             SnapshotRetireOutcome::Released => Ok(()),
             reported @ (SnapshotRetireOutcome::NotResident
             | SnapshotRetireOutcome::StillReferenced { .. }) => {

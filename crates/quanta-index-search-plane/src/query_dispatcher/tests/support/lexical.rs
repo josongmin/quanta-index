@@ -21,7 +21,7 @@ pub(crate) fn stub_artifact_identity(
     repo_metadata: RepoMetadataAuthoritiesV1,
 ) -> LexicalArtifactIdentityV1 {
     LexicalArtifactIdentityV1 {
-        manifest_digest: "stub-lexical-digest".to_string(),
+        manifest_digest: "manifest-digest-9".to_string(),
         normalizer: TextNormalizerVersionV1 { major: 2, minor: 0 },
         repo_metadata,
     }
@@ -69,7 +69,7 @@ impl LexicalIndexOpenPort for RejectLexicalOpener {
 pub(crate) struct StubLexicalSearcher {
     pub(crate) results: Vec<LexicalCandidate>,
     /// The sealed digest the handle claims to have proved; `None` claims
-    /// the fixture's `stub-lexical-digest`.
+    /// the fixture's `manifest-digest-9`.
     pub(crate) manifest_digest: Option<String>,
 }
 
@@ -250,6 +250,9 @@ impl LexicalIndexOpenPort for StubLexicalOpener {
 
 #[derive(Default)]
 pub(crate) struct RecordingLexicalState {
+    /// The physical seal reported by the opened handle. The default matches
+    /// the shared ready-ledger fixture; tests can inject a conflicting seal.
+    pub(crate) manifest_digest: Option<String>,
     pub(crate) primitive_queries: Vec<LqQuery>,
     pub(crate) search_top_ks: Vec<u32>,
     /// The boundary every text page was asked to continue after.
@@ -303,8 +306,14 @@ impl LexicalSearcher for RecordingLexicalSearcher {
         let repo_metadata = guard
             .repo_metadata
             .unwrap_or(RepoMetadataAuthoritiesV1::ALL);
+        let manifest_digest = guard
+            .manifest_digest
+            .clone()
+            .unwrap_or_else(|| "manifest-digest-9".to_string());
         drop(guard);
-        stub_artifact_identity(repo_metadata)
+        let mut identity = stub_artifact_identity(repo_metadata);
+        identity.manifest_digest = manifest_digest;
+        identity
     }
 
     fn search_constrained(

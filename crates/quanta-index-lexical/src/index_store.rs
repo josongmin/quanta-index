@@ -11,12 +11,13 @@ use crate::{DURABLE_WRITE_TEMPORARY_MARKER, LEXICAL_SEALED_IDENTITY_FILE_NAME, S
 use quanta_index_contract::GenerationSnapshot;
 use quanta_index_core::CoreError;
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::io::Write;
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use tantivy::Index;
 
 const MAX_SEALED_IDENTITY_BYTES: usize = 4096;
+static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Open an existing generation's index strictly, never creating or
 /// repairing one, with the tokenizers registered.
@@ -28,7 +29,40 @@ const MAX_SEALED_IDENTITY_BYTES: usize = 4096;
 /// build restricts through missing — is refused typed, never served with
 /// queries it cannot answer.
 pub(crate) fn open_sealed_index(generation_dir: &Path) -> Result<Index, CoreError> {
-    let index = Index::open_in_dir(generation_dir).map_err(|error| {
+    let root = crate::sealed_generation::open_generation_dir_nofollow(generation_dir).map_err(
+        |error| {
+            CoreError::Storage(format!(
+                "lexical: open sealed generation directory {}: {error}",
+                generation_dir.display()
+            ))
+        },
+    )?;
+    let directory = crate::sealed_generation::SealedIndexDirectory::from_opened(root);
+    finish_open_sealed_index(generation_dir, directory)
+}
+
+pub(crate) fn open_sealed_index_at(
+    generation_dir: &Path,
+    root: &File,
+    sealed_meta: Vec<u8>,
+) -> Result<Index, CoreError> {
+    let directory = crate::sealed_generation::SealedIndexDirectory::from_opened_with_meta(
+        root.try_clone().map_err(|error| {
+            CoreError::Storage(format!(
+                "lexical: clone sealed generation directory {}: {error}",
+                generation_dir.display()
+            ))
+        })?,
+        sealed_meta,
+    );
+    finish_open_sealed_index(generation_dir, directory)
+}
+
+fn finish_open_sealed_index(
+    generation_dir: &Path,
+    directory: crate::sealed_generation::SealedIndexDirectory,
+) -> Result<Index, CoreError> {
+    let index = Index::open(directory).map_err(|error| {
         CoreError::Storage(format!(
             "lexical: strict open existing generation {}: {error}",
             generation_dir.display()
@@ -95,7 +129,6 @@ pub(crate) fn write_atomic_durable(
     bytes: &[u8],
     label: &str,
 ) -> Result<(), CoreError> {
-    static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
     let parent = path.parent().ok_or_else(|| {
         CoreError::Storage(format!(
             "lexical: {label} path has no parent: {}",
@@ -156,6 +189,74 @@ pub(crate) fn write_atomic_durable(
         })
 }
 
+/// Publish a receipt inside the generation whose directory descriptor was
+/// authenticated. A later pathname replacement cannot redirect the receipt
+/// into another generation.
+pub(crate) fn write_atomic_durable_at(
+    root: &File,
+    generation_dir: &Path,
+    name: &str,
+    bytes: &[u8],
+    label: &str,
+) -> Result<(), CoreError> {
+    use rustix::fs::{Mode, OFlags, openat, renameat};
+
+    let mut components = Path::new(name).components();
+    if name.contains('/')
+        || !matches!(components.next(), Some(Component::Normal(_)))
+        || components.next().is_some()
+    {
+        return Err(CoreError::InvalidContract(format!(
+            "lexical: {label} name is not a top-level generation entry"
+        )));
+    }
+
+    let temporary = format!(
+        ".{name}{DURABLE_WRITE_TEMPORARY_MARKER}{}-{}",
+        std::process::id(),
+        TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    );
+    let mut file = File::from(
+        openat(
+            root,
+            temporary.as_str(),
+            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::RUSR | Mode::WUSR,
+        )
+        .map_err(|error| {
+            CoreError::Storage(format!(
+                "lexical: create {label} temporary in {}: {error}",
+                generation_dir.display()
+            ))
+        })?,
+    );
+    file.write_all(bytes).map_err(|error| {
+        CoreError::Storage(format!(
+            "lexical: write {label} temporary in {}: {error}",
+            generation_dir.display()
+        ))
+    })?;
+    file.sync_all().map_err(|error| {
+        CoreError::Storage(format!(
+            "lexical: fsync {label} temporary in {}: {error}",
+            generation_dir.display()
+        ))
+    })?;
+    drop(file);
+    renameat(root, temporary.as_str(), root, name).map_err(|error| {
+        CoreError::Storage(format!(
+            "lexical: publish {label} in {}: {error}",
+            generation_dir.display()
+        ))
+    })?;
+    root.sync_all().map_err(|error| {
+        CoreError::Storage(format!(
+            "lexical: fsync {label} generation {}: {error}",
+            generation_dir.display()
+        ))
+    })
+}
+
 pub(crate) fn persist_lexical_sealed_identity(
     generation_dir: &Path,
     identity: &GenerationSnapshot,
@@ -201,13 +302,65 @@ pub(crate) fn sidecar_corrupt(generation_dir: &Path, name: &str, reason: &str) -
 pub(crate) fn read_lexical_sealed_identity(
     generation_dir: &Path,
 ) -> Result<GenerationSnapshot, CoreError> {
+    let root = crate::sealed_generation::open_generation_dir_nofollow(generation_dir).map_err(
+        |error| {
+            CoreError::Storage(format!(
+                "lexical: open sealed generation directory {}: {error}",
+                generation_dir.display()
+            ))
+        },
+    )?;
+    read_lexical_sealed_identity_at(generation_dir, &root)
+}
+
+/// A sealed identity entry is absent only when no directory entry exists.
+/// A dangling symlink or special file still fences an incomplete discard.
+pub(crate) fn sealed_identity_entry_present(generation_dir: &Path) -> Result<bool, CoreError> {
     let path = lexical_sealed_identity_path(generation_dir);
-    let file = File::open(&path).map_err(|error| {
-        if error.kind() == std::io::ErrorKind::NotFound {
+    crate::sealed_generation::optional_entry_metadata(&path)
+        .map(|metadata| metadata.is_some())
+        .map_err(|error| {
+            CoreError::Storage(format!(
+                "lexical: inspect sealed identity {}: {error}",
+                path.display()
+            ))
+        })
+}
+
+pub(crate) fn read_lexical_sealed_identity_at(
+    generation_dir: &Path,
+    root: &File,
+) -> Result<GenerationSnapshot, CoreError> {
+    let path = lexical_sealed_identity_path(generation_dir);
+    let present = crate::sealed_generation::optional_entry_at(
+        root,
+        Path::new(LEXICAL_SEALED_IDENTITY_FILE_NAME),
+    )
+    .map_err(|error| {
+        CoreError::Storage(format!(
+            "lexical: inspect sealed identity {}: {error}",
+            path.display()
+        ))
+    })?;
+    if !present {
+        return Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityIncomplete,
+            message: format!(
+                "lexical: incomplete generation has no sealed identity at {}",
+                path.display()
+            ),
+        });
+    }
+    let mut file = crate::sealed_generation::open_regular_below(
+        root,
+        Path::new(LEXICAL_SEALED_IDENTITY_FILE_NAME),
+    )
+    .map_err(|error| {
+        if crate::sealed_generation::is_unsafe_artifact_path(&error) {
             CoreError::Typed {
-                code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityIncomplete,
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
                 message: format!(
-                    "lexical: incomplete generation has no sealed identity at {}",
+                    "lexical: sealed identity {} is not a regular file within its generation",
                     path.display()
                 ),
             }
@@ -222,20 +375,29 @@ pub(crate) fn read_lexical_sealed_identity(
     // SHA-256 digest. A larger sidecar is not a valid identity; cap the read
     // so a damaged file cannot make the maintenance liveness probe allocate
     // without bound.
-    let mut bytes = Vec::new();
-    let _read_bytes = file.take(4097).read_to_end(&mut bytes).map_err(|error| {
-        CoreError::Storage(format!(
-            "lexical: read sealed generation identity {}: {error}",
-            path.display()
-        ))
-    })?;
-    if bytes.len() > MAX_SEALED_IDENTITY_BYTES {
+    let on_disk = file
+        .metadata()
+        .map_err(|error| {
+            CoreError::Storage(format!(
+                "lexical: inspect sealed generation identity {}: {error}",
+                path.display()
+            ))
+        })?
+        .len();
+    if !matches!(usize::try_from(on_disk), Ok(bytes) if bytes <= MAX_SEALED_IDENTITY_BYTES) {
         return Err(CoreError::Storage(format!(
             "lexical: sealed generation identity {} exceeds {MAX_SEALED_IDENTITY_BYTES} bytes",
             path.display()
         )));
     }
-    ciborium::from_reader(bytes.as_slice()).map_err(|error| {
+    let bytes = crate::sealed_generation::read_opened_bounded(&mut file, MAX_SEALED_IDENTITY_BYTES)
+        .map_err(|error| {
+            CoreError::Storage(format!(
+                "lexical: read sealed generation identity {}: {error}",
+                path.display()
+            ))
+        })?;
+    crate::channel_payloads::decode_cbor_exact(bytes.as_slice()).map_err(|error| {
         CoreError::Storage(format!(
             "lexical: decode sealed generation identity {}: {error}",
             path.display()
@@ -263,7 +425,12 @@ pub(crate) fn validate_lexical_sealed_identity(
 
 #[cfg(test)]
 mod sealed_identity_probe_tests {
-    use super::{lexical_sealed_identity_path, read_lexical_sealed_identity};
+    use super::{
+        lexical_sealed_identity_path, read_lexical_sealed_identity, read_lexical_sealed_identity_at,
+    };
+    use quanta_index_contract::{
+        GenerationSnapshot, ManifestGeneration, RepoId, RevisionId, SearchPlaneTrackKind,
+    };
     use quanta_index_core::CoreError;
 
     #[test]
@@ -276,5 +443,110 @@ mod sealed_identity_probe_tests {
         assert!(
             matches!(error, CoreError::Storage(message) if message.contains("exceeds 4096 bytes"))
         );
+    }
+
+    #[test]
+    fn sealed_identity_rejects_trailing_cbor() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let identity = GenerationSnapshot {
+            repo_id: RepoId::new("repo")?,
+            revision_id: RevisionId::new("revision")?,
+            track: SearchPlaneTrackKind::Lexical,
+            manifest_generation: ManifestGeneration::new(1),
+            manifest_digest: "digest".into(),
+        };
+        let mut bytes = crate::channel_payloads::encode_cbor(&identity, "identity test")?;
+        bytes.push(0xff);
+        std::fs::write(lexical_sealed_identity_path(temp.path()), bytes)?;
+        match read_lexical_sealed_identity(temp.path()) {
+            Err(CoreError::Storage(message)) if message.contains("trailing CBOR bytes") => Ok(()),
+            other => Err(format!("trailing identity bytes were admitted: {other:?}").into()),
+        }
+    }
+
+    #[test]
+    fn opened_identity_does_not_follow_a_replaced_generation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let parent = tempfile::tempdir()?;
+        let generation = parent.path().join("generation");
+        std::fs::create_dir(&generation)?;
+        let original = GenerationSnapshot {
+            repo_id: RepoId::new("repo")?,
+            revision_id: RevisionId::new("revision")?,
+            track: SearchPlaneTrackKind::Lexical,
+            manifest_generation: ManifestGeneration::new(1),
+            manifest_digest: "shared-digest".into(),
+        };
+        std::fs::write(
+            lexical_sealed_identity_path(&generation),
+            crate::channel_payloads::encode_cbor(&original, "identity test")?,
+        )?;
+        let opened = crate::sealed_generation::open_generation_dir_nofollow(&generation)?;
+        std::fs::rename(&generation, parent.path().join("old-generation"))?;
+        std::fs::create_dir(&generation)?;
+        let mut replacement = original.clone();
+        replacement.manifest_generation = ManifestGeneration::new(2);
+        std::fs::write(
+            lexical_sealed_identity_path(&generation),
+            crate::channel_payloads::encode_cbor(&replacement, "identity test")?,
+        )?;
+        if read_lexical_sealed_identity_at(&generation, &opened)? != original
+            || read_lexical_sealed_identity(&generation)? != replacement
+        {
+            return Err("identity reader followed a replacement generation".into());
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fifo_and_symlink_identity_are_refused_without_opening_their_targets() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let temp = tempfile::tempdir().expect("fixture generation directory");
+        let identity = lexical_sealed_identity_path(temp.path());
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&identity)
+                .status()
+                .expect("create FIFO identity")
+                .success()
+        );
+        let generation = temp.path().to_path_buf();
+        let (sender, receiver) = mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let refused = matches!(
+                read_lexical_sealed_identity(&generation),
+                Err(CoreError::Typed {
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
+                    ..
+                })
+            );
+            sender.send(refused).expect("report identity refusal");
+        });
+        let fifo_result = receiver.recv_timeout(Duration::from_secs(5));
+        if matches!(fifo_result, Err(mpsc::RecvTimeoutError::Timeout)) {
+            // A broken blocking reader must be released so the test process
+            // reports a bounded failure instead of hanging the whole suite.
+            drop(
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(&identity)
+                    .expect("unblock FIFO reader"),
+            );
+        }
+        reader.join().expect("identity reader thread");
+        assert!(matches!(fifo_result, Ok(true)));
+        std::fs::remove_file(&identity).expect("remove FIFO");
+        let outside = tempfile::NamedTempFile::new().expect("outside identity");
+        std::os::unix::fs::symlink(outside.path(), &identity).expect("create identity symlink");
+        assert!(matches!(
+            read_lexical_sealed_identity(temp.path()),
+            Err(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
+                ..
+            })
+        ));
     }
 }

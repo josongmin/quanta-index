@@ -20,6 +20,7 @@ crate quanta_index_core
 │   │   ├── enum IncompleteGenerationDiscardOutcomeV1: pub
 │   │   ├── trait IncompleteGenerationDiscardPort: pub
 │   │   ├── struct InventoriedSealedGenerationV1: pub
+│   │   ├── enum OpenCommittedError: pub(self)
 │   │   ├── struct PinnedGenerationReadinessV1: pub
 │   │   ├── enum QuarantineDiscardOutcomeV1: pub
 │   │   ├── trait QuarantinedGenerationDiscardPort: pub
@@ -71,6 +72,7 @@ crate quanta_index_core
 │   │   ├── enum IntegrityScrubOutcomeV1: pub
 │   │   ├── struct IntegrityScrubPolicyV1: pub
 │   │   ├── trait IntegrityScrubPort: pub
+│   │   ├── struct IntegrityScrubProgressV1: pub
 │   │   └── struct IntegrityScrubReportV1: pub
 │   ├── mod lexical: pub
 │   │   ├── mod collection_budget: pub(self)
@@ -112,6 +114,7 @@ crate quanta_index_core
 │   │   │   ├── trait RepoTopicIngestPort: pub
 │   │   │   ├── trait SearchCorpusBatchBuildPort: pub
 │   │   │   ├── trait SearchCorpusIngestPort: pub
+│   │   │   ├── enum SearchCorpusPreflightPhaseV1: pub
 │   │   │   └── type SymbolSearchPageV1: pub
 │   │   ├── mod query_plan: pub(self)
 │   │   │   ├── enum LexicalEndpoint: pub
@@ -270,5 +273,6 @@ crate quanta_index_core
 │   ├── struct RequestBudgetV1: pub
 │   ├── struct RequestCorrelationV1: pub
 │   ├── enum RequestProviderStageV1: pub
-│   └── trait RequestStageDiagnosticPortV1: pub
+│   ├── trait RequestStageDiagnosticPortV1: pub
+│   └── struct SemanticWorkLedgerV1: pub(self)
 └── mod timeref: pub

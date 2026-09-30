@@ -598,17 +598,20 @@ pub trait quanta_index_core::domains::generation::IncompleteGenerationDiscardPor
 pub fn quanta_index_core::domains::generation::IncompleteGenerationDiscardPort::discard_incomplete_generation(&self, candidate: &quanta_index_contract::ipc::control::GenerationSnapshot) -> core::result::Result<quanta_index_core::domains::generation::IncompleteGenerationDiscardOutcomeV1, quanta_index_core::error::CoreError>
 pub trait quanta_index_core::domains::generation::QuarantinedGenerationDiscardPort: core::marker::Send + core::marker::Sync
 pub fn quanta_index_core::domains::generation::QuarantinedGenerationDiscardPort::discard_quarantined_generation(&self, entry: &quanta_index_core::domains::generation::QuarantinedGenerationV1) -> core::result::Result<quanta_index_core::domains::generation::QuarantineDiscardOutcomeV1, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::domains::generation::QuarantinedGenerationDiscardPort::discard_quarantined_generation_with_settlement(&self, entry: &quanta_index_core::domains::generation::QuarantinedGenerationV1, on_absent: &dyn core::ops::function::Fn() -> core::result::Result<(), quanta_index_core::error::CoreError>) -> core::result::Result<quanta_index_core::domains::generation::QuarantineDiscardOutcomeV1, quanta_index_core::error::CoreError>
 pub trait quanta_index_core::domains::generation::SealedGenerationIdentityProbePort: core::marker::Send + core::marker::Sync
 pub fn quanta_index_core::domains::generation::SealedGenerationIdentityProbePort::probe_sealed_generation_identity(&self, candidate: &quanta_index_contract::ipc::control::GenerationSnapshot) -> core::result::Result<(), quanta_index_core::error::CoreError>
 pub trait quanta_index_core::domains::generation::SealedGenerationReclaimPort: core::marker::Send + core::marker::Sync
 pub fn quanta_index_core::domains::generation::SealedGenerationReclaimPort::finish_interrupted_reclaims(&self) -> core::result::Result<quanta_index_core::domains::generation::FinishedReclaims, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::domains::generation::SealedGenerationReclaimPort::measure_sealed_generations(&self, repo_id: &quanta_index_contract_base::ids::RepoId, revision_id: &quanta_index_contract_base::ids::RevisionId, generations: &alloc::collections::btree::set::BTreeSet<quanta_index_contract_base::ids::ManifestGeneration>) -> core::result::Result<quanta_index_core::domains::generation::SealedGenerationBytesV1, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::domains::generation::SealedGenerationReclaimPort::reclaim_sealed_generation(&self, retired: &quanta_index_contract::ipc::control::GenerationSnapshot) -> core::result::Result<quanta_index_core::domains::generation::SealedGenerationReclaimOutcomeV1, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::domains::generation::SealedGenerationReclaimPort::reclaim_sealed_generation_with_settlement(&self, retired: &quanta_index_contract::ipc::control::GenerationSnapshot, on_absent: &dyn core::ops::function::Fn() -> core::result::Result<(), quanta_index_core::error::CoreError>) -> core::result::Result<quanta_index_core::domains::generation::SealedGenerationReclaimOutcomeV1, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::domains::generation::SealedGenerationReclaimPort::sealed_generations_for_pair(&self, repo_id: &quanta_index_contract_base::ids::RepoId, revision_id: &quanta_index_contract_base::ids::RevisionId) -> core::result::Result<alloc::vec::Vec<quanta_index_contract::ipc::control::GenerationSnapshot>, quanta_index_core::error::CoreError>
 pub trait quanta_index_core::domains::generation::SealedGenerationScanPort: core::marker::Send + core::marker::Sync
 pub fn quanta_index_core::domains::generation::SealedGenerationScanPort::inventory_sealed_generations(&self) -> core::result::Result<quanta_index_core::domains::generation::SealedGenerationInventoryV1, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::domains::generation::commit_tree_inheriting_v1(root: &std::path::Path, prefix: &str, base: core::option::Option<(&std::path::Path, &[quanta_index_core::domains::generation::SealedArtifactCommitmentV1])>) -> core::io::error::Result<quanta_index_core::domains::generation::TreeCommitmentV1>
 pub fn quanta_index_core::domains::generation::commit_tree_v1(root: &std::path::Path, prefix: &str) -> core::io::error::Result<alloc::vec::Vec<quanta_index_core::domains::generation::SealedArtifactCommitmentV1>>
+pub fn quanta_index_core::domains::generation::hash_committed_step_opened_v1(open: &dyn core::ops::function::Fn(&str) -> core::io::error::Result<std::fs::File>, committed: &[quanta_index_core::domains::generation::SealedArtifactCommitmentV1], start_artifact: u64, max_bytes: u64) -> core::io::error::Result<quanta_index_core::domains::generation::TreeScrubStepV1>
 pub fn quanta_index_core::domains::generation::hash_committed_step_v1(resolve: &dyn core::ops::function::Fn(&str) -> core::io::error::Result<std::path::PathBuf>, committed: &[quanta_index_core::domains::generation::SealedArtifactCommitmentV1], start_artifact: u64, max_bytes: u64) -> core::io::error::Result<quanta_index_core::domains::generation::TreeScrubStepV1>
 pub fn quanta_index_core::domains::generation::scrub_tree_commitment_v1(root: &std::path::Path, prefix: &str, committed: &[quanta_index_core::domains::generation::SealedArtifactCommitmentV1], start_artifact: u64, max_bytes: u64) -> core::io::error::Result<quanta_index_core::domains::generation::TreeScrubStepV1>
 pub fn quanta_index_core::domains::generation::sha256_of_file(path: &std::path::Path) -> core::io::error::Result<(u64, [u8; 32])>
@@ -1177,6 +1180,23 @@ impl core::marker::Unpin for quanta_index_core::domains::integrity::IntegrityScr
 impl core::marker::UnsafeUnpin for quanta_index_core::domains::integrity::IntegrityScrubPolicyV1
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_core::domains::integrity::IntegrityScrubPolicyV1
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_core::domains::integrity::IntegrityScrubPolicyV1
+pub struct quanta_index_core::domains::integrity::IntegrityScrubProgressV1
+impl quanta_index_core::domains::integrity::IntegrityScrubProgressV1
+pub fn quanta_index_core::domains::integrity::IntegrityScrubProgressV1::clear(&mut self)
+pub fn quanta_index_core::domains::integrity::IntegrityScrubProgressV1::clear_if_invalidated(&mut self, invalidated: impl core::ops::function::FnOnce(&quanta_index_contract::ipc::control::GenerationSnapshot) -> bool)
+pub fn quanta_index_core::domains::integrity::IntegrityScrubProgressV1::record(&mut self, generation: &quanta_index_contract::ipc::control::GenerationSnapshot, outcome: &quanta_index_core::domains::integrity::IntegrityScrubOutcomeV1) -> core::result::Result<(), quanta_index_core::error::CoreError>
+pub fn quanta_index_core::domains::integrity::IntegrityScrubProgressV1::start_or_resume(&mut self, generation: &quanta_index_contract::ipc::control::GenerationSnapshot, cursor: core::option::Option<quanta_index_core::domains::integrity::IntegrityScrubCursorV1>) -> core::result::Result<u64, quanta_index_core::error::CoreError>
+impl core::default::Default for quanta_index_core::domains::integrity::IntegrityScrubProgressV1
+pub fn quanta_index_core::domains::integrity::IntegrityScrubProgressV1::default() -> quanta_index_core::domains::integrity::IntegrityScrubProgressV1
+impl core::fmt::Debug for quanta_index_core::domains::integrity::IntegrityScrubProgressV1
+pub fn quanta_index_core::domains::integrity::IntegrityScrubProgressV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for quanta_index_core::domains::integrity::IntegrityScrubProgressV1
+impl core::marker::Send for quanta_index_core::domains::integrity::IntegrityScrubProgressV1
+impl core::marker::Sync for quanta_index_core::domains::integrity::IntegrityScrubProgressV1
+impl core::marker::Unpin for quanta_index_core::domains::integrity::IntegrityScrubProgressV1
+impl core::marker::UnsafeUnpin for quanta_index_core::domains::integrity::IntegrityScrubProgressV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_core::domains::integrity::IntegrityScrubProgressV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_core::domains::integrity::IntegrityScrubProgressV1
 pub struct quanta_index_core::domains::integrity::IntegrityScrubReportV1
 pub quanta_index_core::domains::integrity::IntegrityScrubReportV1::bytes_read: u64
 pub quanta_index_core::domains::integrity::IntegrityScrubReportV1::files_verified: u64
@@ -1204,6 +1224,7 @@ pub fn quanta_index_core::domains::integrity::DoorFindingQuarantinePort::quarant
 pub trait quanta_index_core::domains::integrity::IntegrityScrubPort: core::marker::Send + core::marker::Sync
 pub fn quanta_index_core::domains::integrity::IntegrityScrubPort::scrub(&self, generation: &quanta_index_contract::ipc::control::GenerationSnapshot, cursor: core::option::Option<quanta_index_core::domains::integrity::IntegrityScrubCursorV1>, budget: quanta_index_core::domains::integrity::IntegrityScrubBudgetV1) -> core::result::Result<quanta_index_core::domains::integrity::IntegrityScrubReportV1, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::domains::integrity::IntegrityScrubPort::scrub_candidates(&self) -> core::result::Result<alloc::vec::Vec<quanta_index_core::domains::integrity::IntegrityScrubCandidateV1>, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::domains::integrity::IntegrityScrubPort::scrub_with_quarantine_fence(&self, generation: &quanta_index_contract::ipc::control::GenerationSnapshot, cursor: core::option::Option<quanta_index_core::domains::integrity::IntegrityScrubCursorV1>, budget: quanta_index_core::domains::integrity::IntegrityScrubBudgetV1, before_quarantine: &dyn core::ops::function::Fn() -> core::result::Result<(), quanta_index_core::error::CoreError>) -> core::result::Result<quanta_index_core::domains::integrity::IntegrityScrubReportV1, quanta_index_core::error::CoreError>
 pub mod quanta_index_core::domains::lexical
 pub enum quanta_index_core::domains::lexical::HistoryTextBuildV1
 pub quanta_index_core::domains::lexical::HistoryTextBuildV1::Full
@@ -1344,6 +1365,45 @@ impl core::marker::Unpin for quanta_index_core::LexicalCandidateExplanationV1
 impl core::marker::UnsafeUnpin for quanta_index_core::LexicalCandidateExplanationV1
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_core::LexicalCandidateExplanationV1
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_core::LexicalCandidateExplanationV1
+pub enum quanta_index_core::domains::lexical::LexicalEndpoint
+pub quanta_index_core::domains::lexical::LexicalEndpoint::Symbol
+pub quanta_index_core::domains::lexical::LexicalEndpoint::Text
+impl core::clone::Clone for quanta_index_core::LexicalEndpoint
+pub fn quanta_index_core::LexicalEndpoint::clone(&self) -> quanta_index_core::LexicalEndpoint
+impl core::cmp::Eq for quanta_index_core::LexicalEndpoint
+impl core::cmp::PartialEq for quanta_index_core::LexicalEndpoint
+pub fn quanta_index_core::LexicalEndpoint::eq(&self, other: &quanta_index_core::LexicalEndpoint) -> bool
+impl core::fmt::Debug for quanta_index_core::LexicalEndpoint
+pub fn quanta_index_core::LexicalEndpoint::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_core::LexicalEndpoint
+impl core::marker::StructuralPartialEq for quanta_index_core::LexicalEndpoint
+impl core::marker::Freeze for quanta_index_core::LexicalEndpoint
+impl core::marker::Send for quanta_index_core::LexicalEndpoint
+impl core::marker::Sync for quanta_index_core::LexicalEndpoint
+impl core::marker::Unpin for quanta_index_core::LexicalEndpoint
+impl core::marker::UnsafeUnpin for quanta_index_core::LexicalEndpoint
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_core::LexicalEndpoint
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_core::LexicalEndpoint
+pub enum quanta_index_core::domains::lexical::LexicalPlanKind
+pub quanta_index_core::domains::lexical::LexicalPlanKind::Symbol
+pub quanta_index_core::domains::lexical::LexicalPlanKind::SymbolAsText
+pub quanta_index_core::domains::lexical::LexicalPlanKind::Text
+impl core::clone::Clone for quanta_index_core::LexicalPlanKind
+pub fn quanta_index_core::LexicalPlanKind::clone(&self) -> quanta_index_core::LexicalPlanKind
+impl core::cmp::Eq for quanta_index_core::LexicalPlanKind
+impl core::cmp::PartialEq for quanta_index_core::LexicalPlanKind
+pub fn quanta_index_core::LexicalPlanKind::eq(&self, other: &quanta_index_core::LexicalPlanKind) -> bool
+impl core::fmt::Debug for quanta_index_core::LexicalPlanKind
+pub fn quanta_index_core::LexicalPlanKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_core::LexicalPlanKind
+impl core::marker::StructuralPartialEq for quanta_index_core::LexicalPlanKind
+impl core::marker::Freeze for quanta_index_core::LexicalPlanKind
+impl core::marker::Send for quanta_index_core::LexicalPlanKind
+impl core::marker::Sync for quanta_index_core::LexicalPlanKind
+impl core::marker::Unpin for quanta_index_core::LexicalPlanKind
+impl core::marker::UnsafeUnpin for quanta_index_core::LexicalPlanKind
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_core::LexicalPlanKind
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_core::LexicalPlanKind
 pub enum quanta_index_core::domains::lexical::LexicalScoreEngineV1
 pub quanta_index_core::domains::lexical::LexicalScoreEngineV1::Bm25
 pub quanta_index_core::domains::lexical::LexicalScoreEngineV1::UnindexedScan
@@ -1365,6 +1425,25 @@ impl core::marker::Unpin for quanta_index_core::LexicalScoreEngineV1
 impl core::marker::UnsafeUnpin for quanta_index_core::LexicalScoreEngineV1
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_core::LexicalScoreEngineV1
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_core::LexicalScoreEngineV1
+pub enum quanta_index_core::domains::lexical::SearchCorpusPreflightPhaseV1
+pub quanta_index_core::domains::lexical::SearchCorpusPreflightPhaseV1::BeforeIntent
+pub quanta_index_core::domains::lexical::SearchCorpusPreflightPhaseV1::UnderOperationLock
+impl core::clone::Clone for quanta_index_core::SearchCorpusPreflightPhaseV1
+pub fn quanta_index_core::SearchCorpusPreflightPhaseV1::clone(&self) -> quanta_index_core::SearchCorpusPreflightPhaseV1
+impl core::cmp::Eq for quanta_index_core::SearchCorpusPreflightPhaseV1
+impl core::cmp::PartialEq for quanta_index_core::SearchCorpusPreflightPhaseV1
+pub fn quanta_index_core::SearchCorpusPreflightPhaseV1::eq(&self, other: &quanta_index_core::SearchCorpusPreflightPhaseV1) -> bool
+impl core::fmt::Debug for quanta_index_core::SearchCorpusPreflightPhaseV1
+pub fn quanta_index_core::SearchCorpusPreflightPhaseV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_core::SearchCorpusPreflightPhaseV1
+impl core::marker::StructuralPartialEq for quanta_index_core::SearchCorpusPreflightPhaseV1
+impl core::marker::Freeze for quanta_index_core::SearchCorpusPreflightPhaseV1
+impl core::marker::Send for quanta_index_core::SearchCorpusPreflightPhaseV1
+impl core::marker::Sync for quanta_index_core::SearchCorpusPreflightPhaseV1
+impl core::marker::Unpin for quanta_index_core::SearchCorpusPreflightPhaseV1
+impl core::marker::UnsafeUnpin for quanta_index_core::SearchCorpusPreflightPhaseV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_core::SearchCorpusPreflightPhaseV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_core::SearchCorpusPreflightPhaseV1
 pub struct quanta_index_core::domains::lexical::HistoryTextDocV1
 pub quanta_index_core::domains::lexical::HistoryTextDocV1::committer_time_ms: u64
 pub quanta_index_core::domains::lexical::HistoryTextDocV1::key: quanta_index_core::HistoryTextDocKeyV1
@@ -1462,12 +1541,35 @@ impl core::marker::Unpin for quanta_index_core::HistoryTextQueryV1
 impl core::marker::UnsafeUnpin for quanta_index_core::HistoryTextQueryV1
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_core::HistoryTextQueryV1
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_core::HistoryTextQueryV1
+pub struct quanta_index_core::domains::lexical::LexicalCollectionBudget
+impl quanta_index_core::LexicalCollectionBudget
+pub fn quanta_index_core::LexicalCollectionBudget::charge_work(&self, units: u64) -> core::result::Result<(), quanta_index_core::error::CoreError>
+pub fn quanta_index_core::LexicalCollectionBudget::failure(&self) -> core::option::Option<quanta_index_core::error::CoreError>
+pub fn quanta_index_core::LexicalCollectionBudget::new(max_work: u64, max_bytes: u64) -> core::result::Result<Self, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::LexicalCollectionBudget::peak_bytes(&self) -> u64
+pub fn quanta_index_core::LexicalCollectionBudget::reserve_bytes(&self, bytes: u64) -> core::result::Result<quanta_index_core::LexicalMemoryReservation, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::LexicalCollectionBudget::resident_bytes(&self) -> u64
+pub fn quanta_index_core::LexicalCollectionBudget::used_work(&self) -> u64
+impl core::clone::Clone for quanta_index_core::LexicalCollectionBudget
+pub fn quanta_index_core::LexicalCollectionBudget::clone(&self) -> quanta_index_core::LexicalCollectionBudget
+impl core::fmt::Debug for quanta_index_core::LexicalCollectionBudget
+pub fn quanta_index_core::LexicalCollectionBudget::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for quanta_index_core::LexicalCollectionBudget
+impl core::marker::Send for quanta_index_core::LexicalCollectionBudget
+impl core::marker::Sync for quanta_index_core::LexicalCollectionBudget
+impl core::marker::Unpin for quanta_index_core::LexicalCollectionBudget
+impl core::marker::UnsafeUnpin for quanta_index_core::LexicalCollectionBudget
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_core::LexicalCollectionBudget
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_core::LexicalCollectionBudget
 pub struct quanta_index_core::domains::lexical::LexicalExecutionBudgetV1
 impl quanta_index_core::LexicalExecutionBudgetV1
 pub const quanta_index_core::LexicalExecutionBudgetV1::DEFAULT: Self
+pub fn quanta_index_core::LexicalExecutionBudgetV1::collection_budget(self, max_segments: usize) -> core::result::Result<quanta_index_core::LexicalCollectionBudget, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::LexicalExecutionBudgetV1::exceeded(self, surface: &str) -> quanta_index_core::error::CoreError
+pub const fn quanta_index_core::LexicalExecutionBudgetV1::max_collection_bytes(self) -> u64
 pub const fn quanta_index_core::LexicalExecutionBudgetV1::max_examined_candidates(self) -> usize
 pub fn quanta_index_core::LexicalExecutionBudgetV1::new(max_examined_candidates: usize) -> core::result::Result<Self, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::LexicalExecutionBudgetV1::new_with_collection_bytes(max_examined_candidates: usize, max_collection_bytes: u64) -> core::result::Result<Self, quanta_index_core::error::CoreError>
 impl core::clone::Clone for quanta_index_core::LexicalExecutionBudgetV1
 pub fn quanta_index_core::LexicalExecutionBudgetV1::clone(&self) -> quanta_index_core::LexicalExecutionBudgetV1
 impl core::cmp::Eq for quanta_index_core::LexicalExecutionBudgetV1
@@ -1484,6 +1586,18 @@ impl core::marker::Unpin for quanta_index_core::LexicalExecutionBudgetV1
 impl core::marker::UnsafeUnpin for quanta_index_core::LexicalExecutionBudgetV1
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_core::LexicalExecutionBudgetV1
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_core::LexicalExecutionBudgetV1
+pub struct quanta_index_core::domains::lexical::LexicalMemoryReservation
+impl core::fmt::Debug for quanta_index_core::LexicalMemoryReservation
+pub fn quanta_index_core::LexicalMemoryReservation::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for quanta_index_core::LexicalMemoryReservation
+pub fn quanta_index_core::LexicalMemoryReservation::drop(&mut self)
+impl core::marker::Freeze for quanta_index_core::LexicalMemoryReservation
+impl core::marker::Send for quanta_index_core::LexicalMemoryReservation
+impl core::marker::Sync for quanta_index_core::LexicalMemoryReservation
+impl core::marker::Unpin for quanta_index_core::LexicalMemoryReservation
+impl core::marker::UnsafeUnpin for quanta_index_core::LexicalMemoryReservation
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_core::LexicalMemoryReservation
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_core::LexicalMemoryReservation
 pub struct quanta_index_core::domains::lexical::LexicalPageSpec
 pub quanta_index_core::domains::lexical::LexicalPageSpec::after: core::option::Option<quanta_index_contract_base::query::lexical_cursor::LexicalCursor>
 pub quanta_index_core::domains::lexical::LexicalPageSpec::fetch: u32
@@ -1505,6 +1619,10 @@ impl core::marker::UnsafeUnpin for quanta_index_core::LexicalPageSpec
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_core::LexicalPageSpec
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_core::LexicalPageSpec
 pub struct quanta_index_core::domains::lexical::LexicalPolicy
+impl quanta_index_core::LexicalPolicy
+pub fn quanta_index_core::LexicalPolicy::plan_candidate_filter_query(query: &quanta_index_contract::query::expression::LqQuery, constraints: &quanta_index_contract_base::query::constraints::QueryConstraintSetV1, candidate_ids: &alloc::collections::btree::set::BTreeSet<alloc::string::String>) -> core::result::Result<quanta_index_core::ValidatedLexicalPlan, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::LexicalPolicy::plan_query(query: &quanta_index_contract::query::expression::LqQuery, constraints: &quanta_index_contract_base::query::constraints::QueryConstraintSetV1, endpoint: quanta_index_core::LexicalEndpoint) -> core::result::Result<quanta_index_core::ValidatedLexicalPlan, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::LexicalPolicy::unsupported_symbol_query_text(query: &quanta_index_contract::query::expression::LqQuery, expr: &quanta_index_lq_norm::ast::LqExpr, symbol_domain: bool) -> bool
 impl quanta_index_core::LexicalPolicy
 pub fn quanta_index_core::LexicalPolicy::validate_query(query: &quanta_index_contract::query::expression::LqQuery) -> core::result::Result<(), quanta_index_core::error::CoreError>
 pub fn quanta_index_core::LexicalPolicy::validate_query_with_constraints(query: &quanta_index_contract::query::expression::LqQuery, constraints: &quanta_index_contract_base::query::constraints::QueryConstraintSetV1) -> core::result::Result<(), quanta_index_core::error::CoreError>
@@ -1560,23 +1678,23 @@ impl core::marker::Unpin for quanta_index_core::LexicalScoreTraceV1
 impl core::marker::UnsafeUnpin for quanta_index_core::LexicalScoreTraceV1
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_core::LexicalScoreTraceV1
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_core::LexicalScoreTraceV1
-pub struct quanta_index_core::domains::lexical::LexicalSearchPageV1
-pub quanta_index_core::domains::lexical::LexicalSearchPageV1::candidates: alloc::vec::Vec<quanta_index_contract_base::results::candidates::LexicalCandidate>
+pub struct quanta_index_core::domains::lexical::LexicalSearchPageV1<Candidate>
+pub quanta_index_core::domains::lexical::LexicalSearchPageV1::candidates: alloc::vec::Vec<Candidate>
 pub quanta_index_core::domains::lexical::LexicalSearchPageV1::exact_total: core::option::Option<u64>
-impl core::clone::Clone for quanta_index_core::LexicalSearchPageV1
-pub fn quanta_index_core::LexicalSearchPageV1::clone(&self) -> quanta_index_core::LexicalSearchPageV1
-impl core::cmp::PartialEq for quanta_index_core::LexicalSearchPageV1
-pub fn quanta_index_core::LexicalSearchPageV1::eq(&self, other: &quanta_index_core::LexicalSearchPageV1) -> bool
-impl core::fmt::Debug for quanta_index_core::LexicalSearchPageV1
-pub fn quanta_index_core::LexicalSearchPageV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for quanta_index_core::LexicalSearchPageV1
-impl core::marker::Freeze for quanta_index_core::LexicalSearchPageV1
-impl core::marker::Send for quanta_index_core::LexicalSearchPageV1
-impl core::marker::Sync for quanta_index_core::LexicalSearchPageV1
-impl core::marker::Unpin for quanta_index_core::LexicalSearchPageV1
-impl core::marker::UnsafeUnpin for quanta_index_core::LexicalSearchPageV1
-impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_core::LexicalSearchPageV1
-impl core::panic::unwind_safe::UnwindSafe for quanta_index_core::LexicalSearchPageV1
+impl<Candidate: core::clone::Clone> core::clone::Clone for quanta_index_core::LexicalSearchPageV1<Candidate>
+pub fn quanta_index_core::LexicalSearchPageV1<Candidate>::clone(&self) -> quanta_index_core::LexicalSearchPageV1<Candidate>
+impl<Candidate: core::cmp::PartialEq> core::cmp::PartialEq for quanta_index_core::LexicalSearchPageV1<Candidate>
+pub fn quanta_index_core::LexicalSearchPageV1<Candidate>::eq(&self, other: &quanta_index_core::LexicalSearchPageV1<Candidate>) -> bool
+impl<Candidate: core::cmp::PartialEq> core::marker::StructuralPartialEq for quanta_index_core::LexicalSearchPageV1<Candidate>
+impl<Candidate: core::fmt::Debug> core::fmt::Debug for quanta_index_core::LexicalSearchPageV1<Candidate>
+pub fn quanta_index_core::LexicalSearchPageV1<Candidate>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<Candidate> core::marker::Freeze for quanta_index_core::LexicalSearchPageV1<Candidate>
+impl<Candidate> core::marker::Send for quanta_index_core::LexicalSearchPageV1<Candidate> where Candidate: core::marker::Send
+impl<Candidate> core::marker::Sync for quanta_index_core::LexicalSearchPageV1<Candidate> where Candidate: core::marker::Sync
+impl<Candidate> core::marker::Unpin for quanta_index_core::LexicalSearchPageV1<Candidate> where Candidate: core::marker::Unpin
+impl<Candidate> core::marker::UnsafeUnpin for quanta_index_core::LexicalSearchPageV1<Candidate>
+impl<Candidate> core::panic::unwind_safe::RefUnwindSafe for quanta_index_core::LexicalSearchPageV1<Candidate> where Candidate: core::panic::unwind_safe::RefUnwindSafe
+impl<Candidate> core::panic::unwind_safe::UnwindSafe for quanta_index_core::LexicalSearchPageV1<Candidate> where Candidate: core::panic::unwind_safe::UnwindSafe
 pub struct quanta_index_core::domains::lexical::LexicalWriterCacheStats
 pub quanta_index_core::domains::lexical::LexicalWriterCacheStats::allocated_heap_bytes: u64
 pub quanta_index_core::domains::lexical::LexicalWriterCacheStats::idle_releases: u64
@@ -1703,6 +1821,27 @@ impl core::marker::Unpin for quanta_index_core::TextAuthorityUpdateStats
 impl core::marker::UnsafeUnpin for quanta_index_core::TextAuthorityUpdateStats
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_core::TextAuthorityUpdateStats
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_core::TextAuthorityUpdateStats
+pub struct quanta_index_core::domains::lexical::ValidatedLexicalPlan
+impl quanta_index_core::ValidatedLexicalPlan
+pub const fn quanta_index_core::ValidatedLexicalPlan::constraints(&self) -> &quanta_index_contract_base::query::constraints::QueryConstraintSetV1
+pub const fn quanta_index_core::ValidatedLexicalPlan::executes_symbol_domain(&self) -> bool
+pub const fn quanta_index_core::ValidatedLexicalPlan::kind(&self) -> quanta_index_core::LexicalPlanKind
+pub const fn quanta_index_core::ValidatedLexicalPlan::query(&self) -> &quanta_index_contract::query::expression::LqQuery
+pub fn quanta_index_core::ValidatedLexicalPlan::uses_symbol_authority(&self) -> bool
+impl core::clone::Clone for quanta_index_core::ValidatedLexicalPlan
+pub fn quanta_index_core::ValidatedLexicalPlan::clone(&self) -> quanta_index_core::ValidatedLexicalPlan
+impl core::cmp::PartialEq for quanta_index_core::ValidatedLexicalPlan
+pub fn quanta_index_core::ValidatedLexicalPlan::eq(&self, other: &quanta_index_core::ValidatedLexicalPlan) -> bool
+impl core::fmt::Debug for quanta_index_core::ValidatedLexicalPlan
+pub fn quanta_index_core::ValidatedLexicalPlan::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_core::ValidatedLexicalPlan
+impl core::marker::Freeze for quanta_index_core::ValidatedLexicalPlan
+impl core::marker::Send for quanta_index_core::ValidatedLexicalPlan
+impl core::marker::Sync for quanta_index_core::ValidatedLexicalPlan
+impl core::marker::Unpin for quanta_index_core::ValidatedLexicalPlan
+impl core::marker::UnsafeUnpin for quanta_index_core::ValidatedLexicalPlan
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_core::ValidatedLexicalPlan
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_core::ValidatedLexicalPlan
 pub const quanta_index_core::domains::lexical::HISTORY_TEXT_INDEX_CORRUPT_CODE: quanta_index_contract::ipc::error::SearchPlaneErrorCodeV2
 pub const quanta_index_core::domains::lexical::HISTORY_TEXT_INDEX_NORMALIZER_UNSUPPORTED_CODE: quanta_index_contract::ipc::error::SearchPlaneErrorCodeV2
 pub const quanta_index_core::domains::lexical::HISTORY_TEXT_INDEX_NOT_READY_CODE: quanta_index_contract::ipc::error::SearchPlaneErrorCodeV2
@@ -1730,6 +1869,7 @@ pub fn quanta_index_core::domains::lexical::LexicalIndexBuildPort::build(&self, 
 pub trait quanta_index_core::domains::lexical::LexicalIndexOpenPort: core::marker::Send + core::marker::Sync
 pub fn quanta_index_core::domains::lexical::LexicalIndexOpenPort::open(&self, repo: &quanta_index_contract_base::ids::RepoId, revision: &quanta_index_contract_base::ids::RevisionId, generation: quanta_index_contract_base::ids::ManifestGeneration) -> core::result::Result<alloc::boxed::Box<dyn quanta_index_core::LexicalSearcher>, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::domains::lexical::LexicalIndexOpenPort::open_proven(&self, candidate: &quanta_index_contract::ipc::control::GenerationSnapshot) -> core::result::Result<alloc::boxed::Box<dyn quanta_index_core::LexicalSearcher>, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::domains::lexical::LexicalIndexOpenPort::preflight_query_primitives(&self, plan: &quanta_index_core::ValidatedLexicalPlan, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<(), quanta_index_core::error::CoreError>
 pub trait quanta_index_core::domains::lexical::LexicalQueryPort: core::marker::Send + core::marker::Sync
 pub fn quanta_index_core::domains::lexical::LexicalQueryPort::lexical_query(&self, request: quanta_index_contract_base::query::requests::TextQueryRequest, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<quanta_index_contract::results::query_responses::TextQueryResponse, quanta_index_core::error::CoreError>
 pub trait quanta_index_core::domains::lexical::LexicalSearcher: core::marker::Send + core::marker::Sync
@@ -1743,8 +1883,10 @@ pub fn quanta_index_core::domains::lexical::LexicalSearcher::search(&self, query
 pub fn quanta_index_core::domains::lexical::LexicalSearcher::search_all(&self, query: &quanta_index_contract::query::expression::LqQuery, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<alloc::vec::Vec<quanta_index_contract_base::results::candidates::LexicalCandidate>, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::domains::lexical::LexicalSearcher::search_constrained(&self, query: &quanta_index_contract::query::expression::LqQuery, constraints: &quanta_index_contract_base::query::constraints::QueryConstraintSetV1, page: &quanta_index_core::LexicalPageSpec, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<quanta_index_core::LexicalSearchPageV1, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::domains::lexical::LexicalSearcher::search_symbols(&self, query: &quanta_index_contract::query::expression::LqQuery, top_k: u32, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<alloc::vec::Vec<quanta_index_contract::results::query_responses::SymbolCandidate>, quanta_index_core::error::CoreError>
-pub fn quanta_index_core::domains::lexical::LexicalSearcher::search_symbols_all(&self, query: &quanta_index_contract::query::expression::LqQuery, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<alloc::vec::Vec<quanta_index_contract::results::query_responses::SymbolCandidate>, quanta_index_core::error::CoreError>
-pub fn quanta_index_core::domains::lexical::LexicalSearcher::search_symbols_constrained(&self, query: &quanta_index_contract::query::expression::LqQuery, constraints: &quanta_index_contract_base::query::constraints::QueryConstraintSetV1, page: &quanta_index_core::LexicalPageSpec, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<alloc::vec::Vec<quanta_index_contract::results::query_responses::SymbolCandidate>, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::domains::lexical::LexicalSearcher::search_symbols_all(&self, _query: &quanta_index_contract::query::expression::LqQuery, _budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<alloc::vec::Vec<quanta_index_contract::results::query_responses::SymbolCandidate>, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::domains::lexical::LexicalSearcher::search_symbols_constrained(&self, query: &quanta_index_contract::query::expression::LqQuery, constraints: &quanta_index_contract_base::query::constraints::QueryConstraintSetV1, page: &quanta_index_core::LexicalPageSpec, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<quanta_index_core::SymbolSearchPageV1, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::domains::lexical::LexicalSearcher::source_file_coverage(&self) -> core::option::Option<&quanta_index_contract::source_coverage::snapshot::FileCoverageSnapshot>
+pub fn quanta_index_core::domains::lexical::LexicalSearcher::source_publication_event(&self) -> core::option::Option<&quanta_index_contract::source_coverage::SourcePublicationEvent>
 pub trait quanta_index_core::domains::lexical::RepoCommitRecencyIngestPort: core::marker::Send + core::marker::Sync
 pub fn quanta_index_core::domains::lexical::RepoCommitRecencyIngestPort::publish_batch(&self, batch: &quanta_index_contract::ipc::ingest::RepoCommitRecencyIngestBatch) -> core::result::Result<quanta_index_contract::ipc::publish_receipt::BatchPublishReceipt, quanta_index_core::error::CoreError>
 pub trait quanta_index_core::domains::lexical::RepoDescriptionIngestPort: core::marker::Send + core::marker::Sync
@@ -1755,10 +1897,13 @@ pub trait quanta_index_core::domains::lexical::RepoTopicIngestPort: core::marker
 pub fn quanta_index_core::domains::lexical::RepoTopicIngestPort::publish_batch(&self, batch: &quanta_index_contract::ipc::ingest::RepoTopicIngestBatch) -> core::result::Result<quanta_index_contract::ipc::publish_receipt::BatchPublishReceipt, quanta_index_core::error::CoreError>
 pub trait quanta_index_core::domains::lexical::SearchCorpusBatchBuildPort: core::marker::Send + core::marker::Sync
 pub fn quanta_index_core::domains::lexical::SearchCorpusBatchBuildPort::build_batch(&self, batch: &quanta_index_contract::ipc::ingest::SearchCorpusIngestBatch) -> core::result::Result<(), quanta_index_core::error::CoreError>
+pub fn quanta_index_core::domains::lexical::SearchCorpusBatchBuildPort::preflight_batch(&self, batch: &quanta_index_contract::ipc::ingest::SearchCorpusIngestBatch, phase: quanta_index_core::SearchCorpusPreflightPhaseV1) -> core::result::Result<(), quanta_index_core::error::CoreError>
 pub trait quanta_index_core::domains::lexical::SearchCorpusIngestPort: core::marker::Send + core::marker::Sync
 pub fn quanta_index_core::domains::lexical::SearchCorpusIngestPort::preflight_batch(&self, batch: &quanta_index_contract::ipc::ingest::SearchCorpusIngestBatch) -> core::result::Result<(), quanta_index_core::error::CoreError>
 pub fn quanta_index_core::domains::lexical::SearchCorpusIngestPort::publish_batch(&self, batch: &quanta_index_contract::ipc::ingest::SearchCorpusIngestBatch, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<quanta_index_contract::ipc::ingest_observation::SearchCorpusPublishOutcome, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::domains::lexical::require_complete_symbol_coverage(snapshot: core::option::Option<&quanta_index_contract::source_coverage::snapshot::FileCoverageSnapshot>, in_scope: impl core::ops::function::FnMut(&quanta_index_contract::source_coverage::SourceFileCoverage) -> core::result::Result<bool, quanta_index_core::error::CoreError>, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<(), quanta_index_core::error::CoreError>
 pub type quanta_index_core::domains::lexical::HistoryTextAdmitFn = (dyn core::ops::function::Fn(&quanta_index_core::HistoryTextHitV1) -> core::result::Result<bool, quanta_index_core::error::CoreError> + core::marker::Send + core::marker::Sync)
+pub type quanta_index_core::domains::lexical::SymbolSearchPageV1 = quanta_index_core::LexicalSearchPageV1<quanta_index_contract::results::query_responses::SymbolCandidate>
 pub mod quanta_index_core::domains::observability
 pub enum quanta_index_core::domains::observability::MetricValueV1
 pub quanta_index_core::domains::observability::MetricValueV1::Counter(u64)
@@ -1961,8 +2106,11 @@ pub quanta_index_core::domains::read_view::LexicalPredicateV1::RepoHasFile
 pub quanta_index_core::domains::read_view::LexicalPredicateV1::RepoHasMeta
 pub quanta_index_core::domains::read_view::LexicalPredicateV1::RepoHasTopic
 pub quanta_index_core::domains::read_view::LexicalPredicateV1::SymbolHasName
+pub quanta_index_core::domains::read_view::LexicalPredicateV1::SymbolLocalNameExact
+pub quanta_index_core::domains::read_view::LexicalPredicateV1::SymbolQualifiedNameExact
 impl quanta_index_core::LexicalPredicateV1
-pub const quanta_index_core::LexicalPredicateV1::ALL: [Self; 11]
+pub const quanta_index_core::LexicalPredicateV1::ALL: [Self; 13]
+pub fn quanta_index_core::LexicalPredicateV1::exact_symbol_name_argument(self, args: &[quanta_index_lq_norm::ast::LqPredicateArg]) -> core::result::Result<core::option::Option<&str>, quanta_index_core::error::CoreError>
 pub const fn quanta_index_core::LexicalPredicateV1::family(self) -> quanta_index_core::LexicalPredicateFamilyV1
 pub fn quanta_index_core::LexicalPredicateV1::from_canonical_name(name: &str) -> core::option::Option<Self>
 pub const fn quanta_index_core::LexicalPredicateV1::name(self) -> &'static str
@@ -2507,6 +2655,7 @@ impl core::marker::UnsafeUnpin for quanta_index_core::DenseIndexV1
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_core::DenseIndexV1
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_core::DenseIndexV1
 pub enum quanta_index_core::domains::semantic::DenseLaneAttestationV1
+pub quanta_index_core::domains::semantic::DenseLaneAttestationV1::ExactScanOfSealedRows
 pub quanta_index_core::domains::semantic::DenseLaneAttestationV1::Sealed
 pub quanta_index_core::domains::semantic::DenseLaneAttestationV1::SealedByAnotherLibraryVersion
 impl core::clone::Clone for quanta_index_core::DenseLaneAttestationV1
@@ -3356,6 +3505,8 @@ pub fn quanta_index_core::domains::semantic::SemanticSearcher::search_hits_for_c
 pub fn quanta_index_core::domains::semantic::SemanticSearcher::search_hits_for_corpus_constrained(&self, query_vector: &[f32], corpus_kind: quanta_index_contract::semantic_kinds::SemanticCorpusKindV1, constraints: &quanta_index_contract_base::query::constraints::QueryConstraintSetV1, top_k: u32, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<alloc::vec::Vec<quanta_index_core::SemanticSearchHitV1>, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::domains::semantic::SemanticSearcher::search_scoped(&self, query_vector: &[f32], allowed_ids: &alloc::collections::btree::set::BTreeSet<alloc::string::String>, top_k: u32, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<alloc::vec::Vec<quanta_index_contract_base::results::candidates::LexicalCandidate>, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::domains::semantic::SemanticSearcher::search_scoped_constrained(&self, query_vector: &[f32], allowed_ids: &alloc::collections::btree::set::BTreeSet<alloc::string::String>, constraints: &quanta_index_contract_base::query::constraints::QueryConstraintSetV1, top_k: u32, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<alloc::vec::Vec<quanta_index_contract_base::results::candidates::LexicalCandidate>, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::domains::semantic::SemanticSearcher::search_work_bounded_v1(&self, _query_vector: &[f32], _constraints: &quanta_index_contract_base::query::constraints::QueryConstraintSetV1, _top_k: u32, _budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<alloc::vec::Vec<quanta_index_contract_base::results::candidates::LexicalCandidate>, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::domains::semantic::SemanticSearcher::validate_query_vector(&self, query_vector: &[f32]) -> core::result::Result<(), quanta_index_core::error::CoreError>
 pub trait quanta_index_core::domains::semantic::TextEmbeddingProvider: core::marker::Send + core::marker::Sync
 pub fn quanta_index_core::domains::semantic::TextEmbeddingProvider::dimension(&self) -> usize
 pub fn quanta_index_core::domains::semantic::TextEmbeddingProvider::embed_batch(&self, texts: &[&str]) -> core::result::Result<alloc::vec::Vec<alloc::vec::Vec<f32>>, quanta_index_core::error::CoreError>
@@ -3372,6 +3523,88 @@ pub fn quanta_index_core::L2UnitEmbeddingProvider<P>::model_revision(&self) -> &
 pub fn quanta_index_core::L2UnitEmbeddingProvider<P>::normalization(&self) -> quanta_index_contract::ipc::ingest::EmbeddingNormalization
 pub fn quanta_index_core::domains::semantic::build_resident_semantic_batch_v1(port: &dyn quanta_index_core::SemanticScopeStreamBuildPort, batch: &quanta_index_contract::ipc::ingest::SemanticIngestBatch, policy: quanta_index_core::SemanticStreamWindowPolicy) -> core::result::Result<quanta_index_core::SemanticStreamTallyV1, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::domains::semantic::owner_key_v1(embedding: &quanta_index_contract::channel::records::EmbeddingRecord) -> (&'static str, &'static str, &str)
+pub mod quanta_index_core::domains::source_publication
+pub enum quanta_index_core::domains::source_publication::SourceEventPhaseV1
+pub quanta_index_core::domains::source_publication::SourceEventPhaseV1::Active
+pub quanta_index_core::domains::source_publication::SourceEventPhaseV1::Pending
+pub quanta_index_core::domains::source_publication::SourceEventPhaseV1::Staged
+impl core::clone::Clone for quanta_index_core::domains::source_publication::SourceEventPhaseV1
+pub fn quanta_index_core::domains::source_publication::SourceEventPhaseV1::clone(&self) -> quanta_index_core::domains::source_publication::SourceEventPhaseV1
+impl core::cmp::Eq for quanta_index_core::domains::source_publication::SourceEventPhaseV1
+impl core::cmp::PartialEq for quanta_index_core::domains::source_publication::SourceEventPhaseV1
+pub fn quanta_index_core::domains::source_publication::SourceEventPhaseV1::eq(&self, other: &quanta_index_core::domains::source_publication::SourceEventPhaseV1) -> bool
+impl core::fmt::Debug for quanta_index_core::domains::source_publication::SourceEventPhaseV1
+pub fn quanta_index_core::domains::source_publication::SourceEventPhaseV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_core::domains::source_publication::SourceEventPhaseV1
+impl core::marker::StructuralPartialEq for quanta_index_core::domains::source_publication::SourceEventPhaseV1
+impl core::marker::Freeze for quanta_index_core::domains::source_publication::SourceEventPhaseV1
+impl core::marker::Send for quanta_index_core::domains::source_publication::SourceEventPhaseV1
+impl core::marker::Sync for quanta_index_core::domains::source_publication::SourceEventPhaseV1
+impl core::marker::Unpin for quanta_index_core::domains::source_publication::SourceEventPhaseV1
+impl core::marker::UnsafeUnpin for quanta_index_core::domains::source_publication::SourceEventPhaseV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_core::domains::source_publication::SourceEventPhaseV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_core::domains::source_publication::SourceEventPhaseV1
+pub enum quanta_index_core::domains::source_publication::SourceEventReservationV1
+pub quanta_index_core::domains::source_publication::SourceEventReservationV1::Existing(quanta_index_core::domains::source_publication::SourceEventRecordV1)
+pub quanta_index_core::domains::source_publication::SourceEventReservationV1::Reserved(quanta_index_core::domains::source_publication::SourceEventRecordV1)
+impl core::clone::Clone for quanta_index_core::domains::source_publication::SourceEventReservationV1
+pub fn quanta_index_core::domains::source_publication::SourceEventReservationV1::clone(&self) -> quanta_index_core::domains::source_publication::SourceEventReservationV1
+impl core::cmp::Eq for quanta_index_core::domains::source_publication::SourceEventReservationV1
+impl core::cmp::PartialEq for quanta_index_core::domains::source_publication::SourceEventReservationV1
+pub fn quanta_index_core::domains::source_publication::SourceEventReservationV1::eq(&self, other: &quanta_index_core::domains::source_publication::SourceEventReservationV1) -> bool
+impl core::fmt::Debug for quanta_index_core::domains::source_publication::SourceEventReservationV1
+pub fn quanta_index_core::domains::source_publication::SourceEventReservationV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_core::domains::source_publication::SourceEventReservationV1
+impl core::marker::Freeze for quanta_index_core::domains::source_publication::SourceEventReservationV1
+impl core::marker::Send for quanta_index_core::domains::source_publication::SourceEventReservationV1
+impl core::marker::Sync for quanta_index_core::domains::source_publication::SourceEventReservationV1
+impl core::marker::Unpin for quanta_index_core::domains::source_publication::SourceEventReservationV1
+impl core::marker::UnsafeUnpin for quanta_index_core::domains::source_publication::SourceEventReservationV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_core::domains::source_publication::SourceEventReservationV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_core::domains::source_publication::SourceEventReservationV1
+pub struct quanta_index_core::domains::source_publication::SourceEventBindingV1
+pub quanta_index_core::domains::source_publication::SourceEventBindingV1::event: quanta_index_contract::source_coverage::SourcePublicationEvent
+pub quanta_index_core::domains::source_publication::SourceEventBindingV1::journal_key: quanta_index_core::domains::idempotency::IdempotencyKeyV1
+pub quanta_index_core::domains::source_publication::SourceEventBindingV1::target: quanta_index_contract::ipc::control::GenerationSnapshot
+impl quanta_index_core::domains::source_publication::SourceEventBindingV1
+pub fn quanta_index_core::domains::source_publication::SourceEventBindingV1::validate(&self) -> core::result::Result<(), quanta_index_core::error::CoreError>
+impl core::clone::Clone for quanta_index_core::domains::source_publication::SourceEventBindingV1
+pub fn quanta_index_core::domains::source_publication::SourceEventBindingV1::clone(&self) -> quanta_index_core::domains::source_publication::SourceEventBindingV1
+impl core::cmp::Eq for quanta_index_core::domains::source_publication::SourceEventBindingV1
+impl core::cmp::PartialEq for quanta_index_core::domains::source_publication::SourceEventBindingV1
+pub fn quanta_index_core::domains::source_publication::SourceEventBindingV1::eq(&self, other: &quanta_index_core::domains::source_publication::SourceEventBindingV1) -> bool
+impl core::fmt::Debug for quanta_index_core::domains::source_publication::SourceEventBindingV1
+pub fn quanta_index_core::domains::source_publication::SourceEventBindingV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_core::domains::source_publication::SourceEventBindingV1
+impl core::marker::Freeze for quanta_index_core::domains::source_publication::SourceEventBindingV1
+impl core::marker::Send for quanta_index_core::domains::source_publication::SourceEventBindingV1
+impl core::marker::Sync for quanta_index_core::domains::source_publication::SourceEventBindingV1
+impl core::marker::Unpin for quanta_index_core::domains::source_publication::SourceEventBindingV1
+impl core::marker::UnsafeUnpin for quanta_index_core::domains::source_publication::SourceEventBindingV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_core::domains::source_publication::SourceEventBindingV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_core::domains::source_publication::SourceEventBindingV1
+pub struct quanta_index_core::domains::source_publication::SourceEventRecordV1
+pub quanta_index_core::domains::source_publication::SourceEventRecordV1::binding: quanta_index_core::domains::source_publication::SourceEventBindingV1
+pub quanta_index_core::domains::source_publication::SourceEventRecordV1::phase: quanta_index_core::domains::source_publication::SourceEventPhaseV1
+impl core::clone::Clone for quanta_index_core::domains::source_publication::SourceEventRecordV1
+pub fn quanta_index_core::domains::source_publication::SourceEventRecordV1::clone(&self) -> quanta_index_core::domains::source_publication::SourceEventRecordV1
+impl core::cmp::Eq for quanta_index_core::domains::source_publication::SourceEventRecordV1
+impl core::cmp::PartialEq for quanta_index_core::domains::source_publication::SourceEventRecordV1
+pub fn quanta_index_core::domains::source_publication::SourceEventRecordV1::eq(&self, other: &quanta_index_core::domains::source_publication::SourceEventRecordV1) -> bool
+impl core::fmt::Debug for quanta_index_core::domains::source_publication::SourceEventRecordV1
+pub fn quanta_index_core::domains::source_publication::SourceEventRecordV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_core::domains::source_publication::SourceEventRecordV1
+impl core::marker::Freeze for quanta_index_core::domains::source_publication::SourceEventRecordV1
+impl core::marker::Send for quanta_index_core::domains::source_publication::SourceEventRecordV1
+impl core::marker::Sync for quanta_index_core::domains::source_publication::SourceEventRecordV1
+impl core::marker::Unpin for quanta_index_core::domains::source_publication::SourceEventRecordV1
+impl core::marker::UnsafeUnpin for quanta_index_core::domains::source_publication::SourceEventRecordV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_core::domains::source_publication::SourceEventRecordV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_core::domains::source_publication::SourceEventRecordV1
+pub trait quanta_index_core::domains::source_publication::SourcePublicationCatalogPort: core::marker::Send + core::marker::Sync
+pub fn quanta_index_core::domains::source_publication::SourcePublicationCatalogPort::inspect_source_event(&self, repo: &quanta_index_contract_base::ids::RepoId, event: &quanta_index_contract::source_coverage::SourcePublicationEvent) -> core::result::Result<core::option::Option<quanta_index_core::domains::source_publication::SourceEventRecordV1>, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::domains::source_publication::SourcePublicationCatalogPort::reconcile_source_event(&self, repo: &quanta_index_contract_base::ids::RepoId, event: &quanta_index_contract::source_coverage::SourcePublicationEvent, journal: &dyn quanta_index_core::domains::idempotency::IdempotencyCatalogPort) -> core::result::Result<quanta_index_core::domains::source_publication::SourceEventRecordV1, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::domains::source_publication::SourcePublicationCatalogPort::reserve_source_event(&self, binding: &quanta_index_core::domains::source_publication::SourceEventBindingV1) -> core::result::Result<quanta_index_core::domains::source_publication::SourceEventReservationV1, quanta_index_core::error::CoreError>
 pub mod quanta_index_core::domains::structural
 pub enum quanta_index_core::domains::structural::StructuralError
 pub quanta_index_core::domains::structural::StructuralError::AuxEpochExpired(alloc::string::String)
@@ -3382,6 +3615,9 @@ pub quanta_index_core::domains::structural::StructuralError::InvalidRequest(allo
 pub quanta_index_core::domains::structural::StructuralError::LangNotSupported(alloc::string::String)
 pub quanta_index_core::domains::structural::StructuralError::ParseTreeProducerUnavailable
 pub quanta_index_core::domains::structural::StructuralError::ProducerExecution(alloc::string::String)
+pub quanta_index_core::domains::structural::StructuralError::RegexPlanLimitExceeded(alloc::string::String)
+pub quanta_index_core::domains::structural::StructuralError::RequestCancelled(alloc::string::String)
+pub quanta_index_core::domains::structural::StructuralError::RequestDeadlineExceeded(alloc::string::String)
 pub quanta_index_core::domains::structural::StructuralError::ShardUnavailable
 impl quanta_index_core::StructuralError
 pub fn quanta_index_core::StructuralError::code(&self) -> quanta_index_contract::ipc::error::SearchPlaneErrorCodeV2
@@ -3552,7 +3788,7 @@ pub struct quanta_index_core::domains::structural::StructuralService
 impl quanta_index_core::StructuralService
 pub fn quanta_index_core::StructuralService::new(producer: alloc::sync::Arc<(dyn quanta_index_core::StructuralProducerPort + core::marker::Send + core::marker::Sync)>) -> Self
 pub fn quanta_index_core::StructuralService::policy(&self) -> quanta_index_core::StructuralPolicy
-pub fn quanta_index_core::StructuralService::query(&self, request: &quanta_index_core::StructuralQueryRequest) -> core::result::Result<quanta_index_core::StructuralQueryResponse, quanta_index_core::StructuralError>
+pub fn quanta_index_core::StructuralService::query(&self, request: &quanta_index_core::StructuralQueryRequest, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<quanta_index_core::StructuralQueryResponse, quanta_index_core::StructuralError>
 pub fn quanta_index_core::StructuralService::with_policy(producer: alloc::sync::Arc<(dyn quanta_index_core::StructuralProducerPort + core::marker::Send + core::marker::Sync)>, policy: quanta_index_core::StructuralPolicy) -> Self
 impl core::marker::Freeze for quanta_index_core::StructuralService
 impl core::marker::Send for quanta_index_core::StructuralService
@@ -3562,8 +3798,9 @@ impl core::marker::UnsafeUnpin for quanta_index_core::StructuralService
 impl !core::panic::unwind_safe::RefUnwindSafe for quanta_index_core::StructuralService
 impl !core::panic::unwind_safe::UnwindSafe for quanta_index_core::StructuralService
 pub trait quanta_index_core::domains::structural::StructuralProducerPort: core::marker::Send + core::marker::Sync
-pub fn quanta_index_core::domains::structural::StructuralProducerPort::execute(&self, request: &quanta_index_core::StructuralQueryRequest) -> core::result::Result<alloc::vec::Vec<quanta_index_core::StructuralMatchCandidate>, quanta_index_core::StructuralError>
+pub fn quanta_index_core::domains::structural::StructuralProducerPort::execute(&self, request: &quanta_index_core::StructuralQueryRequest, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<alloc::vec::Vec<quanta_index_core::StructuralMatchCandidate>, quanta_index_core::StructuralError>
 pub fn quanta_index_core::domains::structural::StructuralProducerPort::readiness(&self, request: &quanta_index_core::StructuralQueryRequest) -> quanta_index_core::StructuralReadiness
+pub fn quanta_index_core::domains::structural::structural_checkpoint(budget: &quanta_index_core::request_budget::RequestBudgetV1, stage: &'static str) -> core::result::Result<(), quanta_index_core::StructuralError>
 pub mod quanta_index_core::error
 pub enum quanta_index_core::error::CoreError
 pub quanta_index_core::error::CoreError::InvalidContract(alloc::string::String)
@@ -3724,19 +3961,25 @@ impl quanta_index_core::request_budget::RequestBudgetV1
 pub fn quanta_index_core::request_budget::RequestBudgetV1::cancel_handle(&self) -> quanta_index_core::request_budget::CancelHandleV1
 pub fn quanta_index_core::request_budget::RequestBudgetV1::cancel_waiter(&self, wake: alloc::sync::Arc<(dyn core::ops::function::Fn() + core::marker::Send + core::marker::Sync)>) -> quanta_index_core::request_budget::CancelWaiterGuardV1
 pub fn quanta_index_core::request_budget::RequestBudgetV1::checkpoint(&self, stage: &'static str) -> core::result::Result<(), quanta_index_core::error::CoreError>
+pub fn quanta_index_core::request_budget::RequestBudgetV1::consume_semantic_work_v1(&self, units: u64) -> core::result::Result<(), quanta_index_core::error::CoreError>
 pub fn quanta_index_core::request_budget::RequestBudgetV1::correlation(&self) -> core::option::Option<quanta_index_core::request_budget::RequestCorrelationV1>
 pub const fn quanta_index_core::request_budget::RequestBudgetV1::deadline(&self) -> std::time::Instant
 pub fn quanta_index_core::request_budget::RequestBudgetV1::for_duration(budget: core::time::Duration) -> Self
 pub fn quanta_index_core::request_budget::RequestBudgetV1::interrupted_at(&self, stage: &'static str) -> core::option::Option<quanta_index_core::error::CoreError>
 pub fn quanta_index_core::request_budget::RequestBudgetV1::interruption(&self) -> core::option::Option<quanta_index_core::request_budget::BudgetInterruptionV1>
 pub fn quanta_index_core::request_budget::RequestBudgetV1::is_cancelled(&self) -> bool
+pub fn quanta_index_core::request_budget::RequestBudgetV1::lexical_preview_budget(&self, max_work: u64, max_bytes: u64) -> core::result::Result<quanta_index_core::LexicalCollectionBudget, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::request_budget::RequestBudgetV1::record_provider_stage_v1(&self, stage: quanta_index_core::request_budget::RequestProviderStageV1)
 pub fn quanta_index_core::request_budget::RequestBudgetV1::remaining(&self) -> core::time::Duration
+pub fn quanta_index_core::request_budget::RequestBudgetV1::reserve_lexical_output_group(&self) -> core::result::Result<core::option::Option<usize>, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::request_budget::RequestBudgetV1::response_request_id(&self) -> u64
+pub fn quanta_index_core::request_budget::RequestBudgetV1::retain_lexical_output(&self, slot: usize, reservations: alloc::vec::Vec<quanta_index_core::LexicalMemoryReservation>) -> core::result::Result<(), quanta_index_core::error::CoreError>
+pub fn quanta_index_core::request_budget::RequestBudgetV1::semantic_work_consumed_v1(&self) -> core::result::Result<core::option::Option<u64>, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::request_budget::RequestBudgetV1::unbounded() -> Self
 pub fn quanta_index_core::request_budget::RequestBudgetV1::until(deadline: std::time::Instant) -> Self
 pub fn quanta_index_core::request_budget::RequestBudgetV1::with_correlation(self, correlation: quanta_index_core::request_budget::RequestCorrelationV1) -> Self
 pub fn quanta_index_core::request_budget::RequestBudgetV1::with_diagnostics(self, diagnostics: alloc::sync::Arc<dyn quanta_index_core::request_budget::RequestStageDiagnosticPortV1>) -> Self
+pub fn quanta_index_core::request_budget::RequestBudgetV1::with_semantic_work_limit_v1(self, limit: u64) -> core::result::Result<Self, quanta_index_core::error::CoreError>
 impl core::clone::Clone for quanta_index_core::request_budget::RequestBudgetV1
 pub fn quanta_index_core::request_budget::RequestBudgetV1::clone(&self) -> quanta_index_core::request_budget::RequestBudgetV1
 impl core::fmt::Debug for quanta_index_core::request_budget::RequestBudgetV1
@@ -3998,6 +4241,7 @@ impl core::marker::UnsafeUnpin for quanta_index_core::DenseIndexV1
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_core::DenseIndexV1
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_core::DenseIndexV1
 pub enum quanta_index_core::DenseLaneAttestationV1
+pub quanta_index_core::DenseLaneAttestationV1::ExactScanOfSealedRows
 pub quanta_index_core::DenseLaneAttestationV1::Sealed
 pub quanta_index_core::DenseLaneAttestationV1::SealedByAnotherLibraryVersion
 impl core::clone::Clone for quanta_index_core::DenseLaneAttestationV1
@@ -4298,6 +4542,45 @@ impl core::marker::Unpin for quanta_index_core::LexicalCandidateExplanationV1
 impl core::marker::UnsafeUnpin for quanta_index_core::LexicalCandidateExplanationV1
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_core::LexicalCandidateExplanationV1
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_core::LexicalCandidateExplanationV1
+pub enum quanta_index_core::LexicalEndpoint
+pub quanta_index_core::LexicalEndpoint::Symbol
+pub quanta_index_core::LexicalEndpoint::Text
+impl core::clone::Clone for quanta_index_core::LexicalEndpoint
+pub fn quanta_index_core::LexicalEndpoint::clone(&self) -> quanta_index_core::LexicalEndpoint
+impl core::cmp::Eq for quanta_index_core::LexicalEndpoint
+impl core::cmp::PartialEq for quanta_index_core::LexicalEndpoint
+pub fn quanta_index_core::LexicalEndpoint::eq(&self, other: &quanta_index_core::LexicalEndpoint) -> bool
+impl core::fmt::Debug for quanta_index_core::LexicalEndpoint
+pub fn quanta_index_core::LexicalEndpoint::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_core::LexicalEndpoint
+impl core::marker::StructuralPartialEq for quanta_index_core::LexicalEndpoint
+impl core::marker::Freeze for quanta_index_core::LexicalEndpoint
+impl core::marker::Send for quanta_index_core::LexicalEndpoint
+impl core::marker::Sync for quanta_index_core::LexicalEndpoint
+impl core::marker::Unpin for quanta_index_core::LexicalEndpoint
+impl core::marker::UnsafeUnpin for quanta_index_core::LexicalEndpoint
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_core::LexicalEndpoint
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_core::LexicalEndpoint
+pub enum quanta_index_core::LexicalPlanKind
+pub quanta_index_core::LexicalPlanKind::Symbol
+pub quanta_index_core::LexicalPlanKind::SymbolAsText
+pub quanta_index_core::LexicalPlanKind::Text
+impl core::clone::Clone for quanta_index_core::LexicalPlanKind
+pub fn quanta_index_core::LexicalPlanKind::clone(&self) -> quanta_index_core::LexicalPlanKind
+impl core::cmp::Eq for quanta_index_core::LexicalPlanKind
+impl core::cmp::PartialEq for quanta_index_core::LexicalPlanKind
+pub fn quanta_index_core::LexicalPlanKind::eq(&self, other: &quanta_index_core::LexicalPlanKind) -> bool
+impl core::fmt::Debug for quanta_index_core::LexicalPlanKind
+pub fn quanta_index_core::LexicalPlanKind::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_core::LexicalPlanKind
+impl core::marker::StructuralPartialEq for quanta_index_core::LexicalPlanKind
+impl core::marker::Freeze for quanta_index_core::LexicalPlanKind
+impl core::marker::Send for quanta_index_core::LexicalPlanKind
+impl core::marker::Sync for quanta_index_core::LexicalPlanKind
+impl core::marker::Unpin for quanta_index_core::LexicalPlanKind
+impl core::marker::UnsafeUnpin for quanta_index_core::LexicalPlanKind
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_core::LexicalPlanKind
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_core::LexicalPlanKind
 pub enum quanta_index_core::LexicalPredicateAliasV1
 pub quanta_index_core::LexicalPredicateAliasV1::FileContainsContent
 pub quanta_index_core::LexicalPredicateAliasV1::RepoContainsCommitAfter
@@ -4365,8 +4648,11 @@ pub quanta_index_core::LexicalPredicateV1::RepoHasFile
 pub quanta_index_core::LexicalPredicateV1::RepoHasMeta
 pub quanta_index_core::LexicalPredicateV1::RepoHasTopic
 pub quanta_index_core::LexicalPredicateV1::SymbolHasName
+pub quanta_index_core::LexicalPredicateV1::SymbolLocalNameExact
+pub quanta_index_core::LexicalPredicateV1::SymbolQualifiedNameExact
 impl quanta_index_core::LexicalPredicateV1
-pub const quanta_index_core::LexicalPredicateV1::ALL: [Self; 11]
+pub const quanta_index_core::LexicalPredicateV1::ALL: [Self; 13]
+pub fn quanta_index_core::LexicalPredicateV1::exact_symbol_name_argument(self, args: &[quanta_index_lq_norm::ast::LqPredicateArg]) -> core::result::Result<core::option::Option<&str>, quanta_index_core::error::CoreError>
 pub const fn quanta_index_core::LexicalPredicateV1::family(self) -> quanta_index_core::LexicalPredicateFamilyV1
 pub fn quanta_index_core::LexicalPredicateV1::from_canonical_name(name: &str) -> core::option::Option<Self>
 pub const fn quanta_index_core::LexicalPredicateV1::name(self) -> &'static str
@@ -4754,6 +5040,25 @@ impl core::marker::Unpin for quanta_index_core::domains::generation::SealedGener
 impl core::marker::UnsafeUnpin for quanta_index_core::domains::generation::SealedGenerationReclaimOutcomeV1
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_core::domains::generation::SealedGenerationReclaimOutcomeV1
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_core::domains::generation::SealedGenerationReclaimOutcomeV1
+pub enum quanta_index_core::SearchCorpusPreflightPhaseV1
+pub quanta_index_core::SearchCorpusPreflightPhaseV1::BeforeIntent
+pub quanta_index_core::SearchCorpusPreflightPhaseV1::UnderOperationLock
+impl core::clone::Clone for quanta_index_core::SearchCorpusPreflightPhaseV1
+pub fn quanta_index_core::SearchCorpusPreflightPhaseV1::clone(&self) -> quanta_index_core::SearchCorpusPreflightPhaseV1
+impl core::cmp::Eq for quanta_index_core::SearchCorpusPreflightPhaseV1
+impl core::cmp::PartialEq for quanta_index_core::SearchCorpusPreflightPhaseV1
+pub fn quanta_index_core::SearchCorpusPreflightPhaseV1::eq(&self, other: &quanta_index_core::SearchCorpusPreflightPhaseV1) -> bool
+impl core::fmt::Debug for quanta_index_core::SearchCorpusPreflightPhaseV1
+pub fn quanta_index_core::SearchCorpusPreflightPhaseV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_core::SearchCorpusPreflightPhaseV1
+impl core::marker::StructuralPartialEq for quanta_index_core::SearchCorpusPreflightPhaseV1
+impl core::marker::Freeze for quanta_index_core::SearchCorpusPreflightPhaseV1
+impl core::marker::Send for quanta_index_core::SearchCorpusPreflightPhaseV1
+impl core::marker::Sync for quanta_index_core::SearchCorpusPreflightPhaseV1
+impl core::marker::Unpin for quanta_index_core::SearchCorpusPreflightPhaseV1
+impl core::marker::UnsafeUnpin for quanta_index_core::SearchCorpusPreflightPhaseV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_core::SearchCorpusPreflightPhaseV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_core::SearchCorpusPreflightPhaseV1
 pub enum quanta_index_core::SemanticEgressPolicyV1
 pub quanta_index_core::SemanticEgressPolicyV1::Denied
 pub quanta_index_core::SemanticEgressPolicyV1::External(quanta_index_core::SemanticEgressGrantV1)
@@ -4813,6 +5118,44 @@ impl core::marker::Unpin for quanta_index_core::SemanticWindowPlacementV1
 impl core::marker::UnsafeUnpin for quanta_index_core::SemanticWindowPlacementV1
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_core::SemanticWindowPlacementV1
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_core::SemanticWindowPlacementV1
+pub enum quanta_index_core::SourceEventPhaseV1
+pub quanta_index_core::SourceEventPhaseV1::Active
+pub quanta_index_core::SourceEventPhaseV1::Pending
+pub quanta_index_core::SourceEventPhaseV1::Staged
+impl core::clone::Clone for quanta_index_core::domains::source_publication::SourceEventPhaseV1
+pub fn quanta_index_core::domains::source_publication::SourceEventPhaseV1::clone(&self) -> quanta_index_core::domains::source_publication::SourceEventPhaseV1
+impl core::cmp::Eq for quanta_index_core::domains::source_publication::SourceEventPhaseV1
+impl core::cmp::PartialEq for quanta_index_core::domains::source_publication::SourceEventPhaseV1
+pub fn quanta_index_core::domains::source_publication::SourceEventPhaseV1::eq(&self, other: &quanta_index_core::domains::source_publication::SourceEventPhaseV1) -> bool
+impl core::fmt::Debug for quanta_index_core::domains::source_publication::SourceEventPhaseV1
+pub fn quanta_index_core::domains::source_publication::SourceEventPhaseV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_core::domains::source_publication::SourceEventPhaseV1
+impl core::marker::StructuralPartialEq for quanta_index_core::domains::source_publication::SourceEventPhaseV1
+impl core::marker::Freeze for quanta_index_core::domains::source_publication::SourceEventPhaseV1
+impl core::marker::Send for quanta_index_core::domains::source_publication::SourceEventPhaseV1
+impl core::marker::Sync for quanta_index_core::domains::source_publication::SourceEventPhaseV1
+impl core::marker::Unpin for quanta_index_core::domains::source_publication::SourceEventPhaseV1
+impl core::marker::UnsafeUnpin for quanta_index_core::domains::source_publication::SourceEventPhaseV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_core::domains::source_publication::SourceEventPhaseV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_core::domains::source_publication::SourceEventPhaseV1
+pub enum quanta_index_core::SourceEventReservationV1
+pub quanta_index_core::SourceEventReservationV1::Existing(quanta_index_core::domains::source_publication::SourceEventRecordV1)
+pub quanta_index_core::SourceEventReservationV1::Reserved(quanta_index_core::domains::source_publication::SourceEventRecordV1)
+impl core::clone::Clone for quanta_index_core::domains::source_publication::SourceEventReservationV1
+pub fn quanta_index_core::domains::source_publication::SourceEventReservationV1::clone(&self) -> quanta_index_core::domains::source_publication::SourceEventReservationV1
+impl core::cmp::Eq for quanta_index_core::domains::source_publication::SourceEventReservationV1
+impl core::cmp::PartialEq for quanta_index_core::domains::source_publication::SourceEventReservationV1
+pub fn quanta_index_core::domains::source_publication::SourceEventReservationV1::eq(&self, other: &quanta_index_core::domains::source_publication::SourceEventReservationV1) -> bool
+impl core::fmt::Debug for quanta_index_core::domains::source_publication::SourceEventReservationV1
+pub fn quanta_index_core::domains::source_publication::SourceEventReservationV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_core::domains::source_publication::SourceEventReservationV1
+impl core::marker::Freeze for quanta_index_core::domains::source_publication::SourceEventReservationV1
+impl core::marker::Send for quanta_index_core::domains::source_publication::SourceEventReservationV1
+impl core::marker::Sync for quanta_index_core::domains::source_publication::SourceEventReservationV1
+impl core::marker::Unpin for quanta_index_core::domains::source_publication::SourceEventReservationV1
+impl core::marker::UnsafeUnpin for quanta_index_core::domains::source_publication::SourceEventReservationV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_core::domains::source_publication::SourceEventReservationV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_core::domains::source_publication::SourceEventReservationV1
 pub enum quanta_index_core::StructuralError
 pub quanta_index_core::StructuralError::AuxEpochExpired(alloc::string::String)
 pub quanta_index_core::StructuralError::AuxEpochUnknown(alloc::string::String)
@@ -4822,6 +5165,9 @@ pub quanta_index_core::StructuralError::InvalidRequest(alloc::string::String)
 pub quanta_index_core::StructuralError::LangNotSupported(alloc::string::String)
 pub quanta_index_core::StructuralError::ParseTreeProducerUnavailable
 pub quanta_index_core::StructuralError::ProducerExecution(alloc::string::String)
+pub quanta_index_core::StructuralError::RegexPlanLimitExceeded(alloc::string::String)
+pub quanta_index_core::StructuralError::RequestCancelled(alloc::string::String)
+pub quanta_index_core::StructuralError::RequestDeadlineExceeded(alloc::string::String)
 pub quanta_index_core::StructuralError::ShardUnavailable
 impl quanta_index_core::StructuralError
 pub fn quanta_index_core::StructuralError::code(&self) -> quanta_index_contract::ipc::error::SearchPlaneErrorCodeV2
@@ -5688,12 +6034,35 @@ impl core::marker::Unpin for quanta_index_core::LexicalArtifactIdentityV1
 impl core::marker::UnsafeUnpin for quanta_index_core::LexicalArtifactIdentityV1
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_core::LexicalArtifactIdentityV1
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_core::LexicalArtifactIdentityV1
+pub struct quanta_index_core::LexicalCollectionBudget
+impl quanta_index_core::LexicalCollectionBudget
+pub fn quanta_index_core::LexicalCollectionBudget::charge_work(&self, units: u64) -> core::result::Result<(), quanta_index_core::error::CoreError>
+pub fn quanta_index_core::LexicalCollectionBudget::failure(&self) -> core::option::Option<quanta_index_core::error::CoreError>
+pub fn quanta_index_core::LexicalCollectionBudget::new(max_work: u64, max_bytes: u64) -> core::result::Result<Self, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::LexicalCollectionBudget::peak_bytes(&self) -> u64
+pub fn quanta_index_core::LexicalCollectionBudget::reserve_bytes(&self, bytes: u64) -> core::result::Result<quanta_index_core::LexicalMemoryReservation, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::LexicalCollectionBudget::resident_bytes(&self) -> u64
+pub fn quanta_index_core::LexicalCollectionBudget::used_work(&self) -> u64
+impl core::clone::Clone for quanta_index_core::LexicalCollectionBudget
+pub fn quanta_index_core::LexicalCollectionBudget::clone(&self) -> quanta_index_core::LexicalCollectionBudget
+impl core::fmt::Debug for quanta_index_core::LexicalCollectionBudget
+pub fn quanta_index_core::LexicalCollectionBudget::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Freeze for quanta_index_core::LexicalCollectionBudget
+impl core::marker::Send for quanta_index_core::LexicalCollectionBudget
+impl core::marker::Sync for quanta_index_core::LexicalCollectionBudget
+impl core::marker::Unpin for quanta_index_core::LexicalCollectionBudget
+impl core::marker::UnsafeUnpin for quanta_index_core::LexicalCollectionBudget
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_core::LexicalCollectionBudget
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_core::LexicalCollectionBudget
 pub struct quanta_index_core::LexicalExecutionBudgetV1
 impl quanta_index_core::LexicalExecutionBudgetV1
 pub const quanta_index_core::LexicalExecutionBudgetV1::DEFAULT: Self
+pub fn quanta_index_core::LexicalExecutionBudgetV1::collection_budget(self, max_segments: usize) -> core::result::Result<quanta_index_core::LexicalCollectionBudget, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::LexicalExecutionBudgetV1::exceeded(self, surface: &str) -> quanta_index_core::error::CoreError
+pub const fn quanta_index_core::LexicalExecutionBudgetV1::max_collection_bytes(self) -> u64
 pub const fn quanta_index_core::LexicalExecutionBudgetV1::max_examined_candidates(self) -> usize
 pub fn quanta_index_core::LexicalExecutionBudgetV1::new(max_examined_candidates: usize) -> core::result::Result<Self, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::LexicalExecutionBudgetV1::new_with_collection_bytes(max_examined_candidates: usize, max_collection_bytes: u64) -> core::result::Result<Self, quanta_index_core::error::CoreError>
 impl core::clone::Clone for quanta_index_core::LexicalExecutionBudgetV1
 pub fn quanta_index_core::LexicalExecutionBudgetV1::clone(&self) -> quanta_index_core::LexicalExecutionBudgetV1
 impl core::cmp::Eq for quanta_index_core::LexicalExecutionBudgetV1
@@ -5710,6 +6079,18 @@ impl core::marker::Unpin for quanta_index_core::LexicalExecutionBudgetV1
 impl core::marker::UnsafeUnpin for quanta_index_core::LexicalExecutionBudgetV1
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_core::LexicalExecutionBudgetV1
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_core::LexicalExecutionBudgetV1
+pub struct quanta_index_core::LexicalMemoryReservation
+impl core::fmt::Debug for quanta_index_core::LexicalMemoryReservation
+pub fn quanta_index_core::LexicalMemoryReservation::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for quanta_index_core::LexicalMemoryReservation
+pub fn quanta_index_core::LexicalMemoryReservation::drop(&mut self)
+impl core::marker::Freeze for quanta_index_core::LexicalMemoryReservation
+impl core::marker::Send for quanta_index_core::LexicalMemoryReservation
+impl core::marker::Sync for quanta_index_core::LexicalMemoryReservation
+impl core::marker::Unpin for quanta_index_core::LexicalMemoryReservation
+impl core::marker::UnsafeUnpin for quanta_index_core::LexicalMemoryReservation
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_core::LexicalMemoryReservation
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_core::LexicalMemoryReservation
 pub struct quanta_index_core::LexicalPageSpec
 pub quanta_index_core::LexicalPageSpec::after: core::option::Option<quanta_index_contract_base::query::lexical_cursor::LexicalCursor>
 pub quanta_index_core::LexicalPageSpec::fetch: u32
@@ -5731,6 +6112,10 @@ impl core::marker::UnsafeUnpin for quanta_index_core::LexicalPageSpec
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_core::LexicalPageSpec
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_core::LexicalPageSpec
 pub struct quanta_index_core::LexicalPolicy
+impl quanta_index_core::LexicalPolicy
+pub fn quanta_index_core::LexicalPolicy::plan_candidate_filter_query(query: &quanta_index_contract::query::expression::LqQuery, constraints: &quanta_index_contract_base::query::constraints::QueryConstraintSetV1, candidate_ids: &alloc::collections::btree::set::BTreeSet<alloc::string::String>) -> core::result::Result<quanta_index_core::ValidatedLexicalPlan, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::LexicalPolicy::plan_query(query: &quanta_index_contract::query::expression::LqQuery, constraints: &quanta_index_contract_base::query::constraints::QueryConstraintSetV1, endpoint: quanta_index_core::LexicalEndpoint) -> core::result::Result<quanta_index_core::ValidatedLexicalPlan, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::LexicalPolicy::unsupported_symbol_query_text(query: &quanta_index_contract::query::expression::LqQuery, expr: &quanta_index_lq_norm::ast::LqExpr, symbol_domain: bool) -> bool
 impl quanta_index_core::LexicalPolicy
 pub fn quanta_index_core::LexicalPolicy::validate_query(query: &quanta_index_contract::query::expression::LqQuery) -> core::result::Result<(), quanta_index_core::error::CoreError>
 pub fn quanta_index_core::LexicalPolicy::validate_query_with_constraints(query: &quanta_index_contract::query::expression::LqQuery, constraints: &quanta_index_contract_base::query::constraints::QueryConstraintSetV1) -> core::result::Result<(), quanta_index_core::error::CoreError>
@@ -5786,23 +6171,23 @@ impl core::marker::Unpin for quanta_index_core::LexicalScoreTraceV1
 impl core::marker::UnsafeUnpin for quanta_index_core::LexicalScoreTraceV1
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_core::LexicalScoreTraceV1
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_core::LexicalScoreTraceV1
-pub struct quanta_index_core::LexicalSearchPageV1
-pub quanta_index_core::LexicalSearchPageV1::candidates: alloc::vec::Vec<quanta_index_contract_base::results::candidates::LexicalCandidate>
+pub struct quanta_index_core::LexicalSearchPageV1<Candidate>
+pub quanta_index_core::LexicalSearchPageV1::candidates: alloc::vec::Vec<Candidate>
 pub quanta_index_core::LexicalSearchPageV1::exact_total: core::option::Option<u64>
-impl core::clone::Clone for quanta_index_core::LexicalSearchPageV1
-pub fn quanta_index_core::LexicalSearchPageV1::clone(&self) -> quanta_index_core::LexicalSearchPageV1
-impl core::cmp::PartialEq for quanta_index_core::LexicalSearchPageV1
-pub fn quanta_index_core::LexicalSearchPageV1::eq(&self, other: &quanta_index_core::LexicalSearchPageV1) -> bool
-impl core::fmt::Debug for quanta_index_core::LexicalSearchPageV1
-pub fn quanta_index_core::LexicalSearchPageV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for quanta_index_core::LexicalSearchPageV1
-impl core::marker::Freeze for quanta_index_core::LexicalSearchPageV1
-impl core::marker::Send for quanta_index_core::LexicalSearchPageV1
-impl core::marker::Sync for quanta_index_core::LexicalSearchPageV1
-impl core::marker::Unpin for quanta_index_core::LexicalSearchPageV1
-impl core::marker::UnsafeUnpin for quanta_index_core::LexicalSearchPageV1
-impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_core::LexicalSearchPageV1
-impl core::panic::unwind_safe::UnwindSafe for quanta_index_core::LexicalSearchPageV1
+impl<Candidate: core::clone::Clone> core::clone::Clone for quanta_index_core::LexicalSearchPageV1<Candidate>
+pub fn quanta_index_core::LexicalSearchPageV1<Candidate>::clone(&self) -> quanta_index_core::LexicalSearchPageV1<Candidate>
+impl<Candidate: core::cmp::PartialEq> core::cmp::PartialEq for quanta_index_core::LexicalSearchPageV1<Candidate>
+pub fn quanta_index_core::LexicalSearchPageV1<Candidate>::eq(&self, other: &quanta_index_core::LexicalSearchPageV1<Candidate>) -> bool
+impl<Candidate: core::cmp::PartialEq> core::marker::StructuralPartialEq for quanta_index_core::LexicalSearchPageV1<Candidate>
+impl<Candidate: core::fmt::Debug> core::fmt::Debug for quanta_index_core::LexicalSearchPageV1<Candidate>
+pub fn quanta_index_core::LexicalSearchPageV1<Candidate>::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<Candidate> core::marker::Freeze for quanta_index_core::LexicalSearchPageV1<Candidate>
+impl<Candidate> core::marker::Send for quanta_index_core::LexicalSearchPageV1<Candidate> where Candidate: core::marker::Send
+impl<Candidate> core::marker::Sync for quanta_index_core::LexicalSearchPageV1<Candidate> where Candidate: core::marker::Sync
+impl<Candidate> core::marker::Unpin for quanta_index_core::LexicalSearchPageV1<Candidate> where Candidate: core::marker::Unpin
+impl<Candidate> core::marker::UnsafeUnpin for quanta_index_core::LexicalSearchPageV1<Candidate>
+impl<Candidate> core::panic::unwind_safe::RefUnwindSafe for quanta_index_core::LexicalSearchPageV1<Candidate> where Candidate: core::panic::unwind_safe::RefUnwindSafe
+impl<Candidate> core::panic::unwind_safe::UnwindSafe for quanta_index_core::LexicalSearchPageV1<Candidate> where Candidate: core::panic::unwind_safe::UnwindSafe
 pub struct quanta_index_core::LexicalWriterCacheStats
 pub quanta_index_core::LexicalWriterCacheStats::allocated_heap_bytes: u64
 pub quanta_index_core::LexicalWriterCacheStats::idle_releases: u64
@@ -6431,19 +6816,25 @@ impl quanta_index_core::request_budget::RequestBudgetV1
 pub fn quanta_index_core::request_budget::RequestBudgetV1::cancel_handle(&self) -> quanta_index_core::request_budget::CancelHandleV1
 pub fn quanta_index_core::request_budget::RequestBudgetV1::cancel_waiter(&self, wake: alloc::sync::Arc<(dyn core::ops::function::Fn() + core::marker::Send + core::marker::Sync)>) -> quanta_index_core::request_budget::CancelWaiterGuardV1
 pub fn quanta_index_core::request_budget::RequestBudgetV1::checkpoint(&self, stage: &'static str) -> core::result::Result<(), quanta_index_core::error::CoreError>
+pub fn quanta_index_core::request_budget::RequestBudgetV1::consume_semantic_work_v1(&self, units: u64) -> core::result::Result<(), quanta_index_core::error::CoreError>
 pub fn quanta_index_core::request_budget::RequestBudgetV1::correlation(&self) -> core::option::Option<quanta_index_core::request_budget::RequestCorrelationV1>
 pub const fn quanta_index_core::request_budget::RequestBudgetV1::deadline(&self) -> std::time::Instant
 pub fn quanta_index_core::request_budget::RequestBudgetV1::for_duration(budget: core::time::Duration) -> Self
 pub fn quanta_index_core::request_budget::RequestBudgetV1::interrupted_at(&self, stage: &'static str) -> core::option::Option<quanta_index_core::error::CoreError>
 pub fn quanta_index_core::request_budget::RequestBudgetV1::interruption(&self) -> core::option::Option<quanta_index_core::request_budget::BudgetInterruptionV1>
 pub fn quanta_index_core::request_budget::RequestBudgetV1::is_cancelled(&self) -> bool
+pub fn quanta_index_core::request_budget::RequestBudgetV1::lexical_preview_budget(&self, max_work: u64, max_bytes: u64) -> core::result::Result<quanta_index_core::LexicalCollectionBudget, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::request_budget::RequestBudgetV1::record_provider_stage_v1(&self, stage: quanta_index_core::request_budget::RequestProviderStageV1)
 pub fn quanta_index_core::request_budget::RequestBudgetV1::remaining(&self) -> core::time::Duration
+pub fn quanta_index_core::request_budget::RequestBudgetV1::reserve_lexical_output_group(&self) -> core::result::Result<core::option::Option<usize>, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::request_budget::RequestBudgetV1::response_request_id(&self) -> u64
+pub fn quanta_index_core::request_budget::RequestBudgetV1::retain_lexical_output(&self, slot: usize, reservations: alloc::vec::Vec<quanta_index_core::LexicalMemoryReservation>) -> core::result::Result<(), quanta_index_core::error::CoreError>
+pub fn quanta_index_core::request_budget::RequestBudgetV1::semantic_work_consumed_v1(&self) -> core::result::Result<core::option::Option<u64>, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::request_budget::RequestBudgetV1::unbounded() -> Self
 pub fn quanta_index_core::request_budget::RequestBudgetV1::until(deadline: std::time::Instant) -> Self
 pub fn quanta_index_core::request_budget::RequestBudgetV1::with_correlation(self, correlation: quanta_index_core::request_budget::RequestCorrelationV1) -> Self
 pub fn quanta_index_core::request_budget::RequestBudgetV1::with_diagnostics(self, diagnostics: alloc::sync::Arc<dyn quanta_index_core::request_budget::RequestStageDiagnosticPortV1>) -> Self
+pub fn quanta_index_core::request_budget::RequestBudgetV1::with_semantic_work_limit_v1(self, limit: u64) -> core::result::Result<Self, quanta_index_core::error::CoreError>
 impl core::clone::Clone for quanta_index_core::request_budget::RequestBudgetV1
 pub fn quanta_index_core::request_budget::RequestBudgetV1::clone(&self) -> quanta_index_core::request_budget::RequestBudgetV1
 impl core::fmt::Debug for quanta_index_core::request_budget::RequestBudgetV1
@@ -6934,6 +7325,45 @@ impl core::marker::Unpin for quanta_index_core::SemanticWindowResidencyV1
 impl core::marker::UnsafeUnpin for quanta_index_core::SemanticWindowResidencyV1
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_core::SemanticWindowResidencyV1
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_core::SemanticWindowResidencyV1
+pub struct quanta_index_core::SourceEventBindingV1
+pub quanta_index_core::SourceEventBindingV1::event: quanta_index_contract::source_coverage::SourcePublicationEvent
+pub quanta_index_core::SourceEventBindingV1::journal_key: quanta_index_core::domains::idempotency::IdempotencyKeyV1
+pub quanta_index_core::SourceEventBindingV1::target: quanta_index_contract::ipc::control::GenerationSnapshot
+impl quanta_index_core::domains::source_publication::SourceEventBindingV1
+pub fn quanta_index_core::domains::source_publication::SourceEventBindingV1::validate(&self) -> core::result::Result<(), quanta_index_core::error::CoreError>
+impl core::clone::Clone for quanta_index_core::domains::source_publication::SourceEventBindingV1
+pub fn quanta_index_core::domains::source_publication::SourceEventBindingV1::clone(&self) -> quanta_index_core::domains::source_publication::SourceEventBindingV1
+impl core::cmp::Eq for quanta_index_core::domains::source_publication::SourceEventBindingV1
+impl core::cmp::PartialEq for quanta_index_core::domains::source_publication::SourceEventBindingV1
+pub fn quanta_index_core::domains::source_publication::SourceEventBindingV1::eq(&self, other: &quanta_index_core::domains::source_publication::SourceEventBindingV1) -> bool
+impl core::fmt::Debug for quanta_index_core::domains::source_publication::SourceEventBindingV1
+pub fn quanta_index_core::domains::source_publication::SourceEventBindingV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_core::domains::source_publication::SourceEventBindingV1
+impl core::marker::Freeze for quanta_index_core::domains::source_publication::SourceEventBindingV1
+impl core::marker::Send for quanta_index_core::domains::source_publication::SourceEventBindingV1
+impl core::marker::Sync for quanta_index_core::domains::source_publication::SourceEventBindingV1
+impl core::marker::Unpin for quanta_index_core::domains::source_publication::SourceEventBindingV1
+impl core::marker::UnsafeUnpin for quanta_index_core::domains::source_publication::SourceEventBindingV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_core::domains::source_publication::SourceEventBindingV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_core::domains::source_publication::SourceEventBindingV1
+pub struct quanta_index_core::SourceEventRecordV1
+pub quanta_index_core::SourceEventRecordV1::binding: quanta_index_core::domains::source_publication::SourceEventBindingV1
+pub quanta_index_core::SourceEventRecordV1::phase: quanta_index_core::domains::source_publication::SourceEventPhaseV1
+impl core::clone::Clone for quanta_index_core::domains::source_publication::SourceEventRecordV1
+pub fn quanta_index_core::domains::source_publication::SourceEventRecordV1::clone(&self) -> quanta_index_core::domains::source_publication::SourceEventRecordV1
+impl core::cmp::Eq for quanta_index_core::domains::source_publication::SourceEventRecordV1
+impl core::cmp::PartialEq for quanta_index_core::domains::source_publication::SourceEventRecordV1
+pub fn quanta_index_core::domains::source_publication::SourceEventRecordV1::eq(&self, other: &quanta_index_core::domains::source_publication::SourceEventRecordV1) -> bool
+impl core::fmt::Debug for quanta_index_core::domains::source_publication::SourceEventRecordV1
+pub fn quanta_index_core::domains::source_publication::SourceEventRecordV1::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_core::domains::source_publication::SourceEventRecordV1
+impl core::marker::Freeze for quanta_index_core::domains::source_publication::SourceEventRecordV1
+impl core::marker::Send for quanta_index_core::domains::source_publication::SourceEventRecordV1
+impl core::marker::Sync for quanta_index_core::domains::source_publication::SourceEventRecordV1
+impl core::marker::Unpin for quanta_index_core::domains::source_publication::SourceEventRecordV1
+impl core::marker::UnsafeUnpin for quanta_index_core::domains::source_publication::SourceEventRecordV1
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_core::domains::source_publication::SourceEventRecordV1
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_core::domains::source_publication::SourceEventRecordV1
 pub struct quanta_index_core::StructuralMatchBinding
 pub quanta_index_core::StructuralMatchBinding::end_byte: u32
 pub quanta_index_core::StructuralMatchBinding::end_line: u32
@@ -7044,7 +7474,7 @@ pub struct quanta_index_core::StructuralService
 impl quanta_index_core::StructuralService
 pub fn quanta_index_core::StructuralService::new(producer: alloc::sync::Arc<(dyn quanta_index_core::StructuralProducerPort + core::marker::Send + core::marker::Sync)>) -> Self
 pub fn quanta_index_core::StructuralService::policy(&self) -> quanta_index_core::StructuralPolicy
-pub fn quanta_index_core::StructuralService::query(&self, request: &quanta_index_core::StructuralQueryRequest) -> core::result::Result<quanta_index_core::StructuralQueryResponse, quanta_index_core::StructuralError>
+pub fn quanta_index_core::StructuralService::query(&self, request: &quanta_index_core::StructuralQueryRequest, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<quanta_index_core::StructuralQueryResponse, quanta_index_core::StructuralError>
 pub fn quanta_index_core::StructuralService::with_policy(producer: alloc::sync::Arc<(dyn quanta_index_core::StructuralProducerPort + core::marker::Send + core::marker::Sync)>, policy: quanta_index_core::StructuralPolicy) -> Self
 impl core::marker::Freeze for quanta_index_core::StructuralService
 impl core::marker::Send for quanta_index_core::StructuralService
@@ -7163,6 +7593,27 @@ impl core::marker::Unpin for quanta_index_core::domains::observability::Unbounde
 impl core::marker::UnsafeUnpin for quanta_index_core::domains::observability::UnboundedWriterAdmission
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_core::domains::observability::UnboundedWriterAdmission
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_core::domains::observability::UnboundedWriterAdmission
+pub struct quanta_index_core::ValidatedLexicalPlan
+impl quanta_index_core::ValidatedLexicalPlan
+pub const fn quanta_index_core::ValidatedLexicalPlan::constraints(&self) -> &quanta_index_contract_base::query::constraints::QueryConstraintSetV1
+pub const fn quanta_index_core::ValidatedLexicalPlan::executes_symbol_domain(&self) -> bool
+pub const fn quanta_index_core::ValidatedLexicalPlan::kind(&self) -> quanta_index_core::LexicalPlanKind
+pub const fn quanta_index_core::ValidatedLexicalPlan::query(&self) -> &quanta_index_contract::query::expression::LqQuery
+pub fn quanta_index_core::ValidatedLexicalPlan::uses_symbol_authority(&self) -> bool
+impl core::clone::Clone for quanta_index_core::ValidatedLexicalPlan
+pub fn quanta_index_core::ValidatedLexicalPlan::clone(&self) -> quanta_index_core::ValidatedLexicalPlan
+impl core::cmp::PartialEq for quanta_index_core::ValidatedLexicalPlan
+pub fn quanta_index_core::ValidatedLexicalPlan::eq(&self, other: &quanta_index_core::ValidatedLexicalPlan) -> bool
+impl core::fmt::Debug for quanta_index_core::ValidatedLexicalPlan
+pub fn quanta_index_core::ValidatedLexicalPlan::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for quanta_index_core::ValidatedLexicalPlan
+impl core::marker::Freeze for quanta_index_core::ValidatedLexicalPlan
+impl core::marker::Send for quanta_index_core::ValidatedLexicalPlan
+impl core::marker::Sync for quanta_index_core::ValidatedLexicalPlan
+impl core::marker::Unpin for quanta_index_core::ValidatedLexicalPlan
+impl core::marker::UnsafeUnpin for quanta_index_core::ValidatedLexicalPlan
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_core::ValidatedLexicalPlan
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_core::ValidatedLexicalPlan
 pub const quanta_index_core::AUX_EPOCH_EXPIRED_CODE: quanta_index_contract::ipc::error::SearchPlaneErrorCodeV2
 pub const quanta_index_core::AUX_EPOCH_RETAIN: usize
 pub const quanta_index_core::AUX_EPOCH_RETAIN_FOR: core::time::Duration
@@ -7343,11 +7794,13 @@ pub fn quanta_index_contract::ipc::ingest::StructuralIngestBatch::revision_id(&s
 pub trait quanta_index_core::IntegrityScrubPort: core::marker::Send + core::marker::Sync
 pub fn quanta_index_core::IntegrityScrubPort::scrub(&self, generation: &quanta_index_contract::ipc::control::GenerationSnapshot, cursor: core::option::Option<quanta_index_core::domains::integrity::IntegrityScrubCursorV1>, budget: quanta_index_core::domains::integrity::IntegrityScrubBudgetV1) -> core::result::Result<quanta_index_core::domains::integrity::IntegrityScrubReportV1, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::IntegrityScrubPort::scrub_candidates(&self) -> core::result::Result<alloc::vec::Vec<quanta_index_core::domains::integrity::IntegrityScrubCandidateV1>, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::IntegrityScrubPort::scrub_with_quarantine_fence(&self, generation: &quanta_index_contract::ipc::control::GenerationSnapshot, cursor: core::option::Option<quanta_index_core::domains::integrity::IntegrityScrubCursorV1>, budget: quanta_index_core::domains::integrity::IntegrityScrubBudgetV1, before_quarantine: &dyn core::ops::function::Fn() -> core::result::Result<(), quanta_index_core::error::CoreError>) -> core::result::Result<quanta_index_core::domains::integrity::IntegrityScrubReportV1, quanta_index_core::error::CoreError>
 pub trait quanta_index_core::LexicalIndexBuildPort: core::marker::Send + core::marker::Sync
 pub fn quanta_index_core::LexicalIndexBuildPort::build(&self, repo: &quanta_index_contract_base::ids::RepoId, revision: &quanta_index_contract_base::ids::RevisionId, generation: quanta_index_contract_base::ids::ManifestGeneration, ops: &[quanta_index_contract::channel::ops::LexicalChannelOp]) -> core::result::Result<(), quanta_index_core::error::CoreError>
 pub trait quanta_index_core::LexicalIndexOpenPort: core::marker::Send + core::marker::Sync
 pub fn quanta_index_core::LexicalIndexOpenPort::open(&self, repo: &quanta_index_contract_base::ids::RepoId, revision: &quanta_index_contract_base::ids::RevisionId, generation: quanta_index_contract_base::ids::ManifestGeneration) -> core::result::Result<alloc::boxed::Box<dyn quanta_index_core::LexicalSearcher>, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::LexicalIndexOpenPort::open_proven(&self, candidate: &quanta_index_contract::ipc::control::GenerationSnapshot) -> core::result::Result<alloc::boxed::Box<dyn quanta_index_core::LexicalSearcher>, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::LexicalIndexOpenPort::preflight_query_primitives(&self, plan: &quanta_index_core::ValidatedLexicalPlan, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<(), quanta_index_core::error::CoreError>
 pub trait quanta_index_core::LexicalQueryPort: core::marker::Send + core::marker::Sync
 pub fn quanta_index_core::LexicalQueryPort::lexical_query(&self, request: quanta_index_contract_base::query::requests::TextQueryRequest, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<quanta_index_contract::results::query_responses::TextQueryResponse, quanta_index_core::error::CoreError>
 pub trait quanta_index_core::LexicalSearcher: core::marker::Send + core::marker::Sync
@@ -7361,8 +7814,10 @@ pub fn quanta_index_core::LexicalSearcher::search(&self, query: &quanta_index_co
 pub fn quanta_index_core::LexicalSearcher::search_all(&self, query: &quanta_index_contract::query::expression::LqQuery, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<alloc::vec::Vec<quanta_index_contract_base::results::candidates::LexicalCandidate>, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::LexicalSearcher::search_constrained(&self, query: &quanta_index_contract::query::expression::LqQuery, constraints: &quanta_index_contract_base::query::constraints::QueryConstraintSetV1, page: &quanta_index_core::LexicalPageSpec, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<quanta_index_core::LexicalSearchPageV1, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::LexicalSearcher::search_symbols(&self, query: &quanta_index_contract::query::expression::LqQuery, top_k: u32, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<alloc::vec::Vec<quanta_index_contract::results::query_responses::SymbolCandidate>, quanta_index_core::error::CoreError>
-pub fn quanta_index_core::LexicalSearcher::search_symbols_all(&self, query: &quanta_index_contract::query::expression::LqQuery, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<alloc::vec::Vec<quanta_index_contract::results::query_responses::SymbolCandidate>, quanta_index_core::error::CoreError>
-pub fn quanta_index_core::LexicalSearcher::search_symbols_constrained(&self, query: &quanta_index_contract::query::expression::LqQuery, constraints: &quanta_index_contract_base::query::constraints::QueryConstraintSetV1, page: &quanta_index_core::LexicalPageSpec, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<alloc::vec::Vec<quanta_index_contract::results::query_responses::SymbolCandidate>, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::LexicalSearcher::search_symbols_all(&self, _query: &quanta_index_contract::query::expression::LqQuery, _budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<alloc::vec::Vec<quanta_index_contract::results::query_responses::SymbolCandidate>, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::LexicalSearcher::search_symbols_constrained(&self, query: &quanta_index_contract::query::expression::LqQuery, constraints: &quanta_index_contract_base::query::constraints::QueryConstraintSetV1, page: &quanta_index_core::LexicalPageSpec, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<quanta_index_core::SymbolSearchPageV1, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::LexicalSearcher::source_file_coverage(&self) -> core::option::Option<&quanta_index_contract::source_coverage::snapshot::FileCoverageSnapshot>
+pub fn quanta_index_core::LexicalSearcher::source_publication_event(&self) -> core::option::Option<&quanta_index_contract::source_coverage::SourcePublicationEvent>
 pub trait quanta_index_core::MetricSourcePort: core::marker::Send + core::marker::Sync
 pub fn quanta_index_core::MetricSourcePort::scrape(&self) -> core::result::Result<alloc::vec::Vec<quanta_index_core::domains::observability::MetricPointV1>, quanta_index_core::error::CoreError>
 impl quanta_index_core::domains::observability::MetricSourcePort for quanta_index_core::RawNormTallies
@@ -7381,6 +7836,7 @@ pub trait quanta_index_core::ProcessMemoryProbePort: core::marker::Send + core::
 pub fn quanta_index_core::ProcessMemoryProbePort::resident_bytes(&self) -> core::result::Result<u64, quanta_index_core::error::CoreError>
 pub trait quanta_index_core::QuarantinedGenerationDiscardPort: core::marker::Send + core::marker::Sync
 pub fn quanta_index_core::QuarantinedGenerationDiscardPort::discard_quarantined_generation(&self, entry: &quanta_index_core::domains::generation::QuarantinedGenerationV1) -> core::result::Result<quanta_index_core::domains::generation::QuarantineDiscardOutcomeV1, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::QuarantinedGenerationDiscardPort::discard_quarantined_generation_with_settlement(&self, entry: &quanta_index_core::domains::generation::QuarantinedGenerationV1, on_absent: &dyn core::ops::function::Fn() -> core::result::Result<(), quanta_index_core::error::CoreError>) -> core::result::Result<quanta_index_core::domains::generation::QuarantineDiscardOutcomeV1, quanta_index_core::error::CoreError>
 pub trait quanta_index_core::RepoCommitRecencyIngestPort: core::marker::Send + core::marker::Sync
 pub fn quanta_index_core::RepoCommitRecencyIngestPort::publish_batch(&self, batch: &quanta_index_contract::ipc::ingest::RepoCommitRecencyIngestBatch) -> core::result::Result<quanta_index_contract::ipc::publish_receipt::BatchPublishReceipt, quanta_index_core::error::CoreError>
 pub trait quanta_index_core::RepoDescriptionIngestPort: core::marker::Send + core::marker::Sync
@@ -7407,11 +7863,13 @@ pub trait quanta_index_core::SealedGenerationReclaimPort: core::marker::Send + c
 pub fn quanta_index_core::SealedGenerationReclaimPort::finish_interrupted_reclaims(&self) -> core::result::Result<quanta_index_core::domains::generation::FinishedReclaims, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::SealedGenerationReclaimPort::measure_sealed_generations(&self, repo_id: &quanta_index_contract_base::ids::RepoId, revision_id: &quanta_index_contract_base::ids::RevisionId, generations: &alloc::collections::btree::set::BTreeSet<quanta_index_contract_base::ids::ManifestGeneration>) -> core::result::Result<quanta_index_core::domains::generation::SealedGenerationBytesV1, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::SealedGenerationReclaimPort::reclaim_sealed_generation(&self, retired: &quanta_index_contract::ipc::control::GenerationSnapshot) -> core::result::Result<quanta_index_core::domains::generation::SealedGenerationReclaimOutcomeV1, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::SealedGenerationReclaimPort::reclaim_sealed_generation_with_settlement(&self, retired: &quanta_index_contract::ipc::control::GenerationSnapshot, on_absent: &dyn core::ops::function::Fn() -> core::result::Result<(), quanta_index_core::error::CoreError>) -> core::result::Result<quanta_index_core::domains::generation::SealedGenerationReclaimOutcomeV1, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::SealedGenerationReclaimPort::sealed_generations_for_pair(&self, repo_id: &quanta_index_contract_base::ids::RepoId, revision_id: &quanta_index_contract_base::ids::RevisionId) -> core::result::Result<alloc::vec::Vec<quanta_index_contract::ipc::control::GenerationSnapshot>, quanta_index_core::error::CoreError>
 pub trait quanta_index_core::SealedGenerationScanPort: core::marker::Send + core::marker::Sync
 pub fn quanta_index_core::SealedGenerationScanPort::inventory_sealed_generations(&self) -> core::result::Result<quanta_index_core::domains::generation::SealedGenerationInventoryV1, quanta_index_core::error::CoreError>
 pub trait quanta_index_core::SearchCorpusBatchBuildPort: core::marker::Send + core::marker::Sync
 pub fn quanta_index_core::SearchCorpusBatchBuildPort::build_batch(&self, batch: &quanta_index_contract::ipc::ingest::SearchCorpusIngestBatch) -> core::result::Result<(), quanta_index_core::error::CoreError>
+pub fn quanta_index_core::SearchCorpusBatchBuildPort::preflight_batch(&self, batch: &quanta_index_contract::ipc::ingest::SearchCorpusIngestBatch, phase: quanta_index_core::SearchCorpusPreflightPhaseV1) -> core::result::Result<(), quanta_index_core::error::CoreError>
 pub trait quanta_index_core::SearchCorpusIngestPort: core::marker::Send + core::marker::Sync
 pub fn quanta_index_core::SearchCorpusIngestPort::preflight_batch(&self, batch: &quanta_index_contract::ipc::ingest::SearchCorpusIngestBatch) -> core::result::Result<(), quanta_index_core::error::CoreError>
 pub fn quanta_index_core::SearchCorpusIngestPort::publish_batch(&self, batch: &quanta_index_contract::ipc::ingest::SearchCorpusIngestBatch, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<quanta_index_contract::ipc::ingest_observation::SearchCorpusPublishOutcome, quanta_index_core::error::CoreError>
@@ -7450,8 +7908,14 @@ pub fn quanta_index_core::SemanticSearcher::search_hits_for_corpus(&self, query_
 pub fn quanta_index_core::SemanticSearcher::search_hits_for_corpus_constrained(&self, query_vector: &[f32], corpus_kind: quanta_index_contract::semantic_kinds::SemanticCorpusKindV1, constraints: &quanta_index_contract_base::query::constraints::QueryConstraintSetV1, top_k: u32, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<alloc::vec::Vec<quanta_index_core::SemanticSearchHitV1>, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::SemanticSearcher::search_scoped(&self, query_vector: &[f32], allowed_ids: &alloc::collections::btree::set::BTreeSet<alloc::string::String>, top_k: u32, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<alloc::vec::Vec<quanta_index_contract_base::results::candidates::LexicalCandidate>, quanta_index_core::error::CoreError>
 pub fn quanta_index_core::SemanticSearcher::search_scoped_constrained(&self, query_vector: &[f32], allowed_ids: &alloc::collections::btree::set::BTreeSet<alloc::string::String>, constraints: &quanta_index_contract_base::query::constraints::QueryConstraintSetV1, top_k: u32, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<alloc::vec::Vec<quanta_index_contract_base::results::candidates::LexicalCandidate>, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::SemanticSearcher::search_work_bounded_v1(&self, _query_vector: &[f32], _constraints: &quanta_index_contract_base::query::constraints::QueryConstraintSetV1, _top_k: u32, _budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<alloc::vec::Vec<quanta_index_contract_base::results::candidates::LexicalCandidate>, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::SemanticSearcher::validate_query_vector(&self, query_vector: &[f32]) -> core::result::Result<(), quanta_index_core::error::CoreError>
+pub trait quanta_index_core::SourcePublicationCatalogPort: core::marker::Send + core::marker::Sync
+pub fn quanta_index_core::SourcePublicationCatalogPort::inspect_source_event(&self, repo: &quanta_index_contract_base::ids::RepoId, event: &quanta_index_contract::source_coverage::SourcePublicationEvent) -> core::result::Result<core::option::Option<quanta_index_core::domains::source_publication::SourceEventRecordV1>, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::SourcePublicationCatalogPort::reconcile_source_event(&self, repo: &quanta_index_contract_base::ids::RepoId, event: &quanta_index_contract::source_coverage::SourcePublicationEvent, journal: &dyn quanta_index_core::domains::idempotency::IdempotencyCatalogPort) -> core::result::Result<quanta_index_core::domains::source_publication::SourceEventRecordV1, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::SourcePublicationCatalogPort::reserve_source_event(&self, binding: &quanta_index_core::domains::source_publication::SourceEventBindingV1) -> core::result::Result<quanta_index_core::domains::source_publication::SourceEventReservationV1, quanta_index_core::error::CoreError>
 pub trait quanta_index_core::StructuralProducerPort: core::marker::Send + core::marker::Sync
-pub fn quanta_index_core::StructuralProducerPort::execute(&self, request: &quanta_index_core::StructuralQueryRequest) -> core::result::Result<alloc::vec::Vec<quanta_index_core::StructuralMatchCandidate>, quanta_index_core::StructuralError>
+pub fn quanta_index_core::StructuralProducerPort::execute(&self, request: &quanta_index_core::StructuralQueryRequest, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<alloc::vec::Vec<quanta_index_core::StructuralMatchCandidate>, quanta_index_core::StructuralError>
 pub fn quanta_index_core::StructuralProducerPort::readiness(&self, request: &quanta_index_core::StructuralQueryRequest) -> quanta_index_core::StructuralReadiness
 pub trait quanta_index_core::TextEmbeddingProvider: core::marker::Send + core::marker::Sync
 pub fn quanta_index_core::TextEmbeddingProvider::dimension(&self) -> usize
@@ -7486,6 +7950,7 @@ pub fn quanta_index_core::count_from_usize(value: usize) -> u64
 pub fn quanta_index_core::declare_required_domains_v1(route: quanta_index_core::QueryRouteV1, plan: core::option::Option<&quanta_index_contract::query::expression::LqQuery>) -> quanta_index_core::RequiredDomainsV1
 pub fn quanta_index_core::dense_admission_round_outcome_v1(admitted: usize, examined: usize, fetch_size: u32, target: u32) -> core::option::Option<quanta_index_core::DenseAdmissionOutcomeV1>
 pub fn quanta_index_core::finish_interrupted_reclaims(track_root: &std::path::Path) -> core::result::Result<quanta_index_core::domains::generation::FinishedReclaims, quanta_index_core::error::CoreError>
+pub fn quanta_index_core::hash_committed_step_opened_v1(open: &dyn core::ops::function::Fn(&str) -> core::io::error::Result<std::fs::File>, committed: &[quanta_index_core::domains::generation::SealedArtifactCommitmentV1], start_artifact: u64, max_bytes: u64) -> core::io::error::Result<quanta_index_core::domains::generation::TreeScrubStepV1>
 pub fn quanta_index_core::hash_committed_step_v1(resolve: &dyn core::ops::function::Fn(&str) -> core::io::error::Result<std::path::PathBuf>, committed: &[quanta_index_core::domains::generation::SealedArtifactCommitmentV1], start_artifact: u64, max_bytes: u64) -> core::io::error::Result<quanta_index_core::domains::generation::TreeScrubStepV1>
 pub const fn quanta_index_core::hybrid_filter_name_v1(filter: &quanta_index_lq_norm::ast::LqFilter) -> &'static str
 pub fn quanta_index_core::ingest_kind_from_code_str(kind_text: &str) -> core::result::Result<quanta_index_contract::ipc::batch_body::IngestOperationKindV1, quanta_index_core::error::CoreError>
@@ -7494,6 +7959,7 @@ pub fn quanta_index_core::now_unix_ms() -> u64
 pub fn quanta_index_core::owner_key_v1(embedding: &quanta_index_contract::channel::records::EmbeddingRecord) -> (&'static str, &'static str, &str)
 pub fn quanta_index_core::reclaim_area(track_root: &std::path::Path) -> std::path::PathBuf
 pub fn quanta_index_core::reclaim_directory(track_root: &std::path::Path, generation_dir: &std::path::Path, entry_name: &str) -> core::result::Result<(), quanta_index_core::error::CoreError>
+pub fn quanta_index_core::require_complete_symbol_coverage(snapshot: core::option::Option<&quanta_index_contract::source_coverage::snapshot::FileCoverageSnapshot>, in_scope: impl core::ops::function::FnMut(&quanta_index_contract::source_coverage::SourceFileCoverage) -> core::result::Result<bool, quanta_index_core::error::CoreError>, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> core::result::Result<(), quanta_index_core::error::CoreError>
 pub fn quanta_index_core::scrub_tree_commitment_v1(root: &std::path::Path, prefix: &str, committed: &[quanta_index_core::domains::generation::SealedArtifactCommitmentV1], start_artifact: u64, max_bytes: u64) -> core::io::error::Result<quanta_index_core::domains::generation::TreeScrubStepV1>
 pub fn quanta_index_core::sha256_of_file(path: &std::path::Path) -> core::io::error::Result<(u64, [u8; 32])>
 pub fn quanta_index_core::unique_inode_tree_bytes(roots: &[std::path::PathBuf], skip: &dyn core::ops::function::Fn(&str) -> bool) -> core::io::error::Result<u64>
@@ -7504,3 +7970,4 @@ pub fn quanta_index_core::validate_query_top_k(top_k: u32) -> core::result::Resu
 pub fn quanta_index_core::verify_tree_commitment_v1(root: &std::path::Path, prefix: &str, committed: &[quanta_index_core::domains::generation::SealedArtifactCommitmentV1]) -> core::io::error::Result<core::result::Result<u64, quanta_index_core::domains::generation::TreeCommitmentMismatchV1>>
 pub fn quanta_index_core::verify_tree_layout_v1(root: &std::path::Path, prefix: &str, committed: &[quanta_index_core::domains::generation::SealedArtifactCommitmentV1]) -> core::io::error::Result<core::result::Result<u64, quanta_index_core::domains::generation::TreeCommitmentMismatchV1>>
 pub type quanta_index_core::HistoryTextAdmitFn = (dyn core::ops::function::Fn(&quanta_index_core::HistoryTextHitV1) -> core::result::Result<bool, quanta_index_core::error::CoreError> + core::marker::Send + core::marker::Sync)
+pub type quanta_index_core::SymbolSearchPageV1 = quanta_index_core::LexicalSearchPageV1<quanta_index_contract::results::query_responses::SymbolCandidate>

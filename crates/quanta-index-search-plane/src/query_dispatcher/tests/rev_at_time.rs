@@ -22,7 +22,10 @@ use crate::query_dispatcher::tests::support::structural::FailClosedStructuralPro
 
 #[test]
 fn lexical_dispatch_rebinds_rev_at_time_to_reachable_ancestor() -> TestResult {
-    let state = Arc::new(Mutex::new(RecordingLexicalState::default()));
+    let state = Arc::new(Mutex::new(RecordingLexicalState {
+        manifest_digest: Some("manifest-digest-7".to_string()),
+        ..RecordingLexicalState::default()
+    }));
     let activation_catalog = activation_catalog_with_generations(&[
         corpus_generation(
             RepoId::new("repo-map-ipc").expect("static fixture ID satisfies canonical policy"),

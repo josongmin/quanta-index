@@ -39,8 +39,9 @@ use quanta_index_core::{
     CoreError, LexicalExecutionBudgetV1, LexicalWriterCacheStats, LexicalWriterPolicy,
     RegexMatchCachePolicy, RegexMatchCacheStats, TextAuthorityUpdateStats, WriterAdmissionPort,
 };
+use sha2::{Digest as _, Sha256};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, RwLockReadGuard, RwLockWriteGuard};
 use std::time::Instant;
 use tantivy::schema::TantivyDocument;
 use tantivy::{IndexWriter, Term};
@@ -85,15 +86,93 @@ impl LexicalAdapter {
             ),
             regex_policy,
             execution_budget,
-            directory_lifecycle: Mutex::new(()),
+            generation_mutations: std::array::from_fn(|_| Mutex::new(())),
+            directory_lifecycle: std::sync::RwLock::new(()),
+            scrub_progress: Mutex::new(
+                quanta_index_core::domains::integrity::IntegrityScrubProgressV1::default(),
+            ),
         }
     }
 
-    /// Hold the sealed-generation directory lifecycle (see the field).
-    pub(crate) fn directory_lifecycle_guard(
+    fn generation_mutation_stripe(&self, key: &GenKey) -> Result<usize, CoreError> {
+        let mut hasher = Sha256::new();
+        hasher.update(
+            GenerationStorageKeyV1::for_repo_revision(&key.repo_id, &key.revision_id)
+                .as_str()
+                .as_bytes(),
+        );
+        hasher.update(key.generation.get().to_le_bytes());
+        let digest = hasher.finalize();
+        let stripe = usize::from(
+            digest
+                .first()
+                .copied()
+                .ok_or_else(|| CoreError::Storage("lexical mutation digest is empty".into()))?,
+        );
+        if self.generation_mutations.get(stripe).is_none() {
+            return Err(CoreError::Storage(
+                "lexical mutation stripe outside table".into(),
+            ));
+        }
+        Ok(stripe)
+    }
+
+    /// Hold one generation's mutation boundary through its last write.
+    pub(crate) fn generation_mutation_guard(
         &self,
-    ) -> Result<std::sync::MutexGuard<'_, ()>, CoreError> {
-        self.directory_lifecycle.lock().map_err(|err| {
+        key: &GenKey,
+    ) -> Result<MutexGuard<'_, ()>, CoreError> {
+        let stripe = self.generation_mutation_stripe(key)?;
+        self.generation_mutations
+            .get(stripe)
+            .ok_or_else(|| CoreError::Storage("lexical mutation stripe outside table".into()))?
+            .lock()
+            .map_err(|error| CoreError::Storage(format!("lexical mutation lock poisoned: {error}")))
+    }
+
+    /// Pin a delta's base against scrub quarantine while the target is
+    /// planned, cloned and sealed. Sorted, deduplicated stripes avoid a
+    /// cross-generation lock cycle even when two keys hash to one stripe.
+    pub(crate) fn generation_build_guards(
+        &self,
+        target: &GenKey,
+        base: Option<ManifestGeneration>,
+    ) -> Result<Vec<MutexGuard<'_, ()>>, CoreError> {
+        let mut stripes = vec![self.generation_mutation_stripe(target)?];
+        if let Some(base) = base {
+            let base_key = GenKey {
+                repo_id: target.repo_id.clone(),
+                revision_id: target.revision_id.clone(),
+                generation: base,
+            };
+            stripes.push(self.generation_mutation_stripe(&base_key)?);
+        }
+        stripes.sort_unstable();
+        stripes.dedup();
+        stripes
+            .into_iter()
+            .map(|stripe| {
+                self.generation_mutations[stripe].lock().map_err(|error| {
+                    CoreError::Storage(format!("lexical mutation lock poisoned: {error}"))
+                })
+            })
+            .collect()
+    }
+
+    /// Hold the sealed-generation directory lifecycle (see the field).
+    pub(crate) fn directory_lifecycle_guard(&self) -> Result<RwLockWriteGuard<'_, ()>, CoreError> {
+        self.directory_lifecycle.write().map_err(|err| {
+            CoreError::Storage(format!(
+                "lexical: generation directory lifecycle lock poisoned: {err}"
+            ))
+        })
+    }
+
+    /// Prevent directory removal while a builder or scrub step is active.
+    pub(crate) fn directory_lifecycle_read_guard(
+        &self,
+    ) -> Result<RwLockReadGuard<'_, ()>, CoreError> {
+        self.directory_lifecycle.read().map_err(|err| {
             CoreError::Storage(format!(
                 "lexical: generation directory lifecycle lock poisoned: {err}"
             ))
@@ -400,6 +479,8 @@ impl LexicalAdapter {
         batch_digest: String,
         entries: usize,
     ) -> Result<quanta_index_contract::BatchPublishReceipt, CoreError> {
+        let _mutation = self.generation_mutation_guard(key)?;
+        let _lifecycle = self.directory_lifecycle_read_guard()?;
         let generation_dir = self.index_path(key);
         ensure_unsealed(&generation_dir, key.generation, family.file_name())?;
         persist_overlay(&generation_dir, family, bytes)?;

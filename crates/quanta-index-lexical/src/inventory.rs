@@ -6,7 +6,7 @@
 )]
 
 use crate::generation_dir::generation_tree_bytes;
-use crate::index_store::{lexical_sealed_identity_path, read_lexical_sealed_identity};
+use crate::index_store::{read_lexical_sealed_identity, sealed_identity_entry_present};
 use crate::sealed_generation::quarantined_by_scrub;
 use quanta_index_contract::{GenerationSnapshot, SearchPlaneTrackKind};
 use quanta_index_core::domains::generation::{
@@ -94,12 +94,22 @@ pub fn inventory_sealed_generations(
             match inventory_generation_dir(lexical_root, &generation_dir) {
                 // A generation the scrub proved corrupt is quarantined by its
                 // receipt, not served (QI-BB-017, QI-BB-026).
-                Ok(Some(identity)) => match quarantined_by_scrub(&generation_dir)? {
-                    Some(quarantined) => inventory.quarantined.push(quarantined),
-                    None => inventory.sealed.push(InventoriedSealedGenerationV1 {
+                Ok(Some(identity)) => match quarantined_by_scrub(&generation_dir) {
+                    Ok(Some(quarantined)) => inventory.quarantined.push(quarantined),
+                    Ok(None) => inventory.sealed.push(InventoriedSealedGenerationV1 {
                         identity,
                         path: generation_dir,
                     }),
+                    Err(CoreError::Typed {
+                        code:
+                            quanta_index_contract::SearchPlaneErrorCodeV2::GenerationScrubReceiptInvalid,
+                        message,
+                    }) => inventory.quarantined.push(quarantine(
+                        generation_dir,
+                        GenerationQuarantineReasonV1::IdentityUnreadable,
+                        message,
+                    )),
+                    Err(error) => return Err(error),
                 },
                 Ok(None) => {}
                 Err(quarantined) => inventory.quarantined.push(quarantined),
@@ -206,7 +216,14 @@ pub(crate) fn inventory_generation_dir(
             "generation directory is not `g<N>`; it needs explicit migration".to_string(),
         ));
     }
-    if !lexical_sealed_identity_path(generation_dir).exists() {
+    let identity_present = sealed_identity_entry_present(generation_dir).map_err(|error| {
+        quarantine(
+            generation_dir.to_path_buf(),
+            GenerationQuarantineReasonV1::IdentityUnreadable,
+            error.to_string(),
+        )
+    })?;
+    if !identity_present {
         return Ok(None);
     }
     let identity = read_lexical_sealed_identity(generation_dir).map_err(|error| {

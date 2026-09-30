@@ -6,13 +6,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::{fmt, fs};
 
-use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId};
+use quanta_index_contract::{GenerationSnapshot, ManifestGeneration, RepoId, RevisionId};
 use quanta_index_core::CoreError;
 use quanta_index_ipc::{decode_cbor_payload, encode_cbor_payload};
 use serde::de::{MapAccess, Visitor};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
+use crate::SnapshotKey;
 use crate::readiness::auxiliary_store::AuxiliaryAuthorityStore;
 use crate::readiness::durable_fs::{
     AtomicFileWriteOutcomeV1, atomic_replace_file_from_staging_v1, ensure_durable_directory_v1,
@@ -28,6 +29,34 @@ use crate::search_corpus_retention::{
 };
 
 impl AuxiliaryAuthorityStore {
+    /// Keep durable record admission excluded through a quarantine decision
+    /// and its physical removal. A path with unreadable identity can still be
+    /// matched to records by hashing each retained record's known pair.
+    pub(crate) fn with_record_keys_during_quarantine<T>(
+        &self,
+        action: impl FnOnce(BTreeSet<SnapshotKey>) -> Result<T, CoreError>,
+    ) -> Result<T, CoreError> {
+        let _root_guard = self.search_corpus_root_lock.lock().map_err(|error| {
+            CoreError::Storage(format!(
+                "search-corpus authority: state-root quarantine lock poisoned: {error}"
+            ))
+        })?;
+        let snapshot = self.load_search_corpus_root_snapshot_v1()?;
+        let keys = snapshot
+            .pairs
+            .values()
+            .flat_map(|records| records.iter())
+            .map(|authority| {
+                SnapshotKey::new(
+                    &authority.record.repo_id,
+                    &authority.record.revision_id,
+                    authority.record.generation,
+                )
+            })
+            .collect();
+        action(keys)
+    }
+
     /// Persist one complete sealed corpus as one immutable generation record.
     ///
     /// Admission performs one authoritative state-root scan, O(P + G), where
@@ -191,6 +220,26 @@ impl AuxiliaryAuthorityStore {
         root_without_pair: &SearchCorpusAuthorityRootSnapshotV1,
         mut pair_records: Vec<SearchCorpusAuthorityFileV1>,
     ) -> Result<SearchCorpusHistoryRetentionReceiptV1, CoreError> {
+        // A directory removed after physical seal but before durable admission
+        // cannot become a zero-byte authority record. The caller holds the
+        // pair guard; quarantine refuses canonical paths with unknown pairs.
+        let candidate = BTreeSet::from([generation]);
+        if self
+            .index_bytes
+            .measure_index_bytes(repo_id, revision_id, &candidate)?
+            .absent
+            .contains(&generation)
+        {
+            return Err(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusGenerationConflict,
+                message: format!(
+                    "search-corpus authority: sealed generation {} of repo={} revision={} is absent from at least one index track",
+                    generation.get(),
+                    repo_id.as_str(),
+                    revision_id.as_str(),
+                ),
+            });
+        }
         let record =
             SearchCorpusAuthorityRecordV1::new(repo_id, revision_id, generation, manifest_digest);
         let bytes = encode_cbor_payload(&record).map_err(|err| {
@@ -413,16 +462,14 @@ impl AuxiliaryAuthorityStore {
         Ok(records)
     }
 
-    /// Plan one pair's retention over its records, measuring every
-    /// candidate retained set's index bytes through the port.
-    pub(super) fn plan_search_corpus_pair_records_v1(
+    fn validate_search_corpus_pair_record_pins_v1(
         &self,
         repo_id: &RepoId,
         revision_id: &RevisionId,
         records: &[SearchCorpusAuthorityFileV1],
         required_generation: Option<ManifestGeneration>,
         active: Option<&SearchCorpusGenerationV1>,
-    ) -> Result<SearchCorpusHistoryRetentionPlanV1, CoreError> {
+    ) -> Result<Vec<GenerationSnapshot>, CoreError> {
         if let Some(active) = active {
             let exact = records.iter().any(|record| {
                 record.record.generation == active.manifest_generation()
@@ -474,9 +521,43 @@ impl AuxiliaryAuthorityStore {
                 None => {}
             }
         }
+        Ok(unresolved)
+    }
+
+    /// Plan one pair's retention over its records, measuring every
+    /// candidate retained set's index bytes through the port.
+    pub(super) fn plan_search_corpus_pair_records_v1(
+        &self,
+        repo_id: &RepoId,
+        revision_id: &RevisionId,
+        records: &[SearchCorpusAuthorityFileV1],
+        required_generation: Option<ManifestGeneration>,
+        active: Option<&SearchCorpusGenerationV1>,
+    ) -> Result<SearchCorpusHistoryRetentionPlanV1, CoreError> {
+        let unresolved = self.validate_search_corpus_pair_record_pins_v1(
+            repo_id,
+            revision_id,
+            records,
+            required_generation,
+            active,
+        )?;
         let mut measure = |generations: &BTreeSet<ManifestGeneration>| {
-            self.index_bytes
-                .measure_index_bytes(repo_id, revision_id, generations)
+            let measured =
+                self.index_bytes
+                    .measure_index_bytes(repo_id, revision_id, generations)?;
+            if let Some(first_absent) = measured.absent.iter().next() {
+                return Err(CoreError::Typed {
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusGenerationConflict,
+                    message: format!(
+                        "search-corpus history retention: repo={} revision={} has {} physically absent retained generation(s), first={}; repair the durable history before admitting another generation",
+                        repo_id.as_str(),
+                        revision_id.as_str(),
+                        measured.absent.len(),
+                        first_absent.get(),
+                    ),
+                });
+            }
+            Ok(measured.bytes)
         };
         self.search_corpus_history_retention.plan(
             records
@@ -512,11 +593,14 @@ impl AuxiliaryAuthorityStore {
                 .iter()
                 .map(|record| record.record.generation)
                 .collect();
-            let bytes = self.index_bytes.measure_index_bytes(
-                &first.record.repo_id,
-                &first.record.revision_id,
-                &generations,
-            )?;
+            let bytes = self
+                .index_bytes
+                .measure_index_bytes(
+                    &first.record.repo_id,
+                    &first.record.revision_id,
+                    &generations,
+                )?
+                .bytes;
             total = total.checked_add(bytes).ok_or_else(|| {
                 CoreError::Storage(
                     "search-corpus history retention: state-root index byte total overflow"
@@ -679,13 +763,42 @@ impl AuxiliaryAuthorityStore {
             let active = active_corpora.iter().find(|active| {
                 active.repo_id() == &repo_id && active.revision_id() == &revision_id
             });
-            let plan = self.plan_search_corpus_pair_records_v1(
-                &repo_id,
-                &revision_id,
-                &observed,
-                None,
-                active,
-            )?;
+            let generations: BTreeSet<_> = observed
+                .iter()
+                .map(|authority| authority.record.generation)
+                .collect();
+            if generations.len() != observed.len() {
+                return Err(CoreError::Storage(format!(
+                    "search-corpus history retention: duplicate generation in restore for repo={} revision={}",
+                    repo_id.as_str(),
+                    revision_id.as_str(),
+                )));
+            }
+            let measured =
+                self.index_bytes
+                    .measure_index_bytes(&repo_id, &revision_id, &generations)?;
+            let plan = if measured.absent.is_empty() {
+                self.plan_search_corpus_pair_records_v1(
+                    &repo_id,
+                    &revision_id,
+                    &observed,
+                    None,
+                    active,
+                )?
+            } else {
+                let _unresolved = self.validate_search_corpus_pair_record_pins_v1(
+                    &repo_id,
+                    &revision_id,
+                    &observed,
+                    None,
+                    active,
+                )?;
+                // A missing track remains in durable history so rollback can
+                // fail with its exact target. Do not let that ghost consume a
+                // slot and cause a healthy record to be reaped at bootstrap.
+                self.search_corpus_history_retention
+                    .preserve_unreconciled_restore(generations, measured.bytes)?
+            };
             projected_total_bytes = projected_total_bytes
                 .checked_add(plan.retained_bytes())
                 .ok_or_else(|| {

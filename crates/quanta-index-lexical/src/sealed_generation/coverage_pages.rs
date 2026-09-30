@@ -4,6 +4,7 @@
 use serde::de::{SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, de};
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsString;
 use std::fs::File;
 use std::io::{Cursor, Write};
 use std::marker::PhantomData;
@@ -182,7 +183,10 @@ fn read_bounded(path: &Path, ceiling: usize) -> Result<Vec<u8>, CoreError> {
         ))
     })?;
     if metadata.len() > ceiling_u64 {
-        return Err(resource("encoded artifact exceeds its byte ceiling"));
+        return Err(corrupt(
+            directory,
+            "committed coverage artifact exceeds its byte ceiling",
+        ));
     }
     let mut file = open_coverage_regular_nofollow(path, directory)?;
     let opened = file
@@ -195,11 +199,45 @@ fn read_bounded(path: &Path, ceiling: usize) -> Result<Vec<u8>, CoreError> {
         ));
     }
     if opened.len() > ceiling_u64 {
-        return Err(resource("encoded artifact exceeds its byte ceiling"));
+        return Err(corrupt(
+            directory,
+            "committed coverage artifact exceeds its byte ceiling",
+        ));
     }
     let expected_len = usize::try_from(opened.len())
         .map_err(|error| resource(&format!("coverage read length overflow: {error}")))?;
     read_admitted_bytes(&mut file, expected_len, path)
+}
+
+fn read_bounded_at(
+    root: &File,
+    directory: &Path,
+    name: &str,
+    ceiling: usize,
+) -> Result<Vec<u8>, CoreError> {
+    let path = directory.join(name);
+    let mut file = super::super::open_regular_below(root, Path::new(name)).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound
+            || super::super::is_unsafe_artifact_path(&error)
+        {
+            corrupt(directory, "coverage artifact missing or unsafe")
+        } else {
+            CoreError::Storage(format!("open {}: {error}", path.display()))
+        }
+    })?;
+    let length = file
+        .metadata()
+        .map_err(|error| CoreError::Storage(format!("inspect {}: {error}", path.display())))?
+        .len();
+    if length > u64::try_from(ceiling).map_err(|error| resource(&error.to_string()))? {
+        return Err(corrupt(
+            directory,
+            "committed coverage artifact exceeds its byte ceiling",
+        ));
+    }
+    let admitted = usize::try_from(length)
+        .map_err(|error| resource(&format!("coverage read length overflow: {error}")))?;
+    read_admitted_bytes(&mut file, admitted, &path)
 }
 
 fn open_coverage_regular_nofollow(path: &Path, directory: &Path) -> Result<File, CoreError> {
@@ -358,7 +396,33 @@ pub(crate) fn root_page_commitments(
     expected: &GenerationSnapshot,
 ) -> Result<Vec<SealedArtifactCommitmentV1>, CoreError> {
     let bytes = read_committed_coverage_root(directory, root)?;
-    let ((_, identity, _, pages), _) = decode_root(&bytes, directory)?;
+    let entries = std::fs::read_dir(directory)
+        .map_err(|error| CoreError::Storage(error.to_string()))?
+        .map(|entry| entry.map(|entry| entry.file_name()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| CoreError::Storage(error.to_string()))?;
+    checked_root_page_commitments(&bytes, directory, expected, entries)
+}
+
+pub(crate) fn root_page_commitments_at(
+    opened: &File,
+    directory: &Path,
+    root: &SealedArtifactCommitmentV1,
+    expected: &GenerationSnapshot,
+) -> Result<Vec<SealedArtifactCommitmentV1>, CoreError> {
+    let bytes = read_committed_coverage_root_at(opened, directory, root)?;
+    let entries = super::super::entry_names_at(opened, None)
+        .map_err(|error| CoreError::Storage(error.to_string()))?;
+    checked_root_page_commitments(&bytes, directory, expected, entries)
+}
+
+fn checked_root_page_commitments(
+    bytes: &[u8],
+    directory: &Path,
+    expected: &GenerationSnapshot,
+    entries: Vec<OsString>,
+) -> Result<Vec<SealedArtifactCommitmentV1>, CoreError> {
+    let ((_, identity, _, pages), _) = decode_root(bytes, directory)?;
     if identity != *expected {
         return Err(corrupt(
             directory,
@@ -374,12 +438,8 @@ pub(crate) fn root_page_commitments(
         })
         .collect();
     let names: BTreeSet<_> = commitments.iter().map(|page| page.name.as_str()).collect();
-    for entry in
-        std::fs::read_dir(directory).map_err(|error| CoreError::Storage(error.to_string()))?
-    {
-        let entry = entry.map_err(|error| CoreError::Storage(error.to_string()))?;
-        let file_name = entry.file_name();
-        let name = file_name.to_string_lossy();
+    for entry in entries {
+        let name = entry.to_string_lossy();
         if is_coverage_page(&name) && !names.contains(name.as_ref()) {
             return Err(corrupt(directory, "uncommitted coverage page"));
         }
@@ -406,12 +466,31 @@ pub(crate) fn read_committed_coverage_root(
     Ok(bytes)
 }
 
+pub(crate) fn read_committed_coverage_root_at(
+    opened: &File,
+    directory: &Path,
+    root: &SealedArtifactCommitmentV1,
+) -> Result<Vec<u8>, CoreError> {
+    if root.name != SOURCE_FILE_COVERAGE_FILE_NAME || root.bytes > MAX_COVERAGE_ROOT_BYTES_U64 {
+        return Err(corrupt(directory, "invalid coverage root commitment"));
+    }
+    let bytes = read_bounded_at(opened, directory, &root.name, MAX_COVERAGE_ROOT_BYTES)?;
+    if !has_length(&bytes, root.bytes) || <[u8; 32]>::from(Sha256::digest(&bytes)) != root.sha256 {
+        return Err(corrupt(
+            directory,
+            "coverage root differs from its commitment",
+        ));
+    }
+    Ok(bytes)
+}
+
+#[cfg(test)]
 pub(crate) fn decode_coverage_pages(
     bytes: &[u8],
     directory: &Path,
     expected: &GenerationSnapshot,
 ) -> Result<CoverageArtifact, CoreError> {
-    decode_coverage_pages_impl(bytes, directory, expected, false, None)
+    decode_coverage_pages_impl(bytes, directory, expected, false, None, None)
 }
 
 pub(super) fn decode_coverage_pages_reusing(
@@ -420,7 +499,17 @@ pub(super) fn decode_coverage_pages_reusing(
     expected: &GenerationSnapshot,
     cached: Option<&CoverageArtifact>,
 ) -> Result<CoverageArtifact, CoreError> {
-    decode_coverage_pages_impl(bytes, directory, expected, false, cached)
+    decode_coverage_pages_impl(bytes, directory, expected, false, cached, None)
+}
+
+pub(super) fn decode_coverage_pages_reusing_at(
+    root: &File,
+    bytes: &[u8],
+    directory: &Path,
+    expected: &GenerationSnapshot,
+    cached: Option<&CoverageArtifact>,
+) -> Result<CoverageArtifact, CoreError> {
+    decode_coverage_pages_impl(bytes, directory, expected, false, cached, Some(root))
 }
 
 pub(crate) fn decode_staged_coverage_pages(
@@ -431,7 +520,7 @@ pub(crate) fn decode_staged_coverage_pages(
     // A crash on either side of the root rename can leave pages from the
     // other version. Only the unsealed retry path may ignore those pages;
     // the caller still compares the decoded event and complete snapshot.
-    decode_coverage_pages_impl(bytes, directory, expected, true, None)
+    decode_coverage_pages_impl(bytes, directory, expected, true, None, None)
 }
 
 fn decode_coverage_pages_impl(
@@ -440,6 +529,7 @@ fn decode_coverage_pages_impl(
     expected: &GenerationSnapshot,
     allow_orphans: bool,
     cached: Option<&CoverageArtifact>,
+    root: Option<&File>,
 ) -> Result<CoverageArtifact, CoreError> {
     let ((_, identity, publication, pages), heap_admission) = decode_root(bytes, directory)?;
     if identity != *expected {
@@ -460,7 +550,10 @@ fn decode_coverage_pages_impl(
     for (slot, length, digest, count) in pages {
         let name = page_name(slot, &digest);
         let _inserted = names.insert(name.clone());
-        let raw = read_bounded(&directory.join(&name), MAX_COVERAGE_PAGE_BYTES)?;
+        let raw = match root {
+            Some(root) => read_bounded_at(root, directory, &name, MAX_COVERAGE_PAGE_BYTES)?,
+            None => read_bounded(&directory.join(&name), MAX_COVERAGE_PAGE_BYTES)?,
+        };
         read_stats.pages = read_stats.pages.saturating_add(1);
         read_stats.page_bytes =
             read_stats
@@ -513,12 +606,17 @@ fn decode_coverage_pages_impl(
     }
     if !allow_orphans {
         // A sealed generation cannot silently retain a second coverage universe.
-        for entry in
-            std::fs::read_dir(directory).map_err(|error| CoreError::Storage(error.to_string()))?
-        {
-            let entry = entry.map_err(|error| CoreError::Storage(error.to_string()))?;
-            let file_name = entry.file_name();
-            let name = file_name.to_string_lossy();
+        let entries = match root {
+            Some(root) => super::super::entry_names_at(root, None)
+                .map_err(|error| CoreError::Storage(error.to_string()))?,
+            None => std::fs::read_dir(directory)
+                .map_err(|error| CoreError::Storage(error.to_string()))?
+                .map(|entry| entry.map(|entry| entry.file_name()))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| CoreError::Storage(error.to_string()))?,
+        };
+        for entry in entries {
+            let name = entry.to_string_lossy();
             if is_coverage_page(&name) && !names.contains(name.as_ref()) {
                 return Err(corrupt(directory, "uncommitted coverage page"));
             }
@@ -704,6 +802,35 @@ pub(crate) fn write_coverage_pages(
 #[cfg(test)]
 mod tests {
     use super::{BoundedRows, MAX_COVERAGE_PAGE_BYTES, read_bounded};
+
+    #[test]
+    fn oversized_committed_page_is_corruption_on_both_read_paths()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("committed-page");
+        std::fs::File::create(&path)?.set_len(u64::try_from(MAX_COVERAGE_PAGE_BYTES)? + 1)?;
+        let opened = super::super::super::open_generation_dir_nofollow(dir.path())?;
+        for result in [
+            read_bounded(&path, MAX_COVERAGE_PAGE_BYTES),
+            super::read_bounded_at(
+                &opened,
+                dir.path(),
+                "committed-page",
+                MAX_COVERAGE_PAGE_BYTES,
+            ),
+        ] {
+            if !matches!(
+                result,
+                Err(quanta_index_core::CoreError::Typed {
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
+                    ..
+                })
+            ) {
+                return Err(format!("oversized committed page was not corrupt: {result:?}").into());
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn replaced_coverage_artifact_cannot_redirect_open_through_symlink()

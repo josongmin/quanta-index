@@ -23,6 +23,81 @@ pub struct IntegrityScrubCursorV1 {
     pub next_artifact: u64,
 }
 
+/// In-process proof of a resumed scrub's position.
+///
+/// A new pass discards the paused one. After a restart the scheduler starts
+/// again at zero instead of trusting a cursor. The composition root runs at
+/// most one pass per adapter at a time.
+#[derive(Debug, Default)]
+pub struct IntegrityScrubProgressV1 {
+    paused: Option<(GenerationSnapshot, IntegrityScrubCursorV1)>,
+}
+
+impl IntegrityScrubProgressV1 {
+    /// A directory replacement cannot inherit proof of the removed tree.
+    pub fn clear(&mut self) {
+        self.paused = None;
+    }
+
+    /// Discard a paused cursor only when its generation was invalidated.
+    /// The adapter owns the mapping from a discarded directory to identities.
+    pub fn clear_if_invalidated(&mut self, invalidated: impl FnOnce(&GenerationSnapshot) -> bool) {
+        if self
+            .paused
+            .as_ref()
+            .is_some_and(|(generation, _cursor)| invalidated(generation))
+        {
+            self.clear();
+        }
+    }
+
+    /// Admit a fresh pass or the exact cursor this adapter previously issued.
+    pub fn start_or_resume(
+        &mut self,
+        generation: &GenerationSnapshot,
+        cursor: Option<IntegrityScrubCursorV1>,
+    ) -> Result<u64, CoreError> {
+        match cursor {
+            None => {
+                self.clear();
+                Ok(0)
+            }
+            Some(cursor)
+                if self.paused.as_ref().is_some_and(
+                    |(expected_generation, expected_cursor)| {
+                        expected_generation == generation && *expected_cursor == cursor
+                    },
+                ) =>
+            {
+                Ok(cursor.next_artifact)
+            }
+            Some(_) => Err(CoreError::InvalidContract(
+                "scrub cursor does not match this adapter's paused generation and position".into(),
+            )),
+        }
+    }
+
+    /// Retain only a position actually produced by a paused step.
+    pub fn record(
+        &mut self,
+        generation: &GenerationSnapshot,
+        outcome: &IntegrityScrubOutcomeV1,
+    ) -> Result<(), CoreError> {
+        self.paused = match outcome {
+            IntegrityScrubOutcomeV1::Paused { cursor } if cursor.next_artifact > 0 => {
+                Some((generation.clone(), *cursor))
+            }
+            IntegrityScrubOutcomeV1::Paused { .. } => {
+                return Err(CoreError::InvalidContract(
+                    "scrub paused without advancing past the first artifact".into(),
+                ));
+            }
+            IntegrityScrubOutcomeV1::Completed | IntegrityScrubOutcomeV1::Corrupt { .. } => None,
+        };
+        Ok(())
+    }
+}
+
 /// The most bytes one scrub step may read.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct IntegrityScrubBudgetV1 {
@@ -181,4 +256,98 @@ pub trait IntegrityScrubPort: Send + Sync {
         cursor: Option<IntegrityScrubCursorV1>,
         budget: IntegrityScrubBudgetV1,
     ) -> Result<IntegrityScrubReportV1, CoreError>;
+
+    /// Run one step while calling `before_quarantine` after proving a
+    /// mismatch but before publishing its quarantine receipt. The caller
+    /// fences resident query handles in that callback. A clean or paused
+    /// step must not call it.
+    fn scrub_with_quarantine_fence(
+        &self,
+        generation: &GenerationSnapshot,
+        cursor: Option<IntegrityScrubCursorV1>,
+        budget: IntegrityScrubBudgetV1,
+        before_quarantine: &dyn Fn() -> Result<(), CoreError>,
+    ) -> Result<IntegrityScrubReportV1, CoreError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use quanta_index_contract::{
+        GenerationSnapshot, ManifestGeneration, RepoId, RevisionId, SearchPlaneTrackKind,
+    };
+
+    use super::{IntegrityScrubCursorV1, IntegrityScrubOutcomeV1, IntegrityScrubProgressV1};
+
+    #[test]
+    fn a_scrub_can_resume_only_the_paused_generation_and_position()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let generation = GenerationSnapshot {
+            repo_id: RepoId::new("scrub-repo")?,
+            revision_id: RevisionId::new("scrub-revision")?,
+            track: SearchPlaneTrackKind::Lexical,
+            manifest_generation: ManifestGeneration::new(1),
+            manifest_digest: "digest-1".into(),
+        };
+        let mut other = generation.clone();
+        other.manifest_digest = "digest-2".into();
+        let mut progress = IntegrityScrubProgressV1::default();
+        let end = IntegrityScrubCursorV1 { next_artifact: 3 };
+        if progress.start_or_resume(&generation, Some(end)).is_ok() {
+            return Err("an unissued cursor was accepted".into());
+        }
+        if progress.start_or_resume(&generation, None)? != 0 {
+            return Err("a new pass did not start at zero".into());
+        }
+        progress.record(
+            &generation,
+            &IntegrityScrubOutcomeV1::Paused {
+                cursor: IntegrityScrubCursorV1 { next_artifact: 1 },
+            },
+        )?;
+        progress.clear_if_invalidated(|paused| paused == &other);
+        if progress.start_or_resume(
+            &generation,
+            Some(IntegrityScrubCursorV1 { next_artifact: 1 }),
+        )? != 1
+        {
+            return Err("another generation's removal cleared the cursor".into());
+        }
+        if progress.start_or_resume(&generation, Some(end)).is_ok() {
+            return Err("a skipped cursor was accepted".into());
+        }
+        if progress
+            .start_or_resume(&other, Some(IntegrityScrubCursorV1 { next_artifact: 1 }))
+            .is_ok()
+        {
+            return Err("another generation reused the cursor".into());
+        }
+        if progress.start_or_resume(
+            &generation,
+            Some(IntegrityScrubCursorV1 { next_artifact: 1 }),
+        )? != 1
+        {
+            return Err("the issued cursor did not resume the pass".into());
+        }
+        progress.clear_if_invalidated(|paused| paused == &generation);
+        if progress
+            .start_or_resume(
+                &generation,
+                Some(IntegrityScrubCursorV1 { next_artifact: 1 }),
+            )
+            .is_ok()
+        {
+            return Err("the removed generation retained its cursor".into());
+        }
+        progress.record(&generation, &IntegrityScrubOutcomeV1::Completed)?;
+        if progress
+            .start_or_resume(
+                &generation,
+                Some(IntegrityScrubCursorV1 { next_artifact: 1 }),
+            )
+            .is_ok()
+        {
+            return Err("a completed pass reused a stale cursor".into());
+        }
+        Ok(())
+    }
 }

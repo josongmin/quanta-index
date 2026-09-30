@@ -29,6 +29,10 @@ name = "runtime_extended_suite"
 path = "tests/runtime_extended_suite.rs"
 
 [[test]]
+name = "runtime_semantic_stream_suite"
+path = "tests/runtime_semantic_stream_suite.rs"
+
+[[test]]
 name = "runtime_supervisor_owner_v1"
 path = "tests/runtime_supervisor_owner_v1.rs"
 

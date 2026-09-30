@@ -59,12 +59,17 @@ fn native_exact_symbol_case_and_typed_file_reach_one_search_plan() -> TestResult
         dispatcher.symbol_with_execution(request, &RequestBudgetV1::unbounded())?;
     let calls = state.lock().map_err(|error| error.to_string())?;
     if calls.primitive_queries.len() != 1
-        || calls.primitive_queries[0].options.case != Some(LqCase::Sensitive)
+        || calls
+            .primitive_queries
+            .first()
+            .and_then(|query| query.options.case)
+            != Some(LqCase::Sensitive)
         || calls.symbol_top_ks != [4]
         || calls.symbol_constraints.len() != 1
-        || calls.symbol_constraints[0]
-            .repo_relative_path_exact
-            .as_ref()
+        || calls
+            .symbol_constraints
+            .first()
+            .and_then(|constraint| constraint.repo_relative_path_exact.as_ref())
             .map(ExactRepoRelativePathV1::as_str)
             != Some("render/render.go")
     {
@@ -80,6 +85,7 @@ fn native_exact_symbol_case_and_typed_file_reach_one_search_plan() -> TestResult
         )
         .into());
     }
+    drop(calls);
     Ok(())
 }
 

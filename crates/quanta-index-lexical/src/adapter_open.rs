@@ -20,16 +20,18 @@ use crate::{
 };
 use quanta_index_contract::channel::LexicalChannelOp;
 use quanta_index_contract::{
-    GenerationSnapshot, ManifestGeneration, RepoId, RevisionId, SearchPlaneTrackKind,
+    FileContributorIdentityEntry, GenerationSnapshot, ManifestGeneration, RepoId, RevisionId,
+    SearchPlaneTrackKind,
 };
 use quanta_index_core::domains::generation::unique_inode_tree_bytes;
 use quanta_index_core::{
     CoreError, LexicalArtifactIdentityV1, LexicalIndexOpenPort, LexicalSearcher,
     RepoMetadataAuthoritiesV1, RepoMetadataAuthorityV1, TextNormalizerVersionV1,
 };
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use tantivy::{Index, IndexReader, ReloadPolicy};
+use tantivy::Index;
 
 impl LexicalAdapter {
     /// The writer guard spans op-apply, commit, and the text-authority
@@ -147,6 +149,117 @@ impl SealedGenerationVisitor for LoadedGeneration {
     }
 }
 
+/// Heap owned by decoded overlays. This uses actual container element sizes
+/// and string/vector capacities; allocator bookkeeping remains outside the
+/// registry's documented estimate.
+trait OverlayHeapBytes {
+    fn overlay_heap_bytes(&self) -> Result<u64, CoreError>;
+}
+
+fn usize_bytes(value: usize) -> Result<u64, CoreError> {
+    u64::try_from(value).map_err(|error| {
+        CoreError::Storage(format!("lexical: overlay heap estimate overflow: {error}"))
+    })
+}
+
+fn add_heap_bytes(total: u64, value: u64) -> Result<u64, CoreError> {
+    total
+        .checked_add(value)
+        .ok_or_else(|| CoreError::Storage("lexical: overlay heap estimate overflow".into()))
+}
+
+impl OverlayHeapBytes for String {
+    fn overlay_heap_bytes(&self) -> Result<u64, CoreError> {
+        usize_bytes(self.capacity())
+    }
+}
+
+impl OverlayHeapBytes for u64 {
+    fn overlay_heap_bytes(&self) -> Result<u64, CoreError> {
+        Ok(0)
+    }
+}
+
+impl<T: OverlayHeapBytes> OverlayHeapBytes for Vec<T> {
+    fn overlay_heap_bytes(&self) -> Result<u64, CoreError> {
+        let elements = usize_bytes(self.capacity())?
+            .checked_mul(usize_bytes(std::mem::size_of::<T>())?)
+            .ok_or_else(|| CoreError::Storage("lexical: overlay heap estimate overflow".into()))?;
+        self.iter().try_fold(elements, |total, value| {
+            add_heap_bytes(total, value.overlay_heap_bytes()?)
+        })
+    }
+}
+
+impl<K: Ord + OverlayHeapBytes, V: OverlayHeapBytes> OverlayHeapBytes for BTreeMap<K, V> {
+    fn overlay_heap_bytes(&self) -> Result<u64, CoreError> {
+        self.iter().try_fold(0_u64, |total, (key, value)| {
+            let total = add_heap_bytes(total, usize_bytes(std::mem::size_of::<(K, V)>())?)?;
+            let total = add_heap_bytes(total, key.overlay_heap_bytes()?)?;
+            add_heap_bytes(total, value.overlay_heap_bytes()?)
+        })
+    }
+}
+
+impl<T: Ord + OverlayHeapBytes> OverlayHeapBytes for BTreeSet<T> {
+    fn overlay_heap_bytes(&self) -> Result<u64, CoreError> {
+        self.iter().try_fold(0_u64, |total, value| {
+            let total = add_heap_bytes(total, usize_bytes(std::mem::size_of::<T>())?)?;
+            add_heap_bytes(total, value.overlay_heap_bytes()?)
+        })
+    }
+}
+
+impl OverlayHeapBytes for FileContributorIdentityEntry {
+    fn overlay_heap_bytes(&self) -> Result<u64, CoreError> {
+        let mut bytes = self.canonical.overlay_heap_bytes()?;
+        if let Some(name) = &self.name {
+            bytes = add_heap_bytes(bytes, name.overlay_heap_bytes()?)?;
+        }
+        if let Some(email) = &self.email {
+            bytes = add_heap_bytes(bytes, email.overlay_heap_bytes()?)?;
+        }
+        Ok(bytes)
+    }
+}
+
+impl LoadedGeneration {
+    fn overlay_heap_bytes_estimate(&self) -> Result<u64, CoreError> {
+        let mut bytes = match &self.repo_metadata {
+            Some(metadata) => metadata.contexts.overlay_heap_bytes()?,
+            None => 0,
+        };
+        for family in [
+            self.repo_commit_recency.as_ref().map(|shard| {
+                shard
+                    .latest_committer_time_ms_by_repo_id
+                    .overlay_heap_bytes()
+            }),
+            self.repo_meta
+                .as_ref()
+                .map(|shard| shard.meta_by_repo_id.overlay_heap_bytes()),
+            self.repo_topic
+                .as_ref()
+                .map(|shard| shard.topics_by_repo_id.overlay_heap_bytes()),
+            self.repo_description
+                .as_ref()
+                .map(|shard| shard.descriptions_by_repo_id.overlay_heap_bytes()),
+            self.file_ownership
+                .as_ref()
+                .map(|shard| shard.owners_by_repo_id.overlay_heap_bytes()),
+            self.file_contributor
+                .as_ref()
+                .map(|shard| shard.contributors_by_repo_id.overlay_heap_bytes()),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            bytes = add_heap_bytes(bytes, family?)?;
+        }
+        Ok(bytes)
+    }
+}
+
 /// The repo-metadata authorities a sealed manifest says the generation
 /// carries: the explicit capability set a query's typed refusals are
 /// answered from.
@@ -240,20 +353,9 @@ impl LexicalAdapter {
             crate::sealed_generation::coverage::CoverageReadPhase::Open,
             verified.coverage_read_stats,
         )?;
-        let reader: IndexReader = verified
-            .index
-            .reader_builder()
-            .reload_policy(ReloadPolicy::Manual)
-            .try_into()
-            .map_err(|err| CoreError::Storage(format!("lexical: reader: {err}")))?;
-        reader
-            .reload()
-            .map_err(|err| CoreError::Storage(format!("lexical: reader reload: {err}")))?;
-        let ranked_keys = Arc::new(
-            verified
-                .ranked_keys
-                .rebind(reader.searcher().segment_readers())?,
-        );
+        let reader = verified.reader;
+        let ranked_keys = verified.ranked_keys;
+        let overlay_bytes = loaded.overlay_heap_bytes_estimate()?;
         let text_authority = verified
             .manifest
             .text_authority
@@ -272,6 +374,7 @@ impl LexicalAdapter {
         let resident_bytes_estimate =
             resident_bytes_estimate(path, text_authority.as_ref(), &ranked_keys)?
                 .checked_add(coverage_bytes)
+                .and_then(|bytes| bytes.checked_add(overlay_bytes))
                 .ok_or_else(|| {
                     CoreError::Storage("lexical resident byte estimate overflow".into())
                 })?;
@@ -311,9 +414,10 @@ impl LexicalAdapter {
 
 /// What an opened handle keeps resident.
 ///
-/// Every mapped file under the generation directory except the decoded
-/// text-authority and ranked-key sidecars (each inode counted once), plus
-/// their resident heap estimates in place of their disk lengths.
+/// Every mapped file under the generation directory except decoded sidecars
+/// (each inode counted once), plus the text-authority and ranked-key heap.
+/// The caller adds decoded coverage and overlay heap before reporting to the
+/// registry; their encoded files must not be counted a second time here.
 pub(crate) fn resident_bytes_estimate(
     generation_dir: &Path,
     text_authority: Option<&ShardedTextAuthority>,
@@ -323,6 +427,9 @@ pub(crate) fn resident_bytes_estimate(
         is_writer_lock_entry(name)
             || name == TEXT_AUTHORITY_DIR_NAME
             || crate::ranked_keys::is_ranked_key_entry(name)
+            || OverlayFamily::from_file_name(name).is_some()
+            || name == crate::sealed_generation::coverage::SOURCE_FILE_COVERAGE_FILE_NAME
+            || crate::sealed_generation::coverage::is_coverage_page(name)
     };
     let mapped =
         unique_inode_tree_bytes(&[generation_dir.to_path_buf()], &skip).map_err(|err| {
@@ -337,4 +444,35 @@ pub(crate) fn resident_bytes_estimate(
         .checked_add(decoded)
         .and_then(|bytes| bytes.checked_add(ranked_key_heap))
         .ok_or_else(|| CoreError::Storage("lexical resident byte estimate overflow".into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{OverlayFamily, resident_bytes_estimate};
+
+    #[test]
+    fn decoded_sidecar_files_do_not_consume_mapped_file_budget()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        std::fs::write(directory.path().join("index.bin"), b"index")?;
+        for family in OverlayFamily::ALL {
+            std::fs::write(directory.path().join(family.file_name()), vec![0_u8; 4096])?;
+        }
+        std::fs::write(
+            directory.path().join("source-file-coverage.cbor"),
+            vec![0_u8; 4096],
+        )?;
+        std::fs::write(
+            directory
+                .path()
+                .join("source-file-coverage-page-00-test.cbor"),
+            vec![0_u8; 4096],
+        )?;
+        let ranked_keys = crate::ranked_keys::RankedKeyTables::bind(Vec::new(), &[])?;
+        let estimate = resident_bytes_estimate(directory.path(), None, &ranked_keys)?;
+        if estimate != 5 {
+            return Err(format!("decoded sidecar files were charged: {estimate} bytes").into());
+        }
+        Ok(())
+    }
 }

@@ -25,19 +25,23 @@ use std::error::Error;
 use std::fmt::Write as _;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::Path;
-use std::time::Instant;
+use std::process::Command;
+use std::sync::{Arc, Mutex, mpsc};
+use std::time::{Duration, Instant};
 
 use sha2::{Digest as _, Sha256};
 
 use quanta_index_contract::lex::LanguageCode;
 use quanta_index_contract::{
-    BatchIngestMode, ChunkId, ChunkRecord, LQ_VERSION_TAG, LqExpr, LqLeaf, LqOptions, LqQuery,
-    LqSpan, ManifestGeneration, RepoCommitRecencyEntry, RepoCommitRecencyIngestBatch, RepoId,
-    RepoRelativePath, RevisionId, SearchCorpusIngestBatch, SearchCorpusReplaceScope,
+    BatchIngestMode, ChunkId, ChunkRecord, GenerationSnapshot, LQ_VERSION_TAG, LqExpr, LqLeaf,
+    LqOptions, LqQuery, LqSpan, ManifestGeneration, RepoCommitRecencyEntry,
+    RepoCommitRecencyIngestBatch, RepoId, RepoRelativePath, RevisionId, SearchCorpusIngestBatch,
+    SearchCorpusReplaceScope, SearchPlaneTrackKind,
 };
 use quanta_index_core::{
-    LexicalIndexOpenPort, RepoCommitRecencyIngestPort, RequestBudgetV1, SearchCorpusBatchBuildPort,
-    SearchCorpusPreflightPhaseV1, TextAuthorityUpdateStats,
+    CoreError, LexicalIndexOpenPort, RepoCommitRecencyIngestPort, RequestBudgetV1,
+    SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort, SearchCorpusBatchBuildPort,
+    SearchCorpusPreflightPhaseV1, TextAuthorityUpdateStats, WriterAdmissionPort,
 };
 use quanta_index_lexical::{LexicalAdapter, LexicalCoverageReadStats};
 
@@ -262,6 +266,87 @@ fn recency_batch(generation: ManifestGeneration) -> RepoCommitRecencyIngestBatch
             latest_committer_time_ms: 1_700_000_000_000,
         }],
     }
+}
+
+struct BlockingWriterAdmission {
+    entered: mpsc::Sender<()>,
+    release: Mutex<mpsc::Receiver<()>>,
+}
+
+impl WriterAdmissionPort for BlockingWriterAdmission {
+    fn admit_writer_open(&self) -> Result<(), CoreError> {
+        self.entered
+            .send(())
+            .map_err(|error| CoreError::Storage(format!("test writer gate entered: {error}")))?;
+        self.release
+            .lock()
+            .map_err(|error| CoreError::Storage(format!("test writer gate poisoned: {error}")))?
+            .recv()
+            .map_err(|error| CoreError::Storage(format!("test writer gate released: {error}")))
+    }
+}
+
+#[test]
+fn delta_keeps_its_proved_base_from_reclaim_until_seal() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().to_path_buf();
+    let base = ManifestGeneration::new(1);
+    let target = ManifestGeneration::new(2);
+    LexicalAdapter::with_state_root(root.clone()).build_batch(&base_batch(base)?)?;
+
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let adapter = Arc::new(LexicalAdapter::with_state_root(root).with_writer_admission(
+        Arc::new(BlockingWriterAdmission {
+            entered: entered_tx,
+            release: Mutex::new(release_rx),
+        }),
+    )?);
+    let delta = delta_batch(target, base)?;
+    let building = Arc::clone(&adapter);
+    let builder = std::thread::spawn(move || building.build_batch(&delta));
+    entered_rx.recv_timeout(Duration::from_secs(10))?;
+
+    let identity = GenerationSnapshot {
+        repo_id: repo(),
+        revision_id: revision(),
+        track: SearchPlaneTrackKind::Lexical,
+        manifest_generation: base,
+        manifest_digest: format!("carryforward-manifest:{}", base.get()),
+    };
+    let (started_tx, started_rx) = mpsc::channel();
+    let (completed_tx, completed_rx) = mpsc::channel();
+    let reclaiming = Arc::clone(&adapter);
+    let reclaimer = std::thread::spawn(move || {
+        let _sent = started_tx.send(());
+        let result = reclaiming.reclaim_sealed_generation(&identity);
+        let _completed = completed_tx.send(());
+        result
+    });
+    started_rx.recv_timeout(Duration::from_secs(10))?;
+    let early = completed_rx.recv_timeout(Duration::from_millis(500));
+    release_tx.send(())?;
+    let build_result = builder.join().map_err(|_panic| "delta builder panicked")?;
+    let reclaim_result = reclaimer
+        .join()
+        .map_err(|_panic| "base reclaimer panicked")?;
+    if !matches!(early, Err(mpsc::RecvTimeoutError::Timeout)) {
+        return Err(format!("base reclaim was not blocked by delta seal: {early:?}").into());
+    }
+    build_result?;
+    if !matches!(
+        reclaim_result?,
+        SealedGenerationReclaimOutcomeV1::Reclaimed { .. }
+    ) {
+        return Err("base was not reclaimed after delta seal".into());
+    }
+    assert_hits(
+        &adapter,
+        target,
+        ALPHA_MARKER,
+        &["chunk-alpha"],
+        "retained delta",
+    )
 }
 
 /// Control: a delta with no prior generation-directory writer carries the base.
@@ -558,6 +643,11 @@ fn emit_coverage_phase(phase: &str, stats: LexicalCoverageReadStats) {
     ]);
 }
 
+#[expect(
+    clippy::print_stdout,
+    clippy::print_stderr,
+    reason = "the manual scale probe forwards its fresh-process measurements to the run log"
+)]
 fn measure_total_delta_pipeline(filler_scopes: usize, mixed: bool) -> TestResult {
     let dir = tempfile::tempdir()?;
     let adapter = LexicalAdapter::with_state_root(dir.path().to_path_buf());
@@ -615,6 +705,22 @@ fn measure_total_delta_pipeline(filler_scopes: usize, mixed: bool) -> TestResult
     let after_build = adapter.coverage_read_stats()?;
     let build_read = coverage_read_delta(after_second_preflight, after_build)?;
     let after_seal = adapter.seal_commitment_stats()?;
+    if std::env::var_os("QUANTA_INDEX_DIAGNOSTIC_FRESH_OPEN").is_some() {
+        let output = Command::new(std::env::current_exe()?)
+            .args([
+                "--ignored",
+                "--exact",
+                "cold_open_only_child",
+                "--nocapture",
+            ])
+            .env("QUANTA_INDEX_DIAGNOSTIC_STATE_ROOT", dir.path())
+            .output()?;
+        print!("{}", String::from_utf8_lossy(&output.stdout));
+        eprint!("{}", String::from_utf8_lossy(&output.stderr));
+        if !output.status.success() {
+            return Err(format!("fresh-process open failed: {}", output.status).into());
+        }
+    }
     let start = Instant::now();
     let opened = adapter.open(&repo(), &revision(), g2)?;
     let open_ms = start.elapsed().as_millis();
@@ -711,6 +817,50 @@ fn total_delta_pipeline_cost_512_files() -> TestResult {
 #[ignore = "manual whole-adapter cost probe; run in a fresh process for RSS"]
 fn total_delta_pipeline_cost_2048_files() -> TestResult {
     measure_total_delta_pipeline(2046, true)
+}
+
+/// Manual scale probe without adding a separate ignored test for every size.
+/// The file count includes the two non-filler scopes in the fixture.
+#[test]
+#[ignore = "manual whole-adapter cost probe; set QUANTA_INDEX_DIAGNOSTIC_FILE_COUNT and run in a fresh process"]
+fn total_delta_pipeline_cost_configured_files() -> TestResult {
+    let files: usize = std::env::var("QUANTA_INDEX_DIAGNOSTIC_FILE_COUNT")?.parse()?;
+    let filler_scopes = files
+        .checked_sub(2)
+        .ok_or("file count must be at least two")?;
+    measure_total_delta_pipeline(filler_scopes, true)
+}
+
+/// Invoked by a manual scale probe in a fresh process so build allocations
+/// cannot contaminate the cold-open peak RSS observation.
+#[test]
+#[ignore = "manual child of the configured scale probe"]
+fn cold_open_only_child() -> TestResult {
+    let root = std::env::var_os("QUANTA_INDEX_DIAGNOSTIC_STATE_ROOT")
+        .ok_or("fresh-open child requires a diagnostic state root")?;
+    let usage = || -> Result<u64, Box<dyn Error>> {
+        let observed = nix::sys::resource::getrusage(nix::sys::resource::UsageWho::RUSAGE_SELF)?;
+        let raw = u64::try_from(observed.max_rss())?;
+        if cfg!(target_os = "macos") {
+            Ok(raw)
+        } else {
+            Ok(raw.checked_mul(1024).ok_or("peak RSS overflow")?)
+        }
+    };
+    let before = usage()?;
+    let adapter = LexicalAdapter::with_state_root(root.into());
+    let started = Instant::now();
+    let opened = adapter.open(&repo(), &revision(), ManifestGeneration::new(2))?;
+    let elapsed = started.elapsed().as_millis();
+    let after = usage()?;
+    emit_evidence(&[
+        ("kind", "fresh_process_open".into()),
+        ("open_ms", elapsed.to_string()),
+        ("peak_rss_before_bytes", before.to_string()),
+        ("peak_rss_after_bytes", after.to_string()),
+    ]);
+    drop(opened);
+    Ok(())
 }
 
 #[test]

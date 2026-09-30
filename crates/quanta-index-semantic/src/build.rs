@@ -1406,8 +1406,11 @@ fn ensure_generation_contract(
     GenerationContract::validate_batch_shape(&header.contract)?;
     let contract_path = layout::build_contract_path(generation_dir);
     if contract_path.exists() {
-        let bytes = fs::read(&contract_path)
-            .map_err(|err| fs_err("read generation contract", &contract_path, &err))?;
+        let bytes = crate::control_file::read_bounded(
+            &contract_path,
+            crate::control_file::MAX_GENERATION_CONTRACT_BYTES,
+        )
+        .map_err(|err| fs_err("read generation contract", &contract_path, &err))?;
         let contract = GenerationContract::decode(&bytes)?;
         return contract.merge_batch(&header.contract);
     }
@@ -1488,7 +1491,10 @@ fn prepare_staging_dataset(
                 revision_id.as_str()
             )));
         }
-        if !layout::sealed_marker_path(&base_dir).exists() {
+        let base_marker = layout::sealed_marker_path(&base_dir);
+        if !crate::control_file::regular_file_present(&base_marker)
+            .map_err(|error| fs_err("inspect delta base sealed marker", &base_marker, &error))?
+        {
             return Err(CoreError::NotReady(format!(
                 "semantic: delta base generation {} is not sealed for repo={} revision={}; cannot clone an in-progress base",
                 base_generation.get(),
@@ -1571,8 +1577,11 @@ fn inherited_vector_index_seal_v1(
         base_generation,
     );
     let manifest_path = layout::manifest_path(&base_dir);
-    let bytes = fs::read(&manifest_path)
-        .map_err(|err| fs_err("read delta base scope manifest", &manifest_path, &err))?;
+    let bytes = crate::control_file::read_bounded(
+        &manifest_path,
+        crate::control_file::MAX_SCOPE_MANIFEST_BYTES,
+    )
+    .map_err(|err| fs_err("read delta base scope manifest", &manifest_path, &err))?;
     let manifest = SemanticManifest::decode(&bytes)?;
     manifest.validate_scope(
         &header.pin.repo_id,
@@ -1837,7 +1846,10 @@ pub(crate) fn build_stream_reported(
         &header.pin.revision_id,
         header.pin.manifest_generation,
     );
-    if layout::sealed_marker_path(&generation_dir).exists() {
+    let sealed_marker = layout::sealed_marker_path(&generation_dir);
+    if crate::control_file::regular_file_present(&sealed_marker)
+        .map_err(|error| fs_err("inspect sealed marker", &sealed_marker, &error))?
+    {
         return Err(CoreError::Storage(format!(
             "semantic: generation {} is already sealed; refusing in-place mutation",
             header.pin.manifest_generation.get()
@@ -1995,6 +2007,11 @@ pub(crate) fn build_stream_reported(
             &sealed_manifest_path(&generation_dir),
             &sealed_manifest_bytes,
             "write sealed generation manifest",
+        )?;
+        crate::control_file::ensure_bounded(
+            header.batch.manifest_digest.as_bytes(),
+            crate::control_file::MAX_SEALED_MARKER_BYTES,
+            "sealed marker",
         )?;
         write_atomic(
             &layout::sealed_marker_path(&generation_dir),

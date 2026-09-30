@@ -5,6 +5,7 @@
 //! proof: source hashes and extraction policy remain producer attestations.
 
 use std::collections::BTreeSet;
+use std::fs::File;
 use std::path::Path;
 
 use quanta_index_contract::{
@@ -19,7 +20,8 @@ pub(crate) const SOURCE_FILE_COVERAGE_FILE_NAME: &str = "source-file-coverage.cb
 mod pages;
 pub(crate) use pages::{
     CoveragePlan, CoverageWriteBase, MAX_COVERAGE_ROOT_BYTES_U64, is_coverage_page,
-    read_admitted_bytes, read_committed_coverage_root, root_page_commitments,
+    read_admitted_bytes, read_committed_coverage_root_at, root_page_commitments,
+    root_page_commitments_at,
 };
 
 pub(crate) type CoverageSnapshot = FileCoverageSnapshot;
@@ -101,11 +103,32 @@ pub(crate) struct CoverageDecodeCache {
 }
 
 impl CoverageDecodeCache {
+    #[cfg(test)]
     pub(crate) fn decode(
         &mut self,
         bytes: &[u8],
         directory: &Path,
         expected: &GenerationSnapshot,
+    ) -> Result<CoverageArtifact, CoreError> {
+        self.decode_with(bytes, directory, expected, None)
+    }
+
+    pub(crate) fn decode_at(
+        &mut self,
+        root: &File,
+        bytes: &[u8],
+        directory: &Path,
+        expected: &GenerationSnapshot,
+    ) -> Result<CoverageArtifact, CoreError> {
+        self.decode_with(bytes, directory, expected, Some(root))
+    }
+
+    fn decode_with(
+        &mut self,
+        bytes: &[u8],
+        directory: &Path,
+        expected: &GenerationSnapshot,
+        root: Option<&File>,
     ) -> Result<CoverageArtifact, CoreError> {
         use sha2::{Digest as _, Sha256};
         let digest = <[u8; 32]>::from(Sha256::digest(bytes));
@@ -114,7 +137,12 @@ impl CoverageDecodeCache {
             .as_ref()
             .filter(|(key, _)| *key == digest)
             .map(|(_, artifact)| artifact);
-        let artifact = pages::decode_coverage_pages_reusing(bytes, directory, expected, cached)?;
+        let artifact = match root {
+            Some(root) => {
+                pages::decode_coverage_pages_reusing_at(root, bytes, directory, expected, cached)?
+            }
+            None => pages::decode_coverage_pages_reusing(bytes, directory, expected, cached)?,
+        };
         // Bound adapter-retained decoded state independently from the larger
         // one-call decode admission. Large roots remain on the uncached rail.
         if artifact.read_stats.max_decode_heap_admission_bytes <= 8 * 1024 * 1024 {
@@ -128,12 +156,22 @@ fn corrupt(generation_dir: &Path, reason: &str) -> CoreError {
     crate::index_store::sidecar_corrupt(generation_dir, SOURCE_FILE_COVERAGE_FILE_NAME, reason)
 }
 
+#[cfg(test)]
 pub(crate) fn decode_coverage(
     bytes: &[u8],
     generation_dir: &Path,
     expected: &GenerationSnapshot,
 ) -> Result<CoverageArtifact, CoreError> {
     pages::decode_coverage_pages(bytes, generation_dir, expected)
+}
+
+pub(crate) fn decode_coverage_at(
+    root: &File,
+    bytes: &[u8],
+    generation_dir: &Path,
+    expected: &GenerationSnapshot,
+) -> Result<CoverageArtifact, CoreError> {
+    pages::decode_coverage_pages_reusing_at(root, bytes, generation_dir, expected, None)
 }
 
 /// Conservative retained-heap admission estimate, not measured allocator use

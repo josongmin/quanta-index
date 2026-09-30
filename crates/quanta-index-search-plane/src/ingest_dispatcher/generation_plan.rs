@@ -1,6 +1,7 @@
 //! Physical generation inspection and the sealed-generation build plan:
 //! which tracks a batch must build, discard, or keep before it can seal.
 
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 
 use quanta_index_contract::{
@@ -14,7 +15,7 @@ use quanta_index_core::{
     SemanticStreamTallyV1,
 };
 
-use crate::{SnapshotKey, SnapshotRegistries, SnapshotRetireOutcome};
+use crate::{SnapshotKey, SnapshotRegistries, SnapshotRetireOutcome, SnapshotRetirementOwner};
 
 /// What one physical reclaim pass did, per track and generation.
 #[derive(Debug, Default, Eq, PartialEq)]
@@ -184,10 +185,18 @@ impl SealedGenerationBuildPlanV1 {
                 track.manifest_generation,
             );
             let (port, fence) = match track.track {
-                SearchPlaneTrackKind::Lexical => (lexical_reclaim, snapshots.lexical.retire(&key)?),
-                SearchPlaneTrackKind::Semantic => {
-                    (semantic_reclaim, snapshots.semantic.retire(&key)?)
-                }
+                SearchPlaneTrackKind::Lexical => (
+                    lexical_reclaim,
+                    snapshots
+                        .lexical
+                        .retire(&key, SnapshotRetirementOwner::SearchCorpusRepair)?,
+                ),
+                SearchPlaneTrackKind::Semantic => (
+                    semantic_reclaim,
+                    snapshots
+                        .semantic
+                        .retire(&key, SnapshotRetirementOwner::SearchCorpusRepair)?,
+                ),
                 SearchPlaneTrackKind::Structural => {
                     return Err(CoreError::InvalidContract(
                         "direct search-corpus materialize: structural is not a search-corpus track"
@@ -205,8 +214,26 @@ impl SealedGenerationBuildPlanV1 {
                     ),
                 });
             }
-            match port.reclaim_sealed_generation(track) {
-                Ok(SealedGenerationReclaimOutcomeV1::Reclaimed { .. }) => {}
+            let settled = Cell::new(false);
+            let settlement_attempted = Cell::new(false);
+            let on_absent = || {
+                settlement_attempted.set(true);
+                snapshots.finish_removed_generation(
+                    track.track,
+                    &key,
+                    SnapshotRetirementOwner::SearchCorpusRepair,
+                )?;
+                settled.set(true);
+                Ok(())
+            };
+            match port.reclaim_sealed_generation_with_settlement(track, &on_absent) {
+                Ok(SealedGenerationReclaimOutcomeV1::Reclaimed { .. }) if settled.get() => {}
+                Ok(SealedGenerationReclaimOutcomeV1::Reclaimed { .. }) => {
+                    return Err(CoreError::Storage(
+                        "direct search-corpus materialize: reclaim omitted namespace settlement"
+                            .into(),
+                    ));
+                }
                 Ok(SealedGenerationReclaimOutcomeV1::Absent) => {
                     return Err(CoreError::Typed {
                         code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusGenerationConflict,
@@ -218,6 +245,9 @@ impl SealedGenerationBuildPlanV1 {
                     });
                 }
                 Err(refused) => {
+                    if settlement_attempted.get() {
+                        return Err(refused);
+                    }
                     return Err(CoreError::Typed {
                         code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusGenerationRepairRequired,
                         message: format!(

@@ -727,7 +727,8 @@ impl E2eRuntime {
     /// Stop the driver (if running) and reconstruct a publisher over the
     /// same `state_root` so further ingest is possible, then leave the
     /// driver stopped so first query lazy-starts a fresh runtime.
-    /// Mirrors a process restart against persistent storage.
+    /// Exercises runtime teardown and reconstruction against persistent storage;
+    /// process-global state remains in this test process.
     #[must_use]
     #[expect(
         clippy::panic,
@@ -735,7 +736,7 @@ impl E2eRuntime {
     )]
     pub fn reopen(mut self) -> Self {
         if let Err(error) = self.stop_driver() {
-            panic!("e2e-harness: daemon process restart failed: {error:#}");
+            panic!("e2e-harness: daemon runtime restart failed: {error:#}");
         }
         self
     }

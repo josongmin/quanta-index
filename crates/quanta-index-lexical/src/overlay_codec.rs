@@ -196,9 +196,13 @@ pub(crate) fn decode_repo_metadata_payload(
     if bytes.is_empty() || bytes == LEGACY_FULL_BUNDLE_PAYLOAD {
         return Ok(None);
     }
-    let wire = ciborium::from_reader::<CborValue, _>(bytes).map_err(|err| {
+    let wire = crate::channel_payloads::decode_cbor_exact::<CborValue>(bytes).map_err(|err| {
         CoreError::InvalidContract(format!("lexical: repo metadata payload decode: {err}"))
     })?;
+    decode_repo_metadata_value(wire).map(Some)
+}
+
+fn decode_repo_metadata_value(wire: CborValue) -> Result<LexicalRepoMetadataPayload, CoreError> {
     let CborValue::Map(fields) = wire else {
         return Err(CoreError::InvalidContract(
             "lexical: repo metadata payload decode: expected map".to_string(),
@@ -257,7 +261,7 @@ pub(crate) fn decode_repo_metadata_payload(
             }
         }
     }
-    Ok(Some(LexicalRepoMetadataPayload {
+    Ok(LexicalRepoMetadataPayload {
         fork: fork.ok_or_else(|| {
             CoreError::InvalidContract(
                 "lexical: repo metadata payload decode: missing field `fork`".to_string(),
@@ -278,7 +282,7 @@ pub(crate) fn decode_repo_metadata_payload(
                 "lexical: repo metadata payload decode: missing field `contexts`".to_string(),
             )
         })?,
-    }))
+    })
 }
 
 pub(crate) fn encode_repo_commit_recency_snapshot(
@@ -312,11 +316,8 @@ pub(crate) fn encode_repo_commit_recency_snapshot(
 }
 
 pub(crate) fn decode_repo_commit_recency_snapshot(
-    bytes: &[u8],
+    wire: CborValue,
 ) -> Result<RepoCommitRecencyShard, CoreError> {
-    let wire = ciborium::from_reader::<CborValue, _>(bytes).map_err(|err| {
-        CoreError::InvalidContract(format!("lexical: repo commit recency decode: {err}"))
-    })?;
     let CborValue::Map(fields) = wire else {
         return Err(CoreError::InvalidContract(
             "lexical: repo commit recency decode: expected map".to_string(),
@@ -467,9 +468,7 @@ pub(crate) fn encode_repo_meta_snapshot(shard: &RepoMetaShard) -> Result<Vec<u8>
     Ok(payload)
 }
 
-pub(crate) fn decode_repo_meta_snapshot(bytes: &[u8]) -> Result<RepoMetaShard, CoreError> {
-    let wire = ciborium::from_reader::<CborValue, _>(bytes)
-        .map_err(|err| CoreError::InvalidContract(format!("lexical: repo meta decode: {err}")))?;
+pub(crate) fn decode_repo_meta_snapshot(wire: CborValue) -> Result<RepoMetaShard, CoreError> {
     let CborValue::Map(fields) = wire else {
         return Err(CoreError::InvalidContract(
             "lexical: repo meta decode: expected map".to_string(),
@@ -621,9 +620,7 @@ pub(crate) fn encode_repo_topic_snapshot(shard: &RepoTopicShard) -> Result<Vec<u
     Ok(payload)
 }
 
-pub(crate) fn decode_repo_topic_snapshot(bytes: &[u8]) -> Result<RepoTopicShard, CoreError> {
-    let wire = ciborium::from_reader::<CborValue, _>(bytes)
-        .map_err(|err| CoreError::InvalidContract(format!("lexical: repo topic decode: {err}")))?;
+pub(crate) fn decode_repo_topic_snapshot(wire: CborValue) -> Result<RepoTopicShard, CoreError> {
     let CborValue::Map(fields) = wire else {
         return Err(CoreError::InvalidContract(
             "lexical: repo topic decode: expected map".to_string(),
@@ -788,11 +785,8 @@ pub(crate) fn encode_repo_description_snapshot(
 }
 
 pub(crate) fn decode_repo_description_snapshot(
-    bytes: &[u8],
+    wire: CborValue,
 ) -> Result<RepoDescriptionShard, CoreError> {
-    let wire = ciborium::from_reader::<CborValue, _>(bytes).map_err(|err| {
-        CoreError::InvalidContract(format!("lexical: repo description decode: {err}"))
-    })?;
     let CborValue::Map(fields) = wire else {
         return Err(CoreError::InvalidContract(
             "lexical: repo description decode: expected map".to_string(),
@@ -981,11 +975,8 @@ pub(crate) fn encode_file_ownership_snapshot(
 }
 
 pub(crate) fn decode_file_ownership_snapshot(
-    bytes: &[u8],
+    wire: CborValue,
 ) -> Result<FileOwnershipShard, CoreError> {
-    let wire = ciborium::from_reader::<CborValue, _>(bytes).map_err(|err| {
-        CoreError::InvalidContract(format!("lexical: file ownership decode: {err}"))
-    })?;
     let CborValue::Map(fields) = wire else {
         return Err(CoreError::InvalidContract(
             "lexical: file ownership decode: expected map".to_string(),
@@ -1197,11 +1188,8 @@ pub(crate) fn encode_file_contributor_snapshot(
 }
 
 pub(crate) fn decode_file_contributor_snapshot(
-    bytes: &[u8],
+    wire: CborValue,
 ) -> Result<FileContributorShard, CoreError> {
-    let wire = ciborium::from_reader::<CborValue, _>(bytes).map_err(|err| {
-        CoreError::InvalidContract(format!("lexical: file contributor decode: {err}"))
-    })?;
     let CborValue::Map(fields) = wire else {
         return Err(CoreError::InvalidContract(
             "lexical: file contributor decode: expected map".to_string(),
@@ -1355,32 +1343,31 @@ pub(crate) fn encode_file_contributor_batch(
     })
 }
 
-/// Decode one overlay family's proved bytes; a decode failure names the
-/// file and is a corrupt sealed generation, never a partial authority.
-pub(crate) fn decode_overlay(
+/// Validate one overlay family's authenticated CBOR value. Decoding bytes and
+/// proving their digest belong to the sealed reader, before this can publish
+/// an authority snapshot.
+pub(crate) fn decode_overlay_value(
     family: OverlayFamily,
-    bytes: &[u8],
+    wire: CborValue,
     generation_dir: &Path,
 ) -> Result<OverlaySnapshot, CoreError> {
     let decoded = match family {
-        OverlayFamily::RepoMetadata => decode_repo_metadata_payload(bytes).and_then(|payload| {
-            payload.map(OverlaySnapshot::RepoMetadata).ok_or_else(|| {
-                CoreError::InvalidContract("repo metadata snapshot carries no payload".to_string())
-            })
-        }),
-        OverlayFamily::CommitRecency => {
-            decode_repo_commit_recency_snapshot(bytes).map(OverlaySnapshot::CommitRecency)
+        OverlayFamily::RepoMetadata => {
+            decode_repo_metadata_value(wire).map(OverlaySnapshot::RepoMetadata)
         }
-        OverlayFamily::Meta => decode_repo_meta_snapshot(bytes).map(OverlaySnapshot::Meta),
-        OverlayFamily::Topic => decode_repo_topic_snapshot(bytes).map(OverlaySnapshot::Topic),
+        OverlayFamily::CommitRecency => {
+            decode_repo_commit_recency_snapshot(wire).map(OverlaySnapshot::CommitRecency)
+        }
+        OverlayFamily::Meta => decode_repo_meta_snapshot(wire).map(OverlaySnapshot::Meta),
+        OverlayFamily::Topic => decode_repo_topic_snapshot(wire).map(OverlaySnapshot::Topic),
         OverlayFamily::Description => {
-            decode_repo_description_snapshot(bytes).map(OverlaySnapshot::Description)
+            decode_repo_description_snapshot(wire).map(OverlaySnapshot::Description)
         }
         OverlayFamily::FileOwnership => {
-            decode_file_ownership_snapshot(bytes).map(OverlaySnapshot::FileOwnership)
+            decode_file_ownership_snapshot(wire).map(OverlaySnapshot::FileOwnership)
         }
         OverlayFamily::Contributor => {
-            decode_file_contributor_snapshot(bytes).map(OverlaySnapshot::Contributor)
+            decode_file_contributor_snapshot(wire).map(OverlaySnapshot::Contributor)
         }
     };
     decoded.map_err(|err| match err {

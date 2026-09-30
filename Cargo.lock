@@ -4460,6 +4460,7 @@ name = "quanta-index-lexical"
 version = "0.1.0"
 dependencies = [
  "ciborium",
+ "nix",
  "quanta-index-contract",
  "quanta-index-core",
  "quanta-index-lq-positions",
@@ -4741,6 +4742,7 @@ dependencies = [
  "lancedb",
  "quanta-index-contract",
  "quanta-index-core",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "sha2",

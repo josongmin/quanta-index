@@ -3,7 +3,7 @@
 use crate::adapter::{declared_delta_base_generation, legacy_ops_for_batch};
 use crate::channel_payloads::{decode_replace_scope_payload, decode_tombstone_scope_payload};
 use crate::generation_dir::{ensure_unsealed, is_writer_lock_entry, read_lexical_delta_base};
-use crate::index_store::{lexical_sealed_identity_path, persist_lexical_sealed_identity};
+use crate::index_store::{persist_lexical_sealed_identity, sealed_identity_entry_present};
 use crate::overlay_codec::OverlayFamily;
 use crate::overlay_codec::{
     decode_repo_metadata_payload, encode_file_contributor_batch, encode_file_ownership_batch,
@@ -249,7 +249,7 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
             revision_id: batch.revision_id.clone(),
             generation: batch.generation,
         });
-        if lexical_sealed_identity_path(&directory).exists() {
+        if sealed_identity_entry_present(&directory)? {
             // A full replacement can reach the existing identity-fenced repair
             // planner for damaged content. Proving that content here would
             // refuse before the materializer can reclaim and rebuild it. This
@@ -290,6 +290,13 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
         if let Some(payload) = &batch.bundle_payload {
             let _metadata = decode_repo_metadata_payload(payload)?;
         }
+        let key = GenKey {
+            repo_id: batch.repo_id.clone(),
+            revision_id: batch.revision_id.clone(),
+            generation: batch.generation,
+        };
+        let _mutation = self.generation_build_guards(&key, batch.base_generation)?;
+        let _lifecycle = self.directory_lifecycle_read_guard()?;
         let candidate = GenerationSnapshot {
             repo_id: batch.repo_id.clone(),
             revision_id: batch.revision_id.clone(),
@@ -297,12 +304,8 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
             manifest_generation: batch.generation,
             manifest_digest: batch.manifest_digest.clone(),
         };
-        let generation_dir = self.index_path(&GenKey {
-            repo_id: batch.repo_id.clone(),
-            revision_id: batch.revision_id.clone(),
-            generation: batch.generation,
-        });
-        if lexical_sealed_identity_path(&generation_dir).exists() {
+        let generation_dir = self.index_path(&key);
+        if sealed_identity_entry_present(&generation_dir)? {
             if !batch.seal {
                 return Err(CoreError::Typed {
                     code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationImmutable,
@@ -330,11 +333,6 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
         // mutation. It is query-invisible until the index and artifact seal.
         let coverage_root =
             write_staged_coverage(&generation_dir, &candidate, &batch.source_event, &coverage)?;
-        let key = GenKey {
-            repo_id: batch.repo_id.clone(),
-            revision_id: batch.revision_id.clone(),
-            generation: batch.generation,
-        };
         self.prepare_generation_from_base(&key, batch.base_generation)?;
         self.build_ops(
             &batch.repo_id,
@@ -349,11 +347,6 @@ impl SearchCorpusBatchBuildPort for LexicalAdapter {
             // behind the manifest. Then manifest first, identity last: the
             // identity's presence is the promotion point and implies a
             // durable manifest.
-            let key = GenKey {
-                repo_id: batch.repo_id.clone(),
-                revision_id: batch.revision_id.clone(),
-                generation: batch.generation,
-            };
             self.finalize_index_for_seal(&key)?;
             let base_dir = read_lexical_delta_base(&generation_dir)?.map(|base| {
                 self.index_path(&GenKey {
@@ -513,6 +506,14 @@ impl LexicalIndexBuildPort for LexicalAdapter {
         generation: ManifestGeneration,
         ops: &[LexicalChannelOp],
     ) -> Result<(), CoreError> {
+        let key = GenKey {
+            repo_id: repo.clone(),
+            revision_id: revision.clone(),
+            generation,
+        };
+        let base = declared_delta_base_generation(ops)?;
+        let _mutation = self.generation_build_guards(&key, base)?;
+        let _lifecycle = self.directory_lifecycle_read_guard()?;
         self.build_ops(repo, revision, generation, ops, false)
     }
 }
@@ -582,7 +583,7 @@ impl LexicalAdapter {
                         message: "lexical: delta base source event differs from the declared stream parent; publish a full replacement to start another lineage".into(),
                     });
                 }
-                self.validate_inherited_candidate_ownership(&verified.index, batch)?;
+                self.validate_inherited_candidate_ownership(&verified.reader, batch)?;
                 let coverage = verified.coverage.ok_or_else(|| CoreError::Typed { code: quanta_index_contract::SearchPlaneErrorCodeV2::SymbolCoverageUnavailable, message: "lexical: coverage delta requires a base with admitted file coverage; rebuild the generation".into() })?;
                 let root = verified.manifest.source_coverage.ok_or_else(|| {
                     CoreError::Storage("lexical: verified coverage has no root commitment".into())
@@ -628,7 +629,7 @@ impl LexicalAdapter {
 
     fn validate_inherited_candidate_ownership(
         &self,
-        index: &tantivy::Index,
+        reader: &tantivy::IndexReader,
         batch: &SearchCorpusIngestBatch,
     ) -> Result<(), CoreError> {
         use tantivy::query::{BooleanQuery, Occur, Query, TermSetQuery};
@@ -660,15 +661,6 @@ impl LexicalAdapter {
             (Occur::Must, Box::new(TermSetQuery::new(terms))),
             (Occur::MustNot, Box::new(BooleanQuery::union(retired))),
         ]);
-        let reader: tantivy::IndexReader = index
-            .reader_builder()
-            .reload_policy(tantivy::ReloadPolicy::Manual)
-            .try_into()
-            .map_err(|error| {
-                CoreError::Storage(format!(
-                    "lexical: inherited candidate ownership reader: {error}"
-                ))
-            })?;
         let count = reader
             .searcher()
             .search(&conflict, &tantivy::collector::Count)

@@ -126,6 +126,14 @@ def test_regular_python_and_rust_jobs_are_independent_and_source_bound():
     rust_names = {step["run"]["name"] for step in rust_steps if "run" in step}
     python_names = {step["run"]["name"] for step in python_steps if "run" in step}
     assert "rust nextest" in rust_names and "rust nextest" not in python_names
+    module_step = next(
+        step["run"]
+        for step in python_steps
+        if isinstance(step, dict)
+        and step.get("run", {}).get("name") == "Verify guarded module snapshots"
+    )
+    assert "cargo install cargo-modules --version 0.26.0 --locked" in module_step["command"]
+    assert "python3 tools/ci/lint/check-cargo-modules-snapshot.py" in module_step["command"]
     assert "Python policy and tooling tests" in python_names
     assert "P00 authority owner tests" in python_names
     assert "Python policy and tooling tests" not in rust_names

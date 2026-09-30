@@ -29,6 +29,7 @@ mod search_corpus_lifecycle;
 mod search_corpus_retention;
 mod semantic_derive;
 mod single_flight;
+mod snapshot_inventory_admission;
 mod snapshot_registry;
 
 pub use control_dispatcher::{
@@ -74,8 +75,9 @@ pub use readiness::{
 pub use search_corpus_lifecycle::{
     ActivationPromotionParts, SearchCorpusLifecycleOwner, SearchCorpusLifecycleParts,
 };
+pub use snapshot_inventory_admission::SnapshotInventoryAdmission;
 pub use snapshot_registry::{
     OpenedSnapshot, SnapshotAcquireOutcome, SnapshotAcquired, SnapshotKey, SnapshotPromoteOutcome,
     SnapshotRegistries, SnapshotRegistry, SnapshotRegistryPolicy, SnapshotRegistryStats,
-    SnapshotRetireOutcome,
+    SnapshotRetireOutcome, SnapshotRetirementOwner,
 };

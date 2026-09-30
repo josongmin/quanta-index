@@ -478,6 +478,18 @@ impl Ledger {
             .cloned()
     }
 
+    /// The track generations this ledger may allow a query to open. The
+    /// quarantine boundary maps them to physical directories before deletion.
+    pub(crate) fn sealed_track_keys(
+        &self,
+        track: SearchPlaneTrackKind,
+    ) -> impl Iterator<Item = (&RepoId, &RevisionId, ManifestGeneration)> {
+        self.sealed_search_track_identities
+            .keys()
+            .filter(move |key| key.track == track)
+            .map(|key| (&key.repo_id, &key.revision_id, key.generation))
+    }
+
     /// The serving boundary for a pinned track generation (QI-BB-003):
     /// [`validate_pinned_generation_v1`] over what this ledger knows. The
     /// sealed identities are what the durable authority recorded at seal,

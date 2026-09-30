@@ -288,8 +288,25 @@ pub(crate) fn seal_generation(
         .transpose()?;
     let mut overlays = Vec::new();
     for family in OverlayFamily::ALL {
-        if family.path(generation_dir).is_file() {
-            overlays.push(measurer.commit(family.file_name())?);
+        let path = family.path(generation_dir);
+        match super::optional_entry_metadata(&path) {
+            Ok(Some(metadata)) if metadata.is_file() => {
+                overlays.push(measurer.commit(family.file_name())?);
+            }
+            Ok(Some(_)) => {
+                return Err(crate::index_store::sidecar_corrupt(
+                    generation_dir,
+                    family.file_name(),
+                    "overlay is not a regular file",
+                ));
+            }
+            Ok(None) => {}
+            Err(error) => {
+                return Err(CoreError::Storage(format!(
+                    "lexical: inspect overlay {} before sealing: {error}",
+                    path.display()
+                )));
+            }
         }
     }
     let source_coverage =
@@ -370,9 +387,6 @@ fn commit_ranked_keys(
         .reload_policy(ReloadPolicy::Manual)
         .try_into()
         .map_err(|error| CoreError::Storage(format!("lexical: ranked-key seal reader: {error}")))?;
-    reader
-        .reload()
-        .map_err(|error| CoreError::Storage(format!("lexical: ranked-key seal reload: {error}")))?;
     let searcher = reader.searcher();
     let mut segments: Vec<(String, &tantivy::SegmentReader)> = searcher
         .segment_readers()
@@ -543,9 +557,6 @@ fn live_text_doc_count(index: &Index, fields: &SchemaFields) -> Result<u64, Core
         .reload_policy(ReloadPolicy::Manual)
         .try_into()
         .map_err(|err| CoreError::Storage(format!("lexical: text doc count reader: {err}")))?;
-    reader.reload().map_err(|err| {
-        CoreError::Storage(format!("lexical: text doc count reader reload: {err}"))
-    })?;
     let query = TermQuery::new(
         Term::from_field_text(fields.doc_kind, TEXT_DOC_KIND),
         IndexRecordOption::Basic,

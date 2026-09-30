@@ -38,8 +38,8 @@ use quanta_index_core::{
     GenerationIdentityValidatePort, GenerationQuarantineReasonV1, GenerationStorageKeyV1,
     IntegrityScrubBudgetV1, IntegrityScrubCursorV1, IntegrityScrubOutcomeV1, IntegrityScrubPort,
     MetricSourcePort, MetricValueV1, QuarantineDiscardOutcomeV1, QuarantinedGenerationDiscardPort,
-    RECLAIM_AREA_DIR_NAME, RequestBudgetV1, SealedGenerationReclaimOutcomeV1,
-    SealedGenerationReclaimPort, SemanticIndexOpenPort,
+    RECLAIM_AREA_DIR_NAME, RequestBudgetV1, SealedGenerationIdentityProbePort,
+    SealedGenerationReclaimOutcomeV1, SealedGenerationReclaimPort, SemanticIndexOpenPort,
 };
 use quanta_index_semantic::{
     SemanticAdapter, build_resident_batch_v1, inventory_persisted_generations,
@@ -107,6 +107,37 @@ fn identity(generation: ManifestGeneration) -> GenerationSnapshot {
 
 fn generation_dir(root: &Path, generation: ManifestGeneration) -> PathBuf {
     GenerationStorageKeyV1::for_repo_revision(&repo(), &revision()).generation_dir(root, generation)
+}
+
+#[test]
+fn point_inventory_matches_full_inventory_for_digest_and_family_symlink() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().join("semantic");
+    let adapter = SemanticAdapter::with_state_root(root.clone())?;
+    let generation = ManifestGeneration::new(1);
+    seal(&adapter, generation)?;
+    let exact = identity(generation);
+    if !adapter.inventory_sealed_generation_identity(&exact)? {
+        return Err("point inventory missed an intact sealed generation".into());
+    }
+    let mut wrong = exact.clone();
+    wrong.manifest_digest.push_str("-wrong");
+    if adapter.inventory_sealed_generation_identity(&wrong)? {
+        return Err("point inventory admitted a different digest".into());
+    }
+    let family = generation_dir(&root, generation)
+        .parent()
+        .ok_or("generation has no family")?
+        .to_path_buf();
+    let moved = temp.path().join("moved-family");
+    std::fs::rename(&family, &moved)?;
+    std::os::unix::fs::symlink(&moved, &family)?;
+    if adapter.inventory_sealed_generation_identity(&exact)?
+        || !inventory_persisted_generations(&root)?.sealed.is_empty()
+    {
+        return Err("point or full inventory followed a family symlink".into());
+    }
+    Ok(())
 }
 
 /// Every regular file under the dataset tree, sorted, relative to the
@@ -526,6 +557,154 @@ fn both_doors_refuse_forged_or_missing_sidecars() -> TestResult {
     expect_admitted(&knock(&adapter, generation), "sealed manifest restored")
 }
 
+fn expect_sidecar_scrub_quarantine(
+    adapter: &SemanticAdapter,
+    root: &Path,
+    generation: ManifestGeneration,
+    what: &str,
+) -> TestResult {
+    expect_refused(
+        &knock(adapter, generation),
+        what,
+        SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
+    )?;
+    let report = adapter.scrub(&identity(generation), None, UNBOUNDED)?;
+    let IntegrityScrubOutcomeV1::Corrupt { quarantined } = &report.outcome else {
+        return Err(
+            format!("{what}: scrub did not quarantine the damaged sidecar: {report:?}").into(),
+        );
+    };
+    let dir = generation_dir(root, generation);
+    if quarantined.path != dir || quarantined.reason != GenerationQuarantineReasonV1::ContentCorrupt
+    {
+        return Err(format!("{what}: wrong quarantine: {quarantined:?}").into());
+    }
+    let inventory = inventory_persisted_generations(root)?;
+    if inventory.quarantined.len() != 1
+        || inventory.quarantined[0].path != dir
+        || inventory.quarantined[0].reason != GenerationQuarantineReasonV1::ContentCorrupt
+    {
+        return Err(format!("{what}: scrub quarantine is not inventoried: {inventory:?}").into());
+    }
+    Ok(())
+}
+
+#[test]
+fn symlinked_sidecars_cannot_pass_a_scrub_with_matching_target_bytes() -> TestResult {
+    for sidecar in [SCOPE_MANIFEST, BUILD_CONTRACT] {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().join("state");
+        let adapter = SemanticAdapter::with_state_root(root.clone())?;
+        let generation = ManifestGeneration::new(91);
+        seal(&adapter, generation)?;
+        let path = generation_dir(&root, generation).join(sidecar);
+        let original = std::fs::read(&path)?;
+        let outside = temp.path().join("matching-sidecar");
+        std::fs::write(&outside, &original)?;
+        std::fs::remove_file(&path)?;
+        std::os::unix::fs::symlink(&outside, &path)?;
+        expect_sidecar_scrub_quarantine(&adapter, &root, generation, sidecar)?;
+        std::fs::remove_file(&path)?;
+        std::fs::write(&path, original)?;
+        expect_refused(
+            &knock(&adapter, generation),
+            &format!("{sidecar}: restored after quarantine"),
+            SearchPlaneErrorCodeV2::GenerationQuarantined,
+        )?;
+    }
+    Ok(())
+}
+
+#[test]
+fn oversized_sidecars_cannot_receive_a_completed_scrub() -> TestResult {
+    for (sidecar, max_bytes) in [
+        (SCOPE_MANIFEST, 16 * 1024 * 1024),
+        (BUILD_CONTRACT, 1024 * 1024),
+    ] {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().join("state");
+        let adapter = SemanticAdapter::with_state_root(root.clone())?;
+        let generation = ManifestGeneration::new(92);
+        seal(&adapter, generation)?;
+        let path = generation_dir(&root, generation).join(sidecar);
+        let original = std::fs::read(&path)?;
+        let file = std::fs::OpenOptions::new().write(true).open(&path)?;
+        file.set_len(
+            u64::try_from(max_bytes)?
+                .checked_add(1)
+                .ok_or("size overflow")?,
+        )?;
+        drop(file);
+        expect_sidecar_scrub_quarantine(&adapter, &root, generation, sidecar)?;
+        std::fs::write(&path, original)?;
+        expect_refused(
+            &knock(&adapter, generation),
+            &format!("{sidecar}: restored after quarantine"),
+            SearchPlaneErrorCodeV2::GenerationQuarantined,
+        )?;
+    }
+    Ok(())
+}
+
+#[test]
+fn a_semantic_scrub_does_not_stop_an_unrelated_generation_build() -> TestResult {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().to_path_buf();
+    let adapter = SemanticAdapter::with_state_root(root.clone())?;
+    let damaged = ManifestGeneration::new(1);
+    let unrelated = ManifestGeneration::new(2);
+    seal(&adapter, damaged)?;
+    flip_last_byte(&generation_dir(&root, damaged).join(SCOPE_MANIFEST))?;
+
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let (build_tx, build_rx) = mpsc::channel();
+    std::thread::scope(|scope| -> TestResult {
+        let adapter_ref = &adapter;
+        let scrub = scope.spawn(move || {
+            adapter_ref
+                .scrub_with_quarantine_fence(&identity(damaged), None, UNBOUNDED, &|| {
+                    entered_tx
+                        .send(())
+                        .map_err(|error| CoreError::Storage(error.to_string()))?;
+                    release_rx
+                        .recv()
+                        .map_err(|error| CoreError::Storage(error.to_string()))?;
+                    Ok(())
+                })
+                .map_err(|error| error.to_string())
+        });
+        entered_rx.recv_timeout(Duration::from_secs(30))?;
+        let adapter_ref = &adapter;
+        let build = scope.spawn(move || {
+            let result = seal(adapter_ref, unrelated).map_err(|error| error.to_string());
+            let _sent = build_tx.send(result.clone());
+            result
+        });
+        let while_scrub_is_fenced = build_rx.recv_timeout(Duration::from_secs(60));
+        release_tx.send(())?;
+        let scrubbed = scrub
+            .join()
+            .map_err(|_| "semantic scrub thread panicked")??;
+        let _built = build
+            .join()
+            .map_err(|_| "semantic build thread panicked")??;
+        if !matches!(scrubbed.outcome, IntegrityScrubOutcomeV1::Corrupt { .. }) {
+            return Err(
+                format!("damaged semantic generation was not quarantined: {scrubbed:?}").into(),
+            );
+        }
+        if let Err(error) = while_scrub_is_fenced {
+            return Err(format!("unrelated semantic build waited for scrub: {error}").into());
+        }
+        Ok(())
+    })?;
+    expect_admitted(&knock(&adapter, unrelated), "unrelated semantic generation")
+}
+
 /// A door's content verdict is recorded only by the adapter's re-proof
 /// (QI-BB-026).
 ///
@@ -704,6 +883,262 @@ fn a_sealed_generation_is_admitted_repeatedly() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn malformed_sealed_manifest_is_quarantined_after_reproof() -> TestResult {
+    for (trailing, via_scrub) in [(false, false), (true, true)] {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().to_path_buf();
+        let adapter = SemanticAdapter::with_state_root(root.clone())?;
+        let generation = ManifestGeneration::new(5);
+        seal(&adapter, generation)?;
+        let dir = generation_dir(&root, generation);
+        let path = dir.join(SEALED_MANIFEST);
+        let original = std::fs::read(&path)?;
+        let damaged = if trailing {
+            let mut bytes = original.clone();
+            bytes.push(0xff);
+            bytes
+        } else {
+            vec![0xff]
+        };
+        std::fs::write(&path, damaged)?;
+        expect_refused(
+            &knock(&adapter, generation),
+            "malformed sealed manifest",
+            SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
+        )?;
+
+        if via_scrub {
+            let fenced = std::cell::Cell::new(false);
+            let report = adapter.scrub_with_quarantine_fence(
+                &identity(generation),
+                None,
+                UNBOUNDED,
+                &|| {
+                    if dir.join("semantic-quarantine.cbor").exists() {
+                        return Err(CoreError::Storage(
+                            "quarantine receipt preceded the registry fence".into(),
+                        ));
+                    }
+                    fenced.set(true);
+                    Ok(())
+                },
+            )?;
+            if !fenced.get() {
+                return Err("scrub published a quarantine without fencing the registry".into());
+            }
+            if !matches!(report.outcome, IntegrityScrubOutcomeV1::Corrupt { .. }) {
+                return Err(
+                    format!("scrub did not quarantine malformed manifest: {report:?}").into(),
+                );
+            }
+        } else if !matches!(
+            adapter.quarantine_door_finding(&identity(generation))?,
+            DoorFindingOutcome::Quarantined { .. }
+        ) {
+            return Err("door reproof did not quarantine malformed manifest".into());
+        }
+
+        let inventory = inventory_persisted_generations(&root)?;
+        let [entry] = inventory.quarantined.as_slice() else {
+            return Err(
+                format!("malformed manifest lacks quarantine receipt: {inventory:?}").into(),
+            );
+        };
+        if entry.path != dir || entry.reason != GenerationQuarantineReasonV1::ContentCorrupt {
+            return Err(format!("wrong malformed-manifest quarantine: {entry:?}").into());
+        }
+        std::fs::write(path, original)?;
+        expect_refused(
+            &knock(&adapter, generation),
+            "restored bytes remain quarantined",
+            SearchPlaneErrorCodeV2::GenerationQuarantined,
+        )?;
+    }
+    Ok(())
+}
+
+#[test]
+fn inventory_refuses_invalid_seals_and_scrub_fences_without_misclassifying_missing_format()
+-> TestResult {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().to_path_buf();
+    let adapter = SemanticAdapter::with_state_root(root.clone())?;
+    let missing = ManifestGeneration::new(83);
+    let oversized = ManifestGeneration::new(84);
+    let intact = ManifestGeneration::new(85);
+    for generation in [missing, oversized, intact] {
+        seal(&adapter, generation)?;
+    }
+    std::fs::remove_file(generation_dir(&root, missing).join(SEALED_MANIFEST))?;
+    let oversized_path = generation_dir(&root, oversized).join(SEALED_MANIFEST);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(oversized_path)?
+        .set_len(16_777_217)?;
+
+    let inventory = inventory_persisted_generations(&root)?;
+    if inventory.sealed.len() != 1
+        || inventory.sealed.first().map(|entry| entry.generation) != Some(intact)
+        || !inventory.quarantined.iter().any(|entry| {
+            entry.path == generation_dir(&root, missing)
+                && entry.reason == GenerationQuarantineReasonV1::FormatUnsupported
+        })
+        || !inventory.quarantined.iter().any(|entry| {
+            entry.path == generation_dir(&root, oversized)
+                && entry.reason == GenerationQuarantineReasonV1::ContentCorrupt
+        })
+    {
+        return Err(format!("sealed-manifest inventory: {inventory:?}").into());
+    }
+    let candidates = adapter.scrub_candidates()?;
+    if candidates.len() != 3
+        || !candidates
+            .iter()
+            .any(|entry| entry.identity == identity(intact))
+        || [missing, oversized].iter().any(|generation| {
+            !candidates.iter().any(|entry| {
+                entry.identity == identity(*generation) && entry.last_completed_unix.is_none()
+            })
+        })
+    {
+        return Err(format!("invalid seals were omitted from scrub: {candidates:?}").into());
+    }
+    for generation in [missing, oversized] {
+        let dir = generation_dir(&root, generation);
+        let fenced = std::cell::Cell::new(false);
+        let result =
+            adapter.scrub_with_quarantine_fence(&identity(generation), None, UNBOUNDED, &|| {
+                if dir.join("semantic-quarantine.cbor").exists() {
+                    return Err(CoreError::Storage(
+                        "quarantine receipt preceded the registry fence".into(),
+                    ));
+                }
+                fenced.set(true);
+                Ok(())
+            });
+        if !fenced.get() {
+            return Err(format!("invalid seal was not fenced: {result:?}").into());
+        }
+        if generation == missing {
+            if !matches!(
+                &result,
+                Err(CoreError::Typed {
+                    code: SearchPlaneErrorCodeV2::GenerationManifestMissing,
+                    ..
+                })
+            ) || dir.join("semantic-quarantine.cbor").exists()
+            {
+                return Err(
+                    format!("missing format was recorded as corruption: {result:?}").into(),
+                );
+            }
+        } else if !matches!(
+            &result,
+            Ok(quanta_index_core::IntegrityScrubReportV1 {
+                outcome: IntegrityScrubOutcomeV1::Corrupt { .. },
+                ..
+            })
+        ) {
+            return Err(format!("oversized seal was not quarantined: {result:?}").into());
+        }
+    }
+    let remaining = adapter.scrub_candidates()?;
+    if remaining.len() != 2
+        || !remaining
+            .iter()
+            .any(|entry| entry.identity == identity(missing))
+        || !remaining
+            .iter()
+            .any(|entry| entry.identity == identity(intact))
+    {
+        return Err(
+            format!("unsupported or quarantined seals were mislisted: {remaining:?}").into(),
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn unsupported_sealed_manifest_is_fenced_without_a_sticky_corruption_receipt() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().to_path_buf();
+    let adapter = SemanticAdapter::with_state_root(root.clone())?;
+    let generation = ManifestGeneration::new(86);
+    seal(&adapter, generation)?;
+    let dir = generation_dir(&root, generation);
+    let path = dir.join(SEALED_MANIFEST);
+    let original = std::fs::read(&path)?;
+    let mut row: ciborium::Value = ciborium::from_reader(original.as_slice())?;
+    let ciborium::Value::Array(fields) = &mut row else {
+        return Err("sealed manifest is not an array".into());
+    };
+    let version = fields
+        .first_mut()
+        .ok_or("sealed manifest has no format field")?;
+    *version = ciborium::Value::Integer(2.into());
+    let mut unsupported = Vec::new();
+    ciborium::into_writer(&row, &mut unsupported)?;
+    std::fs::write(&path, unsupported)?;
+
+    let fenced = std::cell::Cell::new(false);
+    let result =
+        adapter.scrub_with_quarantine_fence(&identity(generation), None, UNBOUNDED, &|| {
+            fenced.set(true);
+            Ok(())
+        });
+    if !fenced.get()
+        || !matches!(
+            &result,
+            Err(CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported,
+                ..
+            })
+        )
+        || dir.join("semantic-quarantine.cbor").exists()
+    {
+        return Err(format!("unsupported format became content corruption: {result:?}").into());
+    }
+    let inventory = inventory_persisted_generations(&root)?;
+    if !inventory.quarantined.iter().any(|entry| {
+        entry.path == dir && entry.reason == GenerationQuarantineReasonV1::FormatUnsupported
+    }) {
+        return Err(
+            format!("unsupported seal lost its typed inventory reason: {inventory:?}").into(),
+        );
+    }
+    std::fs::write(path, original)?;
+    let clean = adapter.scrub(&identity(generation), None, UNBOUNDED)?;
+    if clean.outcome != IntegrityScrubOutcomeV1::Completed {
+        return Err(format!("supported seal could not be rescrubbed: {clean:?}").into());
+    }
+    Ok(())
+}
+
+#[test]
+fn a_caller_cannot_skip_the_scrub_prefix_with_an_unissued_cursor() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let adapter = SemanticAdapter::with_state_root(temp.path().to_path_buf())?;
+    let generation = ManifestGeneration::new(6);
+    seal(&adapter, generation)?;
+    let result = adapter.scrub(
+        &identity(generation),
+        Some(IntegrityScrubCursorV1 { next_artifact: 1 }),
+        IntegrityScrubBudgetV1 {
+            max_bytes: u64::MAX,
+        },
+    );
+    if !matches!(result, Err(CoreError::InvalidContract(_))) {
+        return Err(format!("unissued scrub cursor was accepted: {result:?}").into());
+    }
+    if adapter.scrub_candidates()?.iter().any(|candidate| {
+        candidate.identity == identity(generation) && candidate.last_completed_unix.is_some()
+    }) {
+        return Err("an unissued cursor recorded scrub completion".into());
+    }
+    Ok(())
+}
+
 /// A scrub resumed over a reclaimed generation meets it gone, typed.
 ///
 /// The generation is reclaimed between two steps of one pass. The next
@@ -745,6 +1180,70 @@ fn a_scrub_resumed_over_a_reclaimed_generation_is_refused_not_quarantined() -> T
     if !adapter.scrub_candidates()?.is_empty() {
         return Err("a reclaimed generation is no scrub candidate".into());
     }
+    Ok(())
+}
+
+#[test]
+fn reclaim_and_quarantine_discard_of_other_generations_preserve_a_paused_scrub() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().to_path_buf();
+    let adapter = SemanticAdapter::with_state_root(root.clone())?;
+    let (scrubbed, reclaimed, quarantined) = (
+        ManifestGeneration::new(1),
+        ManifestGeneration::new(2),
+        ManifestGeneration::new(3),
+    );
+    for generation in [scrubbed, reclaimed, quarantined] {
+        seal(&adapter, generation)?;
+    }
+    let one_byte = IntegrityScrubBudgetV1 { max_bytes: 1 };
+    let first = adapter.scrub(&identity(scrubbed), None, one_byte)?;
+    let IntegrityScrubOutcomeV1::Paused { cursor } = first.outcome else {
+        return Err(format!("the first scrub step must pause: {first:?}").into());
+    };
+    if !matches!(
+        adapter.reclaim_sealed_generation(&identity(reclaimed))?,
+        SealedGenerationReclaimOutcomeV1::Reclaimed { .. }
+    ) {
+        return Err("the other generation was not reclaimed".into());
+    }
+    let _resumed = adapter.scrub(&identity(scrubbed), Some(cursor), one_byte)?;
+
+    let first = adapter.scrub(&identity(scrubbed), None, one_byte)?;
+    let IntegrityScrubOutcomeV1::Paused { cursor } = first.outcome else {
+        return Err(format!("the second scrub pass must pause: {first:?}").into());
+    };
+    std::fs::write(
+        generation_dir(&root, quarantined).join(SEALED_MANIFEST),
+        [0xff],
+    )?;
+    if !matches!(
+        adapter.quarantine_door_finding(&identity(quarantined))?,
+        DoorFindingOutcome::Quarantined { .. }
+    ) {
+        return Err("the damaged generation was not quarantined".into());
+    }
+    let inventory = inventory_persisted_generations(&root)?;
+    let entry = inventory
+        .quarantined
+        .iter()
+        .find(|entry| entry.path == generation_dir(&root, quarantined))
+        .ok_or("the damaged generation is absent from quarantine inventory")?;
+    let mut stale = entry.clone();
+    stale.path = generation_dir(&root, scrubbed);
+    if !matches!(
+        adapter.discard_quarantined_generation(&stale),
+        Err(CoreError::Typed { .. })
+    ) {
+        return Err("discard accepted an intact generation as quarantined".into());
+    }
+    if !matches!(
+        adapter.discard_quarantined_generation(entry)?,
+        QuarantineDiscardOutcomeV1::Discarded { .. }
+    ) {
+        return Err("the quarantined generation was not discarded".into());
+    }
+    let _resumed = adapter.scrub(&identity(scrubbed), Some(cursor), one_byte)?;
     Ok(())
 }
 
@@ -829,12 +1328,127 @@ fn an_interrupted_reclaim_is_out_of_the_namespace_and_finished_once() -> TestRes
 
 /// The scrub is bounded and resumable.
 ///
-/// With a one-byte budget every step hashes exactly one committed file and
-/// pauses with a cursor, the steps
-/// together read every committed byte exactly once, the completed pass
-/// leaves a receipt the candidates list reports, and a step resumed past a
-/// file that was damaged after it was verified still finds the damage
-/// through the layout check when it is a shape defect.
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assertions report independent scrub outcomes in this regression test"
+)]
+fn malformed_completion_receipt_is_rescrubbed_without_blocking_other_candidates() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().to_path_buf();
+    let adapter = SemanticAdapter::with_state_root(root.clone())?;
+    let damaged = ManifestGeneration::new(81);
+    let other = ManifestGeneration::new(82);
+    seal(&adapter, damaged)?;
+    seal(&adapter, other)?;
+    let report = adapter.scrub(
+        &identity(other),
+        None,
+        IntegrityScrubBudgetV1 {
+            max_bytes: u64::MAX,
+        },
+    )?;
+    assert_eq!(report.outcome, IntegrityScrubOutcomeV1::Completed);
+    std::fs::write(
+        generation_dir(&root, damaged).join("semantic-scrub-receipt.cbor"),
+        b"malformed",
+    )?;
+    let candidates = adapter.scrub_candidates()?;
+    assert_eq!(candidates.len(), 2);
+    assert!(candidates.iter().any(|candidate| {
+        candidate.identity == identity(damaged) && candidate.last_completed_unix.is_none()
+    }));
+    assert!(candidates.iter().any(|candidate| {
+        candidate.identity == identity(other) && candidate.last_completed_unix.is_some()
+    }));
+    let report = adapter.scrub(
+        &identity(damaged),
+        None,
+        IntegrityScrubBudgetV1 {
+            max_bytes: u64::MAX,
+        },
+    )?;
+    assert_eq!(report.outcome, IntegrityScrubOutcomeV1::Completed);
+    assert!(adapter.scrub_candidates()?.iter().any(|candidate| {
+        candidate.identity == identity(damaged) && candidate.last_completed_unix.is_some()
+    }));
+    Ok(())
+}
+
+#[test]
+fn completion_receipt_with_trailing_bytes_does_not_claim_a_completed_scrub() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().to_path_buf();
+    let adapter = SemanticAdapter::with_state_root(root.clone())?;
+    let generation = ManifestGeneration::new(86);
+    seal(&adapter, generation)?;
+    let report = adapter.scrub(&identity(generation), None, UNBOUNDED)?;
+    if report.outcome != IntegrityScrubOutcomeV1::Completed {
+        return Err(format!("initial scrub did not complete: {report:?}").into());
+    }
+    let receipt = generation_dir(&root, generation).join("semantic-scrub-receipt.cbor");
+    let mut bytes = std::fs::read(&receipt)?;
+    bytes.push(0xff);
+    std::fs::write(&receipt, bytes)?;
+
+    let candidates = adapter.scrub_candidates()?;
+    if !candidates.iter().any(|candidate| {
+        candidate.identity == identity(generation) && candidate.last_completed_unix.is_none()
+    }) {
+        return Err(
+            format!("trailing bytes preserved completion authority: {candidates:?}").into(),
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn symlink_completion_receipt_is_rescrubbed_without_blocking_other_candidates() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().to_path_buf();
+    let adapter = SemanticAdapter::with_state_root(root.clone())?;
+    let damaged = ManifestGeneration::new(83);
+    let other = ManifestGeneration::new(84);
+    seal(&adapter, damaged)?;
+    seal(&adapter, other)?;
+    let other_report = adapter.scrub(
+        &identity(other),
+        None,
+        IntegrityScrubBudgetV1 {
+            max_bytes: u64::MAX,
+        },
+    )?;
+    if other_report.outcome != IntegrityScrubOutcomeV1::Completed {
+        return Err(format!("other generation did not complete: {other_report:?}").into());
+    }
+    let receipt = generation_dir(&root, damaged).join("semantic-scrub-receipt.cbor");
+    std::os::unix::fs::symlink(root.join("missing-receipt"), &receipt)?;
+    let candidates = adapter.scrub_candidates()?;
+    if !candidates.iter().any(|candidate| {
+        candidate.identity == identity(damaged) && candidate.last_completed_unix.is_none()
+    }) || !candidates.iter().any(|candidate| {
+        candidate.identity == identity(other) && candidate.last_completed_unix.is_some()
+    }) {
+        return Err(format!("symlink receipt blocked other candidates: {candidates:?}").into());
+    }
+    let report = adapter.scrub(
+        &identity(damaged),
+        None,
+        IntegrityScrubBudgetV1 {
+            max_bytes: u64::MAX,
+        },
+    )?;
+    if report.outcome != IntegrityScrubOutcomeV1::Completed {
+        return Err(format!("rescrub did not replace invalid receipt: {report:?}").into());
+    }
+    Ok(())
+}
+
+/// Verify bounded scrub resumption.
+///
+/// With a one-byte budget each step hashes one committed file and pauses.
+/// The pass reads every committed byte once, records completion, and detects
+/// shape damage after a paused step.
 #[test]
 fn the_scrub_is_bounded_resumable_and_accounted() -> TestResult {
     let temp = tempfile::tempdir()?;
@@ -910,8 +1524,17 @@ fn the_scrub_is_bounded_resumable_and_accounted() -> TestResult {
         return Err("a completed pass leaves a receipt the candidates report".into());
     }
 
-    // A file truncated after an earlier step verified it is still found by
-    // a later step, through the layout check that precedes every step.
+    // Begin another pass so the resumed cursor was actually issued for this
+    // generation. A file truncated after its first step is still found by
+    // the layout check that precedes the next step.
+    let first_step = adapter.scrub(
+        &identity(generation),
+        None,
+        IntegrityScrubBudgetV1 { max_bytes: 1 },
+    )?;
+    let IntegrityScrubOutcomeV1::Paused { cursor: issued } = first_step.outcome else {
+        return Err(format!("another bounded pass must pause: {first_step:?}").into());
+    };
     let Some(first) = files.first() else {
         return Err("dataset files".into());
     };
@@ -922,11 +1545,7 @@ fn the_scrub_is_bounded_resumable_and_accounted() -> TestResult {
             .get(..original.len().saturating_sub(1))
             .ok_or("the dataset file is not empty")?,
     )?;
-    let resumed = adapter.scrub(
-        &identity(generation),
-        Some(IntegrityScrubCursorV1 { next_artifact: 1 }),
-        UNBOUNDED,
-    )?;
+    let resumed = adapter.scrub(&identity(generation), Some(issued), UNBOUNDED)?;
     let IntegrityScrubOutcomeV1::Corrupt { quarantined } = resumed.outcome else {
         return Err(format!("a resumed step checks the whole layout first: {resumed:?}").into());
     };

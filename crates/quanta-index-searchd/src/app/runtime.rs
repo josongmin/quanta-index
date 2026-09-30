@@ -68,7 +68,8 @@ use quanta_index_search_plane::{
     SEARCH_OWNED_SEMANTIC_DIMENSION, SearchCorpusAuthorityInspectPort,
     SearchCorpusAuthorityWritePort, SearchCorpusLifecycleOwner, SearchCorpusLifecycleParts,
     SearchCorpusMaterializerParts, SearchPlaneControlDispatcher, SearchPlaneControlDispatcherParts,
-    SearchPlaneDispatcher, SearchPlaneIngestDispatcher, SnapshotRegistries, StructuralIngestPort,
+    SearchPlaneDispatcher, SearchPlaneIngestDispatcher, SnapshotInventoryAdmission,
+    SnapshotRegistries, StructuralIngestPort,
 };
 
 use crate::app::boot_inventory::{self, BootInventoryReportV1, HalfSealedPair};
@@ -1616,9 +1617,15 @@ impl SearchdRuntime {
                 semantic_disk_usage,
                 backend_probe: Some(BackendProbeParts {
                     catalog: Arc::clone(&activation_catalog),
-                    lexical: lexical_identity_probe,
-                    semantic: semantic_identity_probe,
+                    lexical: Arc::clone(&lexical_identity_probe),
+                    semantic: Arc::clone(&semantic_identity_probe),
                 }),
+                inventory_admission: Some(Arc::new(SnapshotInventoryAdmission::new(
+                    Arc::clone(&ledger),
+                    lexical_identity_probe,
+                    semantic_identity_probe,
+                    snapshots.clone(),
+                ))),
                 integrity_scrub,
             },
             config.maintenance_policy().tick(),
@@ -1661,6 +1668,7 @@ impl SearchdRuntime {
             semantic_reclaim: Arc::clone(&semantic_sealed_reclaim),
             repo_map: repo_map_quarantine,
             ledger: Arc::clone(&ledger),
+            lifecycle: Arc::clone(&search_corpus_lifecycle),
             snapshots,
         });
         let process_status = Arc::new(SupervisorStatus::default());

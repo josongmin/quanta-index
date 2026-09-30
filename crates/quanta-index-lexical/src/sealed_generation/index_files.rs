@@ -8,6 +8,7 @@
 //! not-yet-collected predecessor cannot change what a query answers and is
 //! not part of the contract.
 
+use std::fs::File;
 use std::path::Path;
 
 use quanta_index_core::CoreError;
@@ -23,6 +24,20 @@ use tantivy::{Index, SegmentComponent};
 pub(crate) fn referenced_index_files(
     index: &Index,
     generation_dir: &Path,
+) -> Result<Vec<String>, CoreError> {
+    let root = super::open_generation_dir_nofollow(generation_dir).map_err(|error| {
+        CoreError::Storage(format!(
+            "lexical: open index generation {}: {error}",
+            generation_dir.display()
+        ))
+    })?;
+    referenced_index_files_at(index, generation_dir, &root)
+}
+
+pub(crate) fn referenced_index_files_at(
+    index: &Index,
+    generation_dir: &Path,
+    root: &File,
 ) -> Result<Vec<String>, CoreError> {
     let metas = index.searchable_segment_metas().map_err(|error| {
         CoreError::Storage(format!(
@@ -55,13 +70,22 @@ pub(crate) fn referenced_index_files(
                     ))
                 })?
                 .to_string();
-            if !generation_dir.join(&name).is_file() {
-                return Err(crate::index_store::sidecar_corrupt(
-                    generation_dir,
-                    &name,
-                    "missing although the sealed commit references it",
-                ));
-            }
+            let _file = super::open_regular_below(root, Path::new(&name)).map_err(|error| {
+                if error.kind() == std::io::ErrorKind::NotFound
+                    || super::is_unsafe_artifact_path(&error)
+                {
+                    crate::index_store::sidecar_corrupt(
+                        generation_dir,
+                        &name,
+                        "not a regular file although the sealed commit references it",
+                    )
+                } else {
+                    CoreError::Storage(format!(
+                        "lexical: open referenced segment {}: {error}",
+                        generation_dir.join(&name).display()
+                    ))
+                }
+            })?;
             names.push(name);
         }
     }

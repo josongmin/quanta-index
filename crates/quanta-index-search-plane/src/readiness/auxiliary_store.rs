@@ -7,6 +7,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+#[cfg(test)]
+use quanta_index_core::SealedGenerationBytesV1;
 use quanta_index_core::{AuxiliaryAuthorityCatalogPort, CoreError};
 
 use crate::auxiliary_authority;
@@ -74,9 +76,12 @@ impl SearchCorpusIndexBytesPort for ScriptedIndexBytesV1 {
         _repo_id: &RepoId,
         _revision_id: &RevisionId,
         generations: &std::collections::BTreeSet<quanta_index_contract::ManifestGeneration>,
-    ) -> Result<u64, CoreError> {
-        Ok(TEST_INDEX_BYTES_PER_GENERATION
-            .saturating_mul(u64::try_from(generations.len()).map_or(u64::MAX, |len| len)))
+    ) -> Result<SealedGenerationBytesV1, CoreError> {
+        Ok(SealedGenerationBytesV1 {
+            bytes: TEST_INDEX_BYTES_PER_GENERATION
+                .saturating_mul(u64::try_from(generations.len()).map_or(u64::MAX, |len| len)),
+            absent: BTreeSet::new(),
+        })
     }
 }
 

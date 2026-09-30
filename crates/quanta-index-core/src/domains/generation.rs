@@ -124,6 +124,15 @@ pub trait SealedGenerationIdentityProbePort: Send + Sync {
         &self,
         candidate: &GenerationSnapshot,
     ) -> Result<(), CoreError>;
+
+    /// Recheck one exact sealed identity with the same marker, manifest and
+    /// quarantine admission as boot inventory. Missing or quarantined is
+    /// `false`; an infrastructure failure is an error. This point lookup
+    /// avoids walking unrelated generations on every maintenance tick.
+    fn inventory_sealed_generation_identity(
+        &self,
+        candidate: &GenerationSnapshot,
+    ) -> Result<bool, CoreError>;
 }
 
 /// Why boot set a persisted generation aside instead of seeding it
@@ -371,6 +380,17 @@ pub trait QuarantinedGenerationDiscardPort: Send + Sync {
     fn discard_quarantined_generation(
         &self,
         entry: &QuarantinedGenerationV1,
+    ) -> Result<QuarantineDiscardOutcomeV1, CoreError> {
+        self.discard_quarantined_generation_with_settlement(entry, &|| Ok(()))
+    }
+
+    /// Invoke `on_absent` while holding the adapter's directory lifecycle
+    /// lock, after the old path is absent and before another seal can reuse it.
+    /// The callback settles snapshot admission fences for that old namespace.
+    fn discard_quarantined_generation_with_settlement(
+        &self,
+        entry: &QuarantinedGenerationV1,
+        on_absent: &dyn Fn() -> Result<(), CoreError>,
     ) -> Result<QuarantineDiscardOutcomeV1, CoreError>;
 }
 
@@ -423,6 +443,17 @@ pub trait SealedGenerationReclaimPort: Send + Sync {
     fn reclaim_sealed_generation(
         &self,
         retired: &GenerationSnapshot,
+    ) -> Result<SealedGenerationReclaimOutcomeV1, CoreError> {
+        self.reclaim_sealed_generation_with_settlement(retired, &|| Ok(()))
+    }
+
+    /// Call `on_absent` under the adapter's directory lifecycle lock once
+    /// the old generation name is absent, including a deletion that reports
+    /// a later I/O error. A new seal cannot reuse the name before settlement.
+    fn reclaim_sealed_generation_with_settlement(
+        &self,
+        retired: &GenerationSnapshot,
+        on_absent: &dyn Fn() -> Result<(), CoreError>,
     ) -> Result<SealedGenerationReclaimOutcomeV1, CoreError>;
 
     /// Every sealed generation present on disk for the pair, with its durable
@@ -609,6 +640,10 @@ pub struct SealedArtifactCommitmentV1 {
 /// cost is I/O and hashing, never the file's size in memory.
 pub fn sha256_of_file(path: &Path) -> std::io::Result<(u64, [u8; 32])> {
     let mut file = std::fs::File::open(path)?;
+    sha256_of_reader(&mut file)
+}
+
+fn sha256_of_reader(file: &mut impl Read) -> std::io::Result<(u64, [u8; 32])> {
     let mut hasher = Sha256::new();
     let mut buffer = vec![0_u8; 1 << 16];
     let mut length = 0_u64;
@@ -931,6 +966,47 @@ pub fn hash_committed_step_v1(
     start_artifact: u64,
     max_bytes: u64,
 ) -> std::io::Result<TreeScrubStepV1> {
+    hash_committed_step_opened_impl(
+        &|name| {
+            let path = resolve(name).map_err(OpenCommittedError::Resolve)?;
+            std::fs::File::open(path).map_err(OpenCommittedError::File)
+        },
+        committed,
+        start_artifact,
+        max_bytes,
+    )
+}
+
+/// Hash committed files through caller-opened descriptors. A caller that
+/// requires path containment can open with `openat`/`O_NOFOLLOW`; no path is
+/// resolved again after the descriptor is acquired.
+///
+/// A missing file is a content mismatch; other open/read errors prove nothing.
+pub fn hash_committed_step_opened_v1(
+    open: &dyn Fn(&str) -> std::io::Result<std::fs::File>,
+    committed: &[SealedArtifactCommitmentV1],
+    start_artifact: u64,
+    max_bytes: u64,
+) -> std::io::Result<TreeScrubStepV1> {
+    hash_committed_step_opened_impl(
+        &|name| open(name).map_err(OpenCommittedError::File),
+        committed,
+        start_artifact,
+        max_bytes,
+    )
+}
+
+enum OpenCommittedError {
+    Resolve(std::io::Error),
+    File(std::io::Error),
+}
+
+fn hash_committed_step_opened_impl<R: Read>(
+    open: &dyn Fn(&str) -> Result<R, OpenCommittedError>,
+    committed: &[SealedArtifactCommitmentV1],
+    start_artifact: u64,
+    max_bytes: u64,
+) -> std::io::Result<TreeScrubStepV1> {
     let mut step = TreeScrubStepV1 {
         files_verified: 0,
         bytes_read: 0,
@@ -947,6 +1023,11 @@ pub fn hash_committed_step_v1(
             committed.len()
         )));
     };
+    if !committed.is_empty() && remaining.is_empty() {
+        return Err(std::io::Error::other(format!(
+            "scrub cursor {start_artifact} is at the end of the committed files without proving a file"
+        )));
+    }
     for (offset, artifact) in remaining.iter().enumerate() {
         if step.files_verified > 0 && step.bytes_read >= max_bytes {
             let next = start
@@ -959,17 +1040,25 @@ pub fn hash_committed_step_v1(
             };
             return Ok(step);
         }
-        let path = resolve(&artifact.name)?;
-        let (bytes, sha256) = match sha256_of_file(&path) {
-            Ok(measured) => measured,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+        let file = match open(&artifact.name) {
+            Ok(file) => file,
+            Err(OpenCommittedError::Resolve(error)) => return Err(error),
+            Err(OpenCommittedError::File(error))
+                if error.kind() == std::io::ErrorKind::NotFound =>
+            {
                 step.verdict = TreeScrubVerdictV1::Mismatch(TreeCommitmentMismatchV1::Missing {
                     name: artifact.name.clone(),
                 });
                 return Ok(step);
             }
-            Err(error) => return Err(error),
+            Err(OpenCommittedError::File(error)) => return Err(error),
         };
+        // A read failure after a successful open cannot prove the file is
+        // missing, even when the filesystem reports NotFound for that read.
+        // One extra byte distinguishes a grown file without hashing an
+        // unbounded tail after the layout check's length observation.
+        let read_limit = artifact.bytes.saturating_add(1);
+        let (bytes, sha256) = sha256_of_reader(&mut file.take(read_limit))?;
         step.bytes_read = step.bytes_read.saturating_add(bytes);
         if bytes != artifact.bytes {
             step.verdict = TreeScrubVerdictV1::Mismatch(TreeCommitmentMismatchV1::Length {
@@ -1131,6 +1220,12 @@ mod unique_inode_bytes_tests {
         std::fs::write(delta.join("delta-only"), [0_u8; 5]).expect("write");
         std::fs::write(delta.join(".lock"), [0_u8; 99]).expect("write");
         std::os::unix::fs::symlink(base.join("segment"), delta.join("alias")).expect("symlink");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir(&outside).expect("mkdir outside");
+        std::fs::write(outside.join("unowned"), [0_u8; 777]).expect("write outside");
+        std::os::unix::fs::symlink(&outside, delta.join("external-dir"))
+            .expect("link outside directory");
+        std::os::unix::fs::symlink(&delta, delta.join("cycle")).expect("link directory cycle");
 
         let skip = |name: &str| name.starts_with(".lock");
         let both = unique_inode_tree_bytes(&[base.clone(), delta.clone()], &skip).expect("io");
@@ -1151,10 +1246,14 @@ mod unique_inode_bytes_tests {
 
 #[cfg(test)]
 mod tree_commitment_tests {
+    use std::cell::Cell;
+    use std::io::{self, Read};
+    use std::rc::Rc;
+
     use super::{
         TreeCommitmentMismatchV1, TreeScrubStepV1, TreeScrubVerdictV1, commit_tree_inheriting_v1,
-        commit_tree_v1, scrub_tree_commitment_v1, sha256_of_file, verify_tree_commitment_v1,
-        verify_tree_layout_v1,
+        commit_tree_v1, hash_committed_step_opened_v1, scrub_tree_commitment_v1, sha256_of_file,
+        verify_tree_commitment_v1, verify_tree_layout_v1,
     };
 
     fn write(root: &std::path::Path, name: &str, bytes: &[u8]) {
@@ -1163,6 +1262,115 @@ mod tree_commitment_tests {
             std::fs::create_dir_all(parent).expect("create parent");
         }
         std::fs::write(path, bytes).expect("write file");
+    }
+
+    #[test]
+    fn descriptor_open_error_does_not_claim_a_digest_mismatch() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join("dataset");
+        write(&root, "a.lance", b"alpha");
+        let committed = commit_tree_v1(&root, "dataset").expect("commit");
+        let error = hash_committed_step_opened_v1(
+            &|_name| {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "read failed",
+                ))
+            },
+            &committed,
+            0,
+            u64::MAX,
+        )
+        .expect_err("I/O failure must not become a content verdict");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn post_open_not_found_read_does_not_claim_a_missing_file() {
+        struct FailingRead;
+
+        impl Read for FailingRead {
+            fn read(&mut self, _buffer: &mut [u8]) -> io::Result<usize> {
+                Err(io::Error::from(io::ErrorKind::NotFound))
+            }
+        }
+
+        let committed = vec![super::SealedArtifactCommitmentV1 {
+            name: "dataset/a.lance".into(),
+            bytes: 5,
+            sha256: [0; 32],
+        }];
+        let error = super::hash_committed_step_opened_impl(
+            &|_name| Ok(FailingRead),
+            &committed,
+            0,
+            u64::MAX,
+        )
+        .expect_err("an open descriptor's read failure proves no missing file");
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn scrub_stops_after_one_byte_beyond_the_committed_length() {
+        struct GrowingRead {
+            remaining: usize,
+            consumed: Rc<Cell<usize>>,
+        }
+
+        impl Read for GrowingRead {
+            fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+                let amount = buffer.len().min(self.remaining);
+                buffer[..amount].fill(b'x');
+                self.remaining -= amount;
+                self.consumed.set(self.consumed.get() + amount);
+                Ok(amount)
+            }
+        }
+
+        let consumed = Rc::new(Cell::new(0));
+        let committed = vec![super::SealedArtifactCommitmentV1 {
+            name: "dataset/a.lance".into(),
+            bytes: 5,
+            sha256: [0; 32],
+        }];
+        let result = hash_committed_step_opened_v1(
+            &|_name| {
+                Ok(GrowingRead {
+                    remaining: 1_000_000,
+                    consumed: Rc::clone(&consumed),
+                })
+            },
+            &committed,
+            0,
+            u64::MAX,
+        )
+        .expect("bounded read");
+        assert_eq!(consumed.get(), 6);
+        assert_eq!(result.bytes_read, 6);
+        assert_eq!(
+            result.verdict,
+            TreeScrubVerdictV1::Mismatch(TreeCommitmentMismatchV1::Length {
+                name: "dataset/a.lance".to_string(),
+                on_disk: 6,
+                committed: 5,
+            })
+        );
+    }
+
+    #[test]
+    fn resolver_error_does_not_claim_a_missing_file() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().join("dataset");
+        write(&root, "a.lance", b"alpha");
+        let committed = commit_tree_v1(&root, "dataset").expect("commit");
+        let error = super::hash_committed_step_v1(
+            &|_name| Err(std::io::Error::from(std::io::ErrorKind::NotFound)),
+            &committed,
+            0,
+            u64::MAX,
+        )
+        .expect_err("resolver failure must not become a content verdict");
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
     }
 
     #[test]
@@ -1323,6 +1531,7 @@ mod tree_commitment_tests {
             }
         );
         // A cursor beyond the list is a caller defect, not a completed scrub.
+        assert!(scrub_tree_commitment_v1(&root, "dataset", &committed, 3, u64::MAX).is_err());
         assert!(scrub_tree_commitment_v1(&root, "dataset", &committed, 4, u64::MAX).is_err());
     }
 

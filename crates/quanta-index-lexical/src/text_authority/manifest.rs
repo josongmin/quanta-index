@@ -51,6 +51,11 @@ pub(crate) const SHARD_DOCS: u64 = 2048;
 /// (`u32::MAX`; the first doc of a posting list is written as an absolute
 /// `u32` gap).
 pub(crate) const MAX_DOC_ID: u64 = 0xFFFF_FFFF;
+// Each fixed CBOR shard row has five u64 fields (at most 45 bytes), a
+// 32-element u8 digest (at most 66 bytes), and an array header. The doc-id
+// range admits at most this many rows. Leave room for the outer row headers.
+pub(crate) const MAX_MANIFEST_BYTES: usize = 268_435_520;
+const _: () = assert!(SHARD_DOCS == 2048 && MAX_DOC_ID == 0xFFFF_FFFF);
 /// Shard file names carry the first eight digest bytes as hex.
 const SHARD_NAME_DIGEST_BYTES: usize = 8;
 
@@ -152,25 +157,14 @@ pub(crate) fn shard_file_name(index: u64, sha256: &[u8; 32]) -> String {
 ///
 /// Read before the row's shape is assumed, so an older format is refused by
 /// name rather than as a decode failure.
-pub(crate) fn leading_format_version(
-    value: &CborValue,
-    what: &str,
-    path: &Path,
-) -> Result<u32, CoreError> {
-    let unreadable = |detail: &str| {
-        CoreError::Storage(format!(
-            "lexical: decode {what} {}: {detail}",
-            path.display()
-        ))
-    };
+pub(crate) fn leading_format_version(value: &CborValue) -> Result<u32, &'static str> {
     let CborValue::Array(items) = value else {
-        return Err(unreadable("manifest is not an array"));
+        return Err("manifest is not an array");
     };
     let Some(CborValue::Integer(format_version)) = items.first() else {
-        return Err(unreadable("manifest has no leading format version"));
+        return Err("manifest has no leading format version");
     };
-    u32::try_from(*format_version)
-        .map_err(|_overflow| unreadable("manifest format version is not a u32"))
+    u32::try_from(*format_version).map_err(|_overflow| "manifest format version is not a u32")
 }
 
 fn format_unsupported(path: &Path, detail: &str) -> CoreError {
@@ -228,26 +222,19 @@ impl TextAuthorityManifest {
     /// (`GENERATION_SIDECAR_CORRUPT`).
     pub(crate) fn decode(bytes: &[u8], generation_dir: &Path) -> Result<Self, CoreError> {
         let path = manifest_path(generation_dir);
-        let value: CborValue = ciborium::from_reader(bytes).map_err(|error| {
-            CoreError::Storage(format!(
-                "lexical: decode text authority manifest {}: {error}",
-                path.display()
-            ))
-        })?;
-        let format_version = leading_format_version(&value, "text authority manifest", &path)?;
+        let value: CborValue = crate::channel_payloads::decode_cbor_exact(bytes)
+            .map_err(|error| manifest_corrupt(generation_dir, &format!("decode CBOR: {error}")))?;
+        let format_version = leading_format_version(&value)
+            .map_err(|detail| manifest_corrupt(generation_dir, detail))?;
         if format_version != TEXT_AUTHORITY_FORMAT_VERSION {
             return Err(format_unsupported(
                 &path,
                 &format!("was written under text-authority format {format_version}"),
             ));
         }
-        let (_format, shard_docs, (major, minor), max_doc_id, shards): ManifestRow =
-            value.deserialized().map_err(|error| {
-                CoreError::Storage(format!(
-                    "lexical: decode text authority manifest {}: {error}",
-                    path.display()
-                ))
-            })?;
+        let (_format, shard_docs, (major, minor), max_doc_id, shards): ManifestRow = value
+            .deserialized()
+            .map_err(|error| manifest_corrupt(generation_dir, &format!("decode row: {error}")))?;
         if shard_docs != SHARD_DOCS {
             return Err(format_unsupported(
                 &path,
@@ -355,9 +342,30 @@ pub(crate) fn read_manifest(
     generation_dir: &Path,
 ) -> Result<Option<TextAuthorityManifest>, CoreError> {
     let path = manifest_path(generation_dir);
-    let bytes = match std::fs::read(&path) {
+    let relative = Path::new(TEXT_AUTHORITY_DIR_NAME).join(TEXT_AUTHORITY_MANIFEST_FILE_NAME);
+    let bytes = match crate::sealed_generation::open_regular_nofollow(generation_dir, &relative)
+        .and_then(|mut file| {
+            crate::sealed_generation::read_opened_bounded(&mut file, MAX_MANIFEST_BYTES)
+        }) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) if crate::sealed_generation::is_unsafe_artifact_path(&error) => {
+            return Err(manifest_corrupt(
+                generation_dir,
+                "manifest is not a regular sealed file",
+            ));
+        }
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::InvalidData | std::io::ErrorKind::UnexpectedEof
+            ) =>
+        {
+            return Err(manifest_corrupt(
+                generation_dir,
+                &format!("cannot read admitted bytes: {error}"),
+            ));
+        }
         Err(error) => {
             return Err(CoreError::Storage(format!(
                 "lexical: read text authority manifest {}: {error}",
@@ -376,6 +384,70 @@ mod tests {
     };
     use quanta_index_core::CoreError;
     use std::path::Path;
+
+    #[test]
+    fn finalize_manifest_read_refuses_symlinked_source() -> Result<(), Box<dyn std::error::Error>> {
+        let generation = tempfile::tempdir()?;
+        let outside = tempfile::tempdir()?;
+        let manifest = super::TextAuthorityManifest {
+            max_doc_id: 0,
+            shards: Vec::new(),
+        };
+        let outside_path = outside.path().join("manifest.cbor");
+        std::fs::write(&outside_path, manifest.encode()?)?;
+        std::fs::create_dir(generation.path().join(super::TEXT_AUTHORITY_DIR_NAME))?;
+        std::os::unix::fs::symlink(&outside_path, super::manifest_path(generation.path()))?;
+        if !matches!(
+            super::read_manifest(generation.path()),
+            Err(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
+                ..
+            })
+        ) {
+            return Err("redirected text-authority manifest was not refused typed".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_manifest_bytes_and_row_are_typed_corruption() {
+        let short_row = crate::channel_payloads::encode_cbor(
+            &(TEXT_AUTHORITY_FORMAT_VERSION,),
+            "test text-authority manifest",
+        )
+        .expect("encode short row");
+        let mut trailing = TextAuthorityManifest {
+            max_doc_id: 0,
+            shards: Vec::new(),
+        }
+        .encode()
+        .expect("encode valid manifest");
+        trailing.push(0xff);
+        for bytes in [vec![0xff], vec![0xf5], short_row, trailing] {
+            assert_eq!(
+                typed_code(&TextAuthorityManifest::decode(&bytes, Path::new("/g1"))),
+                Some(quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt),
+            );
+        }
+    }
+
+    #[test]
+    fn oversized_manifest_refuses_before_reading_body() -> Result<(), Box<dyn std::error::Error>> {
+        let generation = tempfile::tempdir()?;
+        std::fs::create_dir(generation.path().join(super::TEXT_AUTHORITY_DIR_NAME))?;
+        let file = std::fs::File::create(super::manifest_path(generation.path()))?;
+        file.set_len(u64::try_from(super::MAX_MANIFEST_BYTES)? + 1)?;
+        if !matches!(
+            super::read_manifest(generation.path()),
+            Err(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
+                ..
+            })
+        ) {
+            return Err("oversized text-authority manifest was not refused typed".into());
+        }
+        Ok(())
+    }
 
     fn entry(index: u64, min: u64, max: u64) -> ShardEntry {
         ShardEntry {

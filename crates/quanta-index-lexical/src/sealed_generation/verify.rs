@@ -22,25 +22,31 @@
 //! admits a generation has run every step a query's open runs.
 
 use std::collections::BTreeSet;
+use std::ffi::OsStr;
+use std::fs::File;
+use std::io::{BufReader, Read, Seek};
 use std::path::Path;
 use std::sync::Arc;
 
+use ciborium::Value as CborValue;
 use quanta_index_contract::{GenerationSnapshot, SourcePublicationEvent};
 use quanta_index_core::CoreError;
 use quanta_index_core::domains::generation::SealedArtifactCommitmentV1;
+use sha2::{Digest as _, Sha256};
 use tantivy::{Index, IndexReader, ReloadPolicy};
 
 use crate::overlay_codec::OverlayFamily;
 use crate::ranked_keys::{self, MAX_RANKED_KEYS_BYTES, RankedKeyTables, SegmentKeys};
 use crate::sealed_generation::coverage::{
     CoverageArtifact, CoverageDecodeCache, CoverageSnapshot, LexicalCoverageReadStats,
-    SOURCE_FILE_COVERAGE_FILE_NAME, decode_coverage,
+    SOURCE_FILE_COVERAGE_FILE_NAME, decode_coverage_at,
 };
-use crate::sealed_generation::index_files::referenced_index_files;
-use crate::sealed_generation::manifest::{LexicalSealedManifest, read_bound_manifest};
+use crate::sealed_generation::index_directory::MAX_INDEX_CONTROL_BYTES;
+use crate::sealed_generation::index_files::referenced_index_files_at;
+use crate::sealed_generation::manifest::{LexicalSealedManifest, read_bound_manifest_at};
 use crate::text_authority::{
-    ShardBody, TEXT_AUTHORITY_DIR_NAME, TEXT_AUTHORITY_MANIFEST_FILE_NAME, TextAuthorityManifest,
-    load_shard, sha256_of_bytes, text_authority_dir,
+    MAX_MANIFEST_BYTES, ShardBody, TEXT_AUTHORITY_DIR_NAME, TEXT_AUTHORITY_MANIFEST_FILE_NAME,
+    TextAuthorityManifest, sha256_of_bytes, text_authority_dir,
 };
 use crate::{OverlaySnapshot, TANTIVY_INDEX_META_FILE_NAME};
 
@@ -70,9 +76,9 @@ impl SealedGenerationVisitor for DiscardingVisitor {
 /// What the walk proved and opened, beyond what the visitor kept.
 pub(crate) struct VerifiedGeneration {
     pub(crate) manifest: LexicalSealedManifest,
-    /// The index, opened from the sealed commit with the tokenizers
-    /// registered.
-    pub(crate) index: Index,
+    /// The reader whose segment set the ranked-key verifier bound. Reusing it
+    /// for serving avoids reopening every segment after the door's proof.
+    pub(crate) reader: IndexReader,
     pub(crate) ranked_keys: Arc<RankedKeyTables>,
     /// Decoded from this generation's committed artifact; None is unavailable.
     pub(crate) coverage: Option<CoverageSnapshot>,
@@ -95,23 +101,62 @@ pub(crate) fn walk_sealed_generation_reusing_coverage<V: SealedGenerationVisitor
     visitor: &mut V,
     cache: Option<&mut CoverageDecodeCache>,
 ) -> Result<VerifiedGeneration, CoreError> {
+    let root = super::open_generation_dir_nofollow(generation_dir).map_err(|error| {
+        CoreError::Storage(format!(
+            "lexical: open sealed generation {}: {error}",
+            generation_dir.display()
+        ))
+    })?;
+    walk_sealed_generation_at(&root, generation_dir, identity, visitor, cache)
+}
+
+pub(crate) fn walk_sealed_generation_at<V: SealedGenerationVisitor>(
+    root: &File,
+    generation_dir: &Path,
+    identity: &GenerationSnapshot,
+    visitor: &mut V,
+    cache: Option<&mut CoverageDecodeCache>,
+) -> Result<VerifiedGeneration, CoreError> {
+    let observed = crate::index_store::read_lexical_sealed_identity_at(generation_dir, root)?;
+    crate::index_store::validate_lexical_sealed_identity(&observed, identity)?;
     // A generation the scrub proved corrupt is refused at every door.
-    crate::sealed_generation::refuse_if_quarantined(generation_dir)?;
-    let manifest = read_bound_manifest(generation_dir, &identity.manifest_digest)?;
-    let _meta_bytes = read_committed(generation_dir, &manifest.index_meta)?;
-    let index = crate::index_store::open_sealed_index(generation_dir)?;
-    verify_index_segments(generation_dir, &index, &manifest.index_segments)?;
-    let ranked_keys = verify_ranked_keys(generation_dir, &index, &manifest.ranked_keys)?;
-    verify_overlays(generation_dir, &manifest, visitor)?;
-    verify_text_authority(generation_dir, manifest.text_authority.as_deref(), visitor)?;
+    crate::sealed_generation::refuse_if_quarantined_at(root, generation_dir)?;
+    let manifest = read_bound_manifest_at(generation_dir, root, &identity.manifest_digest)?;
+    if !matches!(usize::try_from(manifest.index_meta.bytes), Ok(bytes) if bytes <= MAX_INDEX_CONTROL_BYTES)
+    {
+        return Err(crate::index_store::sidecar_corrupt(
+            generation_dir,
+            &manifest.index_meta.name,
+            "index commit exceeds the control-file byte limit",
+        ));
+    }
+    let meta_bytes = read_committed(root, generation_dir, &manifest.index_meta)?;
+    let index = crate::index_store::open_sealed_index_at(generation_dir, root, meta_bytes)?;
+    verify_index_segments(root, generation_dir, &index, &manifest.index_segments)?;
+    let (ranked_keys, reader) =
+        verify_ranked_keys(root, generation_dir, &index, &manifest.ranked_keys)?;
+    verify_overlays(root, generation_dir, &manifest, visitor)?;
+    verify_text_authority(
+        root,
+        generation_dir,
+        manifest.text_authority.as_deref(),
+        visitor,
+    )?;
     let coverage = match cache {
         Some(cache) => verify_source_coverage_reusing(
+            root,
             generation_dir,
             identity,
             manifest.source_coverage.as_ref(),
             Some(cache),
         ),
-        None => verify_source_coverage(generation_dir, identity, manifest.source_coverage.as_ref()),
+        None => verify_source_coverage_reusing(
+            root,
+            generation_dir,
+            identity,
+            manifest.source_coverage.as_ref(),
+            None,
+        ),
     }?;
     let (coverage, source_publication, coverage_read_stats) = coverage.map_or(
         (None, None, LexicalCoverageReadStats::default()),
@@ -125,7 +170,7 @@ pub(crate) fn walk_sealed_generation_reusing_coverage<V: SealedGenerationVisitor
     );
     Ok(VerifiedGeneration {
         manifest,
-        index,
+        reader,
         ranked_keys,
         coverage,
         source_publication,
@@ -134,10 +179,11 @@ pub(crate) fn walk_sealed_generation_reusing_coverage<V: SealedGenerationVisitor
 }
 
 fn verify_ranked_keys(
+    root: &File,
     generation_dir: &Path,
     index: &Index,
     commitments: &[SealedArtifactCommitmentV1],
-) -> Result<Arc<RankedKeyTables>, CoreError> {
+) -> Result<(Arc<RankedKeyTables>, IndexReader), CoreError> {
     let reader: IndexReader = index
         .reader_builder()
         .reload_policy(ReloadPolicy::Manual)
@@ -145,9 +191,6 @@ fn verify_ranked_keys(
         .map_err(|error| {
             CoreError::Storage(format!("lexical: ranked-key verifier reader: {error}"))
         })?;
-    reader.reload().map_err(|error| {
-        CoreError::Storage(format!("lexical: ranked-key verifier reload: {error}"))
-    })?;
     let searcher = reader.searcher();
     if commitments.len() != searcher.segment_readers().len() {
         return Err(crate::index_store::sidecar_corrupt(
@@ -180,19 +223,15 @@ fn verify_ranked_keys(
                 "resident table exceeds limit",
             ));
         }
-        let bytes = read_committed(generation_dir, commitment)?;
+        let bytes = read_committed(root, generation_dir, commitment)?;
         tables.push(Arc::new(SegmentKeys::decode(bytes, segment)?));
     }
     let tables = RankedKeyTables::bind(tables, searcher.segment_readers())?;
     // A stale or uncommitted table is never silently ignored.
-    for entry in std::fs::read_dir(generation_dir).map_err(|error| {
+    for name in super::entry_names_at(root, None).map_err(|error| {
         CoreError::Storage(format!("lexical: list ranked-key directory: {error}"))
     })? {
-        let entry = entry.map_err(|error| {
-            CoreError::Storage(format!("lexical: read ranked-key directory: {error}"))
-        })?;
-        let file_name = entry.file_name();
-        let name = file_name.to_string_lossy();
+        let name = name.to_string_lossy();
         if ranked_keys::is_ranked_key_entry(&name) && !by_name.contains_key(name.as_ref()) {
             return Err(crate::index_store::sidecar_corrupt(
                 generation_dir,
@@ -201,20 +240,28 @@ fn verify_ranked_keys(
             ));
         }
     }
-    Ok(Arc::new(tables))
+    Ok((Arc::new(tables), reader))
 }
 
 /// Verify and decode the same bytes. A missing committed artifact or an
 /// uncommitted extra artifact is corruption, not an empty file universe.
+#[cfg(test)]
 pub(crate) fn verify_source_coverage(
     generation_dir: &Path,
     identity: &GenerationSnapshot,
     committed: Option<&SealedArtifactCommitmentV1>,
 ) -> Result<Option<CoverageArtifact>, CoreError> {
-    verify_source_coverage_reusing(generation_dir, identity, committed, None)
+    let root = super::open_generation_dir_nofollow(generation_dir).map_err(|error| {
+        CoreError::Storage(format!(
+            "lexical: open coverage generation {}: {error}",
+            generation_dir.display()
+        ))
+    })?;
+    verify_source_coverage_reusing(&root, generation_dir, identity, committed, None)
 }
 
 fn verify_source_coverage_reusing(
+    root: &File,
     generation_dir: &Path,
     identity: &GenerationSnapshot,
     committed: Option<&SealedArtifactCommitmentV1>,
@@ -228,50 +275,26 @@ fn verify_source_coverage_reusing(
                 "coverage root exceeds its byte ceiling",
             ));
         }
-        let path = generation_dir.join(SOURCE_FILE_COVERAGE_FILE_NAME);
-        match std::fs::symlink_metadata(&path) {
-            Ok(metadata) if metadata.is_file() => {}
-            Ok(_) => {
-                return Err(crate::index_store::sidecar_corrupt(
-                    generation_dir,
-                    SOURCE_FILE_COVERAGE_FILE_NAME,
-                    "coverage is not a regular file",
-                ));
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Err(crate::index_store::sidecar_corrupt(
-                    generation_dir,
-                    SOURCE_FILE_COVERAGE_FILE_NAME,
-                    "missing",
-                ));
-            }
-            Err(error) => {
-                return Err(CoreError::Storage(format!(
-                    "lexical: inspect committed coverage {}: {error}",
-                    path.display(),
-                )));
-            }
-        }
-        let bytes = super::coverage::read_committed_coverage_root(generation_dir, artifact)?;
+        let bytes =
+            super::coverage::read_committed_coverage_root_at(root, generation_dir, artifact)?;
         return cache
             .map_or_else(
-                || decode_coverage(&bytes, generation_dir, identity),
-                |cache| cache.decode(&bytes, generation_dir, identity),
+                || decode_coverage_at(root, &bytes, generation_dir, identity),
+                |cache| cache.decode_at(root, &bytes, generation_dir, identity),
             )
             .map(Some);
     }
-    match std::fs::symlink_metadata(generation_dir.join(SOURCE_FILE_COVERAGE_FILE_NAME)) {
-        Ok(_) => Err(crate::index_store::sidecar_corrupt(
+    match super::optional_entry_at(root, Path::new(SOURCE_FILE_COVERAGE_FILE_NAME)) {
+        Ok(true) => Err(crate::index_store::sidecar_corrupt(
             generation_dir,
             SOURCE_FILE_COVERAGE_FILE_NAME,
             "coverage exists without a manifest commitment",
         )),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            for entry in std::fs::read_dir(generation_dir)
+        Ok(false) => {
+            for name in super::entry_names_at(root, None)
                 .map_err(|error| CoreError::Storage(error.to_string()))?
             {
-                let entry = entry.map_err(|error| CoreError::Storage(error.to_string()))?;
-                if super::coverage::is_coverage_page(&entry.file_name().to_string_lossy()) {
+                if super::coverage::is_coverage_page(&name.to_string_lossy()) {
                     return Err(crate::index_store::sidecar_corrupt(
                         generation_dir,
                         SOURCE_FILE_COVERAGE_FILE_NAME,
@@ -290,29 +313,13 @@ fn verify_source_coverage_reusing(
 
 /// Read one committed file whole and prove its length and digest.
 fn read_committed(
+    root: &File,
     generation_dir: &Path,
     artifact: &SealedArtifactCommitmentV1,
 ) -> Result<Vec<u8>, CoreError> {
     let path = generation_dir.join(&artifact.name);
-    let metadata = std::fs::symlink_metadata(&path).map_err(|error| {
-        if error.kind() == std::io::ErrorKind::NotFound {
-            crate::index_store::sidecar_corrupt(generation_dir, &artifact.name, "missing")
-        } else {
-            CoreError::Storage(format!(
-                "lexical: inspect committed file {}: {error}",
-                path.display()
-            ))
-        }
-    })?;
-    if !metadata.is_file() || metadata.len() != artifact.bytes {
-        return Err(crate::index_store::sidecar_corrupt(
-            generation_dir,
-            &artifact.name,
-            "not a regular file at the committed length",
-        ));
-    }
-    let mut opened = super::open_regular_nofollow(generation_dir, Path::new(&artifact.name))
-        .map_err(|error| {
+    let mut opened =
+        super::open_regular_below(root, Path::new(&artifact.name)).map_err(|error| {
             if error.kind() == std::io::ErrorKind::NotFound
                 || super::is_unsafe_artifact_path(&error)
             {
@@ -371,11 +378,12 @@ fn read_committed(
 /// The segment files the (already proved) commit references are exactly
 /// the listed ones, each present at its committed length.
 fn verify_index_segments(
+    root: &File,
     generation_dir: &Path,
     index: &Index,
     committed: &[SealedArtifactCommitmentV1],
 ) -> Result<(), CoreError> {
-    let referenced = referenced_index_files(index, generation_dir)?;
+    let referenced = referenced_index_files_at(index, generation_dir, root)?;
     let listed: BTreeSet<&str> = committed
         .iter()
         .map(|artifact| artifact.name.as_str())
@@ -399,16 +407,24 @@ fn verify_index_segments(
             ));
         }
         let path = generation_dir.join(&artifact.name);
-        let metadata = std::fs::metadata(&path).map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                crate::index_store::sidecar_corrupt(generation_dir, &artifact.name, "missing")
-            } else {
-                CoreError::Storage(format!(
-                    "lexical: inspect committed segment file {}: {error}",
-                    path.display()
-                ))
-            }
-        })?;
+        let metadata = super::open_regular_below(root, Path::new(&artifact.name))
+            .and_then(|file| file.metadata())
+            .map_err(|error| {
+                if error.kind() == std::io::ErrorKind::NotFound
+                    || super::is_unsafe_artifact_path(&error)
+                {
+                    crate::index_store::sidecar_corrupt(
+                        generation_dir,
+                        &artifact.name,
+                        "missing or unsafe",
+                    )
+                } else {
+                    CoreError::Storage(format!(
+                        "lexical: inspect committed segment file {}: {error}",
+                        path.display()
+                    ))
+                }
+            })?;
         if !metadata.is_file() {
             return Err(crate::index_store::sidecar_corrupt(
                 generation_dir,
@@ -433,26 +449,210 @@ fn verify_index_segments(
 
 /// Every listed overlay is read once, proved and decoded; a family the
 /// seal did not list must not be on disk.
+struct DigestingReader<R> {
+    inner: R,
+    hasher: Sha256,
+    bytes: u64,
+    expected: u64,
+}
+
+impl<R: Read> Read for DigestingReader<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let count = self.inner.read(buffer)?;
+        let next = self
+            .bytes
+            .checked_add(u64::try_from(count).map_err(std::io::Error::other)?)
+            .ok_or_else(|| std::io::Error::other("overlay read length overflow"))?;
+        if next > self.expected {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "overlay grew beyond committed length",
+            ));
+        }
+        let consumed = buffer
+            .get(..count)
+            .ok_or_else(|| std::io::Error::other("overlay reader exceeded its buffer"))?;
+        self.hasher.update(consumed);
+        self.bytes = next;
+        Ok(count)
+    }
+}
+
+/// Authenticate the opened inode with bounded scratch before parsing. The
+/// decoder hashes again, so an in-place mutation between passes cannot publish
+/// bytes other than the ones committed by the manifest.
+fn read_committed_overlay_value(
+    root: &File,
+    generation_dir: &Path,
+    artifact: &SealedArtifactCommitmentV1,
+) -> Result<CborValue, CoreError> {
+    let path = generation_dir.join(&artifact.name);
+    let mut file = super::open_regular_below(root, Path::new(&artifact.name)).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound || super::is_unsafe_artifact_path(&error) {
+            crate::index_store::sidecar_corrupt(generation_dir, &artifact.name, "missing or unsafe")
+        } else {
+            CoreError::Storage(format!("lexical: open overlay {}: {error}", path.display()))
+        }
+    })?;
+    let length = file
+        .metadata()
+        .map_err(|error| {
+            CoreError::Storage(format!("lexical: stat overlay {}: {error}", path.display()))
+        })?
+        .len();
+    if length != artifact.bytes {
+        return Err(crate::index_store::sidecar_corrupt(
+            generation_dir,
+            &artifact.name,
+            "opened overlay differs from committed length",
+        ));
+    }
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 16 * 1024];
+    let mut admitted = (&mut file).take(artifact.bytes);
+    loop {
+        let count = admitted.read(&mut buffer).map_err(|error| {
+            CoreError::Storage(format!("lexical: hash overlay {}: {error}", path.display()))
+        })?;
+        if count == 0 {
+            break;
+        }
+        let consumed = buffer
+            .get(..count)
+            .ok_or_else(|| CoreError::Storage("lexical: overlay hash buffer overflow".into()))?;
+        hasher.update(consumed);
+    }
+    if admitted.limit() != 0 {
+        return Err(crate::index_store::sidecar_corrupt(
+            generation_dir,
+            &artifact.name,
+            "overlay shrank while hashing",
+        ));
+    }
+    let mut sentinel = [0_u8; 1];
+    if file.read(&mut sentinel).map_err(|error| {
+        CoreError::Storage(format!(
+            "lexical: finish overlay hash {}: {error}",
+            path.display()
+        ))
+    })? != 0
+    {
+        return Err(crate::index_store::sidecar_corrupt(
+            generation_dir,
+            &artifact.name,
+            "overlay grew while hashing",
+        ));
+    }
+    if <[u8; 32]>::from(hasher.finalize()) != artifact.sha256 {
+        return Err(crate::index_store::sidecar_corrupt(
+            generation_dir,
+            &artifact.name,
+            "content digest differs from the committed digest",
+        ));
+    }
+    file.rewind().map_err(|error| {
+        CoreError::Storage(format!(
+            "lexical: rewind overlay {}: {error}",
+            path.display()
+        ))
+    })?;
+    let mut reader = DigestingReader {
+        inner: BufReader::with_capacity(64 * 1024, file),
+        hasher: Sha256::new(),
+        bytes: 0,
+        expected: artifact.bytes,
+    };
+    let value =
+        ciborium::from_reader::<CborValue, _>(&mut reader).map_err(|error| match error {
+            ciborium::de::Error::Io(io_error)
+                if !matches!(
+                    io_error.kind(),
+                    std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::InvalidData
+                ) =>
+            {
+                CoreError::Storage(format!(
+                    "lexical: read overlay {}: {io_error}",
+                    path.display()
+                ))
+            }
+            other @ (ciborium::de::Error::Io(_)
+            | ciborium::de::Error::Syntax(_)
+            | ciborium::de::Error::Semantic(_, _)
+            | ciborium::de::Error::RecursionLimitExceeded) => crate::index_store::sidecar_corrupt(
+                generation_dir,
+                &artifact.name,
+                &format!("decode committed CBOR: {other}"),
+            ),
+        })?;
+    let mut sentinel = [0_u8; 1];
+    match reader.read(&mut sentinel) {
+        Ok(0) if reader.bytes == artifact.bytes => {}
+        Ok(0) => {
+            return Err(crate::index_store::sidecar_corrupt(
+                generation_dir,
+                &artifact.name,
+                "overlay has missing bytes",
+            ));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+            return Err(crate::index_store::sidecar_corrupt(
+                generation_dir,
+                &artifact.name,
+                "overlay grew while decoding",
+            ));
+        }
+        Err(error) => {
+            return Err(CoreError::Storage(format!(
+                "lexical: finish overlay read {}: {error}",
+                path.display()
+            )));
+        }
+        Ok(_) => {
+            return Err(crate::index_store::sidecar_corrupt(
+                generation_dir,
+                &artifact.name,
+                "overlay has trailing CBOR bytes",
+            ));
+        }
+    }
+    if <[u8; 32]>::from(reader.hasher.finalize()) != artifact.sha256 {
+        return Err(crate::index_store::sidecar_corrupt(
+            generation_dir,
+            &artifact.name,
+            "content digest differs from the committed digest",
+        ));
+    }
+    Ok(value)
+}
+
 fn verify_overlays<V: SealedGenerationVisitor>(
+    root: &File,
     generation_dir: &Path,
     manifest: &LexicalSealedManifest,
     visitor: &mut V,
 ) -> Result<(), CoreError> {
     for family in OverlayFamily::ALL {
-        match manifest.overlay(family) {
-            Some(artifact) => {
-                let bytes = read_committed(generation_dir, artifact)?;
-                let snapshot =
-                    crate::overlay_codec::decode_overlay(family, &bytes, generation_dir)?;
-                visitor.overlay(snapshot)?;
-            }
-            None => {
-                if family.path(generation_dir).exists() {
+        if let Some(artifact) = manifest.overlay(family) {
+            let value = read_committed_overlay_value(root, generation_dir, artifact)?;
+            let snapshot =
+                crate::overlay_codec::decode_overlay_value(family, value, generation_dir)?;
+            visitor.overlay(snapshot)?;
+        } else {
+            let path = family.path(generation_dir);
+            match super::optional_entry_at(root, Path::new(family.file_name())) {
+                Ok(true) => {
                     return Err(crate::index_store::sidecar_corrupt(
                         generation_dir,
                         family.file_name(),
                         "present although the seal committed to no such overlay",
                     ));
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    return Err(CoreError::Storage(format!(
+                        "lexical: inspect absent overlay {}: {error}",
+                        path.display()
+                    )));
                 }
             }
         }
@@ -463,12 +663,20 @@ fn verify_overlays<V: SealedGenerationVisitor>(
 /// The `text-authority/` tree is exactly what the seal listed, and every
 /// shard decodes to what its manifest says.
 fn verify_text_authority<V: SealedGenerationVisitor>(
+    root: &File,
     generation_dir: &Path,
     committed: Option<&[SealedArtifactCommitmentV1]>,
     visitor: &mut V,
 ) -> Result<(), CoreError> {
     let dir = text_authority_dir(generation_dir);
-    let files = match (committed, dir.is_dir()) {
+    let observed =
+        super::optional_entry_at(root, Path::new(TEXT_AUTHORITY_DIR_NAME)).map_err(|error| {
+            CoreError::Storage(format!(
+                "lexical: inspect text authority {}: {error}",
+                dir.display()
+            ))
+        })?;
+    let files = match (committed, observed) {
         (None, false) => return Ok(()),
         (None, true) => {
             return Err(crate::index_store::sidecar_corrupt(
@@ -493,12 +701,20 @@ fn verify_text_authority<V: SealedGenerationVisitor>(
         .ok_or_else(|| {
             crate::index_store::sidecar_corrupt(generation_dir, &manifest_name, "not committed")
         })?;
-    let manifest_bytes = read_committed(generation_dir, manifest_commitment)?;
+    if !matches!(usize::try_from(manifest_commitment.bytes), Ok(bytes) if bytes <= MAX_MANIFEST_BYTES)
+    {
+        return Err(crate::index_store::sidecar_corrupt(
+            generation_dir,
+            &manifest_name,
+            "text-authority manifest exceeds its format byte limit",
+        ));
+    }
+    let manifest_bytes = read_committed(root, generation_dir, manifest_commitment)?;
     let manifest = TextAuthorityManifest::decode(&manifest_bytes, generation_dir)?;
     ensure_text_authority_listing(generation_dir, &manifest, &manifest_name, files)?;
-    ensure_text_authority_directory(generation_dir, &dir, files)?;
+    ensure_text_authority_directory(root, generation_dir, &dir, files)?;
     for entry in &manifest.shards {
-        let body = load_shard(generation_dir, entry)?;
+        let body = crate::text_authority::load_shard_at(root, generation_dir, entry)?;
         visitor.text_authority_shard(entry.index, body)?;
     }
     Ok(())
@@ -542,6 +758,7 @@ fn ensure_text_authority_listing(
 
 /// The `text-authority/` directory holds exactly the committed files.
 fn ensure_text_authority_directory(
+    root: &File,
     generation_dir: &Path,
     dir: &Path,
     committed: &[SealedArtifactCommitmentV1],
@@ -551,19 +768,24 @@ fn ensure_text_authority_directory(
         .iter()
         .filter_map(|artifact| artifact.name.strip_prefix(prefix.as_str()))
         .collect();
-    for entry in std::fs::read_dir(dir).map_err(|error| {
-        CoreError::Storage(format!(
-            "lexical: list text authority directory {}: {error}",
-            dir.display()
-        ))
-    })? {
-        let entry = entry.map_err(|error| {
-            CoreError::Storage(format!(
-                "lexical: read text authority entry in {}: {error}",
-                dir.display()
-            ))
-        })?;
-        let name = entry.file_name();
+    for name in
+        super::entry_names_at(root, Some(OsStr::new(TEXT_AUTHORITY_DIR_NAME))).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound
+                || super::is_unsafe_artifact_path(&error)
+            {
+                crate::index_store::sidecar_corrupt(
+                    generation_dir,
+                    TEXT_AUTHORITY_DIR_NAME,
+                    "missing or not a directory",
+                )
+            } else {
+                CoreError::Storage(format!(
+                    "lexical: list text authority directory {}: {error}",
+                    dir.display()
+                ))
+            }
+        })?
+    {
         let name = name.to_string_lossy();
         let qualified = format!("{prefix}{name}");
         if !owned.contains(name.as_ref()) {
@@ -573,19 +795,22 @@ fn ensure_text_authority_directory(
                 "present although the seal did not commit to it",
             ));
         }
-        let file_type = entry.file_type().map_err(|error| {
-            CoreError::Storage(format!(
-                "lexical: inspect text authority entry {}: {error}",
-                entry.path().display()
-            ))
+        let _file = super::open_regular_below(root, Path::new(&qualified)).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound
+                || super::is_unsafe_artifact_path(&error)
+            {
+                crate::index_store::sidecar_corrupt(
+                    generation_dir,
+                    &qualified,
+                    "is not a regular file",
+                )
+            } else {
+                CoreError::Storage(format!(
+                    "lexical: inspect text authority entry {}: {error}",
+                    dir.join(name.as_ref()).display()
+                ))
+            }
         })?;
-        if !file_type.is_file() {
-            return Err(crate::index_store::sidecar_corrupt(
-                generation_dir,
-                &qualified,
-                "is not a regular file",
-            ));
-        }
     }
     Ok(())
 }

@@ -1474,7 +1474,7 @@ rail = "pr-workspace-nextest"
 id = "searchd-runtime-e2e-semantic-stream-window"
 path = "crates/quanta-index-searchd-runtime/tests/e2e_semantic_stream_window.rs"
 owner = "quanta-index-searchd-runtime"
-target = "runtime_extended_suite"
+target = "runtime_semantic_stream_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]
@@ -1538,6 +1538,13 @@ id = "searchd-runtime-extended-suite-launcher"
 path = "crates/quanta-index-searchd-runtime/tests/runtime_extended_suite.rs"
 owner = "quanta-index-searchd-runtime"
 target = "runtime_extended_suite"
+rail = "pr-workspace-nextest"
+
+[[integration_targets]]
+id = "searchd-runtime-semantic-stream-suite-launcher"
+path = "crates/quanta-index-searchd-runtime/tests/runtime_semantic_stream_suite.rs"
+owner = "quanta-index-searchd-runtime"
+target = "runtime_semantic_stream_suite"
 rail = "pr-workspace-nextest"
 
 [[integration_targets]]

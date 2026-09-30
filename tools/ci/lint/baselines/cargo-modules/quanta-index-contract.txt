@@ -366,7 +366,13 @@ crate quanta_index_contract
 │       ├── struct SearchPlaneQueryIpcResponseEnvelope: pub
 │       ├── struct SearchPlaneQueryIpcResponseEnvelopeVisitor: pub(self)
 │       │   └── type Value: pub(self)
-│       └── struct SearchPlaneQueryIpcResponseVisitor: pub(self)
+│       ├── struct SearchPlaneQueryIpcResponseVisitor: pub(self)
+│       │   └── type Value: pub(self)
+│       ├── struct SemanticWorkBoundedQueryRequestV1: pub
+│       ├── struct SemanticWorkBoundedQueryRequestVisitorV1: pub(self)
+│       │   └── type Value: pub(self)
+│       ├── struct SemanticWorkBoundedQueryResponseV1: pub
+│       └── struct SemanticWorkBoundedQueryResponseVisitorV1: pub(self)
 │           └── type Value: pub(self)
 ├── mod lex: pub
 │   ├── mod diff: pub

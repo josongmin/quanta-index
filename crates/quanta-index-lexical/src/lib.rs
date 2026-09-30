@@ -122,7 +122,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use std::path::PathBuf;
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use std::time::Instant;
 
@@ -239,6 +239,8 @@ struct GenKey {
     revision_id: RevisionId,
     generation: ManifestGeneration,
 }
+
+const GENERATION_MUTATION_LOCK_STRIPES: usize = 256;
 
 /// Local decode/encode for the legacy repo-metadata sidecar.
 ///
@@ -462,15 +464,17 @@ pub struct LexicalAdapter {
     /// Per-deployment cap on what one execution may materialize
     /// (QI-BB-005), threaded to every opened searcher.
     execution_budget: LexicalExecutionBudgetV1,
-    /// Serializes the two things that act on a sealed generation's
-    /// directory outside a query: an integrity-scrub step, which reads
-    /// every committed file and writes its receipt there, and the removal
-    /// of the directory (reclaim, quarantine discard). Without it a
-    /// reclaim racing a scrub step makes the step meet files vanishing
-    /// under it — a false corruption whose quarantine receipt lands in a
-    /// directory being deleted. Under it a step either finds the
-    /// generation whole or finds it gone, typed.
-    directory_lifecycle: Mutex<()>,
+    /// Serializes mutations, scrub and delta-base pins per bounded stripe.
+    /// A stripe collision only delays an unrelated generation; the table
+    /// cannot grow with ingest history.
+    generation_mutations: [Mutex<()>; GENERATION_MUTATION_LOCK_STRIPES],
+    /// Every build and scrub step holds a read guard; quarantine and sealed
+    /// directory removal take the write guard, so a removed namespace cannot
+    /// be reused before its fence is settled. Mutation stripes exclude scrub
+    /// from a target and from a delta's pinned base without stopping unrelated
+    /// builds for the whole hash step.
+    directory_lifecycle: RwLock<()>,
+    scrub_progress: Mutex<quanta_index_core::domains::integrity::IntegrityScrubProgressV1>,
 }
 
 /// Whether an op changes the Tantivy index (and therefore needs a writer and

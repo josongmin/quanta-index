@@ -9,13 +9,25 @@ use quanta_index_contract::lex::SymbolRecord;
 use quanta_index_contract::{BatchIngestMode, ChunkRecord, ManifestGeneration};
 use quanta_index_core::CoreError;
 
+/// Decode exactly one CBOR value. `ciborium::from_reader` does not require EOF,
+/// so a successful prefix alone cannot authenticate a persisted artifact or
+/// an ingest payload.
+pub(crate) fn decode_cbor_exact<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, String> {
+    let mut reader = std::io::Cursor::new(bytes);
+    let value = ciborium::from_reader(&mut reader).map_err(|error| error.to_string())?;
+    if usize::try_from(reader.position()) != Ok(bytes.len()) {
+        return Err("trailing CBOR bytes".to_string());
+    }
+    Ok(value)
+}
+
 pub(crate) fn decode_chunk_payload(bytes: &[u8]) -> Result<ChunkRecord, CoreError> {
-    ciborium::from_reader::<ChunkRecord, _>(bytes)
+    decode_cbor_exact::<ChunkRecord>(bytes)
         .map_err(|err| CoreError::InvalidContract(format!("lexical: chunk payload decode: {err}")))
 }
 
 pub(crate) fn decode_symbol_payload(bytes: &[u8]) -> Result<SymbolRecord, CoreError> {
-    ciborium::from_reader::<SymbolRecord, _>(bytes)
+    decode_cbor_exact::<SymbolRecord>(bytes)
         .map_err(|err| CoreError::InvalidContract(format!("lexical: symbol payload decode: {err}")))
 }
 
@@ -46,14 +58,11 @@ pub(crate) fn decode_replace_scope_payload(
     ),
     CoreError,
 > {
-    ciborium::from_reader::<
-        (
-            BatchIngestMode,
-            Option<ManifestGeneration>,
-            quanta_index_contract::SearchCorpusReplaceScope,
-        ),
-        _,
-    >(bytes)
+    decode_cbor_exact::<(
+        BatchIngestMode,
+        Option<ManifestGeneration>,
+        quanta_index_contract::SearchCorpusReplaceScope,
+    )>(bytes)
     .map_err(|err| {
         CoreError::InvalidContract(format!("lexical: replace scope payload decode: {err}"))
     })
@@ -69,14 +78,11 @@ pub(crate) fn decode_tombstone_scope_payload(
     ),
     CoreError,
 > {
-    ciborium::from_reader::<
-        (
-            BatchIngestMode,
-            Option<ManifestGeneration>,
-            quanta_index_contract::SearchCorpusTombstoneScope,
-        ),
-        _,
-    >(bytes)
+    decode_cbor_exact::<(
+        BatchIngestMode,
+        Option<ManifestGeneration>,
+        quanta_index_contract::SearchCorpusTombstoneScope,
+    )>(bytes)
     .map_err(|err| {
         CoreError::InvalidContract(format!("lexical: tombstone scope payload decode: {err}"))
     })

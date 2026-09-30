@@ -2,6 +2,7 @@
 //! ingest path, from resource preflight through sealed-generation finalize
 //! and retired-generation reclaim.
 
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -38,7 +39,7 @@ use crate::readiness::{
 use crate::semantic_derive::derive_semantic_stream_from_semantic_sources_v1;
 use crate::{
     Ledger, SealedSearchCorpusAuthorityStateV1, SnapshotKey, SnapshotRegistries,
-    SnapshotRetireOutcome,
+    SnapshotRetireOutcome, SnapshotRetirementOwner,
 };
 
 /// Direct search-corpus batch materializer that commits lexical and derived
@@ -506,6 +507,20 @@ impl SearchCorpusIngestPort for DirectSearchCorpusMaterializer {
                 "direct search-corpus materialize: operation-lock stripe {stripe} poisoned: {err}"
             ))
         })?;
+        // An orphan may exist before its durable record is written. Claim
+        // both track keys before inspecting either physical generation so
+        // orphan discard and every other delete owner must defer until this
+        // complete pair is recorded or the publication stops.
+        let _publication = batch
+            .seal
+            .then(|| {
+                self.snapshots.begin_publication(&SnapshotKey::new(
+                    &batch.repo_id,
+                    &batch.revision_id,
+                    batch.generation,
+                ))
+            })
+            .transpose()?;
 
         // Repeat immutable base/candidate ownership admission under this
         // operation's lock before reservation, provider calls or either builder.
@@ -1185,8 +1200,14 @@ impl DirectSearchCorpusMaterializer {
                 }
                 let key = SnapshotKey::new(&batch.repo_id, &batch.revision_id, generation);
                 let fence = match track {
-                    SearchPlaneTrackKind::Lexical => self.snapshots.lexical.retire(&key)?,
-                    SearchPlaneTrackKind::Semantic => self.snapshots.semantic.retire(&key)?,
+                    SearchPlaneTrackKind::Lexical => self
+                        .snapshots
+                        .lexical
+                        .retire(&key, SnapshotRetirementOwner::SearchCorpusRetention)?,
+                    SearchPlaneTrackKind::Semantic => self
+                        .snapshots
+                        .semantic
+                        .retire(&key, SnapshotRetirementOwner::SearchCorpusRetention)?,
                     SearchPlaneTrackKind::Structural => {
                         return Err(CoreError::InvalidContract(
                             "search-corpus physical reclaim: structural is not a search-corpus track"
@@ -1199,10 +1220,31 @@ impl DirectSearchCorpusMaterializer {
                     continue;
                 }
                 crash_point::reached(crash_point::AFTER_FENCE);
-                match port.reclaim_sealed_generation(&retired) {
-                    Ok(SealedGenerationReclaimOutcomeV1::Absent) => {}
+                let settled = Cell::new(false);
+                let on_absent = || {
+                    self.snapshots.finish_removed_generation(
+                        track,
+                        &key,
+                        SnapshotRetirementOwner::SearchCorpusRetention,
+                    )?;
+                    settled.set(true);
+                    Ok(())
+                };
+                match port.reclaim_sealed_generation_with_settlement(&retired, &on_absent) {
+                    Ok(SealedGenerationReclaimOutcomeV1::Absent) if settled.get() => {}
                     Ok(SealedGenerationReclaimOutcomeV1::Reclaimed { bytes }) => {
+                        if !settled.get() {
+                            return Err(CoreError::Storage(
+                                "search-corpus physical reclaim omitted namespace settlement"
+                                    .into(),
+                            ));
+                        }
                         let _prior = receipt.reclaimed.insert((track, generation), bytes);
+                    }
+                    Ok(SealedGenerationReclaimOutcomeV1::Absent) => {
+                        return Err(CoreError::Storage(
+                            "search-corpus absent reclaim omitted namespace settlement".into(),
+                        ));
                     }
                     Err(error) => {
                         defer_storage_failure(error)?;

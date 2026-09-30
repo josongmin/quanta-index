@@ -10,9 +10,9 @@ files have no automatic push, pull-request, merge-queue, or schedule triggers.
 They remain as historical manual definitions and are not current CI authority.
 
 `.circleci/config.yml` owns the replacement verification definition. The
-default `regular` workflow runs tooling contracts, prompt-manager and Rust
-policy checks, benchmark-control contracts, Semgrep, tracked agent-output
-validation, fmt, clippy, and full-workspace nextest. It emits a legacy
+default `regular` workflow runs tooling contracts, guarded module snapshots,
+prompt-manager and Rust policy checks, benchmark-control contracts, Semgrep,
+tracked agent-output validation, fmt, clippy, and full-workspace nextest. It emits a legacy
 test-authority receipt only for an observed PR or `main` run. The `run_heavy`
 pipeline parameter defaults to false; setting it true selects the manual
 full-workspace nextest and four bounded fuzz targets. No heavy schedule is

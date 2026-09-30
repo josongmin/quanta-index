@@ -1,0 +1,8 @@
+# The semantic stream restart E2E boots a daemon and opens a sealed vector
+# index. Its readiness deadline was exhausted twice by co-scheduled E2Es on
+# the local full-suite rail; the same test passed alone and with serial libtest.
+# Reserve the whole nextest pool only for this test, without serializing the
+# other runtime suites.
+[[profile.default.overrides]]
+filter = 'binary(=runtime_semantic_stream_suite) & test(=e2e_semantic_stream_window::a_batch_streams_through_bounded_windows_and_every_row_survives_a_restart)'
+threads-required = "num-test-threads"

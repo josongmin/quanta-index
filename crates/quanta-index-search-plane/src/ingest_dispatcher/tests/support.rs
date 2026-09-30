@@ -1015,10 +1015,12 @@ pub(super) fn test_incomplete_generation_discard()
 pub(super) struct NoStorageSealedReclaim;
 
 impl SealedGenerationReclaimPort for NoStorageSealedReclaim {
-    fn reclaim_sealed_generation(
+    fn reclaim_sealed_generation_with_settlement(
         &self,
         _retired: &GenerationSnapshot,
+        on_absent: &dyn Fn() -> Result<(), CoreError>,
     ) -> Result<SealedGenerationReclaimOutcomeV1, CoreError> {
+        on_absent()?;
         Ok(SealedGenerationReclaimOutcomeV1::Absent)
     }
 
@@ -1059,6 +1061,8 @@ pub(super) struct ScriptedSealedReclaim {
     pub(super) reclaimed: Mutex<Vec<ManifestGeneration>>,
     /// The generation whose next reclaim fails, as an I/O error would.
     pub(super) fail_next: Mutex<Option<ManifestGeneration>>,
+    /// Fail after the directory has left the generation namespace.
+    pub(super) fail_after_move_next: Mutex<Option<ManifestGeneration>>,
     /// How many of the next listings fail.
     pub(super) failing_listings: AtomicUsize,
     /// When set, the next listing is refused typed, as a directory whose
@@ -1083,6 +1087,7 @@ impl ScriptedSealedReclaim {
             ),
             reclaimed: Mutex::new(Vec::new()),
             fail_next: Mutex::new(None),
+            fail_after_move_next: Mutex::new(None),
             failing_listings: AtomicUsize::new(0),
             refuse_next_listing: AtomicBool::new(false),
             interrupted: AtomicU64::new(0),
@@ -1124,6 +1129,15 @@ impl ScriptedSealedReclaim {
         Ok(())
     }
 
+    pub(super) fn fail_after_move_reclaim_of(&self, generation: u64) -> Result<(), CoreError> {
+        *self
+            .fail_after_move_next
+            .lock()
+            .map_err(|err| CoreError::Storage(format!("scripted reclaim poisoned: {err}")))? =
+            Some(ManifestGeneration::new(generation));
+        Ok(())
+    }
+
     pub(super) fn reclaimed(&self) -> Vec<u64> {
         match self.reclaimed.lock() {
             Ok(guard) => guard.iter().map(|generation| generation.get()).collect(),
@@ -1148,9 +1162,10 @@ impl ScriptedSealedReclaim {
 }
 
 impl SealedGenerationReclaimPort for ScriptedSealedReclaim {
-    fn reclaim_sealed_generation(
+    fn reclaim_sealed_generation_with_settlement(
         &self,
         retired: &GenerationSnapshot,
+        on_absent: &dyn Fn() -> Result<(), CoreError>,
     ) -> Result<SealedGenerationReclaimOutcomeV1, CoreError> {
         let mut fail_next = self
             .fail_next
@@ -1164,6 +1179,27 @@ impl SealedGenerationReclaimPort for ScriptedSealedReclaim {
             )));
         }
         drop(fail_next);
+        let mut fail_after_move = self
+            .fail_after_move_next
+            .lock()
+            .map_err(|err| CoreError::Storage(format!("scripted reclaim poisoned: {err}")))?;
+        if *fail_after_move == Some(retired.manifest_generation) {
+            *fail_after_move = None;
+            drop(fail_after_move);
+            let mut on_disk = self
+                .on_disk
+                .lock()
+                .map_err(|err| CoreError::Storage(format!("scripted reclaim poisoned: {err}")))?;
+            on_disk.retain(|generation| *generation != retired.manifest_generation);
+            let _prior = self.interrupted.fetch_add(1, Ordering::SeqCst);
+            drop(on_disk);
+            on_absent()?;
+            return Err(CoreError::Storage(format!(
+                "scripted reclaim: injected failure after moving generation {}",
+                retired.manifest_generation.get()
+            )));
+        }
+        drop(fail_after_move);
         let mut on_disk = self
             .on_disk
             .lock()
@@ -1172,6 +1208,7 @@ impl SealedGenerationReclaimPort for ScriptedSealedReclaim {
             .iter()
             .position(|generation| *generation == retired.manifest_generation)
         else {
+            on_absent()?;
             return Ok(SealedGenerationReclaimOutcomeV1::Absent);
         };
         let _removed = on_disk.remove(index);
@@ -1180,6 +1217,7 @@ impl SealedGenerationReclaimPort for ScriptedSealedReclaim {
             .lock()
             .map_err(|err| CoreError::Storage(format!("scripted reclaim poisoned: {err}")))?
             .push(retired.manifest_generation);
+        on_absent()?;
         Ok(SealedGenerationReclaimOutcomeV1::Reclaimed { bytes: 1 })
     }
 

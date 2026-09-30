@@ -71,7 +71,11 @@ const COLUMN_DISTANCE: &str = "_distance";
 
 fn load_generation_contract(generation_dir: &Path) -> Result<GenerationContract, CoreError> {
     let contract_path = layout::build_contract_path(generation_dir);
-    let bytes = std::fs::read(&contract_path).map_err(|err| {
+    let bytes = crate::control_file::read_bounded(
+        &contract_path,
+        crate::control_file::MAX_GENERATION_CONTRACT_BYTES,
+    )
+    .map_err(|err| {
         CoreError::Storage(format!(
             "semantic: read generation contract {}: {err}",
             contract_path.display()
@@ -82,7 +86,11 @@ fn load_generation_contract(generation_dir: &Path) -> Result<GenerationContract,
 
 fn read_scope_manifest(generation_dir: &Path) -> Result<SemanticManifest, CoreError> {
     let manifest_path = layout::manifest_path(generation_dir);
-    let manifest_bytes = std::fs::read(&manifest_path).map_err(|err| {
+    let manifest_bytes = crate::control_file::read_bounded(
+        &manifest_path,
+        crate::control_file::MAX_SCOPE_MANIFEST_BYTES,
+    )
+    .map_err(|err| {
         CoreError::Storage(format!(
             "semantic: read manifest {}: {err}",
             manifest_path.display()
@@ -219,7 +227,12 @@ pub(crate) async fn open_generation(
 ) -> Result<LoadedGeneration, CoreError> {
     let generation_dir = layout::generation_dir(semantic_root, repo, revision, generation);
     let marker_path = layout::sealed_marker_path(&generation_dir);
-    if !marker_path.exists() {
+    if !crate::control_file::regular_file_present(&marker_path).map_err(|error| {
+        CoreError::Storage(format!(
+            "semantic: inspect sealed marker {}: {error}",
+            marker_path.display()
+        ))
+    })? {
         return Err(CoreError::NotReady(format!(
             "semantic: generation {} for repo={} revision={} is not sealed (or absent)",
             generation.get(),
@@ -233,7 +246,11 @@ pub(crate) async fn open_generation(
     // contract are proven against the seal before the scope manifest is
     // even decoded, so a forged manifest is refused as a corrupt sidecar
     // rather than interpreted.
-    let sealed_digest = std::fs::read_to_string(&marker_path).map_err(|err| {
+    let sealed_digest = crate::control_file::read_string_bounded(
+        &marker_path,
+        crate::control_file::MAX_SEALED_MARKER_BYTES,
+    )
+    .map_err(|err| {
         CoreError::Storage(format!(
             "semantic: read sealed marker {}: {err}",
             marker_path.display()
@@ -384,36 +401,14 @@ pub(crate) async fn open_generation(
 /// `LanceDB` maps the dataset's files on demand, so their on-disk size is the
 /// honest upper bound on what one open handle can make resident.
 pub(crate) fn dataset_tree_bytes(root: &Path) -> Result<u64, CoreError> {
-    let mut total = 0_u64;
-    let mut pending = vec![root.to_path_buf()];
-    while let Some(directory) = pending.pop() {
-        let entries = std::fs::read_dir(&directory).map_err(|err| {
+    quanta_index_core::unique_inode_tree_bytes(&[root.to_path_buf()], &|_name| false).map_err(
+        |error| {
             CoreError::Storage(format!(
-                "semantic: measure dataset dir {}: {err}",
-                directory.display()
+                "semantic: measure dataset dir {}: {error}",
+                root.display()
             ))
-        })?;
-        for entry in entries {
-            let entry = entry.map_err(|err| {
-                CoreError::Storage(format!(
-                    "semantic: measure dataset entry in {}: {err}",
-                    directory.display()
-                ))
-            })?;
-            let metadata = entry.metadata().map_err(|err| {
-                CoreError::Storage(format!(
-                    "semantic: measure dataset entry {}: {err}",
-                    entry.path().display()
-                ))
-            })?;
-            if metadata.is_dir() {
-                pending.push(entry.path());
-            } else if metadata.is_file() {
-                total = total.saturating_add(metadata.len());
-            }
-        }
-    }
-    Ok(total)
+        },
+    )
 }
 
 /// Downcast a named column to a concrete Arrow array type.

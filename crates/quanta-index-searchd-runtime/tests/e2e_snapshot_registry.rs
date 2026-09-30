@@ -1,26 +1,15 @@
 //! QI-BB-001 / QI-BB-017 — opened sealed generations stay resident across
-//! queries, and only a routed mutation can make the daemon reopen one.
+//! queries while durable authority and physical identity remain valid.
 //!
-//! The oracle is fault injection at the daemon front door, not a counter
-//! the registry maintains about itself. After the first query has opened a
-//! generation, the test deletes the on-disk state that a cold open must
-//! read. A second query that still answers identically could only have been
-//! served from a resident handle: a reopen would fail on the missing files.
-//! For the lexical track that is the whole generation directory (Tantivy
-//! maps its segments and the sidecars are decoded on open). For the semantic
-//! track it is the sealed marker and manifest that `open` proves before it
-//! touches the dataset; the dataset itself stays because `LanceDB` reads
-//! fragments per scan rather than at open.
+//! A repeated query over an intact generation must hit the resident handle.
+//! Physical identity loss is a separate case: maintenance evicts both
+//! resident handles and queries must not serve their stale contents.
 //!
-//! The immutability half is the same trick kept: an auxiliary batch that
-//! names a sealed generation is refused typed (QI-BB-030), so nothing was
-//! mutated and the next lexical *and* semantic query must still be served
-//! from the resident handles after the files are deleted — ingest never
-//! drops residency; only GC retirement does.
+//! An auxiliary batch naming a sealed generation is refused typed (QI-BB-030).
+//! With the physical generation still intact, it must not drop residency.
 //!
-//! Activation and restart promote the handles they proved (QI-BB-017 #4):
-//! with the on-disk state deleted right after either, the *first* query
-//! still serves and the registry's miss counter has not moved.
+//! Activation and runtime restart promote the handles they proved (QI-BB-017 #4):
+//! the first query serves with no additional registry miss.
 //!
 //! Single-flight coalescing, fenced retirement and budgeted waits are
 //! proven in the registry's unit tests with barrier-controlled openers.
@@ -31,6 +20,7 @@ use std::error::Error;
 use std::path::{Path, PathBuf};
 
 use std::collections::BTreeMap;
+use std::time::{Duration, Instant};
 
 use quanta_index_contract::{
     ManifestGeneration, RepoId, RepoMetaEntry, RepoMetaIngestBatch, RevisionId,
@@ -112,22 +102,16 @@ fn remove_semantic_open_proofs(dir: &Path) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// The second lexical query is served without any file being read: the
-/// whole generation directory is gone and the answer is unchanged.
+/// A second lexical query over the same intact generation is a registry hit.
 #[test]
-fn second_lexical_query_reads_no_generation_file() -> TestResult {
+fn second_lexical_query_reuses_resident_handle() -> TestResult {
     let mut rt = seeded_runtime()?;
     let first = ids(&rt.query_text(TextQuerySyntax::Native, QUERY, TOP_K))?;
     if first.len() != 2 {
         return Err(format!("fixture served {} rows, expected 2", first.len()).into());
     }
 
-    let dir = lexical_generation_dir(&rt)?;
-    if !dir.is_dir() {
-        return Err(format!("lexical generation dir not found at {}", dir.display()).into());
-    }
-    std::fs::remove_dir_all(&dir)?;
-
+    let before = registry_counters(&mut rt)?;
     let second = ids(&rt.query_text(TextQuerySyntax::Native, QUERY, TOP_K))?;
     if second != first {
         return Err(format!(
@@ -135,21 +119,20 @@ fn second_lexical_query_reads_no_generation_file() -> TestResult {
         )
         .into());
     }
+    assert_registry_hit(&before, &registry_counters(&mut rt)?, "lexical")?;
     Ok(())
 }
 
-/// The second semantic query does not re-prove the generation: its sealed
-/// marker and manifest are gone and the answer is unchanged.
+/// A second semantic query over the same intact generation is a registry hit.
 #[test]
-fn second_semantic_query_does_not_reopen_the_generation() -> TestResult {
+fn second_semantic_query_reuses_resident_handle() -> TestResult {
     let mut rt = seeded_runtime()?;
     let first = ids(&rt.query_semantic(QUERY, TOP_K, None))?;
     if first.is_empty() {
         return Err("fixture served no semantic rows".into());
     }
 
-    remove_semantic_open_proofs(&semantic_generation_dir(&rt)?)?;
-
+    let before = registry_counters(&mut rt)?;
     let second = ids(&rt.query_semantic(QUERY, TOP_K, None))?;
     if second != first {
         return Err(format!(
@@ -157,6 +140,7 @@ fn second_semantic_query_does_not_reopen_the_generation() -> TestResult {
         )
         .into());
     }
+    assert_registry_hit(&before, &registry_counters(&mut rt)?, "semantic")?;
     Ok(())
 }
 
@@ -166,8 +150,7 @@ fn second_semantic_query_does_not_reopen_the_generation() -> TestResult {
 ///
 /// The refusal is proved from the outside: the publish answers
 /// `GENERATION_IMMUTABLE`, no overlay file appears on disk, and the next
-/// query is still served from the resident handle — the generation
-/// directory is deleted first, so a cold open would fail instead.
+/// query is a resident hit while the physical generation remains intact.
 #[test]
 fn an_auxiliary_publish_into_a_sealed_generation_is_refused_and_keeps_residency() -> TestResult {
     let mut rt = seeded_runtime()?;
@@ -219,12 +202,11 @@ fn an_auxiliary_publish_into_a_sealed_generation_is_refused_and_keeps_residency(
             );
         }
     }
-    std::fs::remove_dir_all(&dir)?;
-
+    let before = registry_counters(&mut rt)?;
     let after = rt.query_text(TextQuerySyntax::Native, QUERY, TOP_K);
     if let Some(error) = after.typed_error {
         return Err(format!(
-            "a refused publish dropped the resident handle; the query cold-opened and failed: {}: {}",
+            "a refused publish was followed by a lexical query refusal: {}: {}",
             error.code, error.message
         )
         .into());
@@ -236,16 +218,16 @@ fn an_auxiliary_publish_into_a_sealed_generation_is_refused_and_keeps_residency(
         )
         .into());
     }
-
-    // The semantic handle was never dropped either: with its open proofs
-    // gone, only the resident handle can still answer.
-    remove_semantic_open_proofs(&semantic_generation_dir(&rt)?)?;
     let after_semantic = ids(&rt.query_semantic(QUERY, TOP_K, None))?;
     if after_semantic != first_semantic {
         return Err(format!(
             "the semantic handle was dropped by a refused publish: first={first_semantic:?} after={after_semantic:?}"
         )
         .into());
+    }
+    let after_counters = registry_counters(&mut rt)?;
+    for track in ["lexical", "semantic"] {
+        assert_registry_hit(&before, &after_counters, track)?;
     }
     Ok(())
 }
@@ -268,16 +250,69 @@ fn counter(counters: &BTreeMap<String, u64>, name: &str) -> Result<u64, Box<dyn 
         .ok_or_else(|| format!("counter `{name}` is in the scrape: {counters:?}").into())
 }
 
+fn assert_registry_hit(
+    before: &BTreeMap<String, u64>,
+    after: &BTreeMap<String, u64>,
+    track: &str,
+) -> TestResult {
+    let hits = format!("snapshot_registry_{track}_hits_total");
+    let misses = format!("snapshot_registry_{track}_misses_total");
+    if counter(after, &hits)? != counter(before, &hits)?.saturating_add(1)
+        || counter(after, &misses)? != counter(before, &misses)?
+    {
+        return Err(format!(
+            "{track}: expected one resident hit without a cold open: {before:?} -> {after:?}"
+        )
+        .into());
+    }
+    Ok(())
+}
+
+#[test]
+fn missing_physical_seals_evict_resident_handles_before_the_next_query() -> TestResult {
+    let mut rt = seeded_runtime()?;
+    let _lexical = ids(&rt.query_text(TextQuerySyntax::Native, QUERY, TOP_K))?;
+    let _semantic = ids(&rt.query_semantic(QUERY, TOP_K, None))?;
+    let before = registry_counters(&mut rt)?;
+    std::fs::remove_dir_all(lexical_generation_dir(&rt)?)?;
+    remove_semantic_open_proofs(&semantic_generation_dir(&rt)?)?;
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let now = registry_counters(&mut rt)?;
+        let invalidated = ["lexical", "semantic"].into_iter().all(|track| {
+            let name = format!("snapshot_registry_{track}_inventory_invalidations_total");
+            matches!((counter(&now, &name), counter(&before, &name)), (Ok(current), Ok(prior)) if current > prior)
+        });
+        if invalidated {
+            break;
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "physical loss did not invalidate both residents: {before:?} -> {now:?}"
+            )
+            .into());
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let lexical = rt.query_text(TextQuerySyntax::Native, QUERY, TOP_K);
+    let semantic = rt.query_semantic(QUERY, TOP_K, None);
+    if lexical.typed_error.is_none() || semantic.typed_error.is_none() {
+        return Err(format!(
+            "a physically missing generation was served: lexical_error={:?} lexical_rows={:?} semantic_error={:?} semantic_rows={:?}",
+            lexical.typed_error, lexical.candidate_ids, semantic.typed_error, semantic.candidate_ids,
+        )
+        .into());
+    }
+    Ok(())
+}
+
 /// The first query on each track is served from a promoted handle.
 ///
-/// Deletes everything a cold open of the pinned generation would read on
-/// both tracks, then proves the first query of each is served without one:
-/// it answers, and the registries report no miss and one promotion.
+/// Both tracks answer while their registries report a hit, no miss and one
+/// promotion. Physical-loss invalidation is proved separately above.
 fn assert_first_queries_are_promoted_hits(rt: &mut E2eRuntime) -> TestResult {
     let before = registry_counters(rt)?;
-    std::fs::remove_dir_all(lexical_generation_dir(rt)?)?;
-    remove_semantic_open_proofs(&semantic_generation_dir(rt)?)?;
-
     let text = ids(&rt.query_text(TextQuerySyntax::Native, QUERY, TOP_K))?;
     if text.len() != 2 {
         return Err(format!(

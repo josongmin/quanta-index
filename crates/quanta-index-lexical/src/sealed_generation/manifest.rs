@@ -28,6 +28,9 @@
 //!   Absence means unavailable capability, not complete coverage.
 //!
 //! Format 9 binds bounded immutable coverage pages through a generation root.
+//! A format-9 manifest written before the encoded-size limit was introduced
+//! may exceed the current admission ceiling; it requires an explicit rebuild
+//! rather than being classified as corrupt.
 //! Format 8 added ranked-key tables; format 7 added flat source-file coverage.
 //! Formats 8 and earlier require an explicit rebuild for the current layout.
 //! The index's text documents carry their
@@ -42,7 +45,7 @@
 //! are refused typed: the migration is a rebuild, never a
 //! reinterpretation.
 
-use std::io::Read as _;
+use std::fs::File;
 use std::path::{Path, PathBuf};
 
 use ciborium::Value as CborValue;
@@ -56,6 +59,9 @@ use crate::text_authority::{TEXT_AUTHORITY_DIR_NAME, leading_format_version};
 
 /// File name of the sealed manifest.
 pub(crate) const LEXICAL_SEALED_MANIFEST_FILE_NAME: &str = "search-corpus-generation-manifest.cbor";
+/// Format-9 admission for the encoded artifact inventory. Publishers and
+/// readers enforce the same limit, so a sealed generation stays readable.
+const MAX_SEALED_MANIFEST_BYTES: usize = 16 * 1024 * 1024;
 /// The manifest format this build writes and serves; see the module
 /// documentation for what each earlier format lacked.
 pub(crate) const LEXICAL_SEALED_MANIFEST_FORMAT_VERSION: u32 = 9;
@@ -215,13 +221,10 @@ impl LexicalSealedManifest {
     /// format or normalizer this build does not serve and any structural
     /// violation of the sections.
     pub(crate) fn decode(bytes: &[u8], path: &Path) -> Result<Self, CoreError> {
-        let value: CborValue = ciborium::from_reader(bytes).map_err(|error| {
-            CoreError::Storage(format!(
-                "lexical: decode sealed generation manifest {}: {error}",
-                path.display()
-            ))
-        })?;
-        let format_version = leading_format_version(&value, "sealed generation manifest", path)?;
+        let value: CborValue = crate::channel_payloads::decode_cbor_exact(bytes)
+            .map_err(|error| manifest_corrupt(path, &format!("decode CBOR: {error}")))?;
+        let format_version =
+            leading_format_version(&value).map_err(|detail| manifest_corrupt(path, detail))?;
         if format_version == LEXICAL_SEALED_MANIFEST_WHOLE_CORPUS_TEXT_AUTHORITY_VERSION {
             return Err(CoreError::Typed {
                 code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationTextAuthorityFormatUnsupported,
@@ -251,12 +254,9 @@ impl LexicalSealedManifest {
             text_authority,
             overlays,
             source_coverage,
-        ): SealedManifestRow = value.deserialized().map_err(|error| {
-            CoreError::Storage(format!(
-                "lexical: decode sealed generation manifest {}: {error}",
-                path.display()
-            ))
-        })?;
+        ): SealedManifestRow = value
+            .deserialized()
+            .map_err(|error| manifest_corrupt(path, &format!("decode row: {error}")))?;
         let normalizer = TextNormalizerVersion { major, minor };
         if normalizer != TEXT_NORMALIZER_VERSION {
             return Err(crate::index_store::normalizer_unsupported(path, normalizer));
@@ -397,12 +397,26 @@ impl LexicalSealedManifest {
 /// Read a sealed manifest, refusing typed a missing one and any format or
 /// normalizer this build does not serve.
 pub(crate) fn read_manifest(generation_dir: &Path) -> Result<LexicalSealedManifest, CoreError> {
+    read_manifest_with(generation_dir, || {
+        super::open_regular_nofollow(generation_dir, Path::new(LEXICAL_SEALED_MANIFEST_FILE_NAME))
+    })
+}
+
+pub(crate) fn read_manifest_at(
+    generation_dir: &Path,
+    root: &File,
+) -> Result<LexicalSealedManifest, CoreError> {
+    read_manifest_with(generation_dir, || {
+        super::open_regular_below(root, Path::new(LEXICAL_SEALED_MANIFEST_FILE_NAME))
+    })
+}
+
+fn read_manifest_with(
+    generation_dir: &Path,
+    open: impl FnOnce() -> std::io::Result<File>,
+) -> Result<LexicalSealedManifest, CoreError> {
     let path = manifest_path(generation_dir);
-    let mut file = super::open_regular_nofollow(
-        generation_dir,
-        Path::new(LEXICAL_SEALED_MANIFEST_FILE_NAME),
-    )
-    .map_err(|error| {
+    let mut file = open().map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
             CoreError::Typed {
                 code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestMissing,
@@ -420,22 +434,61 @@ pub(crate) fn read_manifest(generation_dir: &Path) -> Result<LexicalSealedManife
             ))
         }
     })?;
-    let mut bytes = Vec::new();
-    let _read = file.read_to_end(&mut bytes).map_err(|error| {
+    let encoded_bytes = file
+        .metadata()
+        .map_err(|error| {
+            CoreError::Storage(format!(
+                "lexical: inspect sealed generation manifest {}: {error}",
+                path.display()
+            ))
+        })?
+        .len();
+    let ceiling = u64::try_from(MAX_SEALED_MANIFEST_BYTES).map_err(|error| {
         CoreError::Storage(format!(
-            "lexical: read sealed generation manifest {}: {error}",
-            path.display()
+            "lexical: sealed manifest byte ceiling overflow: {error}"
         ))
     })?;
+    if encoded_bytes > ceiling {
+        return Err(CoreError::Typed {
+            code:
+                quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported,
+            message: format!(
+                "lexical: sealed generation manifest {} has {encoded_bytes} encoded bytes, exceeding the current {MAX_SEALED_MANIFEST_BYTES}-byte admission ceiling; an older format-9 generation with this size requires an explicit rebuild",
+                path.display()
+            ),
+        });
+    }
+    let bytes =
+        super::read_opened_bounded(&mut file, MAX_SEALED_MANIFEST_BYTES).map_err(|error| {
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::InvalidData | std::io::ErrorKind::UnexpectedEof
+            ) {
+                manifest_corrupt(&path, &format!("cannot read admitted bytes: {error}"))
+            } else {
+                CoreError::Storage(format!(
+                    "lexical: read sealed generation manifest {}: {error}",
+                    path.display()
+                ))
+            }
+        })?;
     LexicalSealedManifest::decode(&bytes, &path)
 }
 
-/// Read a sealed manifest and prove it was sealed for `manifest_digest`.
-pub(crate) fn read_bound_manifest(
+pub(crate) fn read_bound_manifest_at(
     generation_dir: &Path,
+    root: &File,
     manifest_digest: &str,
 ) -> Result<LexicalSealedManifest, CoreError> {
-    let manifest = read_manifest(generation_dir)?;
+    let manifest = read_manifest_at(generation_dir, root)?;
+    bind_manifest(generation_dir, manifest_digest, manifest)
+}
+
+fn bind_manifest(
+    generation_dir: &Path,
+    manifest_digest: &str,
+    manifest: LexicalSealedManifest,
+) -> Result<LexicalSealedManifest, CoreError> {
     if manifest.manifest_digest != manifest_digest {
         return Err(CoreError::Typed {
             code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityDigestMismatch,
@@ -456,6 +509,11 @@ pub(crate) fn write_manifest(
     manifest: &LexicalSealedManifest,
 ) -> Result<(), CoreError> {
     let bytes = manifest.encode()?;
+    if bytes.len() > MAX_SEALED_MANIFEST_BYTES {
+        return Err(CoreError::InvalidContract(format!(
+            "lexical: sealed generation manifest exceeds {MAX_SEALED_MANIFEST_BYTES} encoded bytes"
+        )));
+    }
     crate::index_store::write_atomic_durable(
         &manifest_path(generation_dir),
         &bytes,
@@ -541,6 +599,54 @@ mod tests {
             return Err(
                 format!("redirected manifest open did not refuse typed: {result:?}").into(),
             );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn bound_manifest_stays_in_the_opened_generation_after_path_replacement()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let parent = tempfile::tempdir()?;
+        let generation = parent.path().join("generation");
+        std::fs::create_dir(&generation)?;
+        std::fs::write(
+            generation.join(super::LEXICAL_SEALED_MANIFEST_FILE_NAME),
+            manifest().encode()?,
+        )?;
+        let opened = super::super::open_generation_dir_nofollow(&generation)?;
+        std::fs::rename(&generation, parent.path().join("old-generation"))?;
+        std::fs::create_dir(&generation)?;
+        let mut replacement = manifest();
+        replacement.manifest_digest = "replacement".to_string();
+        std::fs::write(
+            generation.join(super::LEXICAL_SEALED_MANIFEST_FILE_NAME),
+            replacement.encode()?,
+        )?;
+        let pinned = super::read_bound_manifest_at(&generation, &opened, "digest")?;
+        if pinned.manifest_digest != "digest"
+            || super::read_manifest(&generation)?.manifest_digest != "replacement"
+        {
+            return Err("manifest reader followed a replacement generation".into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn oversized_manifest_requires_explicit_rebuild_before_reading_body()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let generation = tempfile::tempdir()?;
+        let path = generation
+            .path()
+            .join(super::LEXICAL_SEALED_MANIFEST_FILE_NAME);
+        let file = std::fs::File::create(&path)?;
+        file.set_len(u64::try_from(super::MAX_SEALED_MANIFEST_BYTES)? + 1)?;
+        let result = super::read_manifest(generation.path());
+        if typed_code(&result)
+            != Some(
+                quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestFormatUnsupported,
+            )
+        {
+            return Err(format!("oversized manifest did not require rebuild: {result:?}").into());
         }
         Ok(())
     }

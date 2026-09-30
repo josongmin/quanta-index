@@ -186,7 +186,7 @@ fn a_hybrid_query_opens_both_tracks_once_and_names_them_in_its_trace() -> TestRe
         "read_view.domains=lexical,semantic",
         "read_view.epochs=-",
         "read_view.pin=repo-map-ipc@rev-map-ipc#9",
-        "read_view.lexical_artifact=stub-lexical-digest",
+        "read_view.lexical_artifact=manifest-digest-9",
         "read_view.normalizer=2.0",
         "read_view.semantic_artifact=manifest-digest-9",
     ];
@@ -198,6 +198,65 @@ fn a_hybrid_query_opens_both_tracks_once_and_names_them_in_its_trace() -> TestRe
         .any(|detail| detail.starts_with("read_view.profile="))
     {
         return Err(format!("the trace names the semantic profile: {details:?}").into());
+    }
+    Ok(())
+}
+
+#[test]
+fn lexical_read_view_refuses_an_opened_handle_with_a_different_seal() -> TestResult {
+    let lexical_state = Arc::new(Mutex::new(RecordingLexicalState {
+        manifest_digest: Some("different-physical-seal".to_string()),
+        ..RecordingLexicalState::default()
+    }));
+    let semantic_state = Arc::new(Mutex::new(RecordingSemanticState::default()));
+    let dispatcher = recording_dispatcher(&lexical_state, &semantic_state, ready_ledger())?;
+    let response = dispatcher.dispatch(
+        SearchPlaneQueryIpcRequest::Text(text_request("needle", ready_pin())),
+        &RequestBudgetV1::unbounded(),
+    );
+    let (code, _message) = ipc_error_from(response)?;
+    if code != quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityDigestMismatch {
+        return Err(format!("wrong lexical identity refusal: {code:?}").into());
+    }
+    let state = lexical_state
+        .lock()
+        .map_err(|error| format!("lexical state poisoned: {error}"))?;
+    if state.opened_pins.len() != 1 || !state.search_top_ks.is_empty() {
+        return Err("lexical identity refusal did not stop before search".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn semantic_read_view_refuses_an_opened_handle_with_a_different_seal() -> TestResult {
+    let lexical_state = Arc::new(Mutex::new(RecordingLexicalState::default()));
+    let semantic_state = Arc::new(Mutex::new(RecordingSemanticState {
+        manifest_digest: Some("different-physical-seal".to_string()),
+        ..RecordingSemanticState::default()
+    }));
+    let dispatcher = recording_dispatcher(&lexical_state, &semantic_state, ready_ledger())?;
+    let pin = ready_pin();
+    let request = ReadViewRequestV1::new(
+        "semantic",
+        &pin,
+        RequiredDomainsV1::of(ReadDomainV1::SemanticTrack),
+    );
+    let error = match dispatcher.acquire_read_view(&request, &RequestBudgetV1::unbounded()) {
+        Ok(_) => return Err("a handle with a different physical seal was admitted".into()),
+        Err(error) => error,
+    };
+    match error {
+        CoreError::Typed { code, message }
+            if code == quanta_index_contract::SearchPlaneErrorCodeV2::SemanticManifestDigestMismatch
+                && message.contains("expected=manifest-digest-9")
+                && message.contains("observed=different-physical-seal") => {}
+        other => return Err(format!("wrong semantic identity refusal: {other:?}").into()),
+    }
+    let state = semantic_state
+        .lock()
+        .map_err(|error| format!("semantic state poisoned: {error}"))?;
+    if state.cluster_membership_opened_pins.len() != 1 || !state.search_vectors.is_empty() {
+        return Err("semantic identity refusal did not stop before search".into());
     }
     Ok(())
 }

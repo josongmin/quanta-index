@@ -19,6 +19,7 @@ use quanta_index_core::{
 
 use crate::ingest_dispatcher::auxiliary::AuxiliaryMutationCoordinator;
 use crate::ingest_dispatcher::generation_plan::{
+    DeferredGcStep, PhysicalGenerationStateV1, SealedGenerationBuildPlanV1,
     batch_publish_receipt_v1, generation_pair_from_batch_v1,
 };
 use crate::ingest_dispatcher::search_corpus::{
@@ -36,7 +37,10 @@ use crate::ingest_dispatcher::tests::support::{
     test_incomplete_generation_discard,
 };
 use crate::readiness::SearchCorpusHistoryRetentionReceiptV1;
-use crate::{Ledger, SEARCH_OWNED_SEMANTIC_DIMENSION, SnapshotKey, SnapshotRegistries};
+use crate::{
+    Ledger, SEARCH_OWNED_SEMANTIC_DIMENSION, SnapshotKey, SnapshotRegistries,
+    SnapshotRetirementOwner,
+};
 
 #[test]
 fn search_corpus_receipt_exactly_acknowledges_semantic_replace_and_tombstone_mutations_v1()
@@ -452,6 +456,20 @@ fn reclaim_materializer(
     semantic_reclaim: &Arc<ScriptedSealedReclaim>,
     idempotency: &Arc<MemoryIdempotencyCatalog>,
 ) -> DirectSearchCorpusMaterializer {
+    reclaim_materializer_with_snapshots(
+        lexical_reclaim,
+        semantic_reclaim,
+        idempotency,
+        SnapshotRegistries::new(crate::SnapshotRegistryPolicy::DEFAULT),
+    )
+}
+
+fn reclaim_materializer_with_snapshots(
+    lexical_reclaim: &Arc<ScriptedSealedReclaim>,
+    semantic_reclaim: &Arc<ScriptedSealedReclaim>,
+    idempotency: &Arc<MemoryIdempotencyCatalog>,
+    snapshots: SnapshotRegistries,
+) -> DirectSearchCorpusMaterializer {
     let semantic_materializer: Arc<dyn SemanticIngestPort + Send + Sync> = Arc::new(
         DirectSemanticMaterializer::new(Arc::new(FakeSemanticBuilder::default())),
     );
@@ -470,7 +488,7 @@ fn reclaim_materializer(
         semantic_incomplete_discard: test_incomplete_generation_discard(),
         lexical_reclaim: lexical_reclaim.clone(),
         semantic_reclaim: semantic_reclaim.clone(),
-        snapshots: SnapshotRegistries::new(crate::SnapshotRegistryPolicy::DEFAULT),
+        snapshots,
         source_publication: super::support::test_source_catalog(),
         idempotency: idempotency.clone(),
         resource_policy: IngestResourcePolicy::DEFAULT,
@@ -479,6 +497,44 @@ fn reclaim_materializer(
         auxiliary_catalog: memory_aux_catalog(),
         auxiliary_coordinator: AuxiliaryMutationCoordinator::shared(),
     })
+}
+
+#[test]
+fn a_post_move_gc_failure_keeps_cleanup_deferred_without_stranding_its_fence() -> TestRes {
+    let lexical_reclaim = ScriptedSealedReclaim::new(SearchPlaneTrackKind::Lexical, &[1, 2]);
+    let semantic_reclaim = ScriptedSealedReclaim::new(SearchPlaneTrackKind::Semantic, &[1, 2]);
+    lexical_reclaim.fail_after_move_reclaim_of(1)?;
+    let snapshots = SnapshotRegistries::new(crate::SnapshotRegistryPolicy::DEFAULT);
+    let materializer = reclaim_materializer_with_snapshots(
+        &lexical_reclaim,
+        &semantic_reclaim,
+        &memory_catalog(),
+        snapshots.clone(),
+    );
+    let mut batch = fixture_search_corpus_batch()?;
+    batch.generation = ManifestGeneration::new(2);
+    let retention = SearchCorpusHistoryRetentionReceiptV1::retaining_generations_v1(
+        &batch.repo_id,
+        &batch.revision_id,
+        [batch.generation],
+    );
+    let receipt = materializer.reclaim_retired_generations_v1(&batch, &retention)?;
+    if !receipt.deferred.contains(&DeferredGcStep::Reclaim(
+        SearchPlaneTrackKind::Lexical,
+        ManifestGeneration::new(1),
+    )) || lexical_reclaim.remaining() != [2]
+        || lexical_reclaim.interrupted_left() != 1
+    {
+        return Err(format!("post-move cleanup was not deferred: {receipt:?}").into());
+    }
+    let key = SnapshotKey::new(
+        &batch.repo_id,
+        &batch.revision_id,
+        ManifestGeneration::new(1),
+    );
+    let proof = snapshots.lexical.begin_promotion(&key)?;
+    drop(proof);
+    Ok(())
 }
 
 /// Every step of a physical reclaim pass that fails after the seal is
@@ -1049,6 +1105,107 @@ fn a_sealed_but_corrupt_track_is_rebuilt_by_a_replace_seal_and_refused_for_a_del
     {
         return Err("only the damaged track is rebuilt".into());
     }
+    Ok(())
+}
+
+#[test]
+fn failed_reclaim_releases_a_fence_only_after_the_old_namespace_is_absent() -> TestRes {
+    let batch = fixture_search_corpus_batch()?;
+    let (lexical, semantic) = generation_pair_from_batch_v1(&batch);
+    let plan = SealedGenerationBuildPlanV1 {
+        lexical,
+        semantic,
+        lexical_state: PhysicalGenerationStateV1::Corrupt {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityDigestMismatch,
+        },
+        semantic_state: PhysicalGenerationStateV1::Exact,
+    };
+    let key = SnapshotKey::new(&batch.repo_id, &batch.revision_id, batch.generation);
+    let semantic_reclaim = no_storage_sealed_reclaim();
+
+    let moved =
+        ScriptedSealedReclaim::new(SearchPlaneTrackKind::Lexical, &[batch.generation.get()]);
+    moved.fail_after_move_reclaim_of(batch.generation.get())?;
+    let snapshots = SnapshotRegistries::new(crate::SnapshotRegistryPolicy::DEFAULT);
+    match plan.repair_corrupt_v1(
+        BatchIngestMode::ReplaceGeneration,
+        &snapshots,
+        moved.as_ref(),
+        semantic_reclaim.as_ref(),
+    ) {
+        Err(CoreError::Storage(message)) if message.contains("after moving") => {}
+        other => return Err(format!("post-move reclaim failure answered {other:?}").into()),
+    }
+    if moved.remaining().contains(&batch.generation.get()) {
+        return Err("post-move failure left the old namespace present".into());
+    }
+    let replacement_proof = snapshots.lexical.begin_promotion(&key)?;
+    drop(replacement_proof);
+
+    let unmoved =
+        ScriptedSealedReclaim::new(SearchPlaneTrackKind::Lexical, &[batch.generation.get()]);
+    unmoved.fail_next_reclaim_of(batch.generation.get())?;
+    let snapshots = SnapshotRegistries::new(crate::SnapshotRegistryPolicy::DEFAULT);
+    match plan.repair_corrupt_v1(
+        BatchIngestMode::ReplaceGeneration,
+        &snapshots,
+        unmoved.as_ref(),
+        semantic_reclaim.as_ref(),
+    ) {
+        Err(CoreError::Typed {
+            code:
+                quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusGenerationRepairRequired,
+            ..
+        }) => {}
+        other => return Err(format!("pre-move reclaim failure answered {other:?}").into()),
+    }
+    if !unmoved.remaining().contains(&batch.generation.get())
+        || !matches!(
+            snapshots.lexical.begin_promotion(&key),
+            Err(CoreError::Typed { code, .. })
+                if code == quanta_index_contract::SearchPlaneErrorCodeV2::UnknownGeneration
+        )
+    {
+        return Err("pre-move failure released the old namespace fence".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn repairing_a_generation_settles_a_failed_scrubs_old_fence() -> TestRes {
+    let batch = fixture_search_corpus_batch()?;
+    let (lexical, semantic) = generation_pair_from_batch_v1(&batch);
+    let plan = SealedGenerationBuildPlanV1 {
+        lexical,
+        semantic,
+        lexical_state: PhysicalGenerationStateV1::Corrupt {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
+        },
+        semantic_state: PhysicalGenerationStateV1::Exact,
+    };
+    let key = SnapshotKey::new(&batch.repo_id, &batch.revision_id, batch.generation);
+    let snapshots = SnapshotRegistries::new(crate::SnapshotRegistryPolicy::DEFAULT);
+    let _failed_receipt = snapshots
+        .lexical
+        .retire(&key, SnapshotRetirementOwner::IntegrityScrub)?;
+    let lexical_reclaim =
+        ScriptedSealedReclaim::new(SearchPlaneTrackKind::Lexical, &[batch.generation.get()]);
+    let semantic_reclaim = no_storage_sealed_reclaim();
+
+    plan.repair_corrupt_v1(
+        BatchIngestMode::ReplaceGeneration,
+        &snapshots,
+        lexical_reclaim.as_ref(),
+        semantic_reclaim.as_ref(),
+    )?;
+    if lexical_reclaim
+        .remaining()
+        .contains(&batch.generation.get())
+    {
+        return Err("repair left the old generation namespace present".into());
+    }
+    let replacement = snapshots.lexical.begin_promotion(&key)?;
+    drop(replacement);
     Ok(())
 }
 

@@ -993,9 +993,18 @@ impl SearchdConfig {
             | SemanticEmbedderProfile::Hash { .. }
             | SemanticEmbedderProfile::Unavailable => 0,
         };
+        let snapshot_registry_bytes = self
+            .snapshot_registry_policy
+            .max_resident_bytes()
+            .checked_mul(2)
+            .ok_or_else(|| {
+                quanta_index_core::CoreError::InvalidContract(
+                    "process memory envelope: two snapshot registry budgets overflow u64".into(),
+                )
+            })?;
         let envelope = ProcessMemoryEnvelopeV1 {
             lexical_writer_bytes: self.lexical_writer_policy.envelope_bytes(),
-            snapshot_registry_bytes: self.snapshot_registry_policy.max_resident_bytes(),
+            snapshot_registry_bytes,
             regex_match_cache_bytes: self.regex_match_cache_policy.max_resident_bytes(),
             embedding_cache_ledger_bytes,
             semantic_stream_window_bytes: self.semantic_stream_window_policy.max_vector_bytes(),
@@ -2464,7 +2473,7 @@ mod tests {
         );
         assert_eq!(
             envelope.snapshot_registry_bytes,
-            SnapshotRegistryPolicy::DEFAULT.max_resident_bytes()
+            SnapshotRegistryPolicy::DEFAULT.max_resident_bytes() * 2
         );
         assert_eq!(
             envelope.regex_match_cache_bytes,
@@ -2485,6 +2494,20 @@ mod tests {
         );
         assert!(envelope.declared_bytes() <= ProcessMemoryEnvelopeV1::DEFAULT_CEILING_BYTES);
         assert_eq!(envelope.rss_ceiling, None);
+
+        let oversized_tracks = config
+            .clone()
+            .with_snapshot_registry_policy(
+                SnapshotRegistryPolicy::new(16, 1 << 30).expect("policy"),
+            )
+            .process_memory_envelope()
+            .expect_err("both one-GiB registries must be charged");
+        assert!(
+            oversized_tracks
+                .to_string()
+                .contains(quanta_index_core::PROCESS_MEMORY_ENVELOPE_EXCEEDED_CODE.as_wire_str()),
+            "{oversized_tracks}"
+        );
 
         let too_low = config
             .with_process_memory_ceilings(

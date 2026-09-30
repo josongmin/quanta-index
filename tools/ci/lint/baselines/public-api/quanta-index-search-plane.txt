@@ -78,6 +78,10 @@ pub const fn quanta_index_search_plane::ActivationCatalog::root_incarnation_v1(&
 pub fn quanta_index_search_plane::ActivationCatalog::rotate_root_incarnation_for_restore_v1(activations_root: &std::path::Path) -> core::result::Result<(), quanta_index_core::error::CoreError>
 impl core::fmt::Debug for quanta_index_search_plane::ActivationCatalog
 pub fn quanta_index_search_plane::ActivationCatalog::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl quanta_index_core::domains::source_publication::SourcePublicationCatalogPort for quanta_index_search_plane::ActivationCatalog
+pub fn quanta_index_search_plane::ActivationCatalog::inspect_source_event(&self, repo: &quanta_index_contract_base::ids::RepoId, event: &quanta_index_contract::source_coverage::SourcePublicationEvent) -> core::result::Result<core::option::Option<quanta_index_core::domains::source_publication::SourceEventRecordV1>, quanta_index_core::error::CoreError>
+pub fn quanta_index_search_plane::ActivationCatalog::reconcile_source_event(&self, repo: &quanta_index_contract_base::ids::RepoId, event: &quanta_index_contract::source_coverage::SourcePublicationEvent, journal: &dyn quanta_index_core::domains::idempotency::IdempotencyCatalogPort) -> core::result::Result<quanta_index_core::domains::source_publication::SourceEventRecordV1, quanta_index_core::error::CoreError>
+pub fn quanta_index_search_plane::ActivationCatalog::reserve_source_event(&self, binding: &quanta_index_core::domains::source_publication::SourceEventBindingV1) -> core::result::Result<quanta_index_core::domains::source_publication::SourceEventReservationV1, quanta_index_core::error::CoreError>
 impl !core::marker::Freeze for quanta_index_search_plane::ActivationCatalog
 impl core::marker::Send for quanta_index_search_plane::ActivationCatalog
 impl core::marker::Sync for quanta_index_search_plane::ActivationCatalog
@@ -670,6 +674,33 @@ impl core::marker::Unpin for quanta_index_search_plane::SnapshotRetireOutcome
 impl core::marker::UnsafeUnpin for quanta_index_search_plane::SnapshotRetireOutcome
 impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_search_plane::SnapshotRetireOutcome
 impl core::panic::unwind_safe::UnwindSafe for quanta_index_search_plane::SnapshotRetireOutcome
+pub enum quanta_index_search_plane::SnapshotRetirementOwner
+pub quanta_index_search_plane::SnapshotRetirementOwner::AdapterQuarantine
+pub quanta_index_search_plane::SnapshotRetirementOwner::DoorFinding
+pub quanta_index_search_plane::SnapshotRetirementOwner::IntegrityScrub
+pub quanta_index_search_plane::SnapshotRetirementOwner::OrphanDiscard
+pub quanta_index_search_plane::SnapshotRetirementOwner::SearchCorpusRepair
+pub quanta_index_search_plane::SnapshotRetirementOwner::SearchCorpusRetention
+impl core::clone::Clone for quanta_index_search_plane::SnapshotRetirementOwner
+pub fn quanta_index_search_plane::SnapshotRetirementOwner::clone(&self) -> quanta_index_search_plane::SnapshotRetirementOwner
+impl core::cmp::Eq for quanta_index_search_plane::SnapshotRetirementOwner
+impl core::cmp::Ord for quanta_index_search_plane::SnapshotRetirementOwner
+pub fn quanta_index_search_plane::SnapshotRetirementOwner::cmp(&self, other: &quanta_index_search_plane::SnapshotRetirementOwner) -> core::cmp::Ordering
+impl core::cmp::PartialEq for quanta_index_search_plane::SnapshotRetirementOwner
+pub fn quanta_index_search_plane::SnapshotRetirementOwner::eq(&self, other: &quanta_index_search_plane::SnapshotRetirementOwner) -> bool
+impl core::cmp::PartialOrd for quanta_index_search_plane::SnapshotRetirementOwner
+pub fn quanta_index_search_plane::SnapshotRetirementOwner::partial_cmp(&self, other: &quanta_index_search_plane::SnapshotRetirementOwner) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for quanta_index_search_plane::SnapshotRetirementOwner
+pub fn quanta_index_search_plane::SnapshotRetirementOwner::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for quanta_index_search_plane::SnapshotRetirementOwner
+impl core::marker::StructuralPartialEq for quanta_index_search_plane::SnapshotRetirementOwner
+impl core::marker::Freeze for quanta_index_search_plane::SnapshotRetirementOwner
+impl core::marker::Send for quanta_index_search_plane::SnapshotRetirementOwner
+impl core::marker::Sync for quanta_index_search_plane::SnapshotRetirementOwner
+impl core::marker::Unpin for quanta_index_search_plane::SnapshotRetirementOwner
+impl core::marker::UnsafeUnpin for quanta_index_search_plane::SnapshotRetirementOwner
+impl core::panic::unwind_safe::RefUnwindSafe for quanta_index_search_plane::SnapshotRetirementOwner
+impl core::panic::unwind_safe::UnwindSafe for quanta_index_search_plane::SnapshotRetirementOwner
 pub struct quanta_index_search_plane::ActivationCatalog
 impl quanta_index_search_plane::ActivationCatalog
 pub fn quanta_index_search_plane::ActivationCatalog::active_inventory_v1(&self) -> core::result::Result<(alloc::vec::Vec<(quanta_index_search_plane::SearchCorpusGenerationV1, quanta_index_contract_base::activation_token::SearchCorpusActivationTokenV1)>, u64), quanta_index_core::error::CoreError>
@@ -682,6 +713,10 @@ pub const fn quanta_index_search_plane::ActivationCatalog::root_incarnation_v1(&
 pub fn quanta_index_search_plane::ActivationCatalog::rotate_root_incarnation_for_restore_v1(activations_root: &std::path::Path) -> core::result::Result<(), quanta_index_core::error::CoreError>
 impl core::fmt::Debug for quanta_index_search_plane::ActivationCatalog
 pub fn quanta_index_search_plane::ActivationCatalog::fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl quanta_index_core::domains::source_publication::SourcePublicationCatalogPort for quanta_index_search_plane::ActivationCatalog
+pub fn quanta_index_search_plane::ActivationCatalog::inspect_source_event(&self, repo: &quanta_index_contract_base::ids::RepoId, event: &quanta_index_contract::source_coverage::SourcePublicationEvent) -> core::result::Result<core::option::Option<quanta_index_core::domains::source_publication::SourceEventRecordV1>, quanta_index_core::error::CoreError>
+pub fn quanta_index_search_plane::ActivationCatalog::reconcile_source_event(&self, repo: &quanta_index_contract_base::ids::RepoId, event: &quanta_index_contract::source_coverage::SourcePublicationEvent, journal: &dyn quanta_index_core::domains::idempotency::IdempotencyCatalogPort) -> core::result::Result<quanta_index_core::domains::source_publication::SourceEventRecordV1, quanta_index_core::error::CoreError>
+pub fn quanta_index_search_plane::ActivationCatalog::reserve_source_event(&self, binding: &quanta_index_core::domains::source_publication::SourceEventBindingV1) -> core::result::Result<quanta_index_core::domains::source_publication::SourceEventReservationV1, quanta_index_core::error::CoreError>
 impl !core::marker::Freeze for quanta_index_search_plane::ActivationCatalog
 impl core::marker::Send for quanta_index_search_plane::ActivationCatalog
 impl core::marker::Sync for quanta_index_search_plane::ActivationCatalog
@@ -1110,6 +1145,7 @@ pub quanta_index_search_plane::QuarantineServiceParts::ledger: alloc::sync::Arc<
 pub quanta_index_search_plane::QuarantineServiceParts::lexical_discard: alloc::sync::Arc<(dyn quanta_index_core::domains::generation::QuarantinedGenerationDiscardPort + core::marker::Send + core::marker::Sync)>
 pub quanta_index_search_plane::QuarantineServiceParts::lexical_reclaim: alloc::sync::Arc<(dyn quanta_index_core::domains::generation::SealedGenerationReclaimPort + core::marker::Send + core::marker::Sync)>
 pub quanta_index_search_plane::QuarantineServiceParts::lexical_scanner: alloc::sync::Arc<(dyn quanta_index_core::domains::generation::SealedGenerationScanPort + core::marker::Send + core::marker::Sync)>
+pub quanta_index_search_plane::QuarantineServiceParts::lifecycle: alloc::sync::Arc<quanta_index_search_plane::SearchCorpusLifecycleOwner>
 pub quanta_index_search_plane::QuarantineServiceParts::repo_map: alloc::sync::Arc<(dyn quanta_index_core::domains::repomap::outbound::RepoMapQuarantinePort + core::marker::Send + core::marker::Sync)>
 pub quanta_index_search_plane::QuarantineServiceParts::semantic_discard: alloc::sync::Arc<(dyn quanta_index_core::domains::generation::QuarantinedGenerationDiscardPort + core::marker::Send + core::marker::Sync)>
 pub quanta_index_search_plane::QuarantineServiceParts::semantic_reclaim: alloc::sync::Arc<(dyn quanta_index_core::domains::generation::SealedGenerationReclaimPort + core::marker::Send + core::marker::Sync)>
@@ -1237,6 +1273,7 @@ impl !core::panic::unwind_safe::UnwindSafe for quanta_index_search_plane::Search
 pub struct quanta_index_search_plane::SearchCorpusLifecycleParts
 pub quanta_index_search_plane::SearchCorpusLifecycleParts::activation_catalog: alloc::sync::Arc<quanta_index_search_plane::ActivationCatalog>
 pub quanta_index_search_plane::SearchCorpusLifecycleParts::authority: alloc::sync::Arc<(dyn quanta_index_search_plane::SearchCorpusAuthorityInspectPort + core::marker::Send + core::marker::Sync)>
+pub quanta_index_search_plane::SearchCorpusLifecycleParts::idempotency: alloc::sync::Arc<dyn quanta_index_core::domains::idempotency::IdempotencyCatalogPort>
 pub quanta_index_search_plane::SearchCorpusLifecycleParts::ledger: alloc::sync::Arc<std::sync::poison::rwlock::RwLock<quanta_index_search_plane::Ledger>>
 pub quanta_index_search_plane::SearchCorpusLifecycleParts::promotion: quanta_index_search_plane::ActivationPromotionParts
 impl core::marker::Freeze for quanta_index_search_plane::SearchCorpusLifecycleParts
@@ -1266,6 +1303,7 @@ pub quanta_index_search_plane::SearchCorpusMaterializerParts::semantic_reclaim: 
 pub quanta_index_search_plane::SearchCorpusMaterializerParts::semantic_stream_policy: quanta_index_core::domains::semantic::stream::SemanticStreamWindowPolicy
 pub quanta_index_search_plane::SearchCorpusMaterializerParts::snapshots: quanta_index_search_plane::SnapshotRegistries
 pub quanta_index_search_plane::SearchCorpusMaterializerParts::source_egress_policy: core::option::Option<quanta_index_core::domains::semantic::admission::SemanticEgressPolicyV1>
+pub quanta_index_search_plane::SearchCorpusMaterializerParts::source_publication: alloc::sync::Arc<dyn quanta_index_core::domains::source_publication::SourcePublicationCatalogPort>
 impl core::marker::Freeze for quanta_index_search_plane::SearchCorpusMaterializerParts
 impl core::marker::Send for quanta_index_search_plane::SearchCorpusMaterializerParts
 impl core::marker::Sync for quanta_index_search_plane::SearchCorpusMaterializerParts
@@ -1333,7 +1371,7 @@ impl !core::panic::unwind_safe::UnwindSafe for quanta_index_search_plane::Search
 pub struct quanta_index_search_plane::SearchPlaneIngestDispatcher
 impl quanta_index_search_plane::SearchPlaneIngestDispatcher
 pub fn quanta_index_search_plane::SearchPlaneIngestDispatcher::dispatch(&self, request: quanta_index_contract::ipc::ingest::SearchPlaneIngestIpcRequest, budget: &quanta_index_core::request_budget::RequestBudgetV1) -> quanta_index_contract::ipc::ingest::SearchPlaneIngestIpcResponse
-pub fn quanta_index_search_plane::SearchPlaneIngestDispatcher::new(lexical: alloc::sync::Arc<(dyn quanta_index_core::domains::lexical::outbound::SearchCorpusIngestPort + core::marker::Send + core::marker::Sync)>, history: alloc::sync::Arc<(dyn quanta_index_search_plane::HistoryIngestPort + core::marker::Send + core::marker::Sync)>, repo_commit_recency: alloc::sync::Arc<(dyn quanta_index_core::domains::lexical::outbound::RepoCommitRecencyIngestPort + core::marker::Send + core::marker::Sync)>, repo_topic: alloc::sync::Arc<(dyn quanta_index_core::domains::lexical::outbound::RepoTopicIngestPort + core::marker::Send + core::marker::Sync)>, repo_description: alloc::sync::Arc<(dyn quanta_index_core::domains::lexical::outbound::RepoDescriptionIngestPort + core::marker::Send + core::marker::Sync)>, file_ownership: alloc::sync::Arc<(dyn quanta_index_core::domains::lexical::outbound::FileOwnershipIngestPort + core::marker::Send + core::marker::Sync)>, file_contributor: alloc::sync::Arc<(dyn quanta_index_core::domains::lexical::outbound::FileContributorIngestPort + core::marker::Send + core::marker::Sync)>, repo_meta: alloc::sync::Arc<(dyn quanta_index_core::domains::lexical::outbound::RepoMetaIngestPort + core::marker::Send + core::marker::Sync)>, runtime: alloc::sync::Arc<(dyn quanta_index_search_plane::RuntimeMetadataIngestPort + core::marker::Send + core::marker::Sync)>, structural: alloc::sync::Arc<(dyn quanta_index_search_plane::StructuralIngestPort + core::marker::Send + core::marker::Sync)>, repomap: alloc::sync::Arc<(dyn quanta_index_core::domains::repomap::outbound::RepoMapBundleIngestPort + core::marker::Send + core::marker::Sync)>, idempotency: alloc::sync::Arc<(dyn quanta_index_core::domains::idempotency::IdempotencyCatalogPort + core::marker::Send + core::marker::Sync)>) -> Self
+pub fn quanta_index_search_plane::SearchPlaneIngestDispatcher::new(lexical: alloc::sync::Arc<(dyn quanta_index_core::domains::lexical::outbound::SearchCorpusIngestPort + core::marker::Send + core::marker::Sync)>, history: alloc::sync::Arc<(dyn quanta_index_search_plane::HistoryIngestPort + core::marker::Send + core::marker::Sync)>, repo_commit_recency: alloc::sync::Arc<(dyn quanta_index_core::domains::lexical::outbound::RepoCommitRecencyIngestPort + core::marker::Send + core::marker::Sync)>, repo_topic: alloc::sync::Arc<(dyn quanta_index_core::domains::lexical::outbound::RepoTopicIngestPort + core::marker::Send + core::marker::Sync)>, repo_description: alloc::sync::Arc<(dyn quanta_index_core::domains::lexical::outbound::RepoDescriptionIngestPort + core::marker::Send + core::marker::Sync)>, file_ownership: alloc::sync::Arc<(dyn quanta_index_core::domains::lexical::outbound::FileOwnershipIngestPort + core::marker::Send + core::marker::Sync)>, file_contributor: alloc::sync::Arc<(dyn quanta_index_core::domains::lexical::outbound::FileContributorIngestPort + core::marker::Send + core::marker::Sync)>, repo_meta: alloc::sync::Arc<(dyn quanta_index_core::domains::lexical::outbound::RepoMetaIngestPort + core::marker::Send + core::marker::Sync)>, runtime: alloc::sync::Arc<(dyn quanta_index_search_plane::RuntimeMetadataIngestPort + core::marker::Send + core::marker::Sync)>, structural: alloc::sync::Arc<(dyn quanta_index_search_plane::StructuralIngestPort + core::marker::Send + core::marker::Sync)>, repomap: alloc::sync::Arc<(dyn quanta_index_core::domains::repomap::outbound::RepoMapBundleIngestPort + core::marker::Send + core::marker::Sync)>, idempotency: alloc::sync::Arc<(dyn quanta_index_core::domains::idempotency::IdempotencyCatalogPort + core::marker::Send + core::marker::Sync)>, source_publication: alloc::sync::Arc<dyn quanta_index_core::domains::source_publication::SourcePublicationCatalogPort>, source_authority: alloc::sync::Arc<dyn quanta_index_search_plane::SearchCorpusAuthorityInspectPort>) -> Self
 impl core::marker::Freeze for quanta_index_search_plane::SearchPlaneIngestDispatcher
 impl core::marker::Send for quanta_index_search_plane::SearchPlaneIngestDispatcher
 impl core::marker::Sync for quanta_index_search_plane::SearchPlaneIngestDispatcher
@@ -1402,6 +1440,7 @@ pub struct quanta_index_search_plane::SnapshotRegistries
 pub quanta_index_search_plane::SnapshotRegistries::lexical: alloc::sync::Arc<quanta_index_search_plane::SnapshotRegistry<dyn quanta_index_core::domains::lexical::outbound::LexicalSearcher>>
 pub quanta_index_search_plane::SnapshotRegistries::semantic: alloc::sync::Arc<quanta_index_search_plane::SnapshotRegistry<dyn quanta_index_core::domains::semantic::outbound::SemanticSearcher>>
 impl quanta_index_search_plane::SnapshotRegistries
+pub fn quanta_index_search_plane::SnapshotRegistries::finish_retirement(&self, track: quanta_index_contract::ipc::control::SearchPlaneTrackKind, key: &quanta_index_search_plane::SnapshotKey, owner: quanta_index_search_plane::SnapshotRetirementOwner) -> core::result::Result<(), quanta_index_core::error::CoreError>
 pub fn quanta_index_search_plane::SnapshotRegistries::new(policy: quanta_index_search_plane::SnapshotRegistryPolicy) -> Self
 impl core::clone::Clone for quanta_index_search_plane::SnapshotRegistries
 pub fn quanta_index_search_plane::SnapshotRegistries::clone(&self) -> quanta_index_search_plane::SnapshotRegistries
@@ -1419,8 +1458,7 @@ impl<H: ?core::marker::Sized + core::marker::Send + core::marker::Sync + 'static
 pub fn quanta_index_search_plane::SnapshotRegistry<H>::acquire(&self, key: &quanta_index_search_plane::SnapshotKey, budget: &quanta_index_core::request_budget::RequestBudgetV1, open: impl core::ops::function::FnOnce() -> core::result::Result<quanta_index_search_plane::OpenedSnapshot<H>, quanta_index_core::error::CoreError>) -> core::result::Result<quanta_index_search_plane::SnapshotAcquired<H>, quanta_index_core::error::CoreError>
 pub const fn quanta_index_search_plane::SnapshotRegistry<H>::new(policy: quanta_index_search_plane::SnapshotRegistryPolicy) -> Self
 pub const fn quanta_index_search_plane::SnapshotRegistry<H>::policy(&self) -> quanta_index_search_plane::SnapshotRegistryPolicy
-pub fn quanta_index_search_plane::SnapshotRegistry<H>::promote(&self, key: &quanta_index_search_plane::SnapshotKey, opened: &quanta_index_search_plane::OpenedSnapshot<H>) -> core::result::Result<quanta_index_search_plane::SnapshotPromoteOutcome, quanta_index_core::error::CoreError>
-pub fn quanta_index_search_plane::SnapshotRegistry<H>::retire(&self, key: &quanta_index_search_plane::SnapshotKey) -> core::result::Result<quanta_index_search_plane::SnapshotRetireOutcome, quanta_index_core::error::CoreError>
+pub fn quanta_index_search_plane::SnapshotRegistry<H>::retire(&self, key: &quanta_index_search_plane::SnapshotKey, owner: quanta_index_search_plane::SnapshotRetirementOwner) -> core::result::Result<quanta_index_search_plane::SnapshotRetireOutcome, quanta_index_core::error::CoreError>
 pub fn quanta_index_search_plane::SnapshotRegistry<H>::stats(&self) -> core::result::Result<quanta_index_search_plane::SnapshotRegistryStats, quanta_index_core::error::CoreError>
 impl<H> !core::marker::Freeze for quanta_index_search_plane::SnapshotRegistry<H>
 impl<H> core::marker::Send for quanta_index_search_plane::SnapshotRegistry<H> where H: core::marker::Sync + core::marker::Send + ?core::marker::Sized

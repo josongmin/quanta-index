@@ -4,9 +4,10 @@
 )]
 
 use std::collections::BTreeSet;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Barrier};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Barrier, mpsc};
 use std::thread;
+use std::time::Duration;
 
 use quanta_index_contract::{
     GenerationSnapshot, IngestOperationKindV1, ManifestGeneration, RepoId, RevisionId,
@@ -14,7 +15,8 @@ use quanta_index_contract::{
     SourcePublicationEvent,
 };
 use quanta_index_core::{
-    CoreError, IdempotencyKeyV1, SourceEventBindingV1, SourcePublicationCatalogPort as _,
+    CoreError, IdempotencyKeyV1, SealedGenerationBytesV1, SourceEventBindingV1,
+    SourcePublicationCatalogPort as _,
 };
 use tempfile::tempdir;
 
@@ -31,7 +33,262 @@ use crate::readiness::tests::support::{
     search_corpus_retention,
 };
 use crate::search_corpus_lifecycle::SearchCorpusPairMutationCoordinator;
-use crate::search_corpus_retention::SearchCorpusHistoryRetentionPolicyV1;
+use crate::search_corpus_retention::{
+    SearchCorpusHistoryRetentionPolicyV1, SearchCorpusIndexBytesPort,
+};
+
+#[derive(Debug)]
+struct AbsentIndexBytes;
+
+impl SearchCorpusIndexBytesPort for AbsentIndexBytes {
+    fn measure_index_bytes(
+        &self,
+        _repo_id: &RepoId,
+        _revision_id: &RevisionId,
+        generations: &BTreeSet<ManifestGeneration>,
+    ) -> Result<SealedGenerationBytesV1, CoreError> {
+        Ok(SealedGenerationBytesV1 {
+            bytes: 0,
+            absent: generations.clone(),
+        })
+    }
+}
+
+#[derive(Debug)]
+struct PresenceIndexBytes(Arc<AtomicBool>);
+
+impl SearchCorpusIndexBytesPort for PresenceIndexBytes {
+    fn measure_index_bytes(
+        &self,
+        _repo_id: &RepoId,
+        _revision_id: &RevisionId,
+        generations: &BTreeSet<ManifestGeneration>,
+    ) -> Result<SealedGenerationBytesV1, CoreError> {
+        Ok(SealedGenerationBytesV1 {
+            bytes: 0,
+            absent: if self.0.load(Ordering::SeqCst) {
+                BTreeSet::new()
+            } else {
+                generations.clone()
+            },
+        })
+    }
+}
+
+#[derive(Debug)]
+struct MissingGenerationIndexBytes(Arc<AtomicU64>);
+
+impl SearchCorpusIndexBytesPort for MissingGenerationIndexBytes {
+    fn measure_index_bytes(
+        &self,
+        _repo_id: &RepoId,
+        _revision_id: &RevisionId,
+        generations: &BTreeSet<ManifestGeneration>,
+    ) -> Result<SealedGenerationBytesV1, CoreError> {
+        let missing = self.0.load(Ordering::SeqCst);
+        Ok(SealedGenerationBytesV1 {
+            bytes: 0,
+            absent: generations
+                .iter()
+                .copied()
+                .filter(|generation| generation.get() == missing)
+                .collect(),
+        })
+    }
+}
+
+#[test]
+fn quarantine_root_lock_excludes_durable_admission_until_physical_absence() -> TestResult {
+    let dir = tempdir()?;
+    let present = Arc::new(AtomicBool::new(true));
+    let owner = SearchCorpusLifecycleOwner::open(
+        dir.path(),
+        search_corpus_retention(2)?,
+        Arc::new(PresenceIndexBytes(Arc::clone(&present))),
+    )?;
+    let store = owner.authority_store();
+    let repo = RepoId::new("root-lock-repo")?;
+    let revision = RevisionId::new("revision")?;
+    let generation = ManifestGeneration::new(7);
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let (started_tx, started_rx) = mpsc::channel();
+    let (result_tx, result_rx) = mpsc::channel();
+
+    thread::scope(|scope| -> TestResult {
+        let removing_store = Arc::clone(&store);
+        let removing_present = Arc::clone(&present);
+        let removal = scope.spawn(move || {
+            removing_store.with_record_keys_during_quarantine(|keys| {
+                if !keys.is_empty() {
+                    return Err(CoreError::Storage(
+                        "fresh quarantine fixture unexpectedly has durable records".into(),
+                    ));
+                }
+                entered_tx
+                    .send(())
+                    .map_err(|error| CoreError::Storage(error.to_string()))?;
+                release_rx
+                    .recv()
+                    .map_err(|error| CoreError::Storage(error.to_string()))?;
+                removing_present.store(false, Ordering::SeqCst);
+                Ok(())
+            })
+        });
+        entered_rx.recv_timeout(Duration::from_secs(5))?;
+        let admitting_store = Arc::clone(&store);
+        let admission = scope.spawn(move || {
+            let _started = started_tx.send(());
+            let result = admitting_store.record_sealed_search_corpus(
+                &repo,
+                &revision,
+                generation,
+                "digest-7",
+            );
+            let refused_absent = matches!(
+                result,
+                Err(CoreError::Typed {
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusGenerationConflict,
+                    ..
+                })
+            );
+            let _sent = result_tx.send(refused_absent);
+        });
+        started_rx.recv_timeout(Duration::from_secs(5))?;
+        let premature = result_rx.recv_timeout(Duration::from_millis(100));
+        release_tx.send(())?;
+        removal.join().map_err(|_| "removal thread panicked")??;
+        admission.join().map_err(|_| "admission thread panicked")?;
+        if !matches!(premature, Err(mpsc::RecvTimeoutError::Timeout)) {
+            return Err(format!(
+                "admission ran before the quarantine root lock settled: {premature:?}"
+            )
+            .into());
+        }
+        if !result_rx.recv_timeout(Duration::from_secs(5))? {
+            return Err("a physically absent generation acquired durable authority".into());
+        }
+        if store
+            .search_corpus_authority_path(
+                &RepoId::new("root-lock-repo")?,
+                &RevisionId::new("revision")?,
+                generation,
+            )
+            .exists()
+        {
+            return Err("rejected admission persisted an authority record".into());
+        }
+        Ok(())
+    })
+}
+
+#[test]
+fn absent_physical_candidate_cannot_acquire_a_durable_record() -> TestResult {
+    let dir = tempdir()?;
+    let owner = SearchCorpusLifecycleOwner::open(
+        dir.path(),
+        search_corpus_retention(2)?,
+        Arc::new(AbsentIndexBytes),
+    )?;
+    let store = owner.authority_store();
+    let repo = RepoId::new("absent-candidate")?;
+    let revision = RevisionId::new("revision")?;
+    let generation = ManifestGeneration::new(7);
+    let result = store.record_sealed_search_corpus(&repo, &revision, generation, "digest-7");
+    assert!(matches!(
+        result,
+        Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusGenerationConflict,
+            ..
+        })
+    ));
+    assert!(
+        !store
+            .search_corpus_authority_path(&repo, &revision, generation)
+            .exists()
+    );
+    Ok(())
+}
+
+#[test]
+fn absent_retained_generation_cannot_displace_a_healthy_rollback_record() -> TestResult {
+    let dir = tempdir()?;
+    let missing = Arc::new(AtomicU64::new(0));
+    let owner = SearchCorpusLifecycleOwner::open(
+        dir.path(),
+        search_corpus_retention(2)?,
+        Arc::new(MissingGenerationIndexBytes(Arc::clone(&missing))),
+    )?;
+    let store = owner.authority_store();
+    let repo = RepoId::new("absent-retained")?;
+    let revision = RevisionId::new("revision")?;
+    for number in 1..=2 {
+        let _receipt = store.record_sealed_search_corpus(
+            &repo,
+            &revision,
+            ManifestGeneration::new(number),
+            &format!("digest-{number}"),
+        )?;
+    }
+
+    // Quarantine removed one track of g2, but the durable history still
+    // names g2. A g3 admission must not let that ghost consume the predecessor
+    // slot and reap the physically present g1 authority.
+    missing.store(2, Ordering::SeqCst);
+    let refused =
+        store.record_sealed_search_corpus(&repo, &revision, ManifestGeneration::new(3), "digest-3");
+    assert!(matches!(
+        refused,
+        Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusGenerationConflict,
+            ..
+        })
+    ));
+    for number in 1..=2 {
+        assert!(
+            store
+                .search_corpus_authority_path(&repo, &revision, ManifestGeneration::new(number))
+                .is_file(),
+            "refused admission reaped historical generation {number}"
+        );
+    }
+    assert!(
+        !store
+            .search_corpus_authority_path(&repo, &revision, ManifestGeneration::new(3))
+            .exists(),
+        "refused admission persisted g3"
+    );
+    let retry =
+        store.record_sealed_search_corpus(&repo, &revision, ManifestGeneration::new(2), "digest-2");
+    assert!(matches!(
+        retry,
+        Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusGenerationConflict,
+            ..
+        })
+    ));
+    let mut restored = Ledger::new();
+    store.restore_search_corpus_history_into(&mut restored)?;
+    for number in 1..=2 {
+        assert!(
+            store
+                .search_corpus_authority_path(&repo, &revision, ManifestGeneration::new(number))
+                .is_file(),
+            "bootstrap reaped historical generation {number} while another track was missing"
+        );
+        restored.validate_historically_sealed_track_identity(
+            &GenerationSnapshot {
+                repo_id: repo.clone(),
+                revision_id: revision.clone(),
+                track: SearchPlaneTrackKind::Lexical,
+                manifest_generation: ManifestGeneration::new(number),
+                manifest_digest: format!("digest-{number}"),
+            },
+            "unreconciled restore",
+        )?;
+    }
+    Ok(())
+}
 
 fn pending_source_binding(
     repo: &RepoId,

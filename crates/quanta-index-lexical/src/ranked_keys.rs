@@ -378,9 +378,6 @@ impl RankedKeyTables {
             CoreError::Storage("lexical: ranked-key heap estimate overflow".into())
         })
     }
-    pub(crate) fn rebind(&self, readers: &[SegmentReader]) -> Result<Self, CoreError> {
-        Self::bind(self.segments.clone(), readers)
-    }
     pub(crate) fn bind(
         segments: Vec<Arc<SegmentKeys>>,
         readers: &[SegmentReader],

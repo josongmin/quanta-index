@@ -173,7 +173,7 @@ impl ShardBody {
         let corrupt =
             |reason: String| crate::index_store::sidecar_corrupt(generation_dir, name, &reason);
         let (rows, trigram, trigram_folded, positions, positions_folded): ShardRow =
-            ciborium::from_reader(bytes)
+            crate::channel_payloads::decode_cbor_exact(bytes)
                 .map_err(|error| corrupt(format!("shard {index} does not decode: {error}")))?;
         let (first, last) = shard_doc_range(index)?;
         let mut docs_by_id: BTreeMap<u64, TextAuthorityDoc> = BTreeMap::new();
@@ -431,11 +431,13 @@ mod tests {
         let body = builders.finish().expect("finish");
         assert_eq!(body.rows().expect("rows"), 2);
         assert_eq!(body.doc_id_extremes(), Some((SHARD_DOCS, SHARD_DOCS + 7)));
-        let bytes = body.encode().expect("encode");
+        let mut bytes = body.encode().expect("encode");
         let decoded = ShardBody::decode(&bytes, 1, Path::new("/g1"), "shard").expect("decode");
         assert_eq!(decoded.docs_by_id, body.docs_by_id);
         assert_eq!(decoded.trigram, body.trigram);
         assert_eq!(decoded.positions_folded, body.positions_folded);
+        bytes.push(0xff);
+        assert!(ShardBody::decode(&bytes, 1, Path::new("/g1"), "shard").is_err());
         assert_eq!(
             decoded
                 .docs_by_id

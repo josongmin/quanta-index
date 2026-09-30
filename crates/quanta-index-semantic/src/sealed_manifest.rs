@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 
 use quanta_index_core::{
     CoreError, GENERATION_SIDECAR_CORRUPT_CODE, SealedArtifactCommitmentV1, TreeScrubVerdictV1,
-    commit_tree_inheriting_v1, scrub_tree_commitment_v1, sha256_of_file, verify_tree_layout_v1,
+    commit_tree_inheriting_v1, scrub_tree_commitment_v1, verify_tree_layout_v1,
 };
 
 use crate::codec::format_unsupported;
@@ -109,8 +109,8 @@ impl SemanticSealedManifestV1 {
     }
 }
 
-fn measure(path: &Path, label: &str) -> Result<(u64, [u8; 32]), CoreError> {
-    sha256_of_file(path).map_err(|error| {
+fn measure(path: &Path, label: &str, max_bytes: usize) -> Result<(u64, [u8; 32]), CoreError> {
+    crate::control_file::measure_bounded(path, max_bytes).map_err(|error| {
         CoreError::Storage(format!(
             "semantic: read {label} {} for commitment: {error}",
             path.display()
@@ -141,7 +141,11 @@ struct InheritableBaseV1 {
 /// it at all.
 fn inheritable_base_v1(base_generation_dir: &Path) -> Result<InheritableBaseV1, CoreError> {
     let marker_path = layout::sealed_marker_path(base_generation_dir);
-    let base_digest = std::fs::read_to_string(&marker_path).map_err(|error| {
+    let base_digest = crate::control_file::read_string_bounded(
+        &marker_path,
+        crate::control_file::MAX_SEALED_MARKER_BYTES,
+    )
+    .map_err(|error| {
         CoreError::Storage(format!(
             "semantic: read delta base sealed marker {}: {error}",
             marker_path.display()
@@ -167,10 +171,15 @@ pub(crate) fn build_sealed_manifest_bytes(
     manifest_digest: &str,
     base_generation_dir: Option<&Path>,
 ) -> Result<(Vec<u8>, SealMeasurementV1), CoreError> {
-    let scope_manifest = measure(&layout::manifest_path(generation_dir), "scope manifest")?;
+    let scope_manifest = measure(
+        &layout::manifest_path(generation_dir),
+        "scope manifest",
+        crate::control_file::MAX_SCOPE_MANIFEST_BYTES,
+    )?;
     let build_contract = measure(
         &layout::build_contract_path(generation_dir),
         "build contract",
+        crate::control_file::MAX_GENERATION_CONTRACT_BYTES,
     )?;
     let base = base_generation_dir.map(inheritable_base_v1).transpose()?;
     let commitment = commit_tree_inheriting_v1(
@@ -209,12 +218,20 @@ pub(crate) fn build_sealed_manifest_bytes(
             "semantic: encode sealed generation manifest: {error}"
         ))
     })?;
+    crate::control_file::ensure_bounded(
+        &bytes,
+        crate::control_file::MAX_SEALED_MANIFEST_BYTES,
+        "sealed manifest",
+    )?;
     Ok((bytes, measurement))
 }
 
 fn read_sealed_manifest(generation_dir: &Path) -> Result<SemanticSealedManifestV1, CoreError> {
     let path = sealed_manifest_path(generation_dir);
-    let bytes = std::fs::read(&path).map_err(|error| {
+    let bytes = crate::control_file::read_bounded(
+        &path,
+        crate::control_file::MAX_SEALED_MANIFEST_BYTES,
+    ).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
             CoreError::Typed {
                 code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationManifestMissing,
@@ -223,6 +240,8 @@ fn read_sealed_manifest(generation_dir: &Path) -> Result<SemanticSealedManifestV
                     path.display()
                 ),
             }
+        } else if error.kind() == std::io::ErrorKind::InvalidData {
+            sidecar_corrupt(generation_dir, &format!("sealed manifest is invalid: {error}"))
         } else {
             CoreError::Storage(format!(
                 "semantic: read sealed generation manifest {}: {error}",
@@ -230,12 +249,19 @@ fn read_sealed_manifest(generation_dir: &Path) -> Result<SemanticSealedManifestV
             ))
         }
     })?;
-    let row: SealedManifestRowV1 = ciborium::from_reader(bytes.as_slice()).map_err(|error| {
-        CoreError::Storage(format!(
-            "semantic: decode sealed generation manifest {}: {error}",
-            path.display()
-        ))
+    let mut input = std::io::Cursor::new(bytes.as_slice());
+    let row: SealedManifestRowV1 = ciborium::from_reader(&mut input).map_err(|error| {
+        sidecar_corrupt(
+            generation_dir,
+            &format!("sealed manifest cannot be decoded: {error}"),
+        )
     })?;
+    if usize::try_from(input.position()) != Ok(bytes.len()) {
+        return Err(sidecar_corrupt(
+            generation_dir,
+            "sealed manifest contains trailing bytes",
+        ));
+    }
     let manifest = SemanticSealedManifestV1::from_row(row);
     if manifest.format_version == SEALED_MANIFEST_FORMAT_VERSION {
         Ok(manifest)
@@ -277,30 +303,49 @@ fn read_bound_sealed_manifest(
     Ok(manifest)
 }
 
+/// Admit the sealed manifest's format and identity to a cheap inventory.
+/// Dataset file layout and bytes remain the door's and scrub's proofs.
+pub(crate) fn inspect_sealed_manifest_identity(
+    generation_dir: &Path,
+    manifest_digest: &str,
+) -> Result<(), CoreError> {
+    let _manifest = read_bound_sealed_manifest(generation_dir, manifest_digest)?;
+    Ok(())
+}
+
 /// Hash the two decoded sidecars against their commitments.
 fn verify_sidecars(
     generation_dir: &Path,
     manifest: &SemanticSealedManifestV1,
 ) -> Result<(), CoreError> {
-    for (label, path, committed) in [
+    for (label, path, committed, max_bytes) in [
         (
             MANIFEST_FILE_NAME,
             layout::manifest_path(generation_dir),
             manifest.scope_manifest,
+            crate::control_file::MAX_SCOPE_MANIFEST_BYTES,
         ),
         (
             BUILD_CONTRACT_FILE_NAME,
             layout::build_contract_path(generation_dir),
             manifest.build_contract,
+            crate::control_file::MAX_GENERATION_CONTRACT_BYTES,
         ),
     ] {
-        if !path.is_file() {
-            return Err(sidecar_corrupt(
-                generation_dir,
-                &format!("{label}: missing"),
-            ));
-        }
-        let (bytes, sha256) = measure(&path, label)?;
+        let (bytes, sha256) =
+            crate::control_file::measure_bounded(&path, max_bytes).map_err(|error| {
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::InvalidData
+                ) {
+                    sidecar_corrupt(generation_dir, &format!("{label}: {error}"))
+                } else {
+                    CoreError::Storage(format!(
+                        "semantic: read {label} {} for commitment: {error}",
+                        path.display()
+                    ))
+                }
+            })?;
         if bytes != committed.0 {
             return Err(sidecar_corrupt(
                 generation_dir,
@@ -385,7 +430,23 @@ pub(crate) fn scrub_sealed_manifest(
     start_artifact: u64,
     max_bytes: u64,
 ) -> Result<SealedManifestScrubV1, CoreError> {
-    let manifest = read_bound_sealed_manifest(generation_dir, manifest_digest)?;
+    let manifest = match read_bound_sealed_manifest(generation_dir, manifest_digest) {
+        Ok(manifest) => manifest,
+        Err(CoreError::Typed { code, message })
+            if matches!(
+                code,
+                quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityDigestMismatch
+                    | quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt
+            ) =>
+        {
+            return Ok(SealedManifestScrubV1 {
+                files_verified: 0,
+                bytes_read: 0,
+                verdict: SealedManifestScrubVerdictV1::Corrupt { detail: message },
+            });
+        }
+        Err(other) => return Err(other),
+    };
     match verify_sidecars(generation_dir, &manifest) {
         Ok(()) => {}
         Err(CoreError::Typed { code, message }) if code == GENERATION_SIDECAR_CORRUPT_CODE => {

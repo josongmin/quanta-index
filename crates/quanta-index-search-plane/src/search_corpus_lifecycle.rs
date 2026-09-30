@@ -27,6 +27,7 @@ use crate::{
     ActivationCatalog, AuxiliaryAuthorityStore, Ledger, OpenedSnapshot,
     PreparedSearchCorpusGenerationV1, SealedSearchCorpusAuthorityStateV1,
     SearchCorpusGenerationActivationV1, SearchCorpusGenerationV1, SnapshotKey, SnapshotRegistries,
+    SnapshotRetirementOwner,
 };
 
 mod pair_lock;
@@ -217,6 +218,12 @@ impl ActivationPromotionParts {
             candidate.revision_id(),
             candidate.manifest_generation(),
         );
+        // Register both proofs before either opener runs. A scrub or reclaim
+        // retiring one track during the physical proof then fences that
+        // track's eventual promotion, including the gap between the two
+        // sequential promotions below.
+        let lexical_promotion = self.snapshots.lexical.begin_promotion(&key)?;
+        let semantic_promotion = self.snapshots.semantic.begin_promotion(&key)?;
         let lexical: Arc<dyn LexicalSearcher> = Arc::from(
             self.lexical_open
                 .open_proven(candidate.lexical())
@@ -250,21 +257,15 @@ impl ActivationPromotionParts {
         }
         let source_event = lexical.source_publication_event().cloned();
         let lexical_bytes = lexical.resident_bytes_estimate();
-        let _retained = self.snapshots.lexical.promote(
-            &key,
-            &OpenedSnapshot {
-                handle: lexical,
-                resident_bytes: lexical_bytes,
-            },
-        )?;
+        let _retained = lexical_promotion.promote(&OpenedSnapshot {
+            handle: lexical,
+            resident_bytes: lexical_bytes,
+        })?;
         let semantic_bytes = semantic.resident_bytes_estimate();
-        let _retained = self.snapshots.semantic.promote(
-            &key,
-            &OpenedSnapshot {
-                handle: semantic,
-                resident_bytes: semantic_bytes,
-            },
-        )?;
+        let _retained = semantic_promotion.promote(&OpenedSnapshot {
+            handle: semantic,
+            resident_bytes: semantic_bytes,
+        })?;
         Ok(source_event)
     }
 
@@ -281,12 +282,61 @@ impl ActivationPromotionParts {
         gate: ProofGate<'_>,
         source: &CoreError,
     ) -> CoreError {
-        let is_content_defect = matches!(
+        let needs_door_reproof = matches!(
             source,
-            CoreError::Typed { code, .. } if *code == GENERATION_SIDECAR_CORRUPT_CODE
+            CoreError::Typed { code, .. }
+                if *code == GENERATION_SIDECAR_CORRUPT_CODE
+                    || *code == quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityDigestMismatch
         );
-        if gate.findings == DoorFindingPolicy::FailClosed || !is_content_defect {
+        if gate.findings == DoorFindingPolicy::FailClosed {
             return generation_target_unopenable(target, gate.operation, gate.error_code, source);
+        }
+        let key = SnapshotKey::new(
+            &target.repo_id,
+            &target.revision_id,
+            target.manifest_generation,
+        );
+        let retirement = match target.track {
+            SearchPlaneTrackKind::Lexical => self
+                .snapshots
+                .lexical
+                .retire(&key, SnapshotRetirementOwner::DoorFinding),
+            SearchPlaneTrackKind::Semantic => self
+                .snapshots
+                .semantic
+                .retire(&key, SnapshotRetirementOwner::DoorFinding),
+            SearchPlaneTrackKind::Structural => Err(CoreError::InvalidContract(
+                "search-corpus quarantine has no structural snapshot registry".into(),
+            )),
+        };
+        if let Err(error) = retirement {
+            return CoreError::Typed {
+                code: gate.error_code,
+                message: format!(
+                    "{}; the cached handle could not be retired: {error}",
+                    target_unopenable_message(target, gate.operation, source)
+                ),
+            };
+        }
+        if !needs_door_reproof {
+            let finished = self.snapshots.finish_retirement(
+                target.track,
+                &key,
+                SnapshotRetirementOwner::DoorFinding,
+            );
+            let detail = match finished {
+                Ok(()) => "the stale resident handle was evicted".to_string(),
+                Err(error) => format!(
+                    "the stale resident handle was evicted but its retirement could not finish: {error}"
+                ),
+            };
+            return CoreError::Typed {
+                code: gate.error_code,
+                message: format!(
+                    "{}; {detail}",
+                    target_unopenable_message(target, gate.operation, source)
+                ),
+            };
         }
         let door_findings = match target.track {
             SearchPlaneTrackKind::Lexical => &self.lexical_door_findings,
@@ -298,18 +348,38 @@ impl ActivationPromotionParts {
                 ));
             }
         };
-        let recorded = match door_findings.quarantine_door_finding(target) {
-            Ok(DoorFindingOutcome::Quarantined { quarantined }) => {
+        // Retire before the adapter writes a quarantine receipt. Otherwise a
+        // previously resident handle could keep serving the quarantined key.
+        // The fence is released after the re-proof: a fresh open must consult
+        // the receipt (or re-prove a finding that was not reproduced).
+        let finding = door_findings.quarantine_door_finding(target);
+        let finished = self.snapshots.finish_retirement(
+            target.track,
+            &key,
+            SnapshotRetirementOwner::DoorFinding,
+        );
+        let recorded = match (finding, finished) {
+            (Ok(DoorFindingOutcome::Quarantined { quarantined }), Err(error)) => format!(
+                "quarantined as {} at {}, but the snapshot retirement could not finish: {error}",
+                quarantined.reason,
+                quarantined.path.display()
+            ),
+            (other, Err(error)) => {
+                format!(
+                    "quarantine re-proof answered {other:?}, but the snapshot retirement could not finish: {error}"
+                )
+            }
+            (Ok(DoorFindingOutcome::Quarantined { quarantined }), Ok(())) => {
                 format!(
                     "quarantined as {} at {}",
                     quarantined.reason,
                     quarantined.path.display()
                 )
             }
-            Ok(DoorFindingOutcome::NotReproduced) => {
+            (Ok(DoorFindingOutcome::NotReproduced), Ok(())) => {
                 "the re-proof admitted the generation; nothing was quarantined".to_string()
             }
-            Err(error) => format!("the quarantine was not recorded: {error}"),
+            (Err(error), Ok(())) => format!("the quarantine was not recorded: {error}"),
         };
         CoreError::Typed {
             code: gate.error_code,
@@ -618,7 +688,7 @@ mod tests {
     use crate::readiness::SearchCorpusHistoryRetentionPolicyV1;
     use crate::search_corpus_retention::SearchCorpusIndexBytesPort;
     use crate::{
-        PreparedSearchCorpusGenerationV1, SearchCorpusGenerationV1, SnapshotKey,
+        OpenedSnapshot, PreparedSearchCorpusGenerationV1, SearchCorpusGenerationV1, SnapshotKey,
         SnapshotRegistries, SnapshotRegistryPolicy,
     };
     use quanta_index_core::{
@@ -1135,6 +1205,69 @@ mod tests {
                     "{message}"
                 );
             }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn door_quarantine_evicts_a_previously_resident_handle_on_each_track() -> TestResult {
+        let candidate = active_generation()?;
+        let key = SnapshotKey::new(
+            candidate.repo_id(),
+            candidate.revision_id(),
+            candidate.manifest_generation(),
+        );
+        for track in [
+            SearchPlaneTrackKind::Lexical,
+            SearchPlaneTrackKind::Semantic,
+        ] {
+            let (promotion, _lexical, _semantic) = promotion_refusing(
+                Some((track, DoorRefusal::ContentDefect)),
+                ScriptedFinding::Quarantines,
+            );
+            match track {
+                SearchPlaneTrackKind::Lexical => {
+                    let handle: Arc<dyn LexicalSearcher> = Arc::from(promotion.lexical_open.open(
+                        candidate.repo_id(),
+                        candidate.revision_id(),
+                        candidate.manifest_generation(),
+                    )?);
+                    let _admitted = promotion.snapshots.lexical.begin_promotion(&key)?.promote(
+                        &OpenedSnapshot {
+                            handle,
+                            resident_bytes: 1,
+                        },
+                    )?;
+                    assert_eq!(promotion.snapshots.lexical.stats()?.entries, 1);
+                }
+                SearchPlaneTrackKind::Semantic => {
+                    let handle: Arc<dyn SemanticSearcher> =
+                        Arc::from(promotion.semantic_open.open(
+                            candidate.repo_id(),
+                            candidate.revision_id(),
+                            candidate.manifest_generation(),
+                        )?);
+                    let _admitted = promotion
+                        .snapshots
+                        .semantic
+                        .begin_promotion(&key)?
+                        .promote(&OpenedSnapshot {
+                            handle,
+                            resident_bytes: 1,
+                        })?;
+                    assert_eq!(promotion.snapshots.semantic.stats()?.entries, 1);
+                }
+                SearchPlaneTrackKind::Structural => {
+                    return Err("structural is not a search-corpus track".into());
+                }
+            }
+            let _refused = refused_proof(&promotion, ACTIVATION_GATE)?;
+            let entries = match track {
+                SearchPlaneTrackKind::Lexical => promotion.snapshots.lexical.stats()?.entries,
+                SearchPlaneTrackKind::Semantic => promotion.snapshots.semantic.stats()?.entries,
+                SearchPlaneTrackKind::Structural => 0,
+            };
+            assert_eq!(entries, 0, "quarantined {track:?} handle stayed resident");
         }
         Ok(())
     }

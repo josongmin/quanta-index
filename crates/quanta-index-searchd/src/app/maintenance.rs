@@ -27,8 +27,8 @@ use quanta_index_core::{
     CoreError, MetricPointV1, MetricSourcePort, ProcessMemoryProbePort,
     SealedGenerationIdentityProbePort, TrackDiskUsagePort, WriterIdleSweepPort,
 };
-use quanta_index_search_plane::SearchCorpusGenerationV1;
 use quanta_index_search_plane::readiness::ActivationCatalog;
+use quanta_index_search_plane::{SearchCorpusGenerationV1, SnapshotInventoryAdmission};
 
 use crate::app::integrity_scrub::PacedIntegrityScrubV1;
 
@@ -38,6 +38,7 @@ pub struct MaintenanceTallies {
     last_completed_tick: Mutex<Option<Instant>>,
     backend_observation: Mutex<Option<BackendObservation>>,
     backend_probe_failures: AtomicU64,
+    inventory_admission_failures: AtomicU64,
     ticks: AtomicU64,
     idle_writer_releases: AtomicU64,
     sweep_failures: AtomicU64,
@@ -139,6 +140,9 @@ pub struct MaintenanceParts {
     /// Active-generation identity liveness, distinct from the scrub's deep
     /// content proof. Missing means unproven, never healthy.
     pub backend_probe: Option<BackendProbeParts>,
+    /// Evicts cached handles whose physical identity no longer agrees with
+    /// durable authority. Checked before any scheduled deep scrub step.
+    pub inventory_admission: Option<Arc<SnapshotInventoryAdmission>>,
     /// The integrity scrub, stepped on its own interval; `None` when no
     /// adapter scrubs.
     pub integrity_scrub: Option<Mutex<PacedIntegrityScrubV1>>,
@@ -190,6 +194,7 @@ fn observe_backend(parts: &MaintenanceParts, tallies: &MaintenanceTallies) {
 /// measurement.
 fn tick(parts: &MaintenanceParts, tallies: &MaintenanceTallies) {
     let _tick = tallies.ticks.fetch_add(1, Ordering::AcqRel);
+    reconcile_inventory(parts, tallies);
     observe_backend(parts, tallies);
     match parts.writer_sweep.sweep_idle_writers() {
         Ok(released) => {
@@ -215,6 +220,16 @@ fn tick(parts: &MaintenanceParts, tallies: &MaintenanceTallies) {
     }
     if let Ok(mut last) = tallies.last_completed_tick.lock() {
         *last = Some(Instant::now());
+    }
+}
+
+fn reconcile_inventory(parts: &MaintenanceParts, tallies: &MaintenanceTallies) {
+    if let Some(admission) = &parts.inventory_admission
+        && admission.reconcile().is_err()
+    {
+        let _prior = tallies
+            .inventory_admission_failures
+            .fetch_add(1, Ordering::AcqRel);
     }
 }
 
@@ -255,6 +270,7 @@ impl MaintenanceTimer {
     /// gauges are correct at the first scrape, not after the first tick.
     pub fn start(parts: MaintenanceParts, cadence: Duration) -> Result<Self, CoreError> {
         let tallies = Arc::new(MaintenanceTallies::default());
+        reconcile_inventory(&parts, &tallies);
         observe_backend(&parts, &tallies);
         refresh_disk_usage(&parts, &tallies);
         if let Ok(mut last) = tallies.last_completed_tick.lock() {
@@ -386,6 +402,10 @@ impl MetricSourcePort for MaintenanceMetricSource {
                 tallies.backend_probe_failures.load(Ordering::Acquire),
             ),
             MetricPointV1::counter(
+                "maintenance_inventory_admission_failures_total",
+                tallies.inventory_admission_failures.load(Ordering::Acquire),
+            ),
+            MetricPointV1::counter(
                 "maintenance_disk_refreshes_total",
                 tallies.disk_refreshes.load(Ordering::Acquire),
             ),
@@ -511,6 +531,7 @@ mod tests {
                 lexical_disk_usage,
                 semantic_disk_usage,
                 backend_probe: None,
+                inventory_admission: None,
                 integrity_scrub: None,
             },
             Duration::from_millis(10),
@@ -562,6 +583,7 @@ mod tests {
                 lexical_disk_usage: Arc::new(ScriptedDisk(AtomicU64::new(10))),
                 semantic_disk_usage: Arc::new(ScriptedDisk(AtomicU64::new(20))),
                 backend_probe: None,
+                inventory_admission: None,
                 integrity_scrub: None,
             },
             Duration::from_secs(30),

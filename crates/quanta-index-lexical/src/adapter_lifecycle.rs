@@ -4,12 +4,13 @@ use crate::generation_dir::{
     generation_tree_bytes, is_writer_lock_entry, sync_generation_directory,
 };
 use crate::index_store::{
-    lexical_sealed_identity_path, read_lexical_sealed_identity, validate_lexical_sealed_identity,
+    read_lexical_sealed_identity, sealed_identity_entry_present, validate_lexical_sealed_identity,
 };
 use crate::inventory::{discard_quarantined_directory, inventory_sealed_generations};
 use crate::sealed_generation::{
-    DiscardingVisitor, last_completed_scrub, quarantine_content_corrupt, quarantined_by_scrub,
-    scrub_step, walk_sealed_generation,
+    DiscardingVisitor, last_completed_scrub, quarantine_seal_failure_at, quarantined_by_scrub,
+    quarantined_by_scrub_at, scrub_step, seal_failure_quarantine_reason, walk_sealed_generation,
+    walk_sealed_generation_at,
 };
 use crate::{GenKey, LexicalAdapter};
 use quanta_index_contract::{
@@ -22,10 +23,10 @@ use quanta_index_core::domains::generation::{
 };
 use quanta_index_core::{
     CoreError, DoorFindingOutcome, DoorFindingQuarantinePort, FinishedReclaims,
-    GENERATION_SIDECAR_CORRUPT_CODE, GenerationIdentityValidatePort, IntegrityScrubBudgetV1,
-    IntegrityScrubCandidateV1, IntegrityScrubCursorV1, IntegrityScrubPort, IntegrityScrubReportV1,
-    QuarantineDiscardOutcomeV1, QuarantinedGenerationDiscardPort,
-    SealedGenerationIdentityProbePort, SealedGenerationScanPort, reclaim_directory,
+    GenerationIdentityValidatePort, IntegrityScrubBudgetV1, IntegrityScrubCandidateV1,
+    IntegrityScrubCursorV1, IntegrityScrubPort, IntegrityScrubReportV1, QuarantineDiscardOutcomeV1,
+    QuarantinedGenerationDiscardPort, SealedGenerationIdentityProbePort, SealedGenerationScanPort,
+    reclaim_directory,
 };
 use std::collections::BTreeSet;
 
@@ -53,6 +54,74 @@ impl SealedGenerationIdentityProbePort for LexicalAdapter {
         let (_dir, _identity) = self.sealed_generation_dir_for(candidate, "readiness probe")?;
         Ok(())
     }
+
+    fn inventory_sealed_generation_identity(
+        &self,
+        candidate: &GenerationSnapshot,
+    ) -> Result<bool, CoreError> {
+        let key = GenKey {
+            repo_id: candidate.repo_id.clone(),
+            revision_id: candidate.revision_id.clone(),
+            generation: candidate.manifest_generation,
+        };
+        let dir = self.index_path(&key);
+        for component in [dir.parent(), Some(dir.as_path())] {
+            let component = component.ok_or_else(|| {
+                CoreError::InvalidContract("lexical generation has no family directory".into())
+            })?;
+            match std::fs::symlink_metadata(component) {
+                Ok(metadata) if metadata.file_type().is_dir() => {}
+                Ok(_) => return Ok(false),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+                Err(error) => {
+                    return Err(CoreError::Storage(format!(
+                        "lexical: inspect {} for point inventory: {error}",
+                        component.display()
+                    )));
+                }
+            }
+        }
+        let observed = match crate::inventory::inventory_generation_dir(&self.state_root, &dir) {
+            Ok(Some(observed)) => observed,
+            Ok(None) | Err(_) => return Ok(false),
+        };
+        if observed != *candidate {
+            return Ok(false);
+        }
+        match quarantined_by_scrub(&dir) {
+            Ok(None) => Ok(true),
+            Ok(Some(_)) => Ok(false),
+            Err(CoreError::Storage(error)) => Err(CoreError::Storage(error)),
+            Err(_) => Ok(false),
+        }
+    }
+}
+
+impl LexicalAdapter {
+    fn scrub_with_fence(
+        &self,
+        generation: &GenerationSnapshot,
+        cursor: Option<IntegrityScrubCursorV1>,
+        budget: IntegrityScrubBudgetV1,
+        before_quarantine: &dyn Fn() -> Result<(), CoreError>,
+    ) -> Result<IntegrityScrubReportV1, CoreError> {
+        let key = GenKey {
+            repo_id: generation.repo_id.clone(),
+            revision_id: generation.revision_id.clone(),
+            generation: generation.manifest_generation,
+        };
+        let _mutation = self.generation_mutation_guard(&key)?;
+        let _lifecycle = self.directory_lifecycle_read_guard()?;
+        let (generation_dir, observed) = self.sealed_generation_dir_for(generation, "scrub")?;
+        let mut progress = self.scrub_progress.lock().map_err(|error| {
+            CoreError::Storage(format!("lexical scrub progress poisoned: {error}"))
+        })?;
+        let start = progress.start_or_resume(&observed, cursor)?;
+        let report = scrub_step(&generation_dir, &observed, start, budget, before_quarantine)?;
+        progress.record(&observed, &report.outcome)?;
+        drop(progress);
+        Ok(report)
+    }
 }
 
 impl IntegrityScrubPort for LexicalAdapter {
@@ -61,7 +130,14 @@ impl IntegrityScrubPort for LexicalAdapter {
             .sealed
             .into_iter()
             .map(|sealed| {
-                let last_completed_unix = last_completed_scrub(&sealed.path, &sealed.identity)?;
+                // A malformed completion receipt proves no completed pass.
+                // Rescrub this candidate instead of blocking every other
+                // generation in the track's candidate list.
+                let last_completed_unix = match last_completed_scrub(&sealed.path, &sealed.identity) {
+                    Ok(completed) => completed,
+                    Err(CoreError::Typed { code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationScrubReceiptInvalid, .. }) => None,
+                    Err(error) => return Err(error),
+                };
                 Ok(IntegrityScrubCandidateV1 {
                     identity: sealed.identity,
                     last_completed_unix,
@@ -76,9 +152,17 @@ impl IntegrityScrubPort for LexicalAdapter {
         cursor: Option<IntegrityScrubCursorV1>,
         budget: IntegrityScrubBudgetV1,
     ) -> Result<IntegrityScrubReportV1, CoreError> {
-        let _lifecycle = self.directory_lifecycle_guard()?;
-        let (generation_dir, observed) = self.sealed_generation_dir_for(generation, "scrub")?;
-        scrub_step(&generation_dir, &observed, cursor, budget)
+        self.scrub_with_fence(generation, cursor, budget, &|| Ok(()))
+    }
+
+    fn scrub_with_quarantine_fence(
+        &self,
+        generation: &GenerationSnapshot,
+        cursor: Option<IntegrityScrubCursorV1>,
+        budget: IntegrityScrubBudgetV1,
+        before_quarantine: &dyn Fn() -> Result<(), CoreError>,
+    ) -> Result<IntegrityScrubReportV1, CoreError> {
+        self.scrub_with_fence(generation, cursor, budget, before_quarantine)
     }
 }
 
@@ -93,17 +177,39 @@ impl DoorFindingQuarantinePort for LexicalAdapter {
         let _lifecycle = self.directory_lifecycle_guard()?;
         let (generation_dir, observed) =
             self.sealed_generation_dir_for(generation, "door-finding quarantine")?;
-        if let Some(quarantined) = quarantined_by_scrub(&generation_dir)? {
+        let root = crate::sealed_generation::open_generation_dir_nofollow(&generation_dir)
+            .map_err(|error| {
+                CoreError::Storage(format!(
+                    "lexical: open generation for door-finding quarantine {}: {error}",
+                    generation_dir.display()
+                ))
+            })?;
+        let pinned_identity =
+            crate::index_store::read_lexical_sealed_identity_at(&generation_dir, &root)?;
+        validate_lexical_sealed_identity(&pinned_identity, &observed)?;
+        if let Some(quarantined) = quarantined_by_scrub_at(&root, &generation_dir)? {
             return Ok(DoorFindingOutcome::Quarantined { quarantined });
         }
-        match walk_sealed_generation(&generation_dir, &observed, &mut DiscardingVisitor) {
+        match walk_sealed_generation_at(
+            &root,
+            &generation_dir,
+            &observed,
+            &mut DiscardingVisitor,
+            None,
+        ) {
             Ok(_verified) => Ok(DoorFindingOutcome::NotReproduced),
-            Err(CoreError::Typed { code, message }) if code == GENERATION_SIDECAR_CORRUPT_CODE => {
-                let quarantined =
-                    quarantine_content_corrupt(&generation_dir, format!("a door found {message}"))?;
-                Ok(DoorFindingOutcome::Quarantined { quarantined })
-            }
-            Err(other) => Err(other),
+            Err(error) => match seal_failure_quarantine_reason(&error) {
+                Some(reason) => {
+                    let quarantined = quarantine_seal_failure_at(
+                        &root,
+                        &generation_dir,
+                        reason,
+                        &format!("a door found {error}"),
+                    )?;
+                    Ok(DoorFindingOutcome::Quarantined { quarantined })
+                }
+                None => Err(error),
+            },
         }
     }
 }
@@ -115,9 +221,10 @@ impl SealedGenerationScanPort for LexicalAdapter {
 }
 
 impl QuarantinedGenerationDiscardPort for LexicalAdapter {
-    fn discard_quarantined_generation(
+    fn discard_quarantined_generation_with_settlement(
         &self,
         entry: &QuarantinedGenerationV1,
+        on_absent: &dyn Fn() -> Result<(), CoreError>,
     ) -> Result<QuarantineDiscardOutcomeV1, CoreError> {
         if entry.track != SearchPlaneTrackKind::Lexical {
             return Err(CoreError::InvalidContract(format!(
@@ -126,11 +233,39 @@ impl QuarantinedGenerationDiscardPort for LexicalAdapter {
             )));
         }
         let _lifecycle = self.directory_lifecycle_guard()?;
-        discard_quarantined_directory(
+        let outcome = discard_quarantined_directory(
             &self.state_root,
             &inventory_sealed_generations(&self.state_root)?.quarantined,
             entry,
-        )
+        );
+        match std::fs::symlink_metadata(&entry.path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => on_absent()?,
+            Ok(_) if outcome.is_ok() => {
+                return Err(CoreError::Storage(
+                    "lexical quarantine discard reported removal but path remains present".into(),
+                ));
+            }
+            Ok(_) => {}
+            Err(error) => {
+                return Err(CoreError::Storage(format!(
+                    "lexical quarantine discard failed ({outcome:?}); namespace probe failed: {error}"
+                )));
+            }
+        }
+        let outcome = outcome?;
+        let mut progress = self.scrub_progress.lock().map_err(|error| {
+            CoreError::Storage(format!("lexical scrub progress poisoned: {error}"))
+        })?;
+        progress.clear_if_invalidated(|paused| {
+            let key = GenKey {
+                repo_id: paused.repo_id.clone(),
+                revision_id: paused.revision_id.clone(),
+                generation: paused.manifest_generation,
+            };
+            self.index_path(&key).starts_with(&entry.path)
+        });
+        drop(progress);
+        Ok(outcome)
     }
 }
 
@@ -150,6 +285,8 @@ impl IncompleteGenerationDiscardPort for LexicalAdapter {
             revision_id: candidate.revision_id.clone(),
             generation: candidate.manifest_generation,
         };
+        let _mutation = self.generation_mutation_guard(&key)?;
+        let _lifecycle = self.directory_lifecycle_read_guard()?;
         let generation_dir = self.index_path(&key);
         let mut writers = self
             .writers
@@ -159,7 +296,7 @@ impl IncompleteGenerationDiscardPort for LexicalAdapter {
             let _stale_writer = writers.remove(&key);
             return Ok(IncompleteGenerationDiscardOutcomeV1::Absent);
         }
-        if lexical_sealed_identity_path(&generation_dir).exists() {
+        if sealed_identity_entry_present(&generation_dir)? {
             let observed = read_lexical_sealed_identity(&generation_dir)?;
             validate_lexical_sealed_identity(&observed, candidate)?;
             return Err(CoreError::Typed {
@@ -194,9 +331,10 @@ impl IncompleteGenerationDiscardPort for LexicalAdapter {
 }
 
 impl SealedGenerationReclaimPort for LexicalAdapter {
-    fn reclaim_sealed_generation(
+    fn reclaim_sealed_generation_with_settlement(
         &self,
         retired: &GenerationSnapshot,
+        on_absent: &dyn Fn() -> Result<(), CoreError>,
     ) -> Result<SealedGenerationReclaimOutcomeV1, CoreError> {
         if retired.track != SearchPlaneTrackKind::Lexical {
             return Err(CoreError::InvalidContract(format!(
@@ -211,12 +349,22 @@ impl SealedGenerationReclaimPort for LexicalAdapter {
         };
         let generation_dir = self.index_path(&key);
         let _lifecycle = self.directory_lifecycle_guard()?;
-        if !generation_dir.exists() {
-            return Ok(SealedGenerationReclaimOutcomeV1::Absent);
+        match std::fs::symlink_metadata(&generation_dir) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                on_absent()?;
+                return Ok(SealedGenerationReclaimOutcomeV1::Absent);
+            }
+            Ok(_) => {}
+            Err(error) => {
+                return Err(CoreError::Storage(format!(
+                    "lexical: inspect generation namespace {}: {error}",
+                    generation_dir.display()
+                )));
+            }
         }
         // Only a sealed generation is this port's to remove; an unsealed
         // directory belongs to the incomplete-generation protocol.
-        if !lexical_sealed_identity_path(&generation_dir).exists() {
+        if !sealed_identity_entry_present(&generation_dir)? {
             return Err(CoreError::Typed {
                 code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationNotSealed,
                 message: format!(
@@ -237,15 +385,37 @@ impl SealedGenerationReclaimPort for LexicalAdapter {
                 .map_err(|err| CoreError::Storage(format!("lexical writers poisoned: {err}")))?;
             let _stale_writer = writers.remove(&key);
         }
+        self.scrub_progress
+            .lock()
+            .map_err(|error| {
+                CoreError::Storage(format!("lexical scrub progress poisoned: {error}"))
+            })?
+            .clear_if_invalidated(|paused| paused == retired);
         // Out of the generation namespace by one durable rename, then
         // removed: a crash leaves a reclaim-area entry, never a partial tree
         // that would read as an unsealed build (QI-BB-003).
-        reclaim_directory(
+        let reclaimed = reclaim_directory(
             &self.state_root,
             &generation_dir,
             &GenerationStorageKeyV1::for_repo_revision(&key.repo_id, &key.revision_id)
                 .reclaim_entry_name(key.generation),
-        )?;
+        );
+        match std::fs::symlink_metadata(&generation_dir) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => on_absent()?,
+            Ok(_) if reclaimed.is_ok() => {
+                return Err(CoreError::Storage(
+                    "lexical reclaim reported removal but generation namespace remains present"
+                        .into(),
+                ));
+            }
+            Ok(_) => {}
+            Err(error) => {
+                return Err(CoreError::Storage(format!(
+                    "lexical reclaim failed ({reclaimed:?}); namespace probe failed: {error}"
+                )));
+            }
+        }
+        reclaimed?;
         self.invalidate_regex_match_cache_generation(&key)?;
         Ok(SealedGenerationReclaimOutcomeV1::Reclaimed { bytes })
     }
@@ -274,7 +444,7 @@ impl SealedGenerationReclaimPort for LexicalAdapter {
                 CoreError::Storage(format!("lexical: read generation entry: {error}"))
             })?;
             let generation_dir = entry.path();
-            if !generation_dir.is_dir() || !lexical_sealed_identity_path(&generation_dir).exists() {
+            if !generation_dir.is_dir() || !sealed_identity_entry_present(&generation_dir)? {
                 continue;
             }
             let identity = read_lexical_sealed_identity(&generation_dir)?;

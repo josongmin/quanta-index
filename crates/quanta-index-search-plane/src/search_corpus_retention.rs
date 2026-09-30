@@ -15,7 +15,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use quanta_index_contract::{ManifestGeneration, RepoId, RevisionId};
-use quanta_index_core::{CoreError, SealedGenerationReclaimPort};
+use quanta_index_core::{CoreError, SealedGenerationBytesV1, SealedGenerationReclaimPort};
 
 /// Measures the bytes a set of sealed generations of one pair occupies on
 /// disk across both tracks: what `du` would report for those directories
@@ -29,7 +29,7 @@ pub trait SearchCorpusIndexBytesPort: fmt::Debug + Send + Sync {
         repo_id: &RepoId,
         revision_id: &RevisionId,
         generations: &BTreeSet<ManifestGeneration>,
-    ) -> Result<u64, CoreError>;
+    ) -> Result<SealedGenerationBytesV1, CoreError>;
 }
 
 /// The measurement over the two tracks' reclaim ports, which are the
@@ -61,17 +61,21 @@ impl SearchCorpusIndexBytesPort for PairIndexBytesMeasurer {
         repo_id: &RepoId,
         revision_id: &RevisionId,
         generations: &BTreeSet<ManifestGeneration>,
-    ) -> Result<u64, CoreError> {
+    ) -> Result<SealedGenerationBytesV1, CoreError> {
         let lexical = self
             .lexical
             .measure_sealed_generations(repo_id, revision_id, generations)?;
         let semantic =
             self.semantic
                 .measure_sealed_generations(repo_id, revision_id, generations)?;
-        lexical.bytes.checked_add(semantic.bytes).ok_or_else(|| {
+        let bytes = lexical.bytes.checked_add(semantic.bytes).ok_or_else(|| {
             CoreError::Storage(
                 "search-corpus history retention: index byte total overflow".to_string(),
             )
+        })?;
+        Ok(SealedGenerationBytesV1 {
+            bytes,
+            absent: lexical.absent.union(&semantic.absent).copied().collect(),
         })
     }
 }
@@ -161,6 +165,32 @@ impl SearchCorpusHistoryRetentionPolicyV1 {
     #[must_use]
     pub const fn max_total_bytes(self) -> u64 {
         self.max_total_bytes
+    }
+
+    /// Bootstrap may keep a missing historical record so a later rollback
+    /// names its exact unavailable target. Until that record is repaired, a
+    /// count-based sweep cannot safely choose another record to delete.
+    pub(crate) fn preserve_unreconciled_restore(
+        self,
+        generations: BTreeSet<ManifestGeneration>,
+        measured_bytes: u64,
+    ) -> Result<SearchCorpusHistoryRetentionPlanV1, CoreError> {
+        if generations.len() > self.max_generations || measured_bytes > self.max_bytes {
+            return Err(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::SearchCorpusHistoryRetentionExhausted,
+                message: format!(
+                    "search-corpus history retention: unreconciled restore needs generations={} index_bytes={}, limits are max_generations={} max_bytes={}; refusing to reap a healthy generation while a retained track is physically absent",
+                    generations.len(),
+                    measured_bytes,
+                    self.max_generations,
+                    self.max_bytes,
+                ),
+            });
+        }
+        Ok(SearchCorpusHistoryRetentionPlanV1 {
+            retained_generations: generations,
+            retained_bytes: measured_bytes,
+        })
     }
 
     /// Decide what one pair retains.

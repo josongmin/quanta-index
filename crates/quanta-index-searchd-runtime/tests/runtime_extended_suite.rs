@@ -41,8 +41,6 @@ mod e2e_process_readiness;
 mod e2e_ranked_pages;
 #[path = "e2e_semantic_budget_interruption.rs"]
 mod e2e_semantic_budget_interruption;
-#[path = "e2e_semantic_stream_window.rs"]
-mod e2e_semantic_stream_window;
 #[path = "e2e_socket_access.rs"]
 mod e2e_socket_access;
 #[path = "e2e_umask_hardening.rs"]

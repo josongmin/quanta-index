@@ -109,8 +109,15 @@ pub(crate) fn encode<T: Serialize>(value: &T, label: &str) -> Result<Vec<u8>, Co
 
 /// Decode CBOR bytes into a value, mapping codec failure to a typed storage error.
 pub(crate) fn decode<T: DeserializeOwned>(bytes: &[u8], label: &str) -> Result<T, CoreError> {
-    ciborium::from_reader(bytes)
-        .map_err(|err| CoreError::Storage(format!("semantic: decode {label}: {err}")))
+    let mut input = std::io::Cursor::new(bytes);
+    let value = ciborium::from_reader(&mut input)
+        .map_err(|err| CoreError::Storage(format!("semantic: decode {label}: {err}")))?;
+    if usize::try_from(input.position()) != Ok(bytes.len()) {
+        return Err(CoreError::Storage(format!(
+            "semantic: decode {label}: trailing bytes"
+        )));
+    }
+    Ok(value)
 }
 
 /// Wire code for a manifest, contract or sealed manifest written under a

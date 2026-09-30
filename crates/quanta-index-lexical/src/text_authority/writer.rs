@@ -192,8 +192,21 @@ pub(crate) fn finalize_for_seal(
     generation_dir: &Path,
 ) -> Result<Option<TextAuthorityManifest>, CoreError> {
     let dir = text_authority_dir(generation_dir);
-    if !dir.exists() {
-        return Ok(None);
+    match crate::sealed_generation::optional_entry_metadata(&dir) {
+        Ok(None) => return Ok(None),
+        Ok(Some(metadata)) if metadata.is_dir() => {}
+        Ok(Some(_)) => {
+            return Err(CoreError::Storage(format!(
+                "lexical: refusing to seal {}: text-authority is not a directory",
+                generation_dir.display()
+            )));
+        }
+        Err(error) => {
+            return Err(CoreError::Storage(format!(
+                "lexical: inspect text authority {} before sealing: {error}",
+                dir.display()
+            )));
+        }
     }
     let Some(manifest) = read_manifest(generation_dir)? else {
         return Err(CoreError::Storage(format!(

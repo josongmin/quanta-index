@@ -10,6 +10,7 @@
 //! partition the doc-id space in ascending ranges, and doc ids are global
 //! so nothing is remapped.
 
+use std::fs::File;
 use std::path::Path;
 
 use quanta_index_core::CoreError;
@@ -149,18 +150,73 @@ pub(crate) fn load_shard(
     generation_dir: &Path,
     entry: &ShardEntry,
 ) -> Result<ShardBody, CoreError> {
+    load_shard_with(generation_dir, entry, |name| {
+        crate::sealed_generation::open_regular_nofollow(generation_dir, name)
+    })
+}
+
+pub(crate) fn load_shard_at(
+    root: &File,
+    generation_dir: &Path,
+    entry: &ShardEntry,
+) -> Result<ShardBody, CoreError> {
+    load_shard_with(generation_dir, entry, |name| {
+        crate::sealed_generation::open_regular_below(root, name)
+    })
+}
+
+fn load_shard_with(
+    generation_dir: &Path,
+    entry: &ShardEntry,
+    open: impl FnOnce(&Path) -> std::io::Result<File>,
+) -> Result<ShardBody, CoreError> {
     let path = entry.path(generation_dir);
     let name = format!("{TEXT_AUTHORITY_DIR_NAME}/{}", entry.file_name());
-    let bytes = std::fs::read(&path).map_err(|error| {
+    let mut file = open(Path::new(&name)).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
             crate::index_store::sidecar_corrupt(generation_dir, &name, "missing")
+        } else if crate::sealed_generation::is_unsafe_artifact_path(&error) {
+            crate::index_store::sidecar_corrupt(generation_dir, &name, "not a regular sealed file")
         } else {
             CoreError::Storage(format!(
-                "lexical: read text authority shard {}: {error}",
+                "lexical: open text authority shard {}: {error}",
                 path.display()
             ))
         }
     })?;
+    let opened_len = file
+        .metadata()
+        .map_err(|error| {
+            CoreError::Storage(format!("lexical: stat shard {}: {error}", path.display()))
+        })?
+        .len();
+    if opened_len != entry.bytes {
+        return Err(crate::index_store::sidecar_corrupt(
+            generation_dir,
+            &name,
+            "opened shard differs from committed length",
+        ));
+    }
+    let admitted = usize::try_from(entry.bytes).map_err(|error| {
+        CoreError::Storage(format!(
+            "lexical: committed shard length overflows usize: {error}"
+        ))
+    })?;
+    let bytes =
+        crate::sealed_generation::read_opened_bounded(&mut file, admitted).map_err(|error| {
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::InvalidData | std::io::ErrorKind::UnexpectedEof
+            ) {
+                crate::index_store::sidecar_corrupt(
+                    generation_dir,
+                    &name,
+                    &format!("read admitted shard: {error}"),
+                )
+            } else {
+                CoreError::Storage(format!("lexical: read shard {}: {error}", path.display()))
+            }
+        })?;
     let length = u64::try_from(bytes.len()).map_err(|err| {
         CoreError::Storage(format!(
             "lexical: text authority shard {} length: {err}",
@@ -203,4 +259,44 @@ pub(crate) fn load_shard(
         ));
     }
     Ok(body)
+}
+
+#[cfg(test)]
+mod path_tests {
+    use quanta_index_contract::SearchPlaneErrorCodeV2;
+    use quanta_index_core::CoreError;
+
+    use super::load_shard;
+    use crate::text_authority::manifest::{ShardEntry, text_authority_dir};
+
+    #[test]
+    fn shard_read_refuses_redirect_before_loading_bytes() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let generation = tempfile::tempdir()?;
+        let outside = tempfile::tempdir()?;
+        let directory = text_authority_dir(generation.path());
+        std::fs::create_dir(&directory)?;
+        let entry = ShardEntry {
+            index: 0,
+            rows: 1,
+            min_doc_id: 1,
+            max_doc_id: 1,
+            bytes: 4,
+            sha256: [0; 32],
+        };
+        let target = outside.path().join("shard");
+        std::fs::write(&target, b"data")?;
+        std::os::unix::fs::symlink(&target, entry.path(generation.path()))?;
+        let result = load_shard(generation.path(), &entry);
+        if !matches!(
+            result,
+            Err(CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
+                ..
+            })
+        ) {
+            return Err("redirected shard was not refused typed".into());
+        }
+        Ok(())
+    }
 }

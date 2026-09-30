@@ -5,7 +5,7 @@
     reason = "the module is private to the crate; `pub(crate)` is the visibility its items need across the crate's modules, and the workspace's `unreachable_pub = deny` forbids the bare `pub`"
 )]
 
-use crate::index_store::{lexical_sealed_identity_path, write_atomic_durable};
+use crate::index_store::{sealed_identity_entry_present, write_atomic_durable};
 use crate::sealed_generation::{
     LEXICAL_QUARANTINE_RECEIPT_FILE_NAME, LEXICAL_SCRUB_RECEIPT_FILE_NAME,
     LEXICAL_SEALED_MANIFEST_FILE_NAME,
@@ -15,9 +15,12 @@ use crate::{
     TANTIVY_LOCK_FILE_PREFIX, TANTIVY_MANAGED_FILE_NAME, sealed_generation,
 };
 use quanta_index_contract::ManifestGeneration;
-use quanta_index_core::CoreError;
+use quanta_index_core::{CoreError, unique_inode_tree_bytes};
 use std::fs::File;
 use std::path::{Path, PathBuf};
+
+/// CBOR's longest encoding of one `u64`: one initial byte and eight data bytes.
+const MAX_DELTA_BASE_MARKER_BYTES: usize = 9;
 
 pub(crate) fn lexical_delta_base_path(generation_dir: &Path) -> PathBuf {
     generation_dir.join(LEXICAL_DELTA_BASE_FILE_NAME)
@@ -28,22 +31,33 @@ pub(crate) fn read_lexical_delta_base(
     generation_dir: &Path,
 ) -> Result<Option<ManifestGeneration>, CoreError> {
     let path = lexical_delta_base_path(generation_dir);
-    let bytes = match std::fs::read(&path) {
-        Ok(bytes) => bytes,
+    let mut file = match sealed_generation::open_regular_nofollow(
+        generation_dir,
+        Path::new(LEXICAL_DELTA_BASE_FILE_NAME),
+    ) {
+        Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => {
             return Err(CoreError::Storage(format!(
-                "lexical: read delta base marker {}: {error}",
+                "lexical: open delta base marker {}: {error}",
                 path.display()
             )));
         }
     };
-    let raw: u64 = ciborium::from_reader(bytes.as_slice()).map_err(|error| {
-        CoreError::Storage(format!(
-            "lexical: decode delta base marker {}: {error}",
-            path.display()
-        ))
-    })?;
+    let bytes = sealed_generation::read_opened_bounded(&mut file, MAX_DELTA_BASE_MARKER_BYTES)
+        .map_err(|error| {
+            CoreError::Storage(format!(
+                "lexical: read delta base marker {}: {error}",
+                path.display()
+            ))
+        })?;
+    let raw: u64 =
+        crate::channel_payloads::decode_cbor_exact(bytes.as_slice()).map_err(|error| {
+            CoreError::Storage(format!(
+                "lexical: decode delta base marker {}: {error}",
+                path.display()
+            ))
+        })?;
     Ok(Some(ManifestGeneration::new(raw)))
 }
 
@@ -233,7 +247,7 @@ pub(crate) fn ensure_unsealed(
     generation: ManifestGeneration,
     what: &str,
 ) -> Result<(), CoreError> {
-    if lexical_sealed_identity_path(generation_dir).exists() {
+    if sealed_identity_entry_present(generation_dir)? {
         return Err(CoreError::Typed {
             code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationImmutable,
             message: format!(
@@ -257,43 +271,63 @@ pub(crate) fn sync_generation_directory(generation_dir: &Path) -> Result<(), Cor
         })
 }
 
-/// Sum of regular-file sizes under `root`, recursively.
+/// Sum of regular-file sizes under `root`, counting each inode once.
 ///
 /// What a reclaim or a quarantine discard reports giving back. A file
 /// hard-linked into another generation counts here too; the disk frees it
-/// when its last link goes. Writer lock files are transient and excluded.
+/// when its last link goes. Writer lock files and symlinks are excluded.
 pub(crate) fn generation_tree_bytes(root: &Path) -> Result<u64, CoreError> {
-    let mut total = 0_u64;
-    let mut pending = vec![root.to_path_buf()];
-    while let Some(directory) = pending.pop() {
-        let entries = std::fs::read_dir(&directory).map_err(|err| {
-            CoreError::Storage(format!(
-                "lexical: measure generation dir {}: {err}",
-                directory.display()
-            ))
-        })?;
-        for entry in entries {
-            let entry = entry.map_err(|err| {
-                CoreError::Storage(format!(
-                    "lexical: measure generation entry in {}: {err}",
-                    directory.display()
-                ))
-            })?;
-            if is_writer_lock_entry(&entry.file_name().to_string_lossy()) {
-                continue;
-            }
-            let metadata = entry.metadata().map_err(|err| {
-                CoreError::Storage(format!(
-                    "lexical: measure generation entry {}: {err}",
-                    entry.path().display()
-                ))
-            })?;
-            if metadata.is_dir() {
-                pending.push(entry.path());
-            } else if metadata.is_file() {
-                total = total.saturating_add(metadata.len());
-            }
-        }
+    unique_inode_tree_bytes(&[root.to_path_buf()], &is_writer_lock_entry).map_err(|error| {
+        CoreError::Storage(format!(
+            "lexical: measure generation dir {}: {error}",
+            root.display()
+        ))
+    })
+}
+
+#[cfg(test)]
+mod delta_base_marker_tests {
+    use super::{
+        MAX_DELTA_BASE_MARKER_BYTES, lexical_delta_base_path, persist_lexical_delta_base,
+        read_lexical_delta_base,
+    };
+    use quanta_index_contract::ManifestGeneration;
+
+    #[test]
+    fn marker_refuses_trailing_cbor_and_oversized_input() {
+        let root = tempfile::tempdir().expect("tempdir");
+        persist_lexical_delta_base(root.path(), ManifestGeneration::new(17))
+            .expect("persist marker");
+        assert_eq!(
+            read_lexical_delta_base(root.path()).expect("read marker"),
+            Some(ManifestGeneration::new(17))
+        );
+
+        let marker = lexical_delta_base_path(root.path());
+        let mut bytes = std::fs::read(&marker).expect("read encoded marker");
+        bytes.push(0xff);
+        std::fs::write(&marker, &bytes).expect("append trailing byte");
+        let trailing = read_lexical_delta_base(root.path()).expect_err("trailing CBOR must fail");
+        assert!(trailing.to_string().contains("trailing CBOR bytes"));
+
+        std::fs::write(&marker, vec![0_u8; MAX_DELTA_BASE_MARKER_BYTES + 1])
+            .expect("write oversized marker");
+        let oversized = read_lexical_delta_base(root.path()).expect_err("oversize must fail");
+        assert!(oversized.to_string().contains("exceeds"));
     }
-    Ok(total)
+
+    #[cfg(unix)]
+    #[test]
+    fn marker_does_not_follow_a_symlink() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let outside = tempfile::tempdir().expect("outside tempdir");
+        persist_lexical_delta_base(outside.path(), ManifestGeneration::new(17))
+            .expect("persist outside marker");
+        std::os::unix::fs::symlink(
+            lexical_delta_base_path(outside.path()),
+            lexical_delta_base_path(root.path()),
+        )
+        .expect("link marker");
+        assert!(read_lexical_delta_base(root.path()).is_err());
+    }
 }

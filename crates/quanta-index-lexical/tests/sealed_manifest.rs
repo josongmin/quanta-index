@@ -39,14 +39,16 @@ use quanta_index_contract::{
 use quanta_index_core::{
     CoreError, DoorFindingOutcome, DoorFindingQuarantinePort, FileContributorIngestPort,
     FileOwnershipIngestPort, FinishedReclaims, GenerationIdentityValidatePort,
-    GenerationQuarantineReasonV1, GenerationStorageKeyV1, IntegrityScrubBudgetV1,
-    IntegrityScrubCursorV1, IntegrityScrubOutcomeV1, IntegrityScrubPort, LexicalIndexBuildPort,
-    LexicalIndexOpenPort, QuarantineDiscardOutcomeV1, QuarantinedGenerationDiscardPort,
-    RECLAIM_AREA_DIR_NAME, RepoCommitRecencyIngestPort, RepoDescriptionIngestPort,
-    RepoMetaIngestPort, RepoTopicIngestPort, RequestBudgetV1, SealedGenerationReclaimOutcomeV1,
+    GenerationQuarantineReasonV1, GenerationStorageKeyV1, IncompleteGenerationDiscardPort,
+    IntegrityScrubBudgetV1, IntegrityScrubCursorV1, IntegrityScrubOutcomeV1, IntegrityScrubPort,
+    LexicalIndexBuildPort, LexicalIndexOpenPort, QuarantineDiscardOutcomeV1,
+    QuarantinedGenerationDiscardPort, RECLAIM_AREA_DIR_NAME, RepoCommitRecencyIngestPort,
+    RepoDescriptionIngestPort, RepoMetaIngestPort, RepoTopicIngestPort, RequestBudgetV1,
+    SealedGenerationIdentityProbePort, SealedGenerationReclaimOutcomeV1,
     SealedGenerationReclaimPort, SealedGenerationScanPort, SearchCorpusBatchBuildPort,
 };
 use quanta_index_lexical::LexicalAdapter;
+use sha2::{Digest as _, Sha256};
 
 #[path = "support/current_source_fixture.rs"]
 mod current_source_fixture;
@@ -60,6 +62,7 @@ const TEXT_AUTHORITY_DIR: &str = "text-authority";
 const TEXT_AUTHORITY_MANIFEST: &str = "manifest.cbor";
 const MANIFEST: &str = "search-corpus-generation-manifest.cbor";
 const IDENTITY: &str = "search-corpus-generation-identity.cbor";
+const QUARANTINE_RECEIPT: &str = "search-corpus-generation-quarantine.cbor";
 const TANTIVY_META: &str = "meta.json";
 /// The repo-metadata overlay sidecars a query decodes at open, by file name.
 const OVERLAY_FILES: [&str; 7] = [
@@ -355,6 +358,37 @@ fn sealed_generation_with_overlays(
 ) -> TestResult {
     expect_overlays_landed(publish_overlays(adapter, generation, label)?)?;
     adapter.build_batch(&sealed_batch(generation, body)?)?;
+    Ok(())
+}
+
+#[test]
+fn point_inventory_matches_full_inventory_for_digest_and_family_symlink() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().join("lexical");
+    let adapter = LexicalAdapter::with_state_root(root.clone());
+    let generation = ManifestGeneration::new(1);
+    adapter.build_batch(&sealed_batch(generation, "fn point_inventory() {}")?)?;
+    let exact = identity(generation);
+    if !adapter.inventory_sealed_generation_identity(&exact)? {
+        return Err("point inventory missed an intact sealed generation".into());
+    }
+    let mut wrong = exact.clone();
+    wrong.manifest_digest.push_str("-wrong");
+    if adapter.inventory_sealed_generation_identity(&wrong)? {
+        return Err("point inventory admitted a different digest".into());
+    }
+    let family = generation_dir(&root, generation)
+        .parent()
+        .ok_or("generation has no family")?
+        .to_path_buf();
+    let moved = temp.path().join("moved-family");
+    std::fs::rename(&family, &moved)?;
+    std::os::unix::fs::symlink(&moved, &family)?;
+    if adapter.inventory_sealed_generation_identity(&exact)?
+        || !adapter.inventory_sealed_generations()?.sealed.is_empty()
+    {
+        return Err("point or full inventory followed a family symlink".into());
+    }
     Ok(())
 }
 
@@ -719,6 +753,21 @@ fn both_doors_refuse_an_overlay_that_does_not_match_the_manifest() -> TestResult
             &format!("{name} bit-flipped"),
             "GENERATION_SIDECAR_CORRUPT",
         )?;
+        if name == "repo-meta.cbor" {
+            std::fs::write(&path, vec![0xff; original.len()])?;
+            match adapter.validate_generation_identity(&identity(generation)) {
+                Err(CoreError::Typed {
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
+                    message,
+                }) if message.contains("content digest differs from the committed digest") => {}
+                other => {
+                    return Err(format!(
+                        "overlay decoded before its digest was checked: {other:?}"
+                    )
+                    .into());
+                }
+            }
+        }
 
         let stale = std::fs::read(stale_dir.join(name))?;
         if stale == original {
@@ -733,6 +782,45 @@ fn both_doors_refuse_an_overlay_that_does_not_match_the_manifest() -> TestResult
 
         std::fs::write(&path, &original)?;
         expect_admitted(&knock(&adapter, generation), &format!("{name} restored"))?;
+    }
+    Ok(())
+}
+
+#[test]
+fn both_doors_refuse_trailing_bytes_after_a_valid_sealed_manifest() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().to_path_buf();
+    let adapter = LexicalAdapter::with_state_root(root.clone());
+    let generation = ManifestGeneration::new(1);
+    adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
+    let path = generation_dir(&root, generation).join(MANIFEST);
+    let mut bytes = std::fs::read(&path)?;
+    bytes.push(0xff);
+    std::fs::write(&path, bytes)?;
+    expect_refused(
+        &knock(&adapter, generation),
+        "trailing sealed manifest bytes",
+        "GENERATION_SIDECAR_CORRUPT",
+    )
+}
+
+#[test]
+fn full_bundle_preflight_rejects_trailing_cbor_before_generation_preparation() -> TestResult {
+    use quanta_index_core::SearchCorpusPreflightPhaseV1;
+
+    let temp = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(temp.path().to_path_buf());
+    let mut batch = sealed_batch(ManifestGeneration::new(1), "fn one() { sealed_needle }")?;
+    let mut payload = repo_metadata_bundle_payload("production")?;
+    payload.push(0xff);
+    batch.bundle_payload = Some(payload);
+    current_source_fixture::finish_batch(&mut batch)?;
+    match adapter.preflight_batch(&batch, SearchCorpusPreflightPhaseV1::BeforeIntent) {
+        Err(CoreError::InvalidContract(message)) if message.contains("trailing CBOR bytes") => {}
+        other => return Err(format!("trailing FullBundle payload was admitted: {other:?}").into()),
+    }
+    if std::fs::read_dir(temp.path())?.next().is_some() {
+        return Err("preflight prepared a generation before rejecting the payload".into());
     }
     Ok(())
 }
@@ -890,6 +978,30 @@ fn both_doors_refuse_an_overlay_the_seal_did_not_commit_to() -> TestResult {
     Ok(())
 }
 
+#[cfg(unix)]
+#[test]
+fn both_doors_refuse_uncommitted_dangling_overlay_links() -> TestResult {
+    use std::os::unix::fs::symlink;
+
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().to_path_buf();
+    let adapter = LexicalAdapter::with_state_root(root.clone());
+    let generation = ManifestGeneration::new(1);
+    adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
+    let dir = generation_dir(&root, generation);
+    for name in OVERLAY_FILES {
+        let path = dir.join(name);
+        symlink("missing-overlay-target", &path)?;
+        expect_refused(
+            &knock(&adapter, generation),
+            &format!("uncommitted dangling overlay {name}"),
+            "GENERATION_SIDECAR_CORRUPT",
+        )?;
+        std::fs::remove_file(path)?;
+    }
+    expect_admitted(&knock(&adapter, generation), "dangling overlays removed")
+}
+
 /// After the seal nothing may change the generation.
 ///
 /// An index-mutating op and every overlay publish are refused as
@@ -1034,6 +1146,58 @@ fn segment_files_are_length_proved_at_the_doors() -> TestResult {
 
         std::fs::write(&path, &original)?;
         expect_admitted(&knock(&adapter, generation), &format!("{name} restored"))?;
+    }
+    Ok(())
+}
+
+#[test]
+fn a_same_length_segment_redirect_is_refused_and_quarantined() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(temp.path().to_path_buf());
+    let generation = ManifestGeneration::new(1);
+    adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
+    let dir = generation_dir(temp.path(), generation);
+    let segment = segment_files(&dir)?
+        .into_iter()
+        .find(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "store")
+        })
+        .ok_or("missing store component")?;
+    let outside = temp.path().join("outside.store");
+    let _copied = std::fs::copy(&segment, &outside)?;
+    std::fs::remove_file(&segment)?;
+    std::os::unix::fs::symlink(&outside, &segment)?;
+    expect_refused(
+        &knock(&adapter, generation),
+        "redirected committed segment",
+        "GENERATION_SIDECAR_CORRUPT",
+    )?;
+    let fenced = std::cell::Cell::new(false);
+    let report = adapter.scrub_with_quarantine_fence(
+        &identity(generation),
+        None,
+        IntegrityScrubBudgetV1 {
+            max_bytes: u64::MAX,
+        },
+        &|| {
+            if dir
+                .join("search-corpus-generation-quarantine.cbor")
+                .exists()
+            {
+                return Err(CoreError::Storage(
+                    "quarantine receipt preceded the registry fence".into(),
+                ));
+            }
+            fenced.set(true);
+            Ok(())
+        },
+    )?;
+    if !fenced.get() {
+        return Err("scrub published a quarantine without fencing the registry".into());
+    }
+    if !matches!(report.outcome, IntegrityScrubOutcomeV1::Corrupt { .. }) {
+        return Err(format!("scrub accepted a redirected segment: {report:?}").into());
     }
     Ok(())
 }
@@ -1260,6 +1424,222 @@ fn a_door_finding_is_quarantined_only_by_the_adapters_re_proof() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn long_manifest_damage_still_records_a_durable_quarantine() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().to_path_buf();
+    let adapter = LexicalAdapter::with_state_root(root.clone());
+    let generation = ManifestGeneration::new(1);
+    adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
+    let dir = generation_dir(&root, generation);
+    let manifest_path = dir.join(MANIFEST);
+    let raw = std::fs::read(&manifest_path)?;
+    let mut manifest: ciborium::Value = ciborium::from_reader(raw.as_slice())?;
+    let ciborium::Value::Array(fields) = &mut manifest else {
+        return Err("sealed manifest is not an array".into());
+    };
+    let Some(ciborium::Value::Array(meta)) = fields.get_mut(3) else {
+        return Err("sealed manifest lacks index meta commitment".into());
+    };
+    let Some(name) = meta.first_mut() else {
+        return Err("index meta commitment lacks a name".into());
+    };
+    *name = ciborium::Value::Text("x".repeat(70_000));
+    let mut damaged = Vec::new();
+    ciborium::into_writer(&manifest, &mut damaged)?;
+    std::fs::write(&manifest_path, damaged)?;
+
+    let original_reason = match adapter.validate_generation_identity(&identity(generation)) {
+        Err(
+            error @ CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
+                ..
+            },
+        ) => format!("a door found {error}"),
+        other => return Err(format!("damaged manifest was not refused typed: {other:?}").into()),
+    };
+    let fingerprint = format!("{:x}", Sha256::digest(original_reason.as_bytes()));
+    let DoorFindingOutcome::Quarantined { quarantined } =
+        adapter.quarantine_door_finding(&identity(generation))?
+    else {
+        return Err("damaged manifest was not quarantined".into());
+    };
+    if quarantined.detail.len() > 4 * 1024
+        || !quarantined
+            .detail
+            .contains(&format!("original_sha256={fingerprint}"))
+    {
+        return Err("quarantine detail was not bounded with its original digest".into());
+    }
+    let inventory = adapter.inventory_sealed_generations()?;
+    let [entry] = inventory.quarantined.as_slice() else {
+        return Err(format!("quarantine receipt was not durable: {inventory:?}").into());
+    };
+    if entry.path != dir {
+        return Err(format!("quarantine receipt was not durable: {inventory:?}").into());
+    }
+    expect_refused(
+        &knock(&adapter, generation),
+        "long manifest damage after quarantine",
+        "GENERATION_QUARANTINED",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn oversized_committed_control_files_are_refused_before_read() -> TestResult {
+    for (index_meta, excess_bytes, expected_reason) in [
+        (
+            true,
+            16 * 1024 * 1024 + 1,
+            "index commit exceeds the control-file byte limit",
+        ),
+        (
+            false,
+            268_435_520 + 1,
+            "text-authority manifest exceeds its format byte limit",
+        ),
+    ] {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().to_path_buf();
+        let adapter = LexicalAdapter::with_state_root(root.clone());
+        let generation = ManifestGeneration::new(1);
+        adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
+        let path = generation_dir(&root, generation).join(MANIFEST);
+        let mut manifest: ciborium::Value =
+            ciborium::from_reader(std::fs::read(&path)?.as_slice())?;
+        let ciborium::Value::Array(fields) = &mut manifest else {
+            return Err("sealed manifest is not an array".into());
+        };
+        let commitment = if index_meta {
+            let Some(ciborium::Value::Array(meta)) = fields.get_mut(3) else {
+                return Err("sealed manifest lacks index meta commitment".into());
+            };
+            meta
+        } else {
+            let Some(ciborium::Value::Array(files)) = fields.get_mut(7) else {
+                return Err("sealed manifest lacks text authority commitments".into());
+            };
+            let manifest_name =
+                ciborium::Value::Text(format!("{TEXT_AUTHORITY_DIR}/{TEXT_AUTHORITY_MANIFEST}"));
+            let Some(ciborium::Value::Array(manifest_file)) = files.iter_mut().find(|row| {
+                matches!(row, ciborium::Value::Array(parts) if parts.first() == Some(&manifest_name))
+            }) else {
+                return Err("sealed manifest lacks text authority manifest commitment".into());
+            };
+            manifest_file
+        };
+        let Some(bytes) = commitment.get_mut(1) else {
+            return Err("commitment lacks byte length".into());
+        };
+        *bytes = ciborium::Value::Integer(excess_bytes.into());
+        let mut encoded = Vec::new();
+        ciborium::into_writer(&manifest, &mut encoded)?;
+        std::fs::write(&path, encoded)?;
+
+        match adapter.validate_generation_identity(&identity(generation)) {
+            Err(CoreError::Typed {
+                code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
+                message,
+            }) if message.contains(expected_reason) => {}
+            other => {
+                return Err(format!(
+                    "oversized commitment did not fail before file read: {other:?}"
+                )
+                .into());
+            }
+        }
+        expect_refused(
+            &knock(&adapter, generation),
+            "oversized committed control file",
+            "GENERATION_SIDECAR_CORRUPT",
+        )?;
+    }
+    Ok(())
+}
+
+#[test]
+fn malformed_manifest_is_quarantined_by_door_reproof_and_scrub() -> TestResult {
+    for scrub_instead_of_door in [false, true] {
+        let temp = tempfile::tempdir()?;
+        let root = temp.path().to_path_buf();
+        let adapter = LexicalAdapter::with_state_root(root.clone());
+        let generation = ManifestGeneration::new(1);
+        adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
+        let dir = generation_dir(&root, generation);
+        let path = dir.join(MANIFEST);
+        let original = std::fs::read(&path)?;
+        let damaged = if scrub_instead_of_door {
+            let mut value: ciborium::Value = ciborium::from_reader(original.as_slice())?;
+            let ciborium::Value::Array(fields) = &mut value else {
+                return Err("sealed manifest is not an array".into());
+            };
+            fields.truncate(1);
+            let mut bytes = Vec::new();
+            ciborium::into_writer(&value, &mut bytes)?;
+            bytes
+        } else {
+            vec![0xff]
+        };
+        std::fs::write(&path, damaged)?;
+        expect_refused(
+            &knock(&adapter, generation),
+            "malformed sealed manifest",
+            "GENERATION_SIDECAR_CORRUPT",
+        )?;
+        let before = adapter.inventory_sealed_generations()?;
+        if before.sealed.len() != 1 || !before.quarantined.is_empty() {
+            return Err(format!("a read door quarantined without reproof: {before:?}").into());
+        }
+
+        let quarantined = if scrub_instead_of_door {
+            let report = adapter.scrub(
+                &identity(generation),
+                None,
+                IntegrityScrubBudgetV1 { max_bytes: 1 },
+            )?;
+            if report.files_verified != 0 || report.bytes_read != 0 {
+                return Err(format!("malformed manifest was hashed: {report:?}").into());
+            }
+            match report.outcome {
+                IntegrityScrubOutcomeV1::Corrupt { quarantined } => quarantined,
+                other @ (IntegrityScrubOutcomeV1::Completed
+                | IntegrityScrubOutcomeV1::Paused { .. }) => {
+                    return Err(
+                        format!("scrub did not quarantine malformed manifest: {other:?}").into(),
+                    );
+                }
+            }
+        } else {
+            let DoorFindingOutcome::Quarantined { quarantined } =
+                adapter.quarantine_door_finding(&identity(generation))?
+            else {
+                return Err("door reproof did not quarantine malformed manifest".into());
+            };
+            quarantined
+        };
+        if quarantined.path != dir
+            || quarantined.reason != GenerationQuarantineReasonV1::ContentCorrupt
+        {
+            return Err(format!("wrong malformed-manifest quarantine: {quarantined:?}").into());
+        }
+        std::fs::write(&path, original)?;
+        expect_refused(
+            &knock(&adapter, generation),
+            "malformed manifest after durable quarantine",
+            "GENERATION_QUARANTINED",
+        )?;
+        let after = adapter.inventory_sealed_generations()?;
+        let [entry] = after.quarantined.as_slice() else {
+            return Err(format!("malformed-manifest quarantine was not durable: {after:?}").into());
+        };
+        if entry.path != dir {
+            return Err(format!("malformed-manifest quarantine was not durable: {after:?}").into());
+        }
+    }
+    Ok(())
+}
+
 /// An intact generation scrubs in bounded, resumable steps (QI-BB-017).
 ///
 /// With a one-byte budget each step hashes exactly one committed file and
@@ -1327,6 +1707,76 @@ fn an_intact_generation_scrubs_in_bounded_resumable_steps() -> TestResult {
     expect_admitted(&knock(&adapter, generation), "after the scrub")
 }
 
+#[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "assertions report independent scrub outcomes in this regression test"
+)]
+fn malformed_completion_receipt_is_rescrubbed_without_blocking_other_candidates() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(temp.path().to_path_buf());
+    let damaged = ManifestGeneration::new(81);
+    let other = ManifestGeneration::new(82);
+    adapter.build_batch(&sealed_batch(damaged, "fn damaged() {}")?)?;
+    adapter.build_batch(&sealed_batch(other, "fn other() {}")?)?;
+    let report = adapter.scrub(
+        &identity(other),
+        None,
+        IntegrityScrubBudgetV1 {
+            max_bytes: u64::MAX,
+        },
+    )?;
+    assert_eq!(report.outcome, IntegrityScrubOutcomeV1::Completed);
+    std::fs::write(
+        generation_dir(temp.path(), damaged).join("search-corpus-generation-scrub.cbor"),
+        b"malformed",
+    )?;
+    let candidates = adapter.scrub_candidates()?;
+    assert_eq!(candidates.len(), 2);
+    assert!(candidates.iter().any(|candidate| {
+        candidate.identity == identity(damaged) && candidate.last_completed_unix.is_none()
+    }));
+    assert!(candidates.iter().any(|candidate| {
+        candidate.identity == identity(other) && candidate.last_completed_unix.is_some()
+    }));
+    let report = adapter.scrub(
+        &identity(damaged),
+        None,
+        IntegrityScrubBudgetV1 {
+            max_bytes: u64::MAX,
+        },
+    )?;
+    assert_eq!(report.outcome, IntegrityScrubOutcomeV1::Completed);
+    assert!(adapter.scrub_candidates()?.iter().any(|candidate| {
+        candidate.identity == identity(damaged) && candidate.last_completed_unix.is_some()
+    }));
+    Ok(())
+}
+
+#[test]
+fn a_caller_cannot_skip_the_scrub_prefix_with_an_unissued_cursor() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let adapter = LexicalAdapter::with_state_root(temp.path().to_path_buf());
+    let generation = ManifestGeneration::new(1);
+    adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
+    let result = adapter.scrub(
+        &identity(generation),
+        Some(IntegrityScrubCursorV1 { next_artifact: 1 }),
+        IntegrityScrubBudgetV1 {
+            max_bytes: u64::MAX,
+        },
+    );
+    if !matches!(result, Err(CoreError::InvalidContract(_))) {
+        return Err(format!("unissued scrub cursor was accepted: {result:?}").into());
+    }
+    if adapter.scrub_candidates()?.iter().any(|candidate| {
+        candidate.identity == identity(generation) && candidate.last_completed_unix.is_some()
+    }) {
+        return Err("an unissued cursor recorded scrub completion".into());
+    }
+    Ok(())
+}
+
 /// A scrub resumed over a reclaimed generation meets it gone, typed.
 ///
 /// The generation is reclaimed between two steps of one pass. The next
@@ -1368,6 +1818,67 @@ fn a_scrub_resumed_over_a_reclaimed_generation_is_refused_not_quarantined() -> T
     if !adapter.scrub_candidates()?.is_empty() {
         return Err("a reclaimed generation is no scrub candidate".into());
     }
+    Ok(())
+}
+
+#[test]
+fn reclaim_and_quarantine_discard_of_other_generations_preserve_a_paused_scrub() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().to_path_buf();
+    let adapter = LexicalAdapter::with_state_root(root.clone());
+    let (scrubbed, reclaimed, quarantined) = (
+        ManifestGeneration::new(1),
+        ManifestGeneration::new(2),
+        ManifestGeneration::new(3),
+    );
+    for generation in [scrubbed, reclaimed, quarantined] {
+        adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
+    }
+    let one_byte = IntegrityScrubBudgetV1 { max_bytes: 1 };
+    let first = adapter.scrub(&identity(scrubbed), None, one_byte)?;
+    let IntegrityScrubOutcomeV1::Paused { cursor } = first.outcome else {
+        return Err(format!("the first scrub step must pause: {first:?}").into());
+    };
+    if !matches!(
+        adapter.reclaim_sealed_generation(&identity(reclaimed))?,
+        SealedGenerationReclaimOutcomeV1::Reclaimed { .. }
+    ) {
+        return Err("the other generation was not reclaimed".into());
+    }
+    let _resumed = adapter.scrub(&identity(scrubbed), Some(cursor), one_byte)?;
+
+    let first = adapter.scrub(&identity(scrubbed), None, one_byte)?;
+    let IntegrityScrubOutcomeV1::Paused { cursor } = first.outcome else {
+        return Err(format!("the second scrub pass must pause: {first:?}").into());
+    };
+    let _original = damage(&generation_dir(&root, quarantined).join(MANIFEST))?;
+    if !matches!(
+        adapter.quarantine_door_finding(&identity(quarantined))?,
+        DoorFindingOutcome::Quarantined { .. }
+    ) {
+        return Err("the damaged generation was not quarantined".into());
+    }
+    let inventory = adapter.inventory_sealed_generations()?;
+    let entry = inventory
+        .quarantined
+        .iter()
+        .find(|entry| entry.path == generation_dir(&root, quarantined))
+        .ok_or("the damaged generation is absent from quarantine inventory")?;
+    let mut stale = entry.clone();
+    stale.path = generation_dir(&root, scrubbed);
+    if !matches!(
+        adapter.discard_quarantined_generation(&stale),
+        Err(CoreError::Typed { .. })
+    ) {
+        return Err("discard accepted an intact generation as quarantined".into());
+    }
+    if !matches!(
+        adapter.discard_quarantined_generation(entry)?,
+        QuarantineDiscardOutcomeV1::Discarded { .. }
+    ) {
+        return Err("the quarantined generation was not discarded".into());
+    }
+    let _resumed = adapter.scrub(&identity(scrubbed), Some(cursor), one_byte)?;
     Ok(())
 }
 
@@ -1513,6 +2024,38 @@ fn a_generation_that_indexed_nothing_seals_openable() -> TestResult {
     Ok(())
 }
 
+#[cfg(unix)]
+#[test]
+fn both_doors_refuse_uncommitted_text_authority_entries() -> TestResult {
+    use std::os::unix::fs::symlink;
+
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().to_path_buf();
+    let adapter = LexicalAdapter::with_state_root(root.clone());
+    let generation = ManifestGeneration::new(1);
+    let mut empty = sealed_batch(generation, "unused")?;
+    empty.replace_scopes.clear();
+    current_source_fixture::finish_batch(&mut empty)?;
+    adapter.build_batch(&empty)?;
+    let path = generation_dir(&root, generation).join(TEXT_AUTHORITY_DIR);
+    symlink("missing-text-authority-target", &path)?;
+    expect_refused(
+        &knock(&adapter, generation),
+        "uncommitted dangling text authority",
+        "GENERATION_SIDECAR_CORRUPT",
+    )?;
+    std::fs::remove_file(&path)?;
+    std::fs::write(&path, b"not a directory")?;
+    expect_refused(
+        &knock(&adapter, generation),
+        "uncommitted regular text authority",
+        "GENERATION_SIDECAR_CORRUPT",
+    )?;
+    std::fs::remove_file(path)?;
+    adapter.validate_generation_identity(&identity(generation))?;
+    Ok(())
+}
+
 #[test]
 fn coverage_pages_are_bound_at_both_doors_and_by_scrub() -> TestResult {
     let temp = tempfile::tempdir()?;
@@ -1638,4 +2181,167 @@ fn format_eight_requires_explicit_rebuild() -> TestResult {
         "GENERATION_MANIFEST_FORMAT_UNSUPPORTED",
     )?;
     Ok(())
+}
+
+#[test]
+fn oversized_legacy_format_nine_requires_rebuild_at_every_door() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().to_path_buf();
+    let adapter = LexicalAdapter::with_state_root(root.clone());
+    let generation = ManifestGeneration::new(1);
+    adapter.build_batch(&sealed_batch(generation, "fn one() { sealed_needle }")?)?;
+    let manifest = generation_dir(&root, generation).join(MANIFEST);
+    let file = std::fs::OpenOptions::new().write(true).open(manifest)?;
+    file.set_len(16 * 1024 * 1024 + 1)?;
+    expect_refused(
+        &knock(&adapter, generation),
+        "oversized format nine requires rebuild",
+        "GENERATION_MANIFEST_FORMAT_UNSUPPORTED",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn a_dangling_sealed_identity_is_never_discarded_as_incomplete() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().to_path_buf();
+    let adapter = LexicalAdapter::with_state_root(root.clone());
+    let generation = ManifestGeneration::new(81);
+    adapter.build_batch(&sealed_batch(generation, "fn sealed() { preserve_me }")?)?;
+    let dir = generation_dir(&root, generation);
+    let identity_path = dir.join(IDENTITY);
+    std::fs::remove_file(&identity_path)?;
+    std::os::unix::fs::symlink("missing-identity", &identity_path)?;
+
+    expect_refused(
+        &knock(&adapter, generation),
+        "dangling sealed identity",
+        "GENERATION_SIDECAR_CORRUPT",
+    )?;
+    let inventory = adapter.inventory_sealed_generations()?;
+    if inventory.sealed.len() != 0
+        || inventory.quarantined.len() != 1
+        || inventory.quarantined[0].path != dir
+        || inventory.quarantined[0].reason != GenerationQuarantineReasonV1::IdentityUnreadable
+    {
+        return Err(format!("dangling identity was not quarantined: {inventory:?}").into());
+    }
+    match adapter.discard_incomplete_generation(&identity(generation)) {
+        Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationSidecarCorrupt,
+            ..
+        }) => {}
+        other => {
+            return Err(format!("incomplete discard accepted sealed damage: {other:?}").into());
+        }
+    }
+    if !dir.is_dir()
+        || !std::fs::symlink_metadata(identity_path)?
+            .file_type()
+            .is_symlink()
+    {
+        return Err("incomplete discard removed the damaged sealed generation".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn an_invalid_quarantine_receipt_does_not_block_sibling_inventory() -> TestResult {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().to_path_buf();
+    let adapter = LexicalAdapter::with_state_root(root.clone());
+    let damaged = ManifestGeneration::new(82);
+    let healthy = ManifestGeneration::new(83);
+    for generation in [damaged, healthy] {
+        adapter.build_batch(&sealed_batch(generation, "fn sealed() { sealed_needle }")?)?;
+    }
+    std::fs::write(
+        generation_dir(&root, damaged).join(QUARANTINE_RECEIPT),
+        [0xff],
+    )?;
+    let inventory = adapter.inventory_sealed_generations()?;
+    if inventory.sealed.len() != 1
+        || inventory.sealed[0].identity != identity(healthy)
+        || inventory.quarantined.len() != 1
+        || inventory.quarantined[0].reason != GenerationQuarantineReasonV1::IdentityUnreadable
+        || inventory.quarantined[0].path != generation_dir(&root, damaged)
+    {
+        return Err(format!("invalid receipt blocked sibling inventory: {inventory:?}").into());
+    }
+    expect_admitted(&knock(&adapter, healthy), "healthy sibling")?;
+    if !matches!(
+        adapter.discard_quarantined_generation(&inventory.quarantined[0])?,
+        QuarantineDiscardOutcomeV1::Discarded { .. }
+    ) || generation_dir(&root, damaged).exists()
+    {
+        return Err("invalid receipt quarantine was not discardable".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn a_scrub_quarantine_does_not_stop_an_unrelated_generation_build() -> TestResult {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().to_path_buf();
+    let adapter = LexicalAdapter::with_state_root(root.clone());
+    let damaged = ManifestGeneration::new(1);
+    let unrelated = ManifestGeneration::new(2);
+    adapter.build_batch(&sealed_batch(damaged, "fn damaged() { sealed_needle }")?)?;
+    let manifest = generation_dir(&root, damaged).join(MANIFEST);
+    let mut bytes = std::fs::read(&manifest)?;
+    let last = bytes.last_mut().ok_or("empty sealed manifest")?;
+    *last ^= 0xff;
+    std::fs::write(&manifest, bytes)?;
+
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let (build_tx, build_rx) = mpsc::channel();
+    let batch = sealed_batch(unrelated, "fn unrelated() { sealed_needle }")?;
+    std::thread::scope(|scope| -> TestResult {
+        let adapter_ref = &adapter;
+        let scrub = scope.spawn(move || {
+            adapter_ref
+                .scrub_with_quarantine_fence(
+                    &identity(damaged),
+                    None,
+                    IntegrityScrubBudgetV1 {
+                        max_bytes: u64::MAX,
+                    },
+                    &|| {
+                        entered_tx
+                            .send(())
+                            .map_err(|error| CoreError::Storage(error.to_string()))?;
+                        release_rx
+                            .recv()
+                            .map_err(|error| CoreError::Storage(error.to_string()))?;
+                        Ok(())
+                    },
+                )
+                .map_err(|error| error.to_string())
+        });
+        entered_rx.recv_timeout(Duration::from_secs(30))?;
+        let adapter_ref = &adapter;
+        let build = scope.spawn(move || {
+            let result = adapter_ref
+                .build_batch(&batch)
+                .map_err(|error| error.to_string());
+            let _sent = build_tx.send(result.clone());
+            result
+        });
+        let while_scrub_is_fenced = build_rx.recv_timeout(Duration::from_secs(60));
+        release_tx.send(())?;
+        let scrubbed = scrub.join().map_err(|_| "scrub thread panicked")??;
+        build.join().map_err(|_| "build thread panicked")??;
+        if !matches!(scrubbed.outcome, IntegrityScrubOutcomeV1::Corrupt { .. }) {
+            return Err(format!("damaged generation was not quarantined: {scrubbed:?}").into());
+        }
+        if let Err(error) = while_scrub_is_fenced {
+            return Err(format!("unrelated build waited for scrub quarantine: {error}").into());
+        }
+        Ok(())
+    })?;
+    expect_admitted(&knock(&adapter, unrelated), "unrelated generation")
 }

@@ -764,9 +764,10 @@ mod tests {
     struct ScriptedFinish(Result<FinishedReclaims, CoreError>);
 
     impl SealedGenerationReclaimPort for ScriptedFinish {
-        fn reclaim_sealed_generation(
+        fn reclaim_sealed_generation_with_settlement(
             &self,
             _retired: &GenerationSnapshot,
+            _on_absent: &dyn Fn() -> Result<(), CoreError>,
         ) -> Result<SealedGenerationReclaimOutcomeV1, CoreError> {
             Err(CoreError::NotImplemented(
                 "boot reclaims nothing".to_string(),

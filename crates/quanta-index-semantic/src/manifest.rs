@@ -571,7 +571,13 @@ impl SemanticManifest {
     }
 
     pub(crate) fn encode(&self) -> Result<Vec<u8>, CoreError> {
-        codec::encode(self, "semantic manifest")
+        let bytes = codec::encode(self, "semantic manifest")?;
+        crate::control_file::ensure_bounded(
+            &bytes,
+            crate::control_file::MAX_SCOPE_MANIFEST_BYTES,
+            "scope manifest",
+        )?;
+        Ok(bytes)
     }
 
     /// Decode the current format only; any other format is refused typed.

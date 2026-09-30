@@ -105,6 +105,14 @@ jobs:
       - run: *install_verification_tools
       - run: *verify_tool_versions
       - run:
+          name: Verify guarded module snapshots
+          no_output_timeout: 20m
+          command: |
+            set -euo pipefail
+            unset BASH_ENV ENV
+            cargo install cargo-modules --version 0.26.0 --locked
+            python3 tools/ci/lint/check-cargo-modules-snapshot.py
+      - run:
           name: Python policy and tooling tests
           no_output_timeout: 20m
           command: |
@@ -159,6 +167,7 @@ jobs:
             . "$HOME/.cargo/env"
             rustup toolchain install 1.92.0 --profile minimal
             rustup toolchain install nightly --profile minimal
+            cargo install cargo-modules --version 0.26.0 --locked
             cargo +nightly install cargo-fuzz --locked
               curl --proto '=https' --tlsv1.2 -LsSf https://get.nexte.st/0.9.104/linux |
               tar zxf - -C "$HOME/.cargo/bin"
@@ -170,6 +179,13 @@ jobs:
             set -euo pipefail
             unset BASH_ENV ENV
             test "$(git rev-parse HEAD)" = "$CIRCLE_SHA1"
+      - run:
+          name: Verify guarded module snapshots
+          no_output_timeout: 20m
+          command: |
+            set -euo pipefail
+            unset BASH_ENV ENV
+            python3 tools/ci/lint/check-cargo-modules-snapshot.py
       - run:
           name: rust nextest authority receipt
           no_output_timeout: 30m

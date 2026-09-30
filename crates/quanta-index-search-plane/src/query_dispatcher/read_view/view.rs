@@ -140,6 +140,7 @@ impl<'a> ReadViewRequestV1<'a> {
 /// What the ledger supplied for the declared domains, read under one
 /// guard.
 struct LedgerParts {
+    lexical_manifest_digest: Option<String>,
     semantic_manifest_digest: Option<String>,
     history: Option<AuxRead<HistoryAuthorityState>>,
     /// The epoch's text index, claimed under the guard and landed after
@@ -274,12 +275,52 @@ impl QueryReadViewV2 {
         }
         let lexical_identity = lexical.as_ref().map(|handle| handle.artifact_identity());
         if let Some(identity) = &lexical_identity {
+            let expected = parts.lexical_manifest_digest.as_deref().ok_or_else(|| {
+                CoreError::InvalidContract(
+                    "lexical read view acquired a handle without ledger identity".into(),
+                )
+            })?;
+            if identity.manifest_digest != expected {
+                return Err(CoreError::Typed {
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::GenerationIdentityDigestMismatch,
+                    message: format!(
+                        "{}: opened lexical manifest digest mismatch for repo={} revision={} generation={}: expected={}, observed={}",
+                        request.plane,
+                        pin.repo_id.as_str(),
+                        pin.revision_id.as_str(),
+                        pin.manifest_generation.get(),
+                        expected,
+                        identity.manifest_digest,
+                    ),
+                });
+            }
             for authority in request.domains.repo_metadata() {
                 if !identity.repo_metadata.contains(authority) {
                     return Err(
                         ReadViewRefusedError::RepoMetadataUnavailable { authority, pin }.into(),
                     );
                 }
+            }
+        }
+        if let Some(handle) = semantic.as_ref() {
+            let expected = parts.semantic_manifest_digest.as_deref().ok_or_else(|| {
+                CoreError::InvalidContract(
+                    "semantic read view acquired a handle without ledger identity".into(),
+                )
+            })?;
+            if handle.manifest_digest() != expected {
+                return Err(CoreError::Typed {
+                    code: quanta_index_contract::SearchPlaneErrorCodeV2::SemanticManifestDigestMismatch,
+                    message: format!(
+                        "{}: opened semantic manifest digest mismatch for repo={} revision={} generation={}: expected={}, observed={}",
+                        request.plane,
+                        pin.repo_id.as_str(),
+                        pin.revision_id.as_str(),
+                        pin.manifest_generation.get(),
+                        expected,
+                        handle.manifest_digest(),
+                    ),
+                });
             }
         }
         let profile = semantic.as_ref().map(|handle| SemanticProfileV1 {
@@ -517,13 +558,29 @@ impl SearchPlaneDispatcher {
         // authority does not retain is refused here, before any lane, so a
         // reaped or orphaned generation reads as `UNKNOWN_GENERATION` on
         // every route and never reaches an open.
-        if domains.contains(ReadDomainV1::LexicalTrack) {
+        let lexical_manifest_digest = if domains.contains(ReadDomainV1::LexicalTrack) {
             ledger.validate_pinned_track_generation(
                 pin,
                 SearchPlaneTrackKind::Lexical,
                 request.plane,
             )?;
-        }
+            Some(
+                ledger
+                    .sealed_track_identity_digest(
+                        &pin.repo_id,
+                        &pin.revision_id,
+                        SearchPlaneTrackKind::Lexical,
+                        pin.manifest_generation,
+                    )
+                    .ok_or_else(|| {
+                        CoreError::InvalidContract(
+                            "validated lexical generation has no ledger seal identity".into(),
+                        )
+                    })?,
+            )
+        } else {
+            None
+        };
         let semantic_manifest_digest = if domains.contains(ReadDomainV1::SemanticTrack) {
             Self::validate_semantic_pin(ledger, request)?;
             let digest = ledger
@@ -601,6 +658,7 @@ impl SearchPlaneDispatcher {
             None
         };
         Ok(LedgerParts {
+            lexical_manifest_digest,
             semantic_manifest_digest,
             history,
             history_text,
@@ -695,9 +753,13 @@ pub(crate) fn assemble_for_test(
     structural: Option<AuxRead<StructuralAuthorityState>>,
     lexical: Option<Arc<dyn LexicalSearcher>>,
 ) -> Result<QueryReadViewV2, CoreError> {
+    let lexical_manifest_digest = lexical
+        .as_ref()
+        .map(|handle| handle.artifact_identity().manifest_digest);
     QueryReadViewV2::assemble(
         request,
         LedgerParts {
+            lexical_manifest_digest,
             semantic_manifest_digest: None,
             history,
             history_text: None,
