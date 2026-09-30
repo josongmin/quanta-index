@@ -15,7 +15,7 @@ WORDS = re.compile(rb"(?<![A-Za-z0-9_])[A-Za-z_][A-Za-z0-9_]*")
 GO_DECLARATIONS = frozenset(
     {"function_declaration", "method_declaration", "type_spec", "type_alias"}
 )
-GO_EXACT_LOCAL_NAME = "go_exact_local_name_v2"
+GO_EXACT_LOCAL_NAME = "go_exact_local_name_v3"
 ASCII_IDENTIFIER_WORD = "ascii_identifier_word_v1"
 MAX_FILES = 4096
 MAX_SOURCE_BYTES = 512 * 1024 * 1024
@@ -70,7 +70,8 @@ class SourceOracleIndex:
         self.query_tokens = {name.encode("ascii") for name in query_names}
         self._words: dict[bytes, set[str]] | None = None
         self._first_words: dict[bytes, tuple[str, int, int]] = {}
-        self._go_declarations: dict[bytes, list[tuple[str, int, int]]] | None = None
+        # Name bytes identify the match; definition bytes identify the indexed symbol unit.
+        self._go_declarations: dict[bytes, list[tuple[str, int, int, int, int]]] | None = None
 
     def _index_words(self) -> dict[bytes, set[str]]:
         if self._words is None:
@@ -84,7 +85,7 @@ class SourceOracleIndex:
             self._words = words
         return self._words
 
-    def _index_go_declarations(self) -> dict[bytes, list[tuple[str, int, int]]]:
+    def _index_go_declarations(self) -> dict[bytes, list[tuple[str, int, int, int, int]]]:
         if self._go_declarations is None:
             try:
                 from tree_sitter_language_pack import get_parser
@@ -92,7 +93,7 @@ class SourceOracleIndex:
                 parser = get_parser("go")
             except (ImportError, LookupError, ValueError) as exc:
                 raise SourceOracleError("Go source oracle parser unavailable") from exc
-            declarations: dict[bytes, list[tuple[str, int, int]]] = defaultdict(list)
+            declarations: dict[bytes, list[tuple[str, int, int, int, int]]] = defaultdict(list)
             for path, (raw, _digest) in self.files.items():
                 if not path.endswith(".go"):
                     continue
@@ -108,7 +109,15 @@ class SourceOracleIndex:
                             raise SourceOracleError(f"Go declaration lacks name: {path}")
                         token = raw[name.start_byte : name.end_byte]
                         if token in self.query_tokens:
-                            declarations[token].append((path, name.start_byte, name.end_byte))
+                            declarations[token].append(
+                                (
+                                    path,
+                                    name.start_byte,
+                                    name.end_byte,
+                                    node.start_byte,
+                                    node.end_byte,
+                                )
+                            )
                     nodes.extend(reversed(node.children))
             self._go_declarations = declarations
         return self._go_declarations
@@ -128,9 +137,9 @@ class SourceOracleIndex:
                         "end_byte": end,
                         "grade": 3,
                     }
-                    for path, start, end in sorted(matches)
+                    for path, _name_start, _name_end, start, end in sorted(matches)
                 ]
-            paths = {path for path, _start, _end in matches}
+            paths = {path for path, *_spans in matches}
         elif contract == ASCII_IDENTIFIER_WORD and unit == "distinct_file":
             paths = self._index_words().get(token, set())
         else:
@@ -149,5 +158,8 @@ class SourceOracleIndex:
             return self._first_words.get(token)
         if contract == GO_EXACT_LOCAL_NAME:
             matches = self._index_go_declarations().get(token, [])
-            return min(matches) if matches else None
+            if not matches:
+                return None
+            path, start, end, _definition_start, _definition_end = min(matches)
+            return path, start, end
         raise SourceOracleError("unsupported source oracle contract")

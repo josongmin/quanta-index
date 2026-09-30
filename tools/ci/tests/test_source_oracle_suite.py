@@ -172,25 +172,25 @@ def test_go_indexed_local_name_includes_interface_methods_and_aliases(tmp_path):
         {"Push", "Alias", "Hidden", "Flush"},
     )
 
-    def declaration(name: bytes, occurrence: int = 0) -> dict:
-        start = raw.index(name, raw.index(name) + 1) if occurrence else raw.index(name)
+    def declaration(fragment: bytes) -> dict:
+        start = raw.index(fragment)
         return {
             "path": "symbols.go",
             "file_sha256": ev.digest(raw),
             "start_byte": start,
-            "end_byte": start + len(name),
+            "end_byte": start + len(fragment),
             "grade": 3,
         }
 
     assert oracle.expected_rows(ev.source_oracle.GO_EXACT_LOCAL_NAME, "Push", "symbol") == [
-        declaration(b"Push"),
-        declaration(b"Push", 1),
+        declaration(b"Push()"),
+        declaration(b"func (w *Writer) Push() {}"),
     ]
     assert oracle.expected_rows(ev.source_oracle.GO_EXACT_LOCAL_NAME, "Alias", "symbol") == [
-        declaration(b"Alias")
+        declaration(b"Alias = Reader")
     ]
     assert oracle.expected_rows(ev.source_oracle.GO_EXACT_LOCAL_NAME, "Flush", "symbol") == [
-        declaration(b"Flush")
+        declaration(b"Flush()")
     ]
     assert oracle.expected_rows(ev.source_oracle.GO_EXACT_LOCAL_NAME, "Hidden", "symbol") == []
 
@@ -206,22 +206,57 @@ def test_go_indexed_local_name_includes_interface_methods_and_aliases(tmp_path):
         assert tasks["Hidden"]["gold"] == []
         if mode.endswith("symbol"):
             assert tasks["Push"]["declaration_judgments"] == [
-                declaration(b"Push"),
-                declaration(b"Push", 1),
+                declaration(b"Push()"),
+                declaration(b"func (w *Writer) Push() {}"),
             ]
-            assert tasks["Alias"]["declaration_judgments"] == [declaration(b"Alias")]
-            assert tasks["Flush"]["declaration_judgments"] == [declaration(b"Flush")]
+            assert tasks["Alias"]["declaration_judgments"] == [declaration(b"Alias = Reader")]
+            assert tasks["Flush"]["declaration_judgments"] == [declaration(b"Flush()")]
             assert tasks["Hidden"]["declaration_judgments"] == []
         else:
             assert tasks["Push"]["file_judgments"] == [
                 {"path": "symbols.go", "file_sha256": ev.digest(raw), "grade": 3}
             ]
-        legacy = copy.deepcopy(suite)
-        next(task for task in legacy["tasks"] if task["query"] == "Push")["source_oracle"]["contract"] = (
-            "go_exact_local_name_v1"
-        )
-        with pytest.raises(ev.EvidenceError, match="unsupported source oracle contract"):
-            ev.validate_suite(repo, legacy)
+        for old_contract in ("go_exact_local_name_v1", "go_exact_local_name_v2"):
+            legacy = copy.deepcopy(suite)
+            next(task for task in legacy["tasks"] if task["query"] == "Push")["source_oracle"][
+                "contract"
+            ] = old_contract
+            with pytest.raises(ev.EvidenceError, match="unsupported source oracle contract"):
+                ev.validate_suite(repo, legacy)
+
+
+def test_go_source_oracle_symbol_judgment_matches_definition_not_shared_context(tmp_path):
+    raw = b"package sample\nfunc First() {}; func Second() {}\n"
+    repo, commit, files = _source_repo(tmp_path, {"same_line.go": raw})
+    source = ev.SourceSnapshot(repo, commit)
+    oracle = ev.source_oracle.SourceOracleIndex(
+        {path: (source.file(path)[0], ev.digest(contents)) for path, contents in files.items()},
+        {"First"},
+    )
+    judgments = oracle.expected_rows(ev.source_oracle.GO_EXACT_LOCAL_NAME, "First", "symbol")
+    first_start = raw.index(b"func First() {}")
+    second_start = raw.index(b"func Second() {}")
+    assert [(row["start_byte"], row["end_byte"]) for row in judgments] == [
+        (first_start, first_start + len(b"func First() {}"))
+    ]
+
+    def candidate(start: int, end: int, unit_id: str) -> dict:
+        return {
+            "path": "same_line.go",
+            "start_byte": raw.index(b"func First() {}"),
+            "end_byte": len(raw),
+            "span_accounting": {
+                "unit_kind": "symbol",
+                "unit_id": unit_id,
+                "indexed_start_byte": start,
+                "indexed_end_byte": end,
+            },
+        }
+
+    wrong = candidate(second_start, second_start + len(b"func Second() {}"), "second")
+    right = candidate(first_start, first_start + len(b"func First() {}"), "first")
+    assert ev.declaration_recall_at_k([wrong], judgments, 10) == 0.0
+    assert ev.declaration_mrr_at_k([wrong, right], judgments, 10) == 0.5
 
 
 def test_source_oracle_builder_emits_single_route_blind_suites_and_bound_manifest(tmp_path):
@@ -263,11 +298,11 @@ def test_source_oracle_builder_emits_single_route_blind_suites_and_bound_manifes
     symbol = json.loads((output / "go-declaration-symbol-suite.json").read_bytes())
     assert [row["path"] for row in word["tasks"][0]["file_judgments"]] == ["a.go", "b.go"]
     assert [row["path"] for row in declaration["tasks"][0]["file_judgments"]] == ["a.go"]
-    name = files["a.go"].index(b"Param")
+    definition = files["a.go"].index(b"Param struct{}")
     assert [
         (row["path"], row["start_byte"], row["end_byte"])
         for row in symbol["tasks"][0]["declaration_judgments"]
-    ] == [("a.go", name, name + 5)]
+    ] == [("a.go", definition, definition + len(b"Param struct{}"))]
     for mode, candidate_unit in (
         ("identifier-word-file", "distinct_file"),
         ("go-declaration-symbol", "symbol"),

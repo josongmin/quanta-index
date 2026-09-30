@@ -6797,9 +6797,7 @@ def test_verdict_rejects_coordinated_partial_inventory_and_receipt_rebind(tmp_pa
         "</testsuite>",
         encoding="utf-8",
     )
-    results = _counts_results(
-        portable_proof.PYTHON_COMMAND, 1, 1, 1, 0
-    )
+    results = _counts_results(portable_proof.PYTHON_COMMAND, 1, 1, 1, 0)
     paths["results"].write_text(json.dumps(results), encoding="utf-8")
     receipt = json.loads(paths["receipt"].read_text())
     receipt["evidence_sha256"] = pairrun.sha_file(paths["results"])
@@ -10623,7 +10621,9 @@ def test_source_oracle_recomputes_exhaustive_go_and_identifier_judgments(tmp_pat
             "query_family_id": "oracle-family",
             "query_intent": "bare_symbol",
             "answerable": bool(judgments),
-            "gold": [_v3_block(files, gold_path, gold_line, gold_line, grade=3)] if judgments else [],
+            "gold": [_v3_block(files, gold_path, gold_line, gold_line, grade=3)]
+            if judgments
+            else [],
             "judgment_policy": ev.SOURCE_ORACLE_JUDGMENT_POLICY,
             "source_oracle": {"contract": contract, "unit": unit},
             "declaration_judgments" if unit == "symbol" else "file_judgments": judgments,
@@ -10632,12 +10632,12 @@ def test_source_oracle_recomputes_exhaustive_go_and_identifier_judgments(tmp_pat
     def file_row(path):
         return {"path": path, "file_sha256": ev.digest(files[path]), "grade": 3}
 
-    def declaration_row(path, name):
-        start = files[path].index(name)
-        return {**file_row(path), "start_byte": start, "end_byte": start + len(name)}
+    def declaration_row(path, definition):
+        start = files[path].index(definition)
+        return {**file_row(path), "start_byte": start, "end_byte": start + len(definition)}
 
     cases = [
-        task("Param", "go_exact_local_name_v2", "distinct_file", [file_row("a.go")]),
+        task("Param", "go_exact_local_name_v3", "distinct_file", [file_row("a.go")]),
         task(
             "Param",
             "ascii_identifier_word_v1",
@@ -10646,12 +10646,15 @@ def test_source_oracle_recomputes_exhaustive_go_and_identifier_judgments(tmp_pat
         ),
         task(
             "Next",
-            "go_exact_local_name_v2",
+            "go_exact_local_name_v3",
             "symbol",
-            [declaration_row("a.go", b"Next"), declaration_row("b.go", b"Next")],
+            [
+                declaration_row("a.go", b"func (p *Param) Next() {}"),
+                declaration_row("b.go", b"func Next() {}"),
+            ],
             gold_line=3,
         ),
-        task("NoSuchName", "go_exact_local_name_v2", "symbol", []),
+        task("NoSuchName", "go_exact_local_name_v3", "symbol", []),
     ]
     for candidate in cases:
         suite["tasks"] = [candidate]
@@ -10674,13 +10677,13 @@ def test_source_oracle_recomputes_exhaustive_go_and_identifier_judgments(tmp_pat
     assert not ev.source_oracle.has_identifier_word_in_span(b"1Param", b"Param", 1, 6)
     assert not ev.source_oracle.has_identifier_word_in_span(b"ParamExtra", b"Param", 0, 5)
     assert ev.source_oracle.has_identifier_word_in_span(b" Param ", b"Param", 1, 6)
-    assert index.expected_rows("go_exact_local_name_v2", "param", "symbol") == []
+    assert index.expected_rows("go_exact_local_name_v3", "param", "symbol") == []
     invalid_go = b"package demo\nfunc Next(\n"
     invalid_index = ev.source_oracle.SourceOracleIndex(
         {"invalid.go": (invalid_go, ev.digest(invalid_go))}, {"Next"}
     )
     with pytest.raises(ev.source_oracle.SourceOracleError, match="parse error"):
-        invalid_index.expected_rows("go_exact_local_name_v2", "Next", "symbol")
+        invalid_index.expected_rows("go_exact_local_name_v3", "Next", "symbol")
 
     suite["tasks"] = [cases[2]]
     bad_declaration = copy.deepcopy(suite)
