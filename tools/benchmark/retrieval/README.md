@@ -129,6 +129,27 @@ counts identifier words anywhere in file bytes, including comments and tests.
 `label_review` is forbidden on these tasks, and qualified annotation receipts
 reject them. Reports remain `diagnostic_unqualified`.
 
+Identifier-robustness variants use four more contracts over the same indexed Go
+declaration set: `go_declaration_name_prefix_v1` and
+`go_declaration_name_infix_v1` (case-sensitive name text, at least three
+characters), `go_declaration_name_osa1_v1` (every other name at optimal
+string alignment distance one; an edited query that is itself a declaration
+name is an exact-name collision, not a typo), and
+`go_declaration_name_components_v1` (space-separated lowercase components
+matched as a contiguous run of `camel-snake-v1` components; non-ASCII names
+have no components). `identifier_robustness_suite.py` builds one suite per
+lane from an unannotated frozen suite and a seed, with a census of strata,
+ambiguity classes, shortfalls and no-answer content presence:
+
+```sh
+python3 tools/benchmark/retrieval/identifier_robustness_suite.py \
+  --repo /absolute/clean/repository --baseline-suite /absolute/baseline.json \
+  --output-root /absolute/fresh-output --seed 20260930
+```
+
+Its base names come from an exposed suite, so its output is a source-exposed
+diagnostic, never an unseen holdout.
+
 Create reproducible, runnable single-route suites from an unannotated frozen
 source suite with a new external output root:
 

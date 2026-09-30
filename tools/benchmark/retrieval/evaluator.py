@@ -1029,8 +1029,8 @@ def validate_suite(
                 f"gold path contradicts source oracle: {task_id}",
             )
             oracle_spans = (
-                oracle_index.go_name_spans(query)
-                if task["source_oracle"]["contract"] == source_oracle.GO_EXACT_LOCAL_NAME
+                oracle_index.go_name_spans(query, task["source_oracle"]["contract"])
+                if task["source_oracle"]["contract"] in source_oracle.GO_NAME_CONTRACTS
                 else []
             )
         seen_labels = set()

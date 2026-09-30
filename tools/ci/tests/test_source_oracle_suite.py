@@ -507,3 +507,293 @@ def test_source_oracle_rejects_oversized_source_before_unbounded_read(tmp_path, 
         source_oracle_suite.derive_suites(repo, baseline)
     with pytest.raises(ev.EvidenceError, match="source oracle byte limit exceeded"):
         ev.validate_suite(repo, suite)
+
+
+VARIANT_GO = (
+    b"package sample\n"
+    b"type Binder interface {\n"
+    b"\tBindBody()\n"
+    b"}\n"
+    b"func BindJSON() {}\n"
+    b"func BindXML() {}\n"
+    b"func bindQuery() {}\n"
+    b"type HTMLRender struct{}\n"
+    b"func (HTMLRender) Render() {}\n"
+    b"func render_html_page() {}\n"
+    b"func ReadJSON() {}\n"
+    b"// BindYAML is only mentioned in a comment.\n"
+)
+
+
+def _variant_oracle(
+    tmp_path, extra: dict[str, bytes] | None = None, words: frozenset = frozenset({"Param"})
+):
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    repo, commit, files = _source_repo(
+        tmp_path,
+        {
+            "variant.go": VARIANT_GO,
+            "variant_test.go": b"package sample\nfunc BindJSONTest() {}\n",
+            **(extra or {}),
+        },
+    )
+    oracle = ev.source_oracle.SourceOracleIndex(
+        {path: (raw, ev.digest(raw)) for path, raw in files.items()}, set(words)
+    )
+    return oracle
+
+
+def test_go_name_prefix_and_infix_are_case_sensitive_and_exhaustive(tmp_path):
+    so = ev.source_oracle
+    oracle = _variant_oracle(tmp_path)
+    assert oracle.matched_names(so.GO_NAME_PREFIX, "Bind") == [
+        "BindBody",
+        "BindJSON",
+        "BindJSONTest",
+        "BindXML",
+        "Binder",
+    ]
+    assert oracle.matched_names(so.GO_NAME_PREFIX, "bin") == ["bindQuery"]
+    assert [
+        row["path"] for row in oracle.expected_rows(so.GO_NAME_PREFIX, "BindJSON", "distinct_file")
+    ] == [
+        "variant.go",
+        "variant_test.go",
+    ]
+    # Infix counts every declaration containing the fragment, including prefixes.
+    assert oracle.matched_names(so.GO_NAME_INFIX, "JSO") == ["BindJSON", "BindJSONTest", "ReadJSON"]
+    assert oracle.matched_names(so.GO_NAME_INFIX, "YAML") == []
+    for contract in (so.GO_NAME_PREFIX, so.GO_NAME_INFIX):
+        with pytest.raises(so.SourceOracleError, match="three characters"):
+            oracle.expected_rows(contract, "Bi", "distinct_file")
+        with pytest.raises(so.SourceOracleError, match="query form"):
+            oracle.expected_rows(contract, "Bindé", "distinct_file")
+
+
+def test_go_name_components_split_only_existing_boundaries_contiguously(tmp_path):
+    so = ev.source_oracle
+    assert so.name_components("HTMLRender") == ("html", "render")
+    assert so.name_components("render_html_page") == ("render", "html", "page")
+    assert so.name_components("toHTTP2Server") == ("to", "http", "2", "server")
+    oracle = _variant_oracle(tmp_path)
+    assert oracle.matched_names(so.GO_NAME_COMPONENTS, "html render") == ["HTMLRender"]
+    assert oracle.matched_names(so.GO_NAME_COMPONENTS, "render html") == ["render_html_page"]
+    assert oracle.matched_names(so.GO_NAME_COMPONENTS, "bind json") == ["BindJSON", "BindJSONTest"]
+    # Non-contiguous components and invented synonyms do not match.
+    assert oracle.matched_names(so.GO_NAME_COMPONENTS, "render page") == []
+    with pytest.raises(so.SourceOracleError, match="query form"):
+        oracle.expected_rows(so.GO_NAME_COMPONENTS, "HTMLRender", "distinct_file")
+
+
+def test_go_name_osa1_separates_unique_ambiguous_and_exact_collision(tmp_path):
+    so = ev.source_oracle
+    for first, second, expected in (
+        ("BindJSON", "BindJSN", True),
+        ("BindJSON", "BindJSONx", True),
+        ("BindJSON", "BindJSOM", True),
+        ("BindJSON", "BindJOSN", True),
+        ("BindJSON", "BindJONS", False),
+        ("BindJSON", "BidnJSNO", False),
+    ):
+        assert so.osa_distance_at_most_one(first, second) is expected
+    oracle = _variant_oracle(tmp_path)
+    assert oracle.matched_names(so.GO_NAME_OSA1, "BindJOSN") == ["BindJSON"]
+    assert oracle.matched_names(so.GO_NAME_OSA1, "BindXQQ") == []
+    assert oracle.matched_names(so.GO_NAME_OSA1, "ReadJSO") == ["ReadJSON"]
+    assert oracle.matched_names(so.GO_NAME_OSA1, "BindJSOX") == ["BindJSON"]
+    assert oracle.matched_names(so.GO_NAME_OSA1, "BindXMLJ") == ["BindXML"]
+    ambiguous = _variant_oracle(
+        tmp_path / "ambiguous", {"more.go": b"package sample\nfunc BindXMM() {}\n"}
+    )
+    assert ambiguous.matched_names(so.GO_NAME_OSA1, "BindXMX") == ["BindXML", "BindXMM"]
+    # An edited query that is itself a declaration is an exact collision, not its own typo.
+    assert "BindXML" not in ambiguous.matched_names(so.GO_NAME_OSA1, "BindXML")
+    assert ambiguous.expected_rows(so.GO_EXACT_LOCAL_NAME, "BindXMM", "distinct_file")
+
+
+def test_go_no_answer_requires_a_complete_parse(tmp_path):
+    so = ev.source_oracle
+    oracle = _variant_oracle(tmp_path, words=frozenset({"BindYAML"}))
+    assert oracle.expected_rows(so.GO_EXACT_LOCAL_NAME, "BindYAML", "distinct_file") == []
+    assert [
+        r["path"]
+        for r in oracle.expected_rows(so.ASCII_IDENTIFIER_WORD, "BindYAML", "distinct_file")
+    ] == ["variant.go"]
+    broken = _variant_oracle(tmp_path / "broken", {"broken.go": b"package sample\nfunc (\n"})
+    with pytest.raises(so.SourceOracleError, match="parse error"):
+        broken.expected_rows(so.GO_EXACT_LOCAL_NAME, "BindYAML", "distinct_file")
+    with pytest.raises(so.SourceOracleError, match="parse error"):
+        broken.expected_rows(so.GO_NAME_PREFIX, "Bin", "distinct_file")
+
+
+def _robustness_baseline(tmp_path):
+    repo = tmp_path / "robust"
+    repo.mkdir()
+    (repo / "variant.go").write_bytes(VARIANT_GO)
+    git = ["git", "-C", str(repo)]
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run([*git, "add", "variant.go"], check=True)
+    subprocess.run(
+        [
+            *git,
+            "-c",
+            "user.name=T",
+            "-c",
+            "user.email=t@e.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-qm",
+            "frozen",
+        ],
+        check=True,
+    )
+    commit = subprocess.check_output([*git, "rev-parse", "HEAD"], text=True).strip()
+    # Reuse the contract envelope only; universe and tasks are replaced below.
+    baseline = _baseline(commit, {"a.go": b"x\ny\n", "b.go": b"x\ny\nz\n"})
+    universe = [{"path": "variant.go", "file_sha256": ev.digest(VARIANT_GO)}]
+    baseline.update(
+        file_universe=universe, file_universe_digest=ev.universe_digest(universe), tasks=[]
+    )
+    lines = VARIANT_GO.splitlines(keepends=True)
+    for index, name in enumerate(
+        ["BindJSON", "BindXML", "HTMLRender", "ReadJSON", "Render", "bindQuery"], 1
+    ):
+        line = next(
+            i
+            for i, text in enumerate(lines, 1)
+            if name.encode() + b"(" in text or b"type " + name.encode() + b" " in text
+        )
+        start = sum(len(entry) for entry in lines[: line - 1])
+        baseline["tasks"].append(
+            {
+                "task_id": f"T{index}",
+                "query": name,
+                "query_sha256": ev.digest(name.encode()),
+                "query_family_id": f"fam-{name}",
+                "split": "eval",
+                "answerable": True,
+                "gold": [
+                    {
+                        "path": "variant.go",
+                        "start_byte": start,
+                        "end_byte": start + len(lines[line - 1]),
+                        "start_line": line,
+                        "end_line": line,
+                        "file_sha256": ev.digest(VARIANT_GO),
+                        "block_sha256": ev.digest(lines[line - 1]),
+                        "grade": 1,
+                    }
+                ],
+            }
+        )
+    return repo, baseline
+
+
+def test_identifier_robustness_builder_is_deterministic_and_evaluator_bound(tmp_path):
+    from tools.benchmark.retrieval import identifier_robustness_suite as irs
+
+    repo, baseline = _robustness_baseline(tmp_path)
+    first, census = irs.derive(repo, copy.deepcopy(baseline), seed=7, sample_size=3, no_answer=2)
+    second, again = irs.derive(repo, copy.deepcopy(baseline), seed=7, sample_size=3, no_answer=2)
+    assert ev.canonical(census) == ev.canonical(again)
+    assert {lane: ev.canonical(pair) for lane, pair in first.items()} == {
+        lane: ev.canonical(pair) for lane, pair in second.items()
+    }
+    assert set(first) == {"prefix", "infix", "components", "typo", "no-answer"}
+    for lane, (suite, pack) in first.items():
+        assert suite["routes"] == ["lexical"]
+        assert all(set(task) == {"task_id", "query", "query_sha256"} for task in pack["tasks"])
+        for task in suite["tasks"]:
+            assert task["answerable"] is (lane != "no-answer")
+        for record in census["lanes"][lane]["records"]:
+            if record["status"] == "admitted" and lane != "no-answer":
+                assert record["base_name_in_gold"] is True
+    assert set(census["lanes"]["components"]["ineligible"]) <= {"single_component"}
+    suite, _pack = first["prefix"]
+    tampered = copy.deepcopy(suite)
+    tampered["tasks"][0]["file_judgments"] = []
+    tampered["tasks"][0]["answerable"] = False
+    tampered["tasks"][0]["gold"] = []
+    with pytest.raises(ev.EvidenceError, match="source oracle judgments differ"):
+        ev.validate_suite(repo, tampered)
+    renamed = copy.deepcopy(suite)
+    renamed["tasks"][0]["source_oracle"]["contract"] = ev.source_oracle.GO_EXACT_LOCAL_NAME
+    with pytest.raises(ev.EvidenceError):
+        ev.validate_suite(repo, renamed)
+
+
+def test_go_name_variants_distinguish_prefix_infix_and_component_position(tmp_path):
+    so = ev.source_oracle
+    oracle = _variant_oracle(tmp_path)
+    # A fragment inside names is an infix but never a prefix.
+    assert oracle.matched_names(so.GO_NAME_PREFIX, "ind") == []
+    assert "BindJSON" in oracle.matched_names(so.GO_NAME_INFIX, "ind")
+    # Infix also admits the fragment at position zero.
+    assert "BindJSON" in oracle.matched_names(so.GO_NAME_INFIX, "Bin")
+    # Components match a contiguous run at any position, not only the head.
+    assert oracle.matched_names(so.GO_NAME_COMPONENTS, "html page") == ["render_html_page"]
+    assert so.has_inferred_acronym_boundary("prepareTrustedCIDRs")
+    assert so.has_inferred_acronym_boundary("TestLoadHTMLFSTestMode")
+    assert not so.has_inferred_acronym_boundary("render_html_page")
+    assert not so.has_inferred_acronym_boundary("ShouldBind")
+
+
+def test_go_name_variants_decode_non_ascii_declarations_without_crashing(tmp_path):
+    so = ev.source_oracle
+    oracle = _variant_oracle(tmp_path, {"cafe.go": "package sample\nfunc Café() {}\n".encode()})
+    assert oracle.matched_names(so.GO_NAME_PREFIX, "Caf") == ["Café"]
+    assert "Café" in oracle.matched_names(so.GO_NAME_OSA1, "Cafe")
+    assert so.name_components("Café") == ()
+    assert oracle.matched_names(so.GO_NAME_COMPONENTS, "bind json") == ["BindJSON", "BindJSONTest"]
+
+
+def test_identifier_robustness_builder_guards_typo_infix_and_no_answer(tmp_path, monkeypatch):
+    from tools.benchmark.retrieval import identifier_robustness_suite as irs
+
+    for attempt in range(64):
+        query, meta = irs.propose("infix", "StatusStatus", 3, "fam", attempt)
+        assert query is None or not "StatusStatus".startswith(query)
+        assert query is not None or meta.get("retry") == "infix_equals_prefix"
+    repo, baseline = _robustness_baseline(tmp_path)
+    original = irs.propose
+
+    def forced(lane, name, seed, family, attempt):
+        if lane == "typo" and name == "BindJSON":
+            return "ReadJSON", {"operation": "forced"}  # another declaration: collision
+        if lane == "typo" and name == "BindXML":
+            return "2indXML", {"operation": "forced"}  # digit-leading fragment
+        return original(lane, name, seed, family, attempt)
+
+    monkeypatch.setattr(irs, "propose", forced)
+    monkeypatch.setattr(irs, "_no_answer_probes", lambda *_args: [("BindYAML", {})])
+    _suites, census = irs.derive(repo, copy.deepcopy(baseline), seed=7, sample_size=6, no_answer=1)
+    typo = {r["base_query"]: r for r in census["lanes"]["typo"]["records"]}
+    assert typo["BindJSON"]["status"] == "excluded_exact_name_collision"
+    assert typo["BindXML"]["status"] == "admitted"
+    probe = census["lanes"]["no-answer"]["records"][0]
+    # "BindYAML" appears only in a comment: no declaration, one content file.
+    assert probe["answer_class"] == "no_answer"
+    assert probe["content_word_files"] == 1
+    assert probe["content_substring_files"] == 1
+    components = census["lanes"]["components"]["records"]
+    assert {r["base_query"] for r in components if r["status"] == "admitted"} == {
+        "BindJSON",
+        "BindXML",
+        "ReadJSON",
+        "bindQuery",
+    }
+    assert {
+        r["base_query"]: r["generation"]["ineligible"]
+        for r in components
+        if r["status"] == "ineligible"
+    } == {"HTMLRender": "ambiguous_acronym_boundary", "Render": "single_component"}
+
+
+def test_identifier_robustness_sample_depends_on_seed_only():
+    from tools.benchmark.retrieval import identifier_robustness_suite as irs
+
+    tasks = [{"query_family_id": f"fam-{index}"} for index in range(200)]
+    first = irs.sample_families(tasks, 1, 20)
+    assert first == irs.sample_families(list(reversed(tasks)), 1, 20)
+    assert first != irs.sample_families(tasks, 2, 20)

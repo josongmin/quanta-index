@@ -980,3 +980,25 @@ def test_capture_entrypoint_rejects_overlap_before_epoch_writes(
     with pytest.raises(bridge.EvidenceError, match="roots overlap"):
         bridge.capture(bridge.ROOT, paths[0], registry_fixture(), spec_path, 1)
     assert not any(path.exists() for path in paths)
+
+
+def test_pair_typed_state_scores_empty_rankings_instead_of_refusing():
+    answerable = {"status": "abstained", "answerable": True, "file_recall_at_10": 0.0}
+    no_answer = {"status": "abstained", "answerable": False}
+    for space, metric in bridge.METRICS.items():
+        assert bridge.typed_state(answerable, space, metric, None) == ("judged", 0.0)
+        assert bridge.typed_state(no_answer, space, metric, None) == ("no_answer", 1.0)
+    returned = {"status": "success", "answerable": False}
+    assert bridge.typed_state(returned, "file", "file_recall_at_10", None) == ("no_answer", 0.0)
+    hit = {"status": "capped", "answerable": True, "file_recall_at_10": 0.5}
+    assert bridge.typed_state(hit, "file", "file_recall_at_10", None) == ("judged", 0.5)
+    assert bridge.typed_state(hit, "span", "exact_index_span_recall_at_10", None) == (
+        "unsupported",
+        None,
+    )
+    assert bridge.typed_state({"status": "timeout", "answerable": True}, "file", "m", None) == (
+        "timeout",
+        None,
+    )
+    with pytest.raises(bridge.EvidenceError, match="admissible terminal scored state"):
+        bridge.typed_state({"status": "error", "answerable": True}, "file", "m", None)

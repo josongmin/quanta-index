@@ -173,7 +173,11 @@
       "type": "object", "additionalProperties": false,
       "required": ["contract", "unit"],
       "properties": {
-        "contract": {"enum": ["go_exact_local_name_v3", "ascii_identifier_word_v1"]},
+        "contract": {"enum": [
+          "go_exact_local_name_v3", "ascii_identifier_word_v1",
+          "go_declaration_name_prefix_v1", "go_declaration_name_infix_v1",
+          "go_declaration_name_components_v1", "go_declaration_name_osa1_v1"
+        ]},
         "unit": {"enum": ["symbol", "distinct_file"]}
       },
       "allOf": [

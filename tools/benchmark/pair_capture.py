@@ -279,6 +279,28 @@ def derive(native: Path, corpus: Path, timeout: int = 300) -> tuple[dict, dict]:
     return manifest, verdict
 
 
+def typed_state(row: dict, space: str, metric: str, span: dict | None) -> tuple[str, float | None]:
+    """Classify one scored pair row; an empty ranking is a terminal outcome.
+
+    `abstained` answers a no-answer task correctly and misses an answerable one,
+    so it scores 1.0 or 0.0 rather than refusing the whole capture.
+    """
+    status = row["status"]
+    if status == "timeout":
+        return "timeout", None
+    if status == "unavailable":
+        return "unsupported", None
+    if status not in (*evaluator.SCORED_STATUSES, "abstained"):
+        raise EvidenceError("pair row lacks an admissible terminal scored state")
+    if not row["answerable"]:
+        return "no_answer", float(status == "abstained")
+    if status == "abstained":
+        return "judged", 0.0
+    if space == "span":
+        return ("unsupported", None) if span is None else ("judged", span.get(metric))
+    return "judged", row.get(metric)
+
+
 def typed_payloads(native: Path, manifest: dict) -> dict[str, dict]:
     artifacts = manifest["artifacts"]
     protocol = owner.read_json(
@@ -337,23 +359,9 @@ def typed_payloads(native: Path, manifest: dict) -> dict[str, dict]:
             for space, metric in METRICS.items():
                 typed = []
                 for task in tasks:
-                    row = indexed[(task, route)]
-                    state, value = (
-                        "judged",
-                        row.get(metric)
-                        if space != "span"
-                        else spans.get((task, route), {}).get(metric),
+                    state, value = typed_state(
+                        indexed[(task, route)], space, metric, spans.get((task, route))
                     )
-                    if row["status"] == "timeout":
-                        state, value = "timeout", None
-                    elif row["status"] == "unavailable":
-                        state, value = "unsupported", None
-                    elif row["status"] not in evaluator.SCORED_STATUSES:
-                        raise EvidenceError("pair row lacks an admissible terminal scored state")
-                    elif not row["answerable"]:
-                        state, value = "no_answer", float(row["status"] == "abstained")
-                    elif space == "span" and (task, route) not in spans:
-                        state, value = "unsupported", None
                     if state in {"judged", "no_answer"}:
                         if (
                             type(value) not in (int, float)
