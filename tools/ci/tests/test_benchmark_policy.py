@@ -84,6 +84,7 @@ def test_capture_contracts_have_one_local_and_ci_entrypoint() -> None:
         "test_retrieval_capture.py",
         "test_lexical_capture.py",
         "test_lexical_file_comparison.py",
+        "test_lexical_five_product_oracle.py",
         "test_portable_proof.py",
         "test_producer_notifications.py",
         "test_bootstrap_cache.py",

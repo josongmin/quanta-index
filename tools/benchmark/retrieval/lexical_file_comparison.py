@@ -385,6 +385,13 @@ def pair_result(
     task_count: int,
 ) -> dict:
     raw = [_bytes(value) for value in (path, lock_path, native_path, verdict_path)]
+    return pair_result_raw(raw, pack, suite, task_count)
+
+
+def pair_result_raw(raw: list[bytes], pack: dict, suite: dict, task_count: int) -> dict:
+    """Validate a pair capture already bound to retained archive bytes."""
+    if len(raw) != 4 or any(not isinstance(value, bytes) for value in raw):
+        raise ValueError("pair capture requires report, lock, native trace, and verdict bytes")
     report, lock, native, verdict = [_json(value) for value in raw]
     states = verdict.get("states")
     if not isinstance(states, dict) or states.get("PAIR_VALID") != "pass":

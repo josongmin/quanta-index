@@ -179,6 +179,29 @@ mechanical diagnostics. Backend indexed-universe equivalence and human
 relevance are still unproved. Digest verification does not replay native
 response parsing at the capture's original source revision. The result is not
 a five-product quality rank.
+When the original paired native capture is retained as `native-tree.zip`,
+rescore all five from the same frozen suite, pack, and corpus:
+
+```sh
+uv run --frozen --extra dev python -m tools.benchmark.retrieval.lexical_five_product_oracle \
+  --repo /absolute/clean/corpus \
+  --suite /absolute/original-suite.json \
+  --query-pack /absolute/original-blind-pack.json \
+  --capture-manifest /absolute/native-external/capture.json \
+  --sourcegraph-rows /absolute/native-external/sourcegraph_rows.jsonl \
+  --opengrok-rows /absolute/native-external/opengrok_rows.jsonl \
+  --cs-rows /absolute/native-external/cs_rows.jsonl \
+  --native-evidence /absolute/pair-evidence/evidence.json \
+  --native-archive /absolute/pair-evidence/raw/native-tree.zip \
+  --out /absolute/new-output-root/result.json
+```
+
+The evidence binds the original native archive and the suite/pack bytes. The
+pair report, verdict, query identities, result ranks, file hashes, and original
+hit flags are checked before new judgments are scored. Native rows still end
+at 10 **chunks**, so their file NDCG is explicitly an observed-prefix score
+after first-occurrence file deduplication. External rows end at 10 distinct
+files. The two NDCG columns and hit counts remain separate diagnostic units.
 The previous `go_exact_local_name_v1` covered fewer Go declaration kinds.
 `go_exact_local_name_v2` covered the same declaration kinds but used local-name
 token spans as symbol judgments. Published symbols use definition spans, so v2
