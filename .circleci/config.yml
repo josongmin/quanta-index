@@ -51,6 +51,12 @@ jobs:
             cargo nextest --version
             just --version
             uv --version
+      - restore_cache:
+          keys:
+            - cargo-deps-v1-rust1.92.0-{{ checksum "Cargo.lock" }}
+      - restore_cache:
+          keys:
+            - cargo-target-v1-rust1.92.0-clippy-{{ checksum "Cargo.lock" }}-{{ .Branch }}
       - run:
           name: Rust format and clippy
           no_output_timeout: 20m
@@ -59,6 +65,18 @@ jobs:
             unset BASH_ENV ENV
             ./scripts/cargow fmt --all -- --check
             ./scripts/cargow clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - save_cache:
+          key: cargo-deps-v1-rust1.92.0-{{ checksum "Cargo.lock" }}
+          paths:
+            - ~/.cargo/registry
+            - ~/.cargo/git
+      - save_cache:
+          key: cargo-target-v1-rust1.92.0-clippy-{{ checksum "Cargo.lock" }}-{{ .Branch }}
+          paths:
+            - ~/.cache/quanta-index/target
+      - restore_cache:
+          keys:
+            - cargo-target-v1-rust1.92.0-nextest-{{ checksum "Cargo.lock" }}-{{ .Branch }}
       - run:
           name: rust nextest
           no_output_timeout: 30m
@@ -88,6 +106,15 @@ jobs:
               --evidence artifacts/test-authority/nextest.jsonl \
               --inventory artifacts/test-authority/inventory.json \
               --out artifacts/test-authority/receipt.json
+      - save_cache:
+          key: cargo-deps-v1-rust1.92.0-{{ checksum "Cargo.lock" }}
+          paths:
+            - ~/.cargo/registry
+            - ~/.cargo/git
+      - save_cache:
+          key: cargo-target-v1-rust1.92.0-nextest-{{ checksum "Cargo.lock" }}-{{ .Branch }}
+          paths:
+            - ~/.cache/quanta-index/target
       - store_artifacts:
           path: artifacts/test-authority
           destination: test-authority
