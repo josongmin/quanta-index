@@ -79,3 +79,12 @@ re-read the source-file qrels, both records and Semble's full native BM25
 lists; its [result](/Users/songmin/Documents/code-new/qi-s30-file-modes-20261001-ExtGj6hb/audit.json)
 agrees on every task and projection. No new five-product paired score was
 created from snapshots with different request semantics.
+
+The separate 2026-10-01 [robustness file-mode audit](/Users/songmin/Documents/code-new/qi-s30-robust-filemodes-20261001-xh1F3Xoh/audit.json)
+recomputed all six lanes from source-file qrels. Semble distinct-file hits are
+prefix 257/352, infix 164/339, components 276/278, typo 284/363; Quanta
+`keyword_file` hits are 21/352, 14/339 (337 submitted), unsupported on
+components, and 0/363. The no-answer-content lane returned zero files for
+Quanta and non-empty files on all 99 Semble queries. Request semantics and
+completion coverage differ; these are operational diagnostics, not a paired
+quality delta.

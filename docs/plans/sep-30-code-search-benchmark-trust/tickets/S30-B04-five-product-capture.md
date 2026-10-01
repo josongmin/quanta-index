@@ -116,9 +116,14 @@ matched-semantics cohort and a qualified cross-product ranking remain blocked.
 This scored-file follow-up covers the **exact-name lane only**. Prefix, infix,
 components, typo and both no-answer lanes were captured and replayed in v2 at
 `f318e832`, where Semble still used ten BM25 chunks rather than the new
-ten-distinct-file profile. Their v2 results are separate diagnostics; the new
-Semble file profile and Quanta per-file SDK score capture have not been rerun
-on those six robustness lanes.
+ten-distinct-file profile. A separate follow-up from the same `5d345a52` code
+then ran Semble `lexical-file` across all six robustness lanes and Quanta's
+scored `keyword_file` on its five supported lanes. The six Semble records and
+five Quanta records all passed current evaluator replay and an independent
+native/source-file checker. See the [robustness result and raw archive](/Users/songmin/Documents/code-new/qi-s30-robust-filemodes-20261001-xh1F3Xoh/README.md).
+Two infix queries and all component queries were excluded by the frozen
+Quanta `keyword_file` policy admission before search. Sourcegraph/OpenGrok were
+unavailable, so this is not a fresh five-product matched cohort.
 
 Independent read-only audit of the archived inputs, native rows and records
 (`audit.py` / `audit.json` in the same external root) checked all 99 source-file

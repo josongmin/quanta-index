@@ -17,6 +17,10 @@ were 1,192 and 1,190, respectively. The [archived raw evidence and audit](/Users
 remain diagnostic; B02 human qrels, B04 external indexed universes and a
 matched five-product cohort, B07 controlled performance, and B08 fresh
 multi-repository holdout remain open.
+The subsequent [robustness file-mode run](/Users/songmin/Documents/code-new/qi-s30-robust-filemodes-20261001-xh1F3Xoh/README.md)
+also completed all six Semble lanes and the five Quanta `keyword_file` lanes
+supported by its query grammar; it remains a source-exposed native-mode
+diagnostic with no fresh external capture.
 
 | Order | Ticket | Existing authority | Prerequisite | Deliverable |
 | --- | --- | --- | --- | --- |
