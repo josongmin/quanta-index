@@ -65,3 +65,23 @@ missing adapter boundary, with focused native fixtures under its current owner.
 results, digests and residuals: [qi-s30-bench-trust-20260930-0d21914e/RESULTS.md](/Users/songmin/Documents/code-new/qi-s30-bench-trust-20260930-0d21914e/RESULTS.md).
 
 v2 (2026-10-01, clean `f318e832`): three Quanta file policies (literal/keyword/substring) and SG/OG/cs on exact and six robustness lanes; all seven Semble lexical-only pair lanes captured and replayed (fix `59249da8`). Semble file top-10 still BLOCKED; SG/OG universes unattested. [qi-s30-v2-f318e832/RESULTS.md](/Users/songmin/Documents/code-new/qi-s30-v2-f318e832/RESULTS.md).
+
+The v2 five-product rows are **native-workflow diagnostics**, not a matched-semantics
+file-ranking cohort. Quanta `keyword_file` matches content and path with explicit
+case sensitivity; the recorded Sourcegraph request uses `patternType:keyword`
+without an explicit case clause, OpenGrok uses `full` search, and cs uses its
+native command. Before any matched claim, pin and test case, token, path/content
+scope, file-filter, ordering and output-unit behavior for each product on the
+same source view. Keep an unsupported product outside that cohort. A request
+string or source revision alone does not prove an equal indexed universe.
+
+Isolated two-query control (2026-10-01): pinned Semble 0.6.0 indexed the 99
+manifest files into 1,171 chunks under a new external root
+[`qi-sem-file-probe-pADCo8`](/private/tmp/qi-sem-file-probe-pADCo8/probe.json).
+For `Param`, the native ten-chunk prefix covered two files; collecting all
+positive BM25 chunks and taking each file's first occurrence put `context.go`
+at file rank 5 (source chunk rank 23). For `writeContentType`, the gold
+`render/render.go` was file rank 14 (source chunk rank 19). Requesting ten
+chunks versus all chunks changed the order of equal-score hits, so an adapter
+must declare a deterministic tie rule and prove its collection depth. This
+control is not an integrated Semble file route or a new 1,196-task score.

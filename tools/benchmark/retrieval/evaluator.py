@@ -517,6 +517,7 @@ def block(
     universe: set[str] | None = None,
     allow_grade: bool = False,
     allow_span_accounting: bool = False,
+    allow_score: bool = False,
 ) -> dict[str, Any]:
     required = [
         "path",
@@ -532,6 +533,8 @@ def block(
     optional = ["grade"] if (allow_grade and not candidate) else []
     if candidate and allow_span_accounting:
         optional.append("span_accounting")
+    if candidate and allow_score:
+        optional.append("score")
     if optional:
         item = object_keys_optional(value, required, optional, where)
     else:
@@ -576,6 +579,8 @@ def block(
         )
     if candidate:
         positive_int(item["rank"], where + ".rank")
+        if "score" in item:
+            require(is_finite_json_number(item["score"]), where + ".score must be finite")
         if "span_accounting" in item:
             accounting = object_keys(
                 item["span_accounting"],
@@ -1380,9 +1385,10 @@ def _validate_run(
         result_keys.insert(4, "query_identity")
     pack_queries = {task["task_id"]: task for task in pack["tasks"]}
     found = set()
+    score_evidence_by_route: dict[str, str | None] = {}
     for raw in results:
         result = (
-            object_keys_optional(raw, result_keys, ["rank_unit", "ordering"], "result")
+            object_keys_optional(raw, result_keys, ["rank_unit", "ordering", "score_evidence"], "result")
             if version == RUNNER_SCHEMA_VERSION
             else object_keys(raw, result_keys, "result")
         )
@@ -1402,6 +1408,20 @@ def _validate_run(
                 f"unknown result rank_unit for {key}",
             )
         ordering = result.get("ordering")
+        score_evidence = result.get("score_evidence")
+        if score_evidence is not None:
+            require(
+                profile_policy == "keyword_file" and score_evidence == "native_sdk_score_v1",
+                f"score evidence requires keyword_file native SDK scores: {key}",
+            )
+        if profile_policy == "keyword_file":
+            if key[1] in score_evidence_by_route:
+                require(
+                    score_evidence_by_route[key[1]] == score_evidence,
+                    f"keyword_file route mixes score evidence states: {key[1]}",
+                )
+            else:
+                score_evidence_by_route[key[1]] = score_evidence
         if profile_policy in query_plan_contract.FILE_PROJECTION_ORDERING:
             require(
                 key[1] == "lexical" and rank_unit == "distinct_file",
@@ -1549,6 +1569,7 @@ def _validate_run(
         seen_spans: dict[tuple[str, int, int], set[tuple[int, int]] | None] = {}
         seen_unit_ids: set[str] = set()
         seen_files: set[str] = set()
+        previous_scored_file: tuple[float, str] | None = None
         for index, candidate in enumerate(candidates, start=1):
             block(
                 source,
@@ -1557,7 +1578,20 @@ def _validate_run(
                 candidate=True,
                 universe=universe,
                 allow_span_accounting=version == 5 and capture["system"] == "quanta",
+                allow_score=score_evidence == "native_sdk_score_v1",
             )
+            if score_evidence == "native_sdk_score_v1":
+                require("score" in candidate, f"missing native SDK score for {key}")
+                score = float(candidate["score"])
+                path = candidate["path"]
+                if previous_scored_file is not None:
+                    previous_score, previous_path = previous_scored_file
+                    require(
+                        score < previous_score
+                        or (score == previous_score and path.encode() >= previous_path.encode()),
+                        f"keyword_file native SDK score/path order is invalid: {key}",
+                    )
+                previous_scored_file = (score, path)
             if "span_accounting" in candidate:
                 require(span_protocol == 1, f"span evidence lacks record protocol: {key}")
                 accounting = candidate["span_accounting"]
@@ -1983,6 +2017,15 @@ def _route_ordering(run: dict[str, Any], route: str, results: dict, task_ids: li
     return derived
 
 
+def _route_score_evidence(results: dict, route: str, task_ids: list[str]) -> str:
+    """Keep legacy contract-only order distinct from a native score proof."""
+    if not task_ids:
+        return "not_applicable"
+    observed = {results[(task_id, route)].get("score_evidence") for task_id in task_ids}
+    require(len(observed) == 1, f"route {route} mixes score evidence states")
+    return next(iter(observed)) or "not_recorded"
+
+
 def _declaration_match(candidate: dict[str, Any], judgment: dict[str, Any]) -> bool:
     span = candidate.get("span_accounting")
     return (
@@ -2147,6 +2190,11 @@ def judgment_diagnostics(
             by_route[route] = {
                 "rank_unit": expected_unit,
                 "ordering": ordering,
+                "score_evidence": (
+                    _route_score_evidence(results, route, answerable_ids)
+                    if kind == "file_judgments" and ordering == "score_desc_path_tiebreak"
+                    else "not_applicable"
+                ),
                 "rank_metric_interpretation": RANK_METRIC_INTERPRETATION.get(
                     ordering, "not_a_file_projection" if kind == "file_judgments" else "symbol_rank"
                 ),

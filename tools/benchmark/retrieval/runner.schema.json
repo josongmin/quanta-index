@@ -287,6 +287,7 @@
         "block_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "tokens": {"type": "integer", "minimum": 1},
         "rank": {"type": "integer", "minimum": 1},
+        "score": {"type": "number", "description": "Native SDK score, present only with keyword_file score_evidence=native_sdk_score_v1."},
         "span_accounting": {
           "type": "object", "additionalProperties": false,
           "required": ["unit_kind", "unit_id", "producer_identity", "indexed_start_byte", "indexed_end_byte", "sdk_start_line", "sdk_end_line", "extra_context_bytes"],
@@ -329,6 +330,7 @@
         "route": {"type": "string", "minLength": 1},
         "rank_unit": {"description": "Optional effective result unit. symbol is valid only for Quanta exact_symbol_name on the symbol route; distinct_file only for the lexical file projections literal_file, keyword_file and substring_file. It names the unit, not how the units are ordered. Historical symbol records may omit it.", "enum": ["distinct_file", "symbol"]},
         "ordering": {"description": "How a file projection orders its distinct files, derived from the request policy: score_desc_path_tiebreak for keyword_file; path_order_constant_score (a match-only restriction returned in path order, not a relevance ranking) for literal_file and substring_file. Historical literal_file records may omit it.", "enum": ["score_desc_path_tiebreak", "path_order_constant_score"]},
+        "score_evidence": {"description": "Present on new keyword_file results whose every candidate preserves its finite native SDK score. Historical v5 results without it remain replayable but have no per-row score-order proof.", "const": "native_sdk_score_v1"},
         "status": {"enum": ["success", "abstained", "capped", "error", "timeout", "unavailable"]},
         "candidates": {"type": "array", "items": {"$ref": "#/$defs/candidate"}},
         "query_identity": {"$ref": "#/$defs/query_identity"},
@@ -336,6 +338,11 @@
         "error": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/error"}]}
       },
       "allOf": [
+        {
+          "if": {"required": ["score_evidence"]},
+          "then": {"properties": {"candidates": {"items": {"required": ["score"]}}}},
+          "else": {"properties": {"candidates": {"items": {"not": {"required": ["score"]}}}}}
+        },
         {
           "if": {"properties": {"status": {"enum": ["success", "capped"]}}},
           "then": {"properties": {"candidates": {"minItems": 1}, "error": {"type": "null"}}}

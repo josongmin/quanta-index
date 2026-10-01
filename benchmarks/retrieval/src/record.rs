@@ -880,6 +880,12 @@ fn bind_rank_unit(mut result: Value, policy: QueryInputPolicy) -> BenchResult<Va
     if let Some(ordering) = ordering_contract(policy) {
         let _previous = object.insert("ordering".to_string(), Value::from(ordering));
     }
+    if policy == QueryInputPolicy::KeywordFile {
+        let _previous = object.insert(
+            "score_evidence".to_string(),
+            Value::from("native_sdk_score_v1"),
+        );
+    }
     Ok(result)
 }
 
@@ -966,11 +972,32 @@ pub fn result_value(
             let mut seen_unit_ids = BTreeSet::new();
             let mut seen_spans = BTreeSet::new();
             let mut seen_symbol_spans = BTreeSet::new();
+            let mut previous_scored_file: Option<(f64, String)> = None;
             for hit in hits {
                 // Prove every raw hit before the legacy source-span collapse.
                 // Only the bound exact-symbol policy preserves independent
                 // symbol ranks when two definitions share a context line.
-                let proven = prove_hit(hit, candidates.len().saturating_add(1), files, units)?;
+                let mut proven = prove_hit(hit, candidates.len().saturating_add(1), files, units)?;
+                if plan.policy == QueryInputPolicy::KeywordFile {
+                    let score = serde_json::Number::from_f64(hit.score).ok_or_else(|| {
+                        BenchError::Protocol("keyword_file SDK score is not finite".to_string())
+                    })?;
+                    if let Some((previous_score, previous_path)) = &previous_scored_file {
+                        if hit.score > *previous_score
+                            || (hit.score == *previous_score
+                                && hit.path.as_bytes() < previous_path.as_bytes())
+                        {
+                            return Err(BenchError::Protocol(
+                                "keyword_file SDK score/path order is invalid".to_string(),
+                            ));
+                        }
+                    }
+                    previous_scored_file = Some((hit.score, hit.path.clone()));
+                    let object = proven.candidate.as_object_mut().ok_or_else(|| {
+                        BenchError::Protocol("proved candidate is not an object".to_string())
+                    })?;
+                    let _previous = object.insert("score".to_string(), Value::Number(score));
+                }
                 if plan.policy == QueryInputPolicy::ExactSymbolName
                     && proven.unit_kind != PublishedUnitKind::Symbol
                 {
@@ -1736,6 +1763,114 @@ mod tests {
             &units,
         );
         assert!(duplicate.is_err_and(|error| error.to_string().contains("duplicate file path")));
+    }
+
+    #[test]
+    fn keyword_file_result_preserves_finite_native_score() {
+        use quanta_index_contract::QueryResultWindowV2;
+
+        let (files, units, hit) = status_fixture();
+        let plan = plan_query(
+            QueryInputPolicy::KeywordFile,
+            "main",
+            &NlPlanConfig::default(),
+        )
+        .expect("keyword file plan");
+        let outcome = |score| QueryOutcome::ReturnedWindow {
+            hits: vec![RankedHit {
+                score,
+                ..hit.clone()
+            }],
+            window: QueryResultWindowV2::exact_probe(1),
+            explanation: Some(RouteExplanation::default()),
+            latency: Duration::from_millis(1),
+        };
+        let row = result_value("T1", "lexical", &outcome(2.5), &plan, 10, &files, &units)
+            .expect("finite score is recorded");
+        assert_eq!(row["score_evidence"], "native_sdk_score_v1");
+        assert_eq!(row["candidates"][0]["score"].as_f64(), Some(2.5));
+        assert!(
+            result_value(
+                "T1",
+                "lexical",
+                &outcome(f64::NAN),
+                &plan,
+                10,
+                &files,
+                &units,
+            )
+            .is_err()
+        );
+
+        let mut second = files["a.txt"].clone();
+        second.path = "b.txt".to_string();
+        let files = BTreeMap::from([
+            ("a.txt".to_string(), files["a.txt"].clone()),
+            ("b.txt".to_string(), second),
+        ]);
+        let make_chunk = |path: &str, id: &str| Chunk {
+            path: path.to_string(),
+            start_byte: 0,
+            end_byte: u32::try_from(files[path].bytes.len()).expect("short fixture"),
+            start_line: 1,
+            end_line: 1,
+            text: files[path].text.clone(),
+            strategy: "whole_file".to_string(),
+            version: "test".to_string(),
+            config: "test".to_string(),
+            chunk_id: id.to_string(),
+            fallback: false,
+        };
+        let units = PublishedUnitRegistry::from_chunks_and_symbols(
+            &BTreeMap::from([
+                ("a.txt".to_string(), vec![make_chunk("a.txt", "chunk-id")]),
+                ("b.txt".to_string(), vec![make_chunk("b.txt", "chunk-b")]),
+            ]),
+            &BTreeMap::new(),
+            &files,
+        )
+        .expect("two-file registry");
+        let second_hit = RankedHit {
+            path: "b.txt".to_string(),
+            candidate_id: "chunk-b".to_string(),
+            ..hit.clone()
+        };
+        let two = |first: RankedHit, second: RankedHit| QueryOutcome::ReturnedWindow {
+            hits: vec![first, second],
+            window: QueryResultWindowV2::exact_probe(2),
+            explanation: Some(RouteExplanation::default()),
+            latency: Duration::from_millis(1),
+        };
+        assert!(
+            result_value(
+                "T1",
+                "lexical",
+                &two(
+                    hit.clone(),
+                    RankedHit {
+                        score: 2.0,
+                        ..second_hit.clone()
+                    }
+                ),
+                &plan,
+                10,
+                &files,
+                &units,
+            )
+            .is_err()
+        );
+        assert!(
+            result_value(
+                "T1",
+                "lexical",
+                &two(second_hit, hit),
+                &plan,
+                10,
+                &files,
+                &units,
+            )
+            .is_err()
+        );
     }
 
     fn v3_capture_fixture() -> CaptureProvenance {

@@ -115,6 +115,13 @@ to `ndcg_at_10`, with `rank_metric_interpretation` `scored_ranking` or
 `observed_path_order_prefix`. A plan refusal (for example a digit-leading
 fragment under `keyword_file`) refuses the whole run, so run such tasks in a
 subset suite and report them as unsupported query forms.
+New `keyword_file` records also carry `score_evidence: native_sdk_score_v1`
+and each candidate's finite SDK score. The recorder and evaluator reject
+ascending scores and out-of-order path ties. Historical v5 records without
+these fields remain replayable, but their diagnostic route reports
+`score_evidence: not_recorded`; their score order is supported by the policy
+and fixture only, not by per-row captured scores. Do not promote those older
+rows to a score-order-qualified claim.
 The evaluator requires the recorded `rank_unit: distinct_file` and rejects
 repeated file paths for this policy. Source-reviewed file judgments and their
 metrics are opt-in; the original 300-query native capture stays on its frozen

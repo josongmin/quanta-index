@@ -13217,3 +13217,47 @@ def test_route_ordering_refuses_a_relabeled_row_directly():
         ev._route_ordering(run, "lexical", forged, ["T1"])
     chunk = {**run, "captures": {"q0": {"execution_profile": qp.execution_profile("native")}}}
     assert ev._route_ordering(chunk, "lexical", good, ["T1"]) == "not_a_file_projection"
+
+
+def test_keyword_file_native_score_evidence_is_complete_and_ordered(tmp_path):
+    repo, suite, run, suite_path, runner_path = _file_projection_run(
+        tmp_path, "keyword_file", queries=["alphaTwo", "alphaThree"]
+    )
+    for row in run["results"]:
+        row["score_evidence"] = "native_sdk_score_v1"
+        for index, candidate in enumerate(row["candidates"]):
+            candidate["score"] = float(len(row["candidates"]) - index)
+    _pack, run = _repack(repo, suite, run)
+    schema = _load_schema("runner.schema.json")
+    jsonschema.validate(run, schema)
+    loaded_suite, pack, loaded_run = record_v3(repo, suite, run, suite_path, runner_path)
+    route = ev.evaluate_diagnostic(loaded_suite, pack, loaded_run)["judgment_metrics"][
+        "file_judgments"
+    ]["routes"]["lexical"]
+    assert route["score_evidence"] == "native_sdk_score_v1"
+
+    def refused(change, match):
+        forged = copy.deepcopy(run)
+        change(forged["results"][0])
+        with pytest.raises(ev.EvidenceError, match=match):
+            record_v3(repo, suite, forged, suite_path, runner_path)
+
+    refused(lambda row: row["candidates"][0].pop("score"), "missing native SDK score")
+    missing = copy.deepcopy(run)
+    missing["results"][0]["candidates"][0].pop("score")
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(missing, schema)
+    refused(lambda row: row["candidates"][0].update(score=True), "score must be finite")
+    refused(lambda row: row["candidates"][0].update(score=float("inf")), "non-finite JSON")
+    refused(
+        lambda row: row["candidates"][-1].update(score=100.0),
+        "score/path order is invalid",
+    )
+    refused(lambda row: row.update(score_evidence="unknown"), "score evidence requires")
+    refused(lambda row: row.pop("score_evidence"), "missing/unknown fields")
+    mixed = copy.deepcopy(run)
+    mixed["results"][1].pop("score_evidence")
+    for candidate in mixed["results"][1]["candidates"]:
+        candidate.pop("score")
+    with pytest.raises(ev.EvidenceError, match="mixes score evidence states"):
+        record_v3(repo, suite, mixed, suite_path, runner_path)

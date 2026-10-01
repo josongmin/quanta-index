@@ -805,6 +805,26 @@ fn keyword_and_substring_file_public_routes_group_order_scope_and_case() {
         .expect("source-proven result");
         assert_eq!(recorded["rank_unit"], "distinct_file");
         assert_eq!(recorded["ordering"], ordering);
+        if policy == QueryInputPolicy::KeywordFile {
+            assert_eq!(recorded["score_evidence"], "native_sdk_score_v1");
+            for (candidate, hit) in recorded["candidates"]
+                .as_array()
+                .expect("recorded rows")
+                .iter()
+                .zip(hits)
+            {
+                assert_eq!(candidate["score"].as_f64(), Some(hit.score));
+            }
+        } else {
+            assert!(recorded.get("score_evidence").is_none());
+            assert!(
+                recorded["candidates"]
+                    .as_array()
+                    .expect("recorded rows")
+                    .iter()
+                    .all(|candidate| candidate.get("score").is_none())
+            );
+        }
         // Continuation pages preserve the complete file list without repeats.
         let mut paged_paths = Vec::new();
         let mut page = session
