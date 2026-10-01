@@ -125,6 +125,27 @@ Two infix queries and all component queries were excluded by the frozen
 Quanta `keyword_file` policy admission before search. Sourcegraph/OpenGrok were
 unavailable, so this is not a fresh five-product matched cohort.
 
+An isolated four-query cursor continuation of the archived scored
+`keyword_file` generation resolved its exact-name misses. It used a copy of
+the state, the archived search daemon binary and a fresh external output root;
+the first page of each task matched the archived record by path and score.
+The declaration gold files were present at ranks 12 (`writeContentType`), 16
+(`ContentType`), 12 (`New`), and 12/13/14/17 (`Write`), with all cursors
+exhausted. Thus these four misses are ranked beyond top 10, not absent from
+the indexed file set. This does not establish a BM25 implementation defect:
+`keyword_file` scores content and path, while the gold is declaration-derived.
+The [cursor result](/Users/songmin/Documents/code-new/qi-keyword-cursor-evidence-20261001-utlYjc/cursor-result.json)
+and [source/binary/input binding](/Users/songmin/Documents/code-new/qi-keyword-cursor-evidence-20261001-utlYjc/binding.json)
+are separate diagnostic evidence; they are not added to the 1,196-query capture.
+On a second copy of that **same activation**, the product CLI's typed
+`symbol.local_name.exact(NAME) case:yes` route returned each missing
+declaration: `writeContentType`, `ContentType`, and `New` at rank 1, and the
+four `Write` declarations at ranks 1–4. Symbol IDs, declaration lines and
+source hashes matched the pinned gin files. The [symbol result](/Users/songmin/Documents/code-new/qi-current-symbol-evidence-20261001-qEtsXN/symbol-result.json)
+and [binding](/Users/songmin/Documents/code-new/qi-current-symbol-evidence-20261001-qEtsXN/binding.json)
+confirm that a suitable exact-declaration route existed in the archived
+keyword generation. This is a four-query control, not a rerun of 1,196 tasks.
+
 Independent read-only audit of the archived inputs, native rows and records
 (`audit.py` / `audit.json` in the same external root) checked all 99 source-file
 hashes and all 1,196 task/query/gold identities. Semble's complete BM25 lists

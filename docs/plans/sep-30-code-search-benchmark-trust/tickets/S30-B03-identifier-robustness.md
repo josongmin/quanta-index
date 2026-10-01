@@ -79,3 +79,15 @@ supported five lanes, with the original exclusion denominator retained. The
 [independent checker](/Users/songmin/Documents/code-new/qi-s30-robust-filemodes-20261001-xh1F3Xoh/audit.json)
 verifies native-to-file projection and current Quanta path/status parity with
 v2. This source-exposed diagnostic is not a fresh holdout.
+
+2026-10-01 admission repair: the legacy `no-answer-content` generator checked
+content absence when building its 99 probes, but replay admission checked only
+the empty declaration oracle. A comment-only match could therefore be admitted
+after a query/hash mutation. Newly generated NOC suites use the distinct
+`ascii_content_absent_casefold_v1` source oracle and a `no-answer-content-v2`
+suite ID. The evaluator rechecks all frozen file bytes under the declared
+casefold rule; the old NOA declaration contract and archived NOC diagnostics
+remain readable. Focused fixtures reject content-positive and case-variant
+mutations and wrong units. The original 99 NOC query/gold identities are
+unchanged. New product captures under the v2 suite are still required before
+claiming a newly executed result; archived scores retain their old provenance.

@@ -21,6 +21,11 @@ The subsequent [robustness file-mode run](/Users/songmin/Documents/code-new/qi-s
 also completed all six Semble lanes and the five Quanta `keyword_file` lanes
 supported by its query grammar; it remains a source-exposed native-mode
 diagnostic with no fresh external capture.
+The subsequent admission/reporting patch versioned the NOC content-absence
+oracle and added a source-bound Quanta/Semble robustness breakdown; the
+four scored exact misses were independently located beyond top 10 by cursor.
+These repairs do not close human labels, external index attestation, matched
+five-product semantics, controlled performance or the fresh holdout.
 
 | Order | Ticket | Existing authority | Prerequisite | Deliverable |
 | --- | --- | --- | --- | --- |

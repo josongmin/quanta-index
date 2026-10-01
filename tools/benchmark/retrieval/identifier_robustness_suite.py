@@ -31,11 +31,9 @@ LANES = {
     "typo": ("TYP", source_oracle.GO_NAME_OSA1),
     "no-answer": ("NOA", source_oracle.GO_EXACT_LOCAL_NAME),
 }
-# Derived from the declaration-intent no-answer lane: only probes whose bytes occur in
-# no universe file even under case folding, so a returned file is a content false
-# positive for case-sensitive, case-insensitive and subword matchers alike. The
-# evaluator re-derives only the empty declaration census; content absence is a
-# builder-time property recorded in the census.
+# Derived from the declaration-intent no-answer lane: only probes absent from
+# every universe file even under case folding. The evaluator independently
+# rechecks that content-absence oracle against the frozen source on replay.
 CONTENT_NO_ANSWER = ("no-answer-content", "NOC")
 TYPO_OPERATIONS = ("insertion", "deletion", "substitution", "transposition")
 LETTERS = "abcdefghijklmnopqrstuvwxyz"
@@ -411,7 +409,7 @@ def _content_no_answer(
         reasons[record["task_id"]] = found
     suite = copy.deepcopy(source_suite)
     suite["suite_id"] = source_suite["suite_id"].replace(
-        f"-robustness-no-answer-seed{seed}", f"-robustness-{CONTENT_NO_ANSWER[0]}-seed{seed}"
+        f"-robustness-no-answer-seed{seed}", f"-robustness-{CONTENT_NO_ANSWER[0]}-v2-seed{seed}"
     )
     evaluator.require(suite["suite_id"] != source_suite["suite_id"], "suite ID was not derived")
     rows, mapping = [], []
@@ -424,8 +422,17 @@ def _content_no_answer(
             continue
         task_id = code + task["task_id"][len(source_code) :]
         mapping.append({"task_id": task_id, "source_task_id": task["task_id"]})
-        rows.append({**task, "task_id": task_id})
-    evaluator.require(bool(rows), "every no-answer probe occurs in source content")
+        rows.append(
+            {
+                **task,
+                "task_id": task_id,
+                "source_oracle": {
+                    "contract": source_oracle.ASCII_CONTENT_ABSENT_CASEFOLD,
+                    "unit": "distinct_file",
+                },
+            }
+        )
+    evaluator.require(bool(rows), "no content-absent probes were admitted")
     suite["tasks"] = rows
     _checked, pack, _source = evaluator.validate_suite(repo, suite)
     excluded = [
@@ -434,7 +441,7 @@ def _content_no_answer(
         if reasons[(task_id := record["task_id"])]
     ]
     return (suite, pack), {
-        "contract": source_oracle.GO_EXACT_LOCAL_NAME,
+        "contract": source_oracle.ASCII_CONTENT_ABSENT_CASEFOLD,
         "derived_from": "no-answer",
         "criteria": {
             "content_substring_files": 0,

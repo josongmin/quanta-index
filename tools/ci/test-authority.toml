@@ -351,6 +351,7 @@ targets = [
   "benchmark-lexical-capture-python-owner",
   "benchmark-lexical-scorer-python-owner",
   "benchmark-lexical-five-product-oracle-python-owner",
+  "benchmark-identifier-robustness-report-python-owner",
   "benchmark-portable-proof-python-owner",
   "benchmark-pair-capture-python-owner",
   "benchmark-corpus-release-python-owner",
@@ -511,6 +512,12 @@ rail = "pr-benchmark-control-python"
 id = "benchmark-lexical-five-product-oracle-python-owner"
 path = "tools/ci/tests/test_lexical_five_product_oracle.py"
 owner = "tools/benchmark/retrieval/lexical_five_product_oracle.py"
+rail = "pr-benchmark-control-python"
+
+[[python_targets]]
+id = "benchmark-identifier-robustness-report-python-owner"
+path = "tools/ci/tests/test_identifier_robustness_report.py"
+owner = "tools/benchmark/retrieval/identifier_robustness_report.py"
 rail = "pr-benchmark-control-python"
 
 [[python_targets]]

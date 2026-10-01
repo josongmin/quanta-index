@@ -25,6 +25,7 @@ GO_DECLARATIONS = frozenset(
 )
 GO_EXACT_LOCAL_NAME = "go_exact_local_name_v3"
 ASCII_IDENTIFIER_WORD = "ascii_identifier_word_v1"
+ASCII_CONTENT_ABSENT_CASEFOLD = "ascii_content_absent_casefold_v1"
 # Variants over the same indexed Go declaration set as v3. Prefix, infix and
 # osa1 compare exact (case-sensitive) name text; components compare lowercased
 # camel-snake-v1 components on both sides.
@@ -178,6 +179,14 @@ class SourceOracleIndex:
             self._words = words
         return self._words
 
+    def _require_content_absent_casefold(self, query: str) -> None:
+        """Reject a negative content label if any frozen file contains the query."""
+        _require_query(ASCII_CONTENT_ABSENT_CASEFOLD, query)
+        folded = query.casefold()
+        for path, (raw, _digest) in sorted(self.files.items()):
+            if folded in raw.decode("utf-8", "replace").casefold():
+                raise SourceOracleError(f"content absent contract found a match: {path}")
+
     def _index_go_declarations(self) -> dict[bytes, list[tuple[str, int, int, int, int]]]:
         if self._go_declarations is None:
             try:
@@ -239,6 +248,9 @@ class SourceOracleIndex:
         elif contract == ASCII_IDENTIFIER_WORD and unit == "distinct_file":
             _require_query(contract, query)
             paths = self._index_words().get(query.encode("ascii"), set())
+        elif contract == ASCII_CONTENT_ABSENT_CASEFOLD and unit == "distinct_file":
+            self._require_content_absent_casefold(query)
+            paths = set()
         else:
             raise SourceOracleError("unsupported source oracle contract/unit combination")
         return [
@@ -269,6 +281,9 @@ class SourceOracleIndex:
 
     def first_match(self, contract: str, query: str) -> tuple[str, int, int] | None:
         """Choose the first source match by path and byte offset for a diagnostic gold line."""
+        if contract == ASCII_CONTENT_ABSENT_CASEFOLD:
+            self._require_content_absent_casefold(query)
+            return None
         if contract == ASCII_IDENTIFIER_WORD:
             _require_query(contract, query)
             self._index_words()

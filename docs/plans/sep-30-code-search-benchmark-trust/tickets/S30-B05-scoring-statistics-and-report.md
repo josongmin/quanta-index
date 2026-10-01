@@ -88,3 +88,17 @@ components, and 0/363. The no-answer-content lane returned zero files for
 Quanta and non-empty files on all 99 Semble queries. Request semantics and
 completion coverage differ; these are operational diagnostics, not a paired
 quality delta.
+
+2026-10-01 reporting repair: `identifier_robustness_report.py` joins the
+existing evaluator's per-task file Hit@10, eligibility and statuses to the
+frozen robustness census. It independently checks declaration-name ambiguity
+and gold-file counts against the pinned Go source, preserves generator
+ineligibility versus query-policy refusal, and reports no-answer abstention
+and nonempty responses. It does not calculate a second relevance score.
+Archived NOC diagnostics are explicitly marked
+`content_absence_replay_verified=false`; only a newly admitted NOC suite with
+the versioned content-absence oracle can receive `true` after CLI source
+replay. The CLI refuses output overwrites and in-checkout output paths. This
+compositor supports validated Quanta and Semble distinct-file diagnostics;
+the Sourcegraph/cs/OpenGrok native capture contract remains separate. Existing
+five-product rows are still diagnostic and not a matched-semantics cohort.

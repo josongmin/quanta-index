@@ -7,6 +7,7 @@ import json
 import subprocess
 from pathlib import Path
 
+import jsonschema
 import pytest
 
 from tools.benchmark.retrieval import evaluator as ev
@@ -831,7 +832,7 @@ def test_identifier_robustness_content_no_answer_lane_excludes_present_bytes(tmp
         "NOA-004",
     ]
     content, pack = suites["no-answer-content"]
-    assert content["suite_id"].endswith("-robustness-no-answer-content-seed7")
+    assert content["suite_id"].endswith("-robustness-no-answer-content-v2-seed7")
     assert [(t["task_id"], t["query"]) for t in content["tasks"]] == [
         ("NOC-002", "QuuxZorp"),
         ("NOC-004", "WidgetPlume"),
@@ -840,9 +841,14 @@ def test_identifier_robustness_content_no_answer_lane_excludes_present_bytes(tmp
     by_query = {t["query"]: t for t in declaration["tasks"]}
     for task in content["tasks"]:
         source = by_query[task["query"]]
-        assert {**task, "task_id": source["task_id"]} == source
+        assert {
+            **task,
+            "task_id": source["task_id"],
+            "source_oracle": source["source_oracle"],
+        } == source
         assert task["answerable"] is False and task["file_judgments"] == []
-        assert task["source_oracle"]["contract"] == ev.source_oracle.GO_EXACT_LOCAL_NAME
+        assert task["source_oracle"]["contract"] == ev.source_oracle.ASCII_CONTENT_ABSENT_CASEFOLD
+        assert source["source_oracle"]["contract"] == ev.source_oracle.GO_EXACT_LOCAL_NAME
     lane = census["lanes"]["no-answer-content"]
     assert lane["admitted"] == 2 and lane["source_admitted"] == 4 and lane["excluded"] == 2
     # "BindYAML" occurs only in a comment; "BindJ" is also a declaration infix.
@@ -862,7 +868,7 @@ def test_identifier_robustness_content_no_answer_lane_excludes_present_bytes(tmp
     assert set(census["lanes"]["no-answer"]["records"][0]) >= {"content_substring_files"}
     assert "derived_from" not in census["lanes"]["no-answer"]
     monkeypatch.setattr(irs, "_no_answer_probes", lambda *_args: probes[:1])
-    with pytest.raises(ev.EvidenceError, match="every no-answer probe occurs in source"):
+    with pytest.raises(ev.EvidenceError, match="no content-absent probes were admitted"):
         irs.derive(repo, copy.deepcopy(baseline), seed=7, sample_size=6, no_answer=1)
 
 
@@ -884,3 +890,46 @@ def test_identifier_robustness_content_no_answer_lane_excludes_case_variants(tmp
             "reasons": ["content_bytes_present_casefold", "declaration_infix_present_casefold"],
         }
     ]
+
+
+def test_content_no_answer_replay_refuses_content_positive_query(tmp_path, monkeypatch):
+    from tools.benchmark.retrieval import identifier_robustness_suite as irs
+
+    repo, baseline = _robustness_baseline(tmp_path)
+    probes = [("BindYAML", {}), ("Readjson", {}), ("QuuxZorp", {})]
+    monkeypatch.setattr(irs, "_no_answer_probes", lambda *_args: probes)
+    suites, _census = irs.derive(repo, copy.deepcopy(baseline), seed=7, sample_size=6, no_answer=3)
+    declaration = suites["no-answer"][0]
+    content = suites["no-answer-content"][0]
+    assert [task["query"] for task in content["tasks"]] == ["QuuxZorp"]
+    ev.validate_suite(repo, declaration)
+    ev.validate_suite(repo, content)
+    schema_path = Path(__file__).parents[2] / "benchmark/retrieval/suite.schema.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    jsonschema.validate(content, schema)
+    assert all(
+        task["source_oracle"]["contract"] == ev.source_oracle.GO_EXACT_LOCAL_NAME
+        for task in declaration["tasks"]
+    )
+
+    legacy_content = copy.deepcopy(content)
+    legacy_content["suite_id"] = content["suite_id"].replace(
+        "-no-answer-content-v2-", "-no-answer-content-"
+    )
+    legacy_content["tasks"][0]["source_oracle"]["contract"] = ev.source_oracle.GO_EXACT_LOCAL_NAME
+    assert legacy_content["suite_id"] != content["suite_id"]
+    ev.validate_suite(repo, legacy_content)
+
+    wrong_unit = copy.deepcopy(content)
+    wrong_unit["tasks"][0]["source_oracle"]["unit"] = "symbol"
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(wrong_unit, schema)
+    with pytest.raises(ev.EvidenceError, match="judgment unit mismatch"):
+        ev.validate_suite(repo, wrong_unit)
+
+    for query in ("BindYAML", "Readjson"):
+        altered = copy.deepcopy(content)
+        altered["tasks"][0]["query"] = query
+        altered["tasks"][0]["query_sha256"] = ev.digest(query.encode())
+        with pytest.raises(ev.EvidenceError, match="content absent"):
+            ev.validate_suite(repo, altered)

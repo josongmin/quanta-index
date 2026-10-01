@@ -201,6 +201,29 @@ python3 tools/benchmark/retrieval/identifier_robustness_suite.py \
 
 Its base names come from an exposed suite, so its output is a source-exposed
 diagnostic, never an unseen holdout.
+The generated `no-answer-content-v2` suite uses
+`ascii_content_absent_casefold_v1` with `unit: distinct_file`. Replay admission
+checks every frozen source file for the query under the same UTF-8 replacement
+and casefold rule used by the builder. The separate `no-answer` lane continues
+to mean only that no matching declaration exists. Archived NOC suites retain
+their older declaration-only oracle and must be labeled as legacy diagnostics.
+
+For a validated Quanta or Semble distinct-file diagnostic, join the existing
+evaluator report to the frozen robustness census without rescoring candidates:
+
+```sh
+uv run --frozen --extra dev python -m tools.benchmark.retrieval.identifier_robustness_report \
+  --repo /absolute/corpus --suite /absolute/suite.json \
+  --record /absolute/record.json --diagnostic /absolute/diagnostic.json \
+  --census /absolute/census.json --lane prefix \
+  --output /absolute/new-external-root/report.json
+```
+
+The output records generator admission, unsupported request forms, execution
+status, eligible unique/ambiguous Hit@10 and no-answer abstention separately.
+It refuses an existing output path and is always `diagnostic_unqualified`.
+Sourcegraph, cs and OpenGrok have a different native capture contract and are
+not admitted through this report command.
 
 Create reproducible, runnable single-route suites from an unannotated frozen
 source suite with a new external output root:
