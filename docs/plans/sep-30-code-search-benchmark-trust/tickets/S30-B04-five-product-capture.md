@@ -113,3 +113,14 @@ path/content behavior; the prior Sourcegraph/cs/OpenGrok rows were not rerun.
 Sourcegraph and OpenGrok ports 7080/7081 refused connections at this follow-up,
 and their actual indexed universes remain unattested. The five-product
 matched-semantics cohort and a qualified cross-product ranking remain blocked.
+
+Independent read-only audit of the archived inputs, native rows and records
+(`audit.py` / `audit.json` in the same external root) checked all 99 source-file
+hashes and all 1,196 task/query/gold identities. Semble's complete BM25 lists
+project to exactly the recorded first ten distinct files on every task; every
+gold path in the six missed tasks is present beyond rank ten (nearest ranks:
+`With` 11, `writeContentType` 14, `File` 15, `GET` 16, `Type` 17,
+`Name` 27). Quanta's four misses are all `capped` ten-file responses;
+their gold rank beyond the captured window is unknown. These observations
+locate the miss stage without promoting a bare-name gold to independent
+relevance judgment or inferring an engine defect.

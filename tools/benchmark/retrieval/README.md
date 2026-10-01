@@ -95,8 +95,10 @@ golden, re-derived independently by `query_plan.py`:
   most 256 bytes (not `AND`/`OR`/`NOT`) becomes `select:file case:yes <name>`,
   a scored, case-sensitive keyword over content **and** path tokens. Files come
   back by descending score (`ordering: score_desc_path_tiebreak`), so its file NDCG
-  (reported by `evaluate-diagnostic`) is a ranking number; captured records carry
-  no scores, so this order rests on the policy and the pinned runner binary. A file whose path alone contains the name can
+  (reported by `evaluate-diagnostic`) is a ranking number. Historical records
+  lacked scores and rely on the policy and pinned runner binary for their order;
+  new records preserve finite SDK scores per file and verify score/path order.
+  A file whose path alone contains the name can
   match; this is not the content-only phrase contract.
 - `substring_file` (`quanta-substring-file-v1`): one fragment of 3–256 bytes
   without a single quote or control character becomes

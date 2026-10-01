@@ -10,6 +10,14 @@ The [Sep 27 benchmark RFCs](../../sep-27-code-search-remediation/readme.md)
 retain ownership. These tickets describe the concrete data and execution work;
 do not count the two ledgers as separate implementations.
 
+2026-10-01 follow-up at clean `quanta-index@5d345a52`: Quanta scored
+`keyword_file` and Semble scored `lexical-file` each completed all 1,196 exact
+queries against the 99-file gin universe. Their independent source-file hits
+were 1,192 and 1,190, respectively. The [archived raw evidence and audit](/Users/songmin/Documents/code-new/qi-s30-file-modes-20261001-ExtGj6hb/README.md)
+remain diagnostic; B02 human qrels, B04 external indexed universes and a
+matched five-product cohort, B07 controlled performance, and B08 fresh
+multi-repository holdout remain open.
+
 | Order | Ticket | Existing authority | Prerequisite | Deliverable |
 | --- | --- | --- | --- | --- |
 | P0 | [S30-B01](S30-B01-exact-baseline-and-input-admission.md) | CS-BENCH-01/02 | Pinned gin checkout, suite and original capture | 1,196-task source/pack/row audit and immutable run admission |

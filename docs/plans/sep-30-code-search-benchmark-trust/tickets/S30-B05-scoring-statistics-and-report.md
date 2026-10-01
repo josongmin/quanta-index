@@ -74,3 +74,8 @@ The two scored file modes have different query semantics and tie policies, so
 these counts are diagnostic observations, not a paired quality delta. See
 [`Semble summary`](/Users/songmin/Documents/code-new/qi-s30-file-modes-20261001-ExtGj6hb/semble/summary.json) and
 [`Quanta summary`](/Users/songmin/Documents/code-new/qi-s30-file-modes-20261001-ExtGj6hb/quanta/summary.json).
+The independent [audit checker](/Users/songmin/Documents/code-new/qi-s30-file-modes-20261001-ExtGj6hb/audit.py)
+re-read the source-file qrels, both records and Semble's full native BM25
+lists; its [result](/Users/songmin/Documents/code-new/qi-s30-file-modes-20261001-ExtGj6hb/audit.json)
+agrees on every task and projection. No new five-product paired score was
+created from snapshots with different request semantics.
