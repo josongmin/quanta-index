@@ -273,6 +273,7 @@ def validate_execution_profile(value: Any, system: str, where: str) -> dict[str,
     modes = {
         "native-default": ("semble-native-default-v1", None, "upstream-content-default"),
         "lexical-only": ("semble-lexical-only-v1", None, "not_applicable"),
+        "lexical-file": ("semble-lexical-file-v1", None, "not_applicable"),
         "semantic-only": ("semble-semantic-only-v1", None, "not_applicable"),
     }
     mode = profile["mode"]
@@ -1386,9 +1387,10 @@ def _validate_run(
     pack_queries = {task["task_id"]: task for task in pack["tasks"]}
     found = set()
     score_evidence_by_route: dict[str, str | None] = {}
+    file_depth_by_capture: dict[str, int] = {}
     for raw in results:
         result = (
-            object_keys_optional(raw, result_keys, ["rank_unit", "ordering", "score_evidence"], "result")
+            object_keys_optional(raw, result_keys, ["rank_unit", "ordering", "score_evidence", "file_collection"], "result")
             if version == RUNNER_SCHEMA_VERSION
             else object_keys(raw, result_keys, "result")
         )
@@ -1401,6 +1403,11 @@ def _validate_run(
             if version == RUNNER_SCHEMA_VERSION and capture["system"] == "quanta"
             else None
         )
+        semble_file = (
+            version == RUNNER_SCHEMA_VERSION
+            and capture["system"] == "semble"
+            and capture["execution_profile"]["mode"] == "lexical-file"
+        )
         rank_unit = result.get("rank_unit")
         if rank_unit is not None:
             require(
@@ -1411,14 +1418,17 @@ def _validate_run(
         score_evidence = result.get("score_evidence")
         if score_evidence is not None:
             require(
-                profile_policy == "keyword_file" and score_evidence == "native_sdk_score_v1",
-                f"score evidence requires keyword_file native SDK scores: {key}",
+                (profile_policy == "keyword_file" and score_evidence == "native_sdk_score_v1")
+                or (semble_file and score_evidence == "semble_bm25_score_v1"),
+                f"score evidence requires keyword_file native SDK scores or Semble lexical-file BM25 scores: {key}",
             )
-        if profile_policy == "keyword_file":
+        if profile_policy == "keyword_file" or semble_file:
             if key[1] in score_evidence_by_route:
                 require(
                     score_evidence_by_route[key[1]] == score_evidence,
-                    f"keyword_file route mixes score evidence states: {key[1]}",
+                    f"keyword_file route mixes score evidence states: {key[1]}"
+                    if profile_policy == "keyword_file"
+                    else f"Semble lexical-file route mixes score evidence states: {key[1]}",
                 )
             else:
                 score_evidence_by_route[key[1]] = score_evidence
@@ -1446,6 +1456,12 @@ def _validate_run(
                     span_protocol == 1,
                     f"symbol rank_unit requires published-unit span protocol: {key}",
                 )
+        elif semble_file:
+            require(
+                rank_unit == "distinct_file" and ordering == "score_desc_native_tiebreak"
+                and score_evidence == "semble_bm25_score_v1",
+                f"Semble lexical-file requires a scored distinct-file result: {key}",
+            )
         elif capture["system"] == "quanta":
             require(rank_unit is None, f"Quanta chunk profile has incompatible rank_unit: {key}")
         else:
@@ -1453,8 +1469,10 @@ def _validate_run(
                 rank_unit is None,
                 f"Semble capture has no verified distinct_file rank authority: {key}",
             )
-        if profile_policy not in query_plan_contract.FILE_PROJECTION_ORDERING:
+        if profile_policy not in query_plan_contract.FILE_PROJECTION_ORDERING and not semble_file:
             require(ordering is None, f"ordering applies only to file projections: {key}")
+        if not semble_file:
+            require("file_collection" not in result, f"file collection requires Semble lexical-file: {key}")
         if version in (4, 5):
             pack_task = pack_queries.get(key[0])
             require(
@@ -1550,6 +1568,38 @@ def _validate_run(
                 item = object_keys(error, ["code", "message"], f"error for {key}")
                 string(item["code"], f"error.code for {key}")
                 string(item["message"], f"error.message for {key}")
+        if semble_file:
+            collection = result.get("file_collection")
+            if status in ("success", "abstained"):
+                collection = object_keys(
+                    collection,
+                    ["indexed_chunks", "matched_chunks", "matching_files"],
+                    f"file_collection for {key}",
+                )
+                indexed = collection["indexed_chunks"]
+                matched = collection["matched_chunks"]
+                matching_files = collection["matching_files"]
+                require(
+                    type(indexed) is int and indexed > 0
+                    and type(matched) is int and 0 <= matched <= indexed
+                    and type(matching_files) is int and 0 <= matching_files <= matched,
+                    f"Semble file collection counts are invalid: {key}",
+                )
+                require(
+                    len(candidates) == min(matching_files, suite["comparison_contract"]["top_k"])
+                    and (status == "abstained") == (matched == 0),
+                    f"Semble file collection does not explain returned files: {key}",
+                )
+                capture_id = provenance[key[1]]["capture_id"]
+                if capture_id in file_depth_by_capture:
+                    require(
+                        file_depth_by_capture[capture_id] == indexed,
+                        f"Semble indexed chunk depth changes within a capture: {key}",
+                    )
+                else:
+                    file_depth_by_capture[capture_id] = indexed
+            else:
+                require(collection is None, f"failed Semble file collection has counts: {key}")
         if (
             profile_policy in query_plan_contract.FILE_PROJECTION_ORDERING
             and query_plan_contract.FILE_PROJECTION_ORDERING[profile_policy]
@@ -1578,9 +1628,9 @@ def _validate_run(
                 candidate=True,
                 universe=universe,
                 allow_span_accounting=version == 5 and capture["system"] == "quanta",
-                allow_score=score_evidence == "native_sdk_score_v1",
+                allow_score=score_evidence in ("native_sdk_score_v1", "semble_bm25_score_v1"),
             )
-            if score_evidence == "native_sdk_score_v1":
+            if score_evidence in ("native_sdk_score_v1", "semble_bm25_score_v1"):
                 require("score" in candidate, f"missing native SDK score for {key}")
                 score = float(candidate["score"])
                 path = candidate["path"]
@@ -1588,8 +1638,10 @@ def _validate_run(
                     previous_score, previous_path = previous_scored_file
                     require(
                         score < previous_score
-                        or (score == previous_score and path.encode() >= previous_path.encode()),
-                        f"keyword_file native SDK score/path order is invalid: {key}",
+                        or (score == previous_score and (semble_file or path.encode() >= previous_path.encode())),
+                        f"keyword_file native SDK score/path order is invalid: {key}"
+                        if profile_policy == "keyword_file"
+                        else f"Semble lexical-file native score order is invalid: {key}",
                     )
                 previous_scored_file = (score, path)
             if "span_accounting" in candidate:
@@ -1997,6 +2049,7 @@ def file_recall_at_k_judged(
 #: How a route's rank metrics may be read, from its bound ordering contract.
 RANK_METRIC_INTERPRETATION = {
     "score_desc_path_tiebreak": "scored_ranking",
+    "score_desc_native_tiebreak": "scored_ranking_native_ties",
     "path_order_constant_score": "observed_path_order_prefix",
 }
 
@@ -2006,6 +2059,8 @@ def _route_ordering(run: dict[str, Any], route: str, results: dict, task_ids: li
     capture = run["captures"][run["route_provenance"][route]["capture_id"]]
     policy = capture.get("execution_profile", {}).get("policy")
     derived = query_plan_contract.FILE_PROJECTION_ORDERING.get(policy)
+    if capture.get("system") == "semble" and capture.get("execution_profile", {}).get("mode") == "lexical-file":
+        derived = "score_desc_native_tiebreak"
     if derived is None:
         return "not_a_file_projection"
     for task_id in task_ids:
@@ -2123,11 +2178,16 @@ def judgment_diagnostics(
                 capture_id = run["route_provenance"][route]["capture_id"]
                 capture = run["captures"][capture_id]
                 system = capture["system"]
+                complete_semble_file = (
+                    system == "semble"
+                    and rank_unit == "distinct_file"
+                    and result.get("file_collection") is not None
+                )
                 reason = None
                 if rank_unit != expected_unit:
                     reason = "rank_unit_mismatch"
                 elif status not in SCORED_STATUSES and not (
-                    status == "abstained" and system == "quanta"
+                    status == "abstained" and (system == "quanta" or complete_semble_file)
                 ):
                     reason = "execution_status_" + status
                 elif kind == "declaration_judgments" and (
@@ -2140,7 +2200,8 @@ def judgment_diagnostics(
                 ):
                     reason = "missing_published_symbol_authority"
                 elif len(ranked) < NDCG_K and not (
-                    status in ("success", "abstained") and system == "quanta"
+                    status in ("success", "abstained")
+                    and (system == "quanta" or complete_semble_file)
                 ):
                     reason = "insufficient_depth_without_exhaustion"
                 elif tasks[task_id].get("judgment_policy") == COMPLETE_JUDGMENT_POLICY:
@@ -2192,7 +2253,9 @@ def judgment_diagnostics(
                 "ordering": ordering,
                 "score_evidence": (
                     _route_score_evidence(results, route, answerable_ids)
-                    if kind == "file_judgments" and ordering == "score_desc_path_tiebreak"
+                    if kind == "file_judgments" and ordering in (
+                        "score_desc_path_tiebreak", "score_desc_native_tiebreak"
+                    )
                     else "not_applicable"
                 ),
                 "rank_metric_interpretation": RANK_METRIC_INTERPRETATION.get(

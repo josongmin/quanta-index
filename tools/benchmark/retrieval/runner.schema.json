@@ -41,22 +41,25 @@
   },
   "$defs": {
     "query_identity": {
-      "type": "object", "additionalProperties": false,
-      "required": ["original_query_sha256", "effective_lexical_request_sha256", "semantic_text_sha256"],
-      "properties": {
-        "original_query_sha256": {
-          "type": "string", "pattern": "^[0-9a-f]{64}$",
-          "description": "SHA-256 of the caller's raw query bytes; must equal the frozen query-pack task digest."
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["original_query_sha256", "effective_lexical_request_sha256", "semantic_text_sha256"],
+          "properties": {
+            "original_query_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "effective_lexical_request_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "semantic_text_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+          }
         },
-        "effective_lexical_request_sha256": {
-          "type": "string", "pattern": "^[0-9a-f]{64}$",
-          "description": "SHA-256 of the exact lexical-lane request produced by the planner; the evaluator re-derives it from the raw query plus the recorded policy."
-        },
-        "semantic_text_sha256": {
-          "type": "string", "pattern": "^[0-9a-f]{64}$",
-          "description": "SHA-256 of the exact semantic-lane text bytes."
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["original_query_sha256", "submitted_query_sha256"],
+          "properties": {
+            "original_query_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "submitted_query_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+          }
         }
-      }
+      ]
     },
     "comparison_contract": {
       "type": "object", "additionalProperties": false,
@@ -148,6 +151,7 @@
                   {"if": {"properties": {"mode": {"const": "native-default"}}, "required": ["mode"]}, "then": {"properties": {"profile_id": {"const": "semble-native-default-v1"}, "alpha": {"type": "null"}, "rerank": {"const": "upstream-content-default"}}}},
                   {"if": {"properties": {"mode": {"const": "hybrid-no-rerank"}}, "required": ["mode"]}, "then": {"properties": {"profile_id": {"const": "semble-hybrid-no-rerank-v1"}, "alpha": {"type": "number", "minimum": 0, "maximum": 1}, "rerank": {"const": false}}}},
                   {"if": {"properties": {"mode": {"const": "lexical-only"}}, "required": ["mode"]}, "then": {"properties": {"profile_id": {"const": "semble-lexical-only-v1"}, "alpha": {"type": "null"}, "rerank": {"const": "not_applicable"}}}},
+                  {"if": {"properties": {"mode": {"const": "lexical-file"}}, "required": ["mode"]}, "then": {"properties": {"profile_id": {"const": "semble-lexical-file-v1"}, "alpha": {"type": "null"}, "rerank": {"const": "not_applicable"}}}},
                   {"if": {"properties": {"mode": {"const": "semantic-only"}}, "required": ["mode"]}, "then": {"properties": {"profile_id": {"const": "semble-semantic-only-v1"}, "alpha": {"type": "null"}, "rerank": {"const": "not_applicable"}}}}
                 ]
               }
@@ -256,8 +260,8 @@
           "type": "object", "additionalProperties": false,
           "required": ["profile_id", "mode", "alpha", "rerank"],
           "properties": {
-            "profile_id": {"enum": ["semble-native-default-v1", "semble-hybrid-no-rerank-v1", "semble-lexical-only-v1", "semble-semantic-only-v1"]},
-            "mode": {"enum": ["native-default", "hybrid-no-rerank", "lexical-only", "semantic-only"]},
+            "profile_id": {"enum": ["semble-native-default-v1", "semble-hybrid-no-rerank-v1", "semble-lexical-only-v1", "semble-lexical-file-v1", "semble-semantic-only-v1"]},
+            "mode": {"enum": ["native-default", "hybrid-no-rerank", "lexical-only", "lexical-file", "semantic-only"]},
             "alpha": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
             "rerank": {"enum": ["upstream-content-default", false, "not_applicable"]}
           }
@@ -287,7 +291,7 @@
         "block_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "tokens": {"type": "integer", "minimum": 1},
         "rank": {"type": "integer", "minimum": 1},
-        "score": {"type": "number", "description": "Native SDK score, present only with keyword_file score_evidence=native_sdk_score_v1."},
+        "score": {"type": "number", "description": "Native score bound by the result's score_evidence marker."},
         "span_accounting": {
           "type": "object", "additionalProperties": false,
           "required": ["unit_kind", "unit_id", "producer_identity", "indexed_start_byte", "indexed_end_byte", "sdk_start_line", "sdk_end_line", "extra_context_bytes"],
@@ -329,8 +333,17 @@
         "task_id": {"type": "string", "minLength": 1},
         "route": {"type": "string", "minLength": 1},
         "rank_unit": {"description": "Optional effective result unit. symbol is valid only for Quanta exact_symbol_name on the symbol route; distinct_file only for the lexical file projections literal_file, keyword_file and substring_file. It names the unit, not how the units are ordered. Historical symbol records may omit it.", "enum": ["distinct_file", "symbol"]},
-        "ordering": {"description": "How a file projection orders its distinct files, derived from the request policy: score_desc_path_tiebreak for keyword_file; path_order_constant_score (a match-only restriction returned in path order, not a relevance ranking) for literal_file and substring_file. Historical literal_file records may omit it.", "enum": ["score_desc_path_tiebreak", "path_order_constant_score"]},
-        "score_evidence": {"description": "Present on new keyword_file results whose every candidate preserves its finite native SDK score. Historical v5 results without it remain replayable but have no per-row score-order proof.", "const": "native_sdk_score_v1"},
+        "ordering": {"description": "How a file projection orders its distinct files: scored Quanta keyword files, path-ordered Quanta restrictions, or native-score Semble BM25 with upstream tie order.", "enum": ["score_desc_path_tiebreak", "path_order_constant_score", "score_desc_native_tiebreak"]},
+        "score_evidence": {"description": "Present only when every candidate preserves its finite native score. Historical v5 records without it remain replayable but have no per-row score-order proof.", "enum": ["native_sdk_score_v1", "semble_bm25_score_v1"]},
+        "file_collection": {
+          "type": "object", "additionalProperties": false,
+          "required": ["indexed_chunks", "matched_chunks", "matching_files"],
+          "properties": {
+            "indexed_chunks": {"type": "integer", "minimum": 1},
+            "matched_chunks": {"type": "integer", "minimum": 0},
+            "matching_files": {"type": "integer", "minimum": 0}
+          }
+        },
         "status": {"enum": ["success", "abstained", "capped", "error", "timeout", "unavailable"]},
         "candidates": {"type": "array", "items": {"$ref": "#/$defs/candidate"}},
         "query_identity": {"$ref": "#/$defs/query_identity"},

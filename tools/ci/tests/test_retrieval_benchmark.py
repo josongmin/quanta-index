@@ -2954,6 +2954,22 @@ def test_worker_template_dispatches_profiles_with_lane_isolation(tmp_path, monke
     assert payload["actual_alpha_by_task"] is None
     assert payload["rerank_applied"] is False
 
+    completed, payload = run_profile("lexical-file")
+    assert completed.returncode == 0, completed.stderr
+    assert payload["lane_call_counts"] == {"bm25": 2, "semantic": 0, "encode": 0}
+    assert all(
+        event["candidate_depth"] == payload["stats"]["total_chunks"]
+        for event in payload["execution_events"]
+    )
+    semble_adapter.validate_native_profile_report(payload, "lexical-file", None)
+    forged = copy.deepcopy(payload)
+    for event in forged["execution_events"]:
+        event["candidate_depth"] += 1
+        event["lane_candidate_depths"]["bm25"] = [event["candidate_depth"]]
+    forged["execution_events_sha256"] = ev.digest(ev.canonical(forged["execution_events"]))
+    with pytest.raises(semble_adapter.AdapterError, match="every indexed chunk"):
+        semble_adapter.validate_native_profile_report(forged, "lexical-file", None)
+
     # semantic-only: zero BM25 calls.
     completed, payload = run_profile("semantic-only")
     assert completed.returncode == 0, completed.stderr
@@ -4154,6 +4170,125 @@ def test_normalize_record_proves_spans_and_order(tmp_path):
     # Missing samples are null, never 0.
     unmeasured = build(native, {})
     assert unmeasured["results"][0]["timings"]["query_latency_ms"] is None
+
+
+def test_semble_file_collection_preserves_native_rank_and_exhaustion(tmp_path):
+    repo, suite, _run, suite_path, runner_path, files = fixture_v3(
+        tmp_path, answerable_only=True
+    )
+    suite["routes"] = ["semble-lexical-file"]
+    suite["diagnostic_policy"] = ev.OBSERVED_PREFIX_DIAGNOSTIC_POLICY
+    for task in suite["tasks"]:
+        task["label_review"] = {
+            "assessment": "reviewed_unambiguous",
+            "reviewer_id": "fixture-reviewer",
+            "evidence_sha256": ev.digest(b"independent file fixture"),
+        }
+        task["judgment_policy"] = ev.UNJUDGED_POLICY
+        task["file_judgments"] = [
+            {"path": path, "file_sha256": ev.digest(files[path]), "grade": grade}
+            for path, grade in (("a.txt", 3), ("b.txt", 1))
+        ]
+    _, pack, _ = ev.validate_suite(repo, suite)
+    raw = [
+        {
+            "task_id": "T1",
+            "results": [
+                {"file_path": "a.txt", "start_line": 2, "end_line": 2, "score": 2.0},
+                {"file_path": "a.txt", "start_line": 3, "end_line": 3, "score": 1.5},
+                {"file_path": "b.txt", "start_line": 1, "end_line": 1, "score": 1.0},
+            ],
+        },
+        {"task_id": "T2", "results": []},
+    ]
+
+    def normalized(rows):
+        return semble_adapter.normalize_record(
+            pack,
+            ev.digest(ev.canonical(pack)),
+            rows,
+            {"T1": [1.0], "T2": [1.0]},
+            repo,
+            {path: ev.digest(data) for path, data in files.items()},
+            {path: data.splitlines(keepends=True) for path, data in files.items()},
+            pack["comparison_contract"],
+            "file-run",
+            "attested",
+            "method",
+            "log",
+            "minishlab/potion-code-16M-v2",
+            "rev",
+            "semble-lexical-file",
+            semble_adapter.execution_profile("lexical-file", None),
+            "file-cap",
+            _fake_sha("mapping"),
+            _fake_sha("worker"),
+            indexed_chunks=4,
+        )
+
+    run = normalized(raw)
+    first, second = run["results"]
+    assert [item["path"] for item in first["candidates"]] == ["a.txt", "b.txt"]
+    assert [item["score"] for item in first["candidates"]] == [2.0, 1.0]
+    assert first["file_collection"] == {
+        "indexed_chunks": 4,
+        "matched_chunks": 3,
+        "matching_files": 2,
+    }
+    assert second["status"] == "abstained"
+    assert second["file_collection"]["matched_chunks"] == 0
+    jsonschema.validate(run, _load_schema("runner.schema.json"))
+    loaded_suite, loaded_pack, loaded_run = record_v3(
+        repo, suite, run, suite_path, runner_path
+    )
+    route = ev.evaluate_diagnostic(loaded_suite, loaded_pack, loaded_run)[
+        "judgment_metrics"
+    ]["file_judgments"]["routes"]["semble-lexical-file"]
+    assert route["eligible_count"] == 2
+    assert route["ordering"] == "score_desc_native_tiebreak"
+    assert route["score_evidence"] == "semble_bm25_score_v1"
+
+    for change, message in (
+        (lambda row: row.pop("file_collection"), "file_collection"),
+        (lambda row: row.update(rank_unit="symbol"), "scored distinct-file"),
+        (lambda row: row["candidates"][1].update(score=3.0), "native score order"),
+        (lambda row: row["file_collection"].update(matching_files=1), "does not explain"),
+    ):
+        forged = copy.deepcopy(run)
+        change(forged["results"][0])
+        with pytest.raises(ev.EvidenceError, match=message):
+            record_v3(repo, suite, forged, suite_path, runner_path)
+    inconsistent_depth = copy.deepcopy(run)
+    inconsistent_depth["results"][1]["file_collection"]["indexed_chunks"] = 5
+    with pytest.raises(ev.EvidenceError, match="depth changes within a capture"):
+        record_v3(repo, suite, inconsistent_depth, suite_path, runner_path)
+    reversed_raw = copy.deepcopy(raw)
+    reversed_raw[0]["results"][2]["score"] = 3.0
+    with pytest.raises(semble_adapter.AdapterError, match="native score order"):
+        normalized(reversed_raw)
+    tied_raw = copy.deepcopy(raw)
+    tied_raw[0]["results"] = [
+        {"file_path": "b.txt", "start_line": 1, "end_line": 1, "score": 2.0},
+        {"file_path": "a.txt", "start_line": 2, "end_line": 2, "score": 2.0},
+    ]
+    tied = normalized(tied_raw)
+    assert [item["path"] for item in tied["results"][0]["candidates"]] == [
+        "b.txt", "a.txt"
+    ]
+    record_v3(repo, suite, tied, suite_path, runner_path)
+
+    profile = semble_adapter.execution_profile("lexical-file", None)
+    assert pairrun._validate_semble_profile(profile, "fixture") == profile
+    bound = {
+        "execution_profiles": {"semble": profile},
+        "semble_route": "semble-lexical-file",
+        "baseline_route": "semble-lexical-file",
+        "candidate_route": "lexical",
+        "routes": ["lexical"],
+    }
+    pairrun._validate_semble_route_binding(bound)
+    with pytest.raises(pairrun.RunError, match="semble_route must be"):
+        pairrun._validate_semble_route_binding({**bound, "semble_route": "semble-lexical-only"})
 
 
 def _single_route_record_v3(pack_sha, contract, route, system, capture_id, rows):

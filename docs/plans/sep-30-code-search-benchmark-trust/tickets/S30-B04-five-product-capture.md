@@ -85,3 +85,14 @@ at file rank 5 (source chunk rank 23). For `writeContentType`, the gold
 chunks versus all chunks changed the order of equal-score hits, so an adapter
 must declare a deterministic tie rule and prove its collection depth. This
 control is not an integrated Semble file route or a new 1,196-task score.
+
+After that control, `lexical-file` was added as a separate Semble adapter
+profile. It retains every positive-score native BM25 chunk in the raw capture,
+then proves its span and projects the first ten distinct files. The frozen
+two-query adapter run and evaluator replay succeeded at
+[`adapter-run/record.json`](/private/tmp/qi-sem-file-probe-pADCo8/adapter-run/record.json)
+and [`adapter-report.json`](/private/tmp/qi-sem-file-probe-pADCo8/adapter-report.json):
+`Param` hit at file rank 5; `writeContentType` missed at file rank 14 in the
+full native list. This is a two-query diagnostic on the local working source;
+the complete 1,196-query profile, five-product matched semantics and indexed
+universe attestations are still `NOT_RUN`/`BLOCKED` as described above.

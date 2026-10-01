@@ -107,12 +107,14 @@ SEMBLE_PROFILES = (
     "native-default",
     "hybrid-no-rerank",
     "lexical-only",
+    "lexical-file",
     "semantic-only",
 )
 SEMBLE_ROUTE_BY_MODE = {
     "native-default": "semble-hybrid",
     "hybrid-no-rerank": "semble-hybrid",
     "lexical-only": "semble-lexical-only",
+    "lexical-file": "semble-lexical-file",
     "semantic-only": "semble-semantic-only",
 }
 QUANTA_SYMBOL_PRODUCER_IDENTITY = "source-bound-symbols-v2"
@@ -129,6 +131,7 @@ def _validate_semble_profile(value: object, where: str) -> dict:
     fixed = {
         "native-default": ("semble-native-default-v1", None, "upstream-content-default"),
         "lexical-only": ("semble-lexical-only-v1", None, "not_applicable"),
+        "lexical-file": ("semble-lexical-file-v1", None, "not_applicable"),
         "semantic-only": ("semble-semantic-only-v1", None, "not_applicable"),
     }
     if mode == "hybrid-no-rerank":
@@ -5270,6 +5273,7 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
             "native-default",
             "hybrid-no-rerank",
             "lexical-only",
+            "lexical-file",
             "semantic-only",
         }:
             raise RunError(f"{where} has unknown Semble profile")
@@ -5286,7 +5290,7 @@ def _validate_phase_metrics(payload: object, where: str) -> dict:
         ):
             raise RunError(f"{where} has invalid Semble lane counts")
         if (
-            profile == "lexical-only"
+            profile in {"lexical-only", "lexical-file"}
             and not (
                 lane_counts["bm25"] > 0
                 and lane_counts["semantic"] == 0
@@ -7124,7 +7128,7 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             ):
                 pair_note("semble_lane_counts_malformed", ("T11",))
             elif (
-                expected_mode == "lexical-only"
+                expected_mode in ("lexical-only", "lexical-file")
                 and (lane_counts["bm25"] <= 0 or lane_counts["semantic"] or lane_counts["encode"])
                 or expected_mode == "semantic-only"
                 and (lane_counts["bm25"] or lane_counts["semantic"] <= 0)

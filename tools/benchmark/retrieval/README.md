@@ -122,6 +122,14 @@ these fields remain replayable, but their diagnostic route reports
 `score_evidence: not_recorded`; their score order is supported by the policy
 and fixture only, not by per-row captured scores. Do not promote those older
 rows to a score-order-qualified claim.
+Semble's separate `lexical-file` profile requests all indexed chunks from
+the pinned BM25 lane, keeps that positive-score native list in `native.json`,
+and records each file at its first source rank until ten distinct files are
+selected. It emits `rank_unit: distinct_file`,
+`ordering: score_desc_native_tiebreak`, per-file BM25 scores and collection
+counts. Upstream ties retain native order; they are not path tie breaks.
+`lexical-only` continues to return ten chunks. The two profiles must not be
+combined in a single score or latency comparison.
 The evaluator requires the recorded `rank_unit: distinct_file` and rejects
 repeated file paths for this policy. Source-reviewed file judgments and their
 metrics are opt-in; the original 300-query native capture stays on its frozen
@@ -295,7 +303,7 @@ marked reviewed or searched. This status is an authored claim, not proof that
 review or search has not already occurred. Preserve a separately controlled
 proposal freeze and reviewer custody record for that ordering claim.
 
-The five-product bare-symbol diagnostic records the native top-10 rank unit
+The historical five-product bare-symbol diagnostic records the native top-10 rank unit
 per product: Quanta and Semble return chunks, while Sourcegraph, OpenGrok and
 cs return distinct files. Its common evidence uses separate metric names for
 these two units. The mechanically generated gold and unverified external
@@ -349,7 +357,7 @@ The JSON schema is the complete field authority; frequently used options:
 | `semble_python` | required for `pair` | pinned Semble venv interpreter |
 | `semble_lockfile` | required for `pair` | external exact-environment freeze path (frozen into the stage) |
 | `semble_lockfile_sha256` | required for `pair` | SHA-256 of the external freeze; installed distributions must match every pinned line with no extras, including `semble==0.6.0` |
-| `semble_route` | derived from Semble profile | `lexical-only` -> `semble-lexical-only`, `semantic-only` -> `semble-semantic-only`, and `native-default`/`hybrid-no-rerank` -> `semble-hybrid`; explicit mismatches are refused |
+| `semble_route` | derived from Semble profile | `lexical-only` -> `semble-lexical-only`, `lexical-file` -> `semble-lexical-file`, `semantic-only` -> `semble-semantic-only`, and `native-default`/`hybrid-no-rerank` -> `semble-hybrid`; explicit mismatches are refused |
 | `semble_cache_root` | `<out>/semble-cache` | Semble + HF caches (outside checkout) |
 | `query_repetitions_per_root`/`query_warmup_passes` | `1`/`1` | one driver-generated, digest-bound randomized schedule consumed by both runners; qualified speed requires warmup >= 1 and at least 1,000 warm observations per route across roots |
 | `semble_model_revision` | observed | pinned HF revision (drift fails) |

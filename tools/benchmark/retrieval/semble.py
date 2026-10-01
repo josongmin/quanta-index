@@ -63,6 +63,7 @@ def execution_profile(mode: str, alpha: float | None) -> dict:
     fixed = {
         "native-default": ("semble-native-default-v1", None, "upstream-content-default"),
         "lexical-only": ("semble-lexical-only-v1", None, "not_applicable"),
+        "lexical-file": ("semble-lexical-file-v1", None, "not_applicable"),
         "semantic-only": ("semble-semantic-only-v1", None, "not_applicable"),
     }
     if mode == "hybrid-no-rerank":
@@ -151,6 +152,7 @@ def main() -> int:
         "native-default",
         "hybrid-no-rerank",
         "lexical-only",
+        "lexical-file",
         "semantic-only",
     ):
         raise SystemExit(f"worker refuses unknown semble profile: {profile}")
@@ -256,7 +258,7 @@ def main() -> int:
 
         index.model.encode = _counted_encode
 
-    if profile in ("lexical-only", "semantic-only") and not all(
+    if profile in ("lexical-only", "lexical-file", "semantic-only") and not all(
         hasattr(semble_search, name) for name in ("_search_bm25", "_search_semantic")
     ):
         raise SystemExit(
@@ -275,7 +277,10 @@ def main() -> int:
             "profile_sha256": spec["execution_profile_sha256"],
             "actual_alpha": None,
             "actual_rerank": None,
-            "candidate_depth": top_k if profile in ("lexical-only", "semantic-only") else None,
+            "candidate_depth": (
+                len(index.chunks) if profile == "lexical-file"
+                else top_k if profile in ("lexical-only", "semantic-only") else None
+            ),
             "lane_entry_counts": {"bm25": 0, "semantic": 0},
             "lane_candidate_depths": {"bm25": [], "semantic": []},
         }
@@ -290,6 +295,13 @@ def main() -> int:
             elif profile == "lexical-only":
                 result = semble_search._search_bm25(
                     query, index._bm25_index, index.chunks, top_k, None
+                )
+            elif profile == "lexical-file":
+                # Preserve the full positive-score native order in the raw
+                # capture. The adapter proves every row before selecting the
+                # first ten distinct file paths.
+                result = semble_search._search_bm25(
+                    query, index._bm25_index, index.chunks, len(index.chunks), None
                 )
             else:
                 result = semble_search._search_semantic(
@@ -390,11 +402,11 @@ def main() -> int:
         rerank_applied = False
     # RBR-03 fail-closed lane invariants, checked at the source before the
     # payload leaves the worker.
-    if profile == "lexical-only" and (lane_calls["semantic"] or lane_calls["encode"]):
+    if profile in ("lexical-only", "lexical-file") and (lane_calls["semantic"] or lane_calls["encode"]):
         raise SystemExit(
             f"lexical-only profile executed semantic/encode lanes: {lane_calls}"
         )
-    if profile == "lexical-only" and not lane_calls["bm25"]:
+    if profile in ("lexical-only", "lexical-file") and not lane_calls["bm25"]:
         raise SystemExit(f"lexical-only profile ran no BM25 lane: {lane_calls}")
     if profile == "semantic-only" and lane_calls["bm25"]:
         raise SystemExit(f"semantic-only profile executed the BM25 lane: {lane_calls}")
@@ -496,6 +508,7 @@ SEMBLE_PROFILES = (
     "native-default",
     "hybrid-no-rerank",
     "lexical-only",
+    "lexical-file",
     "semantic-only",
 )
 
@@ -526,9 +539,11 @@ def validate_native_profile_report(
         raise AdapterError("Semble worker lane-call report is malformed")
     if any(type(count) is not int or count < 0 for count in lane_counts.values()):
         raise AdapterError("Semble worker lane-call report is invalid")
-    if profile == "lexical-only" and (lane_counts["semantic"] or lane_counts["encode"]):
+    if profile in ("lexical-only", "lexical-file") and (
+        lane_counts["semantic"] or lane_counts["encode"]
+    ):
         raise AdapterError("lexical-only capture executed semantic/encode lanes")
-    if profile == "lexical-only" and not lane_counts["bm25"]:
+    if profile in ("lexical-only", "lexical-file") and not lane_counts["bm25"]:
         raise AdapterError("lexical-only capture ran no BM25 lane")
     if profile == "semantic-only" and lane_counts["bm25"]:
         raise AdapterError("semantic-only capture executed the BM25 lane")
@@ -635,6 +650,10 @@ def validate_native_profile_report(
         raise AdapterError("Semble expected query identity set differs from the query schedule")
     if len(events) != len(expected_events):
         raise AdapterError("Semble execution event count differs from the query protocol")
+    stats = native_payload.get("stats")
+    indexed_chunks = stats.get("total_chunks") if isinstance(stats, dict) else None
+    if profile == "lexical-file" and (type(indexed_chunks) is not int or indexed_chunks <= 0):
+        raise AdapterError("Semble file collection lacks indexed chunk count")
     expected_profile_sha = digest(canonical(execution_profile(profile, alpha)))
     measured: dict[tuple[int, str], dict] = {}
     observed_lane_calls = {"bm25": 0, "semantic": 0}
@@ -692,6 +711,8 @@ def validate_native_profile_report(
         candidate_depth = event["candidate_depth"]
         if type(candidate_depth) is not int or candidate_depth <= 0:
             raise AdapterError("Semble event candidate depth is invalid")
+        if profile == "lexical-file" and candidate_depth != indexed_chunks:
+            raise AdapterError("Semble file collection did not request every indexed chunk")
         for lane in observed_lane_calls:
             if len(depths[lane]) != lane_event[lane] or any(
                 depth != candidate_depth for depth in depths[lane]
@@ -710,7 +731,7 @@ def validate_native_profile_report(
                 raise AdapterError("Semble event actual alpha is invalid")
             if profile == "hybrid-no-rerank" and event["actual_alpha"] != alpha:
                 raise AdapterError("Semble event actual alpha differs from requested alpha")
-        elif profile == "lexical-only":
+        elif profile in ("lexical-only", "lexical-file"):
             if lane_event != {"bm25": 1, "semantic": 0} or depths["semantic"]:
                 raise AdapterError("Semble lexical event crossed the lane boundary")
         elif lane_event != {"bm25": 0, "semantic": 1} or depths["bm25"]:
@@ -1218,8 +1239,10 @@ def normalize_record(
     capture_id: str,
     receipt_digest: str,
     worker_digest: str,
+    *,
+    indexed_chunks: int | None = None,
 ) -> dict:
-    """Native Semble hits -> v3 runner record. Order preserved, spans proven.
+    """Native Semble hits -> v5 runner record. Order preserved, spans proven.
 
     Unknown latency is null, never 0. The capture binds the Semble-owned
     chunker, the exact worker bytes, and the mapping-proof anchor.
@@ -1240,6 +1263,32 @@ def normalize_record(
             raise AdapterError(f"{label} must be a lowercase sha256")
     if not isinstance(native, list):
         raise AdapterError("Semble native rows must be a list")
+    file_mode = profile.get("mode") == "lexical-file"
+    if file_mode and (type(indexed_chunks) is not int or indexed_chunks <= 0):
+        raise AdapterError("Semble file collection lacks indexed chunk count")
+    line_offsets = {}
+    for path, lines in file_lines.items():
+        offsets = [0]
+        for line in lines:
+            offsets.append(offsets[-1] + len(line))
+        line_offsets[path] = offsets
+    results = []
+
+    def append_result(row: dict, *, matched_chunks: int | None = None, matched_files: int | None = None):
+        if file_mode:
+            row.update(
+                rank_unit="distinct_file",
+                ordering="score_desc_native_tiebreak",
+                score_evidence="semble_bm25_score_v1",
+            )
+            if matched_chunks is not None and matched_files is not None:
+                row["file_collection"] = {
+                    "indexed_chunks": indexed_chunks,
+                    "matched_chunks": matched_chunks,
+                    "matching_files": matched_files,
+                }
+        results.append(row)
+
     by_task: dict[str, object] = {}
     expected_task_ids = {task["task_id"] for task in pack["tasks"]}
     for row in native:
@@ -1257,7 +1306,6 @@ def normalize_record(
         task_id not in expected_task_ids for task_id in latencies
     ):
         raise AdapterError("Semble latencies contain an unexpected task or invalid mapping")
-    results = []
     for task in pack["tasks"]:
         task_id = task["task_id"]
         submitted_sha = hashlib.sha256(task["query"].encode()).hexdigest()
@@ -1266,7 +1314,7 @@ def normalize_record(
             "submitted_query_sha256": submitted_sha,
         }
         if task_id not in by_task:
-            results.append(
+            append_result(
                 {
                     "task_id": task_id,
                     "route": route,
@@ -1286,10 +1334,11 @@ def normalize_record(
         hits = by_task[task_id]
         if not isinstance(hits, list):
             raise AdapterError(f"Semble native row is not a list: {task_id}")
-        if len(hits) > top_k:
-            raise AdapterError(f"Semble exceeded top_k for {task_id}")
+        if len(hits) > (indexed_chunks if file_mode else top_k):
+            bound = "indexed chunk count" if file_mode else "top_k"
+            raise AdapterError(f"Semble exceeded {bound} for {task_id}")
         if not hits:
-            results.append(
+            append_result(
                 {
                     "task_id": task_id,
                     "route": route,
@@ -1298,11 +1347,15 @@ def normalize_record(
                     "candidates": [],
                     "timings": {"query_latency_ms": latency},
                     "error": None,
-                }
+                },
+                matched_chunks=0,
+                matched_files=0,
             )
             continue
         candidates = []
         seen_spans = set()
+        seen_files = set()
+        previous_score = None
         hit_error = None
         for hit in hits:
             # Per-hit content failures become error rows (pair-incomplete at
@@ -1310,6 +1363,13 @@ def normalize_record(
             path = hit.get("file_path") if isinstance(hit, dict) else None
             start = hit.get("start_line") if isinstance(hit, dict) else None
             end = hit.get("end_line") if isinstance(hit, dict) else None
+            score = hit.get("score") if isinstance(hit, dict) else None
+            if file_mode:
+                if not is_finite_json_number(score) or score <= 0:
+                    raise AdapterError(f"Semble file collection has invalid BM25 score: {task_id}")
+                if previous_score is not None and score > previous_score:
+                    raise AdapterError(f"Semble file collection is not in native score order: {task_id}")
+                previous_score = score
             if not isinstance(path, str) or path not in file_shas:
                 hit_error = {
                     "code": "semble_hit_outside_universe",
@@ -1352,17 +1412,21 @@ def normalize_record(
                     "message": f"Semble hit holds no tokens: {path}:{start}-{end}",
                 }
                 break
-            start_byte = sum(len(line) for line in lines[: start - 1])
+            start_byte = line_offsets[path][start - 1]
             span = (path, start_byte, start_byte + len(block))
-            # Native hits remain in the raw capture. The scored record has
-            # one candidate per source span, preserving first-hit order.
-            # Validate every hit before this collapse so a malformed duplicate
-            # cannot disappear behind an earlier valid result.
-            if span in seen_spans:
-                continue
-            seen_spans.add(span)
-            candidates.append(
-                {
+            # Native hits remain in the raw capture. Prove every hit before
+            # either source-span collapse or first-occurrence file projection.
+            if file_mode:
+                if path in seen_files:
+                    continue
+                seen_files.add(path)
+                if len(candidates) == top_k:
+                    continue
+            else:
+                if span in seen_spans:
+                    continue
+                seen_spans.add(span)
+            candidate = {
                     "path": path,
                     "start_byte": start_byte,
                     "end_byte": start_byte + len(block),
@@ -1373,9 +1437,11 @@ def normalize_record(
                     "tokens": tokens,
                     "rank": len(candidates) + 1,
                 }
-            )
+            if file_mode:
+                candidate["score"] = score
+            candidates.append(candidate)
         if hit_error is not None:
-            results.append(
+            append_result(
                 {
                     "task_id": task_id,
                     "route": route,
@@ -1387,7 +1453,7 @@ def normalize_record(
                 }
             )
             continue
-        results.append(
+        append_result(
             {
                 "task_id": task_id,
                 "route": route,
@@ -1396,7 +1462,9 @@ def normalize_record(
                 "candidates": candidates,
                 "timings": {"query_latency_ms": latency},
                 "error": None,
-            }
+            },
+            matched_chunks=len(hits),
+            matched_files=len(seen_files) if file_mode else None,
         )
     ordered_native = sorted(native, key=lambda row: str(row.get("task_id")))
     return {
@@ -1658,6 +1726,7 @@ def run_adapter(args: argparse.Namespace) -> int:
     model_asset = model_asset_digest(materialized_hf, model_id, model_revision)
     if model_asset != source_model_asset:
         raise AdapterError("model snapshot changed while the worker was running")
+    native_stats = native_payload.get("stats")
     record = normalize_record(
         pack,
         pack_sha256,
@@ -1678,6 +1747,7 @@ def run_adapter(args: argparse.Namespace) -> int:
         args.run_id,
         diff_digest,
         worker_digest,
+        indexed_chunks=(native_stats.get("total_chunks") if isinstance(native_stats, dict) else None),
     )
     phase_values, worker_total_ms = validate_worker_phase_timings(
         native_payload, protocol=query_protocol is not None
@@ -1921,7 +1991,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--semble-profile",
         default="native-default",
-        choices=("native-default", "hybrid-no-rerank", "lexical-only", "semantic-only"),
+        choices=SEMBLE_PROFILES,
         help="RBR-03 comparison profile; every phase dispatches through one shared path",
     )
     run.add_argument(
