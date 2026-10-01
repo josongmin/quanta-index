@@ -146,6 +146,21 @@ and [binding](/Users/songmin/Documents/code-new/qi-current-symbol-evidence-20261
 confirm that a suitable exact-declaration route existed in the archived
 keyword generation. This is a four-query control, not a rerun of 1,196 tasks.
 
+The NOC v2 repair at clean `112c6c7e` was also exercised on all 99 admitted
+probes. A runner built at that HEAD produced a fresh Quanta `keyword_file`
+record with 99/99 abstentions and zero candidates; current-head evaluator and
+robustness-report replay passed with
+`content_absence_replay_verified=true`. A separate pinned Semble 0.6.0
+`lexical-file` run returned nonempty files for 99/99 probes and passed the same
+replay. The frozen census requested 100 probes and excluded one before
+submission. [Quanta binding](/Users/songmin/Documents/code-new/qi-noc-v2-capture-20261001-112c6c7e-p4/binding.json),
+[Quanta report](/Users/songmin/Documents/code-new/qi-noc-v2-capture-20261001-112c6c7e-p4/quanta-robustness.json),
+[Semble report](/Users/songmin/Documents/code-new/qi-noc-v2-capture-20261001-112c6c7e-p3/semble-robustness.json).
+The first Quanta attempt used an older runner and is explicitly
+[superseded](/Users/songmin/Documents/code-new/qi-noc-v2-capture-20261001-112c6c7e-p3/ERRATUM.md).
+These are separate native-policy diagnostics; the 99-query lane is not the
+1,196-query exact set or a matched-semantics speed comparison.
+
 Independent read-only audit of the archived inputs, native rows and records
 (`audit.py` / `audit.json` in the same external root) checked all 99 source-file
 hashes and all 1,196 task/query/gold identities. Semble's complete BM25 lists

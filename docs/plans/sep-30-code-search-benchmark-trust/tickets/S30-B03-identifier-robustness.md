@@ -89,5 +89,5 @@ suite ID. The evaluator rechecks all frozen file bytes under the declared
 casefold rule; the old NOA declaration contract and archived NOC diagnostics
 remain readable. Focused fixtures reject content-positive and case-variant
 mutations and wrong units. The original 99 NOC query/gold identities are
-unchanged. New product captures under the v2 suite are still required before
-claiming a newly executed result; archived scores retain their old provenance.
+unchanged. Fresh Quanta/Semble 99-query diagnostics under this new suite are
+recorded in B04. Archived scores retain their old provenance.

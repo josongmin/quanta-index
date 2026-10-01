@@ -24,6 +24,8 @@ diagnostic with no fresh external capture.
 The subsequent admission/reporting patch versioned the NOC content-absence
 oracle and added a source-bound Quanta/Semble robustness breakdown; the
 four scored exact misses were independently located beyond top 10 by cursor.
+The versioned NOC suite's 99 admitted probes were then rerun separately for
+Quanta and Semble with current evaluator replay; both remain diagnostic.
 These repairs do not close human labels, external index attestation, matched
 five-product semantics, controlled performance or the fresh holdout.
 

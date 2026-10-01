@@ -70,3 +70,14 @@ quiet-host admission. They are diagnostic phase observations; B07 remains
 `NOT_RUN` for its equal-boundary performance protocol. Raw timing fields are
 in the respective [`Semble`](/Users/songmin/Documents/code-new/qi-s30-file-modes-20261001-ExtGj6hb/semble/adapter-run/phase-metrics.json)
 and [`Quanta`](/Users/songmin/Documents/code-new/qi-s30-file-modes-20261001-ExtGj6hb/quanta/metrics.json) artifacts.
+
+2026-10-01 preflight at clean `112c6c7e`: `NOT_RUN` again. The 16-core host
+had load averages 14.78–19.00, above the local timing admission ceiling of 8,
+with concurrent Rust builds and 53–54 GiB free. Darwin `host-probe` reported
+CPU frequency `unavailable`; current performance admission requires observed
+`stable` or `bounded` frequency, so this host cannot produce a qualified B07
+result even after load settles. Quanta's SDK `.execute()` and Semble's worker
+BM25 dispatch timers exclude different work. A same-boundary claim requires
+an admitted host, current-head release binaries, complete-output timer
+instrumentation and the full 1,196-task repeated protocol. The new 99-query
+NOC run is a correctness diagnostic, not B07 performance evidence.
