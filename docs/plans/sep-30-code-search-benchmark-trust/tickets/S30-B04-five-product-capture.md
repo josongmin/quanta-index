@@ -94,5 +94,22 @@ two-query adapter run and evaluator replay succeeded at
 and [`adapter-report.json`](/private/tmp/qi-sem-file-probe-pADCo8/adapter-report.json):
 `Param` hit at file rank 5; `writeContentType` missed at file rank 14 in the
 full native list. This is a two-query diagnostic on the local working source;
-the complete 1,196-query profile, five-product matched semantics and indexed
-universe attestations are still `NOT_RUN`/`BLOCKED` as described above.
+it does not replace the full-suite capture below.
+
+Full 1,196-query follow-up (2026-10-01, clean `5d345a52`): Semble's new
+`lexical-file` profile completed 1,196/1,196 rows over the same 99-file gin
+manifest and 1,171 indexed chunks; the independent file-gold checker found
+1,190 top-10 hits and six misses. Its 62 lists shorter than ten files are
+complete under full indexed-chunk BM25 collection. Quanta `keyword_file`
+completed 1,196/1,196 with 1,192 hits and 2,408 finite per-candidate SDK
+scores in descending score/path order. New raw records and independent counts:
+[`Semble summary`](/Users/songmin/Documents/code-new/qi-s30-file-modes-20261001-ExtGj6hb/semble/summary.json) and
+[`Quanta summary`](/Users/songmin/Documents/code-new/qi-s30-file-modes-20261001-ExtGj6hb/quanta/summary.json).
+All 1,196 Quanta paths, statuses and ordering match the frozen v2 `keyword_file`
+record; score preservation changed no ranked result. The copied evidence is
+hashed in [`MANIFEST.sha256`](/Users/songmin/Documents/code-new/qi-s30-file-modes-20261001-ExtGj6hb/MANIFEST.sha256).
+These are separately executed diagnostic modes with different token, case and
+path/content behavior; the prior Sourcegraph/cs/OpenGrok rows were not rerun.
+Sourcegraph and OpenGrok ports 7080/7081 refused connections at this follow-up,
+and their actual indexed universes remain unattested. The five-product
+matched-semantics cohort and a qualified cross-product ranking remain blocked.

@@ -59,3 +59,10 @@ Automated assessors only (2 blind + adjudicator + blind pooled review over 5 run
 results, digests and residuals: [qi-s30-bench-trust-20260930-0d21914e/RESULTS.md](/Users/songmin/Documents/code-new/qi-s30-bench-trust-20260930-0d21914e/RESULTS.md).
 
 v2 (2026-10-01): gin 20 was not re-run; its qrels remain automated-assessor only.
+
+An external blind human-review packet was prepared at
+[`human-review packet`](/Users/songmin/Documents/code-new/qi-s30-file-modes-20261001-ExtGj6hb/human-review/README.md):
+314 query/file candidate pairs in separate blank forms for two reviewers,
+bound to the gin 99-file source manifest. No human judgments have been
+received; the pool includes existing Quanta/Semble candidates only and needs
+a five-product pooled revision before a qualified gin-20 comparison.

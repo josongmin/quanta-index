@@ -59,3 +59,14 @@ missing boundary; do not add a second benchmark harness.
 results, digests and residuals: [qi-s30-bench-trust-20260930-0d21914e/RESULTS.md](/Users/songmin/Documents/code-new/qi-s30-bench-trust-20260930-0d21914e/RESULTS.md).
 
 Reconfirmed `NOT_RUN` 2026-10-01 (v2): host load 25–29 and the data volume ran out of space.
+
+The 2026-10-01 source-bound 1,196-query correctness follow-up recorded one
+unqualified timing sample per new file mode. Semble `lexical-file` indexed
+99 files/1,171 chunks in 444.8 ms and summed 1,196 worker query calls to
+576.5 ms; Quanta's debug-runner `keyword_file` summed SDK query calls to
+5,765.4 ms. These modes collect different candidate depths and include
+different process boundaries, with no controlled warmup, repeated roots or
+quiet-host admission. They are diagnostic phase observations; B07 remains
+`NOT_RUN` for its equal-boundary performance protocol. Raw timing fields are
+in the respective [`Semble`](/Users/songmin/Documents/code-new/qi-s30-file-modes-20261001-ExtGj6hb/semble/adapter-run/phase-metrics.json)
+and [`Quanta`](/Users/songmin/Documents/code-new/qi-s30-file-modes-20261001-ExtGj6hb/quanta/metrics.json) artifacts.
