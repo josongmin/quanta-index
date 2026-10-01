@@ -113,6 +113,12 @@ path/content behavior; the prior Sourcegraph/cs/OpenGrok rows were not rerun.
 Sourcegraph and OpenGrok ports 7080/7081 refused connections at this follow-up,
 and their actual indexed universes remain unattested. The five-product
 matched-semantics cohort and a qualified cross-product ranking remain blocked.
+This scored-file follow-up covers the **exact-name lane only**. Prefix, infix,
+components, typo and both no-answer lanes were captured and replayed in v2 at
+`f318e832`, where Semble still used ten BM25 chunks rather than the new
+ten-distinct-file profile. Their v2 results are separate diagnostics; the new
+Semble file profile and Quanta per-file SDK score capture have not been rerun
+on those six robustness lanes.
 
 Independent read-only audit of the archived inputs, native rows and records
 (`audit.py` / `audit.json` in the same external root) checked all 99 source-file
