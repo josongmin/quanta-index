@@ -77,7 +77,7 @@ string or source revision alone does not prove an equal indexed universe.
 
 Isolated two-query control (2026-10-01): pinned Semble 0.6.0 indexed the 99
 manifest files into 1,171 chunks under a new external root
-[`qi-sem-file-probe-pADCo8`](/private/tmp/qi-sem-file-probe-pADCo8/probe.json).
+[`two-query control`](/Users/songmin/Documents/code-new/qi-s30-file-modes-20261001-ExtGj6hb/probe/probe.json).
 For `Param`, the native ten-chunk prefix covered two files; collecting all
 positive BM25 chunks and taking each file's first occurrence put `context.go`
 at file rank 5 (source chunk rank 23). For `writeContentType`, the gold
@@ -90,8 +90,8 @@ After that control, `lexical-file` was added as a separate Semble adapter
 profile. It retains every positive-score native BM25 chunk in the raw capture,
 then proves its span and projects the first ten distinct files. The frozen
 two-query adapter run and evaluator replay succeeded at
-[`adapter-run/record.json`](/private/tmp/qi-sem-file-probe-pADCo8/adapter-run/record.json)
-and [`adapter-report.json`](/private/tmp/qi-sem-file-probe-pADCo8/adapter-report.json):
+[`adapter-run/record.json`](/Users/songmin/Documents/code-new/qi-s30-file-modes-20261001-ExtGj6hb/probe/adapter-run/record.json)
+and [`adapter-report.json`](/Users/songmin/Documents/code-new/qi-s30-file-modes-20261001-ExtGj6hb/probe/adapter-report.json):
 `Param` hit at file rank 5; `writeContentType` missed at file rank 14 in the
 full native list. This is a two-query diagnostic on the local working source;
 it does not replace the full-suite capture below.
