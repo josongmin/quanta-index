@@ -28,6 +28,58 @@ def _unique(rows: list[dict], where: str) -> dict[str, dict]:
     return dict(zip(keys, rows))
 
 
+def verify_generation_manifest(
+    manifest_path: Path,
+    census_path: Path,
+    suite_path: Path,
+    suite: dict[str, Any],
+    census: dict[str, Any],
+    lane: str,
+) -> str:
+    """Bind the admission denominator and submitted suite to one frozen generation."""
+    raw = manifest_path.read_bytes()
+    manifest = evaluator.read_json(manifest_path)
+    _require(isinstance(manifest, dict), "invalid robustness generation manifest")
+    _require(
+        type(manifest.get("schema_version")) is int and manifest["schema_version"] == 1,
+        "unsupported generation manifest",
+    )
+    _require(
+        manifest.get("qualification") == "diagnostic_unqualified_source_exposed",
+        "unexpected generation qualification",
+    )
+    _require(
+        manifest.get("repository_commit") == suite["repository_commit"],
+        "generation source mismatch",
+    )
+    artifacts = manifest.get("artifacts")
+    _require(isinstance(artifacts, list), "missing generation artifacts")
+    paths: dict[str, str] = {}
+    for item in artifacts:
+        _require(
+            isinstance(item, dict) and set(item) == {"path", "sha256"},
+            "invalid generation artifact",
+        )
+        path = item["path"]
+        _require(isinstance(path, str) and path not in paths, "duplicate generation artifact")
+        paths[path] = evaluator.sha(item["sha256"], "generation artifact sha256")
+    for name, path in (("census.json", census_path), (f"{lane}-suite.json", suite_path)):
+        _require(name in paths, "missing generation artifact: " + name)
+        _require(
+            evaluator.digest(path.read_bytes()) == paths[name],
+            "generation artifact mismatch: " + name,
+        )
+    if lane == "no-answer-content":
+        params = manifest.get("parameters")
+        _require(isinstance(params, dict), "missing generation parameters")
+        count = params.get("no_answer")
+        _require(
+            type(count) is int and count == len(census["lanes"]["no-answer"]["records"]),
+            "content no-answer source population mismatch",
+        )
+    return evaluator.digest(raw)
+
+
 def _policy(capture: dict) -> dict[str, str | None]:
     system = capture["system"]
     profile = capture["execution_profile"]
@@ -391,7 +443,7 @@ def _write_output(path: Path, rendered: str, *, repo: Path | None = None) -> Non
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    for name in ("repo", "suite", "record", "diagnostic", "census", "lane"):
+    for name in ("repo", "suite", "record", "diagnostic", "census", "lane", "generation-manifest"):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
@@ -399,10 +451,19 @@ def main() -> int:
         suite, pack, record = evaluator.load_evidence(
             Path(args.repo).resolve(), Path(args.suite), Path(args.record)
         )
-        census = json.loads(Path(args.census).read_text(encoding="utf-8"))
-        diagnostic = json.loads(Path(args.diagnostic).read_text(encoding="utf-8"))
+        census = evaluator.read_json(Path(args.census))
+        diagnostic = evaluator.read_json(Path(args.diagnostic))
+        manifest_sha256 = verify_generation_manifest(
+            Path(args.generation_manifest),
+            Path(args.census),
+            Path(args.suite),
+            suite,
+            census,
+            args.lane,
+        )
         verify_census_against_source(Path(args.repo).resolve(), suite, census, args.lane)
         output = compose_validated(suite, pack, record, diagnostic, census, args.lane)
+        output["generation_manifest_sha256"] = manifest_sha256
         output["content_absence_replay_verified"] = (
             args.lane == "no-answer-content"
             and output["source_oracle_contract"] == source_oracle.ASCII_CONTENT_ABSENT_CASEFOLD

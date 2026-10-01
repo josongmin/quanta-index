@@ -102,3 +102,13 @@ replay. The CLI refuses output overwrites and in-checkout output paths. This
 compositor supports validated Quanta and Semble distinct-file diagnostics;
 the Sourcegraph/cs/OpenGrok native capture contract remains separate. Existing
 five-product rows are still diagnostic and not a matched-semantics cohort.
+
+2026-10-01 denominator binding follow-up: the compositor previously accepted
+an edited census with one extra excluded NOC source probe, changing
+`requested/not_admitted` from `100/1` to `101/2` while the suite, record and
+diagnostic stayed fixed. The CLI now requires the generation manifest and
+checks the exact census and lane-suite bytes against its artifact digests;
+NOC also checks the source probe count against the manifest parameter.
+It records the manifest SHA-256, rejects duplicate JSON keys in census and
+diagnostic inputs, and still reports `diagnostic_unqualified`. The manifest
+is producer provenance, not independent human gold or an external signature.

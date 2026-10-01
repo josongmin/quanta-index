@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -13,6 +15,7 @@ from tools.benchmark.retrieval.identifier_robustness_report import (
     compose,
     compose_validated,
     verify_census_against_source,
+    verify_generation_manifest,
 )
 
 
@@ -449,3 +452,75 @@ def test_ambiguity_census_must_match_independent_source_oracle(monkeypatch, tmp_
     row.update(matched_names=2, answer_class="ambiguous")
     with pytest.raises(ValueError, match="census/source declaration mismatch"):
         verify_census_against_source(tmp_path, suite, census, "prefix")
+
+
+def test_generation_manifest_binds_admission_census_and_submitted_suite(tmp_path):
+    suite, census, _, _ = fixture()
+    suite_path = tmp_path / "prefix-suite.json"
+    census_path = tmp_path / "census.json"
+    manifest_path = tmp_path / "manifest.json"
+    suite_path.write_text(json.dumps(suite))
+    census_path.write_text(json.dumps(census))
+    manifest = {
+        "schema_version": 1,
+        "qualification": "diagnostic_unqualified_source_exposed",
+        "repository_commit": suite["repository_commit"],
+        "artifacts": [
+            {"path": name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+            for name, path in (
+                ("census.json", census_path),
+                ("prefix-suite.json", suite_path),
+            )
+        ],
+    }
+    manifest_path.write_text(json.dumps(manifest))
+    assert (
+        verify_generation_manifest(manifest_path, census_path, suite_path, suite, census, "prefix")
+        == hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    )
+
+    census["lanes"]["prefix"]["records"].append(
+        {"task_id": "X2", "status": "ineligible", "query": None}
+    )
+    census_path.write_text(json.dumps(census))
+    with pytest.raises(ValueError, match="generation artifact mismatch: census.json"):
+        verify_generation_manifest(manifest_path, census_path, suite_path, suite, census, "prefix")
+    census_path.write_text(json.dumps(fixture()[1]))
+    suite_path.write_text(json.dumps({**suite, "suite_id": "swapped"}))
+    with pytest.raises(ValueError, match="generation artifact mismatch: prefix-suite.json"):
+        verify_generation_manifest(manifest_path, census_path, suite_path, suite, census, "prefix")
+
+
+def test_content_no_answer_population_requires_frozen_generation_count(tmp_path):
+    suite, census, _, _ = fixture()
+    census["lanes"]["no-answer"] = {"records": [{"task_id": "NOA1"}]}
+    suite_path = tmp_path / "no-answer-content-suite.json"
+    census_path = tmp_path / "census.json"
+    manifest_path = tmp_path / "manifest.json"
+    suite_path.write_text(json.dumps(suite))
+    census_path.write_text(json.dumps(census))
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "qualification": "diagnostic_unqualified_source_exposed",
+                "repository_commit": suite["repository_commit"],
+                "parameters": {"no_answer": 1},
+                "artifacts": [
+                    {"path": name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+                    for name, path in (
+                        ("census.json", census_path),
+                        ("no-answer-content-suite.json", suite_path),
+                    )
+                ],
+            }
+        )
+    )
+    verify_generation_manifest(
+        manifest_path, census_path, suite_path, suite, census, "no-answer-content"
+    )
+    census["lanes"]["no-answer"]["records"].append({"task_id": "NOA2"})
+    with pytest.raises(ValueError, match="content no-answer source population mismatch"):
+        verify_generation_manifest(
+            manifest_path, census_path, suite_path, suite, census, "no-answer-content"
+        )

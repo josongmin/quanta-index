@@ -215,12 +215,17 @@ evaluator report to the frozen robustness census without rescoring candidates:
 uv run --frozen --extra dev python -m tools.benchmark.retrieval.identifier_robustness_report \
   --repo /absolute/corpus --suite /absolute/suite.json \
   --record /absolute/record.json --diagnostic /absolute/diagnostic.json \
-  --census /absolute/census.json --lane prefix \
+  --census /absolute/census.json \
+  --generation-manifest /absolute/manifest.json --lane prefix \
   --output /absolute/new-external-root/report.json
 ```
 
 The output records generator admission, unsupported request forms, execution
 status, eligible unique/ambiguous Hit@10 and no-answer abstention separately.
+The generation manifest must bind the exact census and lane suite bytes; its
+SHA-256 is included in the report so a later review can identify the admitted
+population. A supplied manifest is producer provenance, not an independent
+human label or qualification authority.
 It refuses an existing output path and is always `diagnostic_unqualified`.
 Sourcegraph, cs and OpenGrok have a different native capture contract and are
 not admitted through this report command.
