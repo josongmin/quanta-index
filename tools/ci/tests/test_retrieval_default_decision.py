@@ -169,8 +169,8 @@ def test_repository_disjoint_bundle_replays_policy_bound_captures(monkeypatch, t
         )
     )
     monkeypatch.setattr(
-        decision.corpus_binding,
-        "validate_split_manifest",
+        decision,
+        "_validate_split_manifest",
         lambda _raw, _releases: {
             "repositories": [
                 {
@@ -203,10 +203,22 @@ def test_repository_disjoint_bundle_replays_policy_bound_captures(monkeypatch, t
                     "PERF_QUALIFIED",
                 )
             },
+            "state_evidence": {
+                name: {"proof_digest": "f" * 64}
+                for name in (
+                    "PAIR_VALID",
+                    "CONTRACT_GREEN",
+                    "SDK_PATH_GREEN",
+                    "QUALITY_DELTA",
+                    "PERF_QUALIFIED",
+                )
+            },
             "comparisons": [
                 {
                     **policy["comparison"],
                     "graded": True,
+                    "sample_count": 1,
+                    "primary_delta": 0.5,
                     "report_digest": hashlib.sha256(report_path.read_bytes()).hexdigest(),
                 }
             ],
@@ -219,7 +231,13 @@ def test_repository_disjoint_bundle_replays_policy_bound_captures(monkeypatch, t
     assert (result["repository_count"], result["paired_sample_count"]) == (12, 12)
     assert result["repository_cluster_ci"]["mean"] == 0.5
     (tmp_path / "repo-00" / "admission.json").write_text(
-        json.dumps({"decision_policy_sha256": "0" * 64, "repository_commit": "1".zfill(40), "suite_sha256": policy["repository_scope"]["holdout"][0]["suite_sha256"]})
+        json.dumps(
+            {
+                "decision_policy_sha256": "0" * 64,
+                "repository_commit": "1".zfill(40),
+                "suite_sha256": policy["repository_scope"]["holdout"][0]["suite_sha256"],
+            }
+        )
     )
     with pytest.raises(decision.DecisionError, match="not frozen"):
         decision.replay_repository_disjoint_bundle(bundle_path)

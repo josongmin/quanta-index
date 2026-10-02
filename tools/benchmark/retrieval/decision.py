@@ -13,7 +13,6 @@ import json
 import sys
 from pathlib import Path
 
-from tools.benchmark import corpus_binding
 from tools.benchmark.evidence import parse_json, read_control
 from tools.benchmark.retrieval import evaluator, run
 from tools.benchmark.retrieval.evaluator import qualified_query_family_ci
@@ -133,6 +132,16 @@ def _absolute_path(value: object, where: str) -> Path:
     return Path(value)
 
 
+def _validate_split_manifest(raw: bytes, releases: dict[str, Path]) -> dict:
+    """Load the legacy benchmark package only for multi-repository replay."""
+    benchmark_dir = str(Path(__file__).resolve().parents[1])
+    if benchmark_dir not in sys.path:
+        sys.path.insert(0, benchmark_dir)
+    from tools.benchmark import corpus_binding
+
+    return corpus_binding.validate_split_manifest(raw, releases)
+
+
 def validate_repository_disjoint_policy(value: object) -> dict:
     """Validate the predeclared C5 policy without granting a product decision."""
     policy = _object(
@@ -174,7 +183,7 @@ def validate_repository_disjoint_policy(value: object) -> dict:
     holdout = scope["holdout"]
     if not isinstance(holdout, list) or len(holdout) < 12:
         raise DecisionError("repository-disjoint holdout needs at least twelve repositories")
-    names, commits, strata = [], set(), {}
+    names, commits, strata, families = [], set(), {}, set()
     for index, raw in enumerate(holdout):
         row = _object(
             raw,
@@ -205,6 +214,9 @@ def validate_repository_disjoint_policy(value: object) -> dict:
                 or values != sorted(set(values))
             ):
                 raise DecisionError(f"repository-disjoint holdout {key} is invalid")
+        if families.intersection(row["query_family_ids"]):
+            raise DecisionError("repository-disjoint query family crosses repositories")
+        families.update(row["query_family_ids"])
         names.append(name)
         commits.add(commit)
         strata[stratum] = strata.get(stratum, 0) + 1
@@ -269,7 +281,7 @@ def replay_repository_disjoint_bundle(bundle_path: Path) -> dict:
     if hashlib.sha256(split_raw).hexdigest() != scope["split_manifest_sha256"]:
         raise DecisionError("repository-disjoint split differs from frozen policy")
     releases = {digest: Path(path) for digest, path in scope["releases"].items()}
-    split = corpus_binding.validate_split_manifest(split_raw, releases)
+    split = _validate_split_manifest(split_raw, releases)
     split_holdout = {
         row["repository"]: row for row in split["repositories"] if row["split"] == "holdout"
     }
@@ -322,13 +334,17 @@ def replay_repository_disjoint_bundle(bundle_path: Path) -> dict:
             or not tasks
         ):
             raise DecisionError("repository-disjoint suite differs from frozen policy or source")
-        eval_tasks = [
-            task for task in tasks if isinstance(task, dict) and task.get("split") == "eval"
-        ]
-        if len(eval_tasks) != sum(
-            isinstance(task, dict) and task.get("split") == "eval" for task in tasks
+        if any(
+            not isinstance(task, dict)
+            or task.get("split") not in {"train", "eval"}
+            or not isinstance(task.get("query_family_id"), str)
+            or not isinstance(task.get("category"), str)
+            for task in tasks
         ):
-            raise DecisionError("repository-disjoint eval task inventory is malformed")
+            raise DecisionError("repository-disjoint task inventory is malformed")
+        eval_tasks = [task for task in tasks if task["split"] == "eval"]
+        if not eval_tasks:
+            raise DecisionError("repository-disjoint suite lacks eval tasks")
         if (
             sorted({task.get("query_family_id") for task in eval_tasks}) != row["query_family_ids"]
             or sorted({task.get("category") for task in eval_tasks}) != row["categories"]
@@ -352,7 +368,14 @@ def replay_repository_disjoint_bundle(bundle_path: Path) -> dict:
         if (
             verdict.get("failure_class") != "none"
             or not isinstance(verdict.get("states"), dict)
+            or not isinstance(verdict.get("state_evidence"), dict)
             or any(verdict["states"].get(state) != "pass" for state in required_states)
+            or any(
+                not isinstance(verdict["state_evidence"].get(state), dict)
+                or not run._is_hex(verdict["state_evidence"][state].get("proof_digest"), 64)
+                for state in required_states
+            )
+            or not isinstance(verdict.get("comparisons"), list)
         ):
             raise DecisionError("repository-disjoint capture lacks qualified proof")
         selected = [
@@ -375,9 +398,13 @@ def replay_repository_disjoint_bundle(bundle_path: Path) -> dict:
         if len(matching) != 1:
             raise DecisionError("repository-disjoint report differs from verified comparison")
         report = bound_json(matching[0])
+        rank = report.get("rank_metrics")
+        observed = rank.get("comparison") if isinstance(rank, dict) else None
         if (
-            report.get("rank_metrics", {}).get("comparison", {}).get("primary_metric")
-            != comparison["primary_metric"]
+            not isinstance(observed, dict)
+            or observed.get("primary_metric") != comparison["primary_metric"]
+            or observed.get("primary_delta") != selected[0].get("primary_delta")
+            or observed.get("sample_count") != selected[0].get("sample_count")
         ):
             raise DecisionError("repository-disjoint report metric differs from policy")
         suites[name], reports[name] = suite, report
