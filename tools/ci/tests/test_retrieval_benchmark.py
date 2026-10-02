@@ -14333,6 +14333,70 @@ def test_intended_name_source_oracle_uses_base_declaration_not_noisy_query(tmp_p
         ev.validate_suite(collision_repo, collision_suite)
 
 
+def test_intended_name_near_exclusion_replays_parser_refusal(tmp_path):
+    files = {
+        "main.go": b"package demo\nfunc Param() {}\n",
+        "broken.go": b"package demo\nfunc Broken(",
+    }
+    repo, commit = _write_repo(tmp_path, files)
+    universe = [
+        {"path": path, "file_sha256": ev.digest(raw)} for path, raw in sorted(files.items())
+    ]
+    suite = {
+        "schema_version": 3,
+        "suite_id": "intended-name-refused-file",
+        "repository_commit": commit,
+        "comparison_contract": _v3_contract(),
+        "routes": ["lexical"],
+        "file_universe": universe,
+        "file_universe_digest": ev.universe_digest(universe),
+        "diagnostic_policy": ev.OBSERVED_PREFIX_DIAGNOSTIC_POLICY,
+        "tasks": [
+            {
+                "task_id": "T1",
+                "split": "eval",
+                "query": "Paran",
+                "query_sha256": ev.digest(b"Paran"),
+                "query_family_id": "Param",
+                "query_intent": "bare_symbol",
+                "intended_name": "Param",
+                "evaluation_contract": {
+                    "request_mode": "explicit_osa1_typo",
+                    "gold_unit": "distinct_file",
+                    "result_unit": "distinct_file",
+                },
+                "answerable": True,
+                "gold": [_v3_block(files, "main.go", 2, 2, grade=3)],
+                "judgment_policy": ev.SOURCE_ORACLE_JUDGMENT_POLICY,
+                "source_oracle": {
+                    "contract": "go_exact_local_name_v3",
+                    "unit": "distinct_file",
+                    "declaration_exclusions": ["broken.go"],
+                    "near_declaration_exclusions": ["broken.go"],
+                },
+                "file_judgments": [
+                    {"path": "main.go", "file_sha256": ev.digest(files["main.go"]), "grade": 3}
+                ],
+            }
+        ],
+    }
+    jsonschema.validate(suite, _load_schema("suite.schema.json"))
+    _loaded, pack, _source = ev.validate_suite(repo, suite)
+    assert "Paran" in str(pack) and "Param" not in str(pack)
+    for field, error in (
+        ("declaration_exclusions", "explicit query eligibility"),
+        ("near_declaration_exclusions", "explicit query eligibility"),
+    ):
+        bad = copy.deepcopy(suite)
+        bad["tasks"][0]["source_oracle"].pop(field)
+        with pytest.raises(ev.EvidenceError, match=error):
+            ev.validate_suite(repo, bad)
+    bad = copy.deepcopy(suite)
+    bad["tasks"][0]["source_oracle"]["near_declaration_exclusions"] = ["main.go"]
+    with pytest.raises(ev.EvidenceError, match="may contain a query match"):
+        ev.validate_suite(repo, bad)
+
+
 def test_declaration_navigation_contract_requires_symbol_policy(tmp_path):
     repo, suite, run, suite_path, runner_path, _files = _exact_symbol_record_fixture(tmp_path)
     suite["diagnostic_policy"] = ev.OBSERVED_PREFIX_DIAGNOSTIC_POLICY

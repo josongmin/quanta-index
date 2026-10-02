@@ -1115,6 +1115,14 @@ def validate_suite(
         and raw["source_oracle"].get("contract") != literal_source_oracle.CONTENT_LITERAL_UTF8_EXACT
         and isinstance(raw.get("query"), str)
     }
+    oracle_names.update(
+        raw["query"]
+        for raw in tasks
+        if isinstance(raw, dict)
+        and isinstance(raw.get("source_oracle"), dict)
+        and isinstance(raw.get("intended_name"), str)
+        and isinstance(raw.get("query"), str)
+    )
     literal_names = {
         raw["query"]
         for raw in tasks
@@ -1128,21 +1136,35 @@ def validate_suite(
         if not isinstance(raw, dict) or not isinstance(raw.get("source_oracle"), dict):
             continue
         annotation = raw["source_oracle"]
-        if "declaration_exclusions" not in annotation:
-            continue
-        paths = annotation["declaration_exclusions"]
-        require(
-            annotation.get("contract") in source_oracle.DECLARATION_NAME_CONTRACTS
-            and isinstance(raw.get("query"), str)
-            and isinstance(paths, list)
-            and bool(paths)
-            and all(isinstance(path, str) and path in universe for path in paths)
-            and paths == sorted(set(paths)),
-            "invalid declaration exclusions",
-        )
-        key = (annotation["contract"], raw.get("intended_name", raw["query"]))
-        require(key not in declaration_exclusions, "duplicate declaration exclusion query")
-        declaration_exclusions[key] = set(paths)
+        for field in ("declaration_exclusions", "near_declaration_exclusions"):
+            if field not in annotation:
+                continue
+            paths = annotation[field]
+            name_contract = source_oracle.NAME_CONTRACTS.get(annotation.get("contract"))
+            require(
+                name_contract is not None
+                and isinstance(raw.get("query"), str)
+                and isinstance(paths, list)
+                and bool(paths)
+                and all(isinstance(path, str) and path in universe for path in paths)
+                and paths == sorted(set(paths))
+                and (
+                    field == "declaration_exclusions"
+                    or (isinstance(raw.get("intended_name"), str) and name_contract[1] == "exact")
+                ),
+                "invalid " + field.replace("_", " "),
+            )
+            if field == "declaration_exclusions":
+                key = (annotation["contract"], raw.get("intended_name", raw["query"]))
+            else:
+                near_contract = next(
+                    contract
+                    for contract, owner in source_oracle.NAME_CONTRACTS.items()
+                    if owner == (name_contract[0], "osa1_casefold")
+                )
+                key = (near_contract, raw["query"])
+            require(key not in declaration_exclusions, "duplicate declaration exclusion query")
+            declaration_exclusions[key] = set(paths)
     seen_ids = set()
     seen_queries = set()
     eval_count = 0
@@ -1215,7 +1237,7 @@ def validate_suite(
             oracle = object_keys_optional(
                 task["source_oracle"],
                 ["contract", "unit"],
-                ["declaration_exclusions"],
+                ["declaration_exclusions", "near_declaration_exclusions"],
                 "source_oracle",
             )
             literal_contract = (
@@ -2961,6 +2983,96 @@ def query_family_cluster_ci(
         "resamples": 10_000,
         "seed_sha256": digest(seed),
         "mean": sum(delta for _task_id, _family_id, _category, delta in rows) / len(rows),
+        "lower_95": quantile(0.025),
+        "upper_95": quantile(0.975),
+    }
+
+
+def repository_cluster_ci(
+    rows: list[tuple[str, str, str, float]],
+    release_digest: str,
+    repositories: dict[str, str],
+) -> dict[str, Any]:
+    """Bootstrap repository means after equal-weight query-family aggregation.
+
+    The caller must separately prove paired, judged task coverage and bind this
+    release to its captures. This interval alone never qualifies a decision.
+    """
+    require(
+        isinstance(release_digest, str) and bool(HEX64_RE.fullmatch(release_digest)),
+        "cluster release digest is invalid",
+    )
+    require(isinstance(repositories, dict) and bool(repositories), "cluster repository inventory is empty")
+    for name, commit in repositories.items():
+        require(
+            isinstance(name, str)
+            and bool(name)
+            and isinstance(commit, str)
+            and bool(COMMIT_RE.fullmatch(commit)),
+            "cluster repository is invalid",
+        )
+    families: dict[str, dict[str, list[float]]] = {name: {} for name in repositories}
+    seen_tasks: set[tuple[str, str]] = set()
+    family_owner: dict[str, str] = {}
+    for repository, task_id, family_id, delta in rows:
+        require(repository in repositories, "cluster row has an unknown repository")
+        require(
+            isinstance(task_id, str)
+            and bool(task_id)
+            and isinstance(family_id, str)
+            and bool(family_id),
+            "cluster task or family is empty",
+        )
+        require((repository, task_id) not in seen_tasks, "cluster task is duplicated")
+        require(type(delta) in (int, float) and math.isfinite(delta), "cluster delta is not finite")
+        require(
+            family_owner.setdefault(family_id, repository) == repository,
+            "cluster family crosses repositories",
+        )
+        seen_tasks.add((repository, task_id))
+        families[repository].setdefault(family_id, []).append(delta)
+    require(all(families.values()), "cluster repository lacks paired rows")
+    means = [
+        sum(sum(deltas) / len(deltas) for deltas in families[name].values())
+        / len(families[name])
+        for name in sorted(repositories)
+    ]
+    summary: dict[str, Any] = {
+        "method": "paired_repository_cluster_bootstrap_percentile_v1",
+        "status": NOT_APPLICABLE if len(means) < 12 else "available",
+        "repository_count": len(means),
+        "family_count": sum(map(len, families.values())),
+        "sample_count": len(rows),
+        "aggregation": "equal_family_within_repository_equal_repository",
+    }
+    if len(means) < 12:
+        return {**summary, "reason": "insufficient_independent_repositories"}
+    seed = canonical(
+        {
+            "release_digest": release_digest,
+            "repositories": [
+                {"name": name, "commit": repositories[name], "mean": mean}
+                for name, mean in zip(sorted(repositories), means, strict=True)
+            ],
+        }
+    )
+    rng = random.Random(int(digest(seed)[:16], 16))
+    sampled = sorted(
+        sum(means[rng.randrange(len(means))] for _ in means) / len(means)
+        for _ in range(10_000)
+    )
+
+    def quantile(p: float) -> float:
+        position = p * (len(sampled) - 1)
+        lower, upper = math.floor(position), math.ceil(position)
+        weight = position - lower
+        return sampled[lower] * (1.0 - weight) + sampled[upper] * weight
+
+    return {
+        **summary,
+        "resamples": 10_000,
+        "seed_sha256": digest(seed),
+        "mean": sum(means) / len(means),
         "lower_95": quantile(0.025),
         "upper_95": quantile(0.975),
     }

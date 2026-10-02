@@ -466,6 +466,12 @@ def _derive_prepared(
         paths = sorted(declaration_exclusions.get((contract, oracle_query), set()))
         if paths and task["answerable"]:
             source_contract["declaration_exclusions"] = paths
+        if intended_typo:
+            near_paths = sorted(
+                row["path"] for row in task.get("near_census_text_excluded", [])
+            )
+            if near_paths:
+                source_contract["near_declaration_exclusions"] = near_paths
         row = {
             "task_id": task["task_id"],
             "query": task["query"],

@@ -345,6 +345,35 @@ def test_c4_partial_typo_excludes_before_parsing_refused_file(tmp_path, monkeypa
     ]
 
 
+def test_c4_admits_typo_with_query_proven_refused_file(tmp_path, monkeypatch):
+    release, capsule, checkout = _fixture(tmp_path, monkeypatch, parser_refusal=True)
+    gold = holdout_c4._read(capsule / "gold.json")
+    blind = holdout_c4._read(capsule / "blind.json")
+    for payload in (gold, blind):
+        payload["tasks"][0].update(
+            intent="declaration_name_osa1_casefold",
+            query="Alphb",
+            case_semantics="casefold",
+        )
+    gold["tasks"][0].update(
+        intended_name="Alpha",
+        near_declaration_state="complete",
+        near_census_text_excluded=[{"path": "broken.go", "reason": "census_refused"}],
+        near_declaration_names=["Alpha"],
+        near_declaration_files=["main.go"],
+        exact_collision_names=[],
+        exact_collision_files=[],
+    )
+    _resign(capsule, "gold.json", gold)
+    _resign(capsule, "blind.json", blind)
+    suite, _pack, report = holdout_c4.derive(
+        release, capsule, checkout, "declaration_name_osa1_casefold"
+    )
+    assert report["selected"] == 1
+    assert suite["tasks"][0]["intended_name"] == "Alpha"
+    assert suite["tasks"][0]["query"] == "Alphb"
+
+
 def test_c4_excludes_negative_with_default_content_or_path_match(tmp_path, monkeypatch):
     release, capsule, checkout = _fixture(tmp_path, monkeypatch)
     gold = holdout_c4._read(capsule / "gold.json")
