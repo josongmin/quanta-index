@@ -54,6 +54,11 @@ CHECKER_IDS = {
     "typescript": "typescript_compiler",
     "javascript": "typescript_compiler",
 }
+CHECKER_ARTIFACTS = {
+    "rust": ("target/release/quanta-census-syn",),
+    "go": ("checker",),
+    "typescript": ("checker.mjs", "node_modules/typescript/lib/typescript.js"),
+}
 
 
 class CensusAuditError(ValueError):
@@ -98,10 +103,42 @@ def _run(argv: list[str], cwd: Path, stdin: bytes = b"") -> bytes:
     return completed.stdout
 
 
+def _artifact_digests(kind: str, root: Path) -> dict[str, str]:
+    digests = {}
+    for name in CHECKER_ARTIFACTS[kind]:
+        path = root / name
+        if path.is_symlink() or not path.is_file():
+            raise CensusAuditError(f"census checker artifact is absent or linked: {name}")
+        digests[name] = _sha(path.read_bytes())
+    return digests
+
+
+def _cache_manifest(kind: str, root: Path, source_digest: str) -> dict[str, Any]:
+    return {
+        "source_digest": source_digest,
+        "artifact_sha256": _artifact_digests(kind, root),
+    }
+
+
+def _require_ready_cache(kind: str, root: Path, source_digest: str) -> None:
+    marker = root / "ready.json"
+    if root.is_symlink() or marker.is_symlink() or not marker.is_file():
+        raise CensusAuditError("census checker cache has no trusted ready marker")
+    try:
+        recorded = marker.read_text()
+    except OSError as exc:
+        raise CensusAuditError("census checker cache marker is malformed") from exc
+    expected = json.dumps(_cache_manifest(kind, root, source_digest), sort_keys=True) + "\n"
+    if recorded != expected:
+        raise CensusAuditError("census checker cache source or artifact differs")
+
+
 def _build(kind: str) -> Path:
     """Build one checker from committed sources and lockfile into a keyed cache."""
-    root = _cache_root() / f"{kind}-{_source_digest(kind)[:20]}"
-    if (root / "ready").is_file():
+    source_digest = _source_digest(kind)
+    root = _cache_root() / f"{kind}-{source_digest}"
+    if root.exists() or root.is_symlink():
+        _require_ready_cache(kind, root, source_digest)
         return root
     root.parent.mkdir(parents=True, exist_ok=True)
     stage = Path(tempfile.mkdtemp(prefix=f".{kind}-", dir=root.parent))
@@ -122,19 +159,20 @@ def _build(kind: str) -> Path:
             shutil.copyfile(CHECKERS / "ts_checker.package.json", stage / "package.json")
             shutil.copyfile(CHECKERS / "ts_checker.package-lock.json", stage / "package-lock.json")
             _run(["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund", "--silent"], stage)
-        (stage / "ready").write_text(_source_digest(kind) + "\n")
+        (stage / "ready.json").write_text(
+            json.dumps(_cache_manifest(kind, stage, source_digest), sort_keys=True) + "\n"
+        )
         try:
             stage.rename(root)
         except OSError:
-            if not (root / "ready").is_file():
-                raise
+            _require_ready_cache(kind, root, source_digest)
     finally:
         if stage.exists():
             shutil.rmtree(stage, ignore_errors=True)
     return root
 
 
-def checker_identity(language: str) -> dict[str, str]:
+def checker_identity(language: str) -> dict[str, Any]:
     checker = CHECKER_IDS[language]
     if language == "python":
         return {
@@ -163,7 +201,12 @@ def checker_identity(language: str) -> dict[str, str]:
             + "; node "
             + _run(["node", "--version"], root).decode().strip()
         )
-    return {"id": checker, "version": version, "source_digest": _source_digest(kind)}
+    return {
+        "id": checker,
+        "version": version,
+        "source_digest": _source_digest(kind),
+        "artifact_sha256": _artifact_digests(kind, root),
+    }
 
 
 def _python_ast(raw: bytes) -> set[tuple[int, bytes]]:
@@ -241,6 +284,7 @@ def audit_files(language: str, view: Path, paths: list[str]) -> dict[str, Any]:
         if len(raw) > MAX_FILE_BYTES:
             raise CensusAuditError(f"census audit source exceeds file limit: {path}")
         raws[path] = raw
+    checker_before = checker_identity(language)
     external = (
         _external(language, [view / path for path in selected])
         if language != "python" and selected
@@ -299,6 +343,9 @@ def audit_files(language: str, view: Path, paths: list[str]) -> dict[str, Any]:
             continue
         admitted_paths.append(path)
         declarations += len(tree_sitter)
+    checker_after = checker_identity(language)
+    if checker_after != checker_before:
+        raise CensusAuditError("census checker changed during audit")
     return {
         "schema_version": 1,
         "kind": "declaration_census_audit",
@@ -306,7 +353,7 @@ def audit_files(language: str, view: Path, paths: list[str]) -> dict[str, Any]:
         "language": language,
         "census": source_oracle.DECLARATION_CENSUS[language],
         "comparison": "name_start_byte_and_name_bytes_set_equality",
-        "checker": checker_identity(language),
+        "checker": checker_before,
         "files": len(selected),
         "file_set_sha256": file_set_sha256(language, raws),
         "agreeing_files": len(selected) - len(refused) - len(disagreements),

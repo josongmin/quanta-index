@@ -76,6 +76,53 @@ def test_independent_parser_matches_hand_written_declarations(name, tmp_path, mo
     assert result["checker"]["id"] == audit.CHECKER_IDS[language]
     if language == "python":
         assert audit._python_ast((FIXTURES / name).read_bytes()) == expected_spans(name)
+    else:
+        kind = "typescript" if language in ("typescript", "javascript") else language
+        assert set(result["checker"]["artifact_sha256"]) == set(audit.CHECKER_ARTIFACTS[kind])
+
+
+def test_checker_cache_refuses_changed_artifact_and_marker(tmp_path, monkeypatch):
+    monkeypatch.setenv("QUANTA_CENSUS_CACHE", str(tmp_path))
+    source_digest = audit._source_digest("go")
+    root = tmp_path / f"go-{source_digest}"
+    root.mkdir()
+    artifact = root / "checker"
+    artifact.write_bytes(b"original")
+    marker = root / "ready.json"
+    marker.write_text(
+        json.dumps(audit._cache_manifest("go", root, source_digest), sort_keys=True) + "\n"
+    )
+    assert audit._build("go") == root
+    artifact.write_bytes(b"tampered")
+    with pytest.raises(audit.CensusAuditError, match="artifact differs"):
+        audit._build("go")
+    artifact.write_bytes(b"original")
+    marker.write_text(json.dumps({"source_digest": "stale", "artifact_sha256": {}}))
+    with pytest.raises(audit.CensusAuditError, match="source or artifact differs"):
+        audit._build("go")
+    marker.unlink()
+    with pytest.raises(audit.CensusAuditError, match="trusted ready marker"):
+        audit._build("go")
+
+
+def test_audit_refuses_checker_identity_change_during_census(tmp_path, monkeypatch):
+    view = tmp_path / "view"
+    view.mkdir()
+    shutil.copyfile(FIXTURES / "python.py", view / "python.py")
+    original = audit.checker_identity
+    calls = 0
+
+    def changing(language):
+        nonlocal calls
+        calls += 1
+        identity = original(language)
+        if calls == 2:
+            return {**identity, "source_digest": "stale"}
+        return identity
+
+    monkeypatch.setattr(audit, "checker_identity", changing)
+    with pytest.raises(audit.CensusAuditError, match="changed during audit"):
+        audit.audit_files("python", view, ["python.py"])
 
 
 MALFORMED = {
