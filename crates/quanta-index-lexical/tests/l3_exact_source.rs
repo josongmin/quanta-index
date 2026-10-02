@@ -337,6 +337,7 @@ fn code_search_matches_file_across_chunk_boundaries_and_maps_unicode_source_span
         vec!["cross.rs"]
     );
     assert!(rows[0].candidate_id.starts_with("file:"));
+    assert_eq!((rows[0].start_line, rows[0].end_line), (1, 1));
 
     let boundary = code_query(&["haBe"], true);
     let rows = searcher

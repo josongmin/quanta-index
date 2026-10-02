@@ -90,7 +90,7 @@
     },
     "artifacts": {
       "type": "object", "additionalProperties": false,
-      "required": ["suite", "query_pack", "corpus_manifest", "mapping_proof", "latency_matrix", "host_start", "host_end", "host_profile", "records", "reports", "quanta_manifests", "semble_adapter_manifest", "semble_lockfile", "semble_native", "semble_model_cache_manifests", "phase_metrics", "phase_metrics_digests", "symbol_preflights", "resource_metrics", "protocol_lock"],
+      "required": ["suite", "query_pack", "corpus_manifest", "mapping_proof", "latency_matrix", "host_start", "host_end", "host_profile", "records", "reports", "quanta_manifests", "semble_adapter_manifest", "semble_lockfile", "semble_native", "semble_model_cache_manifests", "phase_metrics", "phase_metrics_digests", "symbol_preflights", "resource_metrics", "protocol_lock", "driver_source_closure"],
       "properties": {
         "suite": {"type": "string", "minLength": 1},
         "query_pack": {"type": "string", "minLength": 1},
@@ -151,7 +151,7 @@
         },
         "driver_source_closure": {
           "type": "string", "minLength": 1,
-          "description": "Qualified capture's start/end verified retrieval source closure."
+          "description": "Start/end verified retrieval source closure for every pair capture."
         },
         "isolation_proof": {
           "type": "string", "minLength": 1,
@@ -201,12 +201,7 @@
           "required": ["source_sha", "source_closure_digest", "binary_digest", "embedder"],
           "properties": {
             "source_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
-            "source_closure_digest": {
-              "anyOf": [
-                {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-                {"type": "null"}
-              ]
-            },
+            "source_closure_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
             "binary_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
             "embedder": {"enum": ["potion-code", "potion-code-full-v2", "hash-dev"]}
           }
@@ -268,18 +263,13 @@
       "then": {
         "properties": {
           "artifacts": {
-            "required": ["admission_manifest", "experiment_custody", "development_suite", "license_receipt", "annotation_receipts", "adjudication_receipt", "driver_source_closure"]
+            "required": ["admission_manifest", "experiment_custody", "development_suite", "license_receipt", "annotation_receipts", "adjudication_receipt"]
           },
           "provenance": {
             "properties": {
               "admission": {
                 "properties": {
                   "manifest_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
-                }
-              },
-              "quanta": {
-                "properties": {
-                  "source_closure_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
                 }
               }
             }
@@ -292,9 +282,6 @@
             "properties": {
               "admission": {
                 "properties": {"manifest_digest": {"type": "null"}}
-              },
-              "quanta": {
-                "properties": {"source_closure_digest": {"type": "null"}}
               }
             }
           }

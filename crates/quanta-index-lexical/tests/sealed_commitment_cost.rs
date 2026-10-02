@@ -265,6 +265,10 @@ fn delta_stats(
 }
 
 #[test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "fixed on-disk source admission oracle in a fallible fixture"
+)]
 fn file_admission_counts_inherited_source_reads_separately() -> TestResult {
     let temp = tempfile::tempdir()?;
     let root = temp.path();
@@ -292,7 +296,12 @@ fn file_admission_counts_inherited_source_reads_separately() -> TestResult {
     let delta_files = committed_files(&generation_dir(root, g2))?;
     let source_files: Vec<_> = delta_files
         .iter()
-        .filter(|file| file.name.starts_with("file-authority/") && file.name.ends_with(".bin"))
+        .filter(|file| {
+            file.name.starts_with("file-authority/")
+                && Path::new(&file.name)
+                    .extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("bin"))
+        })
         .collect();
     assert_eq!(source_files.len(), 2);
     assert_eq!(

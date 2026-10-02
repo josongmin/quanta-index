@@ -58,10 +58,8 @@ pub(crate) fn lower_code_search_query_text(query_text: &str) -> Result<LqQuery, 
         if !word.quoted
             && let Some(value) = word.text.strip_prefix("case:")
         {
-            if word.quoted || case.is_some() {
-                return Err(code_search_invalid(
-                    "case: must appear once with an unquoted value",
-                ));
+            if case.is_some() {
+                return Err(code_search_invalid("case: may appear only once"));
             }
             case = Some(match value {
                 "yes" => LqCase::Sensitive,
@@ -70,9 +68,10 @@ pub(crate) fn lower_code_search_query_text(query_text: &str) -> Result<LqQuery, 
             });
             continue;
         }
-        let (scope, literal) = if let Some(value) = word.text.strip_prefix("content:") {
+        let scoped = !word.quoted || word.scope_prefix_before_quote;
+        let (scope, literal) = if scoped && let Some(value) = word.text.strip_prefix("content:") {
             (Some("code_search.content"), value)
-        } else if let Some(value) = word.text.strip_prefix("path:") {
+        } else if scoped && let Some(value) = word.text.strip_prefix("path:") {
             (Some("code_search.path"), value)
         } else {
             (None, word.text.as_str())
@@ -154,6 +153,8 @@ pub(crate) fn lower_code_search_query_text(query_text: &str) -> Result<LqQuery, 
 struct CodeSearchWord {
     text: String,
     quoted: bool,
+    /// Whether `content:` or `path:` appeared before the opening quote.
+    scope_prefix_before_quote: bool,
     regex_delimited: bool,
 }
 
@@ -161,6 +162,7 @@ fn code_search_words(query_text: &str) -> Result<Vec<CodeSearchWord>, CoreError>
     let mut words = Vec::new();
     let mut text = String::new();
     let mut quoted = false;
+    let mut scope_prefix_before_quote = false;
     let mut in_quotes = false;
     let mut escaped = false;
     let mut just_closed_quote = false;
@@ -210,9 +212,11 @@ fn code_search_words(query_text: &str) -> Result<Vec<CodeSearchWord>, CoreError>
                 words.push(CodeSearchWord {
                     text: std::mem::take(&mut text),
                     quoted,
+                    scope_prefix_before_quote,
                     regex_delimited,
                 });
                 quoted = false;
+                scope_prefix_before_quote = false;
                 regex_delimited = false;
                 just_closed_quote = false;
             }
@@ -232,6 +236,7 @@ fn code_search_words(query_text: &str) -> Result<Vec<CodeSearchWord>, CoreError>
             }
             in_quotes = true;
             quoted = true;
+            scope_prefix_before_quote = !text.is_empty();
         } else if ch == '\\' {
             return Err(code_search_invalid(
                 "escape bare backslashes with a quoted literal",
@@ -249,6 +254,7 @@ fn code_search_words(query_text: &str) -> Result<Vec<CodeSearchWord>, CoreError>
         words.push(CodeSearchWord {
             text,
             quoted,
+            scope_prefix_before_quote,
             regex_delimited,
         });
     }
@@ -923,6 +929,19 @@ mod tests {
         expect_equal!(
             lower_code_search_query_text("\"hello world\"")?.expr,
             LqExpr::Leaf(LqLeaf::RawString("hello world".to_string())),
+        );
+        for literal in ["path:foo", "content:bar", "path:regex:/foo/"] {
+            expect_equal!(
+                lower_code_search_query_text(&format!("\"{literal}\""))?.expr,
+                LqExpr::Leaf(LqLeaf::RawString(literal.to_string())),
+            );
+        }
+        expect_equal!(
+            lower_code_search_query_text("content:\"path:foo\"")?.expr,
+            LqExpr::Leaf(LqLeaf::Predicate {
+                name: "code_search.content".to_string(),
+                args: vec![LqPredicateArg::RawString("path:foo".to_string())],
+            }),
         );
         expect_equal!(
             lower_code_search_query_text(r#""a\"b\\c""#)?.expr,

@@ -15,7 +15,7 @@ use quanta_index_contract::{
 use quanta_index_core::{CoreError, LexicalPageSpec, LexicalSearchPageV1, RequestBudgetV1};
 use quanta_index_lq_regex::RegexExecutor;
 use quanta_index_lq_trigram::{
-    MAX_CANDIDATE_PRE_VERIFY, TrigramIndex, TrigramIntersectionError, trigrams_of,
+    DocId, MAX_CANDIDATE_PRE_VERIFY, Trigram, TrigramIndex, TrigramIntersectionError, trigrams_of,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -564,83 +564,131 @@ fn proximity_bonus(
     Ok(32_u32.saturating_sub(gap))
 }
 
+fn posting_sources(authority: &FileAuthority, scope: Scope) -> [Option<&TrigramIndex>; 2] {
+    match scope {
+        Scope::Both => [
+            Some(&authority.content_folded),
+            Some(&authority.path_folded),
+        ],
+        Scope::Content => [Some(&authority.content_folded), None],
+        Scope::Path => [Some(&authority.path_folded), None],
+    }
+}
+
+struct LiteralPrefilter<'a> {
+    term: &'a CodeSearchTerm,
+    trigrams: Vec<Trigram>,
+}
+
+impl LiteralPrefilter<'_> {
+    fn possible_in(&self, authority: &FileAuthority, id: DocId) -> bool {
+        posting_sources(authority, self.term.scope)
+            .into_iter()
+            .flatten()
+            .any(|index| {
+                self.trigrams
+                    .iter()
+                    .all(|trigram| index.lookup(*trigram).binary_search(&id).is_ok())
+            })
+    }
+
+    fn seed_size(&self, authority: &FileAuthority) -> usize {
+        posting_sources(authority, self.term.scope)
+            .into_iter()
+            .flatten()
+            .map(|index| {
+                self.trigrams
+                    .iter()
+                    .map(|trigram| index.lookup(*trigram).len())
+                    .min()
+                    .unwrap_or(0)
+            })
+            .sum()
+    }
+}
+
+fn file_for_id(authority: &FileAuthority, id: DocId) -> Result<&SourceFile, CoreError> {
+    let position = usize::try_from(id.0.saturating_sub(1))
+        .map_err(|error| CoreError::Storage(format!("lexical: file id overflow: {error}")))?;
+    let key = authority
+        .ordered_keys
+        .get(position)
+        .ok_or_else(|| CoreError::Storage("lexical: file posting outside authority".into()))?;
+    authority
+        .files
+        .get(key)
+        .ok_or_else(|| CoreError::Storage("lexical: file posting has no source".into()))
+}
+
+/// Generate one file-level AND set. A broad individual posting is never
+/// charged as a completed candidate before the remaining terms filter it.
 fn candidate_ids(
     authority: &FileAuthority,
-    term: &CodeSearchTerm,
+    terms: &[CodeSearchTerm],
     case: CaseMode,
     eligible: Option<&BTreeSet<u64>>,
     budget: &RequestBudgetV1,
 ) -> Result<BTreeSet<u64>, CoreError> {
-    // Per-character fold preserves every sensitive substring. Verify against
-    // the original NFC surface after this shared conservative prefilter.
-    let needle = match case {
-        CaseMode::Sensitive => normalize::fold(&term.needle),
-        CaseMode::Folded => term.needle.clone(),
-    };
-    if needle.len() < 3 {
-        let source_bytes = source_bytes_checked(authority, term.scope, case, eligible, budget)?;
-        if eligible.map_or(authority.ordered_keys.len(), BTreeSet::len) > MAX_SHORT_SCAN_FILES
-            || source_bytes > MAX_SHORT_SCAN_SOURCE_BYTES
-        {
-            return Err(CoreError::Typed {
-                code: quanta_index_contract::SearchPlaneErrorCodeV2::LexTrigramPlanLimitExceeded,
-                message: format!(
-                    "lexical code search: short literal exceeds {MAX_SHORT_SCAN_FILES} files or {MAX_SHORT_SCAN_SOURCE_BYTES} source bytes"
-                ),
-            });
+    let literals: Vec<_> = terms.iter().filter(|term| term.regex.is_none()).collect();
+    let mut indexed = Vec::new();
+    for term in &literals {
+        // Per-character fold preserves every sensitive substring. The
+        // original NFC text remains the final matching authority.
+        let needle = match case {
+            CaseMode::Sensitive => normalize::fold(&term.needle),
+            CaseMode::Folded => term.needle.clone(),
+        };
+        if needle.len() >= 3 {
+            let mut trigrams: Vec<_> = trigrams_of(needle.as_bytes()).collect();
+            trigrams.sort_unstable();
+            trigrams.dedup();
+            indexed.push(LiteralPrefilter { term, trigrams });
         }
-        let mut hits = BTreeSet::new();
-        for (index, key) in authority.ordered_keys.iter().enumerate() {
-            budget.checkpoint("lexical:code-search-short-verify")?;
-            let id = file_id_at(index)?;
-            if eligible.is_some_and(|ids| !ids.contains(&id)) {
-                continue;
-            }
-            let file = authority.files.get(key).ok_or_else(|| {
-                CoreError::Storage("lexical: file authority id has no source".into())
-            })?;
-            if choose_witness(file, term, case, budget)?.is_some() {
-                let _inserted = hits.insert(id);
-            }
-        }
-        return Ok(hits);
     }
-    let mut trigrams: Vec<_> = trigrams_of(needle.as_bytes()).collect();
-    trigrams.sort_unstable();
-    trigrams.dedup();
     let mut hits = BTreeSet::new();
-    let sources: &[&TrigramIndex] = match term.scope {
-        Scope::Both => &[&authority.content_folded, &authority.path_folded],
-        Scope::Content => &[&authority.content_folded],
-        Scope::Path => &[&authority.path_folded],
-    };
-    for index in sources {
-        budget.checkpoint("lexical:code-search-trigram")?;
-        let candidates = index
-            .intersect_trigrams_filtered_with_checkpoint(
-                &trigrams,
-                |id| Ok(eligible.is_none_or(|ids| ids.contains(&id.0))),
-                || budget.checkpoint("lexical:code-search-trigram-posting"),
-            )
-            .map_err(|error| match error {
-                TrigramIntersectionError::Index(error) => {
-                    map_trigram_error("code search file prefilter", &error)
-                }
-                TrigramIntersectionError::Checkpoint(error) => error,
-            })?;
-        for id in candidates {
-            budget.checkpoint("lexical:code-search-verify")?;
-            let position = usize::try_from(id.0.saturating_sub(1)).map_err(|error| {
-                CoreError::Storage(format!("lexical: file id overflow: {error}"))
-            })?;
-            let key = authority.ordered_keys.get(position).ok_or_else(|| {
-                CoreError::Storage("lexical: file posting outside authority".into())
-            })?;
-            let file = authority
-                .files
-                .get(key)
-                .ok_or_else(|| CoreError::Storage("lexical: file posting has no source".into()))?;
-            if choose_witness(file, term, case, budget)?.is_some() {
+    if let Some((seed_position, seed)) = indexed
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, term)| term.seed_size(authority))
+    {
+        for index in posting_sources(authority, seed.term.scope)
+            .into_iter()
+            .flatten()
+        {
+            budget.checkpoint("lexical:code-search-trigram")?;
+            let candidates = index
+                .intersect_trigrams_filtered_with_checkpoint(
+                    &seed.trigrams,
+                    |id| {
+                        if eligible.is_some_and(|ids| !ids.contains(&id.0)) {
+                            return Ok(false);
+                        }
+                        for (position, term) in indexed.iter().enumerate() {
+                            if position != seed_position {
+                                budget.checkpoint("lexical:code-search-term-postings")?;
+                                if !term.possible_in(authority, id) {
+                                    return Ok(false);
+                                }
+                            }
+                        }
+                        let file = file_for_id(authority, id)?;
+                        for term in &literals {
+                            if choose_witness(file, term, case, budget)?.is_none() {
+                                return Ok(false);
+                            }
+                        }
+                        Ok(true)
+                    },
+                    || budget.checkpoint("lexical:code-search-trigram-posting"),
+                )
+                .map_err(|error| match error {
+                    TrigramIntersectionError::Index(error) => {
+                        map_trigram_error("code search file prefilter", &error)
+                    }
+                    TrigramIntersectionError::Checkpoint(error) => error,
+                })?;
+            for id in candidates {
+                budget.checkpoint("lexical:code-search-verify")?;
                 if hits.len() >= MAX_CANDIDATE_PRE_VERIFY && !hits.contains(&id.0) {
                     return Err(CoreError::Typed {
                         code: quanta_index_contract::SearchPlaneErrorCodeV2::LexTrigramPlanLimitExceeded,
@@ -649,6 +697,42 @@ fn candidate_ids(
                 }
                 let _inserted = hits.insert(id.0);
             }
+        }
+        return Ok(hits);
+    }
+
+    let scope = scope_union(literals.iter().map(|term| term.scope))
+        .ok_or_else(|| CoreError::Storage("lexical: no literal candidate seed".into()))?;
+    let source_bytes = source_bytes_checked(authority, scope, case, eligible, budget)?;
+    if eligible.map_or(authority.ordered_keys.len(), BTreeSet::len) > MAX_SHORT_SCAN_FILES
+        || source_bytes > MAX_SHORT_SCAN_SOURCE_BYTES
+    {
+        return Err(CoreError::Typed {
+            code: quanta_index_contract::SearchPlaneErrorCodeV2::LexTrigramPlanLimitExceeded,
+            message: format!(
+                "lexical code search: short literal exceeds {MAX_SHORT_SCAN_FILES} files or {MAX_SHORT_SCAN_SOURCE_BYTES} source bytes"
+            ),
+        });
+    }
+    for (position, key) in authority.ordered_keys.iter().enumerate() {
+        budget.checkpoint("lexical:code-search-short-verify")?;
+        let id = file_id_at(position)?;
+        if eligible.is_some_and(|ids| !ids.contains(&id)) {
+            continue;
+        }
+        let file = authority
+            .files
+            .get(key)
+            .ok_or_else(|| CoreError::Storage("lexical: file authority id has no source".into()))?;
+        let mut matched = true;
+        for term in &literals {
+            if choose_witness(file, term, case, budget)?.is_none() {
+                matched = false;
+                break;
+            }
+        }
+        if matched {
+            let _inserted = hits.insert(id);
         }
     }
     Ok(hits)
@@ -697,11 +781,11 @@ fn scanned_bytes(file: &SourceFile, scope: Scope, case: CaseMode) -> usize {
     }
 }
 
-fn regex_scan_scope(terms: &[CodeSearchTerm]) -> Option<Scope> {
+fn scope_union(scopes: impl Iterator<Item = Scope>) -> Option<Scope> {
     let mut content = false;
     let mut path = false;
-    for term in terms.iter().filter(|term| term.regex.is_some()) {
-        match term.scope {
+    for scope in scopes {
+        match scope {
             Scope::Both => {
                 content = true;
                 path = true;
@@ -716,6 +800,15 @@ fn regex_scan_scope(terms: &[CodeSearchTerm]) -> Option<Scope> {
         (false, true) => Some(Scope::Path),
         (true, true) => Some(Scope::Both),
     }
+}
+
+fn regex_scan_scope(terms: &[CodeSearchTerm]) -> Option<Scope> {
+    scope_union(
+        terms
+            .iter()
+            .filter(|term| term.regex.is_some())
+            .map(|term| term.scope),
+    )
 }
 
 fn language_eligible_ids(
@@ -915,6 +1008,62 @@ fn nfc_identity_focus(
     Ok(Some(original))
 }
 
+fn content_witness_lines(
+    file: &SourceFile,
+    witness: &Witness,
+    budget: &RequestBudgetV1,
+) -> Result<(u32, u32), CoreError> {
+    let text = match witness.mapping_case {
+        CaseMode::Sensitive => file.indexed_text.as_deref(),
+        CaseMode::Folded => file.folded_text.as_deref(),
+    }
+    .ok_or_else(|| CoreError::Storage("lexical: content witness lacks indexed text".into()))?;
+    let start = witness.normalized.start;
+    let end = witness.normalized.end;
+    let bytes = text.as_bytes();
+    if start >= end || end > bytes.len() {
+        return Err(CoreError::Storage(
+            "lexical: content witness is outside indexed text".into(),
+        ));
+    }
+    // NFC and case folding preserve line separators, including when their
+    // byte offsets differ from source. The preview mapping owns byte spans.
+    let mut line = 1_u32;
+    let mut start_line = None;
+    let mut end_line = None;
+    let last = end
+        .checked_sub(1)
+        .ok_or_else(|| CoreError::Storage("lexical: empty content witness".into()))?;
+    let prefix = bytes
+        .get(..end)
+        .ok_or_else(|| CoreError::Storage("lexical: content witness outside source".into()))?;
+    let mut position = 0_usize;
+    for chunk in prefix.chunks(64 * 1024) {
+        budget.checkpoint("lexical:code-search-line-position")?;
+        for byte in chunk {
+            if position == start {
+                start_line = Some(line);
+            }
+            if position == last {
+                end_line = Some(line);
+                break;
+            }
+            if *byte == b'\n' {
+                line = line.checked_add(1).ok_or_else(|| {
+                    CoreError::Storage("lexical: source line count overflow".into())
+                })?;
+            }
+            position = position
+                .checked_add(1)
+                .ok_or_else(|| CoreError::Storage("lexical: line offset overflow".into()))?;
+        }
+    }
+    Ok((
+        start_line.ok_or_else(|| CoreError::Storage("lexical: missing start line".into()))?,
+        end_line.ok_or_else(|| CoreError::Storage("lexical: missing end line".into()))?,
+    ))
+}
+
 fn file_candidate(
     owner: &TantivySearcher,
     file: &SourceFile,
@@ -950,6 +1099,12 @@ fn file_candidate(
     };
     if !materialize_preview {
         return Ok(candidate);
+    }
+    // Each file has one row. Score/repo/path already give distinct order
+    // keys, so line lookup can stay on the selected page without changing
+    // sort or cursor order.
+    if matches!(witness.surface, HitSurface::Content) {
+        (candidate.start_line, candidate.end_line) = content_witness_lines(file, witness, budget)?;
     }
     if matches!(witness.surface, HitSurface::Path) {
         let Some(highlight) = path_highlight(file, witness, budget)? else {
@@ -1112,35 +1267,20 @@ impl TantivySearcher {
                 }
             }
             Some(matching)
+        } else if parsed.terms.iter().any(|term| term.regex.is_none()) {
+            // A regex cannot safely supply a literal trigram unless its
+            // dialect proves that literal mandatory. Join all literal terms
+            // first, then verify regex over the admitted file set.
+            budget.checkpoint("lexical:code-search-terms")?;
+            Some(candidate_ids(
+                authority,
+                &parsed.terms,
+                parsed.case,
+                eligible,
+                budget,
+            )?)
         } else {
-            let mut ids: Option<BTreeSet<u64>> = None;
-            for term in &parsed.terms {
-                // A regex cannot safely use a literal trigram prefilter unless
-                // that literal is proven mandatory under the regex dialect.
-                // Apply literal intersections first, then verify regex terms
-                // over that bounded file set.
-                if term.regex.is_some() {
-                    continue;
-                }
-                budget.checkpoint("lexical:code-search-term")?;
-                let term_ids = match candidate_ids(authority, term, parsed.case, eligible, budget) {
-                    Ok(ids) => ids,
-                    Err(CoreError::Typed {
-                        code:
-                            quanta_index_contract::SearchPlaneErrorCodeV2::LexTrigramPlanLimitExceeded,
-                        ..
-                    }) => continue,
-                    Err(error) => return Err(error),
-                };
-                ids = Some(match ids {
-                    None => term_ids,
-                    Some(prior) => prior.intersection(&term_ids).copied().collect(),
-                });
-                if ids.as_ref().is_some_and(BTreeSet::is_empty) {
-                    break;
-                }
-            }
-            ids
+            None
         };
         let regex_scope = regex_scan_scope(&parsed.terms);
         let ids = match ids {
@@ -1285,8 +1425,9 @@ impl TantivySearcher {
 mod tests {
     use super::{
         CodeSearchTerm, HitSurface, OverlappingMatches, Scope, best_in, boundary_score,
-        candidate_ids, file_candidate_id, language_eligible_ids, min_cover_gap, nfc_identity_focus,
-        path_highlight, regex_scan_scope, scanned_bytes, source_bytes_checked,
+        candidate_ids, content_witness_lines, file_candidate_id, language_eligible_ids,
+        min_cover_gap, nfc_identity_focus, path_highlight, regex_scan_scope, scanned_bytes,
+        source_bytes_checked,
     };
     use quanta_index_contract::lex::LanguageCode;
     use quanta_index_contract::{
@@ -1296,9 +1437,9 @@ mod tests {
     use quanta_index_core::{CoreError, RequestBudgetV1};
     use quanta_index_lq_regex::RegexExecutor;
     use quanta_index_lq_trigram::{DocId, TrigramIndexBuilder, TrigramIntersectionError};
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
 
-    use crate::file_authority::{SourceFile, from_verified_files};
+    use crate::file_authority::{FileAuthority, SourceFile, from_verified_files};
     use quanta_index_lq_text_normalizer::{self as normalize, CaseMode, MappedText};
 
     fn fixture_postings(path: &str, content: Option<&str>) -> u32 {
@@ -1362,8 +1503,14 @@ mod tests {
                 scope,
                 regex: None,
             };
-            let hits = candidate_ids(&authority, &term, CaseMode::Sensitive, None, &budget)
-                .expect("sensitive search");
+            let hits = candidate_ids(
+                &authority,
+                std::slice::from_ref(&term),
+                CaseMode::Sensitive,
+                None,
+                &budget,
+            )
+            .expect("sensitive search");
             assert_eq!(!hits.is_empty(), expected, "{needle}");
         }
     }
@@ -1437,6 +1584,61 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn large_source_line_location_uses_folded_match_position() {
+        let raw = format!(
+            "head\n{}\nİneedle",
+            "x".repeat(super::MAX_PREVIEW_SOURCE_BYTES)
+        );
+        let indexed = normalize::nfc(&raw).into_owned();
+        let folded = normalize::fold(&indexed);
+        let needle = "i\u{307}needle";
+        let start = folded.find(needle).expect("folded match");
+        let witness = super::Witness {
+            surface: HitSurface::Content,
+            normalized: start..start + needle.len(),
+            score: 100,
+            occurrences: 1,
+            mapping_case: CaseMode::Folded,
+        };
+        let file = SourceFile {
+            source: SourceFileRevision {
+                file: SourceFileKey {
+                    source_repo_id: RepoId::new("repo").expect("repo"),
+                    repo_relative_path: RepoRelativePath::new("large.rs"),
+                },
+                revision_id: RevisionId::new("revision").expect("revision"),
+                source_sha256: <sha2::Sha256 as sha2::Digest>::digest(raw.as_bytes()).into(),
+            },
+            bytes: raw.into_bytes(),
+            text_admitted: true,
+            language: LanguageCode::new("rust").expect("language"),
+            indexed_text: Some(indexed),
+            folded_text: Some(folded),
+            indexed_path: "large.rs".into(),
+            folded_path: "large.rs".into(),
+            expected_postings: 0,
+        };
+        assert!(file.bytes.len() > super::MAX_PREVIEW_SOURCE_BYTES);
+        assert_eq!(
+            content_witness_lines(&file, &witness, &RequestBudgetV1::unbounded())
+                .expect("line span"),
+            (3, 3),
+        );
+        let across_newline = super::Witness {
+            surface: HitSurface::Content,
+            normalized: 2..6,
+            score: 100,
+            occurrences: 1,
+            mapping_case: CaseMode::Sensitive,
+        };
+        assert_eq!(
+            content_witness_lines(&file, &across_newline, &RequestBudgetV1::unbounded())
+                .expect("multi-line span"),
+            (1, 2),
+        );
     }
 
     #[test]
@@ -1530,7 +1732,13 @@ mod tests {
         };
         let budget = RequestBudgetV1::unbounded();
         assert!(matches!(
-            candidate_ids(&authority, &term, CaseMode::Sensitive, None, &budget),
+            candidate_ids(
+                &authority,
+                std::slice::from_ref(&term),
+                CaseMode::Sensitive,
+                None,
+                &budget,
+            ),
             Err(CoreError::Typed {
                 code: SearchPlaneErrorCodeV2::LexTrigramPlanLimitExceeded,
                 ..
@@ -1544,13 +1752,88 @@ mod tests {
         assert_eq!(eligible.len(), 1);
         let matches = candidate_ids(
             &authority,
-            &term,
+            std::slice::from_ref(&term),
             CaseMode::Sensitive,
             Some(&eligible),
             &budget,
         )
         .expect("eligible short scan");
         assert_eq!(matches.into_iter().collect::<Vec<_>>(), vec![1]);
+    }
+
+    #[test]
+    fn broad_individual_terms_admit_their_small_file_and_intersection() {
+        let repo = RepoId::new("fixture").expect("repo");
+        let revision = RevisionId::new("fixture-revision").expect("revision");
+        let language = LanguageCode::new("text").expect("language");
+        let mut content_index = TrigramIndexBuilder::new(1).expect("generation");
+        let path_index = TrigramIndexBuilder::new(1).expect("generation");
+        let mut files = BTreeMap::new();
+        let mut ordered_keys = Vec::new();
+        for position in 0..=200_000_u64 {
+            let text = if position == 200_000 {
+                "aaa bbb"
+            } else if position < 100_000 {
+                "aaa"
+            } else {
+                "bbb"
+            };
+            let key = SourceFileKey {
+                source_repo_id: repo.clone(),
+                repo_relative_path: RepoRelativePath::new(format!("src/{position:06}.txt")),
+            };
+            content_index.add_doc(DocId(position + 1), text.as_bytes());
+            ordered_keys.push(key.clone());
+            let _previous = files.insert(
+                key.clone(),
+                SourceFile {
+                    source: SourceFileRevision {
+                        file: key,
+                        revision_id: revision.clone(),
+                        source_sha256: [0; 32],
+                    },
+                    bytes: text.as_bytes().to_vec(),
+                    text_admitted: true,
+                    language: language.clone(),
+                    indexed_text: Some(text.to_string()),
+                    folded_text: Some(text.to_string()),
+                    indexed_path: String::new(),
+                    folded_path: String::new(),
+                    expected_postings: 0,
+                },
+            );
+        }
+        let authority = FileAuthority {
+            files,
+            ordered_keys,
+            content_folded: content_index.finish(),
+            path_folded: path_index.finish(),
+        };
+        let terms = ["aaa", "bbb"].map(|text| CodeSearchTerm {
+            text: text.into(),
+            needle: text.into(),
+            scope: Scope::Content,
+            regex: None,
+        });
+        let budget = RequestBudgetV1::unbounded();
+        assert!(matches!(
+            candidate_ids(
+                &authority,
+                std::slice::from_ref(&terms[0]),
+                CaseMode::Sensitive,
+                None,
+                &budget,
+            ),
+            Err(CoreError::Typed {
+                code: SearchPlaneErrorCodeV2::LexTrigramPlanLimitExceeded,
+                ..
+            })
+        ));
+        assert_eq!(
+            candidate_ids(&authority, &terms, CaseMode::Sensitive, None, &budget)
+                .expect("joint candidate set"),
+            BTreeSet::from([200_001]),
+        );
     }
 
     #[test]

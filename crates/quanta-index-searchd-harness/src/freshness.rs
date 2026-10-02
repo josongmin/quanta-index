@@ -13,7 +13,9 @@ use std::path::Path;
 use std::time::Instant;
 
 use anyhow::{Context as _, Result as AnyResult, anyhow, ensure};
-use quanta_index_contract::{GenerationPin, ManifestGeneration, TextQuerySyntax};
+use quanta_index_contract::{
+    GenerationPin, ManifestGeneration, TextQueryResponse, TextQuerySyntax, TextRankUnit,
+};
 use quanta_index_searchd_harness::E2eRuntime;
 use quanta_index_searchd_harness::artifact::{
     BenchArtifactV1, BenchMode, BenchProvenanceV1, BenchRowV1, BenchSyntax, GitHeadV1, HostV1,
@@ -102,28 +104,31 @@ fn pin(rt: &E2eRuntime, generation: ManifestGeneration) -> GenerationPin {
     GenerationPin::new(rt.repo(), rt.revision(), generation)
 }
 
+fn pinned_text_page(
+    rt: &mut E2eRuntime,
+    syntax: TextQuerySyntax,
+    generation: ManifestGeneration,
+    token: &str,
+) -> AnyResult<(GenerationPin, TextQueryResponse)> {
+    let expected_pin = pin(rt, generation);
+    let page = rt
+        .query_text_page(syntax, token, TOP_K, Some(expected_pin.clone()), None)?
+        .served(token)?;
+    ensure!(
+        page.generation == expected_pin,
+        "freshness: {token} response pin differs: {:?}",
+        page.generation
+    );
+    Ok((expected_pin, page))
+}
+
 fn expect_paths(
     rt: &mut E2eRuntime,
     generation: ManifestGeneration,
     token: &str,
     paths: &[&str],
 ) -> AnyResult<()> {
-    let expected_pin = pin(rt, generation);
-    let page = rt
-        .query_text_page(
-            TextQuerySyntax::Native,
-            token,
-            TOP_K,
-            Some(expected_pin.clone()),
-            None,
-        )?
-        .served(token)?;
-    ensure!(
-        page.generation == expected_pin,
-        "freshness: {token} response generation {:?}, expected {:?}",
-        page.generation,
-        expected_pin
-    );
+    let (expected_pin, page) = pinned_text_page(rt, TextQuerySyntax::Native, generation, token)?;
     let mut actual = Vec::with_capacity(page.results.len());
     for candidate in &page.results {
         ensure!(
@@ -150,6 +155,82 @@ fn expect_paths(
         actual == expected,
         "freshness: {token} generation {} paths {actual:?}, expected {expected:?}",
         generation.get()
+    );
+    Ok(())
+}
+
+/// Check the product file result against the same canonical synthetic source
+/// issuer that staged ingest uses. Native chunk visibility alone cannot prove
+/// the file result's source revision identity.
+fn expect_code_search_files(
+    rt: &mut E2eRuntime,
+    generation: ManifestGeneration,
+    token: &str,
+    files: &[(&str, &str)],
+) -> AnyResult<()> {
+    let (expected_pin, page) =
+        pinned_text_page(rt, TextQuerySyntax::CodeSearch, generation, token)?;
+    ensure!(
+        page.rank_unit == TextRankUnit::File,
+        "freshness: CodeSearch rank unit differs for {token}"
+    );
+    ensure!(
+        page.results.len() == files.len() && page.next_cursor.is_none(),
+        "freshness: CodeSearch file count or continuation differs for {token}"
+    );
+    let mut actual = Vec::with_capacity(page.results.len());
+    for candidate in &page.results {
+        let path = candidate.repo_relative_path.as_str();
+        let (_, content) = files
+            .iter()
+            .find(|(expected_path, _)| *expected_path == path)
+            .ok_or_else(|| anyhow!("freshness: unexpected CodeSearch path {path}"))?;
+        let source = candidate
+            .source
+            .as_ref()
+            .ok_or_else(|| anyhow!("freshness: CodeSearch file {path} has no source identity"))?;
+        let expected_batch = rt.text_search_corpus_batch(path, content)?;
+        let expected_scope = expected_batch
+            .replace_scopes
+            .first()
+            .ok_or_else(|| anyhow!("freshness: synthetic source issuer returned no scope"))?;
+        ensure!(
+            expected_batch.replace_scopes.len() == 1
+                && expected_scope
+                    .coverage
+                    .source
+                    .file
+                    .repo_relative_path
+                    .as_str()
+                    == path,
+            "freshness: synthetic source issuer returned an unexpected scope"
+        );
+        let expected_sha = expected_scope.coverage.source.source_sha256;
+        ensure!(
+            candidate.candidate_id.starts_with("file:")
+                && candidate.repo_id == expected_pin.repo_id
+                && candidate.revision_id == expected_pin.revision_id
+                && candidate.manifest_generation == generation,
+            "freshness: CodeSearch file {path} has incoherent identity: {candidate:?}"
+        );
+        ensure!(
+            candidate.source_repo_id == expected_pin.repo_id
+                && source.file.source_repo_id == expected_pin.repo_id
+                && source.file.repo_relative_path == candidate.repo_relative_path
+                && source.revision_id == expected_pin.revision_id,
+            "freshness: CodeSearch file {path} has incoherent source revision"
+        );
+        ensure!(
+            source.source_sha256 == expected_sha,
+            "freshness: CodeSearch file {path} has stale source SHA"
+        );
+        actual.push(path);
+    }
+    actual.sort_unstable();
+    actual.dedup();
+    ensure!(
+        actual.len() == files.len(),
+        "freshness: CodeSearch returned duplicate files for {token}"
     );
     Ok(())
 }
@@ -213,6 +294,13 @@ pub(crate) fn run_one() -> AnyResult<(FreshnessSample, Option<String>)> {
     rt.activate_last_sealed_generation()?;
     expect_paths(&mut rt, base, OLD_TOKEN, &[UPDATE_PATH])?;
     expect_paths(&mut rt, base, RENAME_TOKEN, &[RENAME_FROM])?;
+    expect_code_search_files(&mut rt, base, OLD_TOKEN, &[(UPDATE_PATH, OLD_CONTENT)])?;
+    expect_code_search_files(
+        &mut rt,
+        base,
+        RENAME_TOKEN,
+        &[(RENAME_FROM, RENAME_CONTENT)],
+    )?;
 
     let update_started = Instant::now();
     fs::write(workspace.path().join(UPDATE_PATH), NEW_CONTENT)?;
@@ -234,6 +322,13 @@ pub(crate) fn run_one() -> AnyResult<(FreshnessSample, Option<String>)> {
     let updated_generation = ManifestGeneration::new(update.generation);
     expect_paths(&mut rt, updated_generation, OLD_TOKEN, &[])?;
     expect_paths(&mut rt, updated_generation, RENAME_TOKEN, &[RENAME_FROM])?;
+    expect_code_search_files(
+        &mut rt,
+        updated_generation,
+        NEW_TOKEN,
+        &[(UPDATE_PATH, NEW_CONTENT)],
+    )?;
+    expect_code_search_files(&mut rt, updated_generation, OLD_TOKEN, &[])?;
 
     let delete_started = Instant::now();
     fs::remove_file(workspace.path().join(UPDATE_PATH))?;
@@ -251,6 +346,13 @@ pub(crate) fn run_one() -> AnyResult<(FreshnessSample, Option<String>)> {
     let deleted_generation = ManifestGeneration::new(delete.generation);
     expect_paths(&mut rt, deleted_generation, OLD_TOKEN, &[])?;
     expect_paths(&mut rt, deleted_generation, RENAME_TOKEN, &[RENAME_FROM])?;
+    expect_code_search_files(&mut rt, deleted_generation, NEW_TOKEN, &[])?;
+    expect_code_search_files(
+        &mut rt,
+        deleted_generation,
+        RENAME_TOKEN,
+        &[(RENAME_FROM, RENAME_CONTENT)],
+    )?;
 
     let rename_started = Instant::now();
     fs::rename(
@@ -289,6 +391,45 @@ pub(crate) fn run_one() -> AnyResult<(FreshnessSample, Option<String>)> {
     let final_generation = ManifestGeneration::new(rename.generation);
     expect_paths(&mut rt, final_generation, OLD_TOKEN, &[])?;
     expect_paths(&mut rt, final_generation, NEW_TOKEN, &[])?;
+    expect_code_search_files(
+        &mut rt,
+        final_generation,
+        RENAME_TOKEN,
+        &[(RENAME_TO, RENAME_CONTENT)],
+    )?;
+    expect_code_search_files(&mut rt, final_generation, NEW_TOKEN, &[])?;
+    expect_code_search_files(
+        &mut rt,
+        final_generation,
+        "path:moved.rs",
+        &[(RENAME_TO, RENAME_CONTENT)],
+    )?;
+    expect_code_search_files(&mut rt, final_generation, "path:rename.rs", &[])?;
+
+    // Reopen the daemon runtime over the same durable state root. Current and
+    // historical file results must retain their source revision and generation.
+    let expected_repo = rt.repo();
+    let expected_revision = rt.revision();
+    let mut rt = rt.reopen();
+    ensure!(
+        rt.repo() == expected_repo && rt.revision() == expected_revision,
+        "freshness: daemon reopen changed repository or source revision"
+    );
+    expect_code_search_files(
+        &mut rt,
+        final_generation,
+        RENAME_TOKEN,
+        &[(RENAME_TO, RENAME_CONTENT)],
+    )?;
+    expect_code_search_files(&mut rt, final_generation, NEW_TOKEN, &[])?;
+    expect_code_search_files(&mut rt, base, OLD_TOKEN, &[(UPDATE_PATH, OLD_CONTENT)])?;
+    expect_code_search_files(
+        &mut rt,
+        updated_generation,
+        NEW_TOKEN,
+        &[(UPDATE_PATH, NEW_CONTENT)],
+    )?;
+    expect_code_search_files(&mut rt, deleted_generation, NEW_TOKEN, &[])?;
 
     Ok((
         FreshnessSample {
@@ -433,7 +574,7 @@ pub(crate) fn artifact(
             },
             "sample_count": report.samples.len(),
             "samples": report.samples.iter().map(FreshnessSample::to_json).collect::<Vec<_>>(),
-            "correctness": ["update replaces old token", "delete removes new token", "rename moves path", "historical generation pins remain coherent"]
+            "correctness": ["update replaces old token", "delete removes new token", "rename moves path", "historical generation pins remain coherent", "CodeSearch file identity and source SHA remain coherent through update/delete/rename and daemon runtime reopen"]
         }),
     })
 }

@@ -5795,16 +5795,25 @@ def _pair_stage(
 
     frozen_admission = {}
     driver_source_closure_digest = None
-    if scope == "qualified":
+    if scope == "qualified" or receipts == "full":
         source_receipt = json.loads(
             Path(frozen["contract_python_receipt"]).read_text(encoding="utf-8")
         )
-        source_closure_path = stage / "driver-source-closure.json"
-        source_closure_path.write_text(
-            json.dumps(source_receipt["source_closure"]), encoding="utf-8"
-        )
-        spec["_driver_source_closure"] = str(source_closure_path)
-        driver_source_closure_digest = source_receipt["source_closure"]["digest"]
+        closure = source_receipt["source_closure"]
+    else:
+        closure = {
+            "schema_version": 1,
+            "profile": "retrieval",
+            "revision": pairrun.git_head_sha(Path(__file__).resolve().parents[3]),
+            "roots": ["tools/benchmark/retrieval"],
+            "files": [{"path": "tools/benchmark/retrieval/run.py", "sha256": _fake_sha("source")}],
+        }
+        closure["digest"] = ev.digest(ev.canonical(closure))
+    source_closure_path = stage / "driver-source-closure.json"
+    source_closure_path.write_text(json.dumps(closure), encoding="utf-8")
+    spec["_driver_source_closure"] = str(source_closure_path)
+    driver_source_closure_digest = closure["digest"]
+    if scope == "qualified":
         evidence_dir = stage / "admission"
         evidence_dir.mkdir(exist_ok=True)
         license_path = evidence_dir / "license-receipt.json"
@@ -8255,6 +8264,89 @@ def test_qualified_verdict_refuses_tampered_driver_source_closure(tmp_path):
         _stage_verdict(st)
 
 
+def test_exploratory_pair_binds_clean_source_closure_without_quality_claim(tmp_path):
+    st = _pair_stage(tmp_path)
+    manifest = st["manifest"]
+    closure = json.loads((st["stage"] / "driver-source-closure.json").read_text())
+    assert manifest["scope"] == "exploratory"
+    assert manifest["artifacts"]["driver_source_closure"] == "driver-source-closure.json"
+    assert manifest["provenance"]["quanta"]["source_closure_digest"] == closure["digest"]
+    assert (
+        json.loads((st["stage"] / "protocol-lock.json").read_text())["driver_source_closure_digest"]
+        == closure["digest"]
+    )
+    jsonschema.validate(manifest, _load_schema("run-manifest.schema.json"))
+    assert _stage_verdict(st)["states"]["PAIR_VALID"] == "pass"
+
+
+def test_exploratory_pair_refuses_unbound_or_tampered_source_closure(tmp_path):
+    st = _pair_stage(tmp_path)
+    closure_path = st["stage"] / "driver-source-closure.json"
+    closure = json.loads(closure_path.read_text())
+    closure["files"][0]["sha256"] = _fake_sha("tampered")
+    closure_path.write_text(json.dumps(closure))
+    with pytest.raises(pairrun.RunError, match="driver source closure.digest mismatch"):
+        _stage_verdict(st)
+
+    closure["digest"] = ev.digest(
+        ev.canonical(
+            {
+                key: closure[key]
+                for key in ("schema_version", "profile", "revision", "roots", "files")
+            }
+        )
+    )
+    closure_path.write_text(json.dumps(closure))
+    verdict = _stage_verdict(st)
+    assert verdict["states"]["PAIR_VALID"] == "fail"
+    assert verdict["state_evidence"]["PAIR_VALID"]["reason"] == (
+        "driver_source_closure_digest_drift"
+    )
+
+
+def test_exploratory_pair_requires_source_closure_capture_and_final_verify(tmp_path, monkeypatch):
+    spec = {
+        "execution_profiles": {
+            "quanta": qp.execution_profile("native"),
+            "semble": semble_adapter.execution_profile("native-default", None),
+        },
+        "semble_lockfile_sha256": _fake_sha("lock"),
+        "semble_python": "/pinned/python",
+        "semble_lockfile": "/pinned/lock",
+        "host_profile": "/pinned/host",
+        "output_root": str(tmp_path / "pair"),
+        "strategies": [{"name": "whole_file"}],
+    }
+    monkeypatch.setattr(pairrun, "preflight_capture", lambda _spec: tmp_path / "pair")
+    monkeypatch.setattr(pairrun, "preflight_daemon_socket_paths", lambda *_args, **_kwargs: None)
+    executed = []
+    monkeypatch.setattr(pairrun, "_run_pair_staged", lambda *_args: executed.append(True))
+    with pytest.raises(pairrun.RunError, match="dirty relevant source"):
+        monkeypatch.setattr(
+            pairrun,
+            "_source_closure",
+            lambda *_args: (_ for _ in ()).throw(pairrun.RunError("dirty relevant source")),
+        )
+        pairrun.run_pair(spec)
+    assert not executed and not (tmp_path / "pair").exists()
+
+    stage = tmp_path / "pair.staging"
+    stage.rmdir()
+    calls = []
+
+    def verify_drift(_root, command, _path):
+        calls.append(command)
+        if command == "verify":
+            raise pairrun.RunError("source closure changed")
+
+    monkeypatch.setattr(pairrun, "_source_closure", verify_drift)
+    monkeypatch.setattr(pairrun, "_run_pair_staged", lambda *_args: {"states": {}})
+    with pytest.raises(pairrun.RunError, match="source closure changed"):
+        pairrun.run_pair(spec)
+    assert calls == ["capture", "verify"]
+    assert not (tmp_path / "pair").exists()
+
+
 def test_qualified_verdict_refuses_valid_but_unbound_driver_source_closure(tmp_path):
     st = _pair_stage(tmp_path, scope="qualified")
     closure_path = st["stage"] / "driver-source-closure.json"
@@ -8426,6 +8518,8 @@ def test_run_pair_promotes_complete_stage_and_public_verdict_replays(tmp_path, m
     original = _stage_verdict(st)
     output_root = tmp_path / "published"
     monkeypatch.setattr(pairrun, "preflight_capture", lambda _spec: output_root)
+    # Source custody is exercised separately; this test copies a complete stage.
+    monkeypatch.setattr(pairrun, "_source_closure", lambda *_args: None)
 
     def staged(_spec, stage):
         shutil.copytree(st["stage"], stage, dirs_exist_ok=True)
@@ -8532,6 +8626,7 @@ def test_pair_staging_atomicity(tmp_path, monkeypatch):
     # This test owns atomic stage promotion, not Unix socket path admission.
     # Its pytest-generated output path is deliberately long on macOS.
     monkeypatch.setattr(pairrun, "preflight_daemon_socket_paths", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(pairrun, "_source_closure", lambda *_args: None)
     monkeypatch.setattr(pairrun, "run_quanta", explode)
     with pytest.raises(pairrun.RunError, match="boom"):
         pairrun.run_pair(spec)
@@ -10224,11 +10319,12 @@ def _g0_manifest() -> dict:
             "symbol_preflights": ["symbol-preflight.json"],
             "resource_metrics": ["resource.json"],
             "protocol_lock": "protocol-lock.json",
+            "driver_source_closure": "driver-source-closure.json",
         },
         "provenance": {
             "quanta": {
                 "source_sha": "a" * 40,
-                "source_closure_digest": None,
+                "source_closure_digest": _fake_sha("closure"),
                 "binary_digest": _fake_sha("qb"),
                 "embedder": "potion-code",
             },
@@ -10275,11 +10371,25 @@ def test_current_manifest_schema():
     invalid(lambda m: m["provenance"]["semble"].update(revision="0.7.0"))
     invalid(lambda m: m["provenance"]["quanta"].update(source_sha="unresolved"))
     invalid(lambda m: m["provenance"]["quanta"].pop("source_closure_digest"))
-    invalid(lambda m: m["provenance"]["quanta"].update(source_closure_digest=_fake_sha("x")))
+    invalid(lambda m: m["provenance"]["quanta"].update(source_closure_digest=None))
     invalid(lambda m: m["provenance"]["quanta"].update(embedder="openai"))
     invalid(lambda m: m["provenance"]["quanta"].pop("embedder"))
     invalid(lambda m: m["host"].update(cache_regime="lukewarm"))
     invalid(lambda m: m["host"].pop("cache_regime"))
+
+    bound_exploratory = json.loads(json.dumps(_g0_manifest()))
+    jsonschema.validate(bound_exploratory, schema)
+    pairrun._validate_manifest_shape(bound_exploratory)
+    for mutator in (
+        lambda value: value["artifacts"].pop("driver_source_closure"),
+        lambda value: value["provenance"]["quanta"].update(source_closure_digest=None),
+    ):
+        mutant = json.loads(json.dumps(bound_exploratory))
+        mutator(mutant)
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(mutant, schema)
+        with pytest.raises(pairrun.RunError, match="artifacts|source closure"):
+            pairrun._validate_manifest_shape(mutant)
 
     qualified = json.loads(json.dumps(_g0_manifest()))
     qualified["scope"] = "qualified"
@@ -10291,7 +10401,6 @@ def test_current_manifest_schema():
             "license_receipt": "license.json",
             "annotation_receipts": ["annotation-a.json", "annotation-b.json"],
             "adjudication_receipt": "adjudication.json",
-            "driver_source_closure": "driver-source-closure.json",
         }
     )
     qualified["provenance"]["admission"]["manifest_digest"] = _fake_sha("admission")

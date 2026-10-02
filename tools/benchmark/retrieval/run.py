@@ -4756,6 +4756,7 @@ def _validate_manifest_shape(payload: object) -> dict:
         "symbol_preflights",
         "resource_metrics",
         "protocol_lock",
+        "driver_source_closure",
     }
     admission_artifacts = {
         "admission_manifest",
@@ -4765,16 +4766,14 @@ def _validate_manifest_shape(payload: object) -> dict:
         "annotation_receipts",
         "adjudication_receipt",
     }
-    optional_artifacts = (
-        set(RECEIPT_KEYS) | {"isolation_proof", "driver_source_closure"} | admission_artifacts
-    )
+    optional_artifacts = set(RECEIPT_KEYS) | {"isolation_proof"} | admission_artifacts
+    if "driver_source_closure" not in artifacts:
+        raise RunError("run manifest lacks the driver source closure")
     if not required_artifacts <= set(artifacts) <= required_artifacts | optional_artifacts:
         raise RunError("run manifest artifacts hold missing/unknown keys")
     present_admission = set(artifacts).intersection(admission_artifacts)
     if manifest["scope"] == "qualified" and present_admission != admission_artifacts:
         raise RunError("qualified run manifest lacks the complete admission bundle")
-    if manifest["scope"] == "qualified" and "driver_source_closure" not in artifacts:
-        raise RunError("qualified run manifest lacks the driver source closure")
     if manifest["scope"] != "qualified" and present_admission:
         raise RunError("exploratory run manifest carries qualification admission artifacts")
     for key in required_artifacts | optional_artifacts:
@@ -4838,11 +4837,8 @@ def _validate_manifest_shape(payload: object) -> dict:
         manifest["scope"] != "exploratory" or any(claims.values())
     ):
         raise RunError("potion-code-full-v2 manifest is exploratory diagnostic only")
-    if manifest["scope"] == "qualified":
-        if not _is_hex(quanta["source_closure_digest"], 64):
-            raise RunError("qualified manifest source closure digest is malformed")
-    elif quanta["source_closure_digest"] is not None:
-        raise RunError("exploratory manifest source closure digest must be null")
+    if not _is_hex(quanta["source_closure_digest"], 64):
+        raise RunError("manifest driver source closure digest is malformed")
     semble = _exact_keys(
         provenance["semble"],
         {"revision", "lockfile_digest", "interpreter_digest", "model_asset_digest"},
@@ -6425,10 +6421,10 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     for key in RECEIPT_KEYS:
         if key in artifacts:
             resolved[key] = _resolve_artifact(root, artifacts[key], f"artifacts.{key}")
+    resolved["driver_source_closure"] = _resolve_artifact(
+        root, artifacts["driver_source_closure"], "artifacts.driver_source_closure"
+    )
     if manifest["scope"] == "qualified":
-        resolved["driver_source_closure"] = _resolve_artifact(
-            root, artifacts["driver_source_closure"], "artifacts.driver_source_closure"
-        )
         for key in (
             "admission_manifest",
             "experiment_custody",
@@ -6455,12 +6451,8 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     evidence = manifest["evidence"]
     claims = manifest["claims"]
     provenance_claims = manifest["provenance"]
-    driver_closure = (
-        _validate_source_closure_shape(
-            read_json(resolved["driver_source_closure"]), "driver source closure"
-        )
-        if manifest["scope"] == "qualified"
-        else None
+    driver_closure = _validate_source_closure_shape(
+        read_json(resolved["driver_source_closure"]), "driver source closure"
     )
     host_profile = validate_host_profile(read_json(resolved["host_profile"]))
     if sha_file(resolved["host_profile"]) != provenance_claims["host"]["profile_digest"]:
@@ -6653,12 +6645,14 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             protocol_payload["admission_digest"],
             protocol_payload["driver_source_closure_digest"],
         )
-        if manifest["scope"] == "qualified":
-            protocol_shape_valid = protocol_shape_valid and all(
-                _is_hex(value, 64) for value in authority_digests
+        protocol_shape_valid = protocol_shape_valid and (
+            (
+                _is_hex(authority_digests[0], 64)
+                if manifest["scope"] == "qualified"
+                else authority_digests[0] is None
             )
-        else:
-            protocol_shape_valid = protocol_shape_valid and authority_digests == (None, None)
+            and _is_hex(authority_digests[1], 64)
+        )
     if not protocol_shape_valid:
         pair_note("protocol_lock_malformed", ("T12",))
         protocol_payload = {}
@@ -6674,13 +6668,12 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
             != provenance_claims["admission"]["manifest_digest"]
         ):
             pair_note("protocol_lock_admission_drift", ("T17",))
-        if manifest["scope"] == "qualified":
-            if driver_closure["revision"] != provenance_claims["quanta"]["source_sha"]:
-                pair_note("driver_source_closure_revision_drift", ("T12", "T17"))
-            if driver_closure["digest"] != provenance_claims["quanta"]["source_closure_digest"]:
-                pair_note("driver_source_closure_digest_drift", ("T12", "T17"))
-            if protocol_payload.get("driver_source_closure_digest") != driver_closure["digest"]:
-                pair_note("protocol_lock_source_closure_drift", ("T12", "T17"))
+        if driver_closure["revision"] != provenance_claims["quanta"]["source_sha"]:
+            pair_note("driver_source_closure_revision_drift", ("T12", "T17"))
+        if driver_closure["digest"] != provenance_claims["quanta"]["source_closure_digest"]:
+            pair_note("driver_source_closure_digest_drift", ("T12", "T17"))
+        if protocol_payload.get("driver_source_closure_digest") != driver_closure["digest"]:
+            pair_note("protocol_lock_source_closure_drift", ("T12", "T17"))
         if protocol_payload["host_profile_digest"] != host_profile_digest:
             pair_note("protocol_lock_host_profile_drift", ("T12",))
         if protocol_payload["top_k"] != pack["comparison_contract"]["top_k"]:
@@ -8312,16 +8305,16 @@ def run_pair(spec: dict) -> int:
             paired=True,
         )
     stage.mkdir(parents=True)
-    if scope == "qualified":
-        closure_path = stage / "driver-source-closure.json"
-        _source_closure(Path(__file__).resolve().parents[3], "capture", closure_path)
-        spec = dict(spec, _driver_source_closure=str(closure_path))
+    closure_path = stage / "driver-source-closure.json"
+    _source_closure(Path(__file__).resolve().parents[3], "capture", closure_path)
+    spec = dict(spec, _driver_source_closure=str(closure_path))
     try:
         summary = _run_pair_staged(spec, stage)
     except Exception:
         # The stage is left for forensics, but the authoritative output
         # root is never promoted from a failed run.
         raise
+    _source_closure(Path(__file__).resolve().parents[3], "verify", closure_path)
     if out_root.exists():
         raise RunError("output root appeared during capture (refusing promotion)")
     os.rename(stage, out_root)
@@ -8490,14 +8483,12 @@ def _run_pair_staged(spec: dict, stage: Path) -> dict:
         json.dumps(build_latency_matrix(rep_layouts), indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    driver_closure_digest = None
-    if spec.get("scope", "exploratory") == "qualified":
-        closure_path = Path(spec.get("_driver_source_closure", ""))
-        _source_closure(Path(__file__).resolve().parents[3], "verify", closure_path)
-        driver_closure = _validate_source_closure_shape(
-            read_json(closure_path), "driver source closure"
-        )
-        driver_closure_digest = driver_closure["digest"]
+    closure_path = Path(spec["_driver_source_closure"])
+    _source_closure(Path(__file__).resolve().parents[3], "verify", closure_path)
+    driver_closure = _validate_source_closure_shape(
+        read_json(closure_path), "driver source closure"
+    )
+    driver_closure_digest = driver_closure["digest"]
     protocol_lock = {
         "lock_version": 4,
         "retrieval_diagnostic_version": 6,
@@ -9992,18 +9983,17 @@ def build_run_manifest(
         "resource_metrics": sorted(resource_metrics),
         "protocol_lock": "protocol-lock.json",
     }
-    source_closure_digest = None
+    closure_path = Path(spec["_driver_source_closure"])
+    closure = _validate_source_closure_shape(read_json(closure_path), "driver source closure")
+    if closure["revision"] != source_sha:
+        raise RunError("driver source closure revision differs from current HEAD")
+    source_closure_digest = closure["digest"]
+    artifacts["driver_source_closure"] = relative(closure_path)
     if scope == "qualified":
-        closure_path = Path(spec.get("_driver_source_closure", ""))
-        closure = _validate_source_closure_shape(read_json(closure_path), "driver source closure")
-        if closure["revision"] != source_sha:
-            raise RunError("driver source closure revision differs from current HEAD")
-        source_closure_digest = closure["digest"]
         for key in ("contract_python_receipt", "contract_rust_receipt", "sdk_receipt"):
             receipt = _validate_receipt_shape(read_json(Path(frozen[key])), key)
             if receipt["source_closure"]["digest"] != source_closure_digest:
                 raise RunError(f"{key} source closure differs from the capture closure")
-        artifacts["driver_source_closure"] = relative(closure_path)
     if spec.get("blinding", "attested") == "isolated":
         proof_path = out_root / "isolation-proof.json"
         if not proof_path.is_file():
