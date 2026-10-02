@@ -686,3 +686,14 @@ code boundary is a versioned, repository-disjoint qualified input that replays
 every declared cell and its source/index/review custody before deriving paired
 rows for this helper. No current C4 or exact-content diagnostic capture can be
 promoted by calling the helper directly.
+
+`main@ae8f0e15` extends the existing `code_search_matrix.py` lexical-only
+pair contract to `code_search_typo_file` and
+`code_search_exact_content_file`. Semantic and hybrid cells for those
+requests must be marked unsupported, while a lexical-only cell cannot be
+silently marked unsupported. The matrix/workflow unit set passed 60 tests.
+This validates policy routing only. A source-bound bridge from C4 admission
+cells to native capture roots is still missing, including explicit handling
+of `no_admission_diagnostic` cells that have no suite or blind pack. The
+existing matrix v2 requires a suite and pack for every repository/family cell;
+it cannot represent those cells without a versioned contract change.
