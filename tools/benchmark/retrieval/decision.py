@@ -15,8 +15,7 @@ from pathlib import Path
 
 from tools.benchmark import corpus_binding
 from tools.benchmark.evidence import parse_json, read_control
-from tools.benchmark.retrieval import run
-from tools.benchmark.retrieval import evaluator
+from tools.benchmark.retrieval import evaluator, run
 from tools.benchmark.retrieval.evaluator import qualified_query_family_ci
 from tools.benchmark.retrieval.finite_json import is_finite_json_number
 
@@ -221,12 +220,207 @@ def validate_repository_disjoint_policy(value: object) -> dict:
         "confidence_method": "paired_query_family_cluster_bootstrap_percentile_v1",
     }
     validate_policy(single)
-    if policy["confidence_method"] != "paired_stratified_repository_cluster_bootstrap_percentile_v1":
+    if (
+        policy["confidence_method"]
+        != "paired_stratified_repository_cluster_bootstrap_percentile_v1"
+    ):
         raise DecisionError("repository-disjoint uncertainty method is unsupported")
     required_repo_strata = {(row["axis"], row["name"]) for row in policy["critical_strata"]}
     if any(("repository", name) not in required_repo_strata for name in names):
         raise DecisionError("repository-disjoint critical strata omit a holdout repository")
     return policy
+
+
+def replay_repository_disjoint_bundle(bundle_path: Path) -> dict:
+    """Replay every predeclared holdout capture before computing uncertainty.
+
+    This is an input gate. It does not make a product-default decision or
+    establish that self-reported reviewer identities are human.
+    """
+    initial: dict[Path, str] = {}
+
+    def bound_bytes(path: Path) -> bytes:
+        raw = read_control(path)
+        observed = hashlib.sha256(raw).hexdigest()
+        expected = initial.setdefault(path, observed)
+        if observed != expected:
+            raise DecisionError("repository-disjoint inputs changed during replay")
+        return raw
+
+    def bound_json(path: Path) -> dict:
+        value = parse_json(bound_bytes(path).decode("utf-8"))
+        if not isinstance(value, dict):
+            raise DecisionError("repository-disjoint input must be a JSON object")
+        return value
+
+    bundle = _object(
+        bound_json(bundle_path),
+        {"schema_version", "kind", "policy", "split_manifest", "captures"},
+        "repository-disjoint bundle",
+    )
+    if bundle["schema_version"] != 1 or bundle["kind"] != "repository_disjoint_c5_inputs":
+        raise DecisionError("repository-disjoint bundle version or kind differs")
+    policy_path = _absolute_path(bundle["policy"], "repository-disjoint policy")
+    split_path = _absolute_path(bundle["split_manifest"], "repository-disjoint split")
+    policy = validate_repository_disjoint_policy(bound_json(policy_path))
+    policy_sha = initial[policy_path]
+    scope = policy["repository_scope"]
+    split_raw = bound_bytes(split_path)
+    if hashlib.sha256(split_raw).hexdigest() != scope["split_manifest_sha256"]:
+        raise DecisionError("repository-disjoint split differs from frozen policy")
+    releases = {digest: Path(path) for digest, path in scope["releases"].items()}
+    split = corpus_binding.validate_split_manifest(split_raw, releases)
+    split_holdout = {
+        row["repository"]: row for row in split["repositories"] if row["split"] == "holdout"
+    }
+    expected = {row["repository"]: row for row in scope["holdout"]}
+    if set(split_holdout) != set(expected):
+        raise DecisionError("repository-disjoint policy differs from split holdout roster")
+    for name, row in expected.items():
+        source = split_holdout[name]
+        if (
+            row["repository_commit"] != source["repository_commit"]
+            or row["release_digest"] != source["release_digest"]
+            or not set(row["query_family_ids"]).issubset(source["query_family_ids"])
+        ):
+            raise DecisionError("repository-disjoint policy differs from source split")
+    captures = bundle["captures"]
+    if not isinstance(captures, list) or len(captures) != len(expected):
+        raise DecisionError("repository-disjoint capture inventory is incomplete")
+    names = []
+    suites, reports, receipts = {}, {}, []
+    comparison = policy["comparison"]
+    required_states = (
+        "PAIR_VALID",
+        "CONTRACT_GREEN",
+        "SDK_PATH_GREEN",
+        "QUALITY_DELTA",
+        "PERF_QUALIFIED",
+    )
+    for index, raw in enumerate(captures):
+        entry = _object(
+            raw,
+            {"repository", "checkout", "suite", "run_manifest"},
+            f"repository-disjoint capture[{index}]",
+        )
+        name = _name(entry["repository"], "capture repository")
+        names.append(name)
+        if name not in expected:
+            raise DecisionError("repository-disjoint capture has an unknown repository")
+        checkout = _absolute_path(entry["checkout"], "capture checkout")
+        suite_path = _absolute_path(entry["suite"], "capture suite")
+        manifest_path = _absolute_path(entry["run_manifest"], "capture manifest")
+        suite = bound_json(suite_path)
+        row = expected[name]
+        source = split_holdout[name]
+        tasks = suite.get("tasks")
+        if (
+            initial[suite_path] != row["suite_sha256"]
+            or suite.get("repository_commit") != row["repository_commit"]
+            or suite.get("file_universe_digest") != source["code_only_universe_digest"]
+            or not isinstance(tasks, list)
+            or not tasks
+        ):
+            raise DecisionError("repository-disjoint suite differs from frozen policy or source")
+        eval_tasks = [
+            task for task in tasks if isinstance(task, dict) and task.get("split") == "eval"
+        ]
+        if len(eval_tasks) != sum(
+            isinstance(task, dict) and task.get("split") == "eval" for task in tasks
+        ):
+            raise DecisionError("repository-disjoint eval task inventory is malformed")
+        if (
+            sorted({task.get("query_family_id") for task in eval_tasks}) != row["query_family_ids"]
+            or sorted({task.get("category") for task in eval_tasks}) != row["categories"]
+        ):
+            raise DecisionError("repository-disjoint suite omits a predeclared family or category")
+        manifest = run._validate_manifest_shape(bound_json(manifest_path))
+        if manifest["scope"] != "qualified":
+            raise DecisionError("repository-disjoint capture is not qualified")
+        root = manifest_path.resolve().parent
+        admission_path = run._resolve_artifact(
+            root, manifest["artifacts"]["admission_manifest"], "admission"
+        )
+        admission = run.validate_admission_manifest(bound_json(admission_path))
+        if (
+            admission.get("decision_policy_sha256") != policy_sha
+            or admission["repository_commit"] != row["repository_commit"]
+            or admission["suite_sha256"] != initial[suite_path]
+        ):
+            raise DecisionError("repository-disjoint policy is not frozen in capture admission")
+        verdict = run.build_verdict(checkout, suite_path, manifest_path)
+        if (
+            verdict.get("failure_class") != "none"
+            or not isinstance(verdict.get("states"), dict)
+            or any(verdict["states"].get(state) != "pass" for state in required_states)
+        ):
+            raise DecisionError("repository-disjoint capture lacks qualified proof")
+        selected = [
+            item
+            for item in verdict.get("comparisons", [])
+            if isinstance(item, dict)
+            and all(item.get(key) == value for key, value in comparison.items())
+            and item.get("graded") is True
+        ]
+        if len(selected) != 1 or not run._is_hex(selected[0].get("report_digest"), 64):
+            raise DecisionError("repository-disjoint selected comparison is absent or ambiguous")
+        report_paths = [
+            run._resolve_artifact(root, ref, "reports") for ref in manifest["artifacts"]["reports"]
+        ]
+        matching = [
+            path
+            for path in report_paths
+            if hashlib.sha256(bound_bytes(path)).hexdigest() == selected[0]["report_digest"]
+        ]
+        if len(matching) != 1:
+            raise DecisionError("repository-disjoint report differs from verified comparison")
+        report = bound_json(matching[0])
+        if (
+            report.get("rank_metrics", {}).get("comparison", {}).get("primary_metric")
+            != comparison["primary_metric"]
+        ):
+            raise DecisionError("repository-disjoint report metric differs from policy")
+        suites[name], reports[name] = suite, report
+        receipts.append(
+            {
+                "repository": name,
+                "admission_sha256": initial[admission_path],
+                "report_sha256": selected[0]["report_digest"],
+            }
+        )
+    if names != sorted(expected):
+        raise DecisionError("repository-disjoint capture inventory is duplicate or unsorted")
+    corpus_digest = evaluator.digest(
+        evaluator.canonical(
+            {"split_manifest_sha256": scope["split_manifest_sha256"], "releases": sorted(releases)}
+        )
+    )
+    ci = evaluator.repository_cluster_ci_from_reports(
+        suites,
+        reports,
+        corpus_digest,
+        {name: row["repository_commit"] for name, row in expected.items()},
+        {name: row["stratum"] for name, row in expected.items()},
+        comparison["baseline_route"],
+        comparison["candidate_route"],
+    )
+    if ci.get("status") != "available":
+        raise DecisionError("repository-disjoint uncertainty is not estimable")
+    if any(
+        hashlib.sha256(read_control(path)).hexdigest() != before for path, before in initial.items()
+    ):
+        raise DecisionError("repository-disjoint inputs changed during replay")
+    return {
+        "schema_version": 1,
+        "status": "replayed_no_default_decision",
+        "product_default_decision": False,
+        "policy_sha256": policy_sha,
+        "split_manifest_sha256": scope["split_manifest_sha256"],
+        "repository_count": len(expected),
+        "paired_sample_count": ci["sample_count"],
+        "repository_cluster_ci": ci,
+        "captures": receipts,
+    }
 
 
 def evaluate_decision(
