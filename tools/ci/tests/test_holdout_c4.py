@@ -255,6 +255,11 @@ def test_c4_independent_name_variants(tmp_path, monkeypatch, intent, query, name
     assert suite["tasks"][0]["query"] == pack["tasks"][0]["query"] == query
     expected_policy = "code_search_file"
     assert report["execution_policy"] == expected_policy
+    assert suite["tasks"][0]["evaluation_contract"] == {
+        "request_mode": "default_file_search",
+        "gold_unit": "distinct_file",
+        "result_unit": "distinct_file",
+    }
     assert suite["suite_id"].endswith(expected_policy.replace("_", "-"))
     assert query_plan.plan_lexical_request(expected_policy, query) == query
 

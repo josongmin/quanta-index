@@ -487,6 +487,15 @@ def _derive_prepared(
             "split": "eval",
             "category": task["intent"],
             "query_intent": "bare_symbol",
+            "evaluation_contract": {
+                "request_mode": (
+                    query_plan.EXPLICIT_OSA1_TYPO
+                    if intended_typo
+                    else query_plan.DEFAULT_FILE_SEARCH
+                ),
+                "gold_unit": "distinct_file",
+                "result_unit": "distinct_file",
+            },
             "source_oracle": source_contract,
             "judgment_policy": evaluator.SOURCE_ORACLE_JUDGMENT_POLICY,
             "file_judgments": judgments,
@@ -495,12 +504,6 @@ def _derive_prepared(
         }
         if intended_typo and task["answerable"]:
             row["intended_name"] = oracle_query
-        if intended_typo:
-            row["evaluation_contract"] = {
-                "request_mode": query_plan.EXPLICIT_OSA1_TYPO,
-                "gold_unit": "distinct_file",
-                "result_unit": "distinct_file",
-            }
         rows.append(row)
     suite = {
         "schema_version": evaluator.SCHEMA_VERSION,
