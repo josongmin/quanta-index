@@ -400,7 +400,7 @@ fn lexical_time_resolution_binds_the_final_ancestor_pin() {
         ManifestGeneration::new(3),
     );
     let request = quanta_index_contract::TextQueryRequest {
-        syntax: quanta_index_contract::TextQuerySyntax::Native,
+        syntax: quanta_index_contract::TextQuerySyntax::Sourcegraph,
         query_text: "needle rev:at.time(2024-06-01T12:34:56Z)".to_string(),
         constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
         generation: Some(sample_generation_pin()),
@@ -444,6 +444,85 @@ fn lexical_time_resolution_binds_the_final_ancestor_pin() {
 }
 
 #[test]
+fn quoted_timeref_literals_do_not_resolve_or_relax_text_response_pins() {
+    let literal = "\"rev:at.time(2024-06-01T12:34:56Z)\"";
+    assert!(!crate::binding::is_rev_at_time_query(
+        quanta_index_contract::TextQuerySyntax::CodeSearch,
+        literal
+    ));
+    assert!(crate::binding::is_rev_at_time_query(
+        quanta_index_contract::TextQuerySyntax::Sourcegraph,
+        "rev:at.time(2024-06-01T12:34:56Z) needle"
+    ));
+
+    let wrong = quanta_index_contract::GenerationPin::new(
+        repo_id(),
+        RevisionId::new("other-revision").expect("fixture revision"),
+        ManifestGeneration::new(8),
+    );
+    let query = Arc::new(StubQueryTransport::new(SearchPlaneQueryIpcResponse::Text(
+        TextQueryResponse {
+            rank_unit: quanta_index_contract::TextRankUnit::File,
+            explanation: quanta_index_contract::SearchExplanation::empty(),
+            generation: wrong,
+            results: vec![],
+            window: QueryResultWindowV2::exact_probe(0),
+            file_owner_rows: None,
+            next_cursor: None,
+        },
+    )));
+    let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
+    let request = quanta_index_contract::TextQueryRequest {
+        syntax: quanta_index_contract::TextQuerySyntax::CodeSearch,
+        query_text: literal.to_string(),
+        constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+        generation: Some(sample_generation_pin()),
+        generation_selector: None,
+        top_k: 5,
+        cursor: None,
+    };
+    let error = client
+        .lexical()
+        .query_request(request.clone())
+        .expect_err("a code-search literal cannot authorize another response pin");
+    assert!(matches!(error, crate::SdkError::Binding { .. }));
+    let requests = ok_or_fail!(query.requests.lock());
+    assert_eq!(requests.len(), 1, "a literal must not trigger resolution");
+    assert!(matches!(
+        requests.first().map(|request| &request.payload),
+        Some(quanta_index_contract::SearchPlaneQueryIpcRequest::Text(sent)) if sent == &request
+    ));
+}
+
+#[test]
+fn code_search_resolution_response_cannot_rebind_a_literal() {
+    let wrong = quanta_index_contract::GenerationPin::new(
+        repo_id(),
+        RevisionId::new("other-revision").expect("fixture revision"),
+        ManifestGeneration::new(8),
+    );
+    let query = Arc::new(StubQueryTransport::new(
+        SearchPlaneQueryIpcResponse::ResolvedLexicalGeneration(wrong),
+    ));
+    let client = QuantaIndex::from_transports(query, unused_control(), unused_ingest());
+    let request = quanta_index_contract::TextQueryRequest {
+        syntax: quanta_index_contract::TextQuerySyntax::CodeSearch,
+        query_text: "\"rev:at.time(2024-06-01T12:34:56Z)\"".to_string(),
+        constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
+        generation: Some(sample_generation_pin()),
+        generation_selector: None,
+        top_k: 5,
+        cursor: None,
+    };
+    let error = client
+        .dispatch_query(
+            quanta_index_contract::SearchPlaneQueryIpcRequest::ResolveLexicalGeneration(request),
+        )
+        .expect_err("code search resolution cannot attest a different pin");
+    assert!(matches!(error, crate::SdkError::Binding { .. }));
+}
+
+#[test]
 fn lexical_time_resolution_rejects_foreign_repo_before_query() {
     let foreign = quanta_index_contract::GenerationPin::new(
         RepoId::new("foreign").expect("fixture repo"),
@@ -455,7 +534,7 @@ fn lexical_time_resolution_rejects_foreign_repo_before_query() {
     ]));
     let client = QuantaIndex::from_transports(query.clone(), unused_control(), unused_ingest());
     let request = quanta_index_contract::TextQueryRequest {
-        syntax: quanta_index_contract::TextQuerySyntax::Native,
+        syntax: quanta_index_contract::TextQuerySyntax::Sourcegraph,
         query_text: "needle rev:at.time(2024-06-01T12:34:56Z)".to_string(),
         constraints: quanta_index_contract::QueryConstraintSetV1::unconstrained(),
         generation: Some(sample_generation_pin()),

@@ -13,7 +13,7 @@ use quanta_index_contract::{
 
 use crate::binding::{
     ControlCallBinding, IngestCallBinding, QueryCallBinding, bind_control_response,
-    bind_ingest_response, bind_query_response,
+    bind_ingest_response, bind_query_response, is_rev_at_time_query,
 };
 use crate::{
     ClientProfile, ConnectOptions, GenerationNamespace, HistoryNamespace, LexicalNamespace,
@@ -192,7 +192,7 @@ impl QuantaIndex {
         let SearchPlaneQueryIpcRequest::Text(query) = request else {
             return Ok(None);
         };
-        if !query.query_text.contains("rev:at.time") {
+        if !is_rev_at_time_query(query.syntax, &query.query_text) {
             return Ok(None);
         }
         let response = self.dispatch_query(

@@ -156,14 +156,12 @@ impl ExpectedIngestResponseV1 {
     }
 }
 
-/// Whether a text query carries the `rev:at.time(...)` directive.
-///
-/// Only the lexical planner resolves this timeref and may legally rebind
-/// the read to an ancestor revision of the pinned one. Other routes must
-/// keep exact response-pin binding even if their text contains the token.
-/// This probes the request the SDK itself is sending, never a response.
-fn is_rev_at_time_query(query_text: &str) -> bool {
-    query_text.contains("rev:at.time")
+/// Whether this syntax can carry a `rev:at.time(...)` selector. CodeSearch
+/// treats the text as a search literal, so it cannot authorize rebinding.
+/// Native and Sourcegraph candidate requests are resolved by the query plane;
+/// the final response is then bound exactly to that resolved generation.
+pub(crate) fn is_rev_at_time_query(syntax: TextQuerySyntax, query_text: &str) -> bool {
+    syntax != TextQuerySyntax::CodeSearch && query_text.contains("rev:at.time")
 }
 
 /// Read-identity selection extracted from a request's pin fields.
@@ -242,7 +240,7 @@ impl QueryCallBinding {
                     pin,
                     active_domain,
                     request.top_k,
-                    true,
+                    is_rev_at_time_query(request.syntax, &request.query_text),
                 )
             }
             SearchPlaneQueryIpcRequest::Text(TextQueryRequest {
@@ -255,7 +253,7 @@ impl QueryCallBinding {
             }) => {
                 let (pin, active_domain) =
                     identity_from(generation.clone(), generation_selector.clone());
-                let rev_at_time = is_rev_at_time_query(query_text);
+                let rev_at_time = is_rev_at_time_query(*syntax, query_text);
                 let mut binding = Self::ranked(
                     ExpectedQueryResponseV1::Text,
                     pin,
