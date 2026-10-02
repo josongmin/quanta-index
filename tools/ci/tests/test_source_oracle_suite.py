@@ -774,6 +774,27 @@ def test_typo_gold_partition_separates_intent_from_near_names_and_content():
         oracle.typo_gold_partition("go", "rendar", "unrelated")
 
 
+def test_typo_partition_accepts_query_proven_parser_refusal():
+    from tools.benchmark.retrieval import source_oracle as so
+
+    files = {
+        "main.go": b"package p\nfunc Param() {}\n",
+        "broken.go": b"package p\nfunc Broken(",
+    }
+    oracle = so.SourceOracleIndex(
+        {path: (raw, ev.digest(raw)) for path, raw in files.items()},
+        {"Param", "Paran"},
+        declaration_exclusions={
+            (so.GO_EXACT_LOCAL_NAME, "Param"): {"broken.go"},
+            (so.GO_NAME_OSA1_CASEFOLD, "Paran"): {"broken.go"},
+        },
+    )
+    partition = oracle.typo_gold_partition("go", "Paran", "Param")
+    assert partition["intended_base_files"] == ["main.go"]
+    assert partition["near_declaration_names"] == ["Param"]
+    assert partition["query_is_declaration_name"] is False
+
+
 def test_paired_typo_builder_emits_operation_and_stress_suites(tmp_path):
     from tools.benchmark.retrieval import identifier_robustness_suite as irs
 

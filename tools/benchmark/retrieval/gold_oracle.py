@@ -496,8 +496,21 @@ def derive(recipe: dict, manifest: dict, view: Path) -> tuple[dict, dict]:
                         exact_collision[name].add(path)
                     elif source_oracle._variant_matches("osa1_casefold", task["query"], name):
                         near[name].add(path)
+            uncertain_rows = {
+                row["path"]: row for row in (*unsupported, *text_excluded) if row["path"]
+            }
+            near_excluded = [
+                uncertain_rows[path]
+                for path in sorted(uncertain_rows)
+                if _textually_excluded(sources[path][0], task["query"], "osa1_casefold")
+            ]
             near_metadata = {
-                "near_declaration_state": "partial" if unsupported or text_excluded else "complete",
+                "near_declaration_state": (
+                    "partial"
+                    if len(near_excluded) != len(uncertain_rows) or any(row["path"] is None for row in unsupported)
+                    else "complete"
+                ),
+                "near_census_text_excluded": near_excluded,
                 "near_declaration_names": sorted(near),
                 "near_declaration_files": sorted(
                     {path for paths in near.values() for path in paths}

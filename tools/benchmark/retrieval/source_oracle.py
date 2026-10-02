@@ -368,7 +368,6 @@ class SourceOracleIndex:
         self._words: dict[bytes, set[str]] | None = None
         self._first_words: dict[bytes, tuple[str, int, int]] = {}
         self._folded_token_paths: dict[str, set[str]] | None = None
-        self._folded_declared_names: dict[str, set[str]] = {}
         # Name bytes identify the match; definition bytes identify the indexed symbol unit.
         self._declarations: dict[
             tuple[str, frozenset[str]], dict[bytes, list[tuple[str, int, int, int, int]]]
@@ -592,10 +591,6 @@ class SourceOracleIndex:
         near = self.expected_rows(contract, query, "distinct_file")
         folded = query.casefold()
         collisions = sorted(self._index_folded_tokens().get(folded, ()))
-        if language not in self._folded_declared_names:
-            self._folded_declared_names[language] = {
-                name.casefold() for name in self.declared_names(language)
-            }
         return {
             "intended_base_name": intended_name,
             "intended_base_files": [row["path"] for row in intended],
@@ -603,7 +598,10 @@ class SourceOracleIndex:
             "near_declaration_files": [row["path"] for row in near],
             "other_near_declaration_names": [name for name in names if name != intended_name],
             "exact_content_collision_paths": collisions,
-            "query_is_declaration_name": query.casefold() in self._folded_declared_names[language],
+            # Every exact name match is in the OSA1 near-name set. This remains
+            # valid when a refused file is excluded for this specific query.
+            "query_is_declaration_name": query.casefold()
+            in {name.casefold() for name in names},
             "user_intent_state": "unjudged",
         }
 

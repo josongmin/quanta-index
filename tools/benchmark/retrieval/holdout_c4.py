@@ -263,9 +263,54 @@ def _derive_prepared(
         for name in (task.get("query"), task.get("intended_name"))
         if isinstance(name, str)
     }
+    typo_exclusions: dict[tuple[str, str], set[str]] = {}
+    if intended_typo:
+        near_contract = gold_oracle._name_contract(language, intent)
+        for task in gold_tasks:
+            if (
+                not isinstance(task, dict)
+                or task.get("intent") != intent
+                or task.get("label_state") != "mechanical_unreviewed"
+                or task.get("near_declaration_state") != "complete"
+            ):
+                continue
+            near_rows = task.get("near_census_text_excluded", [])
+            source_rows = task.get("census_text_excluded", [])
+            if not isinstance(near_rows, list) or not isinstance(source_rows, list):
+                raise ValueError("C4 typo census exclusion rows are malformed")
+            expected = {
+                (row["path"], row["reason"])
+                for row in source_rows
+                if isinstance(row, dict) and set(row) == {"path", "reason"}
+            }
+            observed = {
+                (row["path"], row["reason"])
+                for row in near_rows
+                if isinstance(row, dict) and set(row) == {"path", "reason"}
+            }
+            if (
+                len(expected) != len(source_rows)
+                or len(observed) != len(near_rows)
+                or expected != observed
+                or not observed <= set(required_rows)
+                or any(path not in files for path, _reason in observed)
+            ):
+                raise ValueError("C4 typo near-census exclusion differs")
+            for path, _reason in observed:
+                if not source_oracle.declaration_query_textually_excluded(
+                    files[path], task["query"], "osa1_casefold"
+                ):
+                    raise ValueError("C4 typo near-census exclusion is not query-proven")
+                typo_exclusions.setdefault((near_contract, task["query"]), set()).add(path)
+            for path, _reason in expected:
+                typo_exclusions.setdefault((contract, task["intended_name"]), set()).add(
+                    path
+                )
     typo_oracle = (
         source_oracle.SourceOracleIndex(
-            {path: (raw, source.file(path)[2]) for path, raw in files.items()}, typo_names
+            {path: (raw, source.file(path)[2]) for path, raw in files.items()},
+            typo_names,
+            declaration_exclusions=typo_exclusions,
         )
         if typo_names
         else None

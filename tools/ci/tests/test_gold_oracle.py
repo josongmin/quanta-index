@@ -115,6 +115,59 @@ def test_casefold_typo_gold_keeps_intended_and_near_declarations_separate(tmp_pa
         gold_oracle.derive(bound, manifest, view)
 
 
+@pytest.mark.parametrize("near_text_present", [False, True])
+def test_typo_near_census_uses_query_specific_absence_for_refused_file(
+    tmp_path, near_text_present
+):
+    view = tmp_path / "view"
+    view.mkdir()
+    files = {
+        "main.go": b"package p\nfunc Param() {}\n",
+        "broken.go": b"package p\n"
+        + (b"// Paran\n" if near_text_present else b"")
+        + b"func Broken(",
+    }
+    for path, raw in files.items():
+        (view / path).write_bytes(raw)
+    manifest = {
+        "repository_commit": "a" * 40,
+        "files": [
+            {"path": path, "file_sha256": gold_oracle._sha(raw)}
+            for path, raw in sorted(files.items())
+        ],
+    }
+    recipe = {
+        "schema_version": 2,
+        "split": "holdout",
+        "split_manifest_sha256": "a" * 64,
+        "tasks": [
+            {
+                "task_id": "typo-refused",
+                "query_family_id": "family-Param",
+                "intent": "declaration_name_osa1_casefold",
+                "query": "Paran",
+                "intended_name": "Param",
+                "scope_prefix": "",
+                "language": "go",
+                "case_semantics": "casefold",
+                "normalization": "none_raw_utf8",
+            }
+        ],
+    }
+    gold, _blind = gold_oracle.derive(recipe, manifest, view)
+    row = gold["tasks"][0]
+    assert [(label["path"], label["local_name"]) for label in row["labels"]] == [
+        ("main.go", "Param")
+    ]
+    assert row["census_text_excluded"] == [
+        {"path": "broken.go", "reason": "census_refused"}
+    ]
+    assert row["near_declaration_state"] == ("partial" if near_text_present else "complete")
+    assert row["near_census_text_excluded"] == (
+        [] if near_text_present else [{"path": "broken.go", "reason": "census_refused"}]
+    )
+
+
 @pytest.mark.parametrize(
     "name,language,expected",
     [

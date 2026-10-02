@@ -5,7 +5,7 @@
 //! leaves: its AND and ranking unit is one immutable source file.
 
 use std::cmp::Reverse;
-use std::collections::{BTreeSet, BinaryHeap};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 use std::ops::Range;
 
 use quanta_index_contract::{
@@ -282,6 +282,80 @@ struct Witness {
     score: u32,
     occurrences: u8,
     mapping_case: CaseMode,
+}
+
+struct ScoredMatch {
+    score: u32,
+    primary: Witness,
+    primary_term: usize,
+}
+
+fn add_witness_score(
+    scored: &mut Option<ScoredMatch>,
+    file: &SourceFile,
+    term: &CodeSearchTerm,
+    case: CaseMode,
+    term_index: usize,
+    witness: Witness,
+) {
+    let case_exact = if term.regex.is_some() {
+        false
+    } else {
+        match witness.surface {
+            HitSurface::Content => file
+                .indexed_text
+                .as_ref()
+                .is_some_and(|text| text.contains(&term.text)),
+            HitSurface::Path => file.indexed_path.contains(&term.text),
+        }
+    };
+    let increment = witness
+        .score
+        .saturating_add(u32::from(witness.occurrences.saturating_sub(1)).saturating_mul(2))
+        .saturating_add(if matches!(case, CaseMode::Folded) && case_exact {
+            5
+        } else {
+            0
+        });
+    match scored {
+        Some(prior) => {
+            prior.score = prior.score.saturating_add(increment);
+            if witness.score > prior.primary.score
+                || (witness.score == prior.primary.score && term_index < prior.primary_term)
+            {
+                prior.primary = witness;
+                prior.primary_term = term_index;
+            }
+        }
+        None => {
+            *scored = Some(ScoredMatch {
+                score: increment,
+                primary: witness,
+                primary_term: term_index,
+            });
+        }
+    }
+}
+
+fn score_terms(
+    file: &SourceFile,
+    terms: &[CodeSearchTerm],
+    case: CaseMode,
+    mut scored: Option<ScoredMatch>,
+    literals_only: bool,
+    budget: &RequestBudgetV1,
+) -> Result<Option<ScoredMatch>, CoreError> {
+    let reuse_literals = scored.is_some() && !literals_only;
+    for (index, term) in terms.iter().enumerate() {
+        if (literals_only && term.regex.is_some()) || (reuse_literals && term.regex.is_none()) {
+            continue;
+        }
+        let Some(witness) = choose_witness(file, term, case, budget)? else {
+            return Ok(None);
+        };
+        add_witness_score(&mut scored, file, term, case, index, witness);
+    }
+    Ok(scored)
 }
 
 fn boundary_score(text: &str, span: Range<usize>, path: bool) -> u32 {
@@ -881,7 +955,7 @@ fn candidate_ids(
     case: CaseMode,
     eligible: Option<&BTreeSet<u64>>,
     budget: &RequestBudgetV1,
-) -> Result<BTreeSet<u64>, CoreError> {
+) -> Result<BTreeMap<u64, ScoredMatch>, CoreError> {
     let literals: Vec<_> = terms.iter().filter(|term| term.regex.is_none()).collect();
     let mut indexed = Vec::new();
     for term in &literals {
@@ -898,7 +972,7 @@ fn candidate_ids(
             indexed.push(LiteralPrefilter { term, trigrams });
         }
     }
-    let mut hits = BTreeSet::new();
+    let mut hits = BTreeMap::new();
     if let Some((seed_position, seed)) = indexed
         .iter()
         .enumerate()
@@ -909,10 +983,13 @@ fn candidate_ids(
             .flatten()
         {
             budget.checkpoint("lexical:code-search-trigram")?;
-            let candidates = index
+            let _candidates = index
                 .intersect_trigrams_filtered_with_checkpoint(
                     &seed.trigrams,
                     |id| {
+                        if hits.contains_key(&id.0) {
+                            return Ok(true);
+                        }
                         if eligible.is_some_and(|ids| !ids.contains(&id.0)) {
                             return Ok(false);
                         }
@@ -925,11 +1002,18 @@ fn candidate_ids(
                             }
                         }
                         let file = file_for_id(authority, id)?;
-                        for term in &literals {
-                            if choose_witness(file, term, case, budget)?.is_none() {
-                                return Ok(false);
-                            }
+                        let Some(scored) =
+                            score_terms(file, terms, case, None, true, budget)?
+                        else {
+                            return Ok(false);
+                        };
+                        if hits.len() >= MAX_CANDIDATE_PRE_VERIFY {
+                            return Err(CoreError::Typed {
+                                code: quanta_index_contract::SearchPlaneErrorCodeV2::LexTrigramPlanLimitExceeded,
+                                message: "lexical code search: verified file candidate set exceeds cap".into(),
+                            });
                         }
+                        let _previous = hits.insert(id.0, scored);
                         Ok(true)
                     },
                     || budget.checkpoint("lexical:code-search-trigram-posting"),
@@ -940,16 +1024,6 @@ fn candidate_ids(
                     }
                     TrigramIntersectionError::Checkpoint(error) => error,
                 })?;
-            for id in candidates {
-                budget.checkpoint("lexical:code-search-verify")?;
-                if hits.len() >= MAX_CANDIDATE_PRE_VERIFY && !hits.contains(&id.0) {
-                    return Err(CoreError::Typed {
-                        code: quanta_index_contract::SearchPlaneErrorCodeV2::LexTrigramPlanLimitExceeded,
-                        message: "lexical code search: verified file candidate set exceeds cap".into(),
-                    });
-                }
-                let _inserted = hits.insert(id.0);
-            }
         }
         return Ok(hits);
     }
@@ -977,15 +1051,8 @@ fn candidate_ids(
             .files
             .get(key)
             .ok_or_else(|| CoreError::Storage("lexical: file authority id has no source".into()))?;
-        let mut matched = true;
-        for term in &literals {
-            if choose_witness(file, term, case, budget)?.is_none() {
-                matched = false;
-                break;
-            }
-        }
-        if matched {
-            let _inserted = hits.insert(id);
+        if let Some(scored) = score_terms(file, terms, case, None, true, budget)? {
+            let _previous = hits.insert(id, scored);
         }
     }
     Ok(hits)
@@ -1092,12 +1159,12 @@ fn language_eligible_ids(
 
 fn admit_regex_scan(
     authority: &FileAuthority,
-    ids: &BTreeSet<u64>,
+    ids: impl Iterator<Item = u64>,
     scope: Scope,
     budget: &RequestBudgetV1,
 ) -> Result<(), CoreError> {
     let mut bytes = 0_usize;
-    for (position, id) in ids.iter().enumerate() {
+    for (position, id) in ids.enumerate() {
         if position % 256 == 0 {
             budget.checkpoint("lexical:code-search-regex-admission")?;
         }
@@ -1631,33 +1698,33 @@ impl TantivySearcher {
         }
         let eligible = language_eligible_ids(authority, constraints, budget)?;
         let eligible = eligible.as_ref();
-        let ids: Option<BTreeSet<u64>> = if let Some(path) = &constraints.repo_relative_path_exact {
-            let mut matching = BTreeSet::new();
-            for (index, key) in authority.ordered_keys.iter().enumerate() {
-                budget.checkpoint("lexical:code-search-exact-path")?;
-                if key.repo_relative_path.as_str() == path.as_str() {
-                    let id = file_id_at(index)?;
-                    if eligible.is_none_or(|ids| ids.contains(&id)) {
-                        let _inserted = matching.insert(id);
+        let ids: Option<BTreeMap<u64, Option<ScoredMatch>>> =
+            if let Some(path) = &constraints.repo_relative_path_exact {
+                let mut matching = BTreeMap::new();
+                for (index, key) in authority.ordered_keys.iter().enumerate() {
+                    budget.checkpoint("lexical:code-search-exact-path")?;
+                    if key.repo_relative_path.as_str() == path.as_str() {
+                        let id = file_id_at(index)?;
+                        if eligible.is_none_or(|ids| ids.contains(&id)) {
+                            let _previous = matching.insert(id, None);
+                        }
                     }
                 }
-            }
-            Some(matching)
-        } else if parsed.terms.iter().any(|term| term.regex.is_none()) {
-            // A regex cannot safely supply a literal trigram unless its
-            // dialect proves that literal mandatory. Join all literal terms
-            // first, then verify regex over the admitted file set.
-            budget.checkpoint("lexical:code-search-terms")?;
-            Some(candidate_ids(
-                authority,
-                &parsed.terms,
-                parsed.case,
-                eligible,
-                budget,
-            )?)
-        } else {
-            None
-        };
+                Some(matching)
+            } else if parsed.terms.iter().any(|term| term.regex.is_none()) {
+                // A regex cannot safely supply a literal trigram unless its
+                // dialect proves that literal mandatory. Join all literal terms
+                // first, then verify regex over the admitted file set.
+                budget.checkpoint("lexical:code-search-terms")?;
+                Some(
+                    candidate_ids(authority, &parsed.terms, parsed.case, eligible, budget)?
+                        .into_iter()
+                        .map(|(id, scored)| (id, Some(scored)))
+                        .collect(),
+                )
+            } else {
+                None
+            };
         let regex_scope = regex_scan_scope(&parsed.terms);
         let ids = match ids {
             Some(ids) => ids,
@@ -1683,15 +1750,19 @@ impl TantivySearcher {
                     });
                 }
                 if let Some(ids) = eligible {
-                    ids.clone()
+                    ids.iter().copied().map(|id| (id, None)).collect()
                 } else {
                     (1..=authority.ordered_keys.len())
                         .map(|position| {
-                            u64::try_from(position).map_err(|error| {
-                                CoreError::Storage(format!("lexical: file id overflow: {error}"))
-                            })
+                            u64::try_from(position)
+                                .map(|id| (id, None))
+                                .map_err(|error| {
+                                    CoreError::Storage(format!(
+                                        "lexical: file id overflow: {error}"
+                                    ))
+                                })
                         })
-                        .collect::<Result<BTreeSet<_>, _>>()?
+                        .collect::<Result<BTreeMap<_, _>, _>>()?
                 }
             }
             None => {
@@ -1703,10 +1774,10 @@ impl TantivySearcher {
             }
         };
         if let Some(scope) = regex_scope {
-            admit_regex_scan(authority, &ids, scope, budget)?;
+            admit_regex_scan(authority, ids.keys().copied(), scope, budget)?;
         }
         let mut ranked = Vec::new();
-        for id in ids {
+        for (id, preverified) in ids {
             budget.checkpoint("lexical:code-search-file")?;
             let position = usize::try_from(id.saturating_sub(1)).map_err(|error| {
                 CoreError::Storage(format!("lexical: file id overflow: {error}"))
@@ -1719,51 +1790,31 @@ impl TantivySearcher {
                 .files
                 .get(key)
                 .ok_or_else(|| CoreError::Storage("lexical: file id has no source".into()))?;
-            let mut score = 0_u32;
-            let mut primary: Option<Witness> = None;
-            for term in &parsed.terms {
-                let Some(witness) = choose_witness(file, term, parsed.case, budget)? else {
-                    primary = None;
-                    break;
-                };
-                score = score.saturating_add(witness.score);
-                score = score.saturating_add(
-                    u32::from(witness.occurrences.saturating_sub(1)).saturating_mul(2),
-                );
-                let case_exact = if term.regex.is_some() {
-                    false
-                } else {
-                    match witness.surface {
-                        HitSurface::Content => file
-                            .indexed_text
-                            .as_ref()
-                            .is_some_and(|text| text.contains(&term.text)),
-                        HitSurface::Path => file.indexed_path.contains(&term.text),
-                    }
-                };
-                if matches!(parsed.case, CaseMode::Folded) && case_exact {
-                    score = score.saturating_add(5);
-                }
-                if primary
-                    .as_ref()
-                    .is_none_or(|best| witness.score > best.score)
-                {
-                    primary = Some(witness);
-                }
-            }
-            let Some(witness) = primary else {
+            let Some(scored) =
+                score_terms(file, &parsed.terms, parsed.case, preverified, false, budget)?
+            else {
                 continue;
             };
-            score =
-                score.saturating_add(proximity_bonus(file, &parsed.terms, parsed.case, budget)?);
+            let score = scored.score.saturating_add(proximity_bonus(
+                file,
+                &parsed.terms,
+                parsed.case,
+                budget,
+            )?);
             // At most 32 terms contribute <= 146 points each, plus a 32 point
             // proximity bonus. This fits u16 and converts to f32 exactly.
             let score = u16::try_from(score).map_err(|error| {
                 CoreError::Storage(format!("lexical: code search score overflow: {error}"))
             })?;
-            let candidate =
-                file_candidate(self, file, f32::from(score), Some(&witness), false, budget)?;
-            ranked.push((candidate, witness));
+            let candidate = file_candidate(
+                self,
+                file,
+                f32::from(score),
+                Some(&scored.primary),
+                false,
+                budget,
+            )?;
+            ranked.push((candidate, scored.primary));
         }
         ranked.sort_by(|(left, _), (right, _)| left.order_key().order(&right.order_key()));
         let after = self.page_boundary(page)?;
@@ -2368,7 +2419,7 @@ mod tests {
             &budget,
         )
         .expect("eligible short scan");
-        assert_eq!(matches.into_iter().collect::<Vec<_>>(), vec![1]);
+        assert_eq!(matches.into_keys().collect::<Vec<_>>(), vec![1]);
     }
 
     #[test]
@@ -2441,7 +2492,9 @@ mod tests {
         ));
         assert_eq!(
             candidate_ids(&authority, &terms, CaseMode::Sensitive, None, &budget)
-                .expect("joint candidate set"),
+                .expect("joint candidate set")
+                .into_keys()
+                .collect::<BTreeSet<_>>(),
             BTreeSet::from([200_001]),
         );
     }
