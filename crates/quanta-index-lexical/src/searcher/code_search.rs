@@ -1739,18 +1739,10 @@ impl TantivySearcher {
             Some(ids) => ids,
             None if regex_scope.is_some() => {
                 budget.checkpoint("lexical:code-search-regex-all-files")?;
-                let scope = regex_scope.ok_or_else(|| {
-                    CoreError::Storage("lexical: regex scan scope disappeared".into())
-                })?;
+                // Bound allocation before materializing all ids. The shared
+                // regex admission below checks the source-byte budget once.
                 if eligible.map_or(authority.ordered_keys.len(), BTreeSet::len)
                     > MAX_REGEX_SCAN_FILES
-                    || source_bytes_checked(
-                        authority,
-                        scope,
-                        CaseMode::Sensitive,
-                        eligible,
-                        budget,
-                    )? > MAX_REGEX_SCAN_SOURCE_BYTES
                 {
                     return Err(CoreError::Typed {
                         code:
