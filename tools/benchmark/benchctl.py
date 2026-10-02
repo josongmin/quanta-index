@@ -148,10 +148,21 @@ def parse_args(
         "code-search", help="live five-product workflow over one frozen corpus view"
     )
     workflow_modes = code_search.add_subparsers(dest="code_search_action", required=True)
-    for action in ("run", "verify", "external", "external-verify", "matrix-verify"):
+    for action in (
+        "run",
+        "verify",
+        "external",
+        "external-verify",
+        "matrix-verify",
+        "repository-replay",
+    ):
         mode = workflow_modes.add_parser(action)
         mode.add_argument(
-            "--spec" if action in {"run", "external", "matrix-verify"} else "--capture",
+            "--bundle"
+            if action == "repository-replay"
+            else "--spec"
+            if action in {"run", "external", "matrix-verify"}
+            else "--capture",
             type=Path,
             required=True,
         )
@@ -1436,6 +1447,7 @@ def main(argv: list[str] | None = None) -> int:
             from code_search_workflow import verify as verify_code_search
 
             from tools.benchmark.retrieval import live_lexical_external
+            from tools.benchmark.retrieval.decision import replay_repository_disjoint_bundle
 
             if args.code_search_action == "run":
                 result = capture_code_search(repo_root, args.spec)
@@ -1461,6 +1473,8 @@ def main(argv: list[str] | None = None) -> int:
                     "sha256": file_digest(args.output)[0],
                     "cells": len(spec["cells"]),
                 }
+            elif args.code_search_action == "repository-replay":
+                result = replay_repository_disjoint_bundle(args.bundle)
             else:
                 result = live_lexical_external.verify(args.capture)
         except (

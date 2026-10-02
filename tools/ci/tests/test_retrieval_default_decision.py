@@ -230,6 +230,33 @@ def test_repository_disjoint_bundle_replays_policy_bound_captures(monkeypatch, t
     assert result["product_default_decision"] is False
     assert (result["repository_count"], result["paired_sample_count"]) == (12, 12)
     assert result["repository_cluster_ci"]["mean"] == 0.5
+    original_bundle = bundle_path.read_bytes()
+    missing = json.loads(original_bundle)
+    missing["captures"].pop()
+    bundle_path.write_text(json.dumps(missing))
+    with pytest.raises(decision.DecisionError, match="inventory is incomplete"):
+        decision.replay_repository_disjoint_bundle(bundle_path)
+    bundle_path.write_bytes(original_bundle)
+
+    def failed_verdict(*args):
+        value = verdict(*args)
+        value["states"]["PERF_QUALIFIED"] = "fail"
+        return value
+
+    monkeypatch.setattr(decision.run, "build_verdict", failed_verdict)
+    with pytest.raises(decision.DecisionError, match="lacks qualified proof"):
+        decision.replay_repository_disjoint_bundle(bundle_path)
+    monkeypatch.setattr(decision.run, "build_verdict", verdict)
+
+    report_path = tmp_path / "repo-00" / "report.json"
+    original_report = report_path.read_bytes()
+    ungraded = json.loads(original_report)
+    ungraded["graded"] = False
+    report_path.write_text(json.dumps(ungraded))
+    with pytest.raises(ev.EvidenceError, match="not graded"):
+        decision.replay_repository_disjoint_bundle(bundle_path)
+    report_path.write_bytes(original_report)
+
     (tmp_path / "repo-00" / "admission.json").write_text(
         json.dumps(
             {
