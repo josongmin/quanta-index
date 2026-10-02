@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "benchmark"))
 import code_search_matrix as matrix  # noqa: E402
 
 from tools.benchmark.retrieval import evaluator  # noqa: E402
+from tools.ci.tests.test_holdout_c4 import _matrix_fixture  # noqa: E402
 
 
 def _cell(tmp_path, repository="repo-a", family="symbols"):
@@ -206,6 +207,79 @@ def test_matrix_v3_replays_c4_no_admission_without_inventing_inputs(tmp_path, mo
     (admission_root / "admission-matrix.json").write_text(json.dumps(forged))
     with pytest.raises(ValueError, match="C4 admission differs"):
         matrix.verify(tmp_path, spec_path)
+
+
+def test_matrix_v3_rederives_source_bound_c4_cells(tmp_path, monkeypatch):
+    release, capsules, checkouts = _matrix_fixture(tmp_path, monkeypatch)
+    output = tmp_path / "c4-output"
+    admitted = matrix.holdout_c4.write_matrix(
+        release, capsules, checkouts, output, expected_repositories=2, emit_suites=True
+    )
+    source = {"revision": "a" * 40, "dirty": False}
+    monkeypatch.setattr(matrix.code_search_workflow, "_source", lambda _repo: source)
+    monkeypatch.setattr(
+        matrix.corpus_release,
+        "validate",
+        lambda _release: matrix.holdout_c4._read(release / "release.json"),
+    )
+    monkeypatch.setattr(matrix, "load_registry", lambda _path: {})
+    cells = []
+    for row in admitted["cells"]:
+        selected = row["status"] == "diagnostic_unqualified"
+        root = output / row["repository"] / row["intent"]
+        cells.append(
+            {
+                "repository": row["repository"],
+                "view": "code_only",
+                "query_family": row["intent"],
+                "query_policy": matrix.holdout_c4._execution_policy(row["intent"]),
+                "suite": str(root / "suite.json") if selected else None,
+                "query_pack": str(root / "blind-pack.json") if selected else None,
+                "captures": (
+                    {
+                        "lexical-only": {"kind": "not_run", "reason": matrix.MISSING_REASON},
+                        "semantic-only": {
+                            "kind": "unsupported",
+                            "reason": matrix.UNSUPPORTED_REASON,
+                        },
+                        "hybrid": {"kind": "unsupported", "reason": matrix.UNSUPPORTED_REASON},
+                    }
+                    if selected
+                    else {
+                        mode: {"kind": "not_applicable", "reason": matrix.NO_ADMISSION_REASON}
+                        for mode in matrix.MODES
+                    }
+                ),
+            }
+        )
+    spec = {
+        "schema_version": 3,
+        "release_path": str(release),
+        "release_digest": admitted["release_digest"],
+        "query_families": list(matrix.holdout_c4.MATRIX_INTENTS),
+        "c4_admission_root": str(output),
+        "c4_capsules": str(capsules),
+        "c4_checkouts": str(checkouts),
+        "cells": cells,
+    }
+    spec_path = tmp_path / "matrix-v3.json"
+    spec_path.write_text(json.dumps(spec))
+    capture_roots = {
+        f"{row['repository']}/{row['intent']}": None
+        for row in admitted["cells"]
+        if row["status"] == "diagnostic_unqualified"
+    }
+    assert matrix.build_c4_spec(release, capsules, checkouts, output, capture_roots) == spec
+    with pytest.raises(ValueError, match="capture-root inventory differs"):
+        matrix.build_c4_spec(release, capsules, checkouts, output, {})
+    result = matrix.verify(tmp_path, spec_path)
+    assert result["no_admission_cells"] == sum(
+        row["status"] == "no_admission_diagnostic" for row in admitted["cells"]
+    )
+    assert result["not_run_cells"] == sum(
+        row["status"] == "diagnostic_unqualified" for row in admitted["cells"]
+    )
+    assert result["verified_cells"] == 0
 
 
 @pytest.mark.parametrize("policy", sorted(matrix.LEXICAL_ONLY_FILE_POLICIES))

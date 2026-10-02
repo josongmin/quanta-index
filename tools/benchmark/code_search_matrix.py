@@ -322,6 +322,79 @@ def _replay_c4(
     return by_key, bound_files
 
 
+def build_c4_spec(
+    release: Path,
+    capsules: Path,
+    checkouts: Path,
+    admission_root: Path,
+    capture_roots: dict[str, str | None],
+) -> dict:
+    """Prepare a closed diagnostic v3 spec from current C4 source evidence.
+
+    Every admitted lexical cell must be declared as a capture root or ``None``
+    (not run). No-admission cells are derived, never caller-declared.
+    """
+    release = _path(str(release), "release_path")
+    document = corpus_release.validate(release)
+    repositories = {row["recipe"]["name"] for row in document["repositories"]}
+    if len(repositories) != len(document["repositories"]) or not repositories:
+        raise ValueError("matrix release repository inventory differs")
+    spec = {
+        "schema_version": 3,
+        "release_path": str(release),
+        "release_digest": document["digest"],
+        "query_families": list(holdout_c4.MATRIX_INTENTS),
+        "c4_admission_root": str(_path(str(admission_root), "c4_admission_root")),
+        "c4_capsules": str(_path(str(capsules), "c4_capsules")),
+        "c4_checkouts": str(_path(str(checkouts), "c4_checkouts")),
+        "cells": [],
+    }
+    admitted, bound_files = _replay_c4(spec, release, repositories)
+    expected_roots = {
+        f"{repository}/{intent}"
+        for (repository, intent), row in admitted.items()
+        if row["status"] == "diagnostic_unqualified"
+    }
+    if not isinstance(capture_roots, dict) or set(capture_roots) != expected_roots:
+        raise ValueError("matrix C4 capture-root inventory differs from admitted cells")
+    for repository, intent in sorted(admitted):
+        row = admitted[repository, intent]
+        selected = row["status"] == "diagnostic_unqualified"
+        cell_root = admission_root / repository / intent
+        if selected:
+            root = capture_roots[f"{repository}/{intent}"]
+            lexical = (
+                {"kind": "not_run", "reason": MISSING_REASON}
+                if root is None
+                else {"kind": "pair", "root": str(_path(root, "capture root"))}
+            )
+            captures = {
+                "lexical-only": lexical,
+                "semantic-only": {"kind": "unsupported", "reason": UNSUPPORTED_REASON},
+                "hybrid": {"kind": "unsupported", "reason": UNSUPPORTED_REASON},
+            }
+        else:
+            captures = {
+                mode: {"kind": "not_applicable", "reason": NO_ADMISSION_REASON}
+                for mode in MODES
+            }
+        spec["cells"].append(
+            {
+                "repository": repository,
+                "view": "code_only",
+                "query_family": intent,
+                "query_policy": holdout_c4._execution_policy(intent),
+                "suite": str(cell_root / "suite.json") if selected else None,
+                "query_pack": str(cell_root / "blind-pack.json") if selected else None,
+                "captures": captures,
+            }
+        )
+    _spec(spec, repositories)
+    if any(_read_control_file(path) != before for path, before in bound_files.items()):
+        raise ValueError("matrix C4 admission changed during spec preparation")
+    return spec
+
+
 def verify(repo: Path, spec_path: Path) -> dict:
     """Fail on any omitted, mismatched or unverified applicable matrix cell."""
     source = code_search_workflow._source(repo)
