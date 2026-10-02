@@ -1,6 +1,7 @@
 # S30-B08 — fresh multi-repository holdout and product decision
 
-Status: `NOT_RUN` (2026-09-30); see receipt below. Priority: P2. Parent:
+Status: C4 `VERIFIED` as diagnostic admission; C5 `NOT_RUN` (2026-10-02).
+Priority: P2. Parent:
 [Sep 30 plan](../README.md). Contract owners:
 [CS-BENCH-01](../../sep-27-code-search-remediation/rfcs/CS-BENCH-01-corpus-gold-and-holdout.md),
 [CS-BENCH-03](../../sep-27-code-search-remediation/rfcs/CS-BENCH-03-tracks-metrics-and-statistics.md),
@@ -511,3 +512,51 @@ and unreviewed; complete per-repository product matrices, external service
 index bindings, preregistered statistics and the multi-repository decision
 gate are absent. Neither diagnostic run supports a product ranking or default
 change.
+
+## Current-source census and admission closure (2026-10-02)
+
+**VERIFIED, diagnostic preparation:** clean `main@22320380` captured 12 new
+gold capsules at
+[`/private/tmp/qi-b08-gold-2232-cEcBHy/capsules`](/private/tmp/qi-b08-gold-2232-cEcBHy/capsules)
+from frozen `release-v4` and `sampling-v4`; batch wall time was 449.25 s.
+Capsule identity now binds the direct Python gold, source-oracle, census-audit
+and corpus-binding owners plus parser/runtime versions. The independent
+Rust/Go/TypeScript/JavaScript audits also record the hashes of the executed
+checker artifacts. Their cache refuses a changed source digest, artifact or
+ready marker, and each audit checks checker identity before and after the
+source census. Current-source replay refuses an old capsule (`lo` checked:
+`gold.json` differs), so its metadata cannot be mixed with the new evidence.
+
+The 960 frozen tasks have 880 `mechanical_unreviewed` and 80 `unjudged`
+states. All 12 task label lists are unchanged from the preceding source-bound
+capture. In `nushell`, 52 declaration tasks became mechanically judgeable
+only where a query-specific raw-source scan proves no matching name can occur
+in all seven refused or checker-disputed files; eight tasks remain unjudged.
+
+The final source-bound C4 matrix is
+[`/private/tmp/qi-b08-matrix-2232-ek0Ty8/matrix/admission-matrix.json`](/private/tmp/qi-b08-matrix-2232-ek0Ty8/matrix/admission-matrix.json)
+(SHA-256 `8d350ed07fd8ae7a353dd3699a83677a9d3377ccd93381a73a042dc283fb0c4a`).
+It replayed the capsules and complete source views in 694.73 s. All 12
+repositories × five declaration-name intents have a diagnostic cell: 640
+selected tasks, 80 excluded as unjudged/unsupported. Its selected IDs and
+exclusion rows are identical to the pre-custody diagnostic matrix. The 240
+exact-content tasks are a separate contract and are not in these 720
+declaration cells. The matrix explicitly records `product_capture=false` and
+`qualified_default_search_conformance=false`; no product score was created.
+
+**VERIFIED, focused tests:** `PYTHONPATH=.:tools/benchmark uv run --frozen
+--extra dev pytest -q` over `test_corpus_binding.py`, `test_gold_oracle.py`
+and `test_holdout_c4.py` passed 139 tests. `test_declaration_census.py`
+passed 31 tests, including independent declaration fixtures, changed-cache
+refusals and an audit-time identity-change refusal. Ruff and `git diff --check`
+passed. The first combined run observed a source edit during derivation and
+failed the source-drift guard; it is excluded. The unchanged-source run above
+is the accepted test result.
+
+**NOT_RUN, C5 and product qualification:** no human relevance/adjudication for
+the mechanical audit or workflow tasks, no complete product capture of the
+matrix, no live Sourcegraph/OpenGrok indexed-universe attestation, no
+preregistered repository-cluster decision, and no quiet-host performance
+measurement. C4's case-sensitive declaration-target labels do not prove the
+default folded content/path search contract. The existing 240 literal tasks
+and absent workflow lane cannot be merged into the declaration score.
