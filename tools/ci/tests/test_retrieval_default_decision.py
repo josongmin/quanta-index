@@ -47,6 +47,8 @@ def repository_disjoint_policy(tmp_path: Path, split_sha: str) -> dict:
         "confidence_method": "paired_stratified_repository_cluster_bootstrap_percentile_v1",
         "critical_strata": [
             {"axis": "no_answer", "name": "all", "min_delta": 0.0},
+            {"axis": "category", "name": "objective", "min_delta": 0.0},
+            {"axis": "language", "name": "go", "min_delta": 0.0},
             *(
                 {"axis": "repository", "name": row["repository"], "min_delta": -0.01}
                 for row in rows
@@ -297,6 +299,14 @@ def test_repository_disjoint_bundle_replays_policy_bound_captures(monkeypatch, t
         policy, suites, reports, result["repository_cluster_ci"], result["captures"]
     )["reasons"] == ["query_p95_budget_exceeded"]
     policy["resource_limits"]["max_query_p95_ms"] = 100.0
+    policy["critical_strata"] = [
+        row for row in policy["critical_strata"] if row["axis"] != "language"
+    ]
+    with pytest.raises(decision.DecisionError, match="omits an observed critical stratum"):
+        decision._repository_disjoint_metric_gate(
+            policy, suites, reports, result["repository_cluster_ci"], result["captures"]
+        )
+    policy["critical_strata"].insert(2, {"axis": "language", "name": "go", "min_delta": 0.0})
     reports["repo-00"]["rank_metrics"]["comparison"]["no_answer_abstention_delta"]["mean_delta"] = (
         1.0
     )

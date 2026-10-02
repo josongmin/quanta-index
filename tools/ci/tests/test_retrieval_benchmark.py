@@ -7935,7 +7935,9 @@ def test_repository_disjoint_admission_contract_uses_split_paths(tmp_path):
     spec["admission"].pop("experiment_custody")
     spec["admission"].pop("development_suite")
     spec["admission"].update(split_manifest="split.json", split_releases="releases.json")
-    jsonschema.validate(spec["admission"], _load_schema("pair-spec.schema.json")["properties"]["admission"])
+    jsonschema.validate(
+        spec["admission"], _load_schema("pair-spec.schema.json")["properties"]["admission"]
+    )
     assert pairrun._admission_keys(spec["admission"]) == pairrun.ADMISSION_DISJOINT_KEYS
 
     manifest = copy.deepcopy(st["manifest"])
@@ -7982,9 +7984,13 @@ def test_repository_disjoint_source_custody_refuses_wrong_holdout(monkeypatch, t
         "code_only_universe_digest": "sha256:" + "b" * 64,
         "query_family_ids": ["holdout.family"],
     }
-    monkeypatch.setattr(corpus_binding, "validate_split_manifest", lambda _raw, _paths: {"repositories": [entry]})
+    monkeypatch.setattr(
+        corpus_binding, "validate_split_manifest", lambda _raw, _paths: {"repositories": [entry]}
+    )
     calls = []
-    monkeypatch.setattr(pairrun, "validate_suite", lambda repo, payload: calls.append((repo, payload)))
+    monkeypatch.setattr(
+        pairrun, "validate_suite", lambda repo, payload: calls.append((repo, payload))
+    )
     pairrun._validate_disjoint_admission_source(
         admission, suite, tmp_path, split_path, releases_path
     )
@@ -8030,9 +8036,7 @@ def test_repository_disjoint_admission_freeze_routes_global_custody(monkeypatch,
     admission_path.write_text(json.dumps(admission))
     spec["admission"].pop("experiment_custody")
     spec["admission"].pop("development_suite")
-    spec["admission"].update(
-        split_manifest=str(split_path), split_releases=str(releases_path)
-    )
+    spec["admission"].update(split_manifest=str(split_path), split_releases=str(releases_path))
     receipt_paths = {
         key: st["stage"] / st["manifest"]["artifacts"][key]
         for key in ("contract_python_receipt", "contract_rust_receipt", "sdk_receipt")
@@ -8047,9 +8051,7 @@ def test_repository_disjoint_admission_freeze_routes_global_custody(monkeypatch,
     target.mkdir()
     frozen = pairrun.freeze_admission(spec, target, {k: str(v) for k, v in receipt_paths.items()})
     assert set(frozen) == set(pairrun.ADMISSION_DISJOINT_KEYS)
-    assert observed == [
-        (Path(frozen["split_manifest"]), Path(frozen["split_releases"]))
-    ]
+    assert observed == [(Path(frozen["split_manifest"]), Path(frozen["split_releases"]))]
 
 
 def test_qualified_license_receipt_requires_approved_corpus_bound_decision(tmp_path):
