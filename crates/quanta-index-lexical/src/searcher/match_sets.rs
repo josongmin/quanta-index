@@ -162,10 +162,11 @@ impl TantivySearcher {
             }
         }
         let authority = self.text_authority(TextAuthorityFeature::RegexTrigram)?;
-        let plan = crate::regex::plan_regex(&normalized_source, options, &self.regex_policy)
-            .map_err(map_regex_plan_error)?;
+        let (plan, prepared) =
+            crate::regex::plan_regex_prepared(&normalized_source, options, &self.regex_policy)
+                .map_err(map_regex_plan_error)?;
         let executor =
-            RegexExecutor::compile(&normalized_source).map_err(|err| CoreError::Typed {
+            RegexExecutor::compile_prepared(prepared).map_err(|err| CoreError::Typed {
                 code: crate::query_errors::regex_wire_code(err.code),
                 message: format!("lexical: regex execution compile for {source:?}: {err}"),
             })?;

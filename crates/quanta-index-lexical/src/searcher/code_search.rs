@@ -241,13 +241,15 @@ impl CodeSearchPlan {
                     return Err(unsupported("regex inline case overrides are unsupported"));
                 }
                 let effective = TantivySearcher::regex_source_for_options(body, &query.options);
-                let _plan = crate::regex::plan_regex(&effective, &query.options, regex_policy)
-                    .map_err(map_regex_plan_error)?;
-                let executor =
-                    RegexExecutor::compile(&effective).map_err(|error| CoreError::Typed {
+                let (_plan, prepared) =
+                    crate::regex::plan_regex_prepared(&effective, &query.options, regex_policy)
+                        .map_err(map_regex_plan_error)?;
+                let executor = RegexExecutor::compile_prepared(prepared).map_err(|error| {
+                    CoreError::Typed {
                         code: crate::query_errors::regex_wire_code(error.code),
                         message: format!("lexical code search regex: {error}"),
-                    })?;
+                    }
+                })?;
                 if executor.hir().properties().minimum_len() == Some(0) {
                     return Err(unsupported("zero-width regex matches are unsupported"));
                 }

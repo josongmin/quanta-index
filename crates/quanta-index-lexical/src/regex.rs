@@ -16,7 +16,7 @@
 use core::fmt;
 
 use quanta_index_contract::LqOptions;
-use quanta_index_lq_regex::{ForbiddenKind, RegexErrorCode, RegexExecutor};
+use quanta_index_lq_regex::{ForbiddenKind, RegexCompilationPlan, RegexErrorCode, RegexExecutor};
 
 /// Typed regex planner errors.
 ///
@@ -137,9 +137,19 @@ impl RegexPlan {
 /// Errors are typed against [`RegexPlannerError`]; no silent fallback.
 pub fn plan_regex(
     source: &str,
-    _options: &LqOptions,
+    options: &LqOptions,
     policy: &RegexPolicy,
 ) -> Result<RegexPlan, RegexPlannerError> {
+    plan_regex_prepared(source, options, policy).map(|(plan, _prepared)| plan)
+}
+
+/// Keep the validated HIR for callers that will compile the admitted regex.
+/// The public planning result stays independent of the execution engine.
+pub(crate) fn plan_regex_prepared(
+    source: &str,
+    _options: &LqOptions,
+    policy: &RegexPolicy,
+) -> Result<(RegexPlan, RegexCompilationPlan), RegexPlannerError> {
     let prepared = match RegexExecutor::prepare(source) {
         Ok(prepared) => prepared,
         Err(err) => return Err(map_compile_error(source, &err, policy)),
@@ -174,10 +184,13 @@ pub fn plan_regex(
         // Normalize it to the explicit bounded verify-only plan.
         literals.clear();
     }
-    Ok(RegexPlan {
-        source: source.to_owned(),
-        literal_alternation: literals,
-    })
+    Ok((
+        RegexPlan {
+            source: source.to_owned(),
+            literal_alternation: literals,
+        },
+        prepared,
+    ))
 }
 
 /// Map a `RegexError` from the compile step into a typed
