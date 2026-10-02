@@ -408,12 +408,27 @@ def replay_repository_disjoint_bundle(bundle_path: Path) -> dict:
             or observed.get("sample_count") != selected[0].get("sample_count")
         ):
             raise DecisionError("repository-disjoint report metric differs from policy")
+        paths = {
+            "matrix": run._resolve_artifact(
+                root, manifest["artifacts"]["latency_matrix"], "latency_matrix"
+            ),
+            "records": [
+                run._resolve_artifact(root, ref, "records")
+                for ref in manifest["artifacts"]["records"]
+            ],
+            "resources": [
+                run._resolve_artifact(root, ref, "resource_metrics")
+                for ref in manifest["artifacts"]["resource_metrics"]
+            ],
+        }
+        measurements = _candidate_measurements(manifest, paths, comparison, bound_json)
         suites[name], reports[name] = suite, report
         receipts.append(
             {
                 "repository": name,
                 "admission_sha256": initial[admission_path],
                 "report_sha256": selected[0]["report_digest"],
+                "measurements": measurements,
             }
         )
     if names != sorted(expected):
@@ -573,9 +588,7 @@ def evaluate_decision(
     }
 
 
-def _candidate_measurements(
-    manifest: dict, paths: dict, comparison: dict, bound_json
-) -> dict:
+def _candidate_measurements(manifest: dict, paths: dict, comparison: dict, bound_json) -> dict:
     """Read replay-bound latency and resource observations for one candidate."""
     matrix = bound_json(paths["matrix"])
     key = f"quanta:{comparison['strategy']}:{comparison['candidate_route']}"

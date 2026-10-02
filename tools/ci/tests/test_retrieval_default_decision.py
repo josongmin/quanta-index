@@ -123,13 +123,36 @@ def test_repository_disjoint_bundle_replays_policy_bound_captures(monkeypatch, t
             ],
         }
         (root / "report.json").write_bytes(ev.canonical(report))
+        record_path = root / "record.json"
+        record_path.write_text(json.dumps({"repository": name}))
+        (root / "resource.json").write_text(
+            json.dumps(
+                {
+                    "subject_sha256": hashlib.sha256(record_path.read_bytes()).hexdigest(),
+                    "peak_rss_bytes": 1_000,
+                    "storage": {"index_bytes": 2_000},
+                }
+            )
+        )
+        (root / "latency.json").write_text(
+            json.dumps(
+                {
+                    "samples": {"quanta:whole_file:hybrid:T1": [5.0]},
+                    "floors": {"quanta:whole_file:hybrid": 1},
+                }
+            )
+        )
         (root / "manifest.json").write_text(
             json.dumps(
                 {
                     "scope": "qualified",
+                    "repetitions": 1,
                     "artifacts": {
                         "admission_manifest": "admission.json",
                         "reports": ["report.json"],
+                        "records": ["record.json"],
+                        "resource_metrics": ["resource.json"],
+                        "latency_matrix": "latency.json",
                     },
                 }
             )
@@ -188,6 +211,9 @@ def test_repository_disjoint_bundle_replays_policy_bound_captures(monkeypatch, t
     monkeypatch.setattr(decision.run, "_validate_manifest_shape", lambda value: value)
     monkeypatch.setattr(decision.run, "_resolve_artifact", lambda root, ref, _role: root / ref)
     monkeypatch.setattr(decision.run, "validate_admission_manifest", lambda value: value)
+    monkeypatch.setattr(
+        decision.run, "_record_identity", lambda _record, _path: ("quanta", "whole_file")
+    )
 
     def verdict(_checkout, _suite, manifest_path):
         report_path = manifest_path.parent / "report.json"
