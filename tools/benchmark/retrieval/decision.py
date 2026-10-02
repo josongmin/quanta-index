@@ -13,8 +13,10 @@ import json
 import sys
 from pathlib import Path
 
+from tools.benchmark import corpus_binding
 from tools.benchmark.evidence import parse_json, read_control
 from tools.benchmark.retrieval import run
+from tools.benchmark.retrieval import evaluator
 from tools.benchmark.retrieval.evaluator import qualified_query_family_ci
 from tools.benchmark.retrieval.finite_json import is_finite_json_number
 
@@ -115,6 +117,115 @@ def validate_policy(value: object) -> dict:
     for key in ("max_peak_rss_bytes", "max_index_bytes"):
         if type(limits[key]) is not int or limits[key] <= 0:
             raise DecisionError(f"resource_limits.{key} must be a positive integer")
+    return policy
+
+
+def _absolute_path(value: object, where: str) -> Path:
+    if (
+        not isinstance(value, str)
+        or not value
+        or "\\" in value
+        or "\x00" in value
+        or not Path(value).is_absolute()
+        or ".." in Path(value).parts
+        or Path(value).as_posix() != value
+    ):
+        raise DecisionError(f"{where} must be a canonical absolute path")
+    return Path(value)
+
+
+def validate_repository_disjoint_policy(value: object) -> dict:
+    """Validate the predeclared C5 policy without granting a product decision."""
+    policy = _object(
+        value,
+        {
+            "schema_version",
+            "repository_scope",
+            "comparison",
+            "min_useful_delta",
+            "min_cluster_lower_95",
+            "confidence_method",
+            "critical_strata",
+            "resource_limits",
+        },
+        "repository-disjoint decision policy",
+    )
+    if type(policy["schema_version"]) is not int or policy["schema_version"] != 2:
+        raise DecisionError("repository-disjoint policy schema_version must be 2")
+    scope = _object(
+        policy["repository_scope"],
+        {"kind", "split_manifest_sha256", "releases", "holdout"},
+        "repository-disjoint scope",
+    )
+    if scope["kind"] != "repository_disjoint_holdout" or not run._is_hex(
+        scope["split_manifest_sha256"], 64
+    ):
+        raise DecisionError("repository-disjoint split identity is invalid")
+    releases = scope["releases"]
+    if not isinstance(releases, dict) or not releases:
+        raise DecisionError("repository-disjoint releases are missing")
+    for digest, path in releases.items():
+        if (
+            not isinstance(digest, str)
+            or not digest.startswith("sha256:")
+            or not run._is_hex(digest.removeprefix("sha256:"), 64)
+        ):
+            raise DecisionError("repository-disjoint release digest is invalid")
+        _absolute_path(path, "repository-disjoint release")
+    holdout = scope["holdout"]
+    if not isinstance(holdout, list) or len(holdout) < 12:
+        raise DecisionError("repository-disjoint holdout needs at least twelve repositories")
+    names, commits, strata = [], set(), {}
+    for index, raw in enumerate(holdout):
+        row = _object(
+            raw,
+            {
+                "repository",
+                "repository_commit",
+                "release_digest",
+                "stratum",
+                "suite_sha256",
+                "query_family_ids",
+                "categories",
+            },
+            f"repository-disjoint holdout[{index}]",
+        )
+        name = _name(row["repository"], "holdout repository")
+        commit = row["repository_commit"]
+        if not run._is_hex(commit, 40) or commit in commits:
+            raise DecisionError("repository-disjoint holdout commit is invalid or duplicate")
+        if row["release_digest"] not in releases or not run._is_hex(row["suite_sha256"], 64):
+            raise DecisionError("repository-disjoint holdout release or suite digest differs")
+        stratum = _name(row["stratum"], "holdout stratum")
+        for key in ("query_family_ids", "categories"):
+            values = row[key]
+            if (
+                not isinstance(values, list)
+                or not values
+                or any(not isinstance(item, str) or not item for item in values)
+                or values != sorted(set(values))
+            ):
+                raise DecisionError(f"repository-disjoint holdout {key} is invalid")
+        names.append(name)
+        commits.add(commit)
+        strata[stratum] = strata.get(stratum, 0) + 1
+    if names != sorted(set(names)) or any(count < 2 for count in strata.values()):
+        raise DecisionError("repository-disjoint holdout names or strata are invalid")
+    single = {
+        **policy,
+        "schema_version": 1,
+        "repository_scope": {
+            "kind": "single_repository",
+            "repository_commit": holdout[0]["repository_commit"],
+        },
+        "confidence_method": "paired_query_family_cluster_bootstrap_percentile_v1",
+    }
+    validate_policy(single)
+    if policy["confidence_method"] != "paired_stratified_repository_cluster_bootstrap_percentile_v1":
+        raise DecisionError("repository-disjoint uncertainty method is unsupported")
+    required_repo_strata = {(row["axis"], row["name"]) for row in policy["critical_strata"]}
+    if any(("repository", name) not in required_repo_strata for name in names):
+        raise DecisionError("repository-disjoint critical strata omit a holdout repository")
     return policy
 
 
