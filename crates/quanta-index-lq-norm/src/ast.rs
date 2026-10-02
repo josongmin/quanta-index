@@ -16,7 +16,6 @@ use crate::errors::LqSpan;
 /// Pre-freeze tag per ticket §5 step 39 / dsl.md §11.1; bumps to "1.0" in
 /// LEX-01 once the carrier ships.
 pub const LQ_VERSION_TAG: &str = "1.0-pre";
-const ACCEPTED_LQ_VERSION_TAGS: &[&str] = &["1.0-pre", "1.0"];
 
 /// Canonical pattern-type mode. `CodeSearch` is produced by the product
 /// request lowerer; the Native LQ parser retains its existing DSL values.
@@ -2374,10 +2373,10 @@ impl<'de> serde::Deserialize<'de> for LqNormalizedQuery {
                 }
                 let lq_version =
                     lq_version.ok_or_else(|| serde::de::Error::missing_field("lq_version"))?;
-                if !ACCEPTED_LQ_VERSION_TAGS.contains(&lq_version.as_str()) {
+                if lq_version != LQ_VERSION_TAG {
                     return Err(serde::de::Error::unknown_variant(
                         lq_version.as_str(),
-                        ACCEPTED_LQ_VERSION_TAGS,
+                        &[LQ_VERSION_TAG],
                     ));
                 }
                 Ok(LqNormalizedQuery {

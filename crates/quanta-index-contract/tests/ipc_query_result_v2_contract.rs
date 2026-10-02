@@ -463,6 +463,31 @@ fn lq_query_cbor_decode_rejects_unknown_lq_version() -> TestRes {
 }
 
 #[test]
+fn lq_query_cbor_accepts_only_current_lq_version() -> TestRes {
+    let current = LqQuery::empty(LqSpan::eof(0));
+    roundtrip_eq(&current)?;
+
+    let bytes = mutate_query_wire(|wire| {
+        let ciborium::Value::Map(fields) = wire else {
+            return Err(format!("expected query map, got {wire:?}").into());
+        };
+        for (key, value) in fields {
+            if matches!(key, ciborium::Value::Text(text) if text == "lq_version") {
+                *value = ciborium::Value::Text("1.0".to_owned());
+                return Ok(());
+            }
+        }
+        Err("lq_version field not found in encoded query".into())
+    })?;
+    let result: Result<LqQuery, _> = ciborium::de::from_reader(bytes.as_slice());
+    match result {
+        Ok(decoded) => Err(format!("legacy version unexpectedly decoded: {decoded:?}").into()),
+        Err(error) if error.to_string().contains("1.0") => Ok(()),
+        Err(error) => Err(format!("rejection did not identify version: {error}").into()),
+    }
+}
+
+#[test]
 fn search_plane_ipc_request_v2_semantic_roundtrips_nested_lexical_scope() -> TestRes {
     let request =
         SearchPlaneQueryIpcRequest::Semantic(semantic_request_with_query_text("1.0 0.0 -1.0"));
