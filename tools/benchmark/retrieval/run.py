@@ -2417,6 +2417,8 @@ def _admission_keys(value: object) -> tuple[str, ...]:
     if set(value) == set(ADMISSION_DISJOINT_KEYS):
         return ADMISSION_DISJOINT_KEYS
     raise RunError("qualification admission path inventory is incomplete or mixed")
+
+
 CONTRACT_EVIDENCE_KEYS = (
     "contract_execution_context",
     "contract_execution_logs",
@@ -2550,9 +2552,10 @@ def validate_admission_manifest(payload: object) -> dict:
             not isinstance(disjoint["release_digest"], str)
             or not disjoint["release_digest"].startswith("sha256:")
             or not _is_hex(disjoint["release_digest"][7:], 64)
-            or any(not _is_hex(disjoint[key], 64) for key in (
-                "split_manifest_sha256", "split_releases_sha256"
-            ))
+            or any(
+                not _is_hex(disjoint[key], 64)
+                for key in ("split_manifest_sha256", "split_releases_sha256")
+            )
         ):
             raise RunError("qualification repository-disjoint digests are invalid")
     if policy_keys and not _is_hex(admission["decision_policy_sha256"], 64):
@@ -2752,10 +2755,9 @@ def _validate_disjoint_admission_source(
     from tools.benchmark import corpus_binding
 
     claim = admission["repository_disjoint"]
-    if (
-        claim["split_manifest_sha256"] != sha_file(split_manifest_path)
-        or claim["split_releases_sha256"] != sha_file(split_releases_path)
-    ):
+    if claim["split_manifest_sha256"] != sha_file(split_manifest_path) or claim[
+        "split_releases_sha256"
+    ] != sha_file(split_releases_path):
         raise RunError("qualification repository-disjoint split bytes differ")
     release_paths = read_json(split_releases_path)
     try:
@@ -2869,7 +2871,9 @@ def verify_admission_bundle(
             or development_suite_path is not None
             or experiment_custody_path is not None
         ):
-            raise RunError("qualification repository-disjoint custody paths are incomplete or mixed")
+            raise RunError(
+                "qualification repository-disjoint custody paths are incomplete or mixed"
+            )
         _validate_disjoint_admission_source(
             admission, suite_payload, repo, split_manifest_path, split_releases_path
         )
@@ -6540,10 +6544,14 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
     if manifest["scope"] == "qualified":
         for key in (
             "admission_manifest",
-            "experiment_custody",
-            "development_suite",
             "license_receipt",
             "adjudication_receipt",
+        ):
+            resolved[key] = _resolve_artifact(root, artifacts[key], f"artifacts.{key}")
+        for key in (
+            ("split_manifest", "split_releases")
+            if "split_manifest" in artifacts
+            else ("experiment_custody", "development_suite")
         ):
             resolved[key] = _resolve_artifact(root, artifacts[key], f"artifacts.{key}")
         resolved["annotation_receipts"] = [
@@ -7513,8 +7521,10 @@ def build_verdict(repo: Path, suite_path: Path, manifest_path: Path) -> dict:
                 source_revision=provenance_claims["quanta"]["source_sha"],
                 corpus_manifest_path=resolved["corpus_manifest"],
                 suite_path=resolved["suite"],
-                development_suite_path=resolved["development_suite"],
-                experiment_custody_path=resolved["experiment_custody"],
+                development_suite_path=resolved.get("development_suite"),
+                experiment_custody_path=resolved.get("experiment_custody"),
+                split_manifest_path=resolved.get("split_manifest"),
+                split_releases_path=resolved.get("split_releases"),
                 repo=repo,
                 query_pack_path=resolved["query_pack"],
                 lockfile_path=resolved["semble_lockfile"],
